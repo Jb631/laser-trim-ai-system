@@ -33,3 +33,7 @@ PySide6>=6.4.0
 sqlalchemy>=1.4.0
 psycopg2-binary>=2.9.0  # PostgreSQL
 pymongo>=4.0.0          # MongoDB
+
+openpyxl>=3.0.0
+matplotlib>=3.5.0
+seaborn>=0.12.0
