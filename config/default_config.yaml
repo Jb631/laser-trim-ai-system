@@ -1,0 +1,38 @@
+# Default configuration for Laser Trim AI System
+
+system:
+  name: "Laser Trim AI System"
+  version: "0.1.0"
+
+data:
+  supported_formats: [".xlsx", ".xls", ".csv"]
+  batch_size: 100
+
+analysis:
+  sigma_threshold_default: 0.5
+  sigma_scaling_factor: 24.0
+  filter_sampling_frequency: 100
+  filter_cutoff_frequency: 80
+
+ml_models:
+  failure_prediction:
+    enabled: true
+    retrain_interval_days: 30
+    min_training_samples: 100
+
+  threshold_optimization:
+    enabled: true
+    safety_factor: 1.1
+
+reporting:
+  excel:
+    include_charts: true
+    include_statistics: true
+
+  formats: ["xlsx", "html", "pdf"]
+
+paths:
+  data: "data/"
+  models: "models/"
+  reports: "reports/"
+  logs: "logs/"
