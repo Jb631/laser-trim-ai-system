@@ -25,7 +25,7 @@ This is a modern, AI-powered quality assurance system for analyzing laser trim d
 1. Clone the repository:
 ```bash
 git clone https://github.com/Jb631/laser-trim-ai-system.git
-cd laser-trim-ai-system
+cd requirements.txt
 ```
 
 2. Create a virtual environment:
