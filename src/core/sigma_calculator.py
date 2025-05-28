@@ -11,7 +11,7 @@ import logging
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
-from src.utils.filter_utils import apply_filter
+from src.core.filter_utils import apply_filter
 from src.core.constants import (
     MATLAB_GRADIENT_STEP,
     DEFAULT_SIGMA_SCALING_FACTOR,
