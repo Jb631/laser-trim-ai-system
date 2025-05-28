@@ -18,6 +18,7 @@ from enum import Enum
 import logging
 from pathlib import Path
 import warnings
+from database import DatabaseManager
 
 # Suppress pandas warnings for cleaner output
 warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
@@ -807,3 +808,40 @@ if __name__ == "__main__":
     # Example: Process a folder
     # results = processor.batch_process("path/to/your/folder")
     # processor.export_results(results, "output/summary.xlsx")
+    # In data_processor.py, add database integration:
+
+    class LaserTrimDataProcessor:
+        def __init__(self, config_file='config.json'):
+            # Existing initialization...
+            self.db_manager = DatabaseManager(self.config)
+
+        def analyze_file(self, file_path):
+            # Existing analysis...
+
+            # Save to database
+            if hasattr(self, 'db_manager'):
+                run_id = getattr(self, 'current_run_id', None)
+                if run_id:
+                    self.db_manager.save_file_result(run_id, result)
+
+            return result
+
+        def process_folder(self, folder_path):
+            # Create analysis run
+            if hasattr(self, 'db_manager'):
+                self.current_run_id = self.db_manager.create_analysis_run(
+                    folder_path,
+                    self.config.__dict__
+                )
+
+            # Existing processing...
+
+            # Update run statistics
+            if hasattr(self, 'db_manager') and hasattr(self, 'current_run_id'):
+                self.db_manager.update_analysis_run(
+                    self.current_run_id,
+                    processed_files=len(results),
+                    failed_files=len(errors),
+                    total_files=total_files,
+                    processing_time=time.time() - start_time
+                )
