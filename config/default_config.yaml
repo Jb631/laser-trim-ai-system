@@ -1,38 +1,81 @@
 # Default configuration for Laser Trim AI System
 
-system:
-  name: "Laser Trim AI System"
-  version: "0.1.0"
-
-data:
-  supported_formats: [".xlsx", ".xls", ".csv"]
-  batch_size: 100
-
-analysis:
-  sigma_threshold_default: 0.5
-  sigma_scaling_factor: 24.0
-  filter_sampling_frequency: 100
-  filter_cutoff_frequency: 80
-
-ml_models:
-  failure_prediction:
-    enabled: true
-    retrain_interval_days: 30
-    min_training_samples: 100
-
-  threshold_optimization:
-    enabled: true
-    safety_factor: 1.1
-
-reporting:
-  excel:
-    include_charts: true
-    include_statistics: true
-
-  formats: ["xlsx", "html", "pdf"]
-
+# System paths
 paths:
-  data: "data/"
-  models: "models/"
-  reports: "reports/"
-  logs: "logs/"
+  data_dir: "data"
+  output_dir: "output"
+  log_dir: "logs"
+  model_dir: "models"
+
+# Processing settings
+processing:
+  batch_size: 100
+  parallel_processing: true
+  max_workers: null  # null = auto-detect
+  generate_plots: true
+
+# Analysis settings (validated parameters)
+analysis:
+  sigma_scaling_factor: 24.0
+  filter_cutoff: 80  # Hz
+  filter_sampling: 100  # Hz
+  gradient_step: 3
+  min_data_points: 50
+  end_point_filter: 7
+
+# Machine Learning settings
+ml:
+  enable_ml: true
+  auto_threshold_optimization: true
+  failure_prediction_enabled: true
+  drift_detection_window_days: 30
+  retrain_interval_days: 7
+  min_training_samples: 100
+
+# Reporting settings
+reporting:
+  excel_reports: true
+  html_reports: true
+  include_plots_in_reports: true
+  chart_style: "seaborn-v0_8"
+  plot_dpi: 150
+
+# Data validation settings
+validation:
+  strict_validation: false
+  check_data_quality: true
+  min_position_range: 0.1
+  max_acceptable_sigma: 1.0
+
+# Model-specific overrides
+model_overrides:
+  "8340-1":
+    sigma_threshold: 0.4
+    use_fixed_threshold: true
+
+  "8555":
+    sigma_scaling_factor: 30.0
+
+# System detection rules
+system_detection:
+  system_a_patterns:
+    - "SEC1 TRK1"
+    - "SEC1 TRK2"
+
+  system_b_sheets:
+    - "test"
+    - "Lin Error"
+
+# Performance settings
+performance:
+  cache_enabled: true
+  cache_expiry_hours: 24
+  memory_limit_gb: 8
+  chunk_size: 1000
+
+# Logging settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  max_file_size_mb: 10
+  backup_count: 5
