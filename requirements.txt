@@ -1,44 +1,35 @@
-# Core dependencies
-pandas>=2.0.0
-numpy>=1.24.0
-openpyxl>=3.1.0
-xlrd>=2.0.1
-xlsxwriter>=3.1.0
+# Core dependencies for AI-Powered Laser Trim Analysis System
+# Python 3.8+ recommended
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.21.0
+openpyxl>=3.0.0  # For Excel file handling
+xlrd>=2.0.0      # For older .xls files
 
 # Scientific computing
-scipy>=1.10.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
+scipy>=1.9.0     # For future ML features
 
-# Machine Learning
-scikit-learn>=1.3.0
-xgboost>=1.7.0
-joblib>=1.3.0
-
-# Data validation
-pandera>=0.15.0
-pydantic>=2.0.0
-
-# Configuration
-pyyaml>=6.0
-python-dotenv>=1.0.0
+# Visualization
+matplotlib>=3.5.0
 
 # Utilities
-tqdm>=4.65.0
-colorama>=0.4.6
-tabulate>=0.9.0
+python-dateutil>=2.8.0
 
 # Testing
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-mock>=3.11.0
+pytest>=7.0.0
+pytest-cov>=3.0.0
 
-# Development (optional)
-black>=23.0.0
-flake8>=6.0.0
-mypy>=1.4.0
-pre-commit>=3.3.0
+# Optional: For future ML features (uncomment when needed)
+scikit-learn>=1.0.0
+tensorflow>=2.10.0
+torch>=1.13.0
 
-# Documentation (optional)
-sphinx>=7.0.0
-sphinx-rtd-theme>=1.3.0
+# Optional: For GUI development (uncomment when needed)
+PyQt5>=5.15.0
+PySide6>=6.4.0
+
+# Optional: For database support (uncomment when needed)
+sqlalchemy>=1.4.0
+psycopg2-binary>=2.9.0  # PostgreSQL
+pymongo>=4.0.0          # MongoDB

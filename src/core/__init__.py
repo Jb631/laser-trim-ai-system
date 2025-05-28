@@ -5,7 +5,7 @@ Core processing modules for laser trim analysis.
 """
 
 from .data_loader import DataLoader
-from .data_extractors import DataExtractor
+from .data_processor import DataExtractor
 from .sigma_calculator import SigmaCalculator
 from .system_detector import SystemDetector
 from .filter_utils import apply_matlab_filter
