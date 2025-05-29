@@ -5,7 +5,7 @@ Main orchestrator for loading and processing laser trim data files.
 Coordinates system detection, data extraction, and sigma calculations.
 """
 
-from src.core.config import Config
+from core.config import Config
 from ..constants import (
     SYSTEM_A, SYSTEM_B,
     SYSTEM_A_TRACKS

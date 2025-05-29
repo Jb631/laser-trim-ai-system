@@ -122,7 +122,7 @@ class CalibrationConfig:
 
 @dataclass
 class OutputConfig:
-    """Configuration for output and reporting."""
+    """Configuration for output and excel_reporting."""
     # Output formats
     save_raw_data: bool = True
     save_filtered_data: bool = True

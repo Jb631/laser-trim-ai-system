@@ -8,7 +8,7 @@ machine learning and trend analysis.
 Components:
 - DatabaseManager: Core database operations
 - HistoricalAnalyzer: Advanced historical data analysis
-- TrendReporter: Comprehensive reporting with visualizations
+- TrendReporter: Comprehensive excel_reporting with visualizations
 - DataMigrator: Import/export and data migration tools
 
 Author: Laser Trim AI System
