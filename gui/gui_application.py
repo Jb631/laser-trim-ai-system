@@ -513,8 +513,7 @@ class LaserTrimAIApp:
         self.report_button.pack(fill=tk.X)
 
         # Add report format info
-        if not self.report_generator or isinstance(self.report_generator,
-                                                   type(self).__dict__.get('ExcelReportGenerator')):
+        if not self.report_generator:
             tk.Label(
                 button_frame,
                 text="Note: Excel reporter not available.\nReports will be saved as CSV.",
