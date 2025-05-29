@@ -64,7 +64,7 @@ class LaserTrimOrchestrator:
     Master orchestrator for the Laser Trim AI System.
 
     Coordinates all components and provides a unified interface
-    for processing, analysis, and reporting.
+    for processing, analysis, and excel_reporting.
     """
 
     def __init__(self, config_path: Optional[str] = None,

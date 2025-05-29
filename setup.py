@@ -2,16 +2,92 @@
 Setup script for AI-Powered Laser Trim Analysis System
 
 This script helps set up the project structure and initial configuration.
+Updated for Python 3.12 compatibility.
 
 Author: QA Team
 Date: 2024
-Version: 1.0.0
+Version: 1.1.0
 """
 
 import os
 import sys
 import json
 from pathlib import Path
+import subprocess
+
+
+def check_python_version():
+    """Check if Python version is compatible."""
+    print("Checking Python version...")
+    version = sys.version_info
+
+    if version.major < 3 or (version.major == 3 and version.minor < 8):
+        print(f"⚠ Warning: Python {version.major}.{version.minor} detected.")
+        print("  Minimum required: Python 3.8")
+        print("  Recommended: Python 3.11 or 3.12")
+        return False
+    elif version.major == 3 and version.minor >= 12:
+        print(f"✓ Python {version.major}.{version.minor} - Compatible (Latest)")
+        print("  Note: Using Python 3.12 compatible package versions")
+        return True
+    else:
+        print(f"✓ Python {version.major}.{version.minor} - Compatible")
+        return True
+
+
+def install_dependencies():
+    """Install required dependencies."""
+    print("\nInstalling dependencies...")
+
+    # Upgrade pip first
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+
+    # Install from requirements.txt
+    requirements_file = Path("requirements.txt")
+    if requirements_file.exists():
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+        print("✓ Dependencies installed successfully")
+    else:
+        print("✗ requirements.txt not found!")
+        print("  Creating requirements.txt...")
+        create_requirements_file()
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+
+
+def create_requirements_file():
+    """Create requirements.txt with Python 3.12 compatible versions."""
+    requirements = """# Laser Trim AI System - Python 3.12 Compatible Requirements
+# Core Data Processing
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.12.0
+
+# Excel File Handling
+openpyxl>=3.1.0
+xlrd>=2.0.0
+xlsxwriter>=3.1.0
+
+# Machine Learning
+scikit-learn>=1.4.0
+joblib>=1.3.0
+imbalanced-learn>=0.12.0
+
+# GUI
+tkinterdnd2>=0.3.0
+
+# Visualization
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# Utilities
+python-dateutil>=2.8.0
+pyyaml>=6.0
+click>=8.1.0
+"""
+
+    with open("requirements.txt", "w") as f:
+        f.write(requirements)
+    print("✓ Created requirements.txt with Python 3.12 compatible versions")
 
 
 def create_project_structure():
@@ -33,7 +109,7 @@ def create_project_structure():
         "database"  # For future database
     ]
 
-    print("Creating project directory structure...")
+    print("\nCreating project directory structure...")
 
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -47,6 +123,7 @@ __pycache__/
 *.so
 .Python
 venv/
+laser_trim_env/
 ENV/
 env/
 .env
@@ -99,194 +176,165 @@ ml_models/*.pt
     print("\nProject structure created successfully!")
 
 
-def create_default_configuration():
-    """Create default configuration file."""
-
-    default_config = {
-        "processing": {
-            "filter_sampling_freq": 100,
-            "filter_cutoff_freq": 80,
-            "gradient_step_size": 3,
-            "default_scaling_factor": 24.0,
-            "endpoint_removal_count": 7,
-            "min_data_points": 20,
-            "max_position_range": 1000.0,
-            "max_error_magnitude": 1.0
-        },
-        "system_a": {
-            "columns": {
-                "measured_volts": 3,
-                "index": 4,
-                "theory_volts": 5,
-                "error": 6,
-                "position": 7,
-                "upper_limit": 8,
-                "lower_limit": 9
-            },
-            "unit_length_cell": "B26",
-            "resistance_cell": "B10",
-            "untrimmed_pattern": "SEC1 TRK{} 0",
-            "trimmed_pattern": "SEC1 TRK{} TRM",
-            "track_ids": ["1", "2"]
-        },
-        "system_b": {
-            "columns": {
-                "error": 3,
-                "upper_limit": 5,
-                "lower_limit": 6,
-                "position": 8
-            },
-            "unit_length_cell": "K1",
-            "resistance_cell": "R1",
-            "untrimmed_sheet": "test",
-            "final_sheet": "Lin Error"
-        },
-        "calibration": {
-            "model_scaling_factors": {
-                "8340-1": 0.4,
-                "default": 24.0
-            },
-            "system_a_models": ["68", "78", "85"],
-            "system_b_models": ["8340", "834"],
-            "apply_model_specific_thresholds": True
-        },
-        "output": {
-            "save_raw_data": True,
-            "save_filtered_data": True,
-            "save_gradients": False,
-            "decimal_places": 6,
-            "include_plots": True,
-            "output_filename_pattern": "{model}_{serial}_{timestamp}",
-            "timestamp_format": "%Y%m%d_%H%M%S"
-        },
-        "log_level": "INFO",
-        "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    }
-
-    config_path = Path("config/default_config.json")
-
-    print("\nCreating default configuration...")
-    with open(config_path, "w") as f:
-        json.dump(default_config, f, indent=4)
-
-    print(f"  ✓ Created: {config_path}")
-    print("\nDefault configuration created successfully!")
-
-
-def move_files_to_structure():
-    """Move the core files to appropriate directories."""
-
-    file_moves = [
-        ("data_processor.py", "core/data_processor.py"),
-        ("test_data_processor.py", "tests/test_data_processor.py"),
-        ("config.py", "core/config.py"),
-        ("example_usage.py", "examples/example_usage.py")
-    ]
-
-    print("\nOrganizing files into project structure...")
-
-    for src, dst in file_moves:
-        if os.path.exists(src) and not os.path.exists(dst):
-            os.rename(src, dst)
-            print(f"  ✓ Moved: {src} → {dst}")
-        elif os.path.exists(dst):
-            print(f"  ℹ Already exists: {dst}")
-        else:
-            print(f"  ⚠ Not found: {src}")
-
-
-def create_init_files():
-    """Create __init__.py files for Python packages."""
-
-    init_locations = [
-        "core/__init__.py",
-        "tests/__init__.py",
-        "examples/__init__.py"
-    ]
-
-    print("\nCreating Python package files...")
-
-    for init_file in init_locations:
-        Path(init_file).touch()
-        print(f"  ✓ Created: {init_file}")
-
-
-def create_sample_data():
-    """Create sample data file for testing."""
-
-    print("\nCreating sample data file...")
-
-    # This would create a small sample Excel file
-    # For now, we'll just create a placeholder
-    sample_info = """Sample Data Information
-
-Place your laser trim Excel files in this directory for testing.
-
-Expected formats:
-- System A: Files with 'SEC1 TRK1 0' and 'SEC1 TRK2 0' sheets
-- System B: Files with 'test' and 'Lin Error' sheets
-
-File naming suggestions:
-- 8340_A12345_20240115.xlsx
-- 6845_B67890_20240115.xlsx
+def create_launcher_script():
+    """Create a launcher script for easy startup."""
+    launcher_content = '''#!/usr/bin/env python
+"""
+Launcher for Laser Trim AI System
 """
 
-    with open("data/samples/README.txt", "w") as f:
-        f.write(sample_info)
+import sys
+import os
+from pathlib import Path
 
-    print("  ✓ Created: data/samples/README.txt")
+def main():
+    """Main launcher function."""
+    print("=" * 60)
+    print("LASER TRIM AI SYSTEM")
+    print("=" * 60)
+    print()
 
+    # Add current directory to Python path
+    sys.path.insert(0, str(Path(__file__).parent))
 
-def check_python_version():
-    """Check if Python version is compatible."""
+    print("Choose an option:")
+    print("1. Launch GUI Application")
+    print("2. Process Single File")
+    print("3. Batch Process Folder")
+    print("4. Run Examples")
+    print("5. Exit")
 
-    print("Checking Python version...")
-    version = sys.version_info
+    choice = input("\\nEnter your choice (1-5): ")
 
-    if version.major < 3 or (version.major == 3 and version.minor < 8):
-        print(f"  ⚠ Warning: Python {version.major}.{version.minor} detected.")
-        print("  Recommended: Python 3.8 or higher")
-        return False
+    if choice == "1":
+        try:
+            from gui_application import main as gui_main
+            gui_main()
+        except ImportError:
+            print("GUI module not found. Running example instead...")
+            from example_usage import main as example_main
+            example_main()
+
+    elif choice == "2":
+        from data_processor import DataProcessor
+        processor = DataProcessor()
+        file_path = input("Enter Excel file path: ")
+        try:
+            result = processor.process_file(file_path)
+            print(f"\\nProcessing complete!")
+            print(f"Sigma gradient: {result}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    elif choice == "3":
+        from data_processor import DataProcessor
+        processor = DataProcessor()
+        folder_path = input("Enter folder path: ")
+        try:
+            results = processor.batch_process(folder_path)
+            print(f"\\nProcessed {len(results)} files")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    elif choice == "4":
+        from example_usage import main as example_main
+        example_main()
+
     else:
-        print(f"  ✓ Python {version.major}.{version.minor} - Compatible")
-        return True
+        print("Exiting...")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+'''
+
+    with open("launch_app.py", "w") as f:
+        f.write(launcher_content)
+
+    print("\n✓ Created launch_app.py")
+
+
+def create_batch_launcher():
+    """Create Windows batch file for easy launching."""
+    batch_content = '''@echo off
+echo ========================================
+echo   LASER TRIM AI SYSTEM LAUNCHER
+echo ========================================
+echo.
+
+REM Check if virtual environment exists
+if not exist "laser_trim_env\\Scripts\\python.exe" (
+    echo Creating virtual environment...
+    python -m venv laser_trim_env
+    echo Virtual environment created.
+    echo.
+)
+
+REM Activate virtual environment
+echo Activating virtual environment...
+call laser_trim_env\\Scripts\\activate.bat
+
+REM Check if packages are installed
+python -c "import pandas" 2>nul
+if errorlevel 1 (
+    echo Installing required packages...
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    echo.
+)
+
+REM Launch the application
+echo Starting Laser Trim AI System...
+echo.
+python launch_app.py
+
+pause
+'''
+
+    with open("run_lasertrim.bat", "w") as f:
+        f.write(batch_content)
+
+    print("✓ Created run_lasertrim.bat (Windows launcher)")
 
 
 def main():
     """Main setup function."""
-
     print("=" * 60)
     print("AI-Powered Laser Trim Analysis System - Setup")
     print("=" * 60)
 
     # Check Python version
-    check_python_version()
+    if not check_python_version():
+        print("\n⚠ Warning: Python version may cause compatibility issues.")
+        response = input("Continue anyway? (y/n): ")
+        if response.lower() != 'y':
+            print("Setup cancelled.")
+            return
 
     # Create project structure
     create_project_structure()
 
-    # Create configuration
-    create_default_configuration()
+    # Install dependencies
+    try:
+        install_dependencies()
+    except Exception as e:
+        print(f"\n✗ Error installing dependencies: {e}")
+        print("  Please install manually using: pip install -r requirements.txt")
 
-    # Move files if they exist
-    move_files_to_structure()
-
-    # Create init files
-    create_init_files()
-
-    # Create sample data info
-    create_sample_data()
+    # Create launcher scripts
+    create_launcher_script()
+    create_batch_launcher()
 
     print("\n" + "=" * 60)
     print("Setup completed successfully!")
     print("=" * 60)
 
     print("\nNext steps:")
-    print("1. Create virtual environment: python -m venv venv")
-    print("2. Activate it: source venv/bin/activate (or venv\\Scripts\\activate on Windows)")
-    print("3. Install dependencies: pip install -r requirements.txt")
-    print("4. Place your Excel files in data/samples/")
-    print("5. Run example: python examples/example_usage.py")
+    print("1. Place your Excel files in data/samples/")
+    print("2. Run the application:")
+    print("   - Windows: Double-click 'run_lasertrim.bat'")
+    print("   - Or: python launch_app.py")
+    print("\nFor help, see the documentation in docs/")
 
     print("\nFor GitHub:")
     print("1. git add .")
