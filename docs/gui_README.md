@@ -31,7 +31,7 @@ pip install tkinterdnd2 pandas numpy scikit-learn openpyxl matplotlib seaborn
 
 2. Run the launcher:
 ```bash
-python launch_app.py
+python run_app.py
 ```
 
 ## Usage

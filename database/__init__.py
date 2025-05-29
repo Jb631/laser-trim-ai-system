@@ -8,17 +8,17 @@ machine learning and trend analysis.
 Components:
 - DatabaseManager: Core database operations
 - HistoricalAnalyzer: Advanced historical data analysis
-- TrendReporter: Comprehensive excel_reporting with visualizations
+- TrendReporter: Comprehensive excel_reporter with visualizations
 - DataMigrator: Import/export and data migration tools
 
 Author: Laser Trim AI System
 Date: 2024
 """
 
-from .database_manager import DatabaseManager
-from .historical_analyzer import HistoricalAnalyzer
-from .trend_reporter import TrendReporter
-from .data_migrator import DataMigrator
+from database.database_manager import DatabaseManager
+from database.historical_analyzer import HistoricalAnalyzer
+from database.trend_reporter import TrendReporter
+from database.data_migrator import DataMigrator
 
 __all__ = [
     'DatabaseManager',

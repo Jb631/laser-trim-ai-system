@@ -180,13 +180,13 @@ python src/gui/gui_application.py
 ### Command Line Options
 ```bash
 # Run without GUI
-python launch_app.py --no-gui
+python run_app.py --no-gui
 
 # Verbose logging
-python launch_app.py --verbose
+python run_app.py --verbose
 
 # Skip dependency check
-python launch_app.py --skip-deps
+python run_app.py --skip-deps
 ```
 
 ### Environment Variables
@@ -250,7 +250,7 @@ To update the launcher:
 
 For developers, enable debug mode:
 ```python
-# In launch_app.py, set:
+# In run_app.py, set:
 DEBUG = True
 ```
 

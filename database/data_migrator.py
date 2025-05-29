@@ -15,8 +15,8 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 from datetime import datetime
 
-from .database_manager import DatabaseManager
-from ..config import Config
+from database.database_manager import DatabaseManager
+from core.config import Config
 
 
 class DataMigrator:

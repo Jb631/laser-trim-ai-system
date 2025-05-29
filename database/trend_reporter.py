@@ -22,9 +22,9 @@ from openpyxl.chart.axis import DateAxis
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 
-from .database_manager import DatabaseManager
-from .historical_analyzer import HistoricalAnalyzer
-from ..config import Config
+from database.database_manager import DatabaseManager
+from database.historical_analyzer import HistoricalAnalyzer
+from core.config import Config
 
 
 class TrendReporter:

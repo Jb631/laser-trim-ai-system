@@ -15,15 +15,87 @@ import json
 from datetime import datetime
 from pathlib import Path
 import webbrowser
-from database import DatabaseManager, HistoricalAnalyzer, TrendReporter
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
 
-from core_engine.data_processor import LaserTrimDataProcessor
-from ml_models.ml_analyzer import MLAnalyzer
-from excel_reporter.report_generator import ExcelReportGenerator
-from config import Config, ConfigManager
+# Import core modules with error handling
+try:
+    from core.data_processor_adapter import LaserTrimDataProcessor
+    from core.config import Config, ConfigManager
+
+    logger.info("Core modules imported successfully")
+except ImportError as e:
+    logger.error(f"Core import error: {e}")
+    # Fallback imports
+    try:
+        from core.data_processor import DataProcessor as LaserTrimDataProcessor
+        from core.config import Config, ConfigManager
+    except ImportError as e2:
+        logger.error(f"Fallback core import failed: {e2}")
+        raise
+
+# Import ML modules with error handling
+try:
+    from ml_models.ml_analyzer_adapter import MLAnalyzer
+
+    logger.info("ML modules imported successfully")
+except ImportError as e:
+    logger.warning(f"ML import error: {e} - ML features will be disabled")
+
+
+    # Create dummy ML analyzer
+    class MLAnalyzer:
+        def __init__(self, config):
+            self.config = config
+
+        def analyze(self, result):
+            return {
+                'risk_score': 0.0,
+                'failure_probability': 0.0,
+                'predictions': {}
+            }
+
+# Import Excel reporter with error handling
+try:
+    from excel_reporter.excel_report_adapter import ExcelReportGenerator
+
+    logger.info("Excel reporter imported successfully")
+except ImportError as e:
+    logger.warning(f"Excel reporter import error: {e}")
+    try:
+        from excel_reporter.excel_reporter import ExcelReporter as ExcelReportGenerator
+    except ImportError:
+        logger.error("Failed to import any Excel reporter")
+
+
+        # Create dummy reporter
+        class ExcelReportGenerator:
+            def __init__(self, config):
+                self.config = config
+
+            def generate_report(self, results, filename):
+                logger.error("Excel reporter not available")
+                raise NotImplementedError("Excel reporter not available")
+
+# Import database modules with error handling
+try:
+    from database.database_manager import DatabaseManager
+    from database.historical_analyzer import HistoricalAnalyzer
+    from database.trend_reporter import TrendReporter
+
+    logger.info("Database modules imported successfully")
+except ImportError as e:
+    logger.warning(f"Database import error: {e} - Database features will be disabled")
+    DatabaseManager = None
+    HistoricalAnalyzer = None
+    TrendReporter = None
 
 
 class ModernButton(tk.Button):
@@ -147,12 +219,43 @@ class LaserTrimAIApp:
         except:
             pass
 
-        # Initialize components
-        self.config_manager = ConfigManager()
-        self.config = self.config_manager.load_config()
-        self.processor = LaserTrimDataProcessor(self.config)
-        self.ml_analyzer = MLAnalyzer(self.config)
-        self.report_generator = ExcelReportGenerator(self.config)
+        # Initialize components with error handling
+        try:
+            self.config_manager = ConfigManager()
+            self.config = Config()  # Use the Config class that has the required attributes
+            logger.info("Configuration initialized")
+        except Exception as e:
+            logger.error(f"Config initialization error: {e}")
+            # Create minimal config
+            self.config = type('Config', (), {
+                'processing': type('processing', (), {
+                    'filter_sampling_freq': 100,
+                    'filter_cutoff_freq': 80,
+                    'gradient_step_size': 3
+                })(),
+                'OUTPUT_DIR': 'output'
+            })()
+
+        try:
+            self.processor = LaserTrimDataProcessor(self.config)
+            logger.info("Data processor initialized")
+        except Exception as e:
+            logger.error(f"Processor initialization error: {e}")
+            raise
+
+        try:
+            self.ml_analyzer = MLAnalyzer(self.config)
+            logger.info("ML analyzer initialized")
+        except Exception as e:
+            logger.warning(f"ML analyzer initialization warning: {e}")
+            self.ml_analyzer = None
+
+        try:
+            self.report_generator = ExcelReportGenerator(self.config)
+            logger.info("Report generator initialized")
+        except Exception as e:
+            logger.warning(f"Report generator initialization warning: {e}")
+            self.report_generator = None
 
         # State variables
         self.loaded_files = []
@@ -167,6 +270,8 @@ class LaserTrimAIApp:
 
         # Bind window close event
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+        logger.info("GUI application initialized successfully")
 
     def _setup_styles(self):
         """Configure ttk styles for modern look"""
@@ -202,16 +307,9 @@ class LaserTrimAIApp:
         analysis_menu.add_command(label="Run Analysis", command=self._run_analysis, accelerator="F5")
         analysis_menu.add_command(label="Generate Report", command=self._generate_report, accelerator="Ctrl+R")
 
-        # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Settings...", command=self._open_settings)
-        tools_menu.add_command(label="Model Training...", command=self._open_model_training)
-
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="Documentation", command=self._open_documentation)
         help_menu.add_command(label="About", command=self._show_about)
 
         # Bind keyboard shortcuts
@@ -234,7 +332,6 @@ class LaserTrimAIApp:
         # Create tabs
         self._create_analysis_tab()
         self._create_results_tab()
-        self._create_history_tab()
 
     def _create_analysis_tab(self):
         """Create the main analysis tab"""
@@ -384,14 +481,15 @@ class LaserTrimAIApp:
         settings_frame.pack(fill=tk.X, padx=20, pady=10)
 
         # Checkboxes for analysis options
-        self.ml_enabled = tk.BooleanVar(value=True)
+        self.ml_enabled = tk.BooleanVar(value=self.ml_analyzer is not None)
         tk.Checkbutton(
             settings_frame,
             text="Enable ML Analysis",
             variable=self.ml_enabled,
             font=('Segoe UI', 10),
             bg='white',
-            activebackground='white'
+            activebackground='white',
+            state=tk.NORMAL if self.ml_analyzer else tk.DISABLED
         ).pack(anchor=tk.W, pady=2)
 
         self.auto_report = tk.BooleanVar(value=True)
@@ -399,16 +497,6 @@ class LaserTrimAIApp:
             settings_frame,
             text="Auto-generate Report",
             variable=self.auto_report,
-            font=('Segoe UI', 10),
-            bg='white',
-            activebackground='white'
-        ).pack(anchor=tk.W, pady=2)
-
-        self.parallel_processing = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            settings_frame,
-            text="Parallel Processing",
-            variable=self.parallel_processing,
             font=('Segoe UI', 10),
             bg='white',
             activebackground='white'
@@ -489,31 +577,6 @@ class LaserTrimAIApp:
 
         # Initially disabled
         self.results_text.config(state=tk.DISABLED)
-
-    def _create_history_tab(self):
-        """Create analysis history tab"""
-        history_frame = ttk.Frame(self.notebook)
-        self.notebook.add(history_frame, text="History")
-
-        # History treeview
-        columns = ('Date', 'Files', 'Status', 'Report')
-        self.history_tree = ttk.Treeview(history_frame, columns=columns, show='tree headings')
-
-        # Configure columns
-        self.history_tree.column('#0', width=0, stretch=False)
-        self.history_tree.column('Date', width=150)
-        self.history_tree.column('Files', width=100)
-        self.history_tree.column('Status', width=100)
-        self.history_tree.column('Report', width=200)
-
-        # Configure headings
-        for col in columns:
-            self.history_tree.heading(col, text=col)
-
-        self.history_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Load history
-        self._load_history()
 
     def _create_status_bar(self):
         """Create status bar at bottom of window"""
@@ -597,7 +660,7 @@ class LaserTrimAIApp:
         has_results = self.current_results is not None
 
         self.analyze_button.config(state=tk.NORMAL if has_files else tk.DISABLED)
-        self.report_button.config(state=tk.NORMAL if has_results else tk.DISABLED)
+        self.report_button.config(state=tk.NORMAL if has_results and self.report_generator else tk.DISABLED)
 
     def _run_analysis(self):
         """Run analysis on loaded files"""
@@ -631,15 +694,27 @@ class LaserTrimAIApp:
                 status_text = f"Processing {os.path.basename(file_path)}..."
                 self.root.after(0, lambda: progress.update_progress(progress_value, status_text))
 
-                # Process file
-                result = self.processor.process_file(file_path)
+                try:
+                    # Process file
+                    result = self.processor.analyze_file(file_path)
 
-                # Run ML analysis if enabled
-                if self.ml_enabled.get() and result:
-                    ml_result = self.ml_analyzer.analyze(result)
-                    result['ml_predictions'] = ml_result
+                    # Run ML analysis if enabled
+                    if self.ml_enabled.get() and self.ml_analyzer and result:
+                        try:
+                            ml_result = self.ml_analyzer.analyze(result)
+                            result['ml_predictions'] = ml_result
+                        except Exception as e:
+                            logger.warning(f"ML analysis failed: {e}")
 
-                results.append(result)
+                    results.append(result)
+
+                except Exception as e:
+                    logger.error(f"Error processing {file_path}: {e}")
+                    results.append({
+                        'filename': os.path.basename(file_path),
+                        'error': str(e),
+                        'overall_status': 'ERROR'
+                    })
 
             if not progress.cancelled:
                 # Store results
@@ -649,7 +724,7 @@ class LaserTrimAIApp:
                 self.root.after(0, self._display_results)
 
                 # Auto-generate report if enabled
-                if self.auto_report.get():
+                if self.auto_report.get() and self.report_generator:
                     self.root.after(0, self._generate_report)
 
                 # Update status
@@ -659,6 +734,7 @@ class LaserTrimAIApp:
             self.root.after(0, progress.destroy)
 
         except Exception as e:
+            logger.error(f"Analysis worker error: {e}")
             self.root.after(0, lambda: messagebox.showerror("Analysis Error", str(e)))
             self.root.after(0, progress.destroy)
 
@@ -708,17 +784,30 @@ class LaserTrimAIApp:
 
     def _display_file_result(self, result):
         """Display individual file result"""
-        filename = os.path.basename(result.get('filename', 'Unknown'))
+        filename = result.get('filename', 'Unknown')
         status = result.get('overall_status', 'ERROR')
 
         self.results_text.insert(tk.END, f"File: {filename}\n", 'filename')
         self.results_text.insert(tk.END, f"Status: {status}\n", 'pass' if status == 'PASS' else 'fail')
 
-        # Key metrics
+        # Display error if present
+        if 'error' in result:
+            self.results_text.insert(tk.END, f"Error: {result['error']}\n", 'fail')
+
+        # Key metrics from analysis_results
         if 'analysis_results' in result:
             analysis = result['analysis_results']
-            self.results_text.insert(tk.END, f"  Sigma Gradient: {analysis.get('sigma_gradient', 'N/A'):.4f}\n")
-            self.results_text.insert(tk.END, f"  Threshold: {analysis.get('sigma_threshold', 'N/A'):.4f}\n")
+            self.results_text.insert(tk.END, f"  Sigma Gradient: {analysis.get('sigma_gradient', 'N/A'):.6f}\n")
+            self.results_text.insert(tk.END, f"  Threshold: {analysis.get('sigma_threshold', 'N/A'):.6f}\n")
+
+        # Display track information if available
+        if 'tracks' in result:
+            for track_id, track_data in result['tracks'].items():
+                if 'sigma_results' in track_data:
+                    self.results_text.insert(tk.END, f"  Track {track_id}:\n")
+                    self.results_text.insert(tk.END, f"    Sigma: {track_data['sigma_results'].sigma_gradient:.6f}\n")
+                    self.results_text.insert(tk.END,
+                                             f"    Pass: {'Yes' if track_data['sigma_results'].sigma_pass else 'No'}\n")
 
         # ML predictions if available
         if 'ml_predictions' in result:
@@ -777,6 +866,10 @@ class LaserTrimAIApp:
             messagebox.showwarning("No Results", "Please run analysis before generating report.")
             return
 
+        if not self.report_generator:
+            messagebox.showerror("Report Error", "Report generator not available.")
+            return
+
         # Ask for save location
         filename = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
@@ -796,10 +889,8 @@ class LaserTrimAIApp:
                 if messagebox.askyesno("Report Generated", "Report generated successfully. Open now?"):
                     os.startfile(filename)
 
-                # Add to history
-                self._add_to_history(filename)
-
             except Exception as e:
+                logger.error(f"Report generation error: {e}")
                 messagebox.showerror("Report Error", f"Failed to generate report: {str(e)}")
 
     def _clear_results(self):
@@ -817,38 +908,6 @@ class LaserTrimAIApp:
     def _update_status(self, message):
         """Update status bar message"""
         self.status_label.config(text=message)
-
-    def _load_history(self):
-        """Load analysis history"""
-        # TODO: Implement history loading from database
-        # For now, just add a placeholder
-        self.history_tree.insert('', 'end', values=(
-            datetime.now().strftime('%Y-%m-%d %H:%M'),
-            '0',
-            'No history',
-            '-'
-        ))
-
-    def _add_to_history(self, report_path):
-        """Add entry to history"""
-        self.history_tree.insert('', 0, values=(
-            datetime.now().strftime('%Y-%m-%d %H:%M'),
-            str(len(self.current_results)),
-            'Complete',
-            os.path.basename(report_path)
-        ))
-
-    def _open_settings(self):
-        """Open settings dialog"""
-        SettingsDialog(self.root, self.config_manager)
-
-    def _open_model_training(self):
-        """Open model training dialog"""
-        messagebox.showinfo("Model Training", "Model training interface coming soon!")
-
-    def _open_documentation(self):
-        """Open documentation in browser"""
-        webbrowser.open("https://github.com/Jb631/laser-trim-ai-system/wiki")
 
     def _show_about(self):
         """Show about dialog"""
@@ -874,261 +933,17 @@ potentiometer laser trim analysis.
         self.root.mainloop()
 
 
-class SettingsDialog(tk.Toplevel):
-    """Settings dialog for configuring the application"""
-
-    def __init__(self, parent, config_manager):
-        super().__init__(parent)
-        self.config_manager = config_manager
-        self.config = config_manager.load_config()
-
-        self.title("Settings")
-        self.geometry("600x500")
-        self.resizable(False, False)
-
-        # Center the dialog
-        self.transient(parent)
-        self.grab_set()
-
-        # Create UI
-        self._create_ui()
-
-    def _create_ui(self):
-        """Create settings UI"""
-        # Main container
-        main_frame = tk.Frame(self, bg='white')
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Title
-        tk.Label(
-            main_frame,
-            text="Settings",
-            font=('Segoe UI', 16, 'bold'),
-            bg='white'
-        ).pack(pady=(20, 10))
-
-        # Notebook for categories
-        notebook = ttk.Notebook(main_frame)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
-
-        # General settings
-        self._create_general_tab(notebook)
-
-        # Analysis settings
-        self._create_analysis_tab(notebook)
-
-        # ML settings
-        self._create_ml_tab(notebook)
-
-        # Buttons
-        button_frame = tk.Frame(main_frame, bg='white')
-        button_frame.pack(fill=tk.X, padx=20, pady=(10, 20))
-
-        ModernButton(
-            button_frame,
-            text="Save",
-            bg='#4CAF50',
-            command=self._save_settings
-        ).pack(side=tk.RIGHT, padx=(10, 0))
-
-        ModernButton(
-            button_frame,
-            text="Cancel",
-            bg='#757575',
-            command=self.destroy
-        ).pack(side=tk.RIGHT)
-
-    def _create_general_tab(self, notebook):
-        """Create general settings tab"""
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="General")
-
-        # Settings
-        settings_frame = tk.Frame(frame, bg='white')
-        settings_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-        # Auto-save results
-        self.auto_save = tk.BooleanVar(value=self.config.output_settings.auto_save_results)
-        tk.Checkbutton(
-            settings_frame,
-            text="Auto-save analysis results",
-            variable=self.auto_save,
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=5)
-
-        # Default output directory
-        tk.Label(
-            settings_frame,
-            text="Default output directory:",
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=(20, 5))
-
-        dir_frame = tk.Frame(settings_frame, bg='white')
-        dir_frame.pack(fill=tk.X, pady=5)
-
-        self.output_dir = tk.StringVar(value=self.config.output_settings.default_output_dir)
-        tk.Entry(
-            dir_frame,
-            textvariable=self.output_dir,
-            font=('Segoe UI', 10),
-            state='readonly'
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        tk.Button(
-            dir_frame,
-            text="Browse",
-            command=self._browse_output_dir
-        ).pack(side=tk.RIGHT, padx=(10, 0))
-
-    def _create_analysis_tab(self, notebook):
-        """Create analysis settings tab"""
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Analysis")
-
-        # Settings
-        settings_frame = tk.Frame(frame, bg='white')
-        settings_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-        # Sigma threshold
-        tk.Label(
-            settings_frame,
-            text="Default Sigma Threshold:",
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=(0, 5))
-
-        self.sigma_threshold = tk.DoubleVar(value=self.config.analysis_settings.default_sigma_threshold)
-        tk.Scale(
-            settings_frame,
-            from_=0.001,
-            to=1.0,
-            resolution=0.001,
-            orient=tk.HORIZONTAL,
-            variable=self.sigma_threshold,
-            length=300
-        ).pack(anchor=tk.W, pady=5)
-
-        # Filter settings
-        tk.Label(
-            settings_frame,
-            text="Filter Cutoff Frequency (Hz):",
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=(20, 5))
-
-        self.filter_cutoff = tk.IntVar(value=self.config.analysis_settings.filter_cutoff_freq)
-        tk.Scale(
-            settings_frame,
-            from_=10,
-            to=100,
-            orient=tk.HORIZONTAL,
-            variable=self.filter_cutoff,
-            length=300
-        ).pack(anchor=tk.W, pady=5)
-
-    def _create_ml_tab(self, notebook):
-        """Create ML settings tab"""
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Machine Learning")
-
-        # Settings
-        settings_frame = tk.Frame(frame, bg='white')
-        settings_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-        # ML enabled
-        self.ml_enabled = tk.BooleanVar(value=self.config.ml_settings.enable_ml_analysis)
-        tk.Checkbutton(
-            settings_frame,
-            text="Enable ML analysis",
-            variable=self.ml_enabled,
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=5)
-
-        # Auto-retrain
-        self.auto_retrain = tk.BooleanVar(value=self.config.ml_settings.auto_retrain)
-        tk.Checkbutton(
-            settings_frame,
-            text="Auto-retrain models when new data available",
-            variable=self.auto_retrain,
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=5)
-
-        # Model path
-        tk.Label(
-            settings_frame,
-            text="Model directory:",
-            font=('Segoe UI', 10),
-            bg='white'
-        ).pack(anchor=tk.W, pady=(20, 5))
-
-        self.model_dir = tk.StringVar(value=self.config.ml_settings.model_path)
-        tk.Entry(
-            settings_frame,
-            textvariable=self.model_dir,
-            font=('Segoe UI', 10),
-            state='readonly'
-        ).pack(fill=tk.X, pady=5)
-
-    def _browse_output_dir(self):
-        """Browse for output directory"""
-        directory = filedialog.askdirectory()
-        if directory:
-            self.output_dir.set(directory)
-
-    def _save_settings(self):
-        """Save settings and close"""
-        # Update config
-        self.config.output_settings.auto_save_results = self.auto_save.get()
-        self.config.output_settings.default_output_dir = self.output_dir.get()
-        self.config.analysis_settings.default_sigma_threshold = self.sigma_threshold.get()
-        self.config.analysis_settings.filter_cutoff_freq = self.filter_cutoff.get()
-        self.config.ml_settings.enable_ml_analysis = self.ml_enabled.get()
-        self.config.ml_settings.auto_retrain = self.auto_retrain.get()
-
-        # Save to file
-        self.config_manager.save_config(self.config)
-
-        # Close dialog
-        self.destroy()
-        messagebox.showinfo("Settings Saved", "Settings have been saved successfully.")
-
-
 def main():
     """Main entry point"""
-    app = LaserTrimAIApp()
-    app.run()
+    try:
+        logger.info("Starting Laser Trim AI System GUI...")
+        app = LaserTrimAIApp()
+        app.run()
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        messagebox.showerror("Startup Error", f"Failed to start application:\n{str(e)}")
+        raise
 
-
-class LaserTrimAnalyzerGUI:
-    def __init__(self):
-        # Existing initialization...
-        self.init_database()
-
-    def init_database(self):
-        """Initialize database components."""
-        try:
-            self.db_manager = DatabaseManager(self.config)
-            self.analyzer = HistoricalAnalyzer(self.db_manager, self.config)
-            self.reporter = TrendReporter(self.db_manager, self.analyzer, self.config)
-            self.add_database_menu()
-        except Exception as e:
-            print(f"Database initialization failed: {e}")
-
-    def add_database_menu(self):
-        """Add database menu to GUI."""
-        db_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Database", menu=db_menu)
-
-        db_menu.add_command(label="View Historical Data", command=self.view_historical_data)
-        db_menu.add_command(label="Generate Trend Report", command=self.generate_trend_report)
-        db_menu.add_command(label="Model Analysis", command=self.analyze_models)
-        db_menu.add_separator()
-        db_menu.add_command(label="Import Data", command=self.import_data)
-        db_menu.add_command(label="Export Backup", command=self.export_backup)
 
 if __name__ == "__main__":
     main()

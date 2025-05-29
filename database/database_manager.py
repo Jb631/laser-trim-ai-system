@@ -18,7 +18,7 @@ from contextlib import contextmanager
 import pandas as pd
 import numpy as np
 
-from ..config import Config
+from core.config import Config
 
 
 class DatabaseManager:

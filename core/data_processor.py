@@ -18,7 +18,10 @@ from enum import Enum
 import logging
 from pathlib import Path
 import warnings
-from database import DatabaseManager
+try:
+    from database.database_manager import DatabaseManager
+except ImportError:
+    DatabaseManager = None
 
 # Suppress pandas warnings for cleaner output
 warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
