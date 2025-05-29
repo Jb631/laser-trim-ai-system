@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-# Import core modules with error handling
+# Import core modules
 try:
     from core.data_processor_adapter import LaserTrimDataProcessor
     from core.config import Config, ConfigManager
@@ -33,15 +33,10 @@ try:
     logger.info("Core modules imported successfully")
 except ImportError as e:
     logger.error(f"Core import error: {e}")
-    # Fallback imports
-    try:
-        from core.data_processor import DataProcessor as LaserTrimDataProcessor
-        from core.config import Config, ConfigManager
-    except ImportError as e2:
-        logger.error(f"Fallback core import failed: {e2}")
-        raise
+    from core.data_processor import DataProcessor as LaserTrimDataProcessor
+    from core.config import Config, ConfigManager
 
-# Import ML modules with error handling
+# Import ML modules (optional)
 try:
     from ml_models.ml_analyzer_adapter import MLAnalyzer
 
@@ -50,59 +45,61 @@ except ImportError as e:
     logger.warning(f"ML import error: {e} - ML features will be disabled")
 
 
-    # Create dummy ML analyzer
     class MLAnalyzer:
         def __init__(self, config):
             self.config = config
 
         def analyze(self, result):
-            return {
-                'risk_score': 0.0,
-                'failure_probability': 0.0,
-                'predictions': {}
-            }
+            return {'risk_score': 0.0, 'failure_probability': 0.0}
 
-# Import Excel reporter with error handling
+# Import Excel reporter - with better error handling
+ExcelReportGenerator = None
 try:
     from excel_reporter.excel_report_adapter import ExcelReportGenerator
 
     logger.info("Excel reporter imported successfully")
 except ImportError as e:
-    logger.warning(f"Excel reporter import error: {e}")
+    logger.warning(f"Excel adapter import error: {e}")
     try:
         from excel_reporter.excel_reporter import ExcelReporter as ExcelReportGenerator
-    except ImportError:
-        logger.error("Failed to import any Excel reporter")
+
+        logger.info("Using ExcelReporter directly")
+    except ImportError as e2:
+        logger.error(f"No Excel reporter available: {e2}")
 
 
-        # Create dummy reporter
+        # Create a simple CSV fallback
         class ExcelReportGenerator:
             def __init__(self, config):
                 self.config = config
 
             def generate_report(self, results, filename):
-                logger.error("Excel reporter not available")
-                raise NotImplementedError("Excel reporter not available")
+                """Fallback CSV report generator"""
+                import csv
+                csv_filename = filename.replace('.xlsx', '.csv')
 
-# Import database modules with error handling
-try:
-    from database.database_manager import DatabaseManager
-    from database.historical_analyzer import HistoricalAnalyzer
-    from database.trend_reporter import TrendReporter
+                with open(csv_filename, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Filename', 'Status', 'Sigma Gradient', 'Threshold', 'Pass'])
 
-    logger.info("Database modules imported successfully")
-except ImportError as e:
-    logger.warning(f"Database import error: {e} - Database features will be disabled")
-    DatabaseManager = None
-    HistoricalAnalyzer = None
-    TrendReporter = None
+                    for result in results:
+                        if isinstance(result, dict) and 'filename' in result:
+                            writer.writerow([
+                                result.get('filename', 'Unknown'),
+                                result.get('overall_status', 'Unknown'),
+                                result.get('analysis_results', {}).get('sigma_gradient', 'N/A'),
+                                result.get('analysis_results', {}).get('sigma_threshold', 'N/A'),
+                                result.get('analysis_results', {}).get('sigma_pass', 'N/A')
+                            ])
+
+                logger.info(f"CSV report saved to {csv_filename}")
+                return csv_filename
 
 
 class ModernButton(tk.Button):
     """Modern styled button with hover effects"""
 
     def __init__(self, parent, **kwargs):
-        # Default styling
         default_style = {
             'font': ('Segoe UI', 10),
             'bg': '#2196F3',
@@ -114,20 +111,18 @@ class ModernButton(tk.Button):
             'cursor': 'hand2'
         }
 
-        # Merge with user kwargs
         for key, value in default_style.items():
             if key not in kwargs:
                 kwargs[key] = value
 
         super().__init__(parent, **kwargs)
 
-        # Hover effects
         self.default_bg = kwargs['bg']
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
 
     def _on_enter(self, e):
-        self['bg'] = '#1976D2'  # Darker blue on hover
+        self['bg'] = '#1976D2'
 
     def _on_leave(self, e):
         self['bg'] = self.default_bg
@@ -142,15 +137,12 @@ class ProgressDialog(tk.Toplevel):
         self.geometry("400x200")
         self.resizable(False, False)
 
-        # Center the dialog
         self.transient(parent)
         self.grab_set()
 
-        # Main frame
         main_frame = tk.Frame(self, bg='white', padx=30, pady=30)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Title
         self.title_label = tk.Label(
             main_frame,
             text=title,
@@ -159,7 +151,6 @@ class ProgressDialog(tk.Toplevel):
         )
         self.title_label.pack(pady=(0, 10))
 
-        # Progress bar
         self.progress = ttk.Progressbar(
             main_frame,
             length=300,
@@ -167,7 +158,6 @@ class ProgressDialog(tk.Toplevel):
         )
         self.progress.pack(pady=10)
 
-        # Status label
         self.status_label = tk.Label(
             main_frame,
             text="Starting...",
@@ -177,7 +167,6 @@ class ProgressDialog(tk.Toplevel):
         )
         self.status_label.pack(pady=(0, 10))
 
-        # Cancel button
         self.cancel_button = ModernButton(
             main_frame,
             text="Cancel",
@@ -189,14 +178,12 @@ class ProgressDialog(tk.Toplevel):
         self.cancelled = False
 
     def update_progress(self, value, status_text=""):
-        """Update progress bar and status"""
         self.progress['value'] = value
         if status_text:
             self.status_label['text'] = status_text
         self.update()
 
     def cancel(self):
-        """Cancel the operation"""
         self.cancelled = True
         self.destroy()
 
@@ -205,28 +192,19 @@ class LaserTrimAIApp:
     """Main GUI Application for Laser Trim AI System"""
 
     def __init__(self):
-        # Initialize main window with drag and drop support
+        # Initialize main window
         self.root = TkinterDnD.Tk()
         self.root.title("Laser Trim AI System - QA Analysis")
-        self.root.geometry("1200x800")
-        self.root.minsize(1000, 700)
+        self.root.geometry("1400x800")  # Made wider to ensure both panels are visible
+        self.root.minsize(1200, 700)
 
-        # Set icon if available
-        try:
-            icon_path = Path(__file__).parent / "assets" / "icon.ico"
-            if icon_path.exists():
-                self.root.iconbitmap(str(icon_path))
-        except:
-            pass
-
-        # Initialize components with error handling
+        # Initialize components
         try:
             self.config_manager = ConfigManager()
-            self.config = Config()  # Use the Config class that has the required attributes
+            self.config = Config()
             logger.info("Configuration initialized")
         except Exception as e:
             logger.error(f"Config initialization error: {e}")
-            # Create minimal config
             self.config = type('Config', (), {
                 'processing': type('processing', (), {
                     'filter_sampling_freq': 100,
@@ -236,26 +214,9 @@ class LaserTrimAIApp:
                 'OUTPUT_DIR': 'output'
             })()
 
-        try:
-            self.processor = LaserTrimDataProcessor(self.config)
-            logger.info("Data processor initialized")
-        except Exception as e:
-            logger.error(f"Processor initialization error: {e}")
-            raise
-
-        try:
-            self.ml_analyzer = MLAnalyzer(self.config)
-            logger.info("ML analyzer initialized")
-        except Exception as e:
-            logger.warning(f"ML analyzer initialization warning: {e}")
-            self.ml_analyzer = None
-
-        try:
-            self.report_generator = ExcelReportGenerator(self.config)
-            logger.info("Report generator initialized")
-        except Exception as e:
-            logger.warning(f"Report generator initialization warning: {e}")
-            self.report_generator = None
+        self.processor = LaserTrimDataProcessor(self.config)
+        self.ml_analyzer = MLAnalyzer(self.config)
+        self.report_generator = ExcelReportGenerator(self.config) if ExcelReportGenerator else None
 
         # State variables
         self.loaded_files = []
@@ -276,15 +237,9 @@ class LaserTrimAIApp:
     def _setup_styles(self):
         """Configure ttk styles for modern look"""
         style = ttk.Style()
-
-        # Configure notebook (tabs)
         style.configure('TNotebook', background='#f5f5f5')
         style.configure('TNotebook.Tab', padding=[20, 10])
-
-        # Configure frames
         style.configure('Card.TFrame', background='white', relief=tk.FLAT)
-
-        # Configure labels
         style.configure('Heading.TLabel', font=('Segoe UI', 14, 'bold'))
         style.configure('Subheading.TLabel', font=('Segoe UI', 11))
 
@@ -334,29 +289,59 @@ class LaserTrimAIApp:
         self._create_results_tab()
 
     def _create_analysis_tab(self):
-        """Create the main analysis tab"""
+        """Create the main analysis tab with proper layout"""
         analysis_frame = ttk.Frame(self.notebook)
         self.notebook.add(analysis_frame, text="Analysis")
 
+        # Create PanedWindow for resizable panels
+        paned = ttk.PanedWindow(analysis_frame, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
         # Left panel - File management
-        left_panel = ttk.Frame(analysis_frame)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # File drop zone
-        self._create_drop_zone(left_panel)
-
-        # File list
-        self._create_file_list(left_panel)
+        left_frame = ttk.Frame(paned)
+        paned.add(left_frame, weight=3)  # 3/4 of the space
 
         # Right panel - Controls and info
-        right_panel = ttk.Frame(analysis_frame)
-        right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+        right_frame = ttk.Frame(paned)
+        paned.add(right_frame, weight=1)  # 1/4 of the space
+
+        # Create left panel content
+        self._create_left_panel(left_frame)
+
+        # Create right panel content
+        self._create_right_panel(right_frame)
+
+    def _create_left_panel(self, parent):
+        """Create left panel with file management"""
+        # File drop zone
+        self._create_drop_zone(parent)
+
+        # File list
+        self._create_file_list(parent)
+
+    def _create_right_panel(self, parent):
+        """Create right panel with controls"""
+        # Create a scrollable frame for the right panel
+        canvas = tk.Canvas(parent, bg='white')
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
         # Analysis controls
-        self._create_analysis_controls(right_panel)
+        self._create_analysis_controls(scrollable_frame)
 
         # Quick stats
-        self._create_quick_stats(right_panel)
+        self._create_quick_stats(scrollable_frame)
 
     def _create_drop_zone(self, parent):
         """Create drag and drop zone for files"""
@@ -366,20 +351,19 @@ class LaserTrimAIApp:
         self.drop_zone = tk.Frame(
             drop_frame,
             bg='#e3f2fd',
-            height=150,
+            height=120,
             relief=tk.RIDGE,
             bd=2
         )
         self.drop_zone.pack(fill=tk.X, padx=20, pady=20)
 
-        # Drop zone content
         drop_icon = tk.Label(
             self.drop_zone,
             text="📁",
-            font=('Segoe UI', 48),
+            font=('Segoe UI', 36),
             bg='#e3f2fd'
         )
-        drop_icon.pack(pady=(20, 10))
+        drop_icon.pack(pady=(15, 5))
 
         drop_label = tk.Label(
             self.drop_zone,
@@ -395,9 +379,8 @@ class LaserTrimAIApp:
         self.drop_zone.dnd_bind('<<Drop>>', self._handle_drop)
 
         # Click to browse
-        self.drop_zone.bind('<Button-1>', lambda e: self._load_files())
-        drop_icon.bind('<Button-1>', lambda e: self._load_files())
-        drop_label.bind('<Button-1>', lambda e: self._load_files())
+        for widget in [self.drop_zone, drop_icon, drop_label]:
+            widget.bind('<Button-1>', lambda e: self._load_files())
 
     def _create_file_list(self, parent):
         """Create file list with management controls"""
@@ -426,7 +409,7 @@ class LaserTrimAIApp:
 
         # File listbox with scrollbar
         list_container = tk.Frame(list_frame, bg='white')
-        list_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        list_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
 
         scrollbar = ttk.Scrollbar(list_container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -452,21 +435,22 @@ class LaserTrimAIApp:
             button_frame,
             text="Remove Selected",
             bg='#f44336',
-            command=self._remove_selected_files
+            command=self._remove_selected_files,
+            width=15
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         ModernButton(
             button_frame,
             text="Clear All",
             bg='#757575',
-            command=self._clear_all
+            command=self._clear_all,
+            width=15
         ).pack(side=tk.LEFT)
 
     def _create_analysis_controls(self, parent):
         """Create analysis control panel"""
-        control_frame = ttk.Frame(parent, style='Card.TFrame', width=300)
-        control_frame.pack(fill=tk.X, pady=(0, 10))
-        control_frame.pack_propagate(False)
+        control_frame = ttk.Frame(parent, style='Card.TFrame')
+        control_frame.pack(fill=tk.X, pady=(0, 10), padx=5)
 
         # Header
         tk.Label(
@@ -492,14 +476,15 @@ class LaserTrimAIApp:
             state=tk.NORMAL if self.ml_analyzer else tk.DISABLED
         ).pack(anchor=tk.W, pady=2)
 
-        self.auto_report = tk.BooleanVar(value=True)
+        self.auto_report = tk.BooleanVar(value=False)  # Disabled by default since reporter has issues
         tk.Checkbutton(
             settings_frame,
             text="Auto-generate Report",
             variable=self.auto_report,
             font=('Segoe UI', 10),
             bg='white',
-            activebackground='white'
+            activebackground='white',
+            state=tk.NORMAL if self.report_generator else tk.DISABLED
         ).pack(anchor=tk.W, pady=2)
 
         # Separator
@@ -527,11 +512,22 @@ class LaserTrimAIApp:
         )
         self.report_button.pack(fill=tk.X)
 
+        # Add report format info
+        if not self.report_generator or isinstance(self.report_generator,
+                                                   type(self).__dict__.get('ExcelReportGenerator')):
+            tk.Label(
+                button_frame,
+                text="Note: Excel reporter not available.\nReports will be saved as CSV.",
+                font=('Segoe UI', 9),
+                bg='white',
+                fg='#666',
+                justify=tk.CENTER
+            ).pack(pady=(10, 0))
+
     def _create_quick_stats(self, parent):
         """Create quick statistics panel"""
-        stats_frame = ttk.Frame(parent, style='Card.TFrame', width=300)
-        stats_frame.pack(fill=tk.X)
-        stats_frame.pack_propagate(False)
+        stats_frame = ttk.Frame(parent, style='Card.TFrame')
+        stats_frame.pack(fill=tk.X, padx=5)
 
         # Header
         tk.Label(
@@ -660,7 +656,7 @@ class LaserTrimAIApp:
         has_results = self.current_results is not None
 
         self.analyze_button.config(state=tk.NORMAL if has_files else tk.DISABLED)
-        self.report_button.config(state=tk.NORMAL if has_results and self.report_generator else tk.DISABLED)
+        self.report_button.config(state=tk.NORMAL if has_results else tk.DISABLED)
 
     def _run_analysis(self):
         """Run analysis on loaded files"""
@@ -692,7 +688,7 @@ class LaserTrimAIApp:
                 # Update progress
                 progress_value = (i / total_files) * 100
                 status_text = f"Processing {os.path.basename(file_path)}..."
-                self.root.after(0, lambda: progress.update_progress(progress_value, status_text))
+                self.root.after(0, lambda pv=progress_value, st=status_text: progress.update_progress(pv, st))
 
                 try:
                     # Process file
@@ -849,19 +845,25 @@ class LaserTrimAIApp:
                 text=f"{label}:",
                 font=('Segoe UI', 10),
                 bg='white',
-                anchor=tk.W
+                anchor=tk.W,
+                width=12
             ).pack(side=tk.LEFT)
+
+            color = 'green' if label == "Passed" and int(value) > 0 else \
+                'red' if label == "Failed" and int(value) > 0 else \
+                    'black'
 
             tk.Label(
                 stat_frame,
                 text=value,
                 font=('Segoe UI', 10, 'bold'),
                 bg='white',
+                fg=color,
                 anchor=tk.E
             ).pack(side=tk.RIGHT)
 
     def _generate_report(self):
-        """Generate Excel report"""
+        """Generate Excel or CSV report"""
         if not self.current_results:
             messagebox.showwarning("No Results", "Please run analysis before generating report.")
             return
@@ -870,24 +872,40 @@ class LaserTrimAIApp:
             messagebox.showerror("Report Error", "Report generator not available.")
             return
 
+        # Determine file extension based on available reporter
+        if hasattr(self.report_generator, 'generate_report'):
+            ext = ".xlsx"
+            file_type = "Excel files"
+            # Check if it's the CSV fallback
+            if self.report_generator.__class__.__name__ == 'ExcelReportGenerator' and \
+                    'csv' in str(self.report_generator.generate_report.__doc__).lower():
+                ext = ".csv"
+                file_type = "CSV files"
+        else:
+            ext = ".csv"
+            file_type = "CSV files"
+
         # Ask for save location
         filename = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            initialfile=f"LaserTrim_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            defaultextension=ext,
+            filetypes=[(file_type, f"*{ext}"), ("All files", "*.*")],
+            initialfile=f"LaserTrim_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
         )
 
         if filename:
             try:
                 # Generate report
-                self.report_generator.generate_report(self.current_results, filename)
+                actual_file = self.report_generator.generate_report(self.current_results, filename)
 
                 # Update status
-                self._update_status(f"Report saved: {os.path.basename(filename)}")
+                self._update_status(f"Report saved: {os.path.basename(actual_file or filename)}")
 
                 # Ask if user wants to open the report
                 if messagebox.askyesno("Report Generated", "Report generated successfully. Open now?"):
-                    os.startfile(filename)
+                    try:
+                        os.startfile(actual_file or filename)
+                    except Exception as e:
+                        logger.warning(f"Could not open file: {e}")
 
             except Exception as e:
                 logger.error(f"Report generation error: {e}")
