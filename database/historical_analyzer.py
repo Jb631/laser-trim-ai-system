@@ -18,8 +18,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 
-from .database_manager import DatabaseManager
-from ..config import Config
+from database.database_manager import DatabaseManager
+from core.config import Config
 
 
 class HistoricalAnalyzer:

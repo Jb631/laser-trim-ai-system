@@ -248,10 +248,10 @@ if __name__ == "__main__":
     main()
 '''
 
-    with open("launch_app.py", "w") as f:
+    with open("run_app.py", "w") as f:
         f.write(launcher_content)
 
-    print("\n✓ Created launch_app.py")
+    print("\n✓ Created run_app.py")
 
 
 def create_batch_launcher():
@@ -286,7 +286,7 @@ if errorlevel 1 (
 REM Launch the application
 echo Starting Laser Trim AI System...
 echo.
-python launch_app.py
+python run_app.py
 
 pause
 '''
@@ -333,7 +333,7 @@ def main():
     print("1. Place your Excel files in data/samples/")
     print("2. Run the application:")
     print("   - Windows: Double-click 'run_lasertrim.bat'")
-    print("   - Or: python launch_app.py")
+    print("   - Or: python run_app.py")
     print("\nFor help, see the documentation in docs/")
 
     print("\nFor GitHub:")

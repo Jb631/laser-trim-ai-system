@@ -36,8 +36,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import from your existing modules
-from config import Config
-from data_processor import LaserTrimDataProcessor
+from core.config import Config
+from core.data_processor import LaserTrimDataProcessor
 
 
 class LaserTrimMLModels:

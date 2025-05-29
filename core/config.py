@@ -122,7 +122,7 @@ class CalibrationConfig:
 
 @dataclass
 class OutputConfig:
-    """Configuration for output and excel_reporting."""
+    """Configuration for output and reporting."""
     # Output formats
     save_raw_data: bool = True
     save_filtered_data: bool = True
@@ -135,6 +135,17 @@ class OutputConfig:
     # File naming
     output_filename_pattern: str = "{model}_{serial}_{timestamp}"
     timestamp_format: str = "%Y%m%d_%H%M%S"
+
+    # Output directory
+    output_dir: Optional[Union[str, Path]] = None
+
+    def __post_init__(self):
+        if self.output_dir is None:
+            self.output_dir = Path("output")
+        else:
+            self.output_dir = Path(self.output_dir)
+        # Create output directory if it doesn't exist
+        self.output_dir.mkdir(exist_ok=True)
 
 
 @dataclass
@@ -164,6 +175,31 @@ class SystemConfig:
             self.output = OutputConfig()
 
 
+class Config(SystemConfig):
+    """
+    Extended configuration class with database support.
+    This provides backward compatibility and additional features.
+    """
+
+    # Database-specific attributes
+    OUTPUT_DIR = "output"
+    ANOMALY_THRESHOLDS = {
+        'high_sigma': 0.05,
+        'high_failure_prob': 0.7,
+        'resistance_change': 20
+    }
+    SIGMA_THRESHOLD = 0.04  # Default sigma threshold
+
+    def __init__(self, *args, **kwargs):
+        """Initialize configuration with database support."""
+        super().__init__(*args, **kwargs)
+
+        # Ensure output directory exists
+        if not hasattr(self.output, 'output_dir') or self.output.output_dir is None:
+            self.output.output_dir = Path(self.OUTPUT_DIR)
+            self.output.output_dir.mkdir(exist_ok=True)
+
+
 class ConfigManager:
     """
     Configuration manager for the laser trim analysis system.
@@ -179,7 +215,7 @@ class ConfigManager:
             config_path: Path to configuration file (JSON format)
         """
         self.config_path = Path(config_path) if config_path else None
-        self.config = SystemConfig()
+        self.config = Config()  # Use Config instead of SystemConfig
         self.logger = self._setup_logger()
 
         # Load configuration if path provided
@@ -197,22 +233,29 @@ class ConfigManager:
             logger.setLevel(getattr(logging, self.config.log_level))
         return logger
 
-    def load_config(self, config_path: Optional[Union[str, Path]] = None) -> None:
+    def load_config(self, config_path: Optional[Union[str, Path]] = None) -> Config:
         """
         Load configuration from JSON file.
 
         Args:
             config_path: Path to configuration file
+
+        Returns:
+            Loaded configuration object
         """
         if config_path:
             self.config_path = Path(config_path)
 
         if not self.config_path or not self.config_path.exists():
-            raise ValueError(f"Configuration file not found: {self.config_path}")
+            self.logger.warning(f"Configuration file not found: {self.config_path}")
+            return self.config
 
         try:
             with open(self.config_path, 'r') as f:
                 config_data = json.load(f)
+
+            # Create new Config object
+            self.config = Config()
 
             # Load each configuration section
             if 'processing' in config_data:
@@ -236,7 +279,8 @@ class ConfigManager:
 
         except Exception as e:
             self.logger.error(f"Error loading configuration: {str(e)}")
-            raise
+
+        return self.config
 
     def save_config(self, config_path: Optional[Union[str, Path]] = None) -> None:
         """
@@ -353,7 +397,7 @@ class ConfigManager:
 
     def reset_to_defaults(self) -> None:
         """Reset all configuration to default values."""
-        self.config = SystemConfig()
+        self.config = Config()
         self.logger.info("Configuration reset to defaults")
 
     def create_default_config_file(self, path: Union[str, Path]) -> None:
@@ -378,7 +422,7 @@ def create_configured_processor(config_path: Optional[Union[str, Path]] = None):
     Returns:
         Configured DataProcessor instance
     """
-    from data_processor import DataProcessor
+    from core.data_processor import DataProcessor
 
     # Load configuration
     config_manager = ConfigManager(config_path)
