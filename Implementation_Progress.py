@@ -3,7 +3,7 @@
 ## Completed:
 - [x] Created new file structure
 - [x] Core models (models.py, config.py, constants.py)
-- [ ] Database layer (SQLAlchemy models and manager)
+- [x] Database layer (SQLAlchemy models and manager)
 - [ ] Analysis modules
 - [ ] ML modules
 - [ ] API integration
