@@ -1,0 +1,37 @@
+# requirements.txt
+# Core dependencies
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+xlrd>=2.0.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+
+# ML/Scientific
+scikit-learn>=1.3.0
+scipy>=1.11.0
+statsmodels>=0.14.0
+
+# GUI
+customtkinter>=5.2.0
+ttkthemes>=3.2.0
+
+# API
+httpx>=0.25.0
+tenacity>=8.2.0
+
+# Utilities
+pyyaml>=6.0
+rich>=13.0.0
+click>=8.1.0
+python-dotenv>=1.0.0
