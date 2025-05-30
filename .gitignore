@@ -1,8 +1,13 @@
-# Python
+# .gitignore
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -16,48 +21,114 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# Virtual Environment
-venv/
-env/
-ENV/
-.venv
+# PyInstaller
+*.manifest
+*.spec
 
-# IDEs
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-
-# Data files
-*.xlsx
-*.xls
-*.csv
-!examples/sample_data/*
-
-# Model files
-*.pkl
-*.h5
-*.joblib
-models/*.pkl
-models/*.h5
-
-# Output directories
-reports/
-output/
-logs/
-results/
-
-# Logs
-*.log
-logs/
 
 # OS
 .DS_Store
@@ -68,20 +139,12 @@ logs/
 ehthumbs.db
 Thumbs.db
 
-# Config files with secrets
-config/production.yaml
-config/local.yaml
-config/secrets.yaml
-
-# Test data
-tests/test_data/
-tests/fixtures/large_data/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# Documentation builds
-docs/_build/
-docs/_static/
-docs/_templates/
+# Project specific
+/data/
+/output/
+/logs/
+*.db
+*.db-journal
+/models/
+/cache/
+.laser_trim_analyzer/
