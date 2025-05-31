@@ -26,8 +26,11 @@ from matplotlib.figure import Figure
 
 # Import from your new structure
 from laser_trim_analyzer.core.config import Config
-from laser_trim_analyzer.core.constants import APP_NAME, DEFAULT_OUTPUT_FOLDER
-from laser_trim_analyzer.core.models import AnalysisResult, FileInfo
+from laser_trim_analyzer.core.constants import APP_NAME
+
+# Define the default output folder since it's not in constants
+DEFAULT_OUTPUT_FOLDER = "LaserTrimResults"
+from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.analysis.base import BaseAnalyzer
 
