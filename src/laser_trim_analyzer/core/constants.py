@@ -19,6 +19,9 @@ EXCEL_EXTENSIONS: Final[tuple[str, ...]] = (".xlsx", ".xls")
 BACKUP_PATTERN: Final[str] = "*_backup_*"
 TEMP_FILE_PREFIX: Final[str] = "~$"
 
+# Default output folder name
+DEFAULT_OUTPUT_FOLDER: Final[str] = "LaserTrimResults"
+
 # System identifiers
 class SystemIdentifier(str, Enum):
     """System identification patterns."""

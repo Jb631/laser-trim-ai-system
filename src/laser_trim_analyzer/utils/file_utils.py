@@ -13,8 +13,22 @@ from typing import List, Optional, Callable, Any
 from functools import wraps
 import logging
 
+import hashlib
+from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
+def calculate_file_hash(file_path: Path, chunk_size: int = 8192) -> str:
+    """Calculate SHA256 hash of a file."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(chunk_size), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+def ensure_directory(path: Path) -> None:
+    """Ensure directory exists, create if not."""
+    path.mkdir(parents=True, exist_ok=True)
 
 def ensure_directory(path: Path) -> Path:
     """
