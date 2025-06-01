@@ -16,24 +16,23 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from laser_trim_analyzer.gui.widgets.base_page import BasePage
-from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata
 from laser_trim_analyzer.database.manager import DatabaseManager
+from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
 
 class HistoricalPage(BasePage):
     """Historical data analysis page."""
 
     def __init__(self, parent, main_window):
-        super().__init__(parent, main_window)
-        self.db_manager = main_window.db_manager
         self.current_data = None
-        self.setup_page()
+        super().__init__(parent, main_window)
 
-    def setup_page(self):
+    def _create_page(self):
         """Set up the historical data page."""
         # Title
-        title_frame = ttk.Frame(self.content_frame)
+        title_frame = ttk.Frame(self)
         title_frame.pack(fill='x', padx=20, pady=(20, 10))
 
         ttk.Label(
@@ -50,7 +49,7 @@ class HistoricalPage(BasePage):
     def _create_query_section(self):
         """Create query filters section."""
         query_frame = ttk.LabelFrame(
-            self.content_frame,
+            self,
             text="Query Filters",
             padding=15
         )
@@ -170,7 +169,7 @@ class HistoricalPage(BasePage):
     def _create_results_section(self):
         """Create results table section."""
         results_frame = ttk.LabelFrame(
-            self.content_frame,
+            self,
             text="Query Results",
             padding=10
         )
@@ -242,7 +241,7 @@ class HistoricalPage(BasePage):
     def _create_charts_section(self):
         """Create charts section."""
         charts_frame = ttk.LabelFrame(
-            self.content_frame,
+            self,
             text="Data Visualization",
             padding=10
         )
@@ -356,6 +355,7 @@ class HistoricalPage(BasePage):
             row = {
                 'id': result.id,
                 'timestamp': result.timestamp,
+                'file_date': result.file_date,
                 'model': result.model,
                 'serial': result.serial,
                 'system': result.system.value,
@@ -372,8 +372,11 @@ class HistoricalPage(BasePage):
 
         # Insert into treeview
         for _, row in self.current_data.iterrows():
+            # Use file_date if available, otherwise fall back to timestamp
+            date_to_display = row['file_date'] if pd.notna(row['file_date']) else row['timestamp']
+            
             values = (
-                row['timestamp'].strftime('%Y-%m-%d %H:%M') if pd.notna(row['timestamp']) else '',
+                date_to_display.strftime('%Y-%m-%d %H:%M') if pd.notna(date_to_display) else '',
                 row['model'],
                 row['serial'],
                 row['system'],
@@ -412,7 +415,7 @@ class HistoricalPage(BasePage):
 
     def _update_charts(self, results):
         """Update all charts with query results."""
-        if not results or not self.current_data is not None:
+        if not results or self.current_data is None:
             return
 
         # Update pass rate trend
@@ -431,7 +434,8 @@ class HistoricalPage(BasePage):
 
         # Group by date and calculate pass rate
         df = self.current_data.copy()
-        df['date'] = pd.to_datetime(df['timestamp']).dt.date
+        # Use file_date if available, otherwise timestamp
+        df['date'] = pd.to_datetime(df['file_date'].fillna(df['timestamp'])).dt.date
 
         daily_stats = df.groupby('date').agg({
             'status': lambda x: (x == 'Pass').mean() * 100
@@ -625,7 +629,7 @@ class HistoricalPage(BasePage):
             return
 
         # Create details dialog
-        dialog = tk.Toplevel(self.root)
+        dialog = tk.Toplevel(self.winfo_toplevel())
         dialog.title("Analysis Details")
         dialog.geometry("600x400")
 

@@ -1,7 +1,7 @@
 # src/laser_trim_analyzer/api/__init__.py
 """API client for external AI services."""
 
-from laser_trim_analyzer.api.client import AIClient
+from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider, AIResponse
 from laser_trim_analyzer.api.schemas import (
     AnalysisRequest,
     AnalysisResponse,
@@ -9,7 +9,9 @@ from laser_trim_analyzer.api.schemas import (
 )
 
 __all__ = [
-    "AIClient",
+    "QAAIAnalyzer",
+    "AIProvider", 
+    "AIResponse",
     "AnalysisRequest",
     "AnalysisResponse",
     "PredictionResult",

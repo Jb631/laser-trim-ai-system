@@ -108,20 +108,19 @@ DEFAULT_SIGMA_SCALING_FACTOR: Final[float] = 24.0
 MATLAB_GRADIENT_STEP: Final[int] = 3
 MATLAB_POSITION_MIN: Final[float] = 0.06
 MATLAB_POSITION_MAX: Final[float] = 0.54
+REFERENCE_SIGMA_GRADIENT: Final[float] = 0.023
+DEFAULT_NUM_ZONES: Final[int] = 5
+MIN_ZONES: Final[int] = 1
+MAX_ZONES: Final[int] = 20
+END_POINT_FILTER_COUNT: Final[int] = 5  # Number of points to remove from each end
 
 # Filtering parameters
 FILTER_SAMPLING_FREQUENCY: Final[int] = 100
 FILTER_CUTOFF_FREQUENCY: Final[int] = 80
-END_POINT_FILTER_COUNT: Final[int] = 7  # Points to remove from each end
 
 # Risk thresholds
 HIGH_RISK_THRESHOLD: Final[float] = 0.7
 MEDIUM_RISK_THRESHOLD: Final[float] = 0.3
-
-# Zone analysis
-DEFAULT_NUM_ZONES: Final[int] = 5
-MIN_ZONES: Final[int] = 1
-MAX_ZONES: Final[int] = 20
 
 # Plot settings
 PLOT_FIGURE_SIZE: Final[tuple[int, int]] = (15, 10)

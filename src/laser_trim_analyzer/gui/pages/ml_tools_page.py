@@ -7,13 +7,18 @@ and performance monitoring.
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
+import time
 from typing import Optional, Dict, List, Any
 import json
 import pandas as pd
+import numpy as np
 
-from laser_trim_analyzer.gui.widgets.base_page import BasePage
+from laser_trim_analyzer.core.models import AnalysisResult
+from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer
+from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient
+from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
@@ -23,16 +28,35 @@ class MLToolsPage(BasePage):
     """Machine learning tools page."""
 
     def __init__(self, parent, main_window):
-        super().__init__(parent, main_window)
         self.ml_engine = None
         self.current_model_stats = {}
-        self.setup_page()
+        super().__init__(parent, main_window)
         self._initialize_ml_engine()
 
-    def setup_page(self):
+    def _create_page(self):
         """Set up the ML tools page."""
+        # Create scrollable frame
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Create content in scrollable frame
+        content_frame = scrollable_frame
+        
         # Title
-        title_frame = ttk.Frame(self.content_frame)
+        title_frame = ttk.Frame(content_frame)
         title_frame.pack(fill='x', padx=20, pady=(20, 10))
 
         ttk.Label(
@@ -41,11 +65,11 @@ class MLToolsPage(BasePage):
             font=('Segoe UI', 24, 'bold')
         ).pack(side='left')
 
-        # Create main sections
-        self._create_model_status_section()
-        self._create_threshold_optimization_section()
-        self._create_training_section()
-        self._create_performance_section()
+        # Create main sections in content_frame
+        self._create_model_status_section(content_frame)
+        self._create_threshold_optimization_section(content_frame)
+        self._create_training_section(content_frame)
+        self._create_performance_section(content_frame)
 
     def _initialize_ml_engine(self):
         """Initialize ML engine if available."""
@@ -56,7 +80,7 @@ class MLToolsPage(BasePage):
             self.ml_engine = MLEngine(
                 data_path=str(self.main_window.config.data_directory),
                 models_path=str(self.main_window.config.ml.model_path),
-                logger=self.main_window.logger
+                logger=self.logger
             )
 
             # Load engine state
@@ -66,12 +90,12 @@ class MLToolsPage(BasePage):
             self._update_model_status()
 
         except Exception as e:
-            self.main_window.logger.error(f"Failed to initialize ML engine: {e}")
+            self.logger.error(f"Failed to initialize ML engine: {e}")
 
-    def _create_model_status_section(self):
+    def _create_model_status_section(self, content_frame):
         """Create model status cards."""
         status_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="Model Status",
             padding=10
         )
@@ -124,10 +148,10 @@ class MLToolsPage(BasePage):
         )
         self.training_card.pack(side='left', padx=10, pady=5)
 
-    def _create_threshold_optimization_section(self):
+    def _create_threshold_optimization_section(self, content_frame):
         """Create threshold optimization section."""
         opt_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="Threshold Optimization",
             padding=15
         )
@@ -210,10 +234,10 @@ class MLToolsPage(BasePage):
         )
         self.opt_chart.pack(side='left', fill='both', expand=True)
 
-    def _create_training_section(self):
+    def _create_training_section(self, content_frame):
         """Create model training section."""
         train_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="Model Training",
             padding=15
         )
@@ -324,10 +348,10 @@ class MLToolsPage(BasePage):
         self.training_log.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
 
-    def _create_performance_section(self):
+    def _create_performance_section(self, content_frame):
         """Create model performance section."""
         perf_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="Model Performance",
             padding=10
         )
@@ -443,7 +467,7 @@ class MLToolsPage(BasePage):
                 self.model_select_var.set(models[0])
 
         except Exception as e:
-            self.main_window.logger.error(f"Failed to update model list: {e}")
+            self.logger.error(f"Failed to update model list: {e}")
 
     def _on_model_selected(self, event=None):
         """Handle model selection."""
@@ -531,7 +555,6 @@ class MLToolsPage(BasePage):
         # Create scatter plot of pass/fail vs sigma
         # This would need actual data points from database
         # For now, generate example data
-        import numpy as np
 
         n_points = 100
         sigma_values = np.random.normal(
@@ -618,7 +641,6 @@ class MLToolsPage(BasePage):
 
             # This would load from database
             # For now, create dummy data
-            import numpy as np
             n_samples = 1000
 
             data = pd.DataFrame({

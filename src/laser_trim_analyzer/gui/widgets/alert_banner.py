@@ -7,7 +7,8 @@ Perfect for QA alerts, warnings, and notifications.
 
 import tkinter as tk
 from tkinter import ttk, font
-from typing import Callable, Dict, List, Optional, Typefrom datetime import datetime
+from typing import Callable, Dict, List, Optional, Type
+from datetime import datetime
 import time
 
 
@@ -306,10 +307,12 @@ class AlertStack(ttk.Frame):
 
         # Add to list and pack
         self.alerts.append(alert)
-        alert.pack(fill='x', pady=(0, self.spacing))
+        alert.pack(fill='x', pady=(0, 5))
 
-        # Animate entrance
-        self._animate_slide_down(alert)
+        # Auto dismiss if specified
+        if auto_dismiss and auto_dismiss > 0:
+            self.after(auto_dismiss * 1000,
+                       lambda: self.remove_alert(alert) if alert in self.alerts else None)
 
         return alert
 
@@ -325,11 +328,53 @@ class AlertStack(ttk.Frame):
 
     def _expand_alert(self, alert: AlertBanner, current_height: int):
         """Expand alert to full height."""
+        # Check if alert still exists before trying to configure it
+        try:
+            if not alert.winfo_exists():
+                return
+        except tk.TclError:
+            return
+            
         if current_height < 60:  # Target height
-            alert.configure(height=current_height + 3)
-            self.after(10, lambda: self._expand_alert(alert, current_height + 3))
+            try:
+                alert.configure(height=current_height + 3)
+                self.after(10, lambda: self._expand_alert(alert, current_height + 3))
+            except tk.TclError:
+                # Widget was destroyed during animation
+                pass
         else:
-            alert.configure(height='')  # Reset to natural height
+            try:
+                # Don't set to empty string, just remove height constraint
+                alert.configure(height=60)
+            except tk.TclError:
+                # Widget was destroyed during animation
+                pass
+
+    def _collapse_alert(self, alert: AlertBanner, current_height: int):
+        """Collapse alert before removal."""
+        # Check if alert still exists before trying to configure it
+        try:
+            if not alert.winfo_exists():
+                return
+        except tk.TclError:
+            return
+            
+        if current_height > 0:
+            try:
+                alert.configure(height=current_height - 3)
+                self.after(10, lambda: self._collapse_alert(alert, current_height - 3))
+            except tk.TclError:
+                # Widget was destroyed during animation
+                pass
+        else:
+            try:
+                # Remove alert from list
+                if alert in self.alerts:
+                    self.alerts.remove(alert)
+                    alert.destroy()
+            except tk.TclError:
+                # Widget was already destroyed
+                pass
 
     def clear_all(self):
         """Clear all alerts."""

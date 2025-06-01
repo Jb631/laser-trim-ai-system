@@ -12,8 +12,10 @@ import threading
 import json
 from typing import Optional, Dict, List, Any
 
-from laser_trim_analyzer.gui.widgets.base_page import BasePage
+from laser_trim_analyzer.core.models import AnalysisResult
+from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
+from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider
 
 
@@ -21,17 +23,36 @@ class AIInsightsPage(BasePage):
     """AI-powered insights and analysis page."""
 
     def __init__(self, parent, main_window):
-        super().__init__(parent, main_window)
         self.ai_client = None
         self.chat_history = []
         self.current_analysis = None
-        self.setup_page()
+        super().__init__(parent, main_window)
         self._initialize_ai_client()
 
-    def setup_page(self):
+    def _create_page(self):
         """Set up the AI insights page."""
+        # Create scrollable frame
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Create content in scrollable frame
+        content_frame = scrollable_frame
+        
         # Title
-        title_frame = ttk.Frame(self.content_frame)
+        title_frame = ttk.Frame(content_frame)
         title_frame.pack(fill='x', padx=20, pady=(20, 10))
 
         ttk.Label(
@@ -41,13 +62,13 @@ class AIInsightsPage(BasePage):
         ).pack(side='left')
 
         # Alert stack for AI recommendations
-        self.alert_stack = AlertStack(self.content_frame, max_alerts=3)
+        self.alert_stack = AlertStack(content_frame, max_alerts=3)
         self.alert_stack.pack(fill='x', padx=20, pady=(0, 10))
 
-        # Create main sections
-        self._create_insights_section()
-        self._create_chat_section()
-        self._create_report_section()
+        # Create main sections in content_frame
+        self._create_insights_section(content_frame)
+        self._create_chat_section(content_frame)
+        self._create_report_section(content_frame)
 
     def _initialize_ai_client(self):
         """Initialize AI client if configured."""
@@ -80,7 +101,7 @@ class AIInsightsPage(BasePage):
             )
 
         except Exception as e:
-            self.main_window.logger.error(f"Failed to initialize AI client: {e}")
+            self.logger.error(f"Failed to initialize AI client: {e}")
             self.alert_stack.add_alert(
                 alert_type='error',
                 title='AI Connection Failed',
@@ -88,10 +109,10 @@ class AIInsightsPage(BasePage):
                 dismissible=True
             )
 
-    def _create_insights_section(self):
+    def _create_insights_section(self, content_frame):
         """Create automatic insights section."""
         insights_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="Automatic Insights",
             padding=15
         )
@@ -152,10 +173,10 @@ class AIInsightsPage(BasePage):
         self.insights_text.tag_configure('warning', foreground='#f39c12')
         self.insights_text.tag_configure('error', foreground='#e74c3c')
 
-    def _create_chat_section(self):
+    def _create_chat_section(self, content_frame):
         """Create QA assistant chat interface."""
         chat_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="QA Assistant Chat",
             padding=15
         )
@@ -266,10 +287,10 @@ class AIInsightsPage(BasePage):
                 command=lambda s=suggestion: self._use_suggestion(s)
             ).pack(side='left', padx=(0, 5))
 
-    def _create_report_section(self):
+    def _create_report_section(self, content_frame):
         """Create automated report generation section."""
         report_frame = ttk.LabelFrame(
-            self.content_frame,
+            content_frame,
             text="AI Report Generation",
             padding=15
         )

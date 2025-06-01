@@ -7,7 +7,8 @@ Perfect for displaying key QA metrics like pass rates, sigma values, etc.
 
 import tkinter as tk
 from tkinter import ttk, font
-from typing import Callable, Dict, List, Optional, Tupleimport math
+from typing import Callable, Dict, List, Optional, Tuple
+import math
 
 
 class SparkLine(tk.Canvas):
@@ -183,10 +184,16 @@ class MetricCard(ttk.Frame):
         self.value = value
 
         if add_to_history:
-            self.historical_values.append(value)
-            # Keep last 20 values
-            if len(self.historical_values) > 20:
-                self.historical_values.pop(0)
+            # Only add numeric values to history
+            try:
+                numeric_value = float(value)
+                self.historical_values.append(numeric_value)
+                # Keep last 20 values
+                if len(self.historical_values) > 20:
+                    self.historical_values.pop(0)
+            except (ValueError, TypeError):
+                # Skip non-numeric values
+                pass
 
         self._update_display()
         self._update_trend(old_value, value)
@@ -223,30 +230,46 @@ class MetricCard(ttk.Frame):
         """Get color based on value and thresholds."""
         if not self.thresholds:
             return self.colors['neutral']
+            
+        # Check if value is numeric
+        try:
+            numeric_value = float(self.value)
+        except (ValueError, TypeError):
+            # For non-numeric values, use neutral color
+            return self.colors['neutral']
 
         # Determine if higher or lower is better based on threshold order
         if self.thresholds.get('good', 0) > self.thresholds.get('critical', 0):
             # Higher is better (e.g., pass rate)
-            if self.value >= self.thresholds.get('good', 95):
+            if numeric_value >= self.thresholds.get('good', 95):
                 return self.colors['good']
-            elif self.value >= self.thresholds.get('warning', 90):
+            elif numeric_value >= self.thresholds.get('warning', 90):
                 return self.colors['warning']
             else:
                 return self.colors['critical']
         else:
             # Lower is better (e.g., failure rate)
-            if self.value <= self.thresholds.get('good', 5):
+            if numeric_value <= self.thresholds.get('good', 5):
                 return self.colors['good']
-            elif self.value <= self.thresholds.get('warning', 10):
+            elif numeric_value <= self.thresholds.get('warning', 10):
                 return self.colors['warning']
             else:
                 return self.colors['critical']
 
     def _update_trend(self, old_value: float, new_value: float):
         """Update trend indicator."""
-        if old_value == new_value:
+        # Check if values are numeric
+        try:
+            old_numeric = float(old_value)
+            new_numeric = float(new_value)
+        except (ValueError, TypeError):
+            # For non-numeric values, don't show trend
+            self.trend_label.config(text="", foreground=self.colors['neutral'])
+            return
+            
+        if old_numeric == new_numeric:
             self.trend_label.config(text="→", foreground=self.colors['neutral'])
-        elif new_value > old_value:
+        elif new_numeric > old_numeric:
             # Check if increase is good or bad
             if self.thresholds.get('good', 0) > self.thresholds.get('critical', 0):
                 # Higher is better

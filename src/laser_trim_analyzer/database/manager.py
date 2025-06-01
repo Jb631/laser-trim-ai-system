@@ -15,7 +15,8 @@ from typing import (
     List,
     Optional,
     Type,
-    Union
+    Union,
+    Iterator
 )
 from contextlib import contextmanager
 from pathlib import Path
@@ -56,7 +57,7 @@ class DatabaseManager:
 
     def __init__(
             self,
-            database_url: Optional[str] = None,
+            database_url_or_config: Optional[Union[str, Any]] = None,  # Can be string or Config object
             echo: bool = False,
             pool_size: int = 5,
             max_overflow: int = 10,
@@ -67,7 +68,7 @@ class DatabaseManager:
         Initialize the database manager.
 
         Args:
-            database_url: SQLAlchemy database URL. If None, uses SQLite default.
+            database_url_or_config: SQLAlchemy database URL string or Config object. If None, uses SQLite default.
             echo: If True, log all SQL statements (useful for debugging)
             pool_size: Number of connections to maintain in pool
             max_overflow: Maximum overflow connections allowed
@@ -76,14 +77,28 @@ class DatabaseManager:
         """
         self.logger = logger or logging.getLogger(__name__)
 
-        # Set up database URL
-        if database_url is None:
+        # Handle Config object or string URL
+        if database_url_or_config is None:
             # Default to SQLite in user's home directory
             db_dir = Path.home() / ".laser_trim_analyzer"
             db_dir.mkdir(exist_ok=True)
             db_path = db_dir / "analyzer_v2.db"
             database_url = f"sqlite:///{db_path}"
             self.logger.info(f"Using SQLite database at: {db_path}")
+        elif hasattr(database_url_or_config, 'database'):
+            # It's a Config object
+            config = database_url_or_config
+            if hasattr(config.database, 'url') and config.database.url:
+                database_url = config.database.url
+            else:
+                # Use file path from config
+                db_path = Path(config.database.path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                database_url = f"sqlite:///{db_path.absolute()}"
+                self.logger.info(f"Using SQLite database from config at: {db_path}")
+        else:
+            # It's a string URL
+            database_url = database_url_or_config
 
         self.database_url = database_url
 
@@ -120,7 +135,7 @@ class DatabaseManager:
         self.logger.info("Database manager initialized successfully")
 
     @contextmanager
-    def get_session(self) -> Session:
+    def get_session(self) -> Iterator[Session]:
         """
         Context manager for database sessions.
 
@@ -169,6 +184,50 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Failed to initialize database: {str(e)}")
             raise
+
+    def initialize_schema(self) -> None:
+        """
+        Initialize database schema (alias for init_db).
+        
+        This method ensures all tables are created if they don't exist.
+        """
+        self.init_db(drop_existing=False)
+
+    def check_duplicate_analysis(
+            self,
+            model: str,
+            serial: str,
+            file_date: datetime
+    ) -> Optional[int]:
+        """
+        Check if this unit has already been analyzed.
+
+        Args:
+            model: Model number
+            serial: Serial number
+            file_date: Date from the file (not the analysis date)
+
+        Returns:
+            ID of existing analysis if found, None otherwise
+        """
+        with self.get_session() as session:
+            # Check for exact match (model + serial + file date)
+            existing = session.query(DBAnalysisResult).filter(
+                and_(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.serial == serial,
+                    DBAnalysisResult.file_date == file_date
+                )
+            ).first()
+            
+            if existing:
+                self.logger.info(
+                    f"Found duplicate analysis for {model}-{serial} from {file_date}: "
+                    f"ID {existing.id}"
+                )
+                return existing.id
+            
+            return None
 
     def save_analysis(self, analysis_data: PydanticAnalysisResult) -> int:
         """

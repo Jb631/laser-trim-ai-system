@@ -224,10 +224,18 @@ class ResistanceAnalyzer(BaseAnalyzer):
                     "(verify trim process)"
                 )
 
-        # Check for reasonable resistance range (assuming kOhm units)
-        if untrimmed is not None and (untrimmed < 0.1 or untrimmed > 1000):
-            messages.append(
-                f"Untrimmed resistance {untrimmed} outside typical range (0.1-1000 kΩ)"
-            )
+        # Check for reasonable resistance range
+        # Handle both Ohm and kOhm units - typical pot values are 1kΩ to 100kΩ
+        if untrimmed is not None:
+            if untrimmed > 1000:  # Likely in Ohms
+                if untrimmed < 100 or untrimmed > 1000000:  # 100Ω to 1MΩ
+                    messages.append(
+                        f"Untrimmed resistance {untrimmed} Ω outside typical range (100-1,000,000 Ω)"
+                    )
+            else:  # Likely in kOhms
+                if untrimmed < 0.1 or untrimmed > 1000:  # 0.1kΩ to 1000kΩ
+                    messages.append(
+                        f"Untrimmed resistance {untrimmed} kΩ outside typical range (0.1-1000 kΩ)"
+                    )
 
         return messages

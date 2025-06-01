@@ -48,26 +48,63 @@ def read_excel_sheet(
     """
     file_path = Path(file_path)
 
+    # First, try to read with default pandas (auto-detects engine)
     try:
-        # Read sheet
         df = pd.read_excel(
             file_path,
             sheet_name=sheet_name,
             header=header,
-            skiprows=skiprows,
-            engine='openpyxl'
+            skiprows=skiprows
         )
-
         logger.debug(f"Read sheet '{sheet_name}' from {file_path.name}: {df.shape}")
         return df
 
     except ValueError as e:
         if "Worksheet" in str(e) and "does not exist" in str(e):
             raise SheetNotFoundError(f"Sheet '{sheet_name}' not found in {file_path.name}")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to read sheet '{sheet_name}' from {file_path.name}: {e}")
-        raise DataExtractionError(f"Failed to read Excel sheet: {str(e)}")
+        # Try with explicit engines if auto-detect failed
+        pass
+    except Exception as first_error:
+        # Try with explicit engines if auto-detect failed
+        pass
+
+    # If default failed, try openpyxl explicitly (for xlsx)
+    if file_path.suffix.lower() == '.xlsx':
+        try:
+            df = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                header=header,
+                skiprows=skiprows,
+                engine='openpyxl'
+            )
+            logger.debug(f"Read sheet '{sheet_name}' from {file_path.name} using openpyxl: {df.shape}")
+            return df
+        except Exception:
+            pass
+
+    # Try xlrd for xls files
+    if file_path.suffix.lower() == '.xls':
+        try:
+            df = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                header=header,
+                skiprows=skiprows,
+                engine='xlrd'
+            )
+            logger.debug(f"Read sheet '{sheet_name}' from {file_path.name} using xlrd: {df.shape}")
+            return df
+        except ImportError:
+            logger.error("xlrd not installed. Install with: pip install xlrd")
+            raise DataExtractionError("Cannot read .xls files - xlrd not installed")
+        except Exception as xlrd_error:
+            logger.error(f"xlrd failed: {xlrd_error}")
+            # Continue to raise the original error
+
+    # If all attempts failed, raise the original error
+    logger.error(f"Failed to read sheet '{sheet_name}' from {file_path.name}")
+    raise DataExtractionError(f"Failed to read Excel sheet '{sheet_name}' from {file_path.name}")
 
 
 def extract_cell_value(
@@ -105,31 +142,44 @@ def extract_cell_value(
 
         row_idx = int(row_num) - 1  # 0-based index
 
-        # Read specific cell
-        df = pd.read_excel(
-            file_path,
-            sheet_name=sheet_name,
-            header=None,
-            skiprows=row_idx,
-            nrows=1,
-            usecols=[col_idx],
-            engine='openpyxl'
-        )
+        # Read the entire sheet first for better compatibility
+        try:
+            # Try auto-detection first
+            df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+        except Exception:
+            # Try with specific engines
+            if file_path.suffix.lower() == '.xlsx':
+                df = pd.read_excel(file_path, sheet_name=sheet_name, header=None, engine='openpyxl')
+            else:
+                df = pd.read_excel(file_path, sheet_name=sheet_name, header=None, engine='xlrd')
 
-        if df.empty:
+        # Check if the cell exists
+        if row_idx >= len(df) or col_idx >= len(df.columns):
+            logger.warning(f"Cell {cell_ref} out of bounds in sheet {sheet_name}")
             return default
 
-        value = df.iloc[0, 0]
+        # Get the value
+        value = df.iloc[row_idx, col_idx]
 
         # Handle NaN
         if pd.isna(value):
             return default
 
+        # Handle string values that might be numbers
+        if isinstance(value, str):
+            # Remove any non-numeric characters except decimal point and minus
+            cleaned = re.sub(r'[^\d.\-]', '', value)
+            if cleaned:
+                try:
+                    value = float(cleaned)
+                except ValueError:
+                    pass
+
         logger.debug(f"Extracted {cell_ref}={value} from {sheet_name}")
         return value
 
     except Exception as e:
-        logger.warning(f"Failed to extract cell {cell_ref}: {e}")
+        logger.warning(f"Failed to extract cell {cell_ref} from {sheet_name}: {e}")
         return default
 
 
@@ -195,56 +245,101 @@ def detect_system_type(file_path: Path) -> SystemType:
         SystemDetectionError: If system cannot be detected
     """
     try:
-        excel_file = pd.ExcelFile(file_path, engine='openpyxl')
-        sheet_names = excel_file.sheet_names
-
-        logger.debug(f"Sheets in {file_path.name}: {sheet_names}")
-
-        # Check for System A patterns
-        system_a_indicators = [
-            SystemIdentifier.SYSTEM_A_PATTERN.value,
-            "TRK1", "TRK2",
-            "SEC1", "SEC2"
-        ]
-
-        for sheet in sheet_names:
-            if any(indicator in sheet for indicator in system_a_indicators):
-                logger.info(f"Detected System A from sheet: {sheet}")
+        # Try different approaches to read the file
+        excel_file = None
+        
+        # First try with pandas directly
+        try:
+            # For .xls files, try without specifying engine first
+            if file_path.suffix.lower() == '.xls':
+                try:
+                    excel_file = pd.ExcelFile(file_path)
+                except Exception:
+                    # If that fails, try with xlrd explicitly
+                    excel_file = pd.ExcelFile(file_path, engine='xlrd')
+            else:
+                # For .xlsx files, use openpyxl
+                excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+                
+        except Exception as read_error:
+            # If all pandas attempts fail, try to detect based on filename only
+            logger.warning(f"Cannot read Excel file structure: {read_error}")
+            logger.info("Attempting to detect system type from filename pattern")
+            
+            filename = file_path.stem.upper()
+            
+            # Check filename patterns
+            if any(filename.startswith(prefix) for prefix in ['8340', '834', '8506', '8852']):
+                logger.info("Detected System B from filename pattern")
+                return SystemType.SYSTEM_B
+            elif any(filename.startswith(prefix) for prefix in ['68', '78', '85']):
+                logger.info("Detected System A from filename pattern")
                 return SystemType.SYSTEM_A
+            else:
+                # Default to System B for .xls files as they're more common
+                logger.warning(f"Could not read file or detect from filename, defaulting to System B for .xls file")
+                return SystemType.SYSTEM_B
+                
+        # If we successfully read the file, check sheets
+        if excel_file is not None:
+            sheet_names = excel_file.sheet_names
+            logger.debug(f"Sheets in {file_path.name}: {sheet_names}")
 
-        # Check for System B patterns
-        system_b_indicators = [
-            SystemIdentifier.SYSTEM_B_PATTERN_1.value,
-            SystemIdentifier.SYSTEM_B_PATTERN_2.value,
-            "test", "Lin Error", "Trim"
-        ]
+            # Check for System A patterns
+            system_a_indicators = [
+                SystemIdentifier.SYSTEM_A_PATTERN.value,
+                "TRK1", "TRK2",
+                "SEC1", "SEC2"
+            ]
 
-        system_b_count = sum(
-            1 for sheet in sheet_names
-            if any(indicator in sheet for indicator in system_b_indicators)
-        )
+            for sheet in sheet_names:
+                if any(indicator in sheet for indicator in system_a_indicators):
+                    logger.info(f"Detected System A from sheet: {sheet}")
+                    return SystemType.SYSTEM_A
 
-        if system_b_count >= 2:  # Need at least 2 matching sheets
-            logger.info("Detected System B from sheet patterns")
-            return SystemType.SYSTEM_B
+            # Check for System B patterns
+            system_b_indicators = [
+                SystemIdentifier.SYSTEM_B_PATTERN_1.value,
+                SystemIdentifier.SYSTEM_B_PATTERN_2.value,
+                "test", "Lin Error", "Trim"
+            ]
 
-        # Check filename patterns
+            system_b_count = sum(
+                1 for sheet in sheet_names
+                if any(indicator in sheet for indicator in system_b_indicators)
+            )
+
+            if system_b_count >= 2:  # Need at least 2 matching sheets
+                logger.info("Detected System B from sheet patterns")
+                return SystemType.SYSTEM_B
+
+        # Check filename patterns as fallback
         filename = file_path.stem.upper()
 
-        if filename.startswith(('8340', '834')):
+        if any(filename.startswith(prefix) for prefix in ['8340', '834', '8506', '8852']):
             logger.info("Detected System B from filename pattern")
             return SystemType.SYSTEM_B
-        elif filename.startswith(('68', '78', '85')):
+        elif any(filename.startswith(prefix) for prefix in ['68', '78', '85']):
             logger.info("Detected System A from filename pattern")
             return SystemType.SYSTEM_A
 
-        # Default to System A
-        logger.warning(f"Could not definitively detect system type for {file_path.name}, defaulting to System A")
-        return SystemType.SYSTEM_A
+        # Default based on file extension
+        if file_path.suffix.lower() == '.xls':
+            logger.warning(f"Could not definitively detect system type for {file_path.name}, defaulting to System B for .xls file")
+            return SystemType.SYSTEM_B
+        else:
+            logger.warning(f"Could not definitively detect system type for {file_path.name}, defaulting to System A")
+            return SystemType.SYSTEM_A
 
     except Exception as e:
         logger.error(f"Error detecting system type: {e}")
-        raise SystemDetectionError(f"Failed to detect system type: {str(e)}")
+        # For unreadable files, try filename detection
+        filename = file_path.stem.upper()
+        if any(filename.startswith(prefix) for prefix in ['8340', '834', '8506', '8852']):
+            logger.info("Detected System B from filename pattern (fallback)")
+            return SystemType.SYSTEM_B
+        else:
+            raise SystemDetectionError(f"Failed to detect system type: {str(e)}")
 
 
 def find_trim_sheets(
@@ -261,7 +356,30 @@ def find_trim_sheets(
     Returns:
         Dictionary categorizing sheets by type
     """
-    excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+    # Try to read file with auto-detection first
+    try:
+        excel_file = pd.ExcelFile(file_path)
+    except Exception:
+        # If auto-detect fails, try specific engines
+        if file_path.suffix.lower() == '.xlsx':
+            try:
+                excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+            except Exception as e:
+                logger.error(f"Failed to read XLSX file: {e}")
+                return {'untrimmed': [], 'trimmed': [], 'final': [], 'other': []}
+        elif file_path.suffix.lower() == '.xls':
+            try:
+                excel_file = pd.ExcelFile(file_path, engine='xlrd')
+            except ImportError:
+                logger.error("xlrd not installed. Install with: pip install xlrd")
+                return {'untrimmed': [], 'trimmed': [], 'final': [], 'other': []}
+            except Exception as e:
+                logger.error(f"Failed to read XLS file: {e}")
+                return {'untrimmed': [], 'trimmed': [], 'final': [], 'other': []}
+        else:
+            logger.error(f"Unknown file extension: {file_path.suffix}")
+            return {'untrimmed': [], 'trimmed': [], 'final': [], 'other': []}
+            
     sheet_names = excel_file.sheet_names
 
     sheets = {

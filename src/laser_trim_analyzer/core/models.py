@@ -191,6 +191,10 @@ class TrackData(BaseAnalysisModel):
     travel_length: float = Field(..., gt=0, description="Total travel length")
     position_data: Optional[List[float]] = Field(None, description="Position measurements")
     error_data: Optional[List[float]] = Field(None, description="Error measurements")
+    
+    # Store untrimmed data separately for plotting comparison
+    untrimmed_positions: Optional[List[float]] = Field(None, description="Untrimmed position measurements")
+    untrimmed_errors: Optional[List[float]] = Field(None, description="Untrimmed error measurements")
 
     # Analysis results
     unit_properties: UnitProperties

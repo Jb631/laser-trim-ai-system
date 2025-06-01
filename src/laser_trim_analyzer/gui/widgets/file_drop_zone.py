@@ -6,11 +6,17 @@ with visual feedback and multi-file support.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog
-from tkinterdnd2 import DND_FILES, TkinterDnD
+from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 from typing import List, Optional, Callable, Set
 import os
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+    DND_FILES = None
 
 
 class FileDropZone(ttk.Frame):
@@ -18,7 +24,7 @@ class FileDropZone(ttk.Frame):
     Modern drag-and-drop zone for file selection.
 
     Features:
-    - Drag and drop support for files and folders
+    - Drag and drop support for files and folders (if tkinterdnd2 available)
     - Visual feedback during drag operations
     - File type filtering
     - Progress indication for large operations
@@ -69,7 +75,25 @@ class FileDropZone(ttk.Frame):
         }
 
         self._setup_ui(height)
-        self._setup_drag_drop()
+        
+        # Only setup drag and drop if available and initialized
+        if HAS_DND and self._check_dnd_initialized():
+            self._setup_drag_drop()
+        else:
+            # Update UI to indicate drag and drop is not available
+            self.primary_label.config(text='Click browse to select files')
+            self.secondary_label.pack_forget()
+            if not HAS_DND:
+                print("Note: Drag and drop not available - tkinterdnd2 not installed")
+
+    def _check_dnd_initialized(self):
+        """Check if drag and drop is properly initialized."""
+        try:
+            # Try to check if tkdnd is available in the Tk instance
+            self.winfo_toplevel().tk.call('tk', 'windowingsystem')
+            return True
+        except:
+            return False
 
     def _setup_ui(self, height: int):
         """Set up the UI components."""
@@ -155,14 +179,20 @@ class FileDropZone(ttk.Frame):
 
     def _setup_drag_drop(self):
         """Set up drag and drop functionality."""
-        # Make the drop frame a drop target
-        self.drop_frame.drop_target_register(DND_FILES)
+        try:
+            # Make the drop frame a drop target
+            self.drop_frame.drop_target_register(DND_FILES)
 
-        # Bind drag and drop events
-        self.drop_frame.dnd_bind('<<DropEnter>>', self._on_drag_enter)
-        self.drop_frame.dnd_bind('<<DropPosition>>', self._on_drag_motion)
-        self.drop_frame.dnd_bind('<<DropLeave>>', self._on_drag_leave)
-        self.drop_frame.dnd_bind('<<Drop>>', self._on_drop)
+            # Bind drag and drop events
+            self.drop_frame.dnd_bind('<<DropEnter>>', self._on_drag_enter)
+            self.drop_frame.dnd_bind('<<DropPosition>>', self._on_drag_motion)
+            self.drop_frame.dnd_bind('<<DropLeave>>', self._on_drag_leave)
+            self.drop_frame.dnd_bind('<<Drop>>', self._on_drop)
+        except Exception as e:
+            print(f"Could not enable drag and drop: {e}")
+            # Update UI to indicate drag and drop is not available
+            self.primary_label.config(text='Click browse to select files')
+            self.secondary_label.pack_forget()
 
     def _on_drag_enter(self, event):
         """Handle drag enter event."""
@@ -252,7 +282,7 @@ class FileDropZone(ttk.Frame):
         """Open file browser dialog."""
         if self.accept_folders:
             # Ask user what they want to select
-            result = tk.messagebox.askyesnocancel(
+            result = messagebox.askyesnocancel(
                 "Select Files or Folder",
                 "Do you want to select individual files?\n\n"
                 "Yes - Select files\n"
@@ -282,7 +312,7 @@ class FileDropZone(ttk.Frame):
                     if valid_files:
                         self._process_dropped_files(valid_files)
                     else:
-                        tk.messagebox.showwarning(
+                        messagebox.showwarning(
                             "No Files Found",
                             f"No {', '.join(self.accept_extensions)} files found in the selected folder."
                         )
@@ -315,9 +345,9 @@ class FileDropZone(ttk.Frame):
         # Update UI
         self._update_file_count()
 
-        # Callback
+        # Callback - convert Path objects to strings
         if self.on_files_dropped:
-            self.on_files_dropped(unique_files)
+            self.on_files_dropped([str(f) for f in unique_files])
 
     def _update_appearance(self, state: str):
         """Update the visual appearance based on state."""
@@ -384,26 +414,39 @@ class FileDropZone(ttk.Frame):
         """Enable or disable the drop zone."""
         if enabled:
             self.browse_button.configure(state='normal')
-            self._setup_drag_drop()
+            if HAS_DND and self._check_dnd_initialized():
+                self._setup_drag_drop()
             self._update_appearance('normal')
         else:
             self.browse_button.configure(state='disabled')
-            # Unbind drag and drop events
-            self.drop_frame.drop_target_unregister()
+            # Unbind drag and drop events if available
+            if HAS_DND and self._check_dnd_initialized():
+                try:
+                    self.drop_frame.drop_target_unregister()
+                except:
+                    pass
             self._update_appearance('normal')
+
+    def set_state(self, state: str):
+        """Set the state of the drop zone (alias for set_enabled)."""
+        self.set_enabled(state == 'normal')
 
 
 # Example usage
 if __name__ == "__main__":
     # Create test window
-    root = TkinterDnD.Tk()
+    if HAS_DND:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
+        
     root.title("FileDropZone Demo")
     root.geometry("600x400")
 
 
     # Callback function
-    def on_files_dropped(files: List[Path]):
-        print(f"Files dropped: {[f.name for f in files]}")
+    def on_files_dropped(files: List[str]):
+        print(f"Files dropped: {[Path(f).name for f in files]}")
 
 
     # Create drop zone

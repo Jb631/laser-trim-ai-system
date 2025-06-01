@@ -19,6 +19,7 @@ from typing import (
     Optional,
     Tuple,
     Type
+)
 from datetime import datetime
 import pandas as pd
 
@@ -37,7 +38,7 @@ class ChartWidget(ttk.Frame):
 
     def __init__(self, parent, chart_type: str = 'line',
                  title: str = "", figsize: Tuple[int, int] = (8, 6),
-                 style: str = 'seaborn', **kwargs):
+                 style: str = 'default', **kwargs):
         """
         Initialize ChartWidget.
 
@@ -55,8 +56,14 @@ class ChartWidget(ttk.Frame):
         self.figsize = figsize
         self.data = {}
 
-        # Apply matplotlib style
-        plt.style.use(style)
+        # Apply matplotlib style safely
+        available_styles = plt.style.available
+        if 'seaborn-v0_8' in available_styles:
+            plt.style.use('seaborn-v0_8')
+        elif 'ggplot' in available_styles:
+            plt.style.use('ggplot')
+        else:
+            plt.style.use('default')
 
         # Colors for QA metrics
         self.qa_colors = {
@@ -515,4 +522,3 @@ if __name__ == "__main__":
                                xlabel="Model", ylabel="Metric")
 
     root.mainloop()
-)

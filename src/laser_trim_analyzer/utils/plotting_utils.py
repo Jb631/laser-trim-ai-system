@@ -9,6 +9,7 @@ import matplotlib.patches as mpatches
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import numpy as np
+import pandas as pd
 import seaborn as sns
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
@@ -20,7 +21,12 @@ from laser_trim_analyzer.core.models import TrackData, AnalysisResult
 logger = logging.getLogger(__name__)
 
 # Set default style
-plt.style.use('seaborn-v0_8-darkgrid')
+try:
+    plt.style.use('seaborn')
+except OSError:
+    # Fallback if seaborn style not available
+    plt.style.use('default')
+    
 sns.set_palette("husl")
 
 # QA color scheme
@@ -106,9 +112,16 @@ def _plot_error_vs_position(ax: plt.Axes, track_data: TrackData):
     positions = np.array(track_data.position_data)
     errors = np.array(track_data.error_data)
 
-    # Plot error data
-    ax.plot(positions, errors, 'b-', linewidth=2, label='Measured Error',
-            color=QA_COLORS['untrimmed'])
+    # Plot untrimmed data if available
+    if track_data.untrimmed_positions and track_data.untrimmed_errors:
+        untrimmed_pos = np.array(track_data.untrimmed_positions)
+        untrimmed_err = np.array(track_data.untrimmed_errors)
+        ax.plot(untrimmed_pos, untrimmed_err, 'b--', linewidth=1.5, label='Untrimmed Data',
+                color=QA_COLORS['untrimmed'], alpha=0.6)
+    
+    # Plot trimmed/final data
+    ax.plot(positions, errors, 'g-', linewidth=2, label='Trimmed Data',
+            color=QA_COLORS['trimmed'])
 
     # Add spec limits if available
     spec = track_data.linearity_analysis.linearity_spec
@@ -219,22 +232,29 @@ def _plot_status_indicator(ax: plt.Axes, track_data: TrackData):
     if status == "Pass":
         color = QA_COLORS['pass']
         symbol = "✓"
+        description = "PASS"
     elif status == "Fail":
         color = QA_COLORS['fail']
         symbol = "✗"
+        description = "FAIL"
     else:
         color = QA_COLORS['warning']
         symbol = "⚠"
+        description = "WARNING"
 
     # Draw status circle
-    circle = plt.Circle((0.5, 0.5), 0.4, color=color, alpha=0.8)
+    circle = plt.Circle((0.5, 0.6), 0.3, color=color, alpha=0.8)
     ax.add_patch(circle)
 
     # Add status text
-    ax.text(0.5, 0.5, symbol, ha='center', va='center',
-            fontsize=60, color='white', fontweight='bold')
-    ax.text(0.5, 0.1, status.upper(), ha='center', va='center',
-            fontsize=20, color=color, fontweight='bold')
+    ax.text(0.5, 0.6, symbol, ha='center', va='center',
+            fontsize=50, color='white', fontweight='bold')
+    ax.text(0.5, 0.25, description, ha='center', va='center',
+            fontsize=18, color=color, fontweight='bold')
+    
+    # Add small explanation text
+    ax.text(0.5, 0.1, 'Overall Status', ha='center', va='center',
+            fontsize=10, color='gray', style='italic')
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
