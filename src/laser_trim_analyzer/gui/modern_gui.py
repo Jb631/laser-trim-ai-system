@@ -22,6 +22,7 @@ import matplotlib.animation as animation
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.core.constants import APP_NAME
 from laser_trim_analyzer.core.config import Config
+from laser_trim_analyzer.utils import ensure_directory
 
 # Try to import database and ML modules
 try:

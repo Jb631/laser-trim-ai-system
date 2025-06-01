@@ -22,12 +22,14 @@ from typing import (
     Optional,
     Tuple,
     Union
+)
 from abc import ABC, abstractmethod
 import hashlib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pydantic_core.core_schema import none_schema
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
@@ -769,8 +771,8 @@ class MLEngine:
         """Get model class by name (to be implemented based on your models)."""
         # This should be implemented based on your specific model classes
         # For now, returning a placeholder
-        from laser_trim_analyzer.ml.models import get_model_class
-        return get_model_class(model_name)
+
+        return None
 
     def save_engine_state(self) -> None:
         """Save the current state of the ML engine."""
@@ -808,4 +810,3 @@ class MLEngine:
                 self.retraining_schedule[name] = datetime.fromisoformat(dt_str)
 
             self.logger.info("ML Engine state loaded")
-)

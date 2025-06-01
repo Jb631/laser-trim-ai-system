@@ -65,12 +65,15 @@ def run_gui(debug: bool = False) -> None:
 
     try:
         # Import here to avoid circular imports and heavy imports when using CLI
-        from laser_trim_analyzer.gui.main_window import LaserTrimAnalyzerGUI
+        from laser_trim_analyzer.gui.main_window import MainWindow
 
         console.print(f"[bold blue]{APP_NAME}[/bold blue] - Starting GUI mode...")
 
-        app = LaserTrimAnalyzerGUI()
-        app.run()
+        app = MainWindow()
+        if hasattr(app, 'run'):
+            app.run()
+        else:
+            app.root.mainloop()
 
     except ImportError as e:
         console.print(f"[red]Error: Could not import GUI components: {e}[/red]")

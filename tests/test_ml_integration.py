@@ -20,7 +20,7 @@ import joblib
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import RiskCategory
-from laser_trim_analyzer.ml.ml_engine import (
+from laser_trim_analyzer.ml.engine import (
     MLEngine, ModelConfig, FeatureEngineering,
     ModelVersionControl
 )
