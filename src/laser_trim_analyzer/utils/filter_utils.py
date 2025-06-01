@@ -6,8 +6,7 @@ Implements various filtering techniques to clean and smooth measurement data.
 
 import numpy as np
 from scipy import signal, interpolate
-from typing import List, Optional, Tuple, Union
-import logging
+from typing import List, Optional, Tuple, Type, Unionimport logging
 
 logger = logging.getLogger(__name__)
 

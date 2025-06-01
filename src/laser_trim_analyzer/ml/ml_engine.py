@@ -14,7 +14,14 @@ import json
 import pickle
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union
 from abc import ABC, abstractmethod
 import hashlib
 from pathlib import Path
@@ -801,3 +808,4 @@ class MLEngine:
                 self.retraining_schedule[name] = datetime.fromisoformat(dt_str)
 
             self.logger.info("ML Engine state loaded")
+)

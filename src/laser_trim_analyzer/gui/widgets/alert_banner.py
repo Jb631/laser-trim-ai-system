@@ -7,8 +7,7 @@ Perfect for QA alerts, warnings, and notifications.
 
 import tkinter as tk
 from tkinter import ttk, font
-from typing import Optional, Callable, List, Dict
-from datetime import datetime
+from typing import Callable, Dict, List, Optional, Typefrom datetime import datetime
 import time
 
 

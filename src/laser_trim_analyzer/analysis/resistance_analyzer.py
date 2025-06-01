@@ -5,8 +5,7 @@ Analyzes resistance changes during the trim process.
 """
 
 import time
-from typing import Dict, Any, Optional
-import pandas as pd
+from typing import Any, Dict, List, Optionalimport pandas as pd
 
 from laser_trim_analyzer.core.models import ResistanceAnalysis
 from laser_trim_analyzer.analysis.base import BaseAnalyzer

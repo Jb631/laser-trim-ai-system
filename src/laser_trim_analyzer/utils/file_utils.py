@@ -9,7 +9,13 @@ import hashlib
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Callable, Any
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Type
 from functools import wraps
 import logging
 
@@ -359,3 +365,4 @@ def get_file_info(file_path: Path) -> Dict[str, Any]:
         'extension': file_path.suffix,
         'parent': str(file_path.parent)
     }
+)

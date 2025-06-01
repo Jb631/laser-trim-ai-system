@@ -7,8 +7,7 @@ Perfect for displaying key QA metrics like pass rates, sigma values, etc.
 
 import tkinter as tk
 from tkinter import ttk, font
-from typing import List, Optional, Callable, Tuple
-import math
+from typing import Callable, Dict, List, Optional, Tupleimport math
 
 
 class SparkLine(tk.Canvas):

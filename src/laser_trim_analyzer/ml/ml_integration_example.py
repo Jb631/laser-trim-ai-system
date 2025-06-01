@@ -11,8 +11,7 @@ from datetime import datetime
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from laser_trim_analyzer.processor.processor_module import DataDrivenLaserProcessor
+from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from ml_predictor import MLPredictor, integrate_ml_predictor
 from ml_model_trainer import MLModelTrainer
 

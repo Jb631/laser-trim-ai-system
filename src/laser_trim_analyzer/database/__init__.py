@@ -2,7 +2,7 @@
 """Database management for historical analysis."""
 
 from laser_trim_analyzer.database.manager import DatabaseManager
-from laser_trim_analyzer.database.models import Base, AnalysisRecord, TrackRecord
+from laser_trim_analyzer.database.models import Base, AnalysisResult, TrackResult
 
 __all__ = [
     "DatabaseManager",

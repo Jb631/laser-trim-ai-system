@@ -6,7 +6,14 @@ Provides common interface, validation, and utility methods.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any, Tuple
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type
+)
 from pathlib import Path
 import numpy as np
 import pandas as pd

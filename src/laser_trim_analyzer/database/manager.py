@@ -9,31 +9,36 @@ retrieve potentiometer test results.
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Type,
+    Union
+)
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, func, and_, or_, desc
+from sqlalchemy import create_engine, func, and_, or_, desc, inspect
 from sqlalchemy.orm import sessionmaker, Session, scoped_session
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import Engine
 
-# Import our models
+# Import our database models
 from .models import (
-    Base, AnalysisResult, TrackResult, MLPrediction,
-    QAAlert, BatchInfo, AnalysisBatch,
-    SystemType, StatusType, RiskCategory, AlertType
+    Base, AnalysisResult as DBAnalysisResult, TrackResult as DBTrackResult,
+    MLPrediction as DBMLPrediction, QAAlert as DBQAAlert, BatchInfo as DBBatchInfo,
+    AnalysisBatch as DBAnalysisBatch,
+    SystemType as DBSystemType, StatusType as DBStatusType,
+    RiskCategory as DBRiskCategory, AlertType as DBAlertType
 )
 
-# Import Pydantic models for type hints
-# Assuming these exist in core/models.py
-from laser_trim_analyzer.core.models import (
+# Import Pydantic models from core
+from ..core.models import (
     AnalysisResult as PydanticAnalysisResult,
-    TrackResult as PydanticTrackResult,
-    MLPrediction as PydanticMLPrediction,
-    QAAlert as PydanticQAAlert,
-    BatchInfo as PydanticBatchInfo
+    TrackData, AnalysisStatus, SystemType, RiskCategory
 )
 
 
@@ -157,7 +162,7 @@ class DatabaseManager:
             Base.metadata.create_all(self.engine)
 
             # Verify tables were created
-            inspector = self.engine.inspect(self.engine)
+            inspector = inspect(self.engine)
             tables = inspector.get_table_names()
             self.logger.info(f"Created {len(tables)} tables: {', '.join(tables)}")
 
@@ -177,63 +182,91 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             try:
+                # Convert Pydantic SystemType to DB SystemType
+                system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
+
+                # Convert Pydantic AnalysisStatus to DB StatusType
+                status_map = {
+                    AnalysisStatus.PASS: DBStatusType.PASS,
+                    AnalysisStatus.FAIL: DBStatusType.FAIL,
+                    AnalysisStatus.WARNING: DBStatusType.WARNING,
+                    AnalysisStatus.ERROR: DBStatusType.ERROR,
+                    AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
+                }
+                overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
+
                 # Create main analysis record
-                analysis = AnalysisResult(
-                    filename=analysis_data.filename,
-                    file_path=analysis_data.file_path,
-                    file_date=analysis_data.file_date,
-                    file_hash=analysis_data.file_hash,
-                    model=analysis_data.model,
-                    serial=analysis_data.serial,
-                    system=SystemType(analysis_data.system),
-                    has_multi_tracks=analysis_data.has_multi_tracks,
-                    overall_status=StatusType(analysis_data.overall_status),
+                analysis = DBAnalysisResult(
+                    filename=analysis_data.metadata.filename,
+                    file_path=str(analysis_data.metadata.file_path),
+                    file_date=analysis_data.metadata.file_date,
+                    file_hash=None,  # Calculate if needed
+                    model=analysis_data.metadata.model,
+                    serial=analysis_data.metadata.serial,
+                    system=system_type,
+                    has_multi_tracks=analysis_data.metadata.has_multi_tracks,
+                    overall_status=overall_status,
                     processing_time=analysis_data.processing_time,
-                    output_dir=analysis_data.output_dir,
-                    software_version=analysis_data.software_version,
-                    operator=analysis_data.operator,
-                    sigma_scaling_factor=analysis_data.sigma_scaling_factor,
-                    filter_cutoff_frequency=analysis_data.filter_cutoff_frequency
+                    output_dir=None,  # Set if available
+                    software_version="2.0.0",  # Set from config
+                    operator=None,  # Set if available
+                    sigma_scaling_factor=None,  # Set from first track if available
+                    filter_cutoff_frequency=None  # Set from config if available
                 )
 
                 # Add track results
-                for track_data in analysis_data.tracks:
-                    track = TrackResult(
-                        track_id=track_data.track_id,
-                        status=StatusType(track_data.status),
+                for track_id, track_data in analysis_data.tracks.items():
+                    # Convert track status
+                    track_status = status_map.get(track_data.status, DBStatusType.ERROR)
+
+                    # Convert risk category if available
+                    risk_category = None
+                    if track_data.failure_prediction:
+                        risk_map = {
+                            RiskCategory.HIGH: DBRiskCategory.HIGH,
+                            RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
+                            RiskCategory.LOW: DBRiskCategory.LOW,
+                            RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
+                        }
+                        risk_category = risk_map.get(track_data.failure_prediction.risk_category)
+
+                    track = DBTrackResult(
+                        track_id=track_id,
+                        status=track_status,
                         travel_length=track_data.travel_length,
-                        linearity_spec=track_data.linearity_spec,
-                        sigma_gradient=track_data.sigma_gradient,
-                        sigma_threshold=track_data.sigma_threshold,
-                        sigma_pass=track_data.sigma_pass,
-                        unit_length=track_data.unit_length,
-                        untrimmed_resistance=track_data.untrimmed_resistance,
-                        trimmed_resistance=track_data.trimmed_resistance,
-                        resistance_change=track_data.resistance_change,
-                        resistance_change_percent=track_data.resistance_change_percent,
-                        optimal_offset=track_data.optimal_offset,
-                        final_linearity_error_raw=track_data.final_linearity_error_raw,
-                        final_linearity_error_shifted=track_data.final_linearity_error_shifted,
-                        linearity_pass=track_data.linearity_pass,
-                        linearity_fail_points=track_data.linearity_fail_points,
-                        max_deviation=track_data.max_deviation,
-                        max_deviation_position=track_data.max_deviation_position,
-                        deviation_uniformity=track_data.deviation_uniformity,
-                        trim_improvement_percent=track_data.trim_improvement_percent,
-                        untrimmed_rms_error=track_data.untrimmed_rms_error,
-                        trimmed_rms_error=track_data.trimmed_rms_error,
-                        max_error_reduction_percent=track_data.max_error_reduction_percent,
-                        worst_zone=track_data.worst_zone,
-                        worst_zone_position=track_data.worst_zone_position,
-                        zone_details=track_data.zone_details,
-                        failure_probability=track_data.failure_probability,
-                        risk_category=RiskCategory(track_data.risk_category) if track_data.risk_category else None,
-                        gradient_margin=track_data.gradient_margin,
-                        range_utilization_percent=track_data.range_utilization_percent,
-                        minimum_margin=track_data.minimum_margin,
-                        minimum_margin_position=track_data.minimum_margin_position,
-                        margin_bias=track_data.margin_bias,
-                        plot_path=track_data.plot_path
+                        linearity_spec=track_data.linearity_analysis.linearity_spec,
+                        sigma_gradient=track_data.sigma_analysis.sigma_gradient,
+                        sigma_threshold=track_data.sigma_analysis.sigma_threshold,
+                        sigma_pass=track_data.sigma_analysis.sigma_pass,
+                        unit_length=track_data.unit_properties.unit_length,
+                        untrimmed_resistance=track_data.unit_properties.untrimmed_resistance,
+                        trimmed_resistance=track_data.unit_properties.trimmed_resistance,
+                        resistance_change=track_data.unit_properties.resistance_change,
+                        resistance_change_percent=track_data.unit_properties.resistance_change_percent,
+                        optimal_offset=track_data.linearity_analysis.optimal_offset,
+                        final_linearity_error_raw=track_data.linearity_analysis.final_linearity_error_raw,
+                        final_linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted,
+                        linearity_pass=track_data.linearity_analysis.linearity_pass,
+                        linearity_fail_points=track_data.linearity_analysis.linearity_fail_points,
+                        max_deviation=track_data.linearity_analysis.max_deviation,
+                        max_deviation_position=track_data.linearity_analysis.max_deviation_position,
+                        deviation_uniformity=None,  # Calculate if needed
+                        trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
+                        untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
+                        trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
+                        max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
+                        worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
+                        worst_zone_position=track_data.zone_analysis.worst_zone_position[
+                            0] if track_data.zone_analysis and track_data.zone_analysis.worst_zone_position else None,
+                        zone_details=track_data.zone_analysis.zone_results if track_data.zone_analysis else None,
+                        failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
+                        risk_category=risk_category,
+                        gradient_margin=track_data.sigma_analysis.gradient_margin,
+                        range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
+                        minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
+                        minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
+                        margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
+                        plot_path=str(track_data.plot_path) if track_data.plot_path else None
                     )
                     analysis.tracks.append(track)
 
@@ -243,7 +276,8 @@ class DatabaseManager:
                 session.add(analysis)
                 session.commit()
 
-                self.logger.info(f"Saved analysis for {analysis_data.filename} with {len(analysis.tracks)} tracks")
+                self.logger.info(
+                    f"Saved analysis for {analysis_data.metadata.filename} with {len(analysis.tracks)} tracks")
                 return analysis.id
 
             except Exception as e:
@@ -262,7 +296,7 @@ class DatabaseManager:
             limit: Optional[int] = None,
             offset: Optional[int] = None,
             include_tracks: bool = True
-    ) -> List[AnalysisResult]:
+    ) -> List[DBAnalysisResult]:
         """
         Retrieve historical analysis data with flexible filtering.
 
@@ -282,35 +316,35 @@ class DatabaseManager:
             List of AnalysisResult objects
         """
         with self.get_session() as session:
-            query = session.query(AnalysisResult)
+            query = session.query(DBAnalysisResult)
 
             # Apply filters
             if model:
-                query = query.filter(AnalysisResult.model.like(model))
+                query = query.filter(DBAnalysisResult.model.like(model))
 
             if serial:
-                query = query.filter(AnalysisResult.serial.like(serial))
+                query = query.filter(DBAnalysisResult.serial.like(serial))
 
             # Date filtering
             if days_back:
                 cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-                query = query.filter(AnalysisResult.timestamp >= cutoff_date)
+                query = query.filter(DBAnalysisResult.timestamp >= cutoff_date)
             elif start_date:
-                query = query.filter(AnalysisResult.timestamp >= start_date)
+                query = query.filter(DBAnalysisResult.timestamp >= start_date)
                 if end_date:
-                    query = query.filter(AnalysisResult.timestamp <= end_date)
+                    query = query.filter(DBAnalysisResult.timestamp <= end_date)
 
             if status:
-                query = query.filter(AnalysisResult.overall_status == StatusType(status))
+                query = query.filter(DBAnalysisResult.overall_status == DBStatusType(status))
 
             if risk_category and include_tracks:
                 # Join with tracks to filter by risk category
-                query = query.join(TrackResult).filter(
-                    TrackResult.risk_category == RiskCategory(risk_category)
+                query = query.join(DBTrackResult).filter(
+                    DBTrackResult.risk_category == DBRiskCategory(risk_category)
                 ).distinct()
 
             # Order by most recent first
-            query = query.order_by(desc(AnalysisResult.timestamp))
+            query = query.order_by(desc(DBAnalysisResult.timestamp))
 
             # Apply pagination
             if offset:
@@ -342,8 +376,8 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             # Base query for the model
-            base_query = session.query(AnalysisResult).filter(
-                AnalysisResult.model == model
+            base_query = session.query(DBAnalysisResult).filter(
+                DBAnalysisResult.model == model
             )
 
             # Get basic counts
@@ -359,17 +393,17 @@ class DatabaseManager:
 
             # Get track statistics
             track_stats = session.query(
-                func.count(TrackResult.id).label('total_tracks'),
-                func.avg(TrackResult.sigma_gradient).label('avg_sigma'),
-                func.min(TrackResult.sigma_gradient).label('min_sigma'),
-                func.max(TrackResult.sigma_gradient).label('max_sigma'),
-                func.sum(TrackResult.sigma_pass).label('sigma_passes'),
-                func.sum(TrackResult.linearity_pass).label('linearity_passes'),
-                func.avg(TrackResult.failure_probability).label('avg_failure_prob')
+                func.count(DBTrackResult.id).label('total_tracks'),
+                func.avg(DBTrackResult.sigma_gradient).label('avg_sigma'),
+                func.min(DBTrackResult.sigma_gradient).label('min_sigma'),
+                func.max(DBTrackResult.sigma_gradient).label('max_sigma'),
+                func.sum(DBTrackResult.sigma_pass).label('sigma_passes'),
+                func.sum(DBTrackResult.linearity_pass).label('linearity_passes'),
+                func.avg(DBTrackResult.failure_probability).label('avg_failure_prob')
             ).join(
-                AnalysisResult
+                DBAnalysisResult
             ).filter(
-                AnalysisResult.model == model
+                DBAnalysisResult.model == model
             ).first()
 
             # Calculate pass rates
@@ -379,14 +413,14 @@ class DatabaseManager:
 
             # Get risk distribution
             risk_dist = session.query(
-                TrackResult.risk_category,
-                func.count(TrackResult.id).label('count')
+                DBTrackResult.risk_category,
+                func.count(DBTrackResult.id).label('count')
             ).join(
-                AnalysisResult
+                DBAnalysisResult
             ).filter(
-                AnalysisResult.model == model
+                DBAnalysisResult.model == model
             ).group_by(
-                TrackResult.risk_category
+                DBTrackResult.risk_category
             ).all()
 
             risk_distribution = {str(risk): count for risk, count in risk_dist if risk}
@@ -394,20 +428,20 @@ class DatabaseManager:
             # Get recent trend (last 30 days)
             thirty_days_ago = datetime.utcnow() - timedelta(days=30)
             recent_trend = session.query(
-                func.date(AnalysisResult.timestamp).label('date'),
-                func.count(AnalysisResult.id).label('count'),
-                func.avg(TrackResult.sigma_gradient).label('avg_sigma')
+                func.date(DBAnalysisResult.timestamp).label('date'),
+                func.count(DBAnalysisResult.id).label('count'),
+                func.avg(DBTrackResult.sigma_gradient).label('avg_sigma')
             ).join(
-                TrackResult
+                DBTrackResult
             ).filter(
                 and_(
-                    AnalysisResult.model == model,
-                    AnalysisResult.timestamp >= thirty_days_ago
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.timestamp >= thirty_days_ago
                 )
             ).group_by(
-                func.date(AnalysisResult.timestamp)
+                func.date(DBAnalysisResult.timestamp)
             ).order_by(
-                func.date(AnalysisResult.timestamp)
+                func.date(DBAnalysisResult.timestamp)
             ).all()
 
             return {
@@ -451,18 +485,18 @@ class DatabaseManager:
         """
         with self.get_session() as session:
             query = session.query(
-                TrackResult.risk_category,
-                func.count(TrackResult.id).label('count'),
-                func.avg(TrackResult.failure_probability).label('avg_prob')
+                DBTrackResult.risk_category,
+                func.count(DBTrackResult.id).label('count'),
+                func.avg(DBTrackResult.failure_probability).label('avg_prob')
             )
 
             if days_back:
                 cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-                query = query.join(AnalysisResult).filter(
-                    AnalysisResult.timestamp >= cutoff_date
+                query = query.join(DBAnalysisResult).filter(
+                    DBAnalysisResult.timestamp >= cutoff_date
                 )
 
-            results = query.group_by(TrackResult.risk_category).all()
+            results = query.group_by(DBTrackResult.risk_category).all()
 
             # Build summary
             summary = {
@@ -488,17 +522,17 @@ class DatabaseManager:
 
             # Get high-risk units details
             high_risk_units = session.query(
-                AnalysisResult.filename,
-                AnalysisResult.model,
-                AnalysisResult.serial,
-                TrackResult.track_id,
-                TrackResult.failure_probability
+                DBAnalysisResult.filename,
+                DBAnalysisResult.model,
+                DBAnalysisResult.serial,
+                DBTrackResult.track_id,
+                DBTrackResult.failure_probability
             ).join(
-                TrackResult
+                DBTrackResult
             ).filter(
-                TrackResult.risk_category == RiskCategory.HIGH
+                DBTrackResult.risk_category == DBRiskCategory.HIGH
             ).order_by(
-                desc(TrackResult.failure_probability)
+                desc(DBTrackResult.failure_probability)
             ).limit(10).all()
 
             summary["high_risk_units"] = [
@@ -514,41 +548,45 @@ class DatabaseManager:
 
             return summary
 
-    def save_ml_prediction(self, prediction_data: PydanticMLPrediction) -> int:
+    def save_ml_prediction(self, prediction_data: Dict[str, Any]) -> int:
         """
         Save machine learning prediction results.
 
         Args:
-            prediction_data: Pydantic model containing ML prediction
+            prediction_data: Dictionary containing ML prediction data
 
         Returns:
             ID of the saved prediction record
         """
         with self.get_session() as session:
-            prediction = MLPrediction(
-                analysis_id=prediction_data.analysis_id,
-                model_version=prediction_data.model_version,
-                prediction_type=prediction_data.prediction_type,
-                current_threshold=prediction_data.current_threshold,
-                recommended_threshold=prediction_data.recommended_threshold,
-                threshold_change_percent=prediction_data.threshold_change_percent,
-                false_positives=prediction_data.false_positives,
-                false_negatives=prediction_data.false_negatives,
-                predicted_failure_probability=prediction_data.predicted_failure_probability,
-                predicted_risk_category=RiskCategory(
-                    prediction_data.predicted_risk_category) if prediction_data.predicted_risk_category else None,
-                confidence_score=prediction_data.confidence_score,
-                feature_importance=prediction_data.feature_importance,
-                drift_detected=prediction_data.drift_detected,
-                drift_percentage=prediction_data.drift_percentage,
-                drift_direction=prediction_data.drift_direction,
-                recommendations=prediction_data.recommendations
+            # Convert risk category if present
+            risk_category = None
+            if prediction_data.get('predicted_risk_category'):
+                risk_category = DBRiskCategory(prediction_data['predicted_risk_category'])
+
+            prediction = DBMLPrediction(
+                analysis_id=prediction_data['analysis_id'],
+                model_version=prediction_data.get('model_version'),
+                prediction_type=prediction_data.get('prediction_type'),
+                current_threshold=prediction_data.get('current_threshold'),
+                recommended_threshold=prediction_data.get('recommended_threshold'),
+                threshold_change_percent=prediction_data.get('threshold_change_percent'),
+                false_positives=prediction_data.get('false_positives'),
+                false_negatives=prediction_data.get('false_negatives'),
+                predicted_failure_probability=prediction_data.get('predicted_failure_probability'),
+                predicted_risk_category=risk_category,
+                confidence_score=prediction_data.get('confidence_score'),
+                feature_importance=prediction_data.get('feature_importance'),
+                drift_detected=prediction_data.get('drift_detected', False),
+                drift_percentage=prediction_data.get('drift_percentage'),
+                drift_direction=prediction_data.get('drift_direction'),
+                recommendations=prediction_data.get('recommendations')
             )
 
             session.add(prediction)
             session.commit()
 
-            self.logger.info(f"Saved ML prediction: {prediction_data.prediction_type}")
+            self.logger.info(f"Saved ML prediction: {prediction_data.get('prediction_type')}")
             return prediction.id
 
     def get_batch_statistics(self, batch_id: int) -> Optional[Dict[str, Any]]:
@@ -562,16 +600,16 @@ class DatabaseManager:
             Dictionary with batch statistics or None if not found
         """
         with self.get_session() as session:
-            batch = session.query(BatchInfo).filter(BatchInfo.id == batch_id).first()
+            batch = session.query(DBBatchInfo).filter(DBBatchInfo.id == batch_id).first()
 
             if not batch:
                 return None
 
             # Get linked analyses
-            analyses = session.query(AnalysisResult).join(
-                AnalysisBatch
+            analyses = session.query(DBAnalysisResult).join(
+                DBAnalysisBatch
             ).filter(
-                AnalysisBatch.batch_id == batch_id
+                DBAnalysisBatch.batch_id == batch_id
             ).all()
 
             # Calculate statistics from linked analyses
@@ -585,15 +623,15 @@ class DatabaseManager:
                     total_tracks += 1
                     if track.sigma_pass and track.linearity_pass:
                         passed_tracks += 1
-                    if track.risk_category == RiskCategory.HIGH:
+                    if track.risk_category == DBRiskCategory.HIGH:
                         high_risk_tracks += 1
                     if track.sigma_gradient:
                         sigma_values.append(track.sigma_gradient)
 
             # Update batch statistics
             batch.total_units = len(analyses)
-            batch.passed_units = sum(1 for a in analyses if a.overall_status == StatusType.PASS)
-            batch.failed_units = sum(1 for a in analyses if a.overall_status == StatusType.FAIL)
+            batch.passed_units = sum(1 for a in analyses if a.overall_status == DBStatusType.PASS)
+            batch.failed_units = sum(1 for a in analyses if a.overall_status == DBStatusType.FAIL)
 
             if sigma_values:
                 batch.average_sigma_gradient = sum(sigma_values) / len(sigma_values)
@@ -631,7 +669,7 @@ class DatabaseManager:
                 ]
             }
 
-    def _generate_alerts(self, analysis: AnalysisResult, session: Session) -> None:
+    def _generate_alerts(self, analysis: DBAnalysisResult, session: Session) -> None:
         """
         Generate QA alerts based on analysis results.
 
@@ -644,8 +682,8 @@ class DatabaseManager:
         for track in analysis.tracks:
             # Carbon screen check for 8340 models
             if "8340" in analysis.model and track.sigma_gradient > track.sigma_threshold:
-                alerts.append(QAAlert(
-                    alert_type=AlertType.CARBON_SCREEN,
+                alerts.append(DBQAAlert(
+                    alert_type=DBAlertType.CARBON_SCREEN,
                     severity="High",
                     track_id=track.track_id,
                     metric_name="sigma_gradient",
@@ -655,9 +693,9 @@ class DatabaseManager:
                 ))
 
             # High risk alert
-            if track.risk_category == RiskCategory.HIGH:
-                alerts.append(QAAlert(
-                    alert_type=AlertType.HIGH_RISK,
+            if track.risk_category == DBRiskCategory.HIGH:
+                alerts.append(DBQAAlert(
+                    alert_type=DBAlertType.HIGH_RISK,
                     severity="Critical",
                     track_id=track.track_id,
                     metric_name="failure_probability",
@@ -667,8 +705,8 @@ class DatabaseManager:
 
             # Threshold exceeded alert
             if not track.sigma_pass:
-                alerts.append(QAAlert(
-                    alert_type=AlertType.THRESHOLD_EXCEEDED,
+                alerts.append(DBQAAlert(
+                    alert_type=DBAlertType.THRESHOLD_EXCEEDED,
                     severity="High",
                     track_id=track.track_id,
                     metric_name="sigma_gradient",
@@ -687,7 +725,7 @@ class DatabaseManager:
             severity: Optional[str] = None,
             alert_type: Optional[str] = None,
             days_back: Optional[int] = None
-    ) -> List[QAAlert]:
+    ) -> List[DBQAAlert]:
         """
         Get unresolved QA alerts.
 
@@ -700,25 +738,73 @@ class DatabaseManager:
             List of unresolved QAAlert objects
         """
         with self.get_session() as session:
-            query = session.query(QAAlert).filter(QAAlert.resolved == False)
+            query = session.query(DBQAAlert).filter(DBQAAlert.resolved == False)
 
             if severity:
-                query = query.filter(QAAlert.severity == severity)
+                query = query.filter(DBQAAlert.severity == severity)
 
             if alert_type:
-                query = query.filter(QAAlert.alert_type == AlertType(alert_type))
+                query = query.filter(DBQAAlert.alert_type == DBAlertType(alert_type))
 
             if days_back:
                 cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-                query = query.filter(QAAlert.created_date >= cutoff_date)
+                query = query.filter(DBQAAlert.created_date >= cutoff_date)
 
             # Order by severity and date
             query = query.order_by(
-                desc(QAAlert.severity),
-                desc(QAAlert.created_date)
+                desc(DBQAAlert.severity),
+                desc(DBQAAlert.created_date)
             )
 
             return query.all()
+
+    def create_batch(self, batch_name: str, model: str, batch_type: str = "production") -> int:
+        """
+        Create a new batch for grouping analyses.
+
+        Args:
+            batch_name: Name of the batch
+            model: Model number for the batch
+            batch_type: Type of batch (production, rework, test)
+
+        Returns:
+            ID of the created batch
+        """
+        with self.get_session() as session:
+            batch = DBBatchInfo(
+                batch_name=batch_name,
+                batch_type=batch_type,
+                model=model
+            )
+            session.add(batch)
+            session.commit()
+
+            self.logger.info(f"Created batch: {batch_name}")
+            return batch.id
+
+    def add_analysis_to_batch(self, analysis_id: int, batch_id: int) -> None:
+        """
+        Add an analysis to a batch.
+
+        Args:
+            analysis_id: ID of the analysis
+            batch_id: ID of the batch
+        """
+        with self.get_session() as session:
+            # Check if association already exists
+            existing = session.query(DBAnalysisBatch).filter_by(
+                analysis_id=analysis_id,
+                batch_id=batch_id
+            ).first()
+
+            if not existing:
+                association = DBAnalysisBatch(
+                    analysis_id=analysis_id,
+                    batch_id=batch_id
+                )
+                session.add(association)
+                session.commit()
+                self.logger.info(f"Added analysis {analysis_id} to batch {batch_id}")
 
     def close(self) -> None:
         """Close database connections and clean up resources."""
