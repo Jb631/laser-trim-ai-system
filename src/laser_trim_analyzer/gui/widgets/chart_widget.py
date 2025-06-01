@@ -11,7 +11,14 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import numpy as np
-from typing import List, Dict, Optional, Tuple, Any, Callable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type
 from datetime import datetime
 import pandas as pd
 
@@ -508,3 +515,4 @@ if __name__ == "__main__":
                                xlabel="Model", ylabel="Metric")
 
     root.mainloop()
+)
