@@ -33,8 +33,8 @@ from laser_trim_analyzer.utils.file_utils import ensure_directory, calculate_fil
 from laser_trim_analyzer.utils.excel_utils import (
     read_excel_sheet, extract_cell_value, find_data_columns, detect_system_type
 )
-from laser_trim_analyzer.utils.plot_utils import generate_analysis_plot
-from laser_trim_analyzer.ml.predictor import MLPredictor, PredictionResult
+from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
+from laser_trim_analyzer.ml.predictors import MLPredictor, PredictionResult
 # Try to import ML components
 try:
     from laser_trim_analyzer.ml.predictors import MLPredictor
@@ -898,7 +898,7 @@ class LaserTrimProcessor:
         """Generate analysis plots."""
         for track_id, track_data in result.tracks.items():
             try:
-                plot_path = await generate_analysis_plot(
+                plot_path = await create_analysis_plot(
                     track_data,
                     output_dir,
                     f"{result.metadata.filename}_{track_id}",

@@ -18,7 +18,8 @@ from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import (
     AnalysisResult, TrackData, RiskCategory, AnalysisStatus
 )
-from laser_trim_analyzer.ml.engine import MLEngine, ModelFactory
+from laser_trim_analyzer.ml.engine import MLEngine
+from laser_trim_analyzer.ml.models import ModelFactory
 from laser_trim_analyzer.database.models import MLPrediction as DBMLPrediction
 
 # Import the existing ML predictor implementation

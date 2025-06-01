@@ -16,7 +16,7 @@ import pandas as pd
 from laser_trim_analyzer.gui.widgets.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-from laser_trim_analyzer.ml.ml_engine import MLEngine, ModelConfig
+from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
 
 
 class MLToolsPage(BasePage):
