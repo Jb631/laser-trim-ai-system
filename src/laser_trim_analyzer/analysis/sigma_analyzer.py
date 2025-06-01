@@ -11,7 +11,7 @@ import numpy as np
 from laser_trim_analyzer.core.models import SigmaAnalysis
 from laser_trim_analyzer.core.constants import (
     MATLAB_GRADIENT_STEP, DEFAULT_SIGMA_SCALING_FACTOR,
-    SPECIAL_MODELS
+    SPECIAL_MODELS, END_POINT_FILTER_COUNT
 )
 from laser_trim_analyzer.analysis.base import BaseAnalyzer
 
@@ -200,10 +200,10 @@ class SigmaAnalyzer(BaseAnalyzer):
             if 'fixed_sigma_threshold' in SPECIAL_MODELS[model]:
                 return SPECIAL_MODELS[model]['fixed_sigma_threshold']
 
-        # Model-specific calculations
+        # Model-specific calculations with more realistic thresholds
         if model.startswith('8555'):
-            # Empirical threshold for 8555 models
-            base_threshold = 0.0025
+            # Empirical threshold for 8555 models - more stringent
+            base_threshold = 0.0015  # Reduced from 0.0025
             spec_factor = linearity_spec / 0.01 if linearity_spec > 0 else 1.0
             threshold = base_threshold * spec_factor
 
@@ -212,17 +212,18 @@ class SigmaAnalyzer(BaseAnalyzer):
             threshold = 0.4
 
         else:
-            # Traditional calculation
+            # Traditional calculation with adjusted scaling
             scaling_factor = self._get_scaling_factor(model)
 
             # Use unit length if available, otherwise travel length
             effective_length = unit_length if unit_length and unit_length > 0 else travel_length
 
             if effective_length and effective_length > 0:
-                threshold = (linearity_spec / effective_length) * scaling_factor
+                # More stringent calculation
+                threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)  # Reduced by 50%
             else:
-                # Fallback calculation
-                threshold = scaling_factor * 0.02
+                # Fallback calculation - also more stringent
+                threshold = scaling_factor * 0.01  # Reduced from 0.02
                 self.logger.warning(
                     f"No valid length for threshold calculation, using default: {threshold:.4f}"
                 )
@@ -234,6 +235,14 @@ class SigmaAnalyzer(BaseAnalyzer):
                 f"Calculated threshold {threshold:.6f} below minimum, using {min_threshold:.6f}"
             )
             threshold = min_threshold
+        
+        # Apply maximum threshold to catch unreasonably high values
+        max_threshold = 0.05  # Maximum reasonable threshold
+        if threshold > max_threshold:
+            self.logger.warning(
+                f"Calculated threshold {threshold:.6f} above maximum, using {max_threshold:.6f}"
+            )
+            threshold = max_threshold
 
         return float(threshold)
 

@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 import threading
 import asyncio
+import time
 
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
@@ -40,6 +41,10 @@ class AnalysisPage(BasePage):
         self.processor: Optional[LaserTrimProcessor] = None
         self.is_processing = False
         self.current_task = None
+        
+        # Progress update throttling
+        self.last_progress_update = 0
+        self.progress_update_interval = 0.1  # Update every 100ms max
 
         # Processing options
         self.processing_mode = tk.StringVar(value='detail')
@@ -121,7 +126,7 @@ class AnalysisPage(BasePage):
         self.drop_zone = FileDropZone(
             file_frame,
             on_files_dropped=self._handle_files_dropped,
-            accepted_extensions=['.xlsx', '.xls']
+            accept_extensions=['.xlsx', '.xls']
         )
         self.drop_zone.pack(fill='both', expand=True, pady=(0, 10))
 
@@ -508,6 +513,13 @@ class AnalysisPage(BasePage):
 
     def _update_progress(self, value: float, text: str):
         """Update progress display."""
+        current_time = time.time()
+        
+        # Throttle updates to prevent GUI choppiness
+        if current_time - self.last_progress_update < self.progress_update_interval:
+            return
+            
+        self.last_progress_update = current_time
         self.progress_var.set(value)
         self.progress_label.config(text=text)
 
@@ -680,39 +692,38 @@ class AnalysisPage(BasePage):
             stats_grid,
             title="Total Files",
             value=total,
-            unit="",
-            show_sparkline=False
+            unit=""
         ).grid(row=0, column=0, padx=5, pady=5, sticky='ew')
 
         # Pass rate
         pass_rate = (passed / total * 100) if total > 0 else 0
+        pass_color = "success" if pass_rate >= 95 else "warning" if pass_rate >= 90 else "danger"
         StatCard(
             stats_grid,
             title="Pass Rate",
-            value=pass_rate,
+            value=f"{pass_rate:.1f}",
             unit="%",
-            thresholds={'good': 95, 'warning': 90, 'critical': 80},
-            show_sparkline=False
+            color_scheme=pass_color
         ).grid(row=0, column=1, padx=5, pady=5, sticky='ew')
 
         # Average sigma
+        sigma_color = "success" if avg_sigma <= 0.02 else "warning" if avg_sigma <= 0.03 else "danger"
         StatCard(
             stats_grid,
             title="Avg Sigma",
-            value=avg_sigma,
+            value=f"{avg_sigma:.4f}",
             unit="",
-            thresholds={'good': 0.02, 'warning': 0.03, 'critical': 0.04},
-            show_sparkline=False
+            color_scheme=sigma_color
         ).grid(row=1, column=0, padx=5, pady=5, sticky='ew')
 
         # High risk
+        risk_color = "success" if high_risk <= 2 else "warning" if high_risk <= 5 else "danger"
         StatCard(
             stats_grid,
             title="High Risk",
             value=high_risk,
             unit="",
-            thresholds={'good': 2, 'warning': 5, 'critical': 10},
-            show_sparkline=False
+            color_scheme=risk_color
         ).grid(row=1, column=1, padx=5, pady=5, sticky='ew')
 
         # Results table
@@ -932,5 +943,108 @@ class AnalysisPage(BasePage):
 
     def _show_file_details(self, file_data: Dict[str, Any]):
         """Show detailed results for a file."""
-        # TODO: Open details dialog
-        messagebox.showinfo("Details", f"Detailed view for {file_data['filename']} coming soon!")
+        # Create details dialog
+        dialog = tk.Toplevel(self.winfo_toplevel())
+        dialog.title(f"Analysis Details - {file_data.get('filename', 'Unknown')}")
+        dialog.geometry("700x600")
+        dialog.configure(bg=self.colors['bg'])
+        
+        # Create scrollable text widget
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        text_widget = tk.Text(text_frame, wrap='word', font=('Consolas', 10))
+        scrollbar = ttk.Scrollbar(text_frame, orient='vertical', command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        
+        text_widget.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Configure tags
+        text_widget.tag_configure('heading', font=('Segoe UI', 14, 'bold'))
+        text_widget.tag_configure('subheading', font=('Segoe UI', 12, 'bold'))
+        text_widget.tag_configure('label', font=('Segoe UI', 10, 'bold'))
+        text_widget.tag_configure('pass', foreground='#27ae60')
+        text_widget.tag_configure('fail', foreground='#e74c3c')
+        text_widget.tag_configure('warning', foreground='#f39c12')
+        
+        # Add content
+        text_widget.insert('end', f"{file_data.get('filename', 'Unknown File')}\n", 'heading')
+        text_widget.insert('end', "=" * 60 + "\n\n")
+        
+        # File information
+        text_widget.insert('end', "File Information\n", 'subheading')
+        text_widget.insert('end', f"Model: ", 'label')
+        text_widget.insert('end', f"{file_data.get('model', 'N/A')}\n")
+        text_widget.insert('end', f"Serial: ", 'label')
+        text_widget.insert('end', f"{file_data.get('serial', 'N/A')}\n")
+        text_widget.insert('end', f"Status: ", 'label')
+        
+        status = file_data.get('status', 'Unknown')
+        status_tag = status.lower() if status.lower() in ['pass', 'fail', 'warning'] else None
+        text_widget.insert('end', f"{status}\n", status_tag)
+        
+        text_widget.insert('end', f"Timestamp: ", 'label')
+        timestamp = file_data.get('timestamp', datetime.now())
+        if isinstance(timestamp, datetime):
+            text_widget.insert('end', f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        else:
+            text_widget.insert('end', f"{timestamp}\n")
+        
+        text_widget.insert('end', "\n")
+        
+        # Analysis Results
+        text_widget.insert('end', "Analysis Results\n", 'subheading')
+        text_widget.insert('end', f"Sigma Gradient: ", 'label')
+        text_widget.insert('end', f"{file_data.get('sigma_gradient', 'N/A'):.6f}\n")
+        
+        text_widget.insert('end', f"Sigma Pass: ", 'label')
+        sigma_pass = file_data.get('sigma_pass')
+        if sigma_pass is not None:
+            text_widget.insert('end', "YES\n" if sigma_pass else "NO\n", 'pass' if sigma_pass else 'fail')
+        else:
+            text_widget.insert('end', "N/A\n")
+            
+        text_widget.insert('end', f"Linearity Pass: ", 'label')
+        lin_pass = file_data.get('linearity_pass')
+        if lin_pass is not None:
+            text_widget.insert('end', "YES\n" if lin_pass else "NO\n", 'pass' if lin_pass else 'fail')
+        else:
+            text_widget.insert('end', "N/A\n")
+            
+        text_widget.insert('end', f"Risk Category: ", 'label')
+        risk = file_data.get('risk_category', 'Unknown')
+        risk_tag = 'fail' if risk == 'High' else 'warning' if risk == 'Medium' else 'pass'
+        text_widget.insert('end', f"{risk}\n", risk_tag)
+        
+        # Multi-track details if available
+        if file_data.get('has_multi_tracks') and 'tracks' in file_data:
+            text_widget.insert('end', "\nTrack Details\n", 'subheading')
+            for track_id, track_info in file_data['tracks'].items():
+                text_widget.insert('end', f"\n{track_id}:\n", 'label')
+                text_widget.insert('end', f"  Status: {track_info.get('status', 'N/A')}\n")
+                text_widget.insert('end', f"  Sigma Gradient: {track_info.get('sigma_gradient', 'N/A'):.6f}\n")
+                text_widget.insert('end', f"  Sigma Pass: {'YES' if track_info.get('sigma_pass') else 'NO'}\n")
+                text_widget.insert('end', f"  Linearity Pass: {'YES' if track_info.get('linearity_pass') else 'NO'}\n")
+                text_widget.insert('end', f"  Risk: {track_info.get('risk_category', 'N/A')}\n")
+        
+        # Make read-only
+        text_widget.configure(state='disabled')
+        
+        # Add close button
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Button(
+            button_frame,
+            text="Close",
+            command=dialog.destroy
+        ).pack(side='right', padx=10)
+        
+        # If plot exists, add view plot button
+        if file_data.get('plot_path') and Path(str(file_data['plot_path'])).exists():
+            ttk.Button(
+                button_frame,
+                text="View Plot",
+                command=lambda: self._view_plot(file_data)
+            ).pack(side='right', padx=5)

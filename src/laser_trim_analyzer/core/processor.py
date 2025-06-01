@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import pandas as pd
 import numpy as np
+import re
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import (
@@ -34,15 +35,26 @@ from laser_trim_analyzer.utils.excel_utils import (
     read_excel_sheet, extract_cell_value, find_data_columns, detect_system_type
 )
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
-from laser_trim_analyzer.ml.predictors import MLPredictor, PredictionResult
 # Try to import ML components
 try:
-    from laser_trim_analyzer.ml.predictors import MLPredictor
-
+    from laser_trim_analyzer.ml.predictors import MLPredictor, PredictionResult
     HAS_ML = True
 except ImportError:
     HAS_ML = False
     MLPredictor = None
+    PredictionResult = None
+
+# Type checking support
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from laser_trim_analyzer.ml.predictors import MLPredictor as MLPredictorType, PredictionResult as PredictionResultType
+else:
+    if not HAS_ML:
+        MLPredictorType = Any
+        PredictionResultType = Any
+    else:
+        MLPredictorType = MLPredictor
+        PredictionResultType = PredictionResult
 
 
 class LaserTrimProcessor:
@@ -56,7 +68,7 @@ class LaserTrimProcessor:
             self,
             config: Config,
             db_manager: Optional[DatabaseManager] = None,
-            ml_predictor: Optional[MLPredictor] = None,  # Changed type hint
+            ml_predictor: Optional['MLPredictorType'] = None,
             logger: Optional[logging.Logger] = None
     ):
         """
@@ -190,11 +202,23 @@ class LaserTrimProcessor:
             # Save to database with ML predictions
             if self.db_manager:
                 try:
-                    result.db_id = await self._save_with_ml_predictions(result,
-                                                                        ml_predictions if 'ml_predictions' in locals() else None)
+                    # Check for duplicate analysis first
+                    existing_id = self.db_manager.check_duplicate_analysis(
+                        result.metadata.model,
+                        result.metadata.serial,
+                        result.metadata.file_date
+                    )
+                    
+                    if existing_id:
+                        self.logger.info(
+                            f"Skipping database save - duplicate analysis found (ID: {existing_id})"
+                        )
+                        result.db_id = existing_id
+                    else:
+                        result.db_id = self.db_manager.save_analysis(result)
+                        self.logger.info(f"Saved to database with ID: {result.db_id}")
                 except Exception as e:
                     self.logger.error(f"Database save failed: {e}")
-                    result.processing_errors.append(f"Database save failed: {str(e)}")
 
             # Cache result
             if self._cache_enabled:
@@ -446,9 +470,61 @@ class LaserTrimProcessor:
         model = parts[0] if parts else "Unknown"
         serial = parts[1] if len(parts) > 1 else "Unknown"
 
-        # Get file dates
-        stat = file_path.stat()
-        file_date = datetime.fromtimestamp(stat.st_mtime)
+        # Try to extract date and time from filename
+        # Expected formats:
+        # MODEL_SERIAL_TEST DATA_MM-DD-YYYY_HH-MM AM/PM
+        # MODEL_SERIAL_TA_Test Data_MM-DD-YYYY_HH-MM AMTrimmed Correct
+        file_date = None
+        
+        # Try different date extraction strategies
+        # Strategy 1: Look for MM-DD-YYYY pattern
+        date_pattern = r'(\d{1,2})-(\d{1,2})-(\d{4})'
+        date_match = re.search(date_pattern, filename)
+        
+        if date_match:
+            month, day, year = date_match.groups()
+            
+            # Look for time pattern HH-MM
+            time_pattern = r'(\d{1,2})-(\d{2})'
+            # Find time pattern after the date
+            remaining = filename[date_match.end():]
+            time_match = re.search(time_pattern, remaining)
+            
+            if time_match:
+                hour, minute = time_match.groups()
+                
+                # Determine AM/PM
+                am_pm = ""
+                if "AM" in remaining.upper():
+                    am_pm = "AM"
+                elif "PM" in remaining.upper():
+                    am_pm = "PM"
+                
+                try:
+                    # Build datetime string
+                    if am_pm:
+                        datetime_str = f"{month}-{day}-{year} {hour}:{minute} {am_pm}"
+                        file_date = datetime.strptime(datetime_str, "%m-%d-%Y %I:%M %p")
+                    else:
+                        # If no AM/PM, assume 24-hour format
+                        datetime_str = f"{month}-{day}-{year} {hour}:{minute}"
+                        file_date = datetime.strptime(datetime_str, "%m-%d-%Y %H:%M")
+                    
+                    self.logger.debug(f"Extracted trim date from filename: {file_date}")
+                except Exception as e:
+                    self.logger.warning(f"Could not parse date/time: {e}")
+                    # Just use the date without time
+                    try:
+                        file_date = datetime.strptime(f"{month}-{day}-{year}", "%m-%d-%Y")
+                        self.logger.debug(f"Extracted date only from filename: {file_date}")
+                    except:
+                        pass
+        
+        # If no date from filename, use file modification time as fallback
+        if not file_date:
+            stat = file_path.stat()
+            file_date = datetime.fromtimestamp(stat.st_mtime)
+            self.logger.debug(f"Using file modification date: {file_date}")
 
         metadata = FileMetadata(
             filename=file_path.name,
@@ -509,8 +585,12 @@ class LaserTrimProcessor:
 
     async def _find_system_a_tracks(self, file_path: Path) -> List[str]:
         """Find available tracks in System A file."""
-        excel_file = pd.ExcelFile(file_path)
-        sheet_names = excel_file.sheet_names
+        try:
+            excel_file = pd.ExcelFile(file_path)
+            sheet_names = excel_file.sheet_names
+        except Exception as e:
+            self.logger.warning(f"Could not read Excel file to find tracks: {e}")
+            return ["default"]
 
         # Look for track patterns
         tracks = []
@@ -574,6 +654,8 @@ class LaserTrimProcessor:
                 travel_length=data.get('travel_length', 0),
                 position_data=data.get('positions'),
                 error_data=data.get('errors'),
+                untrimmed_positions=data.get('untrimmed_data', {}).get('positions') if 'untrimmed_data' in data else None,
+                untrimmed_errors=data.get('untrimmed_data', {}).get('errors') if 'untrimmed_data' in data else None,
                 unit_properties=unit_props,
                 sigma_analysis=sigma_analysis,
                 linearity_analysis=linearity_analysis,
@@ -597,18 +679,41 @@ class LaserTrimProcessor:
         loop = asyncio.get_event_loop()
 
         # Find relevant sheets
-        excel_file = pd.ExcelFile(file_path)
+        try:
+            excel_file = pd.ExcelFile(file_path)
+            sheet_names = excel_file.sheet_names
+        except Exception as e:
+            self.logger.error(f"Could not read Excel file: {e}")
+            return None
+            
+        self.logger.debug(f"Sheets found in {file_path.name}: {sheet_names}")
         sheets = {}
 
-        for sheet in excel_file.sheet_names:
-            if track_id in sheet:
-                if " 0" in sheet or "_0" in sheet:
+        for sheet in sheet_names:
+            # More flexible sheet matching
+            if track_id in sheet or (track_id == "TRK1" and ("1 0" in sheet or "1_0" in sheet or "SEC1" in sheet)):
+                if " 0" in sheet or "_0" in sheet or sheet.endswith(" 0"):
                     sheets['untrimmed'] = sheet
-                elif "TRM" in sheet:
+                elif "TRM" in sheet or "TRIM" in sheet.upper():
                     sheets['trimmed'] = sheet
 
+        # If no sheets found with track ID, look for general patterns
         if not sheets:
+            for sheet in sheet_names:
+                if " 0" in sheet or "_0" in sheet or sheet.endswith(" 0"):
+                    sheets['untrimmed'] = sheet
+                    break
+                    
+            for sheet in sheet_names:
+                if "TRM" in sheet or "TRIM" in sheet.upper():
+                    sheets['trimmed'] = sheet
+                    break
+
+        if not sheets:
+            self.logger.warning(f"No sheets found for track {track_id} in {file_path.name}")
             return None
+
+        self.logger.debug(f"Selected sheets for {track_id}: {sheets}")
 
         # Extract data from untrimmed sheet
         untrimmed_data = await loop.run_in_executor(
@@ -622,13 +727,18 @@ class LaserTrimProcessor:
                 None, self._extract_trim_data, file_path, sheets['trimmed'], 'A'
             )
 
+        # Use trimmed data as primary if available, otherwise untrimmed
+        data_source = trimmed_data if trimmed_data and trimmed_data.get('positions') else untrimmed_data
+
         return {
             'sheets': sheets,
             'untrimmed_data': untrimmed_data,
             'trimmed_data': trimmed_data,
-            'positions': untrimmed_data.get('positions', []),
-            'errors': untrimmed_data.get('errors', []),
-            'travel_length': untrimmed_data.get('travel_length', 0)
+            'positions': data_source.get('positions', []),
+            'errors': data_source.get('errors', []),
+            'upper_limits': data_source.get('upper_limits', []),
+            'lower_limits': data_source.get('lower_limits', []),
+            'travel_length': data_source.get('travel_length', 0)
         }
 
     async def _extract_system_b_data(self, file_path: Path) -> Optional[Dict[str, Any]]:
@@ -658,6 +768,8 @@ class LaserTrimProcessor:
             'trimmed_data': trimmed_data,
             'positions': data_source.get('positions', []),
             'errors': data_source.get('errors', []),
+            'upper_limits': data_source.get('upper_limits', []),
+            'lower_limits': data_source.get('lower_limits', []),
             'travel_length': data_source.get('travel_length', 0)
         }
 
@@ -677,14 +789,33 @@ class LaserTrimProcessor:
             if not columns:
                 return {}
 
-            # Extract data
-            positions = df.iloc[:, columns['position']].dropna().tolist()
-            errors = df.iloc[:, columns['error']].dropna().tolist()
+            # Extract data and convert to numeric
+            position_series = pd.to_numeric(df.iloc[:, columns['position']], errors='coerce')
+            error_series = pd.to_numeric(df.iloc[:, columns['error']], errors='coerce')
+            
+            # Extract upper and lower limits if available
+            upper_limits = []
+            lower_limits = []
+            if 'upper_limit' in columns and 'lower_limit' in columns:
+                upper_series = pd.to_numeric(df.iloc[:, columns['upper_limit']], errors='coerce')
+                lower_series = pd.to_numeric(df.iloc[:, columns['lower_limit']], errors='coerce')
+                upper_limits = upper_series.dropna().tolist()
+                lower_limits = lower_series.dropna().tolist()
+            
+            # Drop NaN values
+            positions = position_series.dropna().tolist()
+            errors = error_series.dropna().tolist()
 
             # Ensure same length
             min_len = min(len(positions), len(errors))
             positions = positions[:min_len]
             errors = errors[:min_len]
+            
+            # Ensure limits have same length
+            if upper_limits:
+                upper_limits = upper_limits[:min_len]
+            if lower_limits:
+                lower_limits = lower_limits[:min_len]
 
             # Calculate travel length
             travel_length = max(positions) - min(positions) if positions else 0
@@ -692,6 +823,8 @@ class LaserTrimProcessor:
             return {
                 'positions': positions,
                 'errors': errors,
+                'upper_limits': upper_limits,
+                'lower_limits': lower_limits,
                 'travel_length': travel_length
             }
 
@@ -719,6 +852,9 @@ class LaserTrimProcessor:
                 unit_length_cell = "K1"
                 resistance_cell = "R1"
 
+            # Log what we're looking for
+            self.logger.debug(f"Extracting properties for {system_type.value} from sheets: {sheets}")
+
             # Extract unit length
             if 'untrimmed' in sheets:
                 unit_length = extract_cell_value(
@@ -726,6 +862,7 @@ class LaserTrimProcessor:
                 )
                 if unit_length and isinstance(unit_length, (int, float)):
                     props.unit_length = float(unit_length)
+                    self.logger.debug(f"Found unit_length: {props.unit_length}")
 
             # Extract resistances
             if 'untrimmed' in sheets:
@@ -734,6 +871,7 @@ class LaserTrimProcessor:
                 )
                 if untrimmed_r and isinstance(untrimmed_r, (int, float)):
                     props.untrimmed_resistance = float(untrimmed_r)
+                    self.logger.debug(f"Found untrimmed_resistance: {props.untrimmed_resistance}")
 
             if 'trimmed' in sheets:
                 trimmed_r = extract_cell_value(
@@ -741,6 +879,7 @@ class LaserTrimProcessor:
                 )
                 if trimmed_r and isinstance(trimmed_r, (int, float)):
                     props.trimmed_resistance = float(trimmed_r)
+                    self.logger.debug(f"Found trimmed_resistance: {props.trimmed_resistance}")
 
             return props
 
@@ -753,12 +892,18 @@ class LaserTrimProcessor:
             model: str
     ) -> SigmaAnalysis:
         """Perform sigma gradient analysis."""
-        return await self.sigma_analyzer.analyze(
-            positions=data.get('positions', []),
-            errors=data.get('errors', []),
-            unit_props=unit_props,
-            model=model
-        )
+        # Prepare data dictionary for analyzer
+        analysis_data = {
+            'positions': data.get('positions', []),
+            'errors': data.get('errors', []),
+            'upper_limits': data.get('upper_limits', []),
+            'lower_limits': data.get('lower_limits', []),
+            'model': model,
+            'unit_length': unit_props.unit_length,
+            'travel_length': data.get('travel_length', 0)
+        }
+        
+        return self.sigma_analyzer.analyze(analysis_data)
 
     async def _analyze_linearity(
             self,
@@ -766,18 +911,29 @@ class LaserTrimProcessor:
             sigma_analysis: SigmaAnalysis
     ) -> LinearityAnalysis:
         """Perform linearity analysis."""
-        return await self.linearity_analyzer.analyze(
-            positions=data.get('positions', []),
-            errors=data.get('errors', []),
-            spec=sigma_analysis.sigma_threshold
-        )
+        # Prepare data dictionary for analyzer
+        analysis_data = {
+            'positions': data.get('positions', []),
+            'errors': data.get('errors', []),
+            'upper_limits': data.get('upper_limits', []),
+            'lower_limits': data.get('lower_limits', []),
+            'linearity_spec': sigma_analysis.sigma_threshold
+        }
+        
+        return self.linearity_analyzer.analyze(analysis_data)
 
     async def _analyze_resistance(
             self,
             unit_props: UnitProperties
     ) -> ResistanceAnalysis:
         """Perform resistance analysis."""
-        return await self.resistance_analyzer.analyze(unit_props)
+        # Prepare data dictionary for analyzer
+        analysis_data = {
+            'untrimmed_resistance': unit_props.untrimmed_resistance,
+            'trimmed_resistance': unit_props.trimmed_resistance
+        }
+        
+        return self.resistance_analyzer.analyze(analysis_data)
 
     async def _analyze_trim_effectiveness(
             self,
@@ -823,29 +979,44 @@ class LaserTrimProcessor:
         # Simple failure probability calculation
         # In practice, this would use ML models
 
-        # Factors
-        sigma_factor = sigma_analysis.sigma_ratio
-        linearity_factor = (
-                linearity_analysis.final_linearity_error_shifted / linearity_analysis.linearity_spec
-        )
+        # Factors - ensure they are between 0 and 1
+        # Sigma factor: only high if approaching or exceeding threshold
+        sigma_factor = min(sigma_analysis.sigma_ratio, 1.0)
+        
+        # Linearity factor: ratio of error to spec
+        linearity_factor = 0.0
+        if linearity_analysis.linearity_spec > 0:
+            linearity_factor = min(
+                linearity_analysis.final_linearity_error_shifted / linearity_analysis.linearity_spec,
+                1.0
+            )
 
-        # Resistance factor
-        resistance_factor = 0.5  # Default
-        if unit_props.resistance_change_percent:
-            resistance_factor = min(abs(unit_props.resistance_change_percent) / 10, 1.0)
+        # Resistance factor: only significant if change is large
+        resistance_factor = 0.0  # Default
+        if unit_props.resistance_change_percent is not None:
+            # Only consider it a problem if resistance change is > 5%
+            resistance_factor = min(abs(unit_props.resistance_change_percent) / 10.0, 1.0)
 
-        # Combine factors
+        # Weighted combination - adjusted for more reasonable probabilities
         failure_probability = (
-                0.5 * sigma_factor +
-                0.3 * linearity_factor +
-                0.2 * resistance_factor
+                0.4 * sigma_factor +  # 40% weight on sigma
+                0.4 * linearity_factor +  # 40% weight on linearity
+                0.2 * resistance_factor  # 20% weight on resistance
         )
+        
+        # Apply a scaling factor to make probabilities more reasonable
+        # Most passing units should have low failure probability
+        if sigma_analysis.sigma_pass and linearity_analysis.linearity_pass:
+            # Scale down for passing units
+            failure_probability *= 0.5
+        
         failure_probability = min(max(failure_probability, 0), 1)
 
-        # Determine risk category
-        if failure_probability > self.config.analysis.high_risk_threshold:
+        # Determine risk category with adjusted thresholds
+        # Use stricter criteria for HIGH risk
+        if failure_probability > 0.8:  # Only very bad units are HIGH risk
             risk_category = RiskCategory.HIGH
-        elif failure_probability > self.config.analysis.low_risk_threshold:
+        elif failure_probability > 0.5:  # Medium risk for moderate issues  
             risk_category = RiskCategory.MEDIUM
         else:
             risk_category = RiskCategory.LOW
@@ -896,9 +1067,14 @@ class LaserTrimProcessor:
             output_dir: Path
     ) -> None:
         """Generate analysis plots."""
+        loop = asyncio.get_event_loop()
+        
         for track_id, track_data in result.tracks.items():
             try:
-                plot_path = await create_analysis_plot(
+                # Run blocking plot creation in thread pool
+                plot_path = await loop.run_in_executor(
+                    None,
+                    create_analysis_plot,
                     track_data,
                     output_dir,
                     f"{result.metadata.filename}_{track_id}",

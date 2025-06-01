@@ -11,6 +11,14 @@ from datetime import datetime
 import threading
 from typing import Optional, Dict, List, Any, Callable
 from pathlib import Path
+from dataclasses import dataclass
+
+# Import TkinterDnD2 for drag and drop support
+try:
+    from tkinterdnd2 import TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
 
 # For modern UI elements
 try:
@@ -25,14 +33,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 # Import from your new structure
-from laser_trim_analyzer.core.config import Config
-from laser_trim_analyzer.core.constants import APP_NAME
+from laser_trim_analyzer.core.config import get_config, Config
+from laser_trim_analyzer.core.constants import APP_NAME, DEFAULT_OUTPUT_FOLDER
 
-# Define the default output folder since it's not in constants
-DEFAULT_OUTPUT_FOLDER = "LaserTrimResults"
 from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata
 from laser_trim_analyzer.database.manager import DatabaseManager
-from laser_trim_analyzer.analysis.base import BaseAnalyzer
 
 # Import widgets and dialogs
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
@@ -42,21 +47,28 @@ from laser_trim_analyzer.gui.dialogs.settings_dialog import SettingsDialog
 
 # Try to import ML modules
 try:
-    from laser_trim_analyzer.ml.predictors import FailurePredictor
-    from laser_trim_analyzer.ml.models import ThresholdOptimizer
-
+    from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer
     HAS_ML = True
 except ImportError:
     HAS_ML = False
 
 # Try to import API client
 try:
-    from laser_trim_analyzer.api.client import AIServiceClient
-
+    from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient
     HAS_API = True
 except ImportError:
     HAS_API = False
 
+# Define FileInfo dataclass
+@dataclass
+class FileInfo:
+    """Information about a file to be processed"""
+    path: Path
+    name: str
+    size: int
+    status: str = "pending"
+    result: Optional[Any] = None
+    error: Optional[str] = None
 
 class MainWindow:
     """Main application window for Laser Trim Analyzer"""
@@ -67,8 +79,14 @@ class MainWindow:
         Args:
             config: Application configuration object
         """
-        self.root = tk.Tk()
-        self.config = config or Config()
+        # Use TkinterDnD.Tk() if available, otherwise fallback to regular Tk
+        if HAS_DND:
+            self.root = TkinterDnD.Tk()
+        else:
+            self.root = tk.Tk()
+            print("Warning: tkinterdnd2 not available, drag and drop will be disabled")
+            
+        self.config = config or get_config()
 
         # Setup window
         self._setup_window()
@@ -97,7 +115,7 @@ class MainWindow:
                 pass
 
         # Define color scheme from config or defaults
-        self.colors = self.config.ui.colors if hasattr(self.config, 'ui') else {
+        self.colors = {
             'bg_primary': '#f0f2f5',
             'bg_secondary': '#ffffff',
             'bg_dark': '#1a1a2e',
@@ -121,9 +139,9 @@ class MainWindow:
 
         # Processing options
         self.processing_mode = tk.StringVar(value="detail")
-        self.enable_database = tk.BooleanVar(value=True)
-        self.enable_ml = tk.BooleanVar(value=HAS_ML)
-        self.enable_api = tk.BooleanVar(value=HAS_API)
+        self.enable_database = tk.BooleanVar(value=self.config.database.enabled)
+        self.enable_ml = tk.BooleanVar(value=self.config.ml.enabled and HAS_ML)
+        self.enable_api = tk.BooleanVar(value=self.config.api.enabled and HAS_API)
 
         # Status variables
         self.db_status = tk.StringVar(value="Disconnected")
@@ -178,9 +196,23 @@ class MainWindow:
         # Initialize database
         if self.enable_database.get():
             try:
-                db_path = self.config.database.path if hasattr(self.config, 'database') else \
-                    Path.home() / '.laser_trim_analyzer' / 'analysis.db'
-                self.db_manager = DatabaseManager(str(db_path))
+                if hasattr(self.config, 'database') and hasattr(self.config.database, 'path'):
+                    db_path = self.config.database.path
+                    # Convert to string and check if it's already a URL
+                    db_path_str = str(db_path)
+                    if not db_path_str.startswith(('sqlite://', 'postgresql://', 'mysql://')):
+                        # Expand user path if needed
+                        if db_path_str.startswith('~'):
+                            db_path = Path(db_path_str).expanduser()
+                        else:
+                            db_path = Path(db_path_str)
+                        db_path_str = f"sqlite:///{db_path.absolute()}"
+                else:
+                    # Default path
+                    db_path = Path.home() / '.laser_trim_analyzer' / 'analysis.db'
+                    db_path_str = f"sqlite:///{db_path.absolute()}"
+                
+                self.db_manager = DatabaseManager(db_path_str)
                 self.db_status.set("Connected")
             except Exception as e:
                 self.db_status.set("Error")
@@ -189,7 +221,10 @@ class MainWindow:
         # Initialize ML
         if HAS_ML and self.enable_ml.get():
             try:
-                self.ml_predictor = FailurePredictor()
+                # Pass config to FailurePredictor
+                from laser_trim_analyzer.ml.engine import ModelConfig
+                ml_config = ModelConfig()  # Default config
+                self.ml_predictor = FailurePredictor(ml_config)
                 self.ml_status.set("Ready")
             except Exception as e:
                 self.ml_status.set("Error")
@@ -198,9 +233,9 @@ class MainWindow:
         # Initialize API client
         if HAS_API and self.enable_api.get():
             try:
-                api_key = self.config.api.key if hasattr(self.config, 'api') else None
+                api_key = self.config.api.api_key if hasattr(self.config.api, 'api_key') else None
                 if api_key:
-                    self.api_client = AIServiceClient(api_key)
+                    self.api_client = AIServiceClient(api_key=api_key)
                     self.api_status.set("Connected")
                 else:
                     self.api_status.set("No API Key")
@@ -210,7 +245,9 @@ class MainWindow:
 
         # Initialize analyzer
         try:
-            self.analyzer = BaseAnalyzer(config=self.config)
+            # Don't initialize BaseAnalyzer here - it's abstract
+            # Specific analyzers will be created when needed
+            self.analyzer = None
         except Exception as e:
             print(f"Analyzer initialization error: {e}")
 
@@ -333,8 +370,19 @@ class MainWindow:
         """Create status bar at bottom"""
         from laser_trim_analyzer.gui.widgets.status_bar import StatusBar
 
-        self.status_bar = StatusBar(parent, self.colors)
+        # Map colors to what StatusBar expects
+        status_bar_colors = {
+            'bg': self.colors['bg_primary'],
+            'border': self.colors['border'],
+            'text': self.colors['text_primary'],
+            'text_secondary': self.colors['text_secondary']
+        }
+        
+        self.status_bar = StatusBar(parent, status_bar_colors)
         self.status_bar.pack(fill='x', side='bottom')
+
+        # Create default indicators
+        self.status_bar.create_default_indicators()
 
         # Update status indicators
         self.status_bar.update_status('database', self.db_status.get())
@@ -377,11 +425,91 @@ class MainWindow:
 
     def _export_report(self):
         """Export report action"""
-        if hasattr(self.pages.get(self.current_page.get()), 'export_report'):
-            self.pages[self.current_page.get()].export_report()
+        current_page_name = self.current_page.get()
+        current_page = self.pages.get(current_page_name)
+        
+        # Check if current page has export capability
+        if hasattr(current_page, 'export_results'):
+            current_page.export_results()
+        elif current_page_name == 'analysis' and hasattr(current_page, 'export_file_results'):
+            # For analysis page, export all loaded files
+            messagebox.showinfo("Export", 
+                               "Use the Export button on individual files or wait for analysis completion to export all results")
+        elif current_page_name == 'home':
+            # For home page, offer to export today's results
+            if self.db_manager:
+                self._export_today_results()
+            else:
+                messagebox.showwarning("No Database", "Database connection required for export")
         else:
             messagebox.showinfo("Export",
-                                "Export is available from the Analysis and Historical pages")
+                                f"Export is not available from the {current_page_name.replace('_', ' ').title()} page.\n\n"
+                                "Export is available from:\n"
+                                "• Analysis page (after running analysis)\n"
+                                "• Historical Data page\n"
+                                "• Home page (today's results)")
+    
+    def _export_today_results(self):
+        """Export today's analysis results"""
+        try:
+            from datetime import datetime, timedelta
+            import pandas as pd
+            
+            # Get today's results from database
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            results = self.db_manager.get_historical_data(
+                start_date=today_start,
+                include_tracks=True
+            )
+            
+            if not results:
+                messagebox.showinfo("No Data", "No analysis results found for today")
+                return
+            
+            # Ask for save location
+            filename = filedialog.asksaveasfilename(
+                defaultextension='.xlsx',
+                filetypes=[('Excel files', '*.xlsx'), ('CSV files', '*.csv')],
+                initialfile=f'analysis_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            )
+            
+            if not filename:
+                return
+            
+            # Convert to DataFrame
+            data = []
+            for result in results:
+                # Get primary track data
+                primary_track = None
+                if result.tracks:
+                    primary_track = result.tracks[0]
+                
+                row = {
+                    'Date': result.file_date if result.file_date else result.timestamp,
+                    'Model': result.model,
+                    'Serial': result.serial,
+                    'System': result.system.value,
+                    'Status': result.overall_status.value,
+                    'Sigma Gradient': primary_track.sigma_gradient if primary_track else None,
+                    'Sigma Pass': primary_track.sigma_pass if primary_track else None,
+                    'Linearity Pass': primary_track.linearity_pass if primary_track else None,
+                    'Risk Category': primary_track.risk_category.value if primary_track and primary_track.risk_category else None,
+                    'Processing Time': result.processing_time
+                }
+                data.append(row)
+            
+            df = pd.DataFrame(data)
+            
+            # Save to file
+            if filename.endswith('.xlsx'):
+                df.to_excel(filename, index=False)
+            else:
+                df.to_csv(filename, index=False)
+            
+            messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
 
     def _show_settings(self):
         """Show settings dialog"""

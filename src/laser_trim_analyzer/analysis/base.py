@@ -129,6 +129,18 @@ class BaseAnalyzer(ABC):
             Filtered data array
         """
         try:
+            # Convert to numpy array
+            data_array = np.array(data)
+            
+            # Check if data is too short for filtering
+            min_length = 3 * order  # Rule of thumb for filtfilt
+            if len(data_array) < min_length:
+                self.logger.warning(
+                    f"Data length ({len(data_array)}) too short for order {order} Butterworth filter. "
+                    f"Returning original data."
+                )
+                return data_array
+            
             # Calculate normalized cutoff frequency
             nyquist_freq = self.analysis_config.filter_sampling_frequency / 2
             normalized_cutoff = self.analysis_config.filter_cutoff_frequency / nyquist_freq
@@ -138,15 +150,24 @@ class BaseAnalyzer(ABC):
                 self.logger.warning(
                     f"Cutoff frequency {self.analysis_config.filter_cutoff_frequency} Hz "
                     f"is too high for sampling frequency {self.analysis_config.filter_sampling_frequency} Hz. "
-                    "Using 0.9 * Nyquist frequency."
+                    "Using 0.4 * Nyquist frequency."
                 )
-                normalized_cutoff = 0.9
+                normalized_cutoff = 0.4  # More conservative for stability
+            elif normalized_cutoff > 0.95:
+                # Silently adjust if close to Nyquist
+                normalized_cutoff = 0.4
 
             # Design filter
             b, a = signal.butter(order, normalized_cutoff, btype='low', analog=False)
 
             # Apply filter (using filtfilt for zero phase shift)
-            filtered_data = signal.filtfilt(b, a, data)
+            # Use padding for short sequences
+            if len(data_array) < 50:
+                # For very short sequences, use simpler filtering
+                filtered_data = signal.lfilter(b, a, data_array)
+            else:
+                # For longer sequences, use filtfilt with padding
+                filtered_data = signal.filtfilt(b, a, data_array, padtype='odd', padlen=min(len(data_array)//4, 50))
 
             return filtered_data
 

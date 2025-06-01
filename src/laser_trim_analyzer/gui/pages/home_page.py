@@ -103,9 +103,7 @@ class HomePage(BasePage):
             title="Units Tested",
             value=0,
             unit="",
-            thresholds=None,  # No thresholds for count
-            show_sparkline=False,
-            on_click=lambda: self.main_window._show_page('analysis')
+            color_scheme="default"
         )
         self.stat_cards['units_tested'].grid(row=0, column=0, padx=5, pady=5, sticky='ew')
 
@@ -114,8 +112,7 @@ class HomePage(BasePage):
             title="Pass Rate",
             value=0.0,
             unit="%",
-            thresholds={'good': 95, 'warning': 90, 'critical': 80},
-            on_click=lambda: self.main_window._show_page('historical')
+            color_scheme="success"
         )
         self.stat_cards['pass_rate'].grid(row=0, column=1, padx=5, pady=5, sticky='ew')
 
@@ -124,8 +121,7 @@ class HomePage(BasePage):
             title="Avg Sigma Gradient",
             value=0.0,
             unit="",
-            thresholds={'good': 0.02, 'warning': 0.03, 'critical': 0.04},
-            on_click=lambda: self.main_window._show_page('analysis')
+            color_scheme="warning"
         )
         self.stat_cards['avg_sigma'].grid(row=1, column=0, padx=5, pady=5, sticky='ew')
 
@@ -134,8 +130,7 @@ class HomePage(BasePage):
             title="High Risk Units",
             value=0,
             unit="",
-            thresholds={'good': 2, 'warning': 5, 'critical': 10},
-            on_click=lambda: self._show_high_risk_details()
+            color_scheme="danger"
         )
         self.stat_cards['high_risk'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
 
@@ -385,10 +380,10 @@ class HomePage(BasePage):
                    activities: List[Dict[str, Any]]):
         """Update UI with refreshed data."""
         # Update stat cards
-        self.stat_cards['units_tested'].set_value(stats['units_tested'])
-        self.stat_cards['pass_rate'].set_value(stats['pass_rate'])
-        self.stat_cards['avg_sigma'].set_value(stats['avg_sigma'])
-        self.stat_cards['high_risk'].set_value(stats['high_risk'])
+        self.stat_cards['units_tested'].update_value(stats['units_tested'])
+        self.stat_cards['pass_rate'].update_value(stats['pass_rate'])
+        self.stat_cards['avg_sigma'].update_value(stats['avg_sigma'])
+        self.stat_cards['high_risk'].update_value(stats['high_risk'])
 
         # Update trend chart
         if trend_data:

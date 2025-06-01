@@ -1,0 +1,59 @@
+app_name: "Laser Trim Analyzer"
+version: "2.0.0"
+debug: false
+
+database:
+  enabled: true
+  path: "~/.laser_trim_analyzer/analysis.db"
+  echo: false
+  pool_size: 5
+
+processing:
+  max_workers: 4
+  generate_plots: true
+  plot_dpi: 150
+  cache_enabled: true
+  cache_ttl: 3600
+  file_extensions: [".xlsx", ".xls"]
+  skip_patterns: ["~$*", ".*", "_backup_*"]
+
+analysis:
+  sigma_scaling_factor: 24.0
+  matlab_gradient_step: 3
+  filter_sampling_frequency: 100
+  filter_cutoff_frequency: 40
+  default_num_zones: 5
+  high_risk_threshold: 0.7
+  low_risk_threshold: 0.3
+
+ml:
+  enabled: true
+  model_path: "~/.laser_trim_analyzer/models"
+  failure_prediction_enabled: true
+  failure_prediction_confidence_threshold: 0.8
+  threshold_optimization_enabled: true
+  threshold_optimization_min_samples: 100
+  retrain_interval_days: 30
+  min_training_samples: 1000
+
+api:
+  enabled: false
+  base_url: "http://localhost:8000"
+  timeout: 30
+  max_retries: 3
+  enable_anomaly_detection: true
+  enable_quality_predictions: true
+  enable_maintenance_suggestions: true
+
+gui:
+  theme: "clam"
+  window_width: 1200
+  window_height: 900
+  show_historical_tab: true
+  show_ml_insights: true
+  show_batch_processing: true
+  autosave_enabled: true
+  autosave_interval: 300
+
+data_directory: "~/LaserTrimResults"
+log_directory: "~/.laser_trim_analyzer/logs" 

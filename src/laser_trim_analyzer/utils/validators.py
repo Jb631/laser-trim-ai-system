@@ -89,10 +89,28 @@ def validate_excel_file(
 
     # Try to read Excel file
     try:
-        excel_file = pd.ExcelFile(file_path)
+        # Try openpyxl first for xlsx files
+        try:
+            excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+        except Exception as openpyxl_error:
+            # Try xlrd for xls files
+            try:
+                excel_file = pd.ExcelFile(file_path, engine='xlrd')
+            except Exception as xlrd_error:
+                # File might be corrupted or not a real Excel file
+                result.add_error(f"Cannot read Excel file. It may be corrupted or not a valid Excel file. "
+                               f"openpyxl error: {str(openpyxl_error)}, "
+                               f"xlrd error: {str(xlrd_error)}")
+                return result
+                
         sheet_names = excel_file.sheet_names
         result.metadata['sheet_names'] = sheet_names
         result.metadata['sheet_count'] = len(sheet_names)
+
+        # Check if file has any sheets
+        if not sheet_names:
+            result.add_error("Excel file contains no sheets")
+            return result
 
         # Check for required sheets
         if required_sheets:
