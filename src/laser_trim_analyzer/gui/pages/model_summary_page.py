@@ -25,6 +25,7 @@ from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
 
 class ModelSummaryPage(BasePage):
@@ -447,34 +448,19 @@ class ModelSummaryPage(BasePage):
             data_rows = []
             for analysis in historical_data:
                 for track in analysis.tracks:
-                    # Handle datetime conversion properly
-                    trim_date = analysis.file_date or analysis.timestamp
-                    if isinstance(trim_date, str):
-                        try:
-                            # Try multiple datetime formats
-                            for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S.%f']:
-                                try:
-                                    trim_date = datetime.strptime(trim_date, fmt)
-                                    break
-                                except ValueError:
-                                    continue
-                            else:
-                                # If all formats fail, use current time
-                                trim_date = datetime.now()
-                        except:
-                            trim_date = datetime.now()
-                    elif not isinstance(trim_date, datetime):
-                        trim_date = datetime.now()
+                    # Use the dates from the database that were extracted from filename in the core processor
+                    # The core processor now properly extracts dates from filenames during initial processing
+                    trim_date = safe_datetime_convert(analysis.file_date)
+                    timestamp = safe_datetime_convert(analysis.timestamp)
                     
-                    # Handle timestamp conversion
-                    timestamp = analysis.timestamp
-                    if isinstance(timestamp, str):
-                        try:
-                            timestamp = datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
-                        except:
-                            timestamp = datetime.now()
-                    elif not isinstance(timestamp, datetime):
-                        timestamp = datetime.now()
+                    # Ensure we have valid datetime objects (fallback to current time if needed)
+                    if not trim_date:
+                        trim_date = datetime.now()
+                        self.logger.warning(f"Could not parse file_date for {analysis.filename}, using current time")
+                    
+                    if not timestamp:
+                        timestamp = trim_date  # Use trim_date as fallback
+                        self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
                     
                     row = {
                         'analysis_id': analysis.id,
@@ -510,11 +496,19 @@ class ModelSummaryPage(BasePage):
 
             self.model_data = pd.DataFrame(data_rows)
             
-            # Log data summary
+            # Log data summary with detailed date information for debugging
             self.logger.info(f"Loaded {len(self.model_data)} data rows for model {model}")
             if len(self.model_data) > 0:
                 self.logger.info(f"Date range: {self.model_data['trim_date'].min()} to {self.model_data['trim_date'].max()}")
                 self.logger.info(f"Columns: {list(self.model_data.columns)}")
+                
+                # Add specific debugging for model 8340-1
+                if model == "8340-1":
+                    self.logger.info(f"=== DEBUG INFO FOR MODEL 8340-1 ===")
+                    sample_dates = self.model_data[['filename', 'trim_date', 'timestamp']].head(10)
+                    for idx, row in sample_dates.iterrows():
+                        self.logger.info(f"File: {row['filename']}, Trim Date: {row['trim_date']}, Timestamp: {row['timestamp']}")
+                    self.logger.info(f"=== END DEBUG INFO ===")
             
             # Update UI in main thread
             self.after(0, self._update_model_display)
@@ -681,9 +675,44 @@ class ModelSummaryPage(BasePage):
                     alpha=0.6
                 )
                 
-                # Add legend for pass/fail colors
+                # Fix date formatting on x-axis
                 try:
                     ax = self.sigma_chart.figure.axes[0]
+                    
+                    # Import date formatting utilities
+                    from matplotlib.dates import DateFormatter, MonthLocator, DayLocator
+                    import matplotlib.dates as mdates
+                    
+                    # Convert datetime objects to matplotlib dates for proper formatting
+                    x_dates_mpl = [mdates.date2num(d) for d in x_data]
+                    
+                    # Set date formatter based on data range
+                    date_range = (max(x_data) - min(x_data)).days
+                    
+                    if date_range <= 30:  # Less than a month
+                        ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
+                        ax.xaxis.set_major_locator(DayLocator(interval=max(1, date_range // 10)))
+                    elif date_range <= 90:  # Less than 3 months
+                        ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
+                        ax.xaxis.set_major_locator(DayLocator(interval=max(1, date_range // 8)))
+                    else:  # More than 3 months
+                        ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+                        ax.xaxis.set_major_locator(MonthLocator())
+                    
+                    # Rotate dates for better readability
+                    ax.tick_params(axis='x', rotation=45)
+                    
+                    # Ensure the x-axis uses proper date formatting
+                    ax.xaxis_date()
+                    
+                    # Ensure tight layout
+                    self.sigma_chart.figure.tight_layout()
+                    
+                except Exception as e:
+                    self.logger.warning(f"Could not format dates on trend chart: {e}")
+                
+                # Add legend for pass/fail colors
+                try:
                     import matplotlib.patches as mpatches
                     pass_patch = mpatches.Patch(color=self.sigma_chart.qa_colors['pass'], label='Pass')
                     fail_patch = mpatches.Patch(color=self.sigma_chart.qa_colors['fail'], label='Fail')
@@ -695,7 +724,7 @@ class ModelSummaryPage(BasePage):
                 if len(df) > 2:  # Need at least 3 points for trend
                     try:
                         # Convert dates to numeric for trend calculation
-                        x_numeric = [(d - df['trim_date'].min()).days for d in df['trim_date']]
+                        x_numeric = [mdates.date2num(d) for d in x_data]
                         y_numeric = df['sigma_gradient'].values
                         
                         # Check for valid data
@@ -711,9 +740,12 @@ class ModelSummaryPage(BasePage):
                                     z = np.polyfit(x_clean, y_clean, 1)
                                     trend_line = np.poly1d(z)
                                     
+                                    # Create trend line data using original x data for proper plotting
+                                    trend_y = [trend_line(x) for x in x_numeric]
+                                    
                                     self.sigma_chart.plot_line(
                                         x_data=x_data,
-                                        y_data=[trend_line(x) for x in x_numeric],
+                                        y_data=trend_y,
                                         label="Trend",
                                         color='trend',
                                         linewidth=2
@@ -735,13 +767,75 @@ class ModelSummaryPage(BasePage):
                 try:
                     daily_avg = df.groupby(df['trim_date'].dt.date)['sigma_gradient'].mean().reset_index()
                     
+                    # Convert date column back to datetime for proper plotting
+                    daily_avg['trim_date'] = pd.to_datetime(daily_avg['trim_date'])
+                    
+                    x_data_line = daily_avg['trim_date'].tolist()
+                    y_data_line = daily_avg['sigma_gradient'].tolist()
+                    
                     self.sigma_chart.plot_line(
-                        x_data=daily_avg['trim_date'].tolist(),
-                        y_data=daily_avg['sigma_gradient'].tolist(),
+                        x_data=x_data_line,
+                        y_data=y_data_line,
                         label="Daily Average",
                         color='primary',
                         marker='o'
                     )
+                    
+                    # Fix date formatting on x-axis for line plot
+                    try:
+                        ax = self.sigma_chart.figure.axes[0]
+                        from matplotlib.dates import DateFormatter, MonthLocator, DayLocator
+                        import matplotlib.dates as mdates
+                        
+                        # Ensure x-axis uses proper date formatting
+                        ax.xaxis_date()
+                        
+                        date_range = len(daily_avg)
+                        
+                        if date_range <= 30:
+                            ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
+                        else:
+                            ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+                            ax.xaxis.set_major_locator(MonthLocator())
+                        
+                        ax.tick_params(axis='x', rotation=45)
+                        self.sigma_chart.figure.tight_layout()
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Could not format dates on line chart: {e}")
+                    
+                    # Add trend line to line plot
+                    if len(x_data_line) > 2:
+                        try:
+                            x_numeric = [mdates.date2num(d) for d in x_data_line]
+                            y_numeric = np.array(y_data_line)
+                            
+                            # Filter out any NaN values
+                            valid_mask = ~(np.isnan(x_numeric) | np.isnan(y_numeric))
+                            x_clean = np.array(x_numeric)[valid_mask]
+                            y_clean = y_numeric[valid_mask]
+                            
+                            if len(x_clean) > 2:
+                                try:
+                                    z = np.polyfit(x_clean, y_clean, 1)
+                                    trend_line = np.poly1d(z)
+                                    trend_y = [trend_line(x) for x in x_numeric]
+                                    
+                                    self.sigma_chart.plot_line(
+                                        x_data=x_data_line,
+                                        y_data=trend_y,
+                                        label="Trend",
+                                        color='trend',
+                                        linewidth=2,
+                                        linestyle='--'
+                                    )
+                                except (np.linalg.LinAlgError, np.RankWarning):
+                                    self.logger.warning("Could not compute trend line for line plot")
+                                except Exception as e:
+                                    self.logger.warning(f"Trend line calculation failed for line plot: {e}")
+                        except Exception as e:
+                            self.logger.error(f"Error calculating trend line for line plot: {e}")
+                        
                 except Exception as e:
                     self.logger.error(f"Error creating line plot: {e}")
 
@@ -939,12 +1033,14 @@ class ModelSummaryPage(BasePage):
             return
 
         try:
-            # Get save location
+            # Get save location with proper file dialog
+            initial_filename = f"model_summary_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            
             filename = filedialog.asksaveasfilename(
+                title="Export Model Summary",
                 defaultextension=".xlsx",
                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-                title="Export Model Summary",
-                initialname=f"model_summary_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                initialfile=initial_filename
             )
             
             if not filename:
@@ -957,39 +1053,47 @@ class ModelSummaryPage(BasePage):
                 
                 # Summary statistics
                 summary_stats = self._calculate_summary_stats()
-                summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Value'])
-                summary_df.to_excel(writer, sheet_name='Summary Statistics', index=False)
+                if summary_stats:
+                    summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Value'])
+                    summary_df.to_excel(writer, sheet_name='Summary Statistics', index=False)
                 
                 # Daily aggregates
-                daily_agg = self.model_data.groupby(
-                    self.model_data['trim_date'].dt.date
-                ).agg({
-                    'sigma_gradient': ['count', 'mean', 'std', 'min', 'max'],
-                    'track_status': lambda x: (x == 'Pass').mean() * 100,
-                    'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 0,
-                    'resistance_change_percent': 'mean'
-                }).round(4)
-                
-                daily_agg.columns = ['_'.join(col).strip() for col in daily_agg.columns]
-                daily_agg.to_excel(writer, sheet_name='Daily Summary')
+                try:
+                    daily_agg = self.model_data.groupby(
+                        self.model_data['trim_date'].dt.date
+                    ).agg({
+                        'sigma_gradient': ['count', 'mean', 'std', 'min', 'max'],
+                        'track_status': lambda x: (x == 'Pass').mean() * 100 if len(x) > 0 else 0,
+                        'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 0,
+                        'resistance_change_percent': lambda x: x.mean() if x.notna().any() else 0
+                    }).round(4)
+                    
+                    daily_agg.columns = ['_'.join(str(col)).strip() for col in daily_agg.columns]
+                    daily_agg.to_excel(writer, sheet_name='Daily Summary')
+                except Exception as e:
+                    self.logger.warning(f"Could not create daily summary: {e}")
                 
                 # Monthly aggregates
-                monthly_agg = self.model_data.groupby(
-                    self.model_data['trim_date'].dt.to_period('M')
-                ).agg({
-                    'sigma_gradient': ['count', 'mean', 'std'],
-                    'track_status': lambda x: (x == 'Pass').mean() * 100,
-                    'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 0,
-                }).round(4)
-                
-                monthly_agg.columns = ['_'.join(col).strip() for col in monthly_agg.columns]
-                monthly_agg.to_excel(writer, sheet_name='Monthly Summary')
+                try:
+                    monthly_agg = self.model_data.groupby(
+                        self.model_data['trim_date'].dt.to_period('M')
+                    ).agg({
+                        'sigma_gradient': ['count', 'mean', 'std'],
+                        'track_status': lambda x: (x == 'Pass').mean() * 100 if len(x) > 0 else 0,
+                        'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 0,
+                    }).round(4)
+                    
+                    monthly_agg.columns = ['_'.join(str(col)).strip() for col in monthly_agg.columns]
+                    monthly_agg.to_excel(writer, sheet_name='Monthly Summary')
+                except Exception as e:
+                    self.logger.warning(f"Could not create monthly summary: {e}")
 
             messagebox.showinfo("Export Complete", f"Model summary exported to:\n{filename}")
             self.logger.info(f"Exported model summary to {filename}")
 
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
+            error_msg = f"Failed to export data: {str(e)}"
+            messagebox.showerror("Export Error", error_msg)
             self.logger.error(f"Export failed: {e}")
 
     def _export_chart_data(self):
@@ -999,12 +1103,14 @@ class ModelSummaryPage(BasePage):
             return
 
         try:
-            # Get save location
+            # Get save location with proper file dialog
+            initial_filename = f"chart_data_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            
             filename = filedialog.asksaveasfilename(
+                title="Export Chart Data",
                 defaultextension=".csv",
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                title="Export Chart Data",
-                initialname=f"chart_data_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                initialfile=initial_filename
             )
             
             if not filename:
@@ -1015,9 +1121,12 @@ class ModelSummaryPage(BasePage):
             chart_data.to_csv(filename, index=False)
             
             messagebox.showinfo("Export Complete", f"Chart data exported to:\n{filename}")
+            self.logger.info(f"Exported chart data to {filename}")
 
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export chart data:\n{str(e)}")
+            error_msg = f"Failed to export chart data: {str(e)}"
+            messagebox.showerror("Export Error", error_msg)
+            self.logger.error(f"Chart data export failed: {e}")
 
     def _generate_pdf_report(self):
         """Generate PDF report with charts and metrics."""
@@ -1029,12 +1138,14 @@ class ModelSummaryPage(BasePage):
             from matplotlib.backends.backend_pdf import PdfPages
             import matplotlib.pyplot as plt
             
-            # Get save location
+            # Get save location with proper file dialog
+            initial_filename = f"model_report_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            
             filename = filedialog.asksaveasfilename(
+                title="Generate PDF Report",
                 defaultextension=".pdf",
                 filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
-                title="Generate PDF Report",
-                initialname=f"model_report_{self.selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                initialfile=initial_filename
             )
             
             if not filename:
@@ -1046,60 +1157,76 @@ class ModelSummaryPage(BasePage):
                 fig, axes = plt.subplots(2, 2, figsize=(11, 8.5))
                 fig.suptitle(f'Model {self.selected_model} - Quality Analysis Report', fontsize=16, fontweight='bold')
                 
-                # Summary statistics table
-                ax = axes[0, 0]
-                ax.axis('tight')
-                ax.axis('off')
-                ax.set_title('Key Metrics', fontweight='bold')
+                try:
+                    # Summary statistics table
+                    ax = axes[0, 0]
+                    ax.axis('tight')
+                    ax.axis('off')
+                    ax.set_title('Key Metrics', fontweight='bold')
+                    
+                    stats = self._calculate_summary_stats()
+                    if stats:
+                        table_data = [[k, v] for k, v in list(stats.items())[:8]]
+                        table = ax.table(cellText=table_data, colLabels=['Metric', 'Value'],
+                                       cellLoc='left', loc='center')
+                        table.auto_set_font_size(False)
+                        table.set_fontsize(9)
+                except Exception as e:
+                    self.logger.warning(f"Could not create statistics table: {e}")
                 
-                stats = self._calculate_summary_stats()
-                table_data = [[k, v] for k, v in list(stats.items())[:8]]
-                table = ax.table(cellText=table_data, colLabels=['Metric', 'Value'],
-                               cellLoc='left', loc='center')
-                table.auto_set_font_size(False)
-                table.set_fontsize(9)
+                try:
+                    # Sigma trend plot
+                    ax = axes[0, 1]
+                    df_sorted = self.model_data.sort_values('trim_date')
+                    ax.scatter(df_sorted['trim_date'], df_sorted['sigma_gradient'], alpha=0.6, s=20)
+                    ax.set_title('Sigma Gradient Trend', fontweight='bold')
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel('Sigma Gradient')
+                    ax.tick_params(axis='x', rotation=45)
+                except Exception as e:
+                    self.logger.warning(f"Could not create sigma trend plot: {e}")
                 
-                # Sigma trend plot
-                ax = axes[0, 1]
-                df_sorted = self.model_data.sort_values('trim_date')
-                ax.scatter(df_sorted['trim_date'], df_sorted['sigma_gradient'], alpha=0.6, s=20)
-                ax.set_title('Sigma Gradient Trend', fontweight='bold')
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Sigma Gradient')
-                ax.tick_params(axis='x', rotation=45)
+                try:
+                    # Distribution histogram
+                    ax = axes[1, 0]
+                    sigma_clean = self.model_data['sigma_gradient'].dropna()
+                    if len(sigma_clean) > 0:
+                        ax.hist(sigma_clean, bins=min(20, len(sigma_clean)//2), alpha=0.7, edgecolor='black')
+                        ax.set_title('Sigma Distribution', fontweight='bold')
+                        ax.set_xlabel('Sigma Gradient')
+                        ax.set_ylabel('Frequency')
+                except Exception as e:
+                    self.logger.warning(f"Could not create distribution plot: {e}")
                 
-                # Distribution histogram
-                ax = axes[1, 0]
-                ax.hist(self.model_data['sigma_gradient'].dropna(), bins=20, alpha=0.7, edgecolor='black')
-                ax.set_title('Sigma Distribution', fontweight='bold')
-                ax.set_xlabel('Sigma Gradient')
-                ax.set_ylabel('Frequency')
-                
-                # Pass/Fail by month
-                ax = axes[1, 1]
-                monthly_stats = self.model_data.groupby(
-                    self.model_data['trim_date'].dt.to_period('M')
-                ).agg({'track_status': lambda x: (x == 'Pass').mean() * 100})
-                
-                months = [str(m) for m in monthly_stats.index]
-                pass_rates = monthly_stats['track_status'].values
-                bars = ax.bar(range(len(months)), pass_rates)
-                
-                # Color bars based on pass rate
-                for i, (bar, rate) in enumerate(zip(bars, pass_rates)):
-                    if rate >= 95:
-                        bar.set_color('green')
-                    elif rate >= 90:
-                        bar.set_color('orange')
-                    else:
-                        bar.set_color('red')
-                
-                ax.set_title('Monthly Pass Rate', fontweight='bold')
-                ax.set_xlabel('Month')
-                ax.set_ylabel('Pass Rate (%)')
-                ax.set_xticks(range(len(months)))
-                ax.set_xticklabels(months, rotation=45)
-                ax.set_ylim(0, 100)
+                try:
+                    # Pass/Fail by month
+                    ax = axes[1, 1]
+                    monthly_stats = self.model_data.groupby(
+                        self.model_data['trim_date'].dt.to_period('M')
+                    ).agg({'track_status': lambda x: (x == 'Pass').mean() * 100 if len(x) > 0 else 0})
+                    
+                    if len(monthly_stats) > 0:
+                        months = [str(m) for m in monthly_stats.index]
+                        pass_rates = monthly_stats['track_status'].values
+                        bars = ax.bar(range(len(months)), pass_rates)
+                        
+                        # Color bars based on pass rate
+                        for i, (bar, rate) in enumerate(zip(bars, pass_rates)):
+                            if rate >= 95:
+                                bar.set_color('green')
+                            elif rate >= 90:
+                                bar.set_color('orange')
+                            else:
+                                bar.set_color('red')
+                        
+                        ax.set_title('Monthly Pass Rate', fontweight='bold')
+                        ax.set_xlabel('Month')
+                        ax.set_ylabel('Pass Rate (%)')
+                        ax.set_xticks(range(len(months)))
+                        ax.set_xticklabels(months, rotation=45)
+                        ax.set_ylim(0, 100)
+                except Exception as e:
+                    self.logger.warning(f"Could not create pass/fail plot: {e}")
                 
                 plt.tight_layout()
                 pdf.savefig(fig, bbox_inches='tight')
@@ -1111,8 +1238,11 @@ class ModelSummaryPage(BasePage):
             messagebox.showinfo("Report Generated", f"PDF report generated:\n{filename}")
             self.logger.info(f"Generated PDF report: {filename}")
 
+        except ImportError:
+            messagebox.showerror("Missing Dependency", "PDF generation requires matplotlib. Please install it first.")
         except Exception as e:
-            messagebox.showerror("Report Error", f"Failed to generate report:\n{str(e)}")
+            error_msg = f"Failed to generate report: {str(e)}"
+            messagebox.showerror("Report Error", error_msg)
             self.logger.error(f"Report generation failed: {e}")
 
     def _calculate_summary_stats(self) -> Dict[str, str]:

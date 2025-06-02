@@ -44,6 +44,14 @@ class ProcessingMode(str, Enum):
     SPEED = "speed"  # Parallel without plots
 
 
+class ValidationStatus(str, Enum):
+    """Validation status for calculations."""
+    VALIDATED = "Validated"
+    WARNING = "Warning"
+    FAILED = "Failed"
+    NOT_VALIDATED = "Not Validated"
+
+
 # Base configuration for all models
 class BaseAnalysisModel(BaseModel):
     """Base model with common configuration."""
@@ -59,6 +67,37 @@ class BaseAnalysisModel(BaseModel):
     )
 
 
+class ValidationResult(BaseAnalysisModel):
+    """Result of calculation validation against industry standards."""
+    calculation_type: str = Field(..., description="Type of calculation validated")
+    is_valid: bool = Field(..., description="Whether calculation passes validation")
+    expected_value: float = Field(..., description="Expected value per industry standards")
+    actual_value: float = Field(..., description="Actual calculated value")
+    deviation_percent: float = Field(..., description="Percentage deviation from expected")
+    tolerance_used: float = Field(..., description="Tolerance threshold used")
+    standard_reference: str = Field(..., description="Industry standard reference")
+    warnings: List[str] = Field(default_factory=list, description="Validation warnings")
+    recommendations: List[str] = Field(default_factory=list, description="Industry recommendations")
+    validation_status: ValidationStatus = Field(..., description="Overall validation status")
+
+    @computed_field
+    @property
+    def validation_grade(self) -> str:
+        """Get validation grade (A-F)."""
+        if not self.is_valid:
+            return "F"
+        elif self.deviation_percent <= 1.0:
+            return "A"
+        elif self.deviation_percent <= 3.0:
+            return "B"
+        elif self.deviation_percent <= 5.0:
+            return "C"
+        elif self.deviation_percent <= 10.0:
+            return "D"
+        else:
+            return "E"
+
+
 class FileMetadata(BaseAnalysisModel):
     """File information and metadata."""
     filename: str = Field(..., description="Name of the file")
@@ -68,6 +107,7 @@ class FileMetadata(BaseAnalysisModel):
     serial: str = Field(..., description="Unit serial number")
     system: SystemType = Field(..., description="Trim system type")
     has_multi_tracks: bool = Field(default=False, description="Whether file contains multiple tracks")
+    track_identifier: Optional[str] = Field(None, description="Track identifier for System B multi-track (e.g., TA, TB)")
 
     @field_validator('file_path')
     @classmethod
@@ -114,12 +154,33 @@ class SigmaAnalysis(BaseAnalysisModel):
     sigma_pass: bool = Field(..., description="Whether sigma test passed")
     gradient_margin: float = Field(..., description="Margin to threshold")
     scaling_factor: float = Field(default=24.0, description="Sigma scaling factor used")
+    
+    # Validation fields
+    validation_result: Optional[ValidationResult] = Field(None, description="Industry standard validation")
+    validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Validation status")
 
     @computed_field
     @property
     def sigma_ratio(self) -> float:
         """Calculate ratio of gradient to threshold."""
         return self.sigma_gradient / self.sigma_threshold if self.sigma_threshold > 0 else float('inf')
+
+    @computed_field
+    @property
+    def industry_compliance(self) -> str:
+        """Get industry compliance level."""
+        if not self.validation_result:
+            return "Not Validated"
+        
+        if self.validation_result.is_valid:
+            if self.validation_result.deviation_percent <= 2.0:
+                return "Precision Grade"
+            elif self.validation_result.deviation_percent <= 5.0:
+                return "Standard Grade"
+            else:
+                return "Commercial Grade"
+        else:
+            return "Non-Compliant"
 
 
 class LinearityAnalysis(BaseAnalysisModel):
@@ -132,6 +193,27 @@ class LinearityAnalysis(BaseAnalysisModel):
     linearity_fail_points: int = Field(default=0, ge=0, description="Number of failing points")
     max_deviation: Optional[float] = Field(None, description="Maximum deviation from linear")
     max_deviation_position: Optional[float] = Field(None, description="Position of max deviation")
+    
+    # Validation fields
+    validation_result: Optional[ValidationResult] = Field(None, description="Industry standard validation")
+    validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Validation status")
+
+    @computed_field
+    @property
+    def industry_grade(self) -> str:
+        """Get industry grade classification."""
+        if not self.validation_result:
+            return "Not Classified"
+        
+        linearity_percent = self.final_linearity_error_shifted
+        if linearity_percent <= 0.1:
+            return "Precision Grade (±0.1%)"
+        elif linearity_percent <= 0.5:
+            return "Standard Grade (±0.5%)"
+        elif linearity_percent <= 2.0:
+            return "Commercial Grade (±2.0%)"
+        else:
+            return "Below Commercial Grade"
 
 
 class ResistanceAnalysis(BaseAnalysisModel):
@@ -140,6 +222,10 @@ class ResistanceAnalysis(BaseAnalysisModel):
     trimmed_resistance: Optional[float] = Field(None, ge=0)
     resistance_change: Optional[float] = Field(None)
     resistance_change_percent: Optional[float] = Field(None)
+    
+    # Validation fields
+    validation_result: Optional[ValidationResult] = Field(None, description="Industry standard validation")
+    validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Validation status")
 
     @field_validator('resistance_change_percent')
     @classmethod
@@ -149,6 +235,23 @@ class ResistanceAnalysis(BaseAnalysisModel):
             raise ValueError(f"Resistance change percent seems unrealistic: {v}%")
         return v
 
+    @computed_field
+    @property
+    def resistance_stability_grade(self) -> str:
+        """Get resistance stability grade."""
+        if self.resistance_change_percent is None:
+            return "Not Available"
+        
+        abs_change = abs(self.resistance_change_percent)
+        if abs_change <= 0.01:
+            return "Excellent (±0.01%)"
+        elif abs_change <= 0.1:
+            return "Good (±0.1%)"
+        elif abs_change <= 1.0:
+            return "Acceptable (±1.0%)"
+        else:
+            return "Poor (>1.0%)"
+
 
 class TrimEffectiveness(BaseAnalysisModel):
     """Trim process effectiveness metrics."""
@@ -156,6 +259,26 @@ class TrimEffectiveness(BaseAnalysisModel):
     untrimmed_rms_error: Optional[float] = Field(None, ge=0, description="RMS error before trim")
     trimmed_rms_error: Optional[float] = Field(None, ge=0, description="RMS error after trim")
     max_error_reduction_percent: Optional[float] = Field(None, description="Maximum error reduction")
+    
+    # Validation fields
+    validation_result: Optional[ValidationResult] = Field(None, description="Trim effectiveness validation")
+    validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Validation status")
+
+    @computed_field
+    @property
+    def trim_quality_grade(self) -> str:
+        """Get trim quality grade."""
+        if self.improvement_percent is None:
+            return "Not Available"
+        
+        if self.improvement_percent >= 80:
+            return "Excellent (≥80%)"
+        elif self.improvement_percent >= 60:
+            return "Good (≥60%)"
+        elif self.improvement_percent >= 40:
+            return "Fair (≥40%)"
+        else:
+            return "Poor (<40%)"
 
 
 class ZoneAnalysis(BaseAnalysisModel):
@@ -208,6 +331,11 @@ class TrackData(BaseAnalysisModel):
     failure_prediction: Optional[FailurePrediction] = None
     dynamic_range: Optional[DynamicRangeAnalysis] = None
 
+    # Validation summary
+    overall_validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Overall validation status")
+    validation_warnings: List[str] = Field(default_factory=list, description="All validation warnings")
+    validation_recommendations: List[str] = Field(default_factory=list, description="All validation recommendations")
+
     # Visualization
     plot_path: Optional[Path] = Field(None, description="Path to generated plot")
 
@@ -218,6 +346,43 @@ class TrackData(BaseAnalysisModel):
         if v is not None and len(v) < 10:
             raise ValueError(f"Data array too short: {len(v)} points")
         return v
+
+    @computed_field
+    @property
+    def validation_summary(self) -> Dict[str, Any]:
+        """Get summary of all validation results."""
+        summary = {
+            "overall_status": self.overall_validation_status.value,
+            "total_validations": 0,
+            "passed_validations": 0,
+            "warnings_count": len(self.validation_warnings),
+            "recommendations_count": len(self.validation_recommendations),
+            "grades": {}
+        }
+        
+        # Count validations
+        validations = [
+            self.sigma_analysis.validation_result,
+            self.linearity_analysis.validation_result,
+            self.resistance_analysis.validation_result
+        ]
+        
+        if self.trim_effectiveness and self.trim_effectiveness.validation_result:
+            validations.append(self.trim_effectiveness.validation_result)
+        
+        valid_validations = [v for v in validations if v is not None]
+        summary["total_validations"] = len(valid_validations)
+        summary["passed_validations"] = sum(1 for v in valid_validations if v.is_valid)
+        
+        # Add grades
+        summary["grades"]["sigma"] = self.sigma_analysis.industry_compliance
+        summary["grades"]["linearity"] = self.linearity_analysis.industry_grade
+        summary["grades"]["resistance"] = self.resistance_analysis.resistance_stability_grade
+        
+        if self.trim_effectiveness:
+            summary["grades"]["trim_effectiveness"] = self.trim_effectiveness.trim_quality_grade
+        
+        return summary
 
 
 class AnalysisResult(BaseAnalysisModel):
@@ -235,6 +400,10 @@ class AnalysisResult(BaseAnalysisModel):
     # Validation and errors
     validation_issues: List[str] = Field(default_factory=list, description="Validation warnings/errors")
     processing_errors: List[str] = Field(default_factory=list, description="Processing errors")
+
+    # Overall validation status
+    overall_validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Overall validation status")
+    validation_summary: Dict[str, Any] = Field(default_factory=dict, description="Comprehensive validation summary")
 
     # Database reference
     db_id: Optional[int] = Field(None, description="Database record ID")
@@ -267,6 +436,41 @@ class AnalysisResult(BaseAnalysisModel):
             for track in self.tracks.values()
         )
 
+    @computed_field
+    @property
+    def validation_grade(self) -> str:
+        """Get overall validation grade."""
+        if self.overall_validation_status == ValidationStatus.NOT_VALIDATED:
+            return "Not Validated"
+        elif self.overall_validation_status == ValidationStatus.FAILED:
+            return "F"
+        
+        # Calculate average grade from all tracks
+        grades = []
+        for track in self.tracks.values():
+            if track.sigma_analysis.validation_result:
+                grades.append(track.sigma_analysis.validation_result.validation_grade)
+            if track.linearity_analysis.validation_result:
+                grades.append(track.linearity_analysis.validation_result.validation_grade)
+        
+        if not grades:
+            return "Incomplete"
+        
+        # Convert grades to numeric and average
+        grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0, "F": 0}
+        avg_grade = sum(grade_values.get(g, 0) for g in grades) / len(grades)
+        
+        if avg_grade >= 3.5:
+            return "A"
+        elif avg_grade >= 2.5:
+            return "B"
+        elif avg_grade >= 1.5:
+            return "C"
+        elif avg_grade >= 0.5:
+            return "D"
+        else:
+            return "F"
+
     def to_flat_dict(self) -> Dict[str, Any]:
         """Convert to flat dictionary for Excel/database storage."""
         # Start with file-level data
@@ -280,6 +484,11 @@ class AnalysisResult(BaseAnalysisModel):
             "has_multi_tracks": self.metadata.has_multi_tracks,
             "overall_status": self.overall_status.value,
             "processing_time": self.processing_time,
+            
+            # Validation fields
+            "overall_validation_status": self.overall_validation_status.value,
+            "validation_grade": self.validation_grade,
+            "validation_issues_count": len(self.validation_issues),
         }
 
         # Add primary track data for backward compatibility
@@ -288,8 +497,26 @@ class AnalysisResult(BaseAnalysisModel):
             "sigma_gradient": primary.sigma_analysis.sigma_gradient,
             "sigma_threshold": primary.sigma_analysis.sigma_threshold,
             "sigma_pass": primary.sigma_analysis.sigma_pass,
+            "sigma_validation_status": primary.sigma_analysis.validation_status.value,
+            "sigma_industry_compliance": primary.sigma_analysis.industry_compliance,
+            
             "linearity_pass": primary.linearity_analysis.linearity_pass,
+            "linearity_error": primary.linearity_analysis.final_linearity_error_shifted,
+            "linearity_validation_status": primary.linearity_analysis.validation_status.value,
+            "linearity_industry_grade": primary.linearity_analysis.industry_grade,
+            
+            "resistance_validation_status": primary.resistance_analysis.validation_status.value,
+            "resistance_stability_grade": primary.resistance_analysis.resistance_stability_grade,
+            
             "risk_category": primary.failure_prediction.risk_category.value if primary.failure_prediction else None,
+        })
+
+        # Add validation summary
+        validation_summary = primary.validation_summary
+        flat.update({
+            "total_validations": validation_summary["total_validations"],
+            "passed_validations": validation_summary["passed_validations"],
+            "validation_success_rate": (validation_summary["passed_validations"] / validation_summary["total_validations"] * 100) if validation_summary["total_validations"] > 0 else 0,
         })
 
         return flat
@@ -308,6 +535,10 @@ class BatchConfig(BaseAnalysisModel):
     # ML configuration
     enable_ml_predictions: bool = Field(default=True)
     enable_threshold_optimization: bool = Field(default=True)
+    
+    # Validation configuration
+    enable_validation: bool = Field(default=True, description="Enable industry standard validation")
+    validation_level: str = Field(default="standard", description="Validation strictness level")
 
     # Database configuration
     save_to_database: bool = Field(default=True)
@@ -323,6 +554,9 @@ class BatchResult(BaseAnalysisModel):
     successful_files: int
     failed_files: int
     results: List[AnalysisResult]
+    
+    # Validation summary
+    validation_summary: Dict[str, Any] = Field(default_factory=dict, description="Batch validation summary")
 
     @computed_field
     @property
@@ -335,3 +569,17 @@ class BatchResult(BaseAnalysisModel):
     def processing_duration(self) -> float:
         """Calculate total processing time in seconds."""
         return (self.end_time - self.start_time).total_seconds()
+
+    @computed_field
+    @property
+    def validation_success_rate(self) -> float:
+        """Calculate validation success rate."""
+        if not self.results:
+            return 0.0
+        
+        validated_results = [r for r in self.results if r.overall_validation_status != ValidationStatus.NOT_VALIDATED]
+        if not validated_results:
+            return 0.0
+        
+        passed_validations = sum(1 for r in validated_results if r.overall_validation_status == ValidationStatus.VALIDATED)
+        return (passed_validations / len(validated_results)) * 100

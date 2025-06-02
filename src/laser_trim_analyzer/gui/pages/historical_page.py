@@ -23,6 +23,7 @@ from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
 
 class HistoricalPage(BasePage):
@@ -360,8 +361,8 @@ class HistoricalPage(BasePage):
 
             row = {
                 'id': result.id,
-                'timestamp': result.timestamp,
-                'file_date': result.file_date,
+                'timestamp': safe_datetime_convert(result.timestamp),
+                'file_date': safe_datetime_convert(result.file_date),
                 'model': result.model,
                 'serial': result.serial,
                 'system': result.system.value,
