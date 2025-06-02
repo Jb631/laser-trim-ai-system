@@ -17,6 +17,7 @@ from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class AIInsightsPage(BasePage):
@@ -43,6 +44,9 @@ class AIInsightsPage(BasePage):
         
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Add mouse wheel support to the main canvas
+        add_mousewheel_support(canvas)
         
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
@@ -164,6 +168,9 @@ class AIInsightsPage(BasePage):
         scroll = ttk.Scrollbar(text_frame, command=self.insights_text.yview)
         self.insights_text.config(yscrollcommand=scroll.set)
 
+        # Add mouse wheel support to insights text
+        add_mousewheel_support(self.insights_text)
+
         self.insights_text.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
 
@@ -202,6 +209,9 @@ class AIInsightsPage(BasePage):
             command=self.chat_canvas.yview
         )
         self.chat_canvas.configure(yscrollcommand=chat_scrollbar.set)
+
+        # Add mouse wheel support to chat canvas
+        add_mousewheel_support(self.chat_canvas)
 
         self.chat_canvas.pack(side='left', fill='both', expand=True)
         chat_scrollbar.pack(side='right', fill='y')
@@ -429,7 +439,7 @@ class AIInsightsPage(BasePage):
             )
 
             if not results:
-                self.root.after(0, lambda: self._display_insights(
+                self.winfo_toplevel().after(0, lambda: self._display_insights(
                     "No recent data available for analysis."
                 ))
                 return
@@ -452,10 +462,10 @@ class AIInsightsPage(BasePage):
                 )
 
             # Display insights
-            self.root.after(0, lambda: self._display_insights(response.content))
+            self.winfo_toplevel().after(0, lambda: self._display_insights(response.content))
 
             # Show cost info
-            self.root.after(0, lambda: self.alert_stack.add_alert(
+            self.winfo_toplevel().after(0, lambda: self.alert_stack.add_alert(
                 alert_type='info',
                 title='Analysis Complete',
                 message=f'Cost: ${response.cost:.4f} | Tokens: {sum(response.tokens_used.values())}',
@@ -463,7 +473,7 @@ class AIInsightsPage(BasePage):
             ))
 
         except Exception as e:
-            self.root.after(0, lambda: self._display_insights(
+            self.winfo_toplevel().after(0, lambda: self._display_insights(
                 f"Error generating insights: {str(e)}",
                 is_error=True
             ))
@@ -673,16 +683,16 @@ class AIInsightsPage(BasePage):
             )
 
             # Remove thinking message and add response
-            self.root.after(0, self._remove_last_message)
-            self.root.after(0, lambda: self._add_chat_message(
+            self.winfo_toplevel().after(0, self._remove_last_message)
+            self.winfo_toplevel().after(0, lambda: self._add_chat_message(
                 "AI Assistant",
                 response.content,
                 is_user=False
             ))
 
         except Exception as e:
-            self.root.after(0, self._remove_last_message)
-            self.root.after(0, lambda: self._add_chat_message(
+            self.winfo_toplevel().after(0, self._remove_last_message)
+            self.winfo_toplevel().after(0, lambda: self._add_chat_message(
                 "AI Assistant",
                 f"I encountered an error: {str(e)}",
                 is_user=False
@@ -732,7 +742,7 @@ class AIInsightsPage(BasePage):
         """Run report generation in background."""
         try:
             # Update status
-            self.root.after(0, lambda: self.report_status_label.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(
                 text="Loading data..."
             ))
 
@@ -743,7 +753,7 @@ class AIInsightsPage(BasePage):
             )
 
             if not results:
-                self.root.after(0, lambda: messagebox.showwarning(
+                self.winfo_toplevel().after(0, lambda: messagebox.showwarning(
                     "No Data",
                     f"No data found for the last {days} days"
                 ))
@@ -753,7 +763,7 @@ class AIInsightsPage(BasePage):
             data_summary = self._prepare_data_summary(results)
 
             # Update status
-            self.root.after(0, lambda: self.report_status_label.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(
                 text="Generating AI content..."
             ))
 
@@ -780,23 +790,23 @@ class AIInsightsPage(BasePage):
                 )
 
             # Save report
-            self.root.after(0, lambda: self._save_report(
+            self.winfo_toplevel().after(0, lambda: self._save_report(
                 response.content,
                 report_type,
                 data_summary
             ))
 
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror(
+            self.winfo_toplevel().after(0, lambda: messagebox.showerror(
                 "Report Generation Error",
                 f"Failed to generate report:\n{str(e)}"
             ))
 
         finally:
             # Re-enable button and stop progress
-            self.root.after(0, lambda: self.generate_report_btn.config(state='normal'))
-            self.root.after(0, self.report_progress.stop)
-            self.root.after(0, lambda: self.report_status_label.config(text=""))
+            self.winfo_toplevel().after(0, lambda: self.generate_report_btn.config(state='normal'))
+            self.winfo_toplevel().after(0, self.report_progress.stop)
+            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(text=""))
 
     def _save_report(self, content: str, report_type: str, data_summary: Dict[str, Any]):
         """Save generated report to file."""

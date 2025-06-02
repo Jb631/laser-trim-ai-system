@@ -90,15 +90,15 @@ class HomePage(BasePage):
         )
         stats_frame.pack(fill='x', pady=(0, 20))
 
-        # Create 2x2 grid of stat cards
+        # Create 3x2 grid of stat cards
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill='x')
 
         # Configure grid
-        for i in range(2):
-            stats_grid.columnconfigure(i, weight=1, minsize=200)
+        for i in range(3):
+            stats_grid.columnconfigure(i, weight=1, minsize=180)
 
-        # Create stat cards
+        # Row 1: Basic performance metrics
         self.stat_cards['units_tested'] = StatCard(
             stats_grid,
             title="Units Tested",
@@ -117,6 +117,16 @@ class HomePage(BasePage):
         )
         self.stat_cards['pass_rate'].grid(row=0, column=1, padx=5, pady=5, sticky='ew')
 
+        self.stat_cards['validation_rate'] = StatCard(
+            stats_grid,
+            title="Validation Success",
+            value=0.0,
+            unit="%",
+            color_scheme="info"
+        )
+        self.stat_cards['validation_rate'].grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+
+        # Row 2: Quality metrics
         self.stat_cards['avg_sigma'] = StatCard(
             stats_grid,
             title="Avg Sigma Gradient",
@@ -126,6 +136,15 @@ class HomePage(BasePage):
         )
         self.stat_cards['avg_sigma'].grid(row=1, column=0, padx=5, pady=5, sticky='ew')
 
+        self.stat_cards['industry_grade'] = StatCard(
+            stats_grid,
+            title="Avg Industry Grade",
+            value="--",
+            unit="",
+            color_scheme="info"
+        )
+        self.stat_cards['industry_grade'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+
         self.stat_cards['high_risk'] = StatCard(
             stats_grid,
             title="High Risk Units",
@@ -133,7 +152,7 @@ class HomePage(BasePage):
             unit="",
             color_scheme="danger"
         )
-        self.stat_cards['high_risk'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+        self.stat_cards['high_risk'].grid(row=1, column=2, padx=5, pady=5, sticky='ew')
 
     def _create_trend_section(self, parent):
         """Create trend chart section."""
@@ -265,48 +284,106 @@ class HomePage(BasePage):
             self.logger.error(f"Error refreshing dashboard: {e}")
 
     def _get_today_stats(self) -> Dict[str, Any]:
-        """Get today's statistics from database."""
-        try:
-            # Query today's results
-            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        """Get today's statistics."""
+        if not self.main_window.db_manager:
+            return {
+                "units_tested": 0,
+                "pass_rate": 0.0,
+                "validation_rate": 0.0,
+                "avg_sigma": 0.0,
+                "avg_industry_grade": "--",
+                "high_risk_count": 0
+            }
 
-            # Get today's analyses
-            results = self.db_manager.get_historical_data(
+        try:
+            # Get today's data
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            results = self.main_window.db_manager.get_historical_data(
                 start_date=today_start,
                 include_tracks=True
             )
 
-            # Calculate stats
+            if not results:
+                return {
+                    "units_tested": 0,
+                    "pass_rate": 0.0,
+                    "validation_rate": 0.0,
+                    "avg_sigma": 0.0,
+                    "avg_industry_grade": "--",
+                    "high_risk_count": 0
+                }
+
+            # Calculate basic metrics
             total_units = len(results)
-            passed_units = sum(1 for r in results if r.overall_status.value == 'Pass')
+            passed_units = sum(1 for r in results if r.overall_status.value == "Pass")
             pass_rate = (passed_units / total_units * 100) if total_units > 0 else 0
 
-            # Get track-level stats
-            all_tracks = []
+            # Calculate validation metrics
+            validated_units = sum(1 for r in results if hasattr(r, 'overall_validation_status') and 
+                                r.overall_validation_status and r.overall_validation_status.value == "Validated")
+            validation_rate = (validated_units / total_units * 100) if total_units > 0 else 0
+
+            # Calculate sigma gradient average
+            sigma_values = []
+            industry_grades = []
+            high_risk_count = 0
+
             for result in results:
-                all_tracks.extend(result.tracks)
+                if result.tracks:
+                    primary_track = result.tracks[0]
+                    if hasattr(primary_track, 'sigma_gradient') and primary_track.sigma_gradient:
+                        sigma_values.append(primary_track.sigma_gradient)
+                    
+                    # Count high risk units
+                    if (hasattr(primary_track, 'risk_category') and 
+                        primary_track.risk_category and 
+                        primary_track.risk_category.value == "High"):
+                        high_risk_count += 1
+                    
+                    # Collect industry grades for averaging
+                    if hasattr(result, 'validation_grade') and result.validation_grade:
+                        grade = result.validation_grade
+                        if grade not in ["Not Validated", "Incomplete"]:
+                            industry_grades.append(grade)
 
-            # Calculate average sigma
-            sigma_values = [t.sigma_gradient for t in all_tracks if t.sigma_gradient is not None]
-            avg_sigma = sum(sigma_values) / len(sigma_values) if sigma_values else 0
+            avg_sigma = sum(sigma_values) / len(sigma_values) if sigma_values else 0.0
 
-            # Count high risk
-            high_risk = sum(1 for t in all_tracks if t.risk_category and t.risk_category.value == 'High')
+            # Calculate average industry grade
+            if industry_grades:
+                grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0, "F": 0}
+                avg_grade_value = sum(grade_values.get(g, 0) for g in industry_grades) / len(industry_grades)
+                
+                if avg_grade_value >= 3.5:
+                    avg_industry_grade = "A"
+                elif avg_grade_value >= 2.5:
+                    avg_industry_grade = "B"
+                elif avg_grade_value >= 1.5:
+                    avg_industry_grade = "C"
+                elif avg_grade_value >= 0.5:
+                    avg_industry_grade = "D"
+                else:
+                    avg_industry_grade = "F"
+            else:
+                avg_industry_grade = "--"
 
             return {
-                'units_tested': total_units,
-                'pass_rate': pass_rate,
-                'avg_sigma': avg_sigma,
-                'high_risk': high_risk
+                "units_tested": total_units,
+                "pass_rate": pass_rate,
+                "validation_rate": validation_rate,
+                "avg_sigma": avg_sigma,
+                "avg_industry_grade": avg_industry_grade,
+                "high_risk_count": high_risk_count
             }
 
         except Exception as e:
             self.logger.error(f"Error getting today's stats: {e}")
             return {
-                'units_tested': 0,
-                'pass_rate': 0,
-                'avg_sigma': 0,
-                'high_risk': 0
+                "units_tested": 0,
+                "pass_rate": 0.0,
+                "validation_rate": 0.0,
+                "avg_sigma": 0.0,
+                "avg_industry_grade": "--",
+                "high_risk_count": 0
             }
 
     def _get_trend_data(self) -> List[Dict[str, Any]]:
@@ -386,8 +463,10 @@ class HomePage(BasePage):
         # Update stat cards
         self.stat_cards['units_tested'].update_value(stats['units_tested'])
         self.stat_cards['pass_rate'].update_value(stats['pass_rate'])
+        self.stat_cards['validation_rate'].update_value(stats['validation_rate'])
         self.stat_cards['avg_sigma'].update_value(stats['avg_sigma'])
-        self.stat_cards['high_risk'].update_value(stats['high_risk'])
+        self.stat_cards['industry_grade'].update_value(stats['avg_industry_grade'])
+        self.stat_cards['high_risk'].update_value(stats['high_risk_count'])
 
         # Update trend chart
         if trend_data:
