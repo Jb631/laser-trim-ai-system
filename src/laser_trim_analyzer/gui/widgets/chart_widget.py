@@ -200,7 +200,7 @@ class ChartWidget(ttk.Frame):
     def plot_scatter(self, x_data: List, y_data: List,
                      colors: Optional[List] = None, sizes: Optional[List] = None,
                      labels: Optional[List[str]] = None, xlabel: str = "",
-                     ylabel: str = "", **kwargs):
+                     ylabel: str = "", alpha: float = 0.6, **kwargs):
         """Plot scatter chart."""
         ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
 
@@ -212,9 +212,12 @@ class ChartWidget(ttk.Frame):
         if colors and isinstance(colors[0], str):
             colors = [self.qa_colors.get(c, c) for c in colors]
 
+        # Remove alpha from kwargs if it exists to avoid conflict
+        kwargs.pop('alpha', None)
+
         # Plot scatter
         scatter = ax.scatter(x_data, y_data, c=colors, s=sizes,
-                             alpha=0.6, **kwargs)
+                             alpha=alpha, **kwargs)
 
         # Add annotations if labels provided
         if labels:
@@ -281,6 +284,38 @@ class ChartWidget(ttk.Frame):
         self.canvas.draw()
 
         return n, bins, patches
+
+    def plot_box(self, data: List[List[float]], labels: List[str] = None,
+                 xlabel: str = "", ylabel: str = "", **kwargs):
+        """Plot box plot."""
+        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+
+        # Create box plot
+        bp = ax.boxplot(data, labels=labels, patch_artist=True, **kwargs)
+
+        # Color the boxes
+        colors = [self.qa_colors['primary'], self.qa_colors['secondary'], 
+                  self.qa_colors['warning'], self.qa_colors['success']]
+        
+        for patch, color in zip(bp['boxes'], colors * (len(bp['boxes']) // len(colors) + 1)):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+
+        # Set labels
+        if xlabel:
+            ax.set_xlabel(xlabel)
+        if ylabel:
+            ax.set_ylabel(ylabel)
+        if self.title:
+            ax.set_title(self.title)
+
+        # Grid
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # Refresh canvas
+        self.canvas.draw()
+
+        return bp
 
     def plot_heatmap(self, data: np.ndarray, xlabels: List[str],
                      ylabels: List[str], cmap: str = 'RdYlGn',

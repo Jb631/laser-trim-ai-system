@@ -1,25 +1,28 @@
 """
 Analysis Page for Laser Trim Analyzer
 
-Handles file processing and displays results with ML insights.
+Provides interface for file selection, processing options,
+and analysis execution with results display.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import os
-from pathlib import Path
-from datetime import datetime
-from typing import List, Optional, Dict, Any
-import threading
+from tkinter import ttk, messagebox, filedialog
+import customtkinter as ctk
 import asyncio
-import time
+import threading
+import time as time_module
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import logging
 
+from laser_trim_analyzer.core.models import AnalysisResult, ProcessingMode
+from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWidget
-from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
-from laser_trim_analyzer.core.processor import LaserTrimProcessor
-from laser_trim_analyzer.core.models import AnalysisResult, ProcessingMode
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class AnalysisPage(BasePage):
@@ -152,6 +155,9 @@ class AnalysisPage(BasePage):
 
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas_frame = canvas.create_window((0, 0), window=self.file_list_frame, anchor='nw')
+
+        # Add mouse wheel scrolling support
+        add_mousewheel_support(self.file_list_frame, canvas)
 
         canvas.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
@@ -513,7 +519,7 @@ class AnalysisPage(BasePage):
 
     def _update_progress(self, value: float, text: str):
         """Update progress display."""
-        current_time = time.time()
+        current_time = time_module.time()
         
         # Throttle updates to prevent GUI choppiness
         if current_time - self.last_progress_update < self.progress_update_interval:
@@ -593,13 +599,15 @@ class AnalysisPage(BasePage):
         total = len(results)
 
         if total > 0:
+            # Add persistent success alert without auto-dismiss
             self.alert_stack.add_alert(
                 alert_type='success',
                 title='Analysis Complete',
                 message=f'Processed {total} files. Pass rate: {passed / total * 100:.1f}%',
-                auto_dismiss=10,
+                dismissible=True,  # User can manually dismiss
                 actions=[
-                    {'text': 'View Report', 'command': lambda: self._show_results(results)}
+                    {'text': 'View Report', 'command': lambda: self._show_results(results)},
+                    {'text': 'Export All', 'command': lambda: self._export_all_results(results)}
                 ]
             )
 
@@ -731,7 +739,7 @@ class AnalysisPage(BasePage):
         table_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
 
         # Create treeview
-        columns = ('Model', 'Serial', 'Status', 'Sigma', 'Risk')
+        columns = ('Model', 'Serial', 'Status', 'Sigma', 'Risk', 'Resistance')
         tree = ttk.Treeview(table_frame, columns=columns, show='tree headings', height=10)
 
         # Configure columns
@@ -741,6 +749,7 @@ class AnalysisPage(BasePage):
         tree.column('Status', width=80)
         tree.column('Sigma', width=100)
         tree.column('Risk', width=80)
+        tree.column('Resistance', width=120)
 
         # Set headings
         tree.heading('#0', text='File')
@@ -750,6 +759,14 @@ class AnalysisPage(BasePage):
         # Add data
         for result in results:
             primary = result.primary_track
+            # Get resistance change if available
+            resistance_change = ""
+            if hasattr(primary, 'resistance_analysis') and primary.resistance_analysis:
+                if primary.resistance_analysis.resistance_change_percent is not None:
+                    resistance_change = f"{primary.resistance_analysis.resistance_change_percent:.2f}%"
+                else:
+                    resistance_change = "N/A"
+            
             tree.insert(
                 '',
                 'end',
@@ -759,7 +776,8 @@ class AnalysisPage(BasePage):
                     result.metadata.serial,
                     result.overall_status.value,
                     f"{primary.sigma_analysis.sigma_gradient:.4f}",
-                    primary.failure_prediction.risk_category.value if primary.failure_prediction else 'Unknown'
+                    primary.failure_prediction.risk_category.value if primary.failure_prediction else 'Unknown',
+                    resistance_change
                 ),
                 tags=(result.overall_status.value.lower(),)
             )
@@ -916,6 +934,15 @@ class AnalysisPage(BasePage):
                 text_widget.insert('end',
                                    f"    Linearity Pass: {'Yes' if track.linearity_analysis.linearity_pass else 'No'}\n")
 
+                # Add resistance information
+                if hasattr(track, 'resistance_analysis') and track.resistance_analysis:
+                    if track.resistance_analysis.untrimmed_resistance is not None:
+                        text_widget.insert('end', f"    Untrimmed Resistance: {track.resistance_analysis.untrimmed_resistance:.1f} Ω\n")
+                    if track.resistance_analysis.trimmed_resistance is not None:
+                        text_widget.insert('end', f"    Trimmed Resistance: {track.resistance_analysis.trimmed_resistance:.1f} Ω\n")
+                    if track.resistance_analysis.resistance_change_percent is not None:
+                        text_widget.insert('end', f"    Resistance Change: {track.resistance_analysis.resistance_change_percent:.2f}%\n")
+
                 if track.failure_prediction:
                     text_widget.insert('end',
                                        f"    Failure Probability: {track.failure_prediction.failure_probability:.2%}\n")
@@ -937,9 +964,72 @@ class AnalysisPage(BasePage):
             messagebox.showwarning("No Plot", "Plot file not found.")
 
     def _export_file_results(self, file_data: Dict[str, Any]):
-        """Export individual file results."""
-        # TODO: Implement export functionality
-        messagebox.showinfo("Export", f"Export functionality for {file_data['filename']} coming soon!")
+        """Export results for a single file."""
+        messagebox.showinfo("Export", f"Export functionality for {file_data.get('filename', 'file')} not yet implemented")
+
+    def _export_all_results(self, results: List[AnalysisResult]):
+        """Export all analysis results to Excel."""
+        if not results:
+            messagebox.showwarning("Export", "No results to export")
+            return
+            
+        try:
+            # Get save location
+            from tkinter import filedialog
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                title="Export Analysis Results",
+                initialname=f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            )
+            
+            if not filename:
+                return
+                
+            # Create summary data
+            import pandas as pd
+            
+            data = []
+            for result in results:
+                for track_id, track in result.tracks.items():
+                    row = {
+                        'filename': result.metadata.filename,
+                        'model': result.metadata.model,
+                        'serial': result.metadata.serial,
+                        'file_date': result.metadata.file_date,
+                        'processing_date': result.metadata.timestamp,
+                        'system': result.metadata.system.value,
+                        'track_id': track_id,
+                        'overall_status': result.overall_status.value,
+                        'track_status': track.status.value,
+                        'sigma_gradient': track.sigma_analysis.sigma_gradient,
+                        'sigma_threshold': track.sigma_analysis.sigma_threshold,
+                        'sigma_pass': track.sigma_analysis.sigma_pass,
+                        'linearity_spec': track.linearity_analysis.linearity_spec,
+                        'optimal_offset': track.linearity_analysis.optimal_offset,
+                        'final_linearity_error_raw': track.linearity_analysis.final_linearity_error_raw,
+                        'final_linearity_error_shifted': track.linearity_analysis.final_linearity_error_shifted,
+                        'linearity_pass': track.linearity_analysis.linearity_pass,
+                        'linearity_fail_points': track.linearity_analysis.linearity_fail_points,
+                        'untrimmed_resistance': track.unit_properties.untrimmed_resistance,
+                        'trimmed_resistance': track.unit_properties.trimmed_resistance,
+                        'resistance_change_percent': track.unit_properties.resistance_change_percent,
+                        'failure_probability': track.failure_prediction.failure_probability if track.failure_prediction else None,
+                        'risk_category': track.failure_prediction.risk_category.value if track.failure_prediction else None,
+                        'processing_time': result.processing_time
+                    }
+                    data.append(row)
+            
+            # Export to Excel
+            df = pd.DataFrame(data)
+            df.to_excel(filename, index=False)
+            
+            messagebox.showinfo("Export", f"Results exported successfully to:\n{filename}")
+            self.logger.info(f"Exported analysis results to {filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export results:\n{str(e)}")
+            self.logger.error(f"Export failed: {e}")
 
     def _show_file_details(self, file_data: Dict[str, Any]):
         """Show detailed results for a file."""
@@ -960,91 +1050,36 @@ class AnalysisPage(BasePage):
         text_widget.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # Configure tags
-        text_widget.tag_configure('heading', font=('Segoe UI', 14, 'bold'))
-        text_widget.tag_configure('subheading', font=('Segoe UI', 12, 'bold'))
-        text_widget.tag_configure('label', font=('Segoe UI', 10, 'bold'))
-        text_widget.tag_configure('pass', foreground='#27ae60')
-        text_widget.tag_configure('fail', foreground='#e74c3c')
-        text_widget.tag_configure('warning', foreground='#f39c12')
+        # Format details
+        details = f"""Analysis Details for {file_data.get('filename', 'Unknown')}
+{'=' * 60}
+
+File Information:
+• Model: {file_data.get('model', 'Unknown')}
+• Serial: {file_data.get('serial', 'Unknown')}
+• Status: {file_data.get('status', 'Unknown')}
+
+Analysis Results:
+• Sigma Gradient: {file_data.get('sigma_gradient', 'N/A')}
+• Sigma Pass: {file_data.get('sigma_pass', 'N/A')}
+• Linearity Pass: {file_data.get('linearity_pass', 'N/A')}
+• Risk Category: {file_data.get('risk_category', 'N/A')}
+
+Additional Information:
+• File Path: {file_data.get('file_path', 'Unknown')}
+• Processing Time: {file_data.get('processing_time', 'N/A')} seconds
+
+{'=' * 60}
+Note: This is a simplified view. For complete analysis details,
+export the results or check the main results tabs.
+"""
+
+        text_widget.insert('1.0', details)
+        text_widget.config(state='disabled')
         
-        # Add content
-        text_widget.insert('end', f"{file_data.get('filename', 'Unknown File')}\n", 'heading')
-        text_widget.insert('end', "=" * 60 + "\n\n")
-        
-        # File information
-        text_widget.insert('end', "File Information\n", 'subheading')
-        text_widget.insert('end', f"Model: ", 'label')
-        text_widget.insert('end', f"{file_data.get('model', 'N/A')}\n")
-        text_widget.insert('end', f"Serial: ", 'label')
-        text_widget.insert('end', f"{file_data.get('serial', 'N/A')}\n")
-        text_widget.insert('end', f"Status: ", 'label')
-        
-        status = file_data.get('status', 'Unknown')
-        status_tag = status.lower() if status.lower() in ['pass', 'fail', 'warning'] else None
-        text_widget.insert('end', f"{status}\n", status_tag)
-        
-        text_widget.insert('end', f"Timestamp: ", 'label')
-        timestamp = file_data.get('timestamp', datetime.now())
-        if isinstance(timestamp, datetime):
-            text_widget.insert('end', f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        else:
-            text_widget.insert('end', f"{timestamp}\n")
-        
-        text_widget.insert('end', "\n")
-        
-        # Analysis Results
-        text_widget.insert('end', "Analysis Results\n", 'subheading')
-        text_widget.insert('end', f"Sigma Gradient: ", 'label')
-        text_widget.insert('end', f"{file_data.get('sigma_gradient', 'N/A'):.6f}\n")
-        
-        text_widget.insert('end', f"Sigma Pass: ", 'label')
-        sigma_pass = file_data.get('sigma_pass')
-        if sigma_pass is not None:
-            text_widget.insert('end', "YES\n" if sigma_pass else "NO\n", 'pass' if sigma_pass else 'fail')
-        else:
-            text_widget.insert('end', "N/A\n")
-            
-        text_widget.insert('end', f"Linearity Pass: ", 'label')
-        lin_pass = file_data.get('linearity_pass')
-        if lin_pass is not None:
-            text_widget.insert('end', "YES\n" if lin_pass else "NO\n", 'pass' if lin_pass else 'fail')
-        else:
-            text_widget.insert('end', "N/A\n")
-            
-        text_widget.insert('end', f"Risk Category: ", 'label')
-        risk = file_data.get('risk_category', 'Unknown')
-        risk_tag = 'fail' if risk == 'High' else 'warning' if risk == 'Medium' else 'pass'
-        text_widget.insert('end', f"{risk}\n", risk_tag)
-        
-        # Multi-track details if available
-        if file_data.get('has_multi_tracks') and 'tracks' in file_data:
-            text_widget.insert('end', "\nTrack Details\n", 'subheading')
-            for track_id, track_info in file_data['tracks'].items():
-                text_widget.insert('end', f"\n{track_id}:\n", 'label')
-                text_widget.insert('end', f"  Status: {track_info.get('status', 'N/A')}\n")
-                text_widget.insert('end', f"  Sigma Gradient: {track_info.get('sigma_gradient', 'N/A'):.6f}\n")
-                text_widget.insert('end', f"  Sigma Pass: {'YES' if track_info.get('sigma_pass') else 'NO'}\n")
-                text_widget.insert('end', f"  Linearity Pass: {'YES' if track_info.get('linearity_pass') else 'NO'}\n")
-                text_widget.insert('end', f"  Risk: {track_info.get('risk_category', 'N/A')}\n")
-        
-        # Make read-only
-        text_widget.configure(state='disabled')
-        
-        # Add close button
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(fill='x', pady=(0, 10))
-        
+        # Close button
         ttk.Button(
-            button_frame,
+            dialog,
             text="Close",
             command=dialog.destroy
-        ).pack(side='right', padx=10)
-        
-        # If plot exists, add view plot button
-        if file_data.get('plot_path') and Path(str(file_data['plot_path'])).exists():
-            ttk.Button(
-                button_frame,
-                text="View Plot",
-                command=lambda: self._view_plot(file_data)
-            ).pack(side='right', padx=5)
+        ).pack(pady=(0, 10))

@@ -334,6 +334,7 @@ class MainWindow:
             ("🏠 Home", "home"),
             ("📊 Analysis", "analysis"),
             ("📈 Historical Data", "historical"),
+            ("📋 Model Summary", "model_summary"),
             ("🤖 ML Tools", "ml_tools"),
             ("🧠 AI Insights", "ai_insights"),
             ("⚙️ Settings", "settings")
@@ -394,6 +395,7 @@ class MainWindow:
         from laser_trim_analyzer.gui.pages.home_page import HomePage
         from laser_trim_analyzer.gui.pages.analysis_page import AnalysisPage
         from laser_trim_analyzer.gui.pages.historical_page import HistoricalPage
+        from laser_trim_analyzer.gui.pages.model_summary_page import ModelSummaryPage
         from laser_trim_analyzer.gui.pages.ml_tools_page import MLToolsPage
         from laser_trim_analyzer.gui.pages.ai_insights_page import AIInsightsPage
         from laser_trim_analyzer.gui.pages.settings_page import SettingsPage
@@ -402,6 +404,7 @@ class MainWindow:
         self.pages['home'] = HomePage(self.content_frame, self)
         self.pages['analysis'] = AnalysisPage(self.content_frame, self)
         self.pages['historical'] = HistoricalPage(self.content_frame, self)
+        self.pages['model_summary'] = ModelSummaryPage(self.content_frame, self)
         self.pages['ml_tools'] = MLToolsPage(self.content_frame, self)
         self.pages['ai_insights'] = AIInsightsPage(self.content_frame, self)
         self.pages['settings'] = SettingsPage(self.content_frame, self)

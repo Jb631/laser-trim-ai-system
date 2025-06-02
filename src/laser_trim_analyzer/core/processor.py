@@ -785,6 +785,7 @@ class LaserTrimProcessor:
 
             # Find data columns based on system
             columns = find_data_columns(df, system)
+            self.logger.debug(f"Found columns for {system}: {columns}")
 
             if not columns:
                 return {}
@@ -797,10 +798,17 @@ class LaserTrimProcessor:
             upper_limits = []
             lower_limits = []
             if 'upper_limit' in columns and 'lower_limit' in columns:
+                self.logger.debug(f"Attempting to extract limits from columns {columns['upper_limit']} and {columns['lower_limit']}")
                 upper_series = pd.to_numeric(df.iloc[:, columns['upper_limit']], errors='coerce')
                 lower_series = pd.to_numeric(df.iloc[:, columns['lower_limit']], errors='coerce')
                 upper_limits = upper_series.dropna().tolist()
                 lower_limits = lower_series.dropna().tolist()
+                self.logger.debug(f"Extracted limits - Upper: {len(upper_limits)} values, Lower: {len(lower_limits)} values")
+                if upper_limits and lower_limits:
+                    self.logger.debug(f"Sample upper limits: {upper_limits[:5]}")
+                    self.logger.debug(f"Sample lower limits: {lower_limits[:5]}")
+            else:
+                self.logger.warning(f"Limit columns not found in system {system} columns: {columns}")
             
             # Drop NaN values
             positions = position_series.dropna().tolist()
@@ -820,13 +828,17 @@ class LaserTrimProcessor:
             # Calculate travel length
             travel_length = max(positions) - min(positions) if positions else 0
 
-            return {
+            result = {
                 'positions': positions,
                 'errors': errors,
                 'upper_limits': upper_limits,
                 'lower_limits': lower_limits,
                 'travel_length': travel_length
             }
+            
+            self.logger.debug(f"Final extracted data: {len(positions)} positions, {len(errors)} errors, {len(upper_limits)} upper limits, {len(lower_limits)} lower limits")
+            
+            return result
 
         except Exception as e:
             self.logger.error(f"Error extracting trim data: {e}")
@@ -917,7 +929,8 @@ class LaserTrimProcessor:
             'errors': data.get('errors', []),
             'upper_limits': data.get('upper_limits', []),
             'lower_limits': data.get('lower_limits', []),
-            'linearity_spec': sigma_analysis.sigma_threshold
+            # Don't pass linearity_spec - let the analyzer calculate it from limits
+            # 'linearity_spec': sigma_analysis.sigma_threshold
         }
         
         return self.linearity_analyzer.analyze(analysis_data)

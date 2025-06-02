@@ -13,6 +13,7 @@ import threading
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class HomePage(BasePage):
@@ -228,6 +229,9 @@ class HomePage(BasePage):
         # Pack
         self.activity_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
+
+        # Add mouse wheel scrolling support
+        add_mousewheel_support(self.activity_tree)
 
         # Add tags for status colors
         self.activity_tree.tag_configure('pass', foreground=self.colors['success'])
