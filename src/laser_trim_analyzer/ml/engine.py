@@ -521,9 +521,10 @@ class MLEngine:
             raise ValueError(f"No valid features found for {model_name}")
 
         X = data_features[feature_cols]
-        y = data_features[config.target] if config.target in data_features.columns else None
+        y = data_features[config.target] if config.target and config.target in data_features.columns else None
 
-        if y is None:
+        # For supervised models, target is required
+        if config.target and y is None:
             raise ValueError(f"Target column {config.target} not found")
 
         # Create and train model

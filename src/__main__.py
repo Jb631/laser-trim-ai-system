@@ -58,11 +58,15 @@ def setup_logging(debug: bool = False) -> None:
     logging.getLogger("PIL").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
-    # Reduce noise from analysis modules during normal operation
+    # Reduce noise from analysis modules during normal operation only
     if not debug:
         logging.getLogger("laser_trim_analyzer.analysis").setLevel(logging.WARNING)
         logging.getLogger("laser_trim_analyzer.gui.widgets").setLevel(logging.WARNING)
         logging.getLogger("laser_trim_analyzer.database").setLevel(logging.WARNING)
+    else:
+        # In debug mode, ensure analysis modules are debug level
+        logging.getLogger("laser_trim_analyzer.analysis").setLevel(logging.DEBUG)
+        logging.getLogger("laser_trim_analyzer.core").setLevel(logging.DEBUG)
 
 
 def run_gui(debug: bool = False) -> None:

@@ -7,19 +7,22 @@ with charts and export functionality.
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import customtkinter as ctk
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 import pandas as pd
 import numpy as np
+import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata
+from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, AnalysisStatus
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class HistoricalPage(BasePage):
@@ -226,6 +229,9 @@ class HistoricalPage(BasePage):
 
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
+
+        # Add mouse wheel scrolling support to treeview
+        add_mousewheel_support(self.results_tree)
 
         # Summary label
         self.summary_label = ttk.Label(
@@ -670,3 +676,43 @@ Metrics:
             text="Close",
             command=dialog.destroy
         ).pack(pady=(0, 10))
+
+    def _handle_selection(self, event):
+        """Handle row selection in the tree."""
+        try:
+            selected_items = self.results_tree.selection()
+            self.selected_ids = []
+            
+            for item in selected_items:
+                values = self.results_tree.item(item, 'values')
+                if values:
+                    self.selected_ids.append(int(values[0]))  # ID is first column
+                    
+        except Exception as e:
+            self.logger.error(f"Selection handling error: {e}")
+
+    def export_results(self):
+        """Export historical data to Excel."""
+        if self.current_data is None or len(self.current_data) == 0:
+            messagebox.showwarning("Export", "No data available to export")
+            return
+            
+        try:
+            # Get save location
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                title="Export Historical Data"
+            )
+            
+            if not filename:
+                return
+                
+            # Export to Excel
+            self.current_data.to_excel(filename, index=False)
+            messagebox.showinfo("Export", f"Data exported successfully to:\n{filename}")
+            self.logger.info(f"Exported historical data to {filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
+            self.logger.error(f"Export failed: {e}")

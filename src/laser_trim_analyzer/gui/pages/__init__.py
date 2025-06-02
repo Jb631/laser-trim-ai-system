@@ -9,6 +9,7 @@ from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.pages.home_page import HomePage
 from laser_trim_analyzer.gui.pages.analysis_page import AnalysisPage
 from laser_trim_analyzer.gui.pages.historical_page import HistoricalPage
+from laser_trim_analyzer.gui.pages.model_summary_page import ModelSummaryPage
 from laser_trim_analyzer.gui.pages.ml_tools_page import MLToolsPage
 from laser_trim_analyzer.gui.pages.ai_insights_page import AIInsightsPage
 from laser_trim_analyzer.gui.pages.settings_page import SettingsPage
@@ -18,6 +19,7 @@ __all__ = [
     'HomePage',
     'AnalysisPage',
     'HistoricalPage',
+    'ModelSummaryPage',
     'MLToolsPage',
     'AIInsightsPage',
     'SettingsPage',

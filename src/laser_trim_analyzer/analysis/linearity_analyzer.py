@@ -46,6 +46,10 @@ class LinearityAnalyzer(BaseAnalyzer):
         lower_limits = data.get('lower_limits', [])
         linearity_spec = data.get('linearity_spec')
 
+        self.logger.debug(f"Linearity analysis input: {len(positions)} positions, {len(errors)} errors")
+        self.logger.debug(f"Limits received: {len(upper_limits)} upper, {len(lower_limits)} lower")
+        self.logger.debug(f"Initial linearity_spec: {linearity_spec}")
+
         # Validate data
         is_valid, messages = self.validate_data(positions, errors)
         if not is_valid:
@@ -62,18 +66,25 @@ class LinearityAnalyzer(BaseAnalyzer):
 
         # Interpolate missing limits
         if upper_limits and lower_limits:
+            self.logger.debug("Interpolating limits...")
             upper_limits, lower_limits = self.interpolate_limits(
                 positions, upper_limits, lower_limits
             )
+            self.logger.debug(f"After interpolation: {len(upper_limits)} upper, {len(lower_limits)} lower")
 
         # Calculate linearity spec if not provided
         if linearity_spec is None:
+            self.logger.debug("Calculating linearity spec from limits...")
             linearity_spec = self.calculate_linearity_spec(upper_limits, lower_limits)
+            self.logger.debug(f"Calculated linearity_spec: {linearity_spec}")
+        else:
+            self.logger.debug(f"Using provided linearity_spec: {linearity_spec}")
 
         # Calculate optimal offset
         optimal_offset = self._calculate_optimal_offset(
             errors, upper_limits, lower_limits
         )
+        self.logger.debug(f"Calculated optimal offset: {optimal_offset}")
 
         # Apply offset
         shifted_errors = [e + optimal_offset for e in errors]
@@ -87,6 +98,8 @@ class LinearityAnalyzer(BaseAnalyzer):
             shifted_errors, upper_limits, lower_limits
         )
         linearity_pass = fail_points == 0
+
+        self.logger.debug(f"Linearity analysis results: raw_error={final_error_raw:.4f}, shifted_error={final_error_shifted:.4f}, fail_points={fail_points}, pass={linearity_pass}")
 
         # Calculate deviation analysis
         max_deviation, max_deviation_position = self._analyze_deviation(

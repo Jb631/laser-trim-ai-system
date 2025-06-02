@@ -209,7 +209,12 @@ class ThresholdOptimizer(BaseMLModel):
     def _analyze_threshold_distribution(self, y_true: pd.Series,
                                         y_pred: np.ndarray) -> None:
         """Analyze threshold distribution for insights."""
-        residuals = y_true - y_pred
+        # Ensure both arrays have the same length for broadcasting
+        min_length = min(len(y_true), len(y_pred))
+        y_true_aligned = y_true.iloc[:min_length] if isinstance(y_true, pd.Series) else y_true[:min_length]
+        y_pred_aligned = y_pred[:min_length]
+        
+        residuals = y_true_aligned - y_pred_aligned
 
         # Store analysis results
         self.optimal_threshold_history.append({
