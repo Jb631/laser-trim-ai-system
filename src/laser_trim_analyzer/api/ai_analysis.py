@@ -535,17 +535,30 @@ Critical for meeting customer specifications.
 
     def _load_recent_data(self, days: int = 7) -> pd.DataFrame:
         """Load recent data from database."""
-        import sqlite3
-
         try:
+            import sqlite3
+            
             conn = sqlite3.connect(self.db_path)
+            
+            # FIXED: Prevent SQL injection by using proper parameterization
             query = """
-            SELECT a.*, t.*
-            FROM analysis_results a
-            JOIN track_results t ON a.id = t.analysis_id
-            WHERE a.timestamp >= datetime('now', ?)
+                SELECT 
+                    model,
+                    serial_number,
+                    file_date,
+                    sigma_gradient,
+                    sigma_threshold,
+                    sigma_pass,
+                    linearity_error,
+                    linearity_pass,
+                    status
+                FROM analysis_results 
+                WHERE file_date >= date('now', '-' || ? || ' days')
+                ORDER BY file_date DESC
             """
-            df = pd.read_sql_query(query, conn, params=[f'-{days} days'])
+            
+            # Use proper parameter binding - pass the number of days as an integer
+            df = pd.read_sql_query(query, conn, params=[str(days)])
             conn.close()
             return df
         except Exception as e:

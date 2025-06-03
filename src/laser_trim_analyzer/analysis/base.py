@@ -120,10 +120,13 @@ class BaseAnalyzer(ABC):
                                  order: int = 5) -> np.ndarray:
         """
         Apply Butterworth low-pass filter to data.
+        
+        In Lockheed Martin compliance mode, uses the original LM recursive filter
+        algorithm instead of Butterworth for exact compatibility.
 
         Args:
             data: Input data to filter
-            order: Filter order (default: 5)
+            order: Filter order (default: 5) - ignored in LM compliance mode
 
         Returns:
             Filtered data array
@@ -133,46 +136,67 @@ class BaseAnalyzer(ABC):
             data_array = np.array(data)
             
             # Check if data is too short for filtering
-            min_length = 3 * order  # Rule of thumb for filtfilt
+            min_length = 3 if self.analysis_config.lockheed_martin_compliance_mode else 3 * order
             if len(data_array) < min_length:
                 self.logger.warning(
-                    f"Data length ({len(data_array)}) too short for order {order} Butterworth filter. "
+                    f"Data length ({len(data_array)}) too short for filtering. "
                     f"Returning original data."
                 )
                 return data_array
             
-            # Calculate normalized cutoff frequency
-            nyquist_freq = self.analysis_config.filter_sampling_frequency / 2
-            normalized_cutoff = self.analysis_config.filter_cutoff_frequency / nyquist_freq
-
-            # Ensure cutoff is valid
-            if normalized_cutoff >= 1.0:
-                self.logger.warning(
-                    f"Cutoff frequency {self.analysis_config.filter_cutoff_frequency} Hz "
-                    f"is too high for sampling frequency {self.analysis_config.filter_sampling_frequency} Hz. "
-                    "Using 0.4 * Nyquist frequency."
+            # Use LM original recursive filter when in compliance mode
+            if self.analysis_config.lockheed_martin_compliance_mode:
+                from laser_trim_analyzer.utils.filter_utils import apply_lm_recursive_filter
+                
+                self.logger.info(
+                    "🔴 LOCKHEED MARTIN COMPLIANCE MODE: Using original LM recursive filter "
+                    f"(fc=80Hz, fs=100Hz) - matches my_filtfiltfd2.m algorithm"
                 )
-                normalized_cutoff = 0.4  # More conservative for stability
-            elif normalized_cutoff > 0.95:
-                # Silently adjust if close to Nyquist
-                normalized_cutoff = 0.4
-
-            # Design filter
-            b, a = signal.butter(order, normalized_cutoff, btype='low', analog=False)
-
-            # Apply filter (using filtfilt for zero phase shift)
-            # Use padding for short sequences
-            if len(data_array) < 50:
-                # For very short sequences, use simpler filtering
-                filtered_data = signal.lfilter(b, a, data_array)
+                
+                filtered_data = apply_lm_recursive_filter(
+                    data_array,
+                    cutoff_freq=80.0,  # Original LM specification
+                    sampling_freq=100.0
+                )
+                
+                return filtered_data
+            
+            # Standard Butterworth filter for technical correctness mode
             else:
-                # For longer sequences, use filtfilt with padding
-                filtered_data = signal.filtfilt(b, a, data_array, padtype='odd', padlen=min(len(data_array)//4, 50))
+                # Get effective cutoff frequency
+                effective_cutoff = self.analysis_config.get_effective_cutoff_frequency()
+                
+                # Calculate normalized cutoff frequency
+                nyquist_freq = self.analysis_config.filter_sampling_frequency / 2
+                normalized_cutoff = effective_cutoff / nyquist_freq
 
-            return filtered_data
+                # Standard technical compliance
+                if normalized_cutoff >= 1.0:
+                    self.logger.warning(
+                        f"Cutoff frequency {effective_cutoff} Hz too high for sampling frequency "
+                        f"{self.analysis_config.filter_sampling_frequency} Hz. Using 0.4 * Nyquist frequency."
+                    )
+                    normalized_cutoff = 0.4  # More conservative for stability
+                elif normalized_cutoff > 0.95:
+                    # Silently adjust if close to Nyquist
+                    normalized_cutoff = 0.4
+
+                # Design filter
+                b, a = signal.butter(order, normalized_cutoff, btype='low', analog=False)
+
+                # Apply filter (using filtfilt for zero phase shift)
+                # Use padding for short sequences
+                if len(data_array) < 50:
+                    # For very short sequences, use simpler filtering
+                    filtered_data = signal.lfilter(b, a, data_array)
+                else:
+                    # For longer sequences, use filtfilt with padding
+                    filtered_data = signal.filtfilt(b, a, data_array, padtype='odd', padlen=min(len(data_array)//4, 50))
+
+                return filtered_data
 
         except Exception as e:
-            self.logger.error(f"Error applying Butterworth filter: {e}")
+            self.logger.error(f"Error applying filter: {e}")
             # Return original data if filtering fails
             return np.array(data)
 

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def apply_filter(
         data: Union[List[float], np.ndarray],
         filter_type: str = "butterworth",
-        cutoff_freq: float = 80.0,
+        cutoff_freq: float = 40.0,
         sampling_freq: float = 100.0,
         order: int = 4
 ) -> np.ndarray:
@@ -34,12 +34,12 @@ def apply_filter(
     Returns:
         Filtered data array
     """
-    if not data or len(data) < order + 1:
-        logger.warning(f"Insufficient data points ({len(data)}) for order {order} filter")
-        return np.array(data)
-
     # Convert to numpy array
     data = np.asarray(data, dtype=float)
+    
+    if len(data) < order + 1:
+        logger.warning(f"Insufficient data points ({len(data)}) for order {order} filter")
+        return data
 
     # Handle NaN values
     nan_mask = np.isnan(data)
@@ -275,8 +275,26 @@ def interpolate_missing_data(
 
     except Exception as e:
         logger.error(f"Interpolation failed: {e}")
-        # Fall back to forward fill
-        return pd.Series(data).fillna(method='ffill').fillna(method='bfill').values
+        # Fall back to forward fill using numpy
+        data_array = np.asarray(data, dtype=float)
+        
+        # Forward fill: propagate last valid value forward
+        mask = ~np.isnan(data_array)
+        if not np.any(mask):
+            # All NaN, return as is
+            return data_array
+            
+        # Forward fill
+        idx = np.where(mask, np.arange(len(mask)), np.nan)
+        idx = np.maximum.accumulate(idx, axis=0)
+        
+        # Handle initial NaNs by backward fill
+        if np.isnan(idx[0]):
+            # Find first valid index
+            first_valid = np.argmax(mask)
+            idx[:first_valid] = first_valid
+            
+        return data_array[idx.astype(int)]
 
 
 def apply_end_point_filter(
@@ -351,13 +369,66 @@ def calculate_gradient(
     return np.array(gradients)
 
 
+def apply_lm_recursive_filter(
+        data: Union[List[float], np.ndarray],
+        cutoff_freq: float = 80.0,
+        sampling_freq: float = 100.0
+) -> np.ndarray:
+    """
+    Apply Lockheed Martin original recursive low-pass filter.
+    
+    This implements the exact algorithm from my_filtfiltfd2.m:
+    output[i] = output[i-1] + (fc/fs) * (input[i] - output[i-1])
+    
+    Two-pass filtering for zero-phase response.
+    
+    Args:
+        data: Input data to filter
+        cutoff_freq: Cutoff frequency in Hz (default: 80.0 - LM original)
+        sampling_freq: Sampling frequency in Hz (default: 100.0)
+        
+    Returns:
+        Filtered data array
+    """
+    # Convert to numpy array
+    data = np.asarray(data, dtype=float)
+    
+    if len(data) < 2:
+        logger.warning(f"Insufficient data points ({len(data)}) for LM recursive filter")
+        return data
+    
+    # Calculate filter coefficient (fc/fs ratio)
+    alpha = cutoff_freq / sampling_freq
+    
+    # Clamp alpha to valid range for stability
+    alpha = max(0.001, min(0.999, alpha))
+    
+    # First pass (forward)
+    forward_output = np.zeros_like(data)
+    forward_output[0] = data[0]  # Initialize with first sample
+    
+    for i in range(1, len(data)):
+        forward_output[i] = forward_output[i-1] + alpha * (data[i] - forward_output[i-1])
+    
+    # Second pass (reverse) for zero-phase filtering
+    reverse_output = np.zeros_like(forward_output)
+    reverse_output[-1] = forward_output[-1]  # Initialize with last sample
+    
+    for i in range(len(forward_output) - 2, -1, -1):
+        reverse_output[i] = reverse_output[i+1] + alpha * (forward_output[i] - reverse_output[i+1])
+    
+    logger.debug(f"Applied LM recursive filter: fc={cutoff_freq}Hz, fs={sampling_freq}Hz, alpha={alpha:.3f}")
+    
+    return reverse_output
+
+
 # QA-specific filter presets
 class FilterPresets:
     """Predefined filter configurations for potentiometer QA."""
 
     STANDARD = {
         "filter_type": "butterworth",
-        "cutoff_freq": 80.0,
+        "cutoff_freq": 40.0,
         "sampling_freq": 100.0,
         "order": 4
     }

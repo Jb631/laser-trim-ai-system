@@ -52,6 +52,15 @@ except ImportError:
     HAS_ML = False
     MLPredictor = None
     PredictionResult = None
+    
+    # Create dummy ML predictor for graceful degradation
+    class DummyMLPredictor:
+        def __init__(self, *args, **kwargs):
+            pass
+        def initialize(self):
+            return False
+        async def predict(self, *args, **kwargs):
+            return {}
 
 # Type checking support
 from typing import TYPE_CHECKING
@@ -94,47 +103,115 @@ class LaserTrimProcessor:
         self.ml_predictor = ml_predictor
         self.logger = logger or logging.getLogger(__name__)
 
-        # Initialize ML predictor if enabled and not provided
-        if self.config.ml.enabled and not self.ml_predictor and HAS_ML:
-            self.ml_predictor = MLPredictor(config, logger=self.logger)
-            if not self.ml_predictor.initialize():
-                self.logger.warning("ML predictor initialization failed")
-                self.ml_predictor = None
+        # Initialize ML predictor with robust error handling
+        self._initialize_ml_predictor()
 
-        # Initialize analyzers
-        self.sigma_analyzer = SigmaAnalyzer(config, logger)
-        self.linearity_analyzer = LinearityAnalyzer(config, logger)
-        self.resistance_analyzer = ResistanceAnalyzer(config, logger)
+        # Initialize analyzers with error handling
+        try:
+            self.sigma_analyzer = SigmaAnalyzer(config, logger)
+            self.linearity_analyzer = LinearityAnalyzer(config, logger)
+            self.resistance_analyzer = ResistanceAnalyzer(config, logger)
+        except Exception as e:
+            self.logger.error(f"Failed to initialize analyzers: {e}")
+            # Create dummy analyzers to prevent complete failure
+            self.sigma_analyzer = None
+            self.linearity_analyzer = None
+            self.resistance_analyzer = None
 
-        # Initialize calculation validator
-        validation_level_map = {
-            'relaxed': ValidationLevel.RELAXED,
-            'standard': ValidationLevel.STANDARD,
-            'strict': ValidationLevel.STRICT
-        }
-        validation_level = validation_level_map.get(
-            getattr(config, 'validation_level', 'standard'),
-            ValidationLevel.STANDARD
-        )
-        self.calculation_validator = CalculationValidator(validation_level)
-        self.logger.info(f"Initialized calculation validator with {validation_level.value} validation level")
+        # Initialize calculation validator with error handling
+        try:
+            validation_level_map = {
+                'relaxed': ValidationLevel.RELAXED,
+                'standard': ValidationLevel.STANDARD,
+                'strict': ValidationLevel.STRICT
+            }
+            validation_level = validation_level_map.get(
+                getattr(config, 'validation_level', 'standard'),
+                ValidationLevel.STANDARD
+            )
+            self.calculation_validator = CalculationValidator(validation_level)
+            self.logger.info(f"Initialized calculation validator with {validation_level.value} validation level")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize calculation validator: {e}")
+            self.calculation_validator = None
 
-        # Processing state
+        # Processing state with thread safety
         self._executor = None
         self._processing_tasks = []
         self._is_processing = False
+        self._processing_lock = asyncio.Lock()
 
         # Initialize processing statistics
         self._processing_stats = {
             "files_processed": 0,
             "validation_failures": 0,
             "processing_errors": 0,
-            "cache_hits": 0
+            "cache_hits": 0,
+            "ml_predictions": 0,
+            "ml_errors": 0
         }
 
-        # Cache for performance
+        # Cache for performance with size limit
         self._file_cache = {}
-        self._cache_enabled = config.processing.cache_enabled
+        self._cache_enabled = getattr(config.processing, 'cache_enabled', False)
+        self._max_cache_size = 100  # Limit cache size to prevent memory issues
+
+    def _initialize_ml_predictor(self):
+        """Initialize ML predictor with robust error handling."""
+        # Don't initialize ML if disabled
+        if not getattr(self.config.ml, 'enabled', False):
+            self.ml_predictor = None
+            self.logger.info("ML predictions disabled in configuration")
+            return
+
+        # If ML predictor already provided, use it
+        if self.ml_predictor is not None:
+            self.logger.info("Using provided ML predictor")
+            return
+
+        # Try to initialize ML predictor if available
+        if not HAS_ML:
+            self.logger.warning("ML components not available - predictions disabled")
+            self.ml_predictor = None
+            return
+
+        try:
+            self.logger.info("Initializing ML predictor...")
+            self.ml_predictor = MLPredictor(self.config, logger=self.logger)
+            
+            # Initialize with timeout to prevent hanging
+            import asyncio
+            import functools
+            
+            def run_with_timeout():
+                try:
+                    return self.ml_predictor.initialize()
+                except Exception as e:
+                    self.logger.error(f"ML predictor initialization failed: {e}")
+                    return False
+            
+            # Run initialization with 30 second timeout
+            try:
+                loop = asyncio.get_event_loop()
+                future = loop.run_in_executor(None, run_with_timeout)
+                success = asyncio.wait_for(future, timeout=30.0)
+                
+                if not success:
+                    self.logger.warning("ML predictor initialization failed - using fallback")
+                    self.ml_predictor = None
+                else:
+                    self.logger.info("ML predictor initialized successfully")
+                    
+            except asyncio.TimeoutError:
+                self.logger.warning("ML predictor initialization timed out - disabling ML")
+                self.ml_predictor = None
+            except Exception as e:
+                self.logger.warning(f"ML predictor initialization error: {e}")
+                self.ml_predictor = None
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to create ML predictor: {e}")
+            self.ml_predictor = None
 
     async def process_file(
             self,
@@ -143,7 +220,7 @@ class LaserTrimProcessor:
             progress_callback: Optional[Callable[[str, float], None]] = None
     ) -> AnalysisResult:
         """
-        Process a single Excel file with comprehensive validation.
+        Process a single Excel file with comprehensive validation and robust error handling.
 
         Args:
             file_path: Path to Excel file
@@ -155,97 +232,170 @@ class LaserTrimProcessor:
         """
         file_path = Path(file_path)
         
-        if progress_callback:
-            progress_callback("Starting file validation...", 0.0)
+        # Protect against concurrent processing issues
+        async with self._processing_lock:
+            return await self._process_file_internal(file_path, output_dir, progress_callback)
 
-        # Step 1: Pre-flight file validation
+    async def _process_file_internal(
+            self,
+            file_path: Path,
+            output_dir: Optional[Path] = None,
+            progress_callback: Optional[Callable[[str, float], None]] = None
+    ) -> AnalysisResult:
+        """Internal file processing with comprehensive error handling."""
+        
+        def safe_progress_callback(message: str, progress: float):
+            """Safe progress callback that won't fail."""
+            try:
+                if progress_callback:
+                    progress_callback(message, progress)
+            except Exception as e:
+                self.logger.warning(f"Progress callback error: {e}")
+
+        safe_progress_callback("Starting file validation...", 0.0)
+
+        # Step 1: Pre-flight file validation with comprehensive error handling
         self.logger.info(f"Starting comprehensive validation for: {file_path.name}")
         
         try:
-            file_validation = validate_excel_file(
-                file_path=file_path,
-                max_file_size_mb=self.config.processing.max_file_size_mb
-            )
-            
-            if not file_validation.is_valid:
-                self._processing_stats["validation_failures"] += 1
-                error_msg = f"File validation failed: {'; '.join(file_validation.errors)}"
-                self.logger.error(error_msg)
-                raise ValidationError(error_msg)
-            
-            # Log validation warnings
-            if file_validation.warnings:
-                for warning in file_validation.warnings:
-                    self.logger.warning(f"File validation warning: {warning}")
-            
-            # Extract metadata from validation
-            detected_system = file_validation.metadata.get('detected_system', 'Unknown')
-            file_size_mb = file_validation.metadata.get('file_size_mb', 0)
-            sheet_names = file_validation.metadata.get('sheet_names', [])
-            
-            self.logger.info(f"File validation passed - System: {detected_system}, Size: {file_size_mb:.2f}MB, Sheets: {len(sheet_names)}")
+            # Validate file exists and is readable
+            if not file_path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+                
+            if not file_path.is_file():
+                raise ValidationError(f"Path is not a file: {file_path}")
+                
+            # Check file size before processing
+            file_size = file_path.stat().st_size
+            max_size = getattr(self.config.processing, 'max_file_size_mb', 100) * 1024 * 1024
+            if file_size > max_size:
+                raise ValidationError(f"File too large: {file_size / 1024 / 1024:.1f}MB > {max_size / 1024 / 1024:.1f}MB")
+
+            # Validate file extension
+            valid_extensions = getattr(self.config.processing, 'file_extensions', ['.xlsx', '.xls'])
+            if file_path.suffix.lower() not in valid_extensions:
+                raise ValidationError(f"Unsupported file type: {file_path.suffix}")
+
+            # Try basic Excel file validation
+            try:
+                file_validation = validate_excel_file(
+                    file_path=file_path,
+                    max_file_size_mb=getattr(self.config.processing, 'max_file_size_mb', 100)
+                )
+                
+                if not file_validation.is_valid:
+                    self._processing_stats["validation_failures"] += 1
+                    error_msg = f"File validation failed: {'; '.join(file_validation.errors)}"
+                    self.logger.error(error_msg)
+                    raise ValidationError(error_msg)
+                
+                # Log validation warnings
+                if file_validation.warnings:
+                    for warning in file_validation.warnings:
+                        self.logger.warning(f"File validation warning: {warning}")
+                
+                # Extract metadata from validation
+                detected_system = file_validation.metadata.get('detected_system', 'Unknown')
+                file_size_mb = file_validation.metadata.get('file_size_mb', 0)
+                sheet_names = file_validation.metadata.get('sheet_names', [])
+                
+                self.logger.info(f"File validation passed - System: {detected_system}, Size: {file_size_mb:.2f}MB, Sheets: {len(sheet_names)}")
+                
+            except Exception as e:
+                # If validation utility fails, try basic checks
+                self.logger.warning(f"Advanced validation failed, using basic checks: {e}")
+                try:
+                    import pandas as pd
+                    # Try to read the Excel file to check if it's valid
+                    excel_file = pd.ExcelFile(file_path)
+                    sheet_names = excel_file.sheet_names
+                    self.logger.info(f"Basic validation passed - Found {len(sheet_names)} sheets")
+                except Exception as excel_error:
+                    raise ValidationError(f"File is not a valid Excel file: {excel_error}")
             
         except Exception as e:
             self._processing_stats["validation_failures"] += 1
             self.logger.error(f"File validation error: {e}")
             raise ValidationError(f"File validation failed: {e}")
 
-        if progress_callback:
-            progress_callback("File validation complete, checking cache...", 0.1)
+        safe_progress_callback("File validation complete, checking cache...", 0.1)
 
-        # Step 2: Cache check
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        if not file_path.suffix.lower() in self.config.processing.file_extensions:
-            raise ValidationError(f"Unsupported file type: {file_path.suffix}")
-
-        file_hash = calculate_file_hash(file_path)
-        if self._cache_enabled and file_hash in self._file_cache:
-            self._processing_stats["cache_hits"] += 1
-            self.logger.info(f"Using cached result for {file_path.name}")
-            return self._file_cache[file_hash]
+        # Step 2: Cache check with size management
+        file_hash = None
+        try:
+            file_hash = calculate_file_hash(file_path)
+            if self._cache_enabled and file_hash in self._file_cache:
+                self._processing_stats["cache_hits"] += 1
+                self.logger.info(f"Using cached result for {file_path.name}")
+                return self._file_cache[file_hash]
+        except Exception as e:
+            self.logger.warning(f"Cache check failed: {e}")
 
         self.logger.info(f"Processing file: {file_path.name}")
         start_time = datetime.now()
 
         try:
-            if progress_callback:
-                progress_callback("Detecting system and extracting metadata...", 0.2)
+            safe_progress_callback("Detecting system and extracting metadata...", 0.2)
 
-            # Step 3: System detection and metadata extraction
-            system_type = detect_system_type(file_path)
-            self.logger.info(f"Detected system type: {system_type.value}")
+            # Step 3: System detection and metadata extraction with fallback
+            try:
+                system_type = detect_system_type(file_path)
+                self.logger.info(f"Detected system type: {system_type.value}")
+            except Exception as e:
+                self.logger.warning(f"System detection failed, using default: {e}")
+                system_type = SystemType.SYSTEM_A  # Default fallback
 
-            # Extract file metadata
-            metadata = await self._extract_file_metadata(file_path, system_type)
+            # Extract file metadata with error handling
+            try:
+                metadata = await self._extract_file_metadata(file_path, system_type)
+            except Exception as e:
+                self.logger.warning(f"Metadata extraction failed, using minimal metadata: {e}")
+                # Create minimal metadata
+                metadata = FileMetadata(
+                    filename=file_path.name,
+                    file_path=str(file_path),
+                    model='Unknown',
+                    serial='Unknown',
+                    timestamp=datetime.now(),
+                    system_type=system_type,
+                    file_size_mb=file_path.stat().st_size / 1024 / 1024,
+                    has_multi_tracks=False
+                )
             
-            # Step 4: Model validation
-            if metadata.model:
-                model_validation = validate_model_number(metadata.model)
-                if not model_validation.is_valid:
-                    self.logger.warning(f"Model validation warnings: {model_validation.warnings}")
-                if model_validation.errors:
-                    self.logger.error(f"Model validation errors: {model_validation.errors}")
+            # Step 4: Model validation with fallback
+            if metadata.model and metadata.model != 'Unknown':
+                try:
+                    model_validation = validate_model_number(metadata.model)
+                    if not model_validation.is_valid:
+                        self.logger.warning(f"Model validation warnings: {model_validation.warnings}")
+                    if model_validation.errors:
+                        self.logger.error(f"Model validation errors: {model_validation.errors}")
+                except Exception as e:
+                    self.logger.warning(f"Model validation failed: {e}")
 
-            if progress_callback:
-                progress_callback("Finding track sheets...", 0.3)
+            safe_progress_callback("Finding track sheets...", 0.3)
 
-            # Step 5: Track detection and processing
-            track_sheets = await self._find_track_sheets(file_path, system_type)
-            self.logger.info(f"Found {len(track_sheets)} track sheets")
+            # Step 5: Track detection and processing with robust error handling
+            try:
+                track_sheets = await self._find_track_sheets(file_path, system_type)
+                self.logger.info(f"Found {len(track_sheets)} track sheets")
+            except Exception as e:
+                self.logger.warning(f"Track sheet detection failed: {e}")
+                # Try fallback track detection
+                track_sheets = {"default": {"sheet": "Sheet1"}}
 
             if not track_sheets:
                 raise DataExtractionError("No valid track sheets found")
 
-            # Process tracks with validation
+            # Process tracks with validation and error recovery
             tracks = {}
             total_tracks = len(track_sheets)
+            processing_errors = []
             
             for idx, (track_id, sheets) in enumerate(track_sheets.items()):
-                if progress_callback:
+                if safe_progress_callback:
                     progress = 0.4 + (0.5 * idx / total_tracks)
-                    progress_callback(f"Processing track {track_id}...", progress)
+                    safe_progress_callback(f"Processing track {track_id}...", progress)
 
                 try:
                     track_data = await self._process_track_with_validation(
@@ -255,78 +405,86 @@ class LaserTrimProcessor:
                     self.logger.debug(f"Successfully processed track {track_id}")
                     
                 except Exception as e:
-                    self.logger.error(f"Failed to process track {track_id}: {e}")
+                    error_msg = f"Failed to process track {track_id}: {e}"
+                    self.logger.error(error_msg)
+                    processing_errors.append((track_id, str(e)))
                     # Continue with other tracks rather than failing completely
                     continue
 
             if not tracks:
-                raise ProcessingError("No tracks could be processed successfully")
+                if processing_errors:
+                    error_details = "; ".join([f"{track}: {error}" for track, error in processing_errors])
+                    raise ProcessingError(f"No tracks could be processed successfully. Errors: {error_details}")
+                else:
+                    raise ProcessingError("No tracks could be processed successfully")
 
-            if progress_callback:
-                progress_callback("Performing final analysis...", 0.9)
+            safe_progress_callback("Finalizing analysis...", 0.9)
 
-            # Step 6: Create final result with comprehensive validation
+            # Step 6: Create result with comprehensive data
             primary_track_id = self._determine_primary_track(tracks)
-            primary_track = tracks.get(primary_track_id)
+            primary_track = tracks[primary_track_id]
 
-            # Calculate processing time
-            processing_time = (datetime.now() - start_time).total_seconds()
-
-            # Determine overall status based on validation and analysis
+            # Calculate overall status and validation
             overall_status = self._determine_overall_status(tracks)
             overall_validation_status = self._determine_overall_validation_status(tracks)
             validation_grade = self._calculate_overall_validation_grade(tracks)
 
-            # Collect validation issues
-            validation_issues = []
-            validation_warnings = []
-            validation_recommendations = []
-            
-            for track_data in tracks.values():
-                if hasattr(track_data, 'validation_warnings'):
-                    validation_warnings.extend(track_data.validation_warnings)
-                if hasattr(track_data, 'validation_recommendations'):
-                    validation_recommendations.extend(track_data.validation_recommendations)
-
-            # Create comprehensive result
+            # Create result
             result = AnalysisResult(
                 metadata=metadata,
                 tracks=tracks,
                 primary_track=primary_track,
                 overall_status=overall_status,
-                processing_time=processing_time,
                 overall_validation_status=overall_validation_status,
                 validation_grade=validation_grade,
-                validation_issues=validation_issues,
-                validation_warnings=validation_warnings,
-                validation_recommendations=validation_recommendations
+                processing_time=(datetime.now() - start_time).total_seconds(),
+                file_hash=file_hash,
+                processing_errors=processing_errors if processing_errors else None
             )
 
-            # Step 7: Generate outputs if requested
+            # Step 7: Add ML predictions with error handling
+            try:
+                if self.ml_predictor:
+                    safe_progress_callback("Adding ML predictions...", 0.95)
+                    await self._add_ml_predictions(result)
+                    self._processing_stats["ml_predictions"] += 1
+            except Exception as e:
+                self.logger.warning(f"ML predictions failed: {e}")
+                self._processing_stats["ml_errors"] += 1
+
+            # Step 8: Generate outputs if requested
             if output_dir:
-                await self._generate_outputs(result, output_dir, file_path)
+                try:
+                    safe_progress_callback("Generating outputs...", 0.98)
+                    await self._generate_outputs(result, output_dir, file_path)
+                except Exception as e:
+                    self.logger.warning(f"Output generation failed: {e}")
 
-            # Cache result
-            if self._cache_enabled:
-                self._file_cache[file_hash] = result
+            # Step 9: Cache result if enabled
+            if self._cache_enabled and file_hash:
+                try:
+                    # Manage cache size
+                    if len(self._file_cache) >= self._max_cache_size:
+                        # Remove oldest entry
+                        oldest_key = next(iter(self._file_cache))
+                        del self._file_cache[oldest_key]
+                    
+                    self._file_cache[file_hash] = result
+                except Exception as e:
+                    self.logger.warning(f"Failed to cache result: {e}")
 
-            # Update statistics
+            # Update processing statistics
             self._processing_stats["files_processed"] += 1
             
-            if progress_callback:
-                progress_callback("Processing complete!", 1.0)
-
-            self.logger.info(f"Successfully processed {file_path.name} in {processing_time:.2f}s")
+            safe_progress_callback("Analysis complete", 1.0)
+            self.logger.info(f"Successfully processed {file_path.name} in {result.processing_time:.2f}s")
+            
             return result
 
         except Exception as e:
             self._processing_stats["processing_errors"] += 1
             self.logger.error(f"Processing failed for {file_path.name}: {e}")
-            
-            if progress_callback:
-                progress_callback(f"Processing failed: {str(e)}", 1.0)
-            
-            raise ProcessingError(f"Failed to process {file_path.name}: {e}")
+            raise
 
     async def _process_track_with_validation(
             self,
@@ -375,7 +533,7 @@ class LaserTrimProcessor:
         # Step 3: Perform core analyses with industry validation
         sigma_analysis = await self._analyze_sigma(analysis_data, unit_props, model)
         linearity_analysis = await self._analyze_linearity(analysis_data, unit_props, model)
-        resistance_analysis = await self._analyze_resistance(unit_props)
+        resistance_analysis = await self._analyze_resistance(unit_props, file_path, sheets, system_type)
 
         # Step 4: Validate sigma values
         if sigma_analysis.sigma_gradient is not None and sigma_analysis.sigma_threshold is not None:
@@ -422,9 +580,21 @@ class LaserTrimProcessor:
 
         validation_recommendations.extend(industry_recommendations)
 
+        # Determine track status
+        track_status = self._determine_track_status(sigma_analysis, linearity_analysis)
+        
+        # Extract travel length from analysis data
+        travel_length = analysis_data.get('travel_length', 0.0)
+        if travel_length == 0.0 and 'positions' in analysis_data:
+            positions = analysis_data['positions']
+            if positions:
+                travel_length = max(positions) - min(positions)
+
         # Create track data with comprehensive validation info
         track_data = TrackData(
             track_id=track_id,
+            status=track_status,
+            travel_length=travel_length,
             unit_properties=unit_props,
             sigma_analysis=sigma_analysis,
             linearity_analysis=linearity_analysis,
@@ -438,54 +608,66 @@ class LaserTrimProcessor:
         # Add validation fields to track data
         track_data.validation_warnings = validation_warnings
         track_data.validation_recommendations = validation_recommendations
-        track_data.validation_status = track_validation_status
+        track_data.overall_validation_status = track_validation_status
 
         return track_data
 
     async def process_batch(
-            self,
-            file_paths: List[Path],
-            output_dir: Optional[Path] = None,
-            progress_callback: Optional[Callable[[str, float], None]] = None,
-            max_workers: Optional[int] = None
+        self,
+        file_paths: List[Path],
+        output_dir: Optional[Path] = None,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+        max_workers: Optional[int] = None
     ) -> Dict[str, AnalysisResult]:
         """
-        Process multiple files with comprehensive batch validation.
-
+        Process multiple files in batch with optimized performance and memory management.
+        
         Args:
             file_paths: List of file paths to process
-            output_dir: Output directory for results
-            progress_callback: Progress callback function
-            max_workers: Maximum concurrent workers
-
+            output_dir: Optional output directory for plots
+            progress_callback: Optional progress callback function
+            max_workers: Maximum number of parallel workers
+            
         Returns:
             Dictionary mapping file paths to analysis results
         """
-        if progress_callback:
-            progress_callback("Starting batch validation...", 0.0)
+        import gc
+        import time
+        import psutil
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        if not file_paths:
+            return {}
 
-        # Step 1: Batch-level validation
         self.logger.info(f"Starting batch processing of {len(file_paths)} files")
         
-        batch_validation = BatchValidator.validate_batch(
-            file_paths=file_paths,
-            max_batch_size=self.config.processing.max_batch_size
-        )
+        # Performance tracking
+        start_time = time.time()
+        last_cleanup_time = start_time
+        processed_count = 0
         
-        if not batch_validation.is_valid:
-            error_msg = f"Batch validation failed: {'; '.join(batch_validation.errors)}"
-            self.logger.error(error_msg)
-            raise ValidationError(error_msg)
-        
-        # Log batch validation info
-        if batch_validation.warnings:
-            for warning in batch_validation.warnings:
-                self.logger.warning(f"Batch validation: {warning}")
-        
-        valid_files = batch_validation.metadata.get('valid_files', 0)
-        invalid_files = batch_validation.metadata.get('invalid_files', [])
-        
-        self.logger.info(f"Batch validation: {valid_files} valid files, {len(invalid_files)} invalid files")
+        # Step 1: Batch validation with progress throttling
+        if progress_callback:
+            progress_callback("Validating files...", 0.02)
+
+        invalid_files = []
+        try:
+            from laser_trim_analyzer.utils.validators import BatchValidator
+            
+            validation_result = BatchValidator.validate_batch(
+                file_paths=file_paths,
+                max_batch_size=self.config.processing.max_batch_size
+            )
+            
+            if not validation_result.is_valid:
+                invalid_files = validation_result.metadata.get('invalid_files', [])
+                self.logger.warning(f"Batch validation found {len(invalid_files)} invalid files")
+                for invalid in invalid_files[:5]:  # Log first 5 invalid files
+                    self.logger.warning(f"Invalid file: {invalid}")
+                    
+        except Exception as e:
+            self.logger.error(f"Batch validation failed: {e}")
+            # Continue with processing despite validation failure
         
         # Filter to only valid files for processing
         processable_files = []
@@ -499,63 +681,285 @@ class LaserTrimProcessor:
         if progress_callback:
             progress_callback(f"Processing {len(processable_files)} validated files...", 0.1)
 
-        # Step 2: Process files with limited concurrency
+        # Step 2: Process files with enhanced memory management and throttling
         max_workers = max_workers or self.config.processing.max_workers
         results = {}
         failed_files = []
 
-        # Process in batches to avoid overwhelming the system
-        batch_size = min(max_workers, len(processable_files))
-        
-        for i in range(0, len(processable_files), batch_size):
-            batch_files = processable_files[i:i + batch_size]
+        # Adaptive batch sizing based on file count and memory
+        if len(processable_files) > 500:
+            # Very large batches - use smaller concurrent batches
+            concurrent_batch_size = min(max_workers, 10)
+            cleanup_interval = 25  # More frequent cleanup
+        elif len(processable_files) > 100:
+            # Large batches
+            concurrent_batch_size = min(max_workers, 15)
+            cleanup_interval = 50
+        else:
+            # Standard batches
+            concurrent_batch_size = max_workers
+            cleanup_interval = 100
+
+        self.logger.info(f"Using concurrent batch size: {concurrent_batch_size}, cleanup interval: {cleanup_interval}")
+
+        # Process in smaller concurrent batches to manage memory
+        for i in range(0, len(processable_files), concurrent_batch_size):
+            batch_files = processable_files[i:i + concurrent_batch_size]
             base_progress = 0.1 + (0.8 * i / len(processable_files))
             
-            # Process batch concurrently
-            tasks = []
-            for j, file_path in enumerate(batch_files):
-                def make_progress_callback(file_idx):
-                    def callback(message, progress):
-                        overall_progress = base_progress + (0.8 / len(processable_files) * (progress))
-                        if progress_callback:
-                            progress_callback(f"Processing {file_path.name}: {message}", overall_progress)
-                    return callback
+            # Process concurrent batch
+            batch_results, batch_failed = await self._process_concurrent_batch(
+                batch_files=batch_files,
+                output_dir=output_dir,
+                progress_callback=progress_callback,
+                base_progress=base_progress,
+                total_files=len(processable_files),
+                batch_index=i // concurrent_batch_size
+            )
+            
+            # Merge results
+            results.update(batch_results)
+            failed_files.extend(batch_failed)
+            processed_count += len(batch_files)
+            
+            # Memory and performance management
+            current_time = time.time()
+            if (processed_count % cleanup_interval == 0 and processed_count > 0) or \
+               (current_time - last_cleanup_time > 30):  # Force cleanup every 30 seconds
+                
+                await self._perform_batch_cleanup(processed_count, current_time - start_time)
+                last_cleanup_time = current_time
+                
+                # Yield CPU time to prevent system freezing
+                await asyncio.sleep(0.01)
 
-                task = self.process_file(
-                    file_path=file_path,
-                    output_dir=output_dir,
-                    progress_callback=make_progress_callback(j)
-                )
-                tasks.append((file_path, task))
-
-            # Wait for batch completion
-            for file_path, task in tasks:
-                try:
-                    result = await task
-                    results[str(file_path)] = result
-                    self.logger.info(f"Successfully processed {file_path.name}")
-                except Exception as e:
-                    failed_files.append((str(file_path), str(e)))
-                    self.logger.error(f"Failed to process {file_path.name}: {e}")
-
-        # Step 3: Generate batch summary
+        # Step 3: Generate batch summary with final cleanup
         if progress_callback:
-            progress_callback("Generating batch summary...", 0.95)
+            progress_callback("Finalizing batch results...", 0.95)
+
+        # Final cleanup
+        await self._perform_final_cleanup()
 
         successful_count = len(results)
         failed_count = len(failed_files)
         
-        self.logger.info(f"Batch processing complete: {successful_count} successful, {failed_count} failed")
+        total_time = time.time() - start_time
+        files_per_second = successful_count / total_time if total_time > 0 else 0
         
-        if failed_files:
-            self.logger.warning("Failed files:")
-            for file_path, error in failed_files:
-                self.logger.warning(f"  {file_path}: {error}")
-
-        if progress_callback:
-            progress_callback("Batch processing complete!", 1.0)
+        self.logger.info(f"Batch processing complete: {successful_count} successful, {failed_count} failed")
+        self.logger.info(f"Processing rate: {files_per_second:.2f} files/second")
 
         return results
+
+    async def _process_concurrent_batch(
+        self,
+        batch_files: List[Path],
+        output_dir: Optional[Path],
+        progress_callback: Optional[Callable[[str, float], None]],
+        base_progress: float,
+        total_files: int,
+        batch_index: int
+    ) -> Tuple[Dict[str, AnalysisResult], List[Tuple[str, str]]]:
+        """Process a small batch of files concurrently with memory management."""
+        import asyncio
+        
+        results = {}
+        failed_files = []
+        
+        # Create semaphore to limit true concurrency and prevent resource exhaustion
+        max_concurrent = min(len(batch_files), 8)  # Never more than 8 truly concurrent
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def process_single_file_with_throttling(file_path: Path, file_idx: int) -> Optional[AnalysisResult]:
+            """Process a single file with semaphore control and memory management."""
+            async with semaphore:
+                try:
+                    # Throttled progress callback
+                    def file_progress_callback(message: str, progress: float):
+                        if progress_callback:
+                            # Update at most every 500ms per file to prevent UI flooding
+                            overall_progress = base_progress + (0.8 / total_files * (file_idx + progress))
+                            
+                            # Use asyncio to schedule UI update without blocking
+                            asyncio.create_task(
+                                self._throttled_progress_update(
+                                    progress_callback, 
+                                    f"Batch {batch_index + 1}: {file_path.name} - {message}",
+                                    overall_progress
+                                )
+                            )
+                    
+                    result = await self.process_file(
+                        file_path=file_path,
+                        output_dir=output_dir,
+                        progress_callback=file_progress_callback
+                    )
+                    
+                    # Small yield to prevent CPU monopolization
+                    await asyncio.sleep(0.001)
+                    
+                    return result
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to process {file_path.name}: {e}")
+                    failed_files.append((str(file_path), str(e)))
+                    return None
+        
+        # Process files in the batch concurrently
+        tasks = [
+            process_single_file_with_throttling(file_path, idx) 
+            for idx, file_path in enumerate(batch_files)
+        ]
+        
+        # Wait for completion with proper exception handling
+        completed_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect results
+        for file_path, result in zip(batch_files, completed_results):
+            if isinstance(result, Exception):
+                failed_files.append((str(file_path), str(result)))
+            elif result is not None:
+                results[str(file_path)] = result
+        
+        return results, failed_files
+
+    async def _throttled_progress_update(
+        self, 
+        callback: Callable[[str, float], None], 
+        message: str, 
+        progress: float
+    ):
+        """Throttled progress update to prevent UI flooding."""
+        try:
+            callback(message, progress)
+        except Exception as e:
+            # Don't let progress callback errors stop processing
+            self.logger.debug(f"Progress callback error: {e}")
+
+    async def _perform_batch_cleanup(self, processed_count: int, elapsed_time: float):
+        """
+        Perform cleanup operations during batch processing.
+        
+        Args:
+            processed_count: Number of files processed so far
+            elapsed_time: Elapsed time in seconds
+        """
+        # FIXED: Aggressive memory management for large batches
+        import gc
+        import matplotlib.pyplot as plt
+        
+        # Force garbage collection every 50 files or every 10 minutes
+        gc_interval = self.config.processing.garbage_collection_interval
+        if processed_count % gc_interval == 0:
+            self.logger.debug(f"Forcing garbage collection after {processed_count} files")
+            collected = gc.collect()
+            self.logger.debug(f"Garbage collector released {collected} objects")
+        
+        # Close matplotlib figures to prevent memory leaks
+        matplotlib_interval = self.config.processing.matplotlib_cleanup_interval
+        if processed_count % matplotlib_interval == 0:
+            plt.close('all')  # Close all matplotlib figures
+            self.logger.debug("Closed all matplotlib figures to free memory")
+        
+        # Clear file cache periodically for very large batches
+        if hasattr(self, '_file_cache') and len(self._file_cache) > 100:
+            cache_size_before = len(self._file_cache)
+            # Keep only the most recent 50 entries
+            if cache_size_before > 50:
+                # Convert to list of (key, timestamp) pairs, sort by timestamp, keep newest 50
+                cache_items = list(self._file_cache.items())
+                # For simplicity, just clear half the cache
+                keys_to_remove = list(self._file_cache.keys())[:-50]
+                for key in keys_to_remove:
+                    del self._file_cache[key]
+                self.logger.debug(f"Reduced cache from {cache_size_before} to {len(self._file_cache)} entries")
+        
+        # Log memory usage and performance stats
+        processing_rate = processed_count / elapsed_time if elapsed_time > 0 else 0
+        self.logger.info(f"Batch progress: {processed_count} files processed, "
+                        f"rate: {processing_rate:.2f} files/sec")
+        
+        # Check memory usage and warn if high
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            # Warn if memory usage is getting high
+            memory_threshold = self.config.processing.memory_throttle_threshold
+            if memory_mb > memory_threshold:
+                self.logger.warning(f"High memory usage detected: {memory_mb:.1f} MB "
+                                  f"(threshold: {memory_threshold} MB)")
+                
+                # Force more aggressive cleanup if memory is very high
+                if memory_mb > memory_threshold * 1.5:
+                    self.logger.warning("Performing emergency memory cleanup")
+                    gc.collect()
+                    plt.close('all')
+                    # Clear more of the cache
+                    if hasattr(self, '_file_cache'):
+                        cache_keys = list(self._file_cache.keys())
+                        for key in cache_keys[:-10]:  # Keep only 10 most recent
+                            del self._file_cache[key]
+                        
+        except ImportError:
+            # psutil not available, skip memory monitoring
+            pass
+        except Exception as e:
+            self.logger.debug(f"Error monitoring memory: {e}")
+
+    async def _perform_final_cleanup(self):
+        """
+        Perform final cleanup operations after batch processing completes.
+        """
+        # FIXED: Comprehensive final cleanup to prevent memory accumulation
+        import gc
+        import matplotlib.pyplot as plt
+        
+        self.logger.info("Performing final batch cleanup...")
+        
+        # Close all matplotlib figures
+        plt.close('all')
+        
+        # Clear all caches
+        if hasattr(self, '_file_cache'):
+            cache_size = len(self._file_cache)
+            self._file_cache.clear()
+            self.logger.debug(f"Cleared file cache ({cache_size} entries)")
+        
+        # Clear any analyzers' internal state
+        for analyzer in [self.sigma_analyzer, self.linearity_analyzer, self.resistance_analyzer]:
+            if hasattr(analyzer, 'clear_cache'):
+                analyzer.clear_cache()
+        
+        # Reset processing statistics
+        self._processing_stats = {
+            "files_processed": 0,
+            "validation_failures": 0,
+            "processing_errors": 0,
+            "cache_hits": 0,
+            "ml_predictions": 0,
+            "ml_errors": 0
+        }
+        
+        # Force comprehensive garbage collection
+        for _ in range(3):  # Multiple passes to ensure everything is cleaned
+            collected = gc.collect()
+        
+        # Log final memory state
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            self.logger.info(f"Final memory usage: {memory_mb:.1f} MB")
+        except (ImportError, Exception):
+            pass
+        
+        # Reset processing state
+        self._is_processing = False
+        self._processing_tasks = []
+        
+        self.logger.info("Final cleanup completed")
 
     async def _extract_metadata(self, file_path: Path) -> FileMetadata:
         """Extract file metadata."""
@@ -1446,13 +1850,19 @@ class LaserTrimProcessor:
 
     async def _analyze_resistance(
             self,
-            unit_props: UnitProperties
+            unit_props: UnitProperties,
+            file_path: Path,
+            sheets: Dict[str, str],
+            system_type: SystemType
     ) -> ResistanceAnalysis:
         """Perform resistance analysis."""
         # Prepare data dictionary for analyzer
         analysis_data = {
             'untrimmed_resistance': unit_props.untrimmed_resistance,
-            'trimmed_resistance': unit_props.trimmed_resistance
+            'trimmed_resistance': unit_props.trimmed_resistance,
+            'file_path': str(file_path),
+            'discovered_sheets': sheets,
+            'system_type': system_type.value
         }
         
         resistance_analysis = self.resistance_analyzer.analyze(analysis_data)

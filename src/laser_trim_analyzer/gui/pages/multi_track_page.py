@@ -105,6 +105,12 @@ class MultiTrackPage(BasePage):
             selection_frame,
             text="📂 Analyze Folder",
             command=self._analyze_folder,
+        ).pack(side='left', padx=(0, 10))
+
+        ttk.Button(
+            selection_frame,
+            text="🗄️ From Database",
+            command=self._select_unit_from_database,
         ).pack(side='left')
 
         # Selected unit info (full width below header)
@@ -571,118 +577,123 @@ class MultiTrackPage(BasePage):
         ).pack(side='left')
 
     def _update_multi_track_display(self):
-        """Update all UI elements with multi-track data."""
+        """Update the display with current unit data with enhanced safety checks."""
         if not self.current_unit_data:
+            # Show empty state
+            self.unit_info_label.config(text="No multi-track data loaded. Select a file, folder, or unit from database to begin analysis.")
+            
+            # Reset all overview cards to empty state
+            for card in self.overview_cards.values():
+                if card is not None:  # Safety check for None cards
+                    card.update_value("--")
+                    
+            # Clear charts
+            for chart in self.comparison_charts.values():
+                if chart is not None:  # Safety check for None charts
+                    chart.clear()
+                    
             return
 
-        unit_data = self.current_unit_data
-        comparison = self.comparison_data
-
-        # Update unit info
-        unit_id = unit_data['unit_id']
-        track_count = len(unit_data['tracks'])
-        overall_status = unit_data['overall_status'].value
-
-        self.unit_info_label.config(
-            text=f"Unit: {unit_id} | {track_count} tracks | Status: {overall_status}"
-        )
-
-        # Update overview cards
-        self.overview_cards['unit_id'].update_value(unit_id)
-        self.overview_cards['track_count'].update_value(track_count)
-        self.overview_cards['overall_status'].update_value(overall_status)
-
-        # Set status color
-        if overall_status == "Pass":
-            self.overview_cards['overall_status'].set_color_scheme('success')
-        elif overall_status == "Fail":
-            self.overview_cards['overall_status'].set_color_scheme('danger')
-        else:
-            self.overview_cards['overall_status'].set_color_scheme('warning')
-
-        if comparison and comparison.get('comparison_performed'):
-            # Update consistency metrics
-            consistency_status = "Good" if not comparison.get('has_issues') else "Issues Found"
-            self.overview_cards['consistency'].update_value(consistency_status)
+        try:
+            unit_data = self.current_unit_data
             
-            if comparison.get('has_issues'):
-                self.overview_cards['consistency'].set_color_scheme('danger')
-            else:
-                self.overview_cards['consistency'].set_color_scheme('success')
-
-            # Update variation metrics
-            sigma_cv = comparison.get('sigma_comparison', {}).get('cv_percent', 0)
-            linearity_cv = comparison.get('linearity_comparison', {}).get('cv_percent', 0)
-            issues_count = len(comparison.get('consistency_issues', []))
-
-            self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}")
-            self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}")
-            self.overview_cards['issues_found'].update_value(issues_count)
-
-            # Calculate overall validation grade for the unit
-            validation_grades = []
-            for result in unit_data['tracks'].values():
-                if hasattr(result, 'validation_grade') and result.validation_grade:
-                    grade = result.validation_grade
-                    if grade not in ["Not Validated", "Incomplete"]:
-                        validation_grades.append(grade)
-
-            if validation_grades:
-                grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0, "F": 0}
-                avg_grade_value = sum(grade_values.get(g, 0) for g in validation_grades) / len(validation_grades)
+            # Update unit info label
+            if 'model' in unit_data and 'serial' in unit_data:
+                # Database data format
+                model = unit_data['model']
+                serial = unit_data['serial']
+                file_count = unit_data.get('total_files', 0)
+                track_count = unit_data.get('track_count', 0)
+                status = unit_data.get('overall_status', 'UNKNOWN')
                 
-                if avg_grade_value >= 3.5:
-                    overall_validation_grade = "A"
-                elif avg_grade_value >= 2.5:
-                    overall_validation_grade = "B"
-                elif avg_grade_value >= 1.5:
-                    overall_validation_grade = "C"
-                elif avg_grade_value >= 0.5:
-                    overall_validation_grade = "D"
-                else:
-                    overall_validation_grade = "F"
-            else:
-                overall_validation_grade = "Not Validated"
+            self.unit_info_label.config(
+                    text=f"Unit: {model}/{serial} | {file_count} files | {track_count} tracks | Status: {status}"
+                )
+                
+                # Update overview cards with database data
+                self.overview_cards['unit_id'].update_value(f"{model}/{serial}")
+                self.overview_cards['track_count'].update_value(str(track_count))
+                self.overview_cards['overall_status'].update_value(status)
+                
+                # Set color scheme based on status
+                status_color = {
+                    'PASS': 'success',
+                    'FAIL': 'danger',
+                    'WARNING': 'warning',
+                    'MIXED': 'info'
+                }.get(status, 'default')
+                self.overview_cards['overall_status'].set_color_scheme(status_color)
+                
+                # Update consistency metrics
+                consistency = unit_data.get('consistency', 'UNKNOWN')
+                self.overview_cards['consistency'].update_value(consistency)
+                
+                sigma_cv = unit_data.get('sigma_cv', 0)
+                linearity_cv = unit_data.get('linearity_cv', 0)
+                
+                self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}")
+                self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}")
+                
+                # Set color schemes based on variation
+                sigma_color = 'success' if sigma_cv < 5 else 'warning' if sigma_cv < 10 else 'danger'
+                linearity_color = 'success' if linearity_cv < 10 else 'warning' if linearity_cv < 20 else 'danger'
+                
+                self.overview_cards['sigma_cv'].set_color_scheme(sigma_color)
+                self.overview_cards['linearity_cv'].set_color_scheme(linearity_color)
+                
+                # Update validation grade if available
+                if 'validation_grade' in unit_data:
+                    self.overview_cards['validation_grade'].update_value(unit_data['validation_grade'])
             
-            self.overview_cards['validation_grade'].update_value(overall_validation_grade)
-            
-            # Set validation grade color scheme
-            if overall_validation_grade in ["A", "B"]:
-                self.overview_cards['validation_grade'].set_color_scheme('success')
-            elif overall_validation_grade in ["C", "D"]:
-                self.overview_cards['validation_grade'].set_color_scheme('warning')
-            elif overall_validation_grade == "F":
-                self.overview_cards['validation_grade'].set_color_scheme('danger')
             else:
-                self.overview_cards['validation_grade'].set_color_scheme('default')
+                # File-based data format (original processor output)
+                unit_id = unit_data.get('unit_id', 'Unknown')
+                track_count = len(unit_data.get('tracks', {}))
+                overall_status = unit_data.get('overall_status', 'UNKNOWN')
+                
+                self.unit_info_label.config(
+                    text=f"Unit: {unit_id} | {track_count} tracks | Status: {overall_status}"
+                )
+                
+                # Update overview cards
+                self.overview_cards['unit_id'].update_value(unit_id)
+                self.overview_cards['track_count'].update_value(str(track_count))
+                self.overview_cards['overall_status'].update_value(overall_status)
+                
+                # Calculate metrics for file-based data
+                tracks = unit_data.get('tracks', {})
+                if tracks:
+                    sigma_values = [t.get('sigma_gradient', 0) for t in tracks.values() if t.get('sigma_gradient')]
+                    if sigma_values:
+                        sigma_cv = (np.std(sigma_values) / np.mean(sigma_values)) * 100
+                        self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}")
+                    
+                    # Update other metrics as available
+                    consistency = "GOOD" if len(tracks) > 1 else "N/A"
+                    self.overview_cards['consistency'].update_value(consistency)
 
-            # Set color schemes based on values
-            if sigma_cv > 10:
-                self.overview_cards['sigma_cv'].set_color_scheme('danger')
-            elif sigma_cv > 5:
-                self.overview_cards['sigma_cv'].set_color_scheme('warning')
-            else:
-                self.overview_cards['sigma_cv'].set_color_scheme('success')
+            # Update charts with current data
+            try:
+                self._update_comparison_charts()
+            except Exception as e:
+                self.logger.error(f"Error updating comparison charts: {e}")
+                
+            try:
+                self._update_consistency_analysis()
+            except Exception as e:
+                self.logger.error(f"Error updating consistency analysis: {e}")
 
-            # Update charts
-            self._update_comparison_charts()
+            # Enable action buttons
+            if hasattr(self, 'export_report_btn'):
+                self.export_report_btn.config(state='normal')
+            if hasattr(self, 'generate_pdf_btn'):
+                self.generate_pdf_btn.config(state='normal')
             
-            # Update consistency analysis
-            self._update_consistency_analysis()
-        else:
-            # Single track or no comparison
-            self.overview_cards['consistency'].update_value("N/A (Single Track)")
-            self.overview_cards['sigma_cv'].update_value("N/A")
-            self.overview_cards['linearity_cv'].update_value("N/A")
-            self.overview_cards['validation_grade'].update_value("N/A")
-            self.overview_cards['issues_found'].update_value("0")
-
-        # Enable action buttons
-        self.export_report_btn.config(state='normal')
-        self.generate_pdf_btn.config(state='normal')
-        self.view_tracks_btn.config(state='normal')
-        
-        self.status_label.config(text=f"Analysis complete: {datetime.now().strftime('%H:%M:%S')}")
+            self.logger.info("Successfully updated multi-track display")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating multi-track display: {e}")
+            self.unit_info_label.config(text="Error displaying multi-track data - check logs")
 
     def _update_comparison_charts(self):
         """Update comparison charts with track data."""
@@ -750,47 +761,68 @@ class MultiTrackPage(BasePage):
     def _update_consistency_analysis(self):
         """Update consistency analysis text fields."""
         if not self.comparison_data:
+            # Clear text fields and show no data message
+            self.issues_text.config(state='normal')
+            self.issues_text.delete(1.0, tk.END)
+            self.issues_text.insert(tk.END, "No comparison data available.")
+            self.issues_text.config(state='disabled')
+            
+            self.recommendations_text.config(state='normal')
+            self.recommendations_text.delete(1.0, tk.END)
+            self.recommendations_text.insert(tk.END, "Load multi-track data to see recommendations.")
+            self.recommendations_text.config(state='disabled')
             return
 
-        comparison = self.comparison_data
-        
-        # Update issues text
-        self.issues_text.config(state='normal')
-        self.issues_text.delete(1.0, tk.END)
-        
-        if comparison.get('consistency_issues'):
-            for i, issue in enumerate(comparison['consistency_issues'], 1):
-                self.issues_text.insert(tk.END, f"{i}. {issue}\n")
-        else:
-            self.issues_text.insert(tk.END, "No consistency issues found. All tracks show good agreement.")
-        
-        self.issues_text.config(state='disabled')
-        
-        # Update recommendations text
-        self.recommendations_text.config(state='normal')
-        self.recommendations_text.delete(1.0, tk.END)
-        
-        recommendations = []
-        
-        if comparison.get('has_issues'):
-            recommendations.append("• Investigate manufacturing process variations between tracks")
-            recommendations.append("• Check tooling alignment and calibration")
-            recommendations.append("• Review trim parameters for consistency")
+        try:
+            comparison = self.comparison_data
             
-            if comparison.get('sigma_comparison', {}).get('cv_percent', 0) > 10:
-                recommendations.append("• High sigma variation detected - review cutting parameters")
+            # Update issues text
+            self.issues_text.config(state='normal')
+            self.issues_text.delete(1.0, tk.END)
+            
+            if comparison.get('consistency_issues'):
+                for i, issue in enumerate(comparison['consistency_issues'], 1):
+                    self.issues_text.insert(tk.END, f"{i}. {issue}\n")
+            else:
+                self.issues_text.insert(tk.END, "No consistency issues found. All tracks show good agreement.")
+            
+            self.issues_text.config(state='disabled')
+            
+            # Update recommendations text
+            self.recommendations_text.config(state='normal')
+            self.recommendations_text.delete(1.0, tk.END)
+            
+            if comparison.get('recommendations'):
+                for i, rec in enumerate(comparison['recommendations'], 1):
+                    self.recommendations_text.insert(tk.END, f"{i}. {rec}\n")
+            else:
+                # Generate default recommendations based on analysis
+                recommendations = []
+                if comparison.get('has_issues'):
+                    recommendations.append("Review tracks with high variation for potential manufacturing issues.")
+                    recommendations.append("Consider additional quality control measures for this unit type.")
+                else:
+                    recommendations.append("Unit shows good track consistency.")
+                    recommendations.append("Continue with current manufacturing process.")
                 
-            if comparison.get('linearity_comparison', {}).get('cv_percent', 0) > 15:
-                recommendations.append("• High linearity variation - check mechanical alignment")
-        else:
-            recommendations.append("• Unit shows good track-to-track consistency")
-            recommendations.append("• Continue current manufacturing process")
-            recommendations.append("• Regular monitoring recommended")
-        
-        for rec in recommendations:
-            self.recommendations_text.insert(tk.END, rec + "\n")
-        
-        self.recommendations_text.config(state='disabled')
+                for i, rec in enumerate(recommendations, 1):
+                    self.recommendations_text.insert(tk.END, f"{i}. {rec}\n")
+            
+            self.recommendations_text.config(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error updating consistency analysis: {e}")
+            
+            # Show error state
+            self.issues_text.config(state='normal')
+            self.issues_text.delete(1.0, tk.END)
+            self.issues_text.insert(tk.END, f"Error loading consistency data: {str(e)}")
+            self.issues_text.config(state='disabled')
+            
+            self.recommendations_text.config(state='normal')
+            self.recommendations_text.delete(1.0, tk.END)
+            self.recommendations_text.insert(tk.END, "Unable to generate recommendations due to data error.")
+            self.recommendations_text.config(state='disabled')
 
     def _export_comparison_report(self):
         """Export multi-track comparison report to Excel."""
@@ -889,6 +921,221 @@ class MultiTrackPage(BasePage):
     def _view_individual_tracks(self):
         """Open individual track analysis in separate windows."""
         messagebox.showinfo("Coming Soon", "Individual track viewer will be implemented in the next version.")
+
+    def _load_multi_track_from_database(self, model: str, serial: str):
+        """Load multi-track data for a specific unit from database."""
+        try:
+            if not self.db_manager:
+                raise ValueError("Database not connected")
+
+            # Get all analyses for this model/serial combination
+            historical_data = self.db_manager.get_historical_data(
+                model=model,
+                serial=serial,
+                include_tracks=True,
+                limit=None  # Get all data
+            )
+
+            if not historical_data:
+                self.after(0, lambda: messagebox.showinfo(
+                    "No Data",
+                    f"No data found for Model: {model}, Serial: {serial}"
+                ))
+                return
+
+            # Group by track files (different filenames might represent different tracks)
+            track_data = {}
+            unit_summary = {
+                'model': model,
+                'serial': serial,
+                'total_files': len(historical_data),
+                'track_count': 0,
+                'overall_status': 'UNKNOWN',
+                'files': []
+            }
+
+            for analysis in historical_data:
+                file_info = {
+                    'filename': analysis.filename,
+                    'file_date': analysis.file_date,
+                    'timestamp': analysis.timestamp,
+                    'status': analysis.overall_status.value,
+                    'track_count': len(analysis.tracks),
+                    'tracks': {}
+                }
+
+                for track in analysis.tracks:
+                    track_info = {
+                        'track_id': track.track_id,
+                        'status': track.status.value,
+                        'sigma_gradient': track.sigma_gradient,
+                        'sigma_pass': track.sigma_pass,
+                        'linearity_error': track.final_linearity_error_shifted,
+                        'linearity_pass': track.linearity_pass,
+                        'failure_probability': track.failure_probability,
+                        'risk_category': track.risk_category.value if track.risk_category else 'UNKNOWN'
+                    }
+                    file_info['tracks'][track.track_id] = track_info
+
+                unit_summary['files'].append(file_info)
+                unit_summary['track_count'] += len(analysis.tracks)
+
+            # Determine overall unit status
+            all_statuses = [f['status'] for f in unit_summary['files']]
+            if 'FAIL' in all_statuses:
+                unit_summary['overall_status'] = 'FAIL'
+            elif 'WARNING' in all_statuses:
+                unit_summary['overall_status'] = 'WARNING'
+            elif all(s == 'PASS' for s in all_statuses):
+                unit_summary['overall_status'] = 'PASS'
+            else:
+                unit_summary['overall_status'] = 'MIXED'
+
+            # Calculate consistency metrics
+            all_sigma_gradients = []
+            all_linearity_errors = []
+            
+            for file_info in unit_summary['files']:
+                for track_info in file_info['tracks'].values():
+                    if track_info['sigma_gradient'] is not None:
+                        all_sigma_gradients.append(track_info['sigma_gradient'])
+                    if track_info['linearity_error'] is not None:
+                        all_linearity_errors.append(track_info['linearity_error'])
+
+            if all_sigma_gradients:
+                sigma_cv = (np.std(all_sigma_gradients) / np.mean(all_sigma_gradients)) * 100
+                unit_summary['sigma_cv'] = sigma_cv
+            else:
+                unit_summary['sigma_cv'] = 0
+
+            if all_linearity_errors:
+                linearity_cv = (np.std(all_linearity_errors) / np.mean(all_linearity_errors)) * 100
+                unit_summary['linearity_cv'] = linearity_cv
+            else:
+                unit_summary['linearity_cv'] = 0
+
+            # Determine consistency grade
+            if unit_summary['sigma_cv'] < 5 and unit_summary['linearity_cv'] < 10:
+                unit_summary['consistency'] = 'EXCELLENT'
+            elif unit_summary['sigma_cv'] < 10 and unit_summary['linearity_cv'] < 20:
+                unit_summary['consistency'] = 'GOOD'
+            elif unit_summary['sigma_cv'] < 20 and unit_summary['linearity_cv'] < 30:
+                unit_summary['consistency'] = 'FAIR'
+            else:
+                unit_summary['consistency'] = 'POOR'
+
+            self.current_unit_data = unit_summary
+            
+            # Update UI in main thread
+            self.after(0, self._update_multi_track_display)
+
+            self.logger.info(f"Loaded multi-track data from database: {model}/{serial} - {len(historical_data)} files")
+
+        except Exception as e:
+            self.logger.error(f"Failed to load multi-track data from database: {e}")
+            self.after(0, lambda: messagebox.showerror(
+                "Error", f"Failed to load data from database:\n{str(e)}"
+            ))
+
+    def _select_unit_from_database(self):
+        """Show dialog to select a unit from the database for multi-track analysis."""
+        if not self.db_manager:
+            messagebox.showerror("Error", "Database not connected")
+            return
+
+        try:
+            # Get all unique model/serial combinations
+            with self.db_manager.get_session() as session:
+                from laser_trim_analyzer.database.manager import DBAnalysisResult
+                
+                results = session.query(
+                    DBAnalysisResult.model,
+                    DBAnalysisResult.serial,
+                    func.count(DBAnalysisResult.id).label('file_count')
+                ).filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.serial.isnot(None)
+                ).group_by(
+                    DBAnalysisResult.model,
+                    DBAnalysisResult.serial
+                ).having(
+                    func.count(DBAnalysisResult.id) > 1  # Only units with multiple files
+                ).order_by(
+                    DBAnalysisResult.model,
+                    DBAnalysisResult.serial
+                ).all()
+
+            if not results:
+                messagebox.showinfo(
+                    "No Multi-Track Units",
+                    "No units with multiple files found in database."
+                )
+                return
+
+            # Show selection dialog
+            dialog = tk.Toplevel(self.winfo_toplevel())
+            dialog.title("Select Unit for Multi-Track Analysis")
+            dialog.geometry("600x400")
+            dialog.grab_set()
+
+            # Title
+            ttk.Label(
+                dialog,
+                text="Units with Multiple Files:",
+                font=('Segoe UI', 14, 'bold')
+            ).pack(pady=(10, 20))
+
+            # Create listbox with scrollbar
+            list_frame = ttk.Frame(dialog)
+            list_frame.pack(fill='both', expand=True, padx=20, pady=(0, 20))
+
+            listbox = tk.Listbox(list_frame, font=('Segoe UI', 10))
+            scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
+            listbox.config(yscrollcommand=scrollbar.set)
+
+            # Populate listbox
+            unit_list = []
+            for model, serial, file_count in results:
+                display_text = f"{model} / {serial} ({file_count} files)"
+                listbox.insert(tk.END, display_text)
+                unit_list.append((model, serial))
+
+            listbox.pack(side='left', fill='both', expand=True)
+            scrollbar.pack(side='right', fill='y')
+
+            # Buttons
+            btn_frame = ttk.Frame(dialog)
+            btn_frame.pack(fill='x', padx=20, pady=(0, 10))
+
+            def analyze_selected():
+                selection = listbox.curselection()
+                if selection:
+                    model, serial = unit_list[selection[0]]
+                    dialog.destroy()
+                    # Load data from database
+                    self.unit_info_label.config(text=f"Loading data for {model}/{serial}...")
+                    threading.Thread(
+                        target=self._load_multi_track_from_database,
+                        args=(model, serial),
+                        daemon=True
+                    ).start()
+
+            ttk.Button(
+                btn_frame,
+                text="Analyze Selected Unit",
+                command=analyze_selected,
+                style='Primary.TButton'
+            ).pack(side='left', padx=(0, 10))
+
+            ttk.Button(
+                btn_frame,
+                text="Cancel",
+                command=dialog.destroy
+            ).pack(side='left')
+
+        except Exception as e:
+            self.logger.error(f"Failed to get units from database: {e}")
+            messagebox.showerror("Error", f"Failed to load units:\n{str(e)}")
 
     def on_show(self):
         """Called when page is shown."""

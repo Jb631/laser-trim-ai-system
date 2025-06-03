@@ -385,23 +385,71 @@ class BatchProcessingPage(ctk.CTkFrame):
         folder_path = filedialog.askdirectory(title="Select folder with Excel files")
         
         if folder_path:
-            folder = Path(folder_path)
-            excel_files = []
+            self._start_folder_discovery(Path(folder_path))
+
+    def _start_folder_discovery(self, folder_path: Path):
+        """Start asynchronous folder discovery with progress indication."""
+        # Update UI to show scanning state
+        self._update_batch_status("Scanning Folder...", "orange")
+        self.select_folder_button.configure(state="disabled", text="Scanning...")
+        
+        # Run discovery in background thread
+        def discover_files():
+            try:
+                excel_files = []
+                total_checked = 0
+                
+                # Find all Excel files recursively with progress updates
+                for pattern in ["*.xlsx", "*.xls"]:
+                    for file_path in folder_path.rglob(pattern):
+                        # Filter out temporary files
+                        if not file_path.name.startswith('~$'):
+                            excel_files.append(file_path)
+                        
+                        # Update progress every 50 files
+                        total_checked += 1
+                        if total_checked % 50 == 0:
+                            self.after(0, lambda count=total_checked: 
+                                     self._update_batch_status(f"Scanning... ({count} files found)", "orange"))
+                
+                # Update UI on main thread
+                self.after(0, self._handle_folder_discovery_complete, excel_files, folder_path)
+                
+            except Exception as e:
+                logger.error(f"Folder discovery failed: {e}")
+                self.after(0, self._handle_folder_discovery_error, str(e))
+        
+        # Start discovery thread
+        thread = threading.Thread(target=discover_files, daemon=True)
+        thread.start()
+
+    def _handle_folder_discovery_complete(self, excel_files: List[Path], folder_path: Path):
+        """Handle completion of folder discovery."""
+        # Re-enable button
+        self.select_folder_button.configure(state="normal", text="📂 Select Folder")
+        
+        if excel_files:
+            self.selected_files = excel_files
+            self._update_file_display()
+            self._update_batch_status("Folder Selected", "orange")
+            logger.info(f"Found {len(excel_files)} Excel files in {folder_path}")
             
-            # Find all Excel files recursively
-            for pattern in ["*.xlsx", "*.xls"]:
-                excel_files.extend(folder.rglob(pattern))
-            
-            # Filter out temporary files
-            excel_files = [f for f in excel_files if not f.name.startswith('~$')]
-            
-            if excel_files:
-                self.selected_files = excel_files
-                self._update_file_display()
-                self._update_batch_status("Folder Selected", "orange")
-                logger.info(f"Found {len(excel_files)} Excel files in {folder}")
-            else:
-                messagebox.showwarning("No Files", f"No Excel files found in {folder}")
+            # Show discovery summary
+            messagebox.showinfo(
+                "Folder Discovery Complete",
+                f"Found {len(excel_files)} Excel files in:\n{folder_path.name}\n\n"
+                f"Ready for batch validation and processing."
+            )
+        else:
+            self._update_batch_status("No Files Selected", "gray")
+            messagebox.showwarning("No Files", f"No Excel files found in {folder_path}")
+
+    def _handle_folder_discovery_error(self, error_message: str):
+        """Handle folder discovery error."""
+        # Re-enable button
+        self.select_folder_button.configure(state="normal", text="📂 Select Folder")
+        self._update_batch_status("Discovery Error", "red")
+        messagebox.showerror("Folder Discovery Error", f"Failed to scan folder:\n{error_message}")
 
     def _clear_files(self):
         """Clear selected files."""
@@ -601,31 +649,97 @@ class BatchProcessingPage(ctk.CTkFrame):
         logger.info(f"Started batch processing of {len(processable_files)} files")
 
     def _run_batch_processing(self, file_paths: List[Path]):
-        """Run batch processing in background thread."""
+        """Run batch processing in background thread with performance optimizations."""
+        import gc
+        import time
+        
         try:
+            # Performance tracking
+            start_time = time.time()
+            last_gc_time = start_time
+            last_progress_update = 0
+            processed_count = 0
+            
             # Create output directory if plots requested
             output_dir = None
             if self.generate_plots_var.get():
                 output_dir = self.config.output_directory / "batch_processing" / datetime.now().strftime("%Y%m%d_%H%M%S")
                 ensure_directory(output_dir)
             
-            # Progress callback
+            # Throttled progress callback to prevent UI flooding
             def progress_callback(message: str, progress: float):
-                if self.progress_dialog:
-                    self.after(0, lambda: self.progress_dialog.update_progress(message, progress))
+                nonlocal last_progress_update
+                current_time = time.time()
+                
+                # Only update progress every 250ms to prevent UI flooding
+                if current_time - last_progress_update >= 0.25:
+                    last_progress_update = current_time
+                    if self.progress_dialog:
+                        self.after(0, lambda: self.progress_dialog.update_progress(message, progress))
+                        
+                    # Force GUI update and yield CPU time
+                    self.after(0, self.update)
+                    time.sleep(0.001)  # Tiny sleep to yield CPU
             
-            # Run batch processing with asyncio
+            # Enhanced progress callback with memory monitoring
+            def enhanced_progress_callback(message: str, progress: float):
+                nonlocal processed_count, last_gc_time
+                current_time = time.time()
+                
+                # Standard progress update
+                progress_callback(message, progress)
+                
+                # Memory management every 50 files or 30 seconds
+                if (processed_count % 50 == 0 and processed_count > 0) or (current_time - last_gc_time > 30):
+                    logger.debug(f"Performing memory cleanup at file {processed_count}")
+                    
+                    # Force garbage collection
+                    gc.collect()
+                    last_gc_time = current_time
+                    
+                    # Clear any intermediate results from memory
+                    import matplotlib.pyplot as plt
+                    plt.close('all')  # Close all matplotlib figures
+                    
+                    # Yield more CPU time during cleanup
+                    time.sleep(0.01)
+            
+            # Run batch processing with asyncio and optimizations
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
             try:
-                max_workers = int(self.workers_slider.get())
+                # Limit max workers based on system resources and file count
+                base_workers = int(self.workers_slider.get())
+                file_count = len(file_paths)
                 
+                # Scale down workers for very large batches to prevent resource exhaustion
+                if file_count > 1000:
+                    max_workers = min(base_workers, 6)  # Max 6 workers for very large batches
+                elif file_count > 500:
+                    max_workers = min(base_workers, 8)  # Max 8 workers for large batches
+                else:
+                    max_workers = base_workers
+                
+                logger.info(f"Processing {file_count} files with {max_workers} workers (scaled from {base_workers})")
+                
+                # Disable plots for very large batches to save memory
+                if file_count > 200 and self.generate_plots_var.get():
+                    reply = messagebox.askyesno(
+                        "Large Batch Detected",
+                        f"Processing {file_count} files with plots enabled may cause performance issues.\n\n"
+                        "Disable plots for better performance?"
+                    )
+                    if reply:
+                        self.generate_plots_var.set(False)
+                        output_dir = None
+                
+                # Process with memory-efficient batching
                 results = loop.run_until_complete(
-                    self.processor.process_batch(
+                    self._process_with_memory_management(
                         file_paths=file_paths,
                         output_dir=output_dir,
-                        progress_callback=progress_callback,
+                        progress_callback=enhanced_progress_callback,
                         max_workers=max_workers
                     )
                 )
@@ -633,6 +747,9 @@ class BatchProcessingPage(ctk.CTkFrame):
                 # Save to database if requested
                 if self.save_to_db_var.get() and self.db_manager:
                     self._save_batch_to_database(results)
+                
+                # Final cleanup
+                gc.collect()
                 
                 # Update UI on main thread
                 self.after(0, self._handle_batch_success, results, output_dir)
@@ -655,10 +772,92 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         finally:
             self.is_processing = False
+            # Final cleanup
+            import gc
+            gc.collect()
+
+    async def _process_with_memory_management(
+        self,
+        file_paths: List[Path],
+        output_dir: Optional[Path],
+        progress_callback: Callable[[str, float], None],
+        max_workers: int
+    ) -> Dict[str, AnalysisResult]:
+        """Process files with enhanced memory management and throttling."""
+        import psutil
+        import time
+        
+        results = {}
+        
+        # Process in smaller chunks to prevent memory buildup
+        chunk_size = min(max_workers * 2, 20)  # Process in chunks of 20 max
+        total_files = len(file_paths)
+        
+        logger.info(f"Processing {total_files} files in chunks of {chunk_size}")
+        
+        for chunk_start in range(0, total_files, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, total_files)
+            chunk_files = file_paths[chunk_start:chunk_end]
+            
+            # Update progress for chunk start
+            chunk_progress = chunk_start / total_files
+            progress_callback(f"Processing chunk {chunk_start//chunk_size + 1}/{(total_files-1)//chunk_size + 1}...", chunk_progress)
+            
+            # Process chunk with limited concurrency
+            chunk_results = await self.processor.process_batch(
+                file_paths=chunk_files,
+                output_dir=output_dir,
+                progress_callback=lambda msg, prog: progress_callback(
+                    msg, 
+                    chunk_progress + (prog * chunk_size / total_files)
+                ),
+                max_workers=min(max_workers, len(chunk_files))
+            )
+            
+            # Merge results
+            results.update(chunk_results)
+            
+            # Memory management between chunks
+            if chunk_end < total_files:  # Not the last chunk
+                logger.debug(f"Chunk {chunk_start//chunk_size + 1} complete, performing cleanup...")
+                
+                # Check memory usage
+                try:
+                    process = psutil.Process()
+                    memory_mb = process.memory_info().rss / (1024 * 1024)
+                    
+                    if memory_mb > 1500:  # If using > 1.5GB, be more aggressive with cleanup
+                        logger.warning(f"High memory usage detected: {memory_mb:.1f}MB, performing aggressive cleanup")
+                        
+                        # Clear matplotlib figures
+                        import matplotlib.pyplot as plt
+                        plt.close('all')
+                        
+                        # Force garbage collection
+                        import gc
+                        gc.collect()
+                        
+                        # Longer pause for memory recovery
+                        await asyncio.sleep(0.1)
+                    else:
+                        # Standard cleanup
+                        import gc
+                        gc.collect()
+                        await asyncio.sleep(0.05)
+                        
+                except Exception as e:
+                    logger.warning(f"Memory monitoring failed: {e}")
+                    # Standard cleanup as fallback
+                    import gc
+                    gc.collect()
+                    await asyncio.sleep(0.05)
+        
+        return results
 
     def _save_batch_to_database(self, results: Dict[str, AnalysisResult]):
-        """Save batch results to database."""
+        """Save batch results to database with robust error handling."""
         saved_count = 0
+        failed_count = 0
         
         for file_path, result in results.items():
             try:
@@ -673,13 +872,37 @@ class BatchProcessingPage(ctk.CTkFrame):
                     logger.info(f"Duplicate found for {Path(file_path).name} (ID: {existing_id})")
                     result.db_id = existing_id
                 else:
-                    result.db_id = self.db_manager.save_analysis(result)
-                    saved_count += 1
+                    # Try normal save first
+                    try:
+                        result.db_id = self.db_manager.save_analysis(result)
+                        saved_count += 1
+                        
+                        # Validate the save
+                        if not self.db_manager.validate_saved_analysis(result.db_id):
+                            raise RuntimeError("Database validation failed")
+                            
+                    except Exception as save_error:
+                        logger.warning(f"Normal save failed for {Path(file_path).name}, trying force save: {save_error}")
+                        # Try force save as fallback
+                        result.db_id = self.db_manager.force_save_analysis(result)
+                        saved_count += 1
+                        logger.info(f"Force saved {Path(file_path).name} to database")
                     
             except Exception as e:
                 logger.error(f"Database save failed for {Path(file_path).name}: {e}")
+                failed_count += 1
         
-        logger.info(f"Saved {saved_count} new analyses to database")
+        logger.info(f"Database save complete: {saved_count} saved, {failed_count} failed")
+        
+        if failed_count > 0:
+            # Show warning about failed saves
+            self.after(0, lambda: messagebox.showwarning(
+                "Database Warning",
+                f"Some files failed to save to database:\n"
+                f"Saved: {saved_count}\n"
+                f"Failed: {failed_count}\n\n"
+                f"Check logs for details."
+            ))
 
     def _handle_batch_success(self, results: Dict[str, AnalysisResult], output_dir: Optional[Path]):
         """Handle successful batch completion."""

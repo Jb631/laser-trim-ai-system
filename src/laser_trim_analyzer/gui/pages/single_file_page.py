@@ -478,8 +478,20 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
                             logger.info(f"Duplicate analysis found (ID: {existing_id})")
                             result.db_id = existing_id
                         else:
-                            result.db_id = self.db_manager.save_analysis(result)
-                            logger.info(f"Saved to database with ID: {result.db_id}")
+                            # Try normal save first
+                            try:
+                                result.db_id = self.db_manager.save_analysis(result)
+                                logger.info(f"Saved to database with ID: {result.db_id}")
+                                
+                                # Validate the save
+                                if not self.db_manager.validate_saved_analysis(result.db_id):
+                                    raise RuntimeError("Database validation failed")
+                                    
+                            except Exception as save_error:
+                                logger.warning(f"Normal save failed, trying force save: {save_error}")
+                                # Try force save as fallback
+                                result.db_id = self.db_manager.force_save_analysis(result)
+                                logger.info(f"Force saved to database with ID: {result.db_id}")
                             
                     except Exception as e:
                         logger.error(f"Database save failed: {e}")

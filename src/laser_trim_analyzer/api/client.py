@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 import pickle
+import pandas as pd
 
 # AI Provider imports
 try:

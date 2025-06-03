@@ -750,7 +750,7 @@ class ModelSummaryPage(BasePage):
                                         color='trend',
                                         linewidth=2
                                     )
-                                except (np.linalg.LinAlgError, np.RankWarning):
+                                except np.linalg.LinAlgError:
                                     # SVD didn't converge or rank deficient
                                     self.logger.warning("Could not compute trend line: numerical issues")
                                 except Exception as e:
@@ -829,7 +829,8 @@ class ModelSummaryPage(BasePage):
                                         linewidth=2,
                                         linestyle='--'
                                     )
-                                except (np.linalg.LinAlgError, np.RankWarning):
+                                except np.linalg.LinAlgError:
+                                    # SVD didn't converge or rank deficient
                                     self.logger.warning("Could not compute trend line for line plot")
                                 except Exception as e:
                                     self.logger.warning(f"Trend line calculation failed for line plot: {e}")

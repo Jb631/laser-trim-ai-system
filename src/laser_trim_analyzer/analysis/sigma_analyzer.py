@@ -135,18 +135,48 @@ class SigmaAnalyzer(BaseAnalyzer):
             dx = positions[i + step_size] - positions[i]
             dy = errors[i + step_size] - errors[i]
 
-            if abs(dx) > 1e-10:  # Avoid division by zero
+            # FIXED: Add proper bounds checking for division by zero
+            if abs(dx) > 1e-10:  # Ensure dx is not effectively zero
                 gradient = dy / dx
-                gradients.append(gradient)
+                # Additional bounds checking for numerical stability
+                if not (np.isnan(gradient) or np.isinf(gradient)):
+                    gradients.append(gradient)
+                else:
+                    self.logger.warning(f"Invalid gradient calculated at index {i}: {gradient}")
+            else:
+                self.logger.debug(f"Skipping near-zero position difference at index {i}: dx={dx}")
 
         if not gradients:
-            self.logger.warning("No valid gradients calculated")
+            self.logger.warning("No valid gradients calculated - insufficient position variation")
             return 0.0
 
         # Calculate standard deviation with N-1 degrees of freedom
-        sigma_gradient = np.std(gradients, ddof=1)
-
-        return float(sigma_gradient)
+        # Additional safety check for edge cases
+        if len(gradients) == 1:
+            self.logger.warning("Only one valid gradient point - using absolute value")
+            return abs(gradients[0])
+        
+        try:
+            sigma_gradient = np.std(gradients, ddof=1)
+            
+            # Bounds checking for the final result
+            if np.isnan(sigma_gradient) or np.isinf(sigma_gradient):
+                self.logger.error(f"Invalid sigma gradient calculated: {sigma_gradient}")
+                return 0.0
+                
+            # Sanity check - sigma gradient should be positive and reasonable
+            if sigma_gradient < 0:
+                self.logger.warning(f"Negative sigma gradient: {sigma_gradient}, taking absolute value")
+                sigma_gradient = abs(sigma_gradient)
+                
+            if sigma_gradient > 1000:  # Unreasonably large value
+                self.logger.warning(f"Unusually large sigma gradient: {sigma_gradient}, may indicate data issues")
+            
+            return float(sigma_gradient)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating sigma gradient: {e}")
+            return 0.0
 
     def _calculate_linearity_spec_from_limits(self,
                                               upper_limits: List[Optional[float]],

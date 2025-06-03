@@ -10,6 +10,8 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 from typing import List, Optional, Callable, Set
 import os
+import threading
+import time
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -217,18 +219,24 @@ class FileDropZone(ttk.Frame):
         # Parse dropped files
         files = self._parse_drop_data(event.data)
 
-        # Validate and filter files
-        valid_files = self._validate_files(files)
-
-        if valid_files:
-            self._update_appearance('accept')
-            self.after(500, lambda: self._update_appearance('normal'))
-
-            # Process files
-            self._process_dropped_files(valid_files)
+        # Check if any folders are dropped
+        has_folders = any(f.is_dir() for f in files if f.exists())
+        
+        if has_folders and self.accept_folders:
+            # Handle async folder processing
+            self._process_dropped_files_async(files)
         else:
-            self._update_appearance('reject')
-            self.after(500, lambda: self._update_appearance('normal'))
+            # Validate and filter files synchronously (for individual files)
+            valid_files = self._validate_files_sync(files)
+
+            if valid_files:
+                self._update_appearance('accept')
+                self.after(500, lambda: self._update_appearance('normal'))
+                # Process files
+                self._process_dropped_files(valid_files)
+            else:
+                self._update_appearance('reject')
+                self.after(500, lambda: self._update_appearance('normal'))
 
         return event.action
 
@@ -251,8 +259,79 @@ class FileDropZone(ttk.Frame):
 
         return files
 
-    def _validate_files(self, files: List[Path]) -> List[Path]:
-        """Validate and filter dropped files."""
+    def _process_dropped_files_async(self, files: List[Path]):
+        """Process dropped files that may include folders asynchronously."""
+        # Update UI to scanning state
+        self._update_appearance('hover')
+        self.primary_label.config(text='Processing dropped items...')
+        self.secondary_label.config(text='Please wait while we scan folders')
+        self.browse_button.configure(state='disabled')
+        
+        def process_files():
+            try:
+                valid_files = []
+                total_checked = 0
+                
+                for file_path in files:
+                    if file_path.is_file():
+                        # Check extension for individual files
+                        if file_path.suffix.lower() in self.accept_extensions:
+                            valid_files.append(file_path)
+                    elif file_path.is_dir() and self.accept_folders:
+                        # Recursively find valid files in folder
+                        for found_file in file_path.rglob('*'):
+                            if found_file.is_file() and found_file.suffix.lower() in self.accept_extensions:
+                                # Skip temporary files
+                                if not found_file.name.startswith('~'):
+                                    valid_files.append(found_file)
+                            
+                            # Update progress every 100 files
+                            total_checked += 1
+                            if total_checked % 100 == 0:
+                                self.after(0, lambda count=total_checked: 
+                                         self.secondary_label.config(text=f'Scanned {count} files...'))
+                
+                # Call completion handler on main thread
+                self.after(0, self._handle_async_drop_complete, valid_files, None)
+                
+            except Exception as e:
+                # Call completion handler with error
+                self.after(0, self._handle_async_drop_complete, [], str(e))
+        
+        # Start processing thread
+        thread = threading.Thread(target=process_files, daemon=True)
+        thread.start()
+
+    def _handle_async_drop_complete(self, valid_files: List[Path], error: str):
+        """Handle completion of async drop processing."""
+        # Re-enable UI
+        self.browse_button.configure(state='normal')
+        
+        if error:
+            self._update_appearance('reject')
+            self.primary_label.config(text='Error processing dropped items')
+            self.secondary_label.config(text=f'Error: {error}')
+            self.after(2000, lambda: self._reset_ui_text())
+        elif valid_files:
+            self._update_appearance('accept')
+            self.primary_label.config(text=f'Found {len(valid_files)} files!')
+            self.secondary_label.config(text='Files ready for processing')
+            self._process_dropped_files(valid_files)
+            self.after(2000, lambda: self._reset_ui_text())
+        else:
+            self._update_appearance('reject')
+            self.primary_label.config(text='No valid files found')
+            self.secondary_label.config(text='Try dropping files with supported extensions')
+            self.after(2000, lambda: self._reset_ui_text())
+
+    def _reset_ui_text(self):
+        """Reset UI text to default state."""
+        self._update_appearance('normal')
+        self.primary_label.config(text='Drag and drop files here')
+        self.secondary_label.config(text='or click browse to select files')
+
+    def _validate_files_sync(self, files: List[Path]) -> List[Path]:
+        """Validate and filter dropped files synchronously (for individual files only)."""
         valid_files = []
 
         for file_path in files:
@@ -260,14 +339,15 @@ class FileDropZone(ttk.Frame):
                 # Check extension
                 if file_path.suffix.lower() in self.accept_extensions:
                     valid_files.append(file_path)
-            elif file_path.is_dir() and self.accept_folders:
-                # Recursively find valid files in folder
-                valid_files.extend(self._find_files_in_folder(file_path))
 
         return valid_files
 
+    def _validate_files(self, files: List[Path]) -> List[Path]:
+        """Validate and filter dropped files (deprecated - use _validate_files_sync)."""
+        return self._validate_files_sync(files)
+
     def _find_files_in_folder(self, folder: Path) -> List[Path]:
-        """Recursively find valid files in a folder."""
+        """Recursively find valid files in a folder (synchronous)."""
         valid_files = []
 
         for file_path in folder.rglob('*'):
@@ -277,6 +357,41 @@ class FileDropZone(ttk.Frame):
                     valid_files.append(file_path)
 
         return valid_files
+
+    def _find_files_in_folder_async(self, folder: Path, callback):
+        """Asynchronously find valid files in a folder."""
+        self._update_appearance('hover')
+        self.primary_label.config(text='Scanning folder...')
+        self.secondary_label.config(text='Please wait while we discover files')
+        self.browse_button.configure(state='disabled')
+        
+        def discover_files():
+            try:
+                valid_files = []
+                total_checked = 0
+                
+                for file_path in folder.rglob('*'):
+                    if file_path.is_file() and file_path.suffix.lower() in self.accept_extensions:
+                        # Skip temporary files
+                        if not file_path.name.startswith('~'):
+                            valid_files.append(file_path)
+                    
+                    # Update progress every 100 files
+                    total_checked += 1
+                    if total_checked % 100 == 0:
+                        self.after(0, lambda count=total_checked: 
+                                 self.secondary_label.config(text=f'Scanned {count} files...'))
+                
+                # Call callback on main thread with results
+                self.after(0, callback, valid_files, None)
+                
+            except Exception as e:
+                # Call callback with error
+                self.after(0, callback, [], str(e))
+        
+        # Start discovery thread
+        thread = threading.Thread(target=discover_files, daemon=True)
+        thread.start()
 
     def _browse_files(self):
         """Open file browser dialog."""
@@ -304,18 +419,39 @@ class FileDropZone(ttk.Frame):
                     self._process_dropped_files(valid_files)
 
             elif result is False:
-                # Select folder
+                # Select folder with async discovery
                 folder = filedialog.askdirectory(title="Select Folder")
                 if folder:
                     folder_path = Path(folder)
-                    valid_files = self._find_files_in_folder(folder_path)
-                    if valid_files:
-                        self._process_dropped_files(valid_files)
-                    else:
-                        messagebox.showwarning(
-                            "No Files Found",
-                            f"No {', '.join(self.accept_extensions)} files found in the selected folder."
-                        )
+                    
+                    def on_discovery_complete(valid_files, error):
+                        # Re-enable UI
+                        self.browse_button.configure(state='normal')
+                        self._update_appearance('normal')
+                        
+                        if error:
+                            self.primary_label.config(text='Error scanning folder')
+                            self.secondary_label.config(text=f'Error: {error}')
+                            messagebox.showerror("Folder Scan Error", f"Could not scan folder:\n{error}")
+                        elif valid_files:
+                            self.primary_label.config(text='Drag and drop files here')
+                            self.secondary_label.config(text='or click browse to select files')
+                            self._process_dropped_files(valid_files)
+                            messagebox.showinfo(
+                                "Folder Scan Complete", 
+                                f"Found {len(valid_files)} {', '.join(self.accept_extensions)} files\n"
+                                f"in {folder_path.name}"
+                            )
+                        else:
+                            self.primary_label.config(text='No files found')
+                            self.secondary_label.config(text='Try selecting a different folder')
+                            messagebox.showwarning(
+                                "No Files Found",
+                                f"No {', '.join(self.accept_extensions)} files found in the selected folder."
+                            )
+                    
+                    # Start async discovery
+                    self._find_files_in_folder_async(folder_path, on_discovery_complete)
         else:
             # Just select files
             files = filedialog.askopenfilenames(
@@ -371,6 +507,11 @@ class FileDropZone(ttk.Frame):
             border_color = self.colors['reject_border']
             text_color = self.colors['reject_border']
             icon_text = '❌'
+        elif state == 'processing':
+            bg_color = '#fff3cd'  # Light yellow
+            border_color = '#ffc107'  # Warning yellow
+            text_color = '#856404'  # Dark yellow
+            icon_text = '⚙️'
         else:
             return
 
@@ -428,8 +569,22 @@ class FileDropZone(ttk.Frame):
             self._update_appearance('normal')
 
     def set_state(self, state: str):
-        """Set the state of the drop zone (alias for set_enabled)."""
-        self.set_enabled(state == 'normal')
+        """Set the state of the drop zone."""
+        if state == 'normal':
+            self.set_enabled(True)
+            self._update_appearance('normal')
+        elif state == 'disabled':
+            self.set_enabled(False)
+            self._update_appearance('normal')
+        elif state == 'processing':
+            # Keep enabled but show processing state
+            self.browse_button.configure(state='disabled')  # Disable browse during processing
+            self._update_appearance('processing')
+            # Update text to show processing
+            self.primary_label.config(text='Processing files...')
+            self.secondary_label.config(text='Analysis in progress')
+        else:
+            self.set_enabled(state == 'normal')
 
 
 # Example usage

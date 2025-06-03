@@ -68,7 +68,7 @@ SYSTEM_A_COLUMNS = {
 }
 
 SYSTEM_B_COLUMNS = {
-    "position": 8,      # Column I
+    "position": 4,      # Column E (CORRECTED: was incorrectly 8/Column I)
     "error": 3,         # Column D
     "upper_limit": 5,   # Column F
     "lower_limit": 6    # Column G
@@ -103,20 +103,25 @@ SPECIAL_MODELS = {
     }
 }
 
-# Analysis constants
+# Analysis constants - EXACT LOCKHEED MARTIN MATLAB SPECIFICATIONS
 DEFAULT_SIGMA_SCALING_FACTOR: Final[float] = 24.0
-MATLAB_GRADIENT_STEP: Final[int] = 3
-MATLAB_POSITION_MIN: Final[float] = 0.06
-MATLAB_POSITION_MAX: Final[float] = 0.54
+MATLAB_GRADIENT_STEP: Final[int] = 3                    # z_step in calc_gradient.m
+MATLAB_POSITION_MIN: Final[float] = 0.06                # ROI extraction: 0.06" start
+MATLAB_POSITION_MAX: Final[float] = 0.54                # ROI extraction: 0.54" end  
 REFERENCE_SIGMA_GRADIENT: Final[float] = 0.023
 DEFAULT_NUM_ZONES: Final[int] = 5
 MIN_ZONES: Final[int] = 1
 MAX_ZONES: Final[int] = 20
 END_POINT_FILTER_COUNT: Final[int] = 5  # Number of points to remove from each end
 
-# Filtering parameters
+# Filtering parameters - LOCKHEED MARTIN COMPLIANCE MODE
+# Based on original LM MATLAB specifications from read_laser_data_v12.m
+# Original algorithm: my_filtfiltfd2.m recursive filter
+# Formula: output[i] = output[i-1] + (fc/fs) * (input[i] - output[i-1])
 FILTER_SAMPLING_FREQUENCY: Final[int] = 100
-FILTER_CUTOFF_FREQUENCY: Final[int] = 80
+FILTER_CUTOFF_FREQUENCY_LM_ORIGINAL: Final[int] = 80   # Original LM spec from MATLAB
+FILTER_CUTOFF_FREQUENCY_CORRECTED: Final[int] = 40    # Technically correct (respects Nyquist)
+FILTER_CUTOFF_FREQUENCY: Final[int] = 40  # Current default (use LM_ORIGINAL if needed)
 
 # Risk thresholds
 HIGH_RISK_THRESHOLD: Final[float] = 0.7
@@ -144,7 +149,7 @@ DB_TIMEOUT: Final[float] = 30.0
 BATCH_INSERT_SIZE: Final[int] = 1000
 
 # GUI constants
-MIN_WINDOW_WIDTH: Final[int] = 800
+MIN_WINDOW_WIDTH: Final[int] = 900
 MIN_WINDOW_HEIGHT: Final[int] = 600
 PROGRESS_UPDATE_INTERVAL: Final[int] = 100  # milliseconds
 
