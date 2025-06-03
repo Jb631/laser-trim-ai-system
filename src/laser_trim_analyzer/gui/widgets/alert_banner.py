@@ -128,17 +128,31 @@ class AlertBanner(ttk.Frame):
             except:
                 pass  # If even error handling fails, fail silently
                 
-        # Store original error handler
-        self._original_error_handler = self.tk.report_callback_exception
-        
-        # Set up custom error handler for this banner
-        def custom_error_handler(error_type, error_value, tb):
-            if "AlertBanner" in str(tb) or "alert_banner" in str(tb):
-                handle_banner_error(error_type, error_value, tb)
-            else:
-                # Pass through other errors to original handler
-                self._original_error_handler(error_type, error_value, tb)
+        # Try to store original error handler safely
+        try:
+            # Get the root window for error reporting
+            root = self.winfo_toplevel()
+            if hasattr(root, 'report_callback_exception'):
+                self._original_error_handler = root.report_callback_exception
                 
+                # Set up custom error handler for this banner
+                def custom_error_handler(error_type, error_value, tb):
+                    if "AlertBanner" in str(tb) or "alert_banner" in str(tb):
+                        handle_banner_error(error_type, error_value, tb)
+                    else:
+                        # Pass through other errors to original handler
+                        self._original_error_handler(error_type, error_value, tb)
+                        
+                # Set the custom error handler
+                root.report_callback_exception = custom_error_handler
+            else:
+                # Fallback: just store the error handler function for cleanup
+                self._original_error_handler = None
+        except Exception as e:
+            # If error boundary setup fails, continue without it
+            print(f"Warning: Could not set up error boundary for AlertBanner: {e}")
+            self._original_error_handler = None
+
     def _emergency_cleanup(self):
         """Emergency cleanup when banner errors occur."""
         try:
