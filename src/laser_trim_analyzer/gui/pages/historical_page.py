@@ -34,9 +34,33 @@ class HistoricalPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the historical data page."""
-        # Title
-        title_frame = ttk.Frame(self)
+        """Set up the historical data page with scrollable layout."""
+        # Create scrollable main frame without shifting
+        main_container = ttk.Frame(self)
+        main_container.pack(fill='both', expand=True)
+        
+        # Canvas and scrollbar
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Add mouse wheel scrolling support
+        add_mousewheel_support(scrollable_frame, canvas)
+        
+        # Pack scrollbar first to avoid shifting
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Title in scrollable frame
+        title_frame = ttk.Frame(scrollable_frame)
         title_frame.pack(fill='x', padx=20, pady=(20, 10))
 
         ttk.Label(
@@ -45,23 +69,27 @@ class HistoricalPage(BasePage):
             font=('Segoe UI', 24, 'bold')
         ).pack(side='left')
 
-        # Create main sections
-        self._create_query_section()
-        self._create_results_section()
-        self._create_charts_section()
+        # Create main sections in scrollable frame
+        self._create_query_section(scrollable_frame)
+        self._create_results_section(scrollable_frame)
+        self._create_charts_section(scrollable_frame)
 
-    def _create_query_section(self):
-        """Create query filters section."""
+    def _create_query_section(self, parent):
+        """Create query filters section with responsive layout."""
         query_frame = ttk.LabelFrame(
-            self,
+            parent,
             text="Query Filters",
             padding=15
         )
         query_frame.pack(fill='x', padx=20, pady=10)
 
-        # Create 2x3 grid for filters
+        # Create responsive grid for filters
         filters_grid = ttk.Frame(query_frame)
         filters_grid.pack(fill='x')
+        
+        # Configure grid for responsive layout
+        for i in range(6):  # 6 columns
+            filters_grid.grid_columnconfigure(i, weight=1, minsize=120)
 
         # Model filter
         ttk.Label(filters_grid, text="Model:").grid(
@@ -70,10 +98,9 @@ class HistoricalPage(BasePage):
         self.model_var = tk.StringVar()
         self.model_entry = ttk.Entry(
             filters_grid,
-            textvariable=self.model_var,
-            width=20
+            textvariable=self.model_var
         )
-        self.model_entry.grid(row=0, column=1, padx=(0, 20), pady=5)
+        self.model_entry.grid(row=0, column=1, sticky='ew', padx=(0, 20), pady=5)
 
         # Serial filter
         ttk.Label(filters_grid, text="Serial:").grid(
@@ -82,10 +109,9 @@ class HistoricalPage(BasePage):
         self.serial_var = tk.StringVar()
         self.serial_entry = ttk.Entry(
             filters_grid,
-            textvariable=self.serial_var,
-            width=20
+            textvariable=self.serial_var
         )
-        self.serial_entry.grid(row=0, column=3, padx=(0, 20), pady=5)
+        self.serial_entry.grid(row=0, column=3, sticky='ew', padx=(0, 20), pady=5)
 
         # Date range
         ttk.Label(filters_grid, text="Date Range:").grid(
@@ -99,11 +125,11 @@ class HistoricalPage(BasePage):
                 "Today", "Last 7 days", "Last 30 days",
                 "Last 90 days", "Last year", "All time"
             ],
-            width=15,
             state='readonly'
         )
-        self.date_combo.grid(row=0, column=5, pady=5)
+        self.date_combo.grid(row=0, column=5, sticky='ew', pady=5)
 
+        # Second row of filters
         # Status filter
         ttk.Label(filters_grid, text="Status:").grid(
             row=1, column=0, sticky='w', padx=(0, 10), pady=5
@@ -113,10 +139,9 @@ class HistoricalPage(BasePage):
             filters_grid,
             textvariable=self.status_var,
             values=["All", "Pass", "Fail", "Warning"],
-            width=18,
             state='readonly'
         )
-        self.status_combo.grid(row=1, column=1, pady=5)
+        self.status_combo.grid(row=1, column=1, sticky='ew', pady=5)
 
         # Risk category filter
         ttk.Label(filters_grid, text="Risk:").grid(
@@ -127,10 +152,9 @@ class HistoricalPage(BasePage):
             filters_grid,
             textvariable=self.risk_var,
             values=["All", "High", "Medium", "Low"],
-            width=18,
             state='readonly'
         )
-        self.risk_combo.grid(row=1, column=3, pady=5)
+        self.risk_combo.grid(row=1, column=3, sticky='ew', pady=5)
 
         # Limit results
         ttk.Label(filters_grid, text="Limit:").grid(
@@ -141,14 +165,19 @@ class HistoricalPage(BasePage):
             filters_grid,
             textvariable=self.limit_var,
             values=["50", "100", "500", "1000", "All"],
-            width=15,
             state='readonly'
         )
-        self.limit_combo.grid(row=1, column=5, pady=5)
+        self.limit_combo.grid(row=1, column=5, sticky='ew', pady=5)
 
-        # Action buttons
+        # Action buttons with responsive layout
         button_frame = ttk.Frame(query_frame)
         button_frame.pack(fill='x', pady=(15, 0))
+        
+        # Configure button frame for responsive layout
+        button_frame.grid_columnconfigure(0, weight=1)
+        button_frame.grid_columnconfigure(1, weight=1)
+        button_frame.grid_columnconfigure(2, weight=1)
+        button_frame.grid_columnconfigure(3, weight=2)  # Extra space
 
         self.query_btn = ttk.Button(
             button_frame,
@@ -156,38 +185,44 @@ class HistoricalPage(BasePage):
             command=self._run_query,
             style='Primary.TButton'
         )
-        self.query_btn.pack(side='left', padx=(0, 10))
+        self.query_btn.grid(row=0, column=0, sticky='ew', padx=(0, 10))
 
-        ttk.Button(
+        clear_btn = ttk.Button(
             button_frame,
             text="Clear Filters",
             command=self._clear_filters
-        ).pack(side='left', padx=(0, 10))
+        )
+        clear_btn.grid(row=0, column=1, sticky='ew', padx=(0, 10))
 
-        ttk.Button(
+        export_btn = ttk.Button(
             button_frame,
             text="Export Results",
             command=self._export_results
-        ).pack(side='left')
+        )
+        export_btn.grid(row=0, column=2, sticky='ew', padx=(0, 10))
 
-    def _create_results_section(self):
-        """Create results table section."""
+    def _create_results_section(self, parent):
+        """Create results table section with responsive height management."""
         results_frame = ttk.LabelFrame(
-            self,
+            parent,
             text="Query Results",
             padding=10
         )
-        results_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        results_frame.pack(fill='both', expand=True, padx=20, pady=10)  # Changed to expand
 
-        # Create treeview with scrollbars
+        # Create treeview with scrollbars and responsive layout
         tree_frame = ttk.Frame(results_frame)
-        tree_frame.pack(fill='both', expand=True)
+        tree_frame.pack(fill='both', expand=True)  # Changed to expand
+        
+        # Configure tree frame for responsiveness
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
 
         # Scrollbars
         vsb = ttk.Scrollbar(tree_frame, orient='vertical')
         hsb = ttk.Scrollbar(tree_frame, orient='horizontal')
 
-        # Treeview
+        # Treeview with responsive dimensions
         columns = (
             'Date', 'Model', 'Serial', 'System', 'Status',
             'Sigma Gradient', 'Sigma Pass', 'Linearity Pass',
@@ -200,97 +235,102 @@ class HistoricalPage(BasePage):
             show='tree headings',
             yscrollcommand=vsb.set,
             xscrollcommand=hsb.set
+            # Remove fixed height for responsive behavior
         )
 
         # Configure scrollbars
         vsb.config(command=self.results_tree.yview)
         hsb.config(command=self.results_tree.xview)
 
-        # Configure columns
+        # Configure columns with responsive widths
         self.results_tree.column('#0', width=0, stretch=False)
-        self.results_tree.column('Date', width=150)
-        self.results_tree.column('Model', width=80)
-        self.results_tree.column('Serial', width=100)
-        self.results_tree.column('System', width=60)
-        self.results_tree.column('Status', width=80)
-        self.results_tree.column('Sigma Gradient', width=100)
-        self.results_tree.column('Sigma Pass', width=80)
-        self.results_tree.column('Linearity Pass', width=100)
-        self.results_tree.column('Risk Category', width=90)
-        self.results_tree.column('Processing Time', width=100)
+        
+        # Define responsive column widths
+        column_configs = [
+            ('Date', 150, True),
+            ('Model', 80, True),
+            ('Serial', 100, True),
+            ('System', 60, True),
+            ('Status', 80, True),
+            ('Sigma Gradient', 100, True),
+            ('Sigma Pass', 80, True),
+            ('Linearity Pass', 100, True),
+            ('Risk Category', 90, True),
+            ('Processing Time', 100, True)
+        ]
+        
+        for col, width, stretch in column_configs:
+            self.results_tree.column(col, width=width, stretch=stretch, minwidth=50)
 
         # Configure headings
         for col in columns:
             self.results_tree.heading(col, text=col, command=lambda c=col: self._sort_column(c))
 
-        # Pack widgets
+        # Grid layout for responsive control
         self.results_tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
 
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-
         # Add mouse wheel scrolling support to treeview
         add_mousewheel_support(self.results_tree)
 
-        # Summary label
+        # Summary label with responsive positioning
         self.summary_label = ttk.Label(
             results_frame,
             text="No data loaded",
             font=('Segoe UI', 10)
         )
-        self.summary_label.pack(pady=(10, 0))
+        self.summary_label.pack(pady=(10, 0), expand=True)
 
         # Bind double-click to view details
         self.results_tree.bind('<Double-1>', self._view_details)
 
-    def _create_charts_section(self):
-        """Create charts section."""
+    def _create_charts_section(self, parent):
+        """Create charts section with responsive layout."""
         charts_frame = ttk.LabelFrame(
-            self,
+            parent,
             text="Data Visualization",
             padding=10
         )
         charts_frame.pack(fill='both', expand=True, padx=20, pady=(0, 20))
 
-        # Create notebook for different charts
+        # Create notebook for different charts with responsive sizing
         self.chart_notebook = ttk.Notebook(charts_frame)
         self.chart_notebook.pack(fill='both', expand=True)
 
-        # Pass rate trend chart
+        # Pass rate trend chart with responsive dimensions
         trend_frame = ttk.Frame(self.chart_notebook)
         self.chart_notebook.add(trend_frame, text="Pass Rate Trend")
 
         self.trend_chart = ChartWidget(
             trend_frame,
             chart_type='line',
-            title="Pass Rate Trend Over Time",
-            figsize=(10, 5)
+            title="Pass Rate Trend Over Time"
+            # Remove fixed figsize for responsive behavior
         )
         self.trend_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Sigma distribution chart
+        # Sigma distribution chart with responsive dimensions
         dist_frame = ttk.Frame(self.chart_notebook)
         self.chart_notebook.add(dist_frame, text="Sigma Distribution")
 
         self.dist_chart = ChartWidget(
             dist_frame,
             chart_type='histogram',
-            title="Sigma Gradient Distribution",
-            figsize=(10, 5)
+            title="Sigma Gradient Distribution"
+            # Remove fixed figsize for responsive behavior
         )
         self.dist_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Model comparison chart
+        # Model comparison chart with responsive dimensions
         comp_frame = ttk.Frame(self.chart_notebook)
         self.chart_notebook.add(comp_frame, text="Model Comparison")
 
         self.comp_chart = ChartWidget(
             comp_frame,
             chart_type='bar',
-            title="Pass Rate by Model",
-            figsize=(10, 5)
+            title="Pass Rate by Model"
+            # Remove fixed figsize for responsive behavior
         )
         self.comp_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
