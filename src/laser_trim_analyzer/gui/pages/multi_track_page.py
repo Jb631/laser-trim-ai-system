@@ -606,7 +606,7 @@ class MultiTrackPage(BasePage):
                 track_count = unit_data.get('track_count', 0)
                 status = unit_data.get('overall_status', 'UNKNOWN')
                 
-            self.unit_info_label.config(
+                self.unit_info_label.config(
                     text=f"Unit: {model}/{serial} | {file_count} files | {track_count} tracks | Status: {status}"
                 )
                 
