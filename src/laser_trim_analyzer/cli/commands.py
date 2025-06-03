@@ -13,18 +13,22 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import asyncio
+import logging
+import time
 
 import click
 import pandas as pd
+import numpy as np
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich import print as rprint
 
 from laser_trim_analyzer.core.config import Config, get_config
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
+from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor, process_large_directory
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.report_generator import ReportGenerator
 
@@ -908,6 +912,260 @@ def config(ctx, key, value, list_all):
     else:
         # Show help
         console.print("Use 'lta config --help' for usage information")
+
+
+# Large-scale batch processing command
+@cli.command()
+@click.argument('directory', type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option('--output', '-o', type=click.Path(path_type=Path), help='Output directory')
+@click.option('--max-workers', type=int, help='Maximum parallel workers')
+@click.option('--batch-size', type=int, help='Batch size for processing')
+@click.option('--high-performance', is_flag=True, help='Enable high-performance mode')
+@click.option('--resume-from', type=str, help='Resume from specific file')
+@click.option('--disable-plots', is_flag=True, help='Disable plot generation for speed')
+@click.option('--memory-limit', type=float, help='Memory limit in GB')
+@click.pass_context
+def batch(ctx, directory, output, max_workers, batch_size, high_performance, resume_from, disable_plots, memory_limit):
+    """
+    Process multiple files in a directory efficiently.
+    
+    Optimized for handling hundreds or thousands of files with:
+    - Intelligent batching and memory management
+    - Progress tracking and crash recovery
+    - Performance monitoring
+    - Automatic optimization for large batches
+    """
+    config = ctx.obj['config']
+    
+    # Apply command-line overrides
+    if max_workers:
+        config.processing.max_workers = max_workers
+    if batch_size:
+        config.processing.max_batch_size = batch_size
+    if disable_plots:
+        config.processing.generate_plots = False
+    if memory_limit:
+        config.processing.memory_limit_mb = memory_limit * 1024  # Convert GB to MB
+    if high_performance:
+        config.processing.high_performance_mode = True
+        config.processing.generate_plots = False
+        config.processing.max_workers = min(16, max(8, config.processing.max_workers))
+
+    async def run_batch():
+        try:
+            # Show initial info
+            console.print(Panel.fit(
+                f"[bold blue]Large-Scale Batch Processing[/bold blue]\n\n"
+                f"📁 Directory: {directory}\n"
+                f"🎯 Output: {output or 'Same directory'}\n"
+                f"⚡ Workers: {config.processing.max_workers}\n"
+                f"📦 Batch Size: {config.processing.max_batch_size}\n"
+                f"🧠 Memory Limit: {config.processing.memory_limit_mb:.0f} MB\n"
+                f"📊 Generate Plots: {config.processing.generate_plots}\n"
+                f"🚀 High Performance: {high_performance}"
+            ))
+            
+            # Initialize database if enabled
+            db_manager = None
+            if config.database.enabled:
+                try:
+                    db_path = f"sqlite:///{config.database.path.absolute()}"
+                    db_manager = DatabaseManager(db_path)
+                    console.print("✅ Database connected")
+                except Exception as e:
+                    console.print(f"⚠️ Database initialization failed: {e}")
+            
+            # Initialize large-scale processor
+            processor = LargeScaleProcessor(config, db_manager)
+            
+            # Progress tracking
+            progress_stats = {
+                'start_time': time.time(),
+                'last_update': time.time()
+            }
+            
+            def progress_callback(message: str, progress: float, stats: Dict[str, Any]):
+                """Handle progress updates with rich display."""
+                current_time = time.time()
+                
+                # Throttle updates to avoid spam
+                if current_time - progress_stats['last_update'] < 0.5:
+                    return
+                    
+                progress_stats['last_update'] = current_time
+                
+                # Calculate elapsed time
+                elapsed = current_time - progress_stats['start_time']
+                
+                # Create progress display
+                console.clear()
+                
+                # Main progress bar
+                progress_bar = f"{'█' * int(progress * 40)}{'░' * (40 - int(progress * 40))}"
+                console.print(f"\n🔄 Progress: [{progress_bar}] {progress*100:.1f}%")
+                console.print(f"📝 Status: {message}")
+                
+                # Statistics table
+                table = Table(title="Processing Statistics")
+                table.add_column("Metric", style="cyan")
+                table.add_column("Value", style="green")
+                
+                table.add_row("Files Processed", f"{stats.get('processed_files', 0):,}")
+                table.add_row("Failed Files", f"{stats.get('failed_files', 0):,}")
+                table.add_row("Total Files", f"{stats.get('total_files', 0):,}")
+                
+                if stats.get('files_per_second', 0) > 0:
+                    table.add_row("Speed", f"{stats['files_per_second']:.2f} files/sec")
+                
+                table.add_row("Elapsed Time", f"{elapsed/60:.1f} minutes")
+                
+                if stats.get('estimated_completion'):
+                    remaining_time = stats['estimated_completion'] - current_time
+                    table.add_row("Est. Remaining", f"{remaining_time/60:.1f} minutes")
+                
+                table.add_row("Memory Usage", f"{stats.get('current_memory_mb', 0):.1f} MB")
+                table.add_row("Peak Memory", f"{stats.get('peak_memory_mb', 0):.1f} MB")
+                
+                console.print(table)
+            
+            # Run processing
+            results = await processor.process_large_directory(
+                directory=directory,
+                output_dir=output,
+                progress_callback=progress_callback,
+                resume_from=resume_from
+            )
+            
+            # Display final results
+            _display_batch_results(results, processor.get_stats())
+            
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Processing interrupted by user[/yellow]")
+            if 'processor' in locals():
+                processor.stop_processing()
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            if ctx.obj['debug']:
+                console.print_exception()
+            raise click.ClickException(str(e))
+    
+    asyncio.run(run_batch())
+
+
+# Directory scanning command
+@cli.command()
+@click.argument('directory', type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option('--extensions', default='.xlsx,.xls', help='File extensions to count (comma-separated)')
+@click.option('--include-subdirs', is_flag=True, help='Include subdirectories')
+@click.pass_context
+def scan(ctx, directory, extensions, include_subdirs):
+    """Scan directory and estimate processing requirements."""
+    
+    console.print(f"[bold blue]Scanning Directory:[/bold blue] {directory}")
+    
+    # Parse extensions
+    ext_list = [ext.strip() for ext in extensions.split(',')]
+    if not all(ext.startswith('.') for ext in ext_list):
+        ext_list = [f'.{ext}' if not ext.startswith('.') else ext for ext in ext_list]
+    
+    # Scan files
+    files = []
+    total_size = 0
+    
+    with console.status("Scanning files..."):
+        pattern = '**/*' if include_subdirs else '*'
+        
+        for file_path in directory.glob(pattern):
+            if file_path.is_file() and file_path.suffix.lower() in ext_list:
+                try:
+                    size = file_path.stat().st_size
+                    files.append((file_path, size))
+                    total_size += size
+                except Exception:
+                    continue
+    
+    # Analyze results
+    file_count = len(files)
+    avg_size = total_size / file_count if file_count > 0 else 0
+    total_size_mb = total_size / (1024 * 1024)
+    
+    # Estimate processing requirements
+    config = ctx.obj['config']
+    
+    # Estimate processing time (rough calculation)
+    estimated_time_per_file = 2.0  # seconds per file (rough estimate)
+    total_estimated_time = file_count * estimated_time_per_file
+    
+    # With parallel processing
+    parallel_time = total_estimated_time / config.processing.max_workers
+    
+    # Memory estimation
+    estimated_memory_per_file = 10  # MB per file in memory
+    peak_memory_estimate = min(
+        config.processing.max_concurrent_files * estimated_memory_per_file,
+        config.processing.memory_limit_mb
+    )
+    
+    # Create results table
+    table = Table(title="Directory Scan Results")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_column("Notes", style="yellow")
+    
+    table.add_row("Total Files", f"{file_count:,}", f"Extensions: {', '.join(ext_list)}")
+    table.add_row("Total Size", f"{total_size_mb:.1f} MB", f"Avg: {avg_size/1024:.1f} KB per file")
+    table.add_row("Est. Processing Time", f"{total_estimated_time/60:.1f} minutes", "Sequential processing")
+    table.add_row("Est. Parallel Time", f"{parallel_time/60:.1f} minutes", f"With {config.processing.max_workers} workers")
+    table.add_row("Est. Memory Usage", f"{peak_memory_estimate:.0f} MB", "Peak concurrent memory")
+    
+    # Recommendations
+    recommendations = []
+    
+    if file_count > 1000:
+        recommendations.append("🚀 Use --high-performance flag for large batches")
+        recommendations.append("💾 Consider increasing memory limit")
+        recommendations.append("📊 Consider --disable-plots for faster processing")
+    
+    if total_size_mb > 1000:
+        recommendations.append("💿 Ensure sufficient disk space for outputs")
+    
+    if peak_memory_estimate > config.processing.memory_limit_mb:
+        recommendations.append("⚠️ Consider reducing max_concurrent_files in config")
+    
+    console.print(table)
+    
+    if recommendations:
+        console.print("\n[bold yellow]Recommendations:[/bold yellow]")
+        for rec in recommendations:
+            console.print(f"  {rec}")
+    
+    # Show example command
+    console.print(f"\n[bold green]Example command:[/bold green]")
+    cmd = f"lta batch \"{directory}\""
+    if file_count > 500:
+        cmd += " --high-performance"
+    if file_count > 1000:
+        cmd += " --disable-plots"
+    console.print(f"  {cmd}")
+
+
+def _display_batch_results(results: Dict, stats: Dict):
+    """Display results for batch processing."""
+    console.clear()
+    
+    # Success/failure summary
+    total_files = len(results) + stats.get('failed_files', 0)
+    success_rate = len(results) / total_files * 100 if total_files > 0 else 0
+    
+    console.print(Panel.fit(
+        f"[bold green]Batch Processing Complete![/bold green]\n\n"
+        f"✅ Successful: {len(results):,} files\n"
+        f"❌ Failed: {stats.get('failed_files', 0):,} files\n"
+        f"📊 Success Rate: {success_rate:.1f}%\n"
+        f"⏱️ Total Time: {stats.get('total_time', 0)/60:.1f} minutes\n"
+        f"🚀 Speed: {stats.get('files_per_second', 0):.2f} files/sec\n"
+        f"💾 Peak Memory: {stats.get('peak_memory_mb', 0):.1f} MB"
+    ))
 
 
 # Entry point for script execution

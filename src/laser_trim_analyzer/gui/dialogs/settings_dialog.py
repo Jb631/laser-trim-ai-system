@@ -84,6 +84,7 @@ class SettingsDialog(tk.Toplevel):
         self.vars['gradient_step'] = tk.IntVar()
         self.vars['filter_sampling'] = tk.IntVar()
         self.vars['filter_cutoff'] = tk.IntVar()
+        self.vars['lm_compliance_mode'] = tk.BooleanVar()
         self.vars['num_zones'] = tk.IntVar()
         self.vars['high_risk_threshold'] = tk.DoubleVar()
         self.vars['low_risk_threshold'] = tk.DoubleVar()
@@ -417,14 +418,33 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=0, column=1, sticky='w', pady=5)
 
         ttk.Label(filter_frame, text="Cutoff Frequency:").grid(row=1, column=0, sticky='w', pady=5)
-        ttk.Spinbox(
+        self.cutoff_spin = ttk.Spinbox(
             filter_frame,
             textvariable=self.vars['filter_cutoff'],
             from_=10,
             to=500,
             increment=10,
             width=10
-        ).grid(row=1, column=1, sticky='w', pady=5)
+        )
+        self.cutoff_spin.grid(row=1, column=1, sticky='w', pady=5)
+        
+        # Lockheed Martin Compliance Mode
+        ttk.Label(filter_frame, text="LM Compliance Mode:").grid(row=2, column=0, sticky='w', pady=5)
+        self.lm_compliance_check = ttk.Checkbutton(
+            filter_frame,
+            variable=self.vars['lm_compliance_mode'],
+            command=self._toggle_lm_compliance
+        )
+        self.lm_compliance_check.grid(row=2, column=1, sticky='w', pady=5)
+        
+        # Warning label for LM compliance mode
+        self.lm_warning_label = ttk.Label(
+            filter_frame,
+            text="⚠️ Uses original LM recursive filter (80Hz) - may override cutoff frequency",
+            foreground="orange",
+            font=('Segoe UI', 8)
+        )
+        self.lm_warning_label.grid(row=3, column=0, columnspan=2, sticky='w', pady=2)
 
         filter_frame.columnconfigure(1, weight=1)
 
@@ -680,6 +700,7 @@ class SettingsDialog(tk.Toplevel):
         self.vars['gradient_step'].set(self.config.analysis.matlab_gradient_step)
         self.vars['filter_sampling'].set(self.config.analysis.filter_sampling_frequency)
         self.vars['filter_cutoff'].set(self.config.analysis.filter_cutoff_frequency)
+        self.vars['lm_compliance_mode'].set(self.config.analysis.lockheed_martin_compliance_mode)
         self.vars['num_zones'].set(self.config.analysis.default_num_zones)
         self.vars['high_risk_threshold'].set(self.config.analysis.high_risk_threshold)
         self.vars['low_risk_threshold'].set(self.config.analysis.low_risk_threshold)
@@ -714,6 +735,7 @@ class SettingsDialog(tk.Toplevel):
         self._toggle_ml_settings()
         self._toggle_api_settings()
         self._toggle_autosave_settings()
+        self._toggle_lm_compliance()
 
     def _save_settings(self):
         """Save UI values to config object."""
@@ -747,6 +769,7 @@ class SettingsDialog(tk.Toplevel):
         self.config.analysis.matlab_gradient_step = self.vars['gradient_step'].get()
         self.config.analysis.filter_sampling_frequency = self.vars['filter_sampling'].get()
         self.config.analysis.filter_cutoff_frequency = self.vars['filter_cutoff'].get()
+        self.config.analysis.lockheed_martin_compliance_mode = self.vars['lm_compliance_mode'].get()
         self.config.analysis.default_num_zones = self.vars['num_zones'].get()
         self.config.analysis.high_risk_threshold = self.vars['high_risk_threshold'].get()
         self.config.analysis.low_risk_threshold = self.vars['low_risk_threshold'].get()
@@ -859,6 +882,27 @@ class SettingsDialog(tk.Toplevel):
             self.api_key_entry.configure(show='')
         else:
             self.api_key_entry.configure(show='*')
+
+    def _toggle_lm_compliance(self):
+        """Toggle LM compliance mode."""
+        enabled = self.vars['lm_compliance_mode'].get()
+        
+        if enabled:
+            # Show warning and disable cutoff frequency editing
+            self.cutoff_spin.configure(state='disabled')
+            self.lm_warning_label.configure(foreground='red')
+            # Informatively show what the LM mode will use
+            original_cutoff = self.vars['filter_cutoff'].get()
+            self.lm_warning_label.configure(
+                text=f"⚠️ LM Mode: Uses 80Hz cutoff (overrides {original_cutoff}Hz) with recursive filter"
+            )
+        else:
+            # Enable cutoff frequency editing and reset warning
+            self.cutoff_spin.configure(state='normal')
+            self.lm_warning_label.configure(foreground='gray')
+            self.lm_warning_label.configure(
+                text="Uses Butterworth filter with configurable cutoff frequency"
+            )
 
     def _browse_directory(self, var: tk.StringVar):
         """Browse for directory."""

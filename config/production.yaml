@@ -22,6 +22,10 @@ analysis:
   matlab_gradient_step: 3
   filter_sampling_frequency: 100
   filter_cutoff_frequency: 40
+  # Lockheed Martin Compliance Mode
+  # Set to true to use original LM specifications (80 Hz cutoff)
+  # WARNING: This violates Nyquist theorem but may be required for contractual compliance
+  lockheed_martin_compliance_mode: false
   default_num_zones: 5
   high_risk_threshold: 0.7
   low_risk_threshold: 0.3

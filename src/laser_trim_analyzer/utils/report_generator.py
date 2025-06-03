@@ -72,6 +72,20 @@ class ReportGenerator:
         # Calculate pass rate
         pass_rate = (passed_files / total_files * 100) if total_files > 0 else 0
         
+        # Determine analysis mode information
+        lm_mode_files = 0
+        standard_mode_files = 0
+        for result in results:
+            # Check if LM compliance mode was used (this would be logged in processing)
+            if hasattr(result, 'processing_metadata') and result.processing_metadata:
+                if result.processing_metadata.get('lm_compliance_mode', False):
+                    lm_mode_files += 1
+                else:
+                    standard_mode_files += 1
+            else:
+                # Default assumption if no metadata
+                standard_mode_files += 1
+        
         # Generate results table rows
         table_rows = []
         for result in results:
@@ -81,12 +95,19 @@ class ReportGenerator:
             validation_status = getattr(result, 'overall_validation_status', 'Not Available')
             validation_grade = getattr(result, 'validation_grade', 'N/A')
             
+            # Get analysis mode info
+            analysis_mode = "Standard"
+            if hasattr(result, 'processing_metadata') and result.processing_metadata:
+                if result.processing_metadata.get('lm_compliance_mode', False):
+                    analysis_mode = "LM Compliance"
+            
             row = f"""
             <tr>
                 <td>{result.metadata.filename}</td>
                 <td>{result.metadata.model}</td>
                 <td>{result.metadata.serial}</td>
                 <td><span class="status-{result.overall_status.value.lower()}">{result.overall_status.value}</span></td>
+                <td><span class="mode-{analysis_mode.lower().replace(' ', '-')}">{analysis_mode}</span></td>
                 <td><span class="validation-{validation_status.value.lower() if hasattr(validation_status, 'value') else 'unknown'}">{validation_status.value if hasattr(validation_status, 'value') else validation_status}</span></td>
                 <td>{validation_grade}</td>
                 <td>{primary_track.sigma_analysis.sigma_gradient:.4f}</td>
@@ -96,6 +117,19 @@ class ReportGenerator:
             </tr>
             """
             table_rows.append(row)
+        
+        # Generate analysis mode summary
+        mode_summary = ""
+        if lm_mode_files > 0 or standard_mode_files > 0:
+            mode_summary = f"""
+                <div class="summary-card mode-info">
+                    <h3>Analysis Modes</h3>
+                    <div class="mode-breakdown">
+                        <div>LM Compliance: <strong>{lm_mode_files}</strong></div>
+                        <div>Standard: <strong>{standard_mode_files}</strong></div>
+                    </div>
+                </div>
+            """
         
         # Generate HTML
         html_content = f"""
@@ -203,6 +237,25 @@ class ReportGenerator:
                 .validation-not_validated {{
                     color: #95a5a6;
                 }}
+                .mode-lm-compliance {{
+                    color: #e67e22;
+                    font-weight: bold;
+                }}
+                .mode-standard {{
+                    color: #3498db;
+                    font-weight: bold;
+                }}
+                .mode-info {{
+                    border-left-color: #9b59b6;
+                }}
+                .mode-info .value {{
+                    color: #9b59b6;
+                }}
+                .mode-breakdown {{
+                    display: flex;
+                    justify-content: space-between;
+                    font-size: 0.9em;
+                }}
                 .footer {{
                     margin-top: 30px;
                     text-align: center;
@@ -236,6 +289,7 @@ class ReportGenerator:
                         <h3>Warnings</h3>
                         <div class="value" style="color: #f39c12;">{warning_files}</div>
                     </div>
+                    {mode_summary}
                 </div>
 
                 <table>
@@ -245,6 +299,7 @@ class ReportGenerator:
                             <th>Model</th>
                             <th>Serial</th>
                             <th>Status</th>
+                            <th>Mode</th>
                             <th>Validation</th>
                             <th>Grade</th>
                             <th>Sigma Gradient</th>

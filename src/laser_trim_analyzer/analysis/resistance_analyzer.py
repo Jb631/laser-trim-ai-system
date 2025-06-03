@@ -29,8 +29,9 @@ class ResistanceAnalyzer(BaseAnalyzer):
                 - untrimmed_resistance: Optional[float] - Resistance before trim
                 - trimmed_resistance: Optional[float] - Resistance after trim
                 - file_path: Optional[str] - Excel file path for extraction
-                - untrimmed_sheet: Optional[str] - Sheet name for untrimmed data
-                - trimmed_sheet: Optional[str] - Sheet name for trimmed data
+                - discovered_sheets: Optional[Dict] - Sheet names found by processor
+                - untrimmed_sheet: Optional[str] - Sheet name for untrimmed data (fallback)
+                - trimmed_sheet: Optional[str] - Sheet name for trimmed data (fallback)
                 - system_type: Optional[str] - System type (A or B)
                 - model: Optional[str] - Model identifier
 
@@ -43,7 +44,7 @@ class ResistanceAnalyzer(BaseAnalyzer):
         untrimmed_resistance = data.get('untrimmed_resistance')
         trimmed_resistance = data.get('trimmed_resistance')
 
-        # If not provided, try to extract from Excel file
+        # If not provided, try to extract from Excel file using discovered sheets
         if (untrimmed_resistance is None or trimmed_resistance is None) and 'file_path' in data:
             extracted_values = self._extract_from_excel(data)
             if untrimmed_resistance is None:
@@ -88,7 +89,7 @@ class ResistanceAnalyzer(BaseAnalyzer):
 
     def _extract_from_excel(self, data: Dict[str, Any]) -> Dict[str, Optional[float]]:
         """
-        Extract resistance values from Excel file.
+        Extract resistance values from Excel file using discovered sheet names.
 
         Args:
             data: Dictionary with file path and sheet information
@@ -108,32 +109,150 @@ class ResistanceAnalyzer(BaseAnalyzer):
                 untrimmed_cell = 'R1'
                 trimmed_cell = 'R1'
             else:  # System A
-                # Special handling for 8340 models
-                if model.startswith('8340'):
-                    untrimmed_cell = 'B10'
-                    trimmed_cell = 'B10'
-                else:
-                    untrimmed_cell = 'B10'
-                    trimmed_cell = 'B10'
+                untrimmed_cell = 'B10'
+                trimmed_cell = 'B10'
+
+            # Get sheet names - prefer discovered sheets from processor
+            discovered_sheets = data.get('discovered_sheets', {})
+            
+            # Try to get actual sheet names from discovered sheets first
+            untrimmed_sheet = None
+            trimmed_sheet = None
+            
+            if discovered_sheets:
+                untrimmed_sheet = discovered_sheets.get('untrimmed')
+                trimmed_sheet = discovered_sheets.get('trimmed')
+                self.logger.debug(f"Using discovered sheets: untrimmed='{untrimmed_sheet}', trimmed='{trimmed_sheet}'")
+            
+            # Fallback to provided sheet names if discovered sheets not available
+            if not untrimmed_sheet:
+                untrimmed_sheet = data.get('untrimmed_sheet')
+            if not trimmed_sheet:
+                trimmed_sheet = data.get('trimmed_sheet')
+            
+            # If still no sheet names, try to find them using fuzzy matching
+            if not untrimmed_sheet or not trimmed_sheet:
+                matched_sheets = self._find_sheets_by_fuzzy_matching(file_path, system_type)
+                if not untrimmed_sheet:
+                    untrimmed_sheet = matched_sheets.get('untrimmed')
+                if not trimmed_sheet:
+                    trimmed_sheet = matched_sheets.get('trimmed')
 
             # Extract from untrimmed sheet
-            untrimmed_sheet = data.get('untrimmed_sheet')
             if untrimmed_sheet:
                 extracted['untrimmed'] = self._read_cell_value(
                     file_path, untrimmed_sheet, untrimmed_cell
                 )
+                if extracted['untrimmed'] is not None:
+                    self.logger.debug(f"Extracted untrimmed resistance: {extracted['untrimmed']} from sheet '{untrimmed_sheet}'")
+            else:
+                self.logger.warning(f"No untrimmed sheet found for file: {file_path}")
 
             # Extract from trimmed sheet
-            trimmed_sheet = data.get('trimmed_sheet')
             if trimmed_sheet:
                 extracted['trimmed'] = self._read_cell_value(
                     file_path, trimmed_sheet, trimmed_cell
                 )
+                if extracted['trimmed'] is not None:
+                    self.logger.debug(f"Extracted trimmed resistance: {extracted['trimmed']} from sheet '{trimmed_sheet}'")
+            else:
+                self.logger.warning(f"No trimmed sheet found for file: {file_path}")
 
         except Exception as e:
             self.logger.error(f"Error extracting resistance from Excel: {e}")
 
         return extracted
+
+    def _find_sheets_by_fuzzy_matching(self, file_path: str, system_type: str) -> Dict[str, Optional[str]]:
+        """
+        Find sheet names using fuzzy matching when exact names aren't available.
+        
+        Args:
+            file_path: Path to Excel file
+            system_type: System type (A or B)
+            
+        Returns:
+            Dictionary with matched sheet names
+        """
+        matched = {'untrimmed': None, 'trimmed': None}
+        
+        try:
+            # Get all sheet names from the file
+            excel_file = pd.ExcelFile(file_path)
+            available_sheets = excel_file.sheet_names
+            
+            if system_type == 'A':
+                # Look for System A patterns
+                untrimmed_patterns = ['trk1 0', 'sec1 trk1 0', 'trk 0']
+                trimmed_patterns = ['trk1 trm', 'sec1 trk1', 'trm', 'trim']
+            else:
+                # Look for System B patterns
+                untrimmed_patterns = ['test']
+                trimmed_patterns = ['trim', 'lin error']
+            
+            # Find untrimmed sheet
+            matched['untrimmed'] = self._find_closest_sheet_match(
+                untrimmed_patterns, available_sheets
+            )
+            
+            # Find trimmed sheet
+            matched['trimmed'] = self._find_closest_sheet_match(
+                trimmed_patterns, available_sheets
+            )
+            
+            self.logger.debug(f"Fuzzy matching results: {matched} from sheets: {available_sheets}")
+            
+        except Exception as e:
+            self.logger.error(f"Error in fuzzy sheet matching: {e}")
+        
+        return matched
+
+    def _find_closest_sheet_match(self, patterns: List[str], available_sheets: List[str]) -> Optional[str]:
+        """
+        Find the closest matching sheet name from a list of patterns.
+        
+        Args:
+            patterns: List of patterns to search for
+            available_sheets: List of available sheet names
+            
+        Returns:
+            Best matching sheet name or None
+        """
+        best_match = None
+        best_score = 0
+        
+        for pattern in patterns:
+            pattern_lower = pattern.lower()
+            
+            for sheet in available_sheets:
+                sheet_lower = sheet.lower()
+                
+                # Exact match gets highest score
+                if pattern_lower == sheet_lower:
+                    return sheet
+                
+                # Partial match scoring
+                score = 0
+                if pattern_lower in sheet_lower:
+                    score = len(pattern_lower) / len(sheet_lower)
+                elif sheet_lower in pattern_lower:
+                    score = len(sheet_lower) / len(pattern_lower) * 0.8
+                
+                # Bonus for containing key terms
+                if 'trk' in pattern_lower and 'trk' in sheet_lower:
+                    score += 0.2
+                if '0' in pattern_lower and '0' in sheet_lower:
+                    score += 0.1
+                if 'trm' in pattern_lower and 'trm' in sheet_lower:
+                    score += 0.2
+                if 'trim' in pattern_lower and 'trim' in sheet_lower:
+                    score += 0.2
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = sheet
+        
+        return best_match if best_score > 0.3 else None
 
     def _read_cell_value(self, file_path: str, sheet_name: str,
                          cell_ref: str) -> Optional[float]:

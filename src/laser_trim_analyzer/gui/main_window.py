@@ -105,6 +105,9 @@ class MainWindow:
         self.root.title(f"{APP_NAME} - Professional Edition")
         self.root.geometry("1400x900")
         self.root.minsize(1200, 800)
+        
+        # Disable window updates during initialization to prevent flashing
+        self.root.withdraw()
 
         # Try to set DPI awareness on Windows
         if sys.platform == 'win32':
@@ -136,6 +139,15 @@ class MainWindow:
         self.current_page = tk.StringVar(value="home")
         self.input_files: List[FileInfo] = []
         self.is_processing = False
+        
+        # Thread management
+        self._active_threads = []
+        self._shutdown_requested = False
+        
+        # Performance optimization flags
+        self._ui_update_scheduled = False
+        self._last_update_time = 0
+        self._update_interval = 100  # milliseconds
 
         # Processing options
         self.processing_mode = tk.StringVar(value="detail")
@@ -148,6 +160,9 @@ class MainWindow:
         self.ml_status = tk.StringVar(value="Not Available")
         self.api_status = tk.StringVar(value="Not Connected")
         self.status_text = tk.StringVar(value="Ready")
+        
+        # Bind cleanup on window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _setup_styles(self):
         """Configure ttk styles for modern appearance"""
@@ -523,10 +538,79 @@ class MainWindow:
         if dialog.show():
             # Settings were saved, reinitialize services if needed
             self._init_services()
+    
+    def _schedule_ui_update(self):
+        """Schedule a UI update to prevent excessive refreshes"""
+        if not self._ui_update_scheduled:
+            self._ui_update_scheduled = True
+            self.root.after(self._update_interval, self._perform_ui_update)
+    
+    def _perform_ui_update(self):
+        """Perform scheduled UI updates"""
+        import time
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        # Only update if enough time has passed
+        if current_time - self._last_update_time >= self._update_interval:
+            try:
+                # Update status bar if it exists
+                if hasattr(self, 'status_bar'):
+                    self.status_bar.update_status('database', self.db_status.get())
+                    self.status_bar.update_status('ml', self.ml_status.get())
+                    self.status_bar.update_status('api', self.api_status.get())
+                
+                self._last_update_time = current_time
+            except Exception as e:
+                print(f"UI update error: {e}")
+        
+        self._ui_update_scheduled = False
+    
+    def _cleanup_threads(self):
+        """Clean up any active threads"""
+        self._shutdown_requested = True
+        for thread in self._active_threads:
+            if thread.is_alive():
+                try:
+                    thread.join(timeout=1.0)
+                except:
+                    pass
+        self._active_threads.clear()
+    
+    def _on_closing(self):
+        """Handle window close event"""
+        try:
+            # Clean up threads
+            self._cleanup_threads()
+            
+            # Close database connection
+            if self.db_manager:
+                try:
+                    self.db_manager.close()
+                except:
+                    pass
+            
+            # Destroy the window
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+            # Force quit if cleanup fails
+            import sys
+            sys.exit(0)
 
     def run(self):
         """Start the application"""
-        self.root.mainloop()
+        try:
+            # Show the window after everything is initialized
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            
+            # Start the main loop
+            self.root.mainloop()
+        except Exception as e:
+            print(f"Application error: {e}")
+            self._on_closing()
 
 
 def main():

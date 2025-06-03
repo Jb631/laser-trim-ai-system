@@ -873,3 +873,299 @@ class DatabaseManager:
             self.logger.info("Database connections closed")
         except Exception as e:
             self.logger.error(f"Error closing database: {str(e)}")
+
+    def save_analysis_batch(self, analysis_list: List[PydanticAnalysisResult]) -> List[int]:
+        """
+        Save multiple analysis results in a batch operation for better performance.
+        
+        Args:
+            analysis_list: List of analysis results to save
+            
+        Returns:
+            List of analysis IDs
+        """
+        if not analysis_list:
+            return []
+            
+        analysis_ids = []
+        
+        with self.get_session() as session:
+            try:
+                self.logger.info(f"Saving batch of {len(analysis_list)} analysis results")
+                
+                # Save each analysis individually for reliability
+                for analysis_data in analysis_list:
+                    try:
+                        # Convert Pydantic SystemType to DB SystemType
+                        system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
+
+                        # Convert Pydantic AnalysisStatus to DB StatusType
+                        status_map = {
+                            AnalysisStatus.PASS: DBStatusType.PASS,
+                            AnalysisStatus.FAIL: DBStatusType.FAIL,
+                            AnalysisStatus.WARNING: DBStatusType.WARNING,
+                            AnalysisStatus.ERROR: DBStatusType.ERROR,
+                            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
+                        }
+                        overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
+
+                        # Create main analysis record
+                        analysis = DBAnalysisResult(
+                            filename=analysis_data.metadata.filename,
+                            file_path=str(analysis_data.metadata.file_path),
+                            file_date=analysis_data.metadata.file_date,
+                            file_hash=None,  # Calculate if needed
+                            model=analysis_data.metadata.model,
+                            serial=analysis_data.metadata.serial,
+                            system=system_type,
+                            has_multi_tracks=analysis_data.metadata.has_multi_tracks,
+                            overall_status=overall_status,
+                            processing_time=analysis_data.processing_time,
+                            output_dir=None,  # Set if available
+                            software_version="2.0.0",  # Set from config
+                            operator=None,  # Set if available
+                            sigma_scaling_factor=None,  # Set from first track if available
+                            filter_cutoff_frequency=None  # Set from config if available
+                        )
+
+                        # Add track results
+                        for track_id, track_data in analysis_data.tracks.items():
+                            # Convert track status
+                            track_status = status_map.get(track_data.status, DBStatusType.ERROR)
+
+                            # Convert risk category if available
+                            risk_category = None
+                            if track_data.failure_prediction:
+                                risk_map = {
+                                    RiskCategory.HIGH: DBRiskCategory.HIGH,
+                                    RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
+                                    RiskCategory.LOW: DBRiskCategory.LOW,
+                                    RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
+                                }
+                                risk_category = risk_map.get(track_data.failure_prediction.risk_category)
+
+                            track = DBTrackResult(
+                                track_id=track_id,
+                                status=track_status,
+                                travel_length=track_data.travel_length,
+                                linearity_spec=track_data.linearity_analysis.linearity_spec,
+                                sigma_gradient=track_data.sigma_analysis.sigma_gradient,
+                                sigma_threshold=track_data.sigma_analysis.sigma_threshold,
+                                sigma_pass=track_data.sigma_analysis.sigma_pass,
+                                unit_length=track_data.unit_properties.unit_length,
+                                untrimmed_resistance=track_data.unit_properties.untrimmed_resistance,
+                                trimmed_resistance=track_data.unit_properties.trimmed_resistance,
+                                resistance_change=track_data.unit_properties.resistance_change,
+                                resistance_change_percent=track_data.unit_properties.resistance_change_percent,
+                                optimal_offset=track_data.linearity_analysis.optimal_offset,
+                                final_linearity_error_raw=track_data.linearity_analysis.final_linearity_error_raw,
+                                final_linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted,
+                                linearity_pass=track_data.linearity_analysis.linearity_pass,
+                                linearity_fail_points=track_data.linearity_analysis.linearity_fail_points,
+                                max_deviation=track_data.linearity_analysis.max_deviation,
+                                max_deviation_position=track_data.linearity_analysis.max_deviation_position,
+                                deviation_uniformity=None,  # Calculate if needed
+                                trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
+                                untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
+                                trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
+                                max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
+                                worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
+                                worst_zone_position=track_data.zone_analysis.worst_zone_position[
+                                    0] if track_data.zone_analysis and track_data.zone_analysis.worst_zone_position else None,
+                                zone_details=track_data.zone_analysis.zone_results if track_data.zone_analysis else None,
+                                failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
+                                risk_category=risk_category,
+                                gradient_margin=track_data.sigma_analysis.gradient_margin,
+                                range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
+                                minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
+                                minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
+                                margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
+                                plot_path=str(track_data.plot_path) if track_data.plot_path else None
+                            )
+                            analysis.tracks.append(track)
+
+                        # Generate alerts for this analysis
+                        self._generate_alerts(analysis, session)
+
+                        # Add to session
+                        session.add(analysis)
+                        session.flush()  # Get the ID without committing
+                        
+                        analysis_ids.append(analysis.id)
+                        
+                        self.logger.debug(f"Prepared analysis for {analysis_data.metadata.filename}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Failed to prepare analysis for {analysis_data.metadata.filename}: {e}")
+                        # Continue with other analyses
+                        continue
+                
+                # Single commit for the entire batch
+                session.commit()
+                
+                self.logger.info(f"Successfully saved batch: {len(analysis_ids)} analyses with tracks")
+                
+                return analysis_ids
+                
+            except Exception as e:
+                session.rollback()
+                self.logger.error(f"Failed to save analysis batch: {str(e)}")
+                raise
+
+    def validate_saved_analysis(self, analysis_id: int) -> bool:
+        """
+        Validate that an analysis was properly saved to the database.
+        
+        Args:
+            analysis_id: ID of the analysis to validate
+            
+        Returns:
+            True if analysis is properly saved with all tracks
+        """
+        try:
+            with self.get_session() as session:
+                # Check analysis exists
+                analysis = session.query(DBAnalysisResult).filter(
+                    DBAnalysisResult.id == analysis_id
+                ).first()
+                
+                if not analysis:
+                    self.logger.error(f"Analysis ID {analysis_id} not found in database")
+                    return False
+                
+                # Check tracks exist
+                track_count = session.query(DBTrackResult).filter(
+                    DBTrackResult.analysis_id == analysis_id
+                ).count()
+                
+                if track_count == 0:
+                    self.logger.error(f"No tracks found for analysis ID {analysis_id}")
+                    return False
+                
+                self.logger.info(f"Analysis ID {analysis_id} validated: {track_count} tracks")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Validation failed for analysis ID {analysis_id}: {e}")
+            return False
+
+    def force_save_analysis(self, analysis_data: PydanticAnalysisResult) -> int:
+        """
+        Force save analysis without duplicate checking - for critical saves.
+        
+        Args:
+            analysis_data: Pydantic model containing analysis results
+            
+        Returns:
+            ID of the saved analysis record
+        """
+        with self.get_session() as session:
+            try:
+                self.logger.info(f"Force saving analysis for {analysis_data.metadata.filename}")
+                
+                # Convert Pydantic SystemType to DB SystemType
+                system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
+
+                # Convert Pydantic AnalysisStatus to DB StatusType
+                status_map = {
+                    AnalysisStatus.PASS: DBStatusType.PASS,
+                    AnalysisStatus.FAIL: DBStatusType.FAIL,
+                    AnalysisStatus.WARNING: DBStatusType.WARNING,
+                    AnalysisStatus.ERROR: DBStatusType.ERROR,
+                    AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
+                }
+                overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
+
+                # Create main analysis record
+                analysis = DBAnalysisResult(
+                    filename=analysis_data.metadata.filename,
+                    file_path=str(analysis_data.metadata.file_path),
+                    file_date=analysis_data.metadata.file_date,
+                    file_hash=None,  # Calculate if needed
+                    model=analysis_data.metadata.model,
+                    serial=analysis_data.metadata.serial,
+                    system=system_type,
+                    has_multi_tracks=analysis_data.metadata.has_multi_tracks,
+                    overall_status=overall_status,
+                    processing_time=analysis_data.processing_time,
+                    output_dir=None,  # Set if available
+                    software_version="2.0.0",  # Set from config
+                    operator=None,  # Set if available
+                    sigma_scaling_factor=None,  # Set from first track if available
+                    filter_cutoff_frequency=None  # Set from config if available
+                )
+
+                # Add track results
+                for track_id, track_data in analysis_data.tracks.items():
+                    # Convert track status
+                    track_status = status_map.get(track_data.status, DBStatusType.ERROR)
+
+                    # Convert risk category if available
+                    risk_category = None
+                    if track_data.failure_prediction:
+                        risk_map = {
+                            RiskCategory.HIGH: DBRiskCategory.HIGH,
+                            RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
+                            RiskCategory.LOW: DBRiskCategory.LOW,
+                            RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
+                        }
+                        risk_category = risk_map.get(track_data.failure_prediction.risk_category)
+
+                    track = DBTrackResult(
+                        track_id=track_id,
+                        status=track_status,
+                        travel_length=track_data.travel_length,
+                        linearity_spec=track_data.linearity_analysis.linearity_spec,
+                        sigma_gradient=track_data.sigma_analysis.sigma_gradient,
+                        sigma_threshold=track_data.sigma_analysis.sigma_threshold,
+                        sigma_pass=track_data.sigma_analysis.sigma_pass,
+                        unit_length=track_data.unit_properties.unit_length,
+                        untrimmed_resistance=track_data.unit_properties.untrimmed_resistance,
+                        trimmed_resistance=track_data.unit_properties.trimmed_resistance,
+                        resistance_change=track_data.unit_properties.resistance_change,
+                        resistance_change_percent=track_data.unit_properties.resistance_change_percent,
+                        optimal_offset=track_data.linearity_analysis.optimal_offset,
+                        final_linearity_error_raw=track_data.linearity_analysis.final_linearity_error_raw,
+                        final_linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted,
+                        linearity_pass=track_data.linearity_analysis.linearity_pass,
+                        linearity_fail_points=track_data.linearity_analysis.linearity_fail_points,
+                        max_deviation=track_data.linearity_analysis.max_deviation,
+                        max_deviation_position=track_data.linearity_analysis.max_deviation_position,
+                        deviation_uniformity=None,  # Calculate if needed
+                        trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
+                        untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
+                        trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
+                        max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
+                        worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
+                        worst_zone_position=track_data.zone_analysis.worst_zone_position[
+                            0] if track_data.zone_analysis and track_data.zone_analysis.worst_zone_position else None,
+                        zone_details=track_data.zone_analysis.zone_results if track_data.zone_analysis else None,
+                        failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
+                        risk_category=risk_category,
+                        gradient_margin=track_data.sigma_analysis.gradient_margin,
+                        range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
+                        minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
+                        minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
+                        margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
+                        plot_path=str(track_data.plot_path) if track_data.plot_path else None
+                    )
+                    analysis.tracks.append(track)
+
+                # Check for alerts
+                self._generate_alerts(analysis, session)
+
+                session.add(analysis)
+                session.commit()
+
+                # Validate the save was successful
+                if not self.validate_saved_analysis(analysis.id):
+                    raise RuntimeError(f"Analysis save validation failed for {analysis_data.metadata.filename}")
+
+                self.logger.info(
+                    f"Force saved analysis for {analysis_data.metadata.filename} with {len(analysis.tracks)} tracks (ID: {analysis.id})")
+                return analysis.id
+
+            except Exception as e:
+                session.rollback()
+                self.logger.error(f"Failed to force save analysis: {str(e)}")
+                raise
