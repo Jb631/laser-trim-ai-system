@@ -34,10 +34,14 @@ class MultiTrackPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the multi-track analysis page."""
-        # Create scrollable frame
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        """Set up the multi-track analysis page with proper positioning."""
+        # Create scrollable main frame without shifting
+        main_container = ttk.Frame(self)
+        main_container.pack(fill='both', expand=True)
+        
+        # Canvas and scrollbar
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         
         scrollable_frame.bind(
@@ -51,9 +55,9 @@ class MultiTrackPage(BasePage):
         # Add mouse wheel scrolling support
         add_mousewheel_support(scrollable_frame, canvas)
         
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
+        # Pack scrollbar first to avoid shifting
         scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
         
         # Create content in scrollable frame
         content_frame = scrollable_frame
@@ -229,41 +233,112 @@ class MultiTrackPage(BasePage):
         self.comparison_notebook = ttk.Notebook(comparison_frame)
         self.comparison_notebook.pack(fill='both', expand=True)
 
-        # Sigma comparison tab
-        sigma_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(sigma_frame, text="Sigma Comparison")
+        # Summary comparison tab
+        self._create_summary_tab()
 
-        self.sigma_comparison_chart = ChartWidget(
-            sigma_frame,
-            chart_type='bar',
-            title="Sigma Gradient by Track",
-            figsize=(10, 6)
+        # Detailed analysis tab
+        self._create_detailed_tab()
+
+        # Charts tab
+        self._create_charts_tab()
+
+    def _create_summary_tab(self):
+        """Create summary comparison tab with responsive layout."""
+        summary_frame = ttk.Frame(self.comparison_notebook)
+        self.comparison_notebook.add(summary_frame, text="📊 Summary")
+
+        # Create treeview for track comparison with responsive sizing
+        tree_frame = ttk.Frame(summary_frame)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Configure tree frame for responsiveness
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+
+        # Track comparison tree with responsive columns
+        columns = ('Track', 'Status', 'Sigma Gradient', 'Sigma Pass', 'Linearity Pass', 'Risk')
+        self.track_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show='tree headings'
+            # Remove fixed height for responsive behavior
         )
-        self.sigma_comparison_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Linearity comparison tab
-        linearity_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(linearity_frame, text="Linearity Comparison")
+        # Configure columns with responsive widths
+        self.track_tree.heading('#0', text='')
+        self.track_tree.column('#0', width=0, stretch=False)
 
-        self.linearity_comparison_chart = ChartWidget(
-            linearity_frame,
-            chart_type='bar',
-            title="Linearity Error by Track",
-            figsize=(10, 6)
+        # Configure responsive column widths
+        column_configs = [
+            ('Track', 100, True),
+            ('Status', 80, True),
+            ('Sigma Gradient', 120, True),
+            ('Sigma Pass', 100, True),
+            ('Linearity Pass', 120, True),
+            ('Risk', 80, True)
+        ]
+
+        for col, width, stretch in column_configs:
+            self.track_tree.heading(col, text=col)
+            self.track_tree.column(col, width=width, stretch=stretch, minwidth=60)
+
+        # Scrollbars
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.track_tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.track_tree.xview)
+        
+        self.track_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # Grid layout for responsive control
+        self.track_tree.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+
+    def _create_detailed_tab(self):
+        """Create detailed analysis tab with responsive layout."""
+        detailed_frame = ttk.Frame(self.comparison_notebook)
+        self.comparison_notebook.add(detailed_frame, text="📋 Detailed Analysis")
+
+        # Scrollable text area for detailed information with responsive sizing
+        text_frame = ttk.Frame(detailed_frame)
+        text_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Configure text frame for responsiveness
+        text_frame.grid_columnconfigure(0, weight=1)
+        text_frame.grid_rowconfigure(0, weight=1)
+
+        # Text widget with scrollbar - responsive height
+        self.detailed_text = tk.Text(
+            text_frame,
+            wrap='word',
+            font=('Consolas', 10),
+            state='disabled'
+            # Remove fixed height for responsive behavior
         )
-        self.linearity_comparison_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        text_scrollbar = ttk.Scrollbar(text_frame, orient='vertical', command=self.detailed_text.yview)
+        self.detailed_text.configure(yscrollcommand=text_scrollbar.set)
 
-        # Error profile comparison tab
-        profile_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(profile_frame, text="Error Profiles")
+        # Grid layout for responsive control
+        self.detailed_text.grid(row=0, column=0, sticky='nsew')
+        text_scrollbar.grid(row=0, column=1, sticky='ns')
 
-        self.profile_comparison_chart = ChartWidget(
-            profile_frame,
-            chart_type='line',
-            title="Error Profile Comparison",
-            figsize=(10, 6)
+    def _create_charts_tab(self):
+        """Create charts tab with responsive layout."""
+        charts_frame = ttk.Frame(self.comparison_notebook)
+        self.comparison_notebook.add(charts_frame, text="📈 Charts")
+
+        # Chart display area with responsive sizing
+        self.chart_display = ttk.Frame(charts_frame)
+        self.chart_display.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # Placeholder for charts
+        placeholder_label = ttk.Label(
+            self.chart_display,
+            text="Track comparison charts will be displayed here",
+            font=('Segoe UI', 12),
+            foreground=self.colors['text_secondary']
         )
-        self.profile_comparison_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        placeholder_label.pack(expand=True)
 
     def _create_consistency_section(self, parent):
         """Create consistency analysis section."""

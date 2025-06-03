@@ -38,10 +38,14 @@ class ModelSummaryPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the model summary page."""
-        # Create scrollable frame
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        """Set up the model summary page with proper positioning."""
+        # Create scrollable main frame without shifting
+        main_container = ttk.Frame(self)
+        main_container.pack(fill='both', expand=True)
+        
+        # Canvas and scrollbar
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         
         scrollable_frame.bind(
@@ -55,9 +59,9 @@ class ModelSummaryPage(BasePage):
         # Add mouse wheel scrolling support
         add_mousewheel_support(scrollable_frame, canvas)
         
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
+        # Pack scrollbar first to avoid shifting
         scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
         
         # Create content in scrollable frame
         content_frame = scrollable_frame
@@ -78,13 +82,13 @@ class ModelSummaryPage(BasePage):
         self._create_actions_section(content_frame)
 
     def _create_header_section(self, parent):
-        """Create header with title and model selection."""
+        """Create header with title and model selection using responsive layout."""
         header_frame = ttk.Frame(parent)
         header_frame.pack(fill='x', padx=20, pady=(20, 10))
 
         # Configure grid for responsive layout
         header_frame.columnconfigure(0, weight=1)
-        header_frame.columnconfigure(1, weight=0)
+        header_frame.columnconfigure(1, weight=0, minsize=300)
 
         # Title on the left
         title_label = ttk.Label(
@@ -94,34 +98,35 @@ class ModelSummaryPage(BasePage):
         )
         title_label.grid(row=0, column=0, sticky='w')
 
-        # Model selection on the right
+        # Model selection on the right with responsive layout
         selection_frame = ttk.Frame(header_frame)
         selection_frame.grid(row=0, column=1, sticky='e', padx=(10, 0))
+        
+        # Configure selection frame for responsiveness
+        selection_frame.grid_columnconfigure(1, weight=1)
 
         ttk.Label(
             selection_frame,
             text="Select Model:",
             font=('Segoe UI', 12)
-        ).pack(side='left', padx=(0, 10))
+        ).grid(row=0, column=0, sticky='w', padx=(0, 10))
 
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
             selection_frame,
             textvariable=self.model_var,
-            width=15,
             state='readonly',
             font=('Segoe UI', 11)
         )
-        self.model_combo.pack(side='left', padx=(0, 10))
+        self.model_combo.grid(row=0, column=1, sticky='ew', padx=(0, 10))
         self.model_combo.bind('<<ComboboxSelected>>', self._on_model_selected)
 
         # Refresh button
         ttk.Button(
             selection_frame,
             text="🔄 Refresh",
-            command=self._load_models,
-            width=10
-        ).pack(side='left')
+            command=self._load_models
+        ).grid(row=0, column=2, sticky='w')
 
         # Selected model info (full width below header)
         self.model_info_label = ttk.Label(
@@ -133,7 +138,7 @@ class ModelSummaryPage(BasePage):
         self.model_info_label.pack(fill='x', padx=20, pady=(0, 10))
 
     def _create_metrics_section(self, parent):
-        """Create key metrics display."""
+        """Create key metrics display with responsive layout."""
         metrics_frame = ttk.LabelFrame(
             parent,
             text="Key Performance Metrics",
@@ -141,15 +146,15 @@ class ModelSummaryPage(BasePage):
         )
         metrics_frame.pack(fill='x', padx=20, pady=10)
 
-        # Create 2x4 grid of metric cards
+        # Create responsive grid of metric cards
         self.metrics_grid = ttk.Frame(metrics_frame)
         self.metrics_grid.pack(fill='x')
 
-        # Configure grid
+        # Configure grid for responsive layout - 4 columns
         for i in range(4):
-            self.metrics_grid.columnconfigure(i, weight=1, minsize=180)
+            self.metrics_grid.columnconfigure(i, weight=1, minsize=160)
 
-        # Initialize metric cards
+        # Initialize metric cards with responsive positioning
         self.metric_cards = {}
         
         # Row 1: Basic metrics
@@ -227,7 +232,7 @@ class ModelSummaryPage(BasePage):
         self.metric_cards['high_risk'].grid(row=1, column=3, padx=5, pady=5, sticky='ew')
 
     def _create_trend_section(self, parent):
-        """Create sigma trend chart section."""
+        """Create sigma trend chart section with responsive layout."""
         trend_frame = ttk.LabelFrame(
             parent,
             text="Sigma Gradient Trending",
@@ -235,47 +240,49 @@ class ModelSummaryPage(BasePage):
         )
         trend_frame.pack(fill='x', padx=20, pady=10)
 
-        # Chart controls
+        # Chart controls with responsive layout
         controls_frame = ttk.Frame(trend_frame)
         controls_frame.pack(fill='x', pady=(0, 10))
+        
+        # Configure controls for responsive layout
+        controls_frame.grid_columnconfigure(1, weight=1)
+        controls_frame.grid_columnconfigure(3, weight=1)
 
-        ttk.Label(controls_frame, text="Time Range:").pack(side='left', padx=(0, 10))
+        ttk.Label(controls_frame, text="Time Range:").grid(row=0, column=0, sticky='w', padx=(0, 10))
 
         self.time_range_var = tk.StringVar(value="Last 30 days")
         time_combo = ttk.Combobox(
             controls_frame,
             textvariable=self.time_range_var,
             values=["Last 7 days", "Last 30 days", "Last 90 days", "Last 6 months", "Last year", "All time"],
-            width=15,
             state='readonly'
         )
-        time_combo.pack(side='left', padx=(0, 20))
+        time_combo.grid(row=0, column=1, sticky='ew', padx=(0, 20))
         time_combo.bind('<<ComboboxSelected>>', self._update_trend_chart)
 
-        ttk.Label(controls_frame, text="Chart Type:").pack(side='left', padx=(0, 10))
+        ttk.Label(controls_frame, text="Chart Type:").grid(row=0, column=2, sticky='w', padx=(0, 10))
 
         self.chart_type_var = tk.StringVar(value="Scatter with Trend")
         chart_type_combo = ttk.Combobox(
             controls_frame,
             textvariable=self.chart_type_var,
             values=["Scatter with Trend", "Line Plot", "Box Plot by Week"],
-            width=20,
             state='readonly'
         )
-        chart_type_combo.pack(side='left')
+        chart_type_combo.grid(row=0, column=3, sticky='ew')
         chart_type_combo.bind('<<ComboboxSelected>>', self._update_trend_chart)
 
-        # Sigma trend chart
+        # Sigma trend chart with responsive sizing
         self.sigma_chart = ChartWidget(
             trend_frame,
             chart_type='scatter',
-            title="Sigma Gradient Over Time",
-            figsize=(12, 6)
+            title="Sigma Gradient Over Time"
+            # Remove fixed figsize for responsive behavior
         )
-        self.sigma_chart.pack(fill='x', pady=(10, 0))
+        self.sigma_chart.pack(fill='x', pady=(10, 0), expand=True)
 
     def _create_analysis_section(self, parent):
-        """Create additional analysis charts."""
+        """Create additional analysis charts with responsive layout."""
         analysis_frame = ttk.LabelFrame(
             parent,
             text="Detailed Analysis",
@@ -283,48 +290,48 @@ class ModelSummaryPage(BasePage):
         )
         analysis_frame.pack(fill='both', expand=True, padx=20, pady=10)
 
-        # Create notebook for different analysis views
+        # Create notebook for different analysis views with responsive sizing
         self.analysis_notebook = ttk.Notebook(analysis_frame)
         self.analysis_notebook.pack(fill='both', expand=True)
 
-        # Distribution Analysis tab
+        # Distribution Analysis tab with responsive charts
         dist_frame = ttk.Frame(self.analysis_notebook)
         self.analysis_notebook.add(dist_frame, text="Distribution Analysis")
 
         self.distribution_chart = ChartWidget(
             dist_frame,
             chart_type='histogram',
-            title="Sigma Gradient Distribution",
-            figsize=(10, 5)
+            title="Sigma Gradient Distribution"
+            # Remove fixed figsize for responsive behavior
         )
         self.distribution_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Pass/Fail Analysis tab
+        # Pass/Fail Analysis tab with responsive charts
         passfail_frame = ttk.Frame(self.analysis_notebook)
         self.analysis_notebook.add(passfail_frame, text="Pass/Fail Analysis")
 
         self.passfail_chart = ChartWidget(
             passfail_frame,
             chart_type='bar',
-            title="Pass/Fail Rate by Time Period",
-            figsize=(10, 5)
+            title="Pass/Fail Rate by Time Period"
+            # Remove fixed figsize for responsive behavior
         )
         self.passfail_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Quality Correlation tab
+        # Quality Correlation tab with responsive charts
         correlation_frame = ttk.Frame(self.analysis_notebook)
         self.analysis_notebook.add(correlation_frame, text="Quality Correlations")
 
         self.correlation_chart = ChartWidget(
             correlation_frame,
             chart_type='scatter',
-            title="Sigma vs. Linearity Error Correlation",
-            figsize=(10, 5)
+            title="Sigma vs. Linearity Error Correlation"
+            # Remove fixed figsize for responsive behavior
         )
         self.correlation_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
     def _create_actions_section(self, parent):
-        """Create export and print action buttons."""
+        """Create export and print action buttons with responsive layout."""
         actions_frame = ttk.LabelFrame(
             parent,
             text="Export & Reports",
@@ -332,9 +339,15 @@ class ModelSummaryPage(BasePage):
         )
         actions_frame.pack(fill='x', padx=20, pady=(10, 20))
 
-        # Button container
+        # Button container with responsive layout
         btn_container = ttk.Frame(actions_frame)
         btn_container.pack(fill='x')
+        
+        # Configure button container for responsive layout
+        btn_container.grid_columnconfigure(0, weight=1)
+        btn_container.grid_columnconfigure(1, weight=1)
+        btn_container.grid_columnconfigure(2, weight=1)
+        btn_container.grid_columnconfigure(3, weight=2)  # Extra space for stats
 
         # Export to Excel button
         self.export_excel_btn = ttk.Button(
@@ -344,7 +357,7 @@ class ModelSummaryPage(BasePage):
             style='Primary.TButton',
             state='disabled'
         )
-        self.export_excel_btn.pack(side='left', padx=(0, 10))
+        self.export_excel_btn.grid(row=0, column=0, sticky='ew', padx=(0, 10))
 
         # Generate PDF Report button
         self.generate_report_btn = ttk.Button(
@@ -353,7 +366,7 @@ class ModelSummaryPage(BasePage):
             command=self._generate_pdf_report,
             state='disabled'
         )
-        self.generate_report_btn.pack(side='left', padx=(0, 10))
+        self.generate_report_btn.grid(row=0, column=1, sticky='ew', padx=(0, 10))
 
         # Export chart data button
         self.export_chart_btn = ttk.Button(
@@ -362,16 +375,16 @@ class ModelSummaryPage(BasePage):
             command=self._export_chart_data,
             state='disabled'
         )
-        self.export_chart_btn.pack(side='left', padx=(0, 10))
+        self.export_chart_btn.grid(row=0, column=2, sticky='ew', padx=(0, 10))
 
-        # Quick stats label
+        # Quick stats label with responsive positioning
         self.quick_stats_label = ttk.Label(
             btn_container,
             text="",
             font=('Segoe UI', 10),
             foreground=self.colors['text_secondary']
         )
-        self.quick_stats_label.pack(side='right')
+        self.quick_stats_label.grid(row=0, column=3, sticky='e')
 
     def _load_models(self):
         """Load available models from database."""

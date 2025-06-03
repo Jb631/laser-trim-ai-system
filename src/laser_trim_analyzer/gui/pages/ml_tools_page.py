@@ -44,10 +44,14 @@ class MLToolsPage(BasePage):
         self._initialize_ml_engine()
 
     def _create_page(self):
-        """Set up the ML tools page."""
-        # Create scrollable frame
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        """Set up the ML tools page with proper positioning."""
+        # Create scrollable main frame without shifting
+        main_container = ttk.Frame(self)
+        main_container.pack(fill='both', expand=True)
+        
+        # Canvas and scrollbar
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         
         scrollable_frame.bind(
@@ -62,9 +66,9 @@ class MLToolsPage(BasePage):
         from laser_trim_analyzer.gui.widgets import add_mousewheel_support
         add_mousewheel_support(scrollable_frame, canvas)
         
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
+        # Pack scrollbar first to avoid shifting
         scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
         
         # Create content in scrollable frame
         content_frame = scrollable_frame
@@ -612,9 +616,10 @@ class MLToolsPage(BasePage):
             ))
 
         except Exception as e:
+            error_msg = str(e)  # Capture the error message
             self.winfo_toplevel().after(0, lambda: messagebox.showerror(
                 "Optimization Error",
-                f"Failed to optimize threshold:\n{str(e)}"
+                f"Failed to optimize threshold:\n{error_msg}"
             ))
 
     def _display_optimization_results(self, optimal: float, confidence: float, stats: dict):

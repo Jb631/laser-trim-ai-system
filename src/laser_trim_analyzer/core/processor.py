@@ -439,7 +439,7 @@ class LaserTrimProcessor:
                 validation_grade=validation_grade,
                 processing_time=(datetime.now() - start_time).total_seconds(),
                 file_hash=file_hash,
-                processing_errors=processing_errors if processing_errors else None
+                processing_errors=processing_errors if processing_errors else []
             )
 
             # Step 7: Add ML predictions with error handling
