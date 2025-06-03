@@ -118,40 +118,22 @@ class AlertBanner(ttk.Frame):
 
     def _setup_error_boundary(self):
         """Set up comprehensive error handling for the banner."""
-        def handle_banner_error(error_type, error_value, traceback):
-            """Handle any banner-related errors gracefully."""
-            try:
-                print(f"AlertBanner Error: {error_type.__name__}: {error_value}")
-                # Attempt graceful cleanup
-                if self.is_visible:
-                    self._emergency_cleanup()
-            except:
-                pass  # If even error handling fails, fail silently
-                
-        # Try to store original error handler safely
+        # Simple error handler without trying to override tkinter's error reporting
+        self._original_error_handler = None
+        
+        # Just set up basic error handling for this widget
         try:
-            # Get the root window for error reporting
-            root = self.winfo_toplevel()
-            if hasattr(root, 'report_callback_exception'):
-                self._original_error_handler = root.report_callback_exception
-                
-                # Set up custom error handler for this banner
-                def custom_error_handler(error_type, error_value, tb):
-                    if "AlertBanner" in str(tb) or "alert_banner" in str(tb):
-                        handle_banner_error(error_type, error_value, tb)
-                    else:
-                        # Pass through other errors to original handler
-                        self._original_error_handler(error_type, error_value, tb)
-                        
-                # Set the custom error handler
-                root.report_callback_exception = custom_error_handler
-            else:
-                # Fallback: just store the error handler function for cleanup
-                self._original_error_handler = None
+            # Bind error handling to widget destruction
+            self.bind('<Destroy>', self._on_widget_destroy)
         except Exception as e:
-            # If error boundary setup fails, continue without it
             print(f"Warning: Could not set up error boundary for AlertBanner: {e}")
-            self._original_error_handler = None
+            
+    def _on_widget_destroy(self, event=None):
+        """Handle widget destruction cleanup."""
+        try:
+            self._emergency_cleanup()
+        except:
+            pass  # Silent cleanup on destroy
 
     def _emergency_cleanup(self):
         """Emergency cleanup when banner errors occur."""
