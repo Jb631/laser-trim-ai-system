@@ -1594,3 +1594,15 @@ Contact support if issues persist.
                 {'text': 'Clear Files', 'command': lambda: self._clear_files()}
             ]
         )
+
+    def _dismiss_large_batch_alert(self):
+        """Dismiss the large batch mode alert."""
+        try:
+            # Find and dismiss any info alerts (the large batch alert)
+            info_alerts = self.alert_stack.get_alerts('info')
+            for alert in info_alerts:
+                if hasattr(alert, 'title') and 'Large Batch Mode' in alert.title:
+                    alert.dismiss()
+                    break
+        except Exception as e:
+            self.logger.error(f"Error dismissing large batch alert: {e}")
