@@ -24,7 +24,6 @@ except ImportError:
 # For modern UI elements
 try:
     from PIL import Image, ImageTk
-
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -85,9 +84,10 @@ class MainWindow:
             self.root = TkinterDnD.Tk()
         else:
             self.root = tk.Tk()
-            print("Warning: tkinterdnd2 not available, drag and drop will be disabled")
+            logging.warning("tkinterdnd2 not available, drag and drop will be disabled")
             
         self.config = config or get_config()
+        self.logger = logging.getLogger(__name__)
 
         # Setup window
         self._setup_window()
@@ -98,8 +98,8 @@ class MainWindow:
         # Create UI
         self._create_ui()
 
-        # Show home page
-        self._show_page("home")
+        # Show appropriate initial page based on user state
+        self._determine_initial_page()
 
     def _setup_window(self):
         """Configure the main window with responsive design capabilities"""
@@ -157,7 +157,7 @@ class MainWindow:
         self._setup_styles()
 
         # Initialize state variables
-        self.current_page = tk.StringVar(value="home")
+        self.current_page = tk.StringVar(value="")
         self.input_files: List[FileInfo] = []
         self.is_processing = False
         
@@ -170,11 +170,11 @@ class MainWindow:
         self._last_update_time = 0
         self._update_interval = 100  # milliseconds
 
-        # Processing options
-        self.processing_mode = tk.StringVar(value="detail")
-        self.enable_database = tk.BooleanVar(value=self.config.database.enabled)
-        self.enable_ml = tk.BooleanVar(value=self.config.ml.enabled and HAS_ML)
-        self.enable_api = tk.BooleanVar(value=self.config.api.enabled and HAS_API)
+        # Processing options - load from config or use defaults
+        self.processing_mode = tk.StringVar(value=getattr(self.config.processing, 'default_mode', 'detail'))
+        self.enable_database = tk.BooleanVar(value=getattr(self.config.database, 'enabled', False))
+        self.enable_ml = tk.BooleanVar(value=getattr(self.config.ml, 'enabled', False) and HAS_ML)
+        self.enable_api = tk.BooleanVar(value=getattr(self.config.api, 'enabled', False) and HAS_API)
 
         # Status variables
         self.db_status = tk.StringVar(value="Disconnected")
@@ -200,21 +200,6 @@ class MainWindow:
         # Use a dark-friendly theme as base
         self.style.theme_use('clam')
         
-        # Update color scheme to be consistently dark
-        self.colors = {
-            'bg_primary': '#2b2b2b',      # Dark primary background
-            'bg_secondary': '#3c3c3c',    # Dark secondary background
-            'bg_dark': '#1e1e1e',         # Darker background
-            'accent': '#0078d4',          # Modern blue accent
-            'accent_light': '#4a9eff',    # Light blue accent
-            'success': '#107c10',         # Dark green
-            'warning': '#ff8c00',         # Orange
-            'danger': '#d13438',          # Red
-            'text_primary': '#ffffff',    # White text
-            'text_secondary': '#cccccc',  # Light gray text
-            'border': '#555555'           # Gray border
-        }
-
         # Configure frame styles for dark theme
         self.style.configure('TFrame', background=self.colors['bg_primary'])
         self.style.configure('Card.TFrame',
@@ -342,46 +327,40 @@ class MainWindow:
                 
                 self.db_manager = DatabaseManager(db_path_str)
                 self.db_status.set("Connected")
+                self.logger.info(f"Database connected: {db_path_str}")
             except Exception as e:
                 self.db_status.set("Error")
-                print(f"Database initialization error: {e}")
+                self.logger.error(f"Database initialization error: {e}")
 
         # Initialize ML
         if HAS_ML and self.enable_ml.get():
             try:
                 from laser_trim_analyzer.ml.predictors import MLPredictor
-                self.ml_predictor = MLPredictor(self.config, logger=logging.getLogger(__name__))
+                self.ml_predictor = MLPredictor(self.config, logger=self.logger)
                 if self.ml_predictor.initialize():
                     self.ml_status.set("Ready")
-                    logging.getLogger(__name__).info("ML Predictor initialized successfully")
+                    self.logger.info("ML Predictor initialized successfully")
                 else:
                     self.ml_status.set("Models Need Training")
-                    logging.getLogger(__name__).info("ML Predictor initialized but models need training")
+                    self.logger.info("ML Predictor initialized but models need training")
             except Exception as e:
                 self.ml_status.set("Error")
-                logging.getLogger(__name__).error(f"Failed to initialize ML Predictor: {e}")
-                print(f"Failed to initialize ML Predictor: {e}")
+                self.logger.error(f"Failed to initialize ML Predictor: {e}")
 
         # Initialize API client
         if HAS_API and self.enable_api.get():
             try:
-                api_key = self.config.api.api_key if hasattr(self.config.api, 'api_key') else None
+                api_key = getattr(self.config.api, 'api_key', None) if hasattr(self.config, 'api') else None
                 if api_key:
                     self.api_client = AIServiceClient(api_key=api_key)
                     self.api_status.set("Connected")
+                    self.logger.info("API client initialized")
                 else:
                     self.api_status.set("No API Key")
+                    self.logger.warning("API key not configured")
             except Exception as e:
                 self.api_status.set("Error")
-                print(f"API initialization error: {e}")
-
-        # Initialize analyzer
-        try:
-            # Don't initialize BaseAnalyzer here - it's abstract
-            # Specific analyzers will be created when needed
-            self.analyzer = None
-        except Exception as e:
-            print(f"Analyzer initialization error: {e}")
+                self.logger.error(f"API initialization error: {e}")
 
     def _create_ui(self):
         """Create the main UI layout"""
@@ -490,8 +469,12 @@ class MainWindow:
         user_frame = ttk.Frame(parent, style='Dark.TFrame')
         user_frame.pack(side='bottom', fill='x', padx=10, pady=20)
 
+        # Get actual user info from system
+        import getpass
+        username = getpass.getuser()
+        
         ttk.Label(user_frame,
-                  text="QA Specialist",
+                  text=f"User: {username}",
                   font=('Segoe UI', 10, 'bold'),
                   foreground='white',
                   background=self.colors['bg_dark']).pack()
@@ -520,7 +503,7 @@ class MainWindow:
         # Create default indicators
         self.status_bar.create_default_indicators()
 
-        # Update status indicators
+        # Update status indicators with real values
         self.status_bar.update_status('database', self.db_status.get())
         self.status_bar.update_status('ml', self.ml_status.get())
         self.status_bar.update_status('api', self.api_status.get())
@@ -538,35 +521,113 @@ class MainWindow:
         from laser_trim_analyzer.gui.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.pages.single_file_page import SingleFilePage
 
-        # Create page instances
-        self.pages = {}
-        self.pages['home'] = HomePage(self.content_frame, self)
-        self.pages['analysis'] = AnalysisPage(self.content_frame, self)
-        self.pages['single_file'] = SingleFilePage(self.content_frame, main_window=self)
-        self.pages['batch_processing'] = BatchProcessingPage(self.content_frame, main_window=self)
-        self.pages['historical'] = HistoricalPage(self.content_frame, self)
-        self.pages['model_summary'] = ModelSummaryPage(self.content_frame, self)
-        self.pages['multi_track'] = MultiTrackPage(self.content_frame, self)
-        self.pages['ml_tools'] = MLToolsPage(self.content_frame, self)
-        self.pages['ai_insights'] = AIInsightsPage(self.content_frame, self)
-        self.pages['settings'] = SettingsPage(self.content_frame, self)
+        # Create page instances with proper initialization
+        try:
+            self.pages['home'] = HomePage(self.content_frame, self)
+            self.pages['analysis'] = AnalysisPage(self.content_frame, self)
+            self.pages['single_file'] = SingleFilePage(self.content_frame, main_window=self)
+            self.pages['batch_processing'] = BatchProcessingPage(self.content_frame, main_window=self)
+            self.pages['historical'] = HistoricalPage(self.content_frame, self)
+            self.pages['model_summary'] = ModelSummaryPage(self.content_frame, self)
+            self.pages['multi_track'] = MultiTrackPage(self.content_frame, self)
+            self.pages['ml_tools'] = MLToolsPage(self.content_frame, self)
+            self.pages['ai_insights'] = AIInsightsPage(self.content_frame, self)
+            self.pages['settings'] = SettingsPage(self.content_frame, self)
+            
+            self.logger.info("All pages created successfully")
+        except Exception as e:
+            self.logger.error(f"Error creating pages: {e}")
+            # Create minimal fallback pages if needed
+            self._create_fallback_pages()
+
+    def _create_fallback_pages(self):
+        """Create minimal fallback pages if main page creation fails"""
+        # Create basic error page
+        error_frame = ttk.Frame(self.content_frame)
+        ttk.Label(error_frame, 
+                 text="Error loading application pages. Please check configuration.",
+                 font=('Segoe UI', 14)).pack(pady=50)
+        self.pages['error'] = error_frame
+
+    def _determine_initial_page(self):
+        """Determine which page to show initially based on user state"""
+        # Check if user has any existing data
+        has_data = self._check_user_data()
+        
+        if has_data:
+            # User has data, show home page
+            initial_page = "home"
+        else:
+            # New user, show single file page for onboarding
+            initial_page = "single_file"
+        
+        # Load last page from settings if available
+        try:
+            from laser_trim_analyzer.gui.settings_manager import settings_manager
+            last_page = settings_manager.get("window.last_page")
+            if last_page and last_page in self.pages:
+                initial_page = last_page
+        except Exception as e:
+            self.logger.warning(f"Could not load last page setting: {e}")
+        
+        self._show_page(initial_page)
+
+    def _check_user_data(self) -> bool:
+        """Check if user has any existing analysis data"""
+        try:
+            if self.db_manager:
+                # Check if database has any analysis results
+                recent_data = self.db_manager.get_historical_data(limit=1)
+                return len(recent_data) > 0
+        except Exception as e:
+            self.logger.warning(f"Could not check user data: {e}")
+        
+        # Check for any output files in default directory
+        try:
+            output_dir = Path(getattr(self.config, 'data_directory', Path.home() / "LaserTrimResults"))
+            if output_dir.exists():
+                # Check for any analysis files
+                analysis_files = list(output_dir.glob("**/*.xlsx")) + list(output_dir.glob("**/*.csv"))
+                return len(analysis_files) > 0
+        except Exception as e:
+            self.logger.warning(f"Could not check output directory: {e}")
+        
+        return False
 
     def _show_page(self, page_name: str):
         """Show the selected page"""
         # Hide all pages
         for page in self.pages.values():
-            page.hide()
+            if hasattr(page, 'hide'):
+                page.hide()
+            else:
+                page.pack_forget()
 
         # Show selected page
         if page_name in self.pages:
-            self.pages[page_name].show()
+            page = self.pages[page_name]
+            if hasattr(page, 'show'):
+                page.show()
+            else:
+                page.pack(fill='both', expand=True)
+            
             self.current_page.set(page_name)
+            
+            # Save last page to settings
+            try:
+                from laser_trim_analyzer.gui.settings_manager import settings_manager
+                settings_manager.set("window.last_page", page_name)
+            except Exception as e:
+                self.logger.warning(f"Could not save last page setting: {e}")
+        else:
+            self.logger.error(f"Page '{page_name}' not found")
+            # Show error page or fallback
+            if 'error' in self.pages:
+                self._show_page('error')
 
     def _quick_analysis(self):
         """Quick analysis action"""
-        self._show_page('analysis')
-        if hasattr(self.pages['analysis'], 'browse_files'):
-            self.pages['analysis'].browse_files()
+        self._show_page('single_file')
 
     def _export_report(self):
         """Export report action"""
@@ -581,41 +642,43 @@ class MainWindow:
             messagebox.showinfo("Export", 
                                "Use the Export button on individual files or wait for analysis completion to export all results")
         elif current_page_name == 'home':
-            # For home page, offer to export today's results
+            # For home page, offer to export recent results
             if self.db_manager:
-                self._export_today_results()
+                self._export_recent_results()
             else:
                 messagebox.showwarning("No Database", "Database connection required for export")
         else:
             messagebox.showinfo("Export",
                                 f"Export is not available from the {current_page_name.replace('_', ' ').title()} page.\n\n"
                                 "Export is available from:\n"
-                                "• Analysis page (after running analysis)\n"
+                                "• Single File page (after running analysis)\n"
+                                "• Batch Processing page (after completion)\n"
                                 "• Historical Data page\n"
-                                "• Home page (today's results)")
+                                "• Home page (recent results)")
     
-    def _export_today_results(self):
-        """Export today's analysis results"""
+    def _export_recent_results(self):
+        """Export recent analysis results"""
         try:
             from datetime import datetime, timedelta
             import pandas as pd
             
-            # Get today's results from database
-            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Get recent results from database (last 7 days)
+            week_ago = datetime.now() - timedelta(days=7)
             results = self.db_manager.get_historical_data(
-                start_date=today_start,
-                include_tracks=True
+                start_date=week_ago,
+                include_tracks=True,
+                limit=100
             )
             
             if not results:
-                messagebox.showinfo("No Data", "No analysis results found for today")
+                messagebox.showinfo("No Data", "No recent analysis results found")
                 return
             
             # Ask for save location
             filename = filedialog.asksaveasfilename(
                 defaultextension='.xlsx',
                 filetypes=[('Excel files', '*.xlsx'), ('CSV files', '*.csv')],
-                initialfile=f'analysis_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                initialfile=f'recent_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
             )
             
             if not filename:
@@ -633,13 +696,13 @@ class MainWindow:
                     'Date': result.file_date if result.file_date else result.timestamp,
                     'Model': result.model,
                     'Serial': result.serial,
-                    'System': result.system.value,
-                    'Status': result.overall_status.value,
-                    'Sigma Gradient': primary_track.sigma_gradient if primary_track else None,
-                    'Sigma Pass': primary_track.sigma_pass if primary_track else None,
-                    'Linearity Pass': primary_track.linearity_pass if primary_track else None,
-                    'Risk Category': primary_track.risk_category.value if primary_track and primary_track.risk_category else None,
-                    'Processing Time': result.processing_time
+                    'System': result.system.value if hasattr(result.system, 'value') else str(result.system),
+                    'Status': result.overall_status.value if hasattr(result.overall_status, 'value') else str(result.overall_status),
+                    'Sigma Gradient': getattr(primary_track, 'sigma_gradient', None) if primary_track else None,
+                    'Sigma Pass': getattr(primary_track, 'sigma_pass', None) if primary_track else None,
+                    'Linearity Pass': getattr(primary_track, 'linearity_pass', None) if primary_track else None,
+                    'Risk Category': getattr(primary_track.risk_category, 'value', None) if primary_track and hasattr(primary_track, 'risk_category') else None,
+                    'Processing Time': getattr(result, 'processing_time', None)
                 }
                 data.append(row)
             
@@ -654,177 +717,25 @@ class MainWindow:
             messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}")
             
         except Exception as e:
+            self.logger.error(f"Export error: {e}")
             messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
 
     def _show_settings(self):
         """Show settings dialog"""
-        dialog = SettingsDialog(self.root, self.config)
-        if dialog.show():
-            # Settings were saved, reinitialize services if needed
+        try:
+            from laser_trim_analyzer.gui.settings_manager import SettingsDialog, settings_manager
+            dialog = SettingsDialog(self.root, settings_manager)
+            dialog.wait_window()  # Wait for dialog to close
+            
+            # Reinitialize services if settings changed
             self._init_services()
+            self._schedule_ui_update()
+        except Exception as e:
+            self.logger.error(f"Error showing settings: {e}")
+            messagebox.showerror("Settings Error", f"Failed to open settings: {str(e)}")
     
     def _schedule_ui_update(self):
         """Schedule a UI update to prevent excessive refreshes"""
         if not self._ui_update_scheduled:
             self._ui_update_scheduled = True
-            self.root.after(self._update_interval, self._perform_ui_update)
-    
-    def _perform_ui_update(self):
-        """Perform scheduled UI updates"""
-        import time
-        current_time = time.time() * 1000  # Convert to milliseconds
-        
-        # Only update if enough time has passed
-        if current_time - self._last_update_time >= self._update_interval:
-            try:
-                # Update status bar if it exists
-                if hasattr(self, 'status_bar'):
-                    self.status_bar.update_status('database', self.db_status.get())
-                    self.status_bar.update_status('ml', self.ml_status.get())
-                    self.status_bar.update_status('api', self.api_status.get())
-                
-                self._last_update_time = current_time
-            except Exception as e:
-                print(f"UI update error: {e}")
-        
-        self._ui_update_scheduled = False
-    
-    def _cleanup_threads(self):
-        """Clean up any active threads"""
-        self._shutdown_requested = True
-        for thread in self._active_threads:
-            if thread.is_alive():
-                try:
-                    thread.join(timeout=1.0)
-                except:
-                    pass
-        self._active_threads.clear()
-    
-    def _on_closing(self):
-        """Handle window close event"""
-        try:
-            # Clean up threads
-            self._cleanup_threads()
-            
-            # Close database connection
-            if self.db_manager:
-                try:
-                    self.db_manager.close()
-                except:
-                    pass
-            
-            # Destroy the window
-            self.root.quit()
-            self.root.destroy()
-        except Exception as e:
-            print(f"Error during shutdown: {e}")
-            # Force quit if cleanup fails
-            import sys
-            sys.exit(0)
-
-    def _get_window_size_class(self) -> str:
-        """Determine the current window size class."""
-        try:
-            width = self.root.winfo_width()
-            if width <= 1000:
-                return 'small'
-            elif width <= 1400:
-                return 'medium'
-            else:
-                return 'large'
-        except tk.TclError:
-            return 'medium'  # Default fallback
-
-    def _on_window_configure(self, event):
-        """Handle window resize events for responsive design."""
-        # Only handle window resize events for the root window
-        if event.widget != self.root:
-            return
-            
-        new_size_class = self._get_window_size_class()
-        if new_size_class != self._window_size_class:
-            self._window_size_class = new_size_class
-            self._handle_window_size_change(new_size_class)
-
-    def _handle_window_size_change(self, size_class: str):
-        """Handle window size class changes."""
-        # Update UI layout based on new size class
-        if hasattr(self, 'pages') and self.pages:
-            current_page_name = self.current_page.get()
-            if current_page_name in self.pages:
-                current_page = self.pages[current_page_name]
-                if hasattr(current_page, '_handle_responsive_layout'):
-                    try:
-                        current_page._handle_responsive_layout(size_class)
-                    except Exception as e:
-                        print(f"Error updating page layout: {e}")
-
-    def _emergency_stop_all(self, event=None):
-        """Emergency stop all processing (Ctrl+Q)."""
-        if self.is_processing:
-            result = messagebox.askyesno(
-                "Emergency Stop",
-                "Stop all processing operations?\n\n"
-                "This will immediately halt all running processes."
-            )
-            if result:
-                self._stop_all_processing()
-                messagebox.showinfo("Stopped", "All processing operations have been stopped.")
-
-    def _emergency_stop_current(self, event=None):
-        """Stop current page processing (Escape)."""
-        if self.is_processing:
-            current_page_name = self.current_page.get()
-            if hasattr(self, 'pages') and current_page_name in self.pages:
-                current_page = self.pages[current_page_name]
-                if hasattr(current_page, 'request_stop_processing'):
-                    current_page.request_stop_processing()
-                    self.status_text.set("Stop requested...")
-
-    def _stop_all_processing(self):
-        """Stop all processing in all pages."""
-        self.is_processing = False
-        self._shutdown_requested = True
-        
-        # Stop processing in all pages
-        if hasattr(self, 'pages'):
-            for page in self.pages.values():
-                if hasattr(page, 'request_stop_processing'):
-                    page.request_stop_processing()
-        
-        # Clean up threads
-        self._cleanup_threads()
-        
-        self.status_text.set("All processing stopped")
-
-    def run(self):
-        """Start the application"""
-        try:
-            # Show the window after everything is initialized
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
-            
-            # Start the main loop
-            self.root.mainloop()
-        except Exception as e:
-            print(f"Application error: {e}")
-            self._on_closing()
-
-
-def main():
-    """Main entry point for the GUI application"""
-    # Load configuration
-    try:
-        from laser_trim_analyzer.core.config import load_config
-        config = load_config()
-    except:
-        config = None
-
-    # Create and run application
-    app = MainWindow(config)
-    app.run()
-
-
-if __name__ == "__main__":
-    main()
+            self.root
