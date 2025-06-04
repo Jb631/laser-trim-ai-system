@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import pandas as pd
 import numpy as np
 import re
+import threading
+import time
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import (
@@ -179,10 +181,7 @@ class LaserTrimProcessor:
             self.logger.info("Initializing ML predictor...")
             self.ml_predictor = MLPredictor(self.config, logger=self.logger)
             
-            # Initialize with timeout to prevent hanging
-            import asyncio
-            import functools
-            
+            # Initialize synchronously with timeout
             def run_with_timeout():
                 try:
                     return self.ml_predictor.initialize()
@@ -190,23 +189,33 @@ class LaserTrimProcessor:
                     self.logger.error(f"ML predictor initialization failed: {e}")
                     return False
             
-            # Run initialization with 30 second timeout
-            try:
-                loop = asyncio.get_event_loop()
-                future = loop.run_in_executor(None, run_with_timeout)
-                success = asyncio.wait_for(future, timeout=30.0)
-                
-                if not success:
-                    self.logger.warning("ML predictor initialization failed - using fallback")
-                    self.ml_predictor = None
-                else:
-                    self.logger.info("ML predictor initialized successfully")
-                    
-            except asyncio.TimeoutError:
+            # Run initialization with simple timeout using threading
+            import threading
+            import time
+            
+            result = [None]  # Use list to modify from inner function
+            exception = [None]
+            
+            def worker():
+                try:
+                    result[0] = run_with_timeout()
+                except Exception as e:
+                    exception[0] = e
+            
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            thread.join(timeout=30.0)  # 30 second timeout
+            
+            if thread.is_alive():
                 self.logger.warning("ML predictor initialization timed out - disabling ML")
                 self.ml_predictor = None
-            except Exception as e:
-                self.logger.warning(f"ML predictor initialization error: {e}")
+            elif exception[0]:
+                self.logger.warning(f"ML predictor initialization error: {exception[0]}")
+                self.ml_predictor = None
+            elif result[0]:
+                self.logger.info("ML predictor initialized successfully")
+            else:
+                self.logger.warning("ML predictor initialization failed - using fallback")
                 self.ml_predictor = None
                 
         except Exception as e:

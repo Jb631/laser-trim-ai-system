@@ -44,13 +44,13 @@ class SingleFilePage(BasePage):
         self.processor = LaserTrimProcessor(self.analyzer_config)
         
         # Get database manager if available
-        self.db_manager = None
+        self._db_manager = None
         try:
-            if hasattr(main_window, 'db_manager'):
-                self.db_manager = main_window.db_manager
+            if hasattr(main_window, 'db_manager') and main_window.db_manager:
+                self._db_manager = main_window.db_manager
             elif hasattr(self.analyzer_config, 'database') and self.analyzer_config.database.enabled:
                 from laser_trim_analyzer.database.manager import DatabaseManager
-                self.db_manager = DatabaseManager(self.analyzer_config)
+                self._db_manager = DatabaseManager(self.analyzer_config)
                 logger.info("Database manager initialized for single file page")
         except Exception as e:
             logger.warning(f"Failed to initialize database manager: {e}")
@@ -516,10 +516,10 @@ class SingleFilePage(BasePage):
                 raise ProcessingError(error_msg)
                 
             # Save to database if requested
-            if self.save_to_db_var.get() and self.db_manager:
+            if self.save_to_db_var.get() and self._db_manager:
                 try:
                     # Check for duplicates
-                    existing_id = self.db_manager.check_duplicate_analysis(
+                    existing_id = self._db_manager.check_duplicate_analysis(
                         result.metadata.model,
                         result.metadata.serial,
                         result.metadata.file_date
@@ -531,17 +531,17 @@ class SingleFilePage(BasePage):
                     else:
                         # Try normal save first
                         try:
-                            result.db_id = self.db_manager.save_analysis(result)
+                            result.db_id = self._db_manager.save_analysis(result)
                             logger.info(f"Saved to database with ID: {result.db_id}")
                             
                             # Validate the save
-                            if not self.db_manager.validate_saved_analysis(result.db_id):
+                            if not self._db_manager.validate_saved_analysis(result.db_id):
                                 raise RuntimeError("Database validation failed")
                                 
                         except Exception as save_error:
                             logger.warning(f"Normal save failed, trying force save: {save_error}")
                             # Try force save as fallback
-                            result.db_id = self.db_manager.force_save_analysis(result)
+                            result.db_id = self._db_manager.force_save_analysis(result)
                             logger.info(f"Force saved to database with ID: {result.db_id}")
                         
                 except Exception as e:

@@ -51,6 +51,10 @@ class MLToolsPage(BasePage):
         self.model_comparison_data = {}
         self.optimization_recommendations = []
         self._status_poll_job = None  # For status polling
+        
+        # Set up logger before calling parent __init__
+        self.logger = logging.getLogger(__name__)
+        
         super().__init__(parent, main_window)
         self._initialize_ml_engine()
         self._start_status_polling()
@@ -199,7 +203,7 @@ class MLToolsPage(BasePage):
             )
             status_text.pack(side='left', padx=5)
 
-            # Version info
+            # Version label
             version_label = ctk.CTkLabel(
                 card_frame,
                 text="v1.0.0",
@@ -208,51 +212,78 @@ class MLToolsPage(BasePage):
             )
             version_label.pack(pady=2)
 
-            # Last trained info
+            # Last trained label
             trained_label = ctk.CTkLabel(
                 card_frame,
                 text="Never trained",
                 font=ctk.CTkFont(size=10),
                 text_color="gray"
             )
-            trained_label.pack(pady=(2, 10))
+            trained_label.pack(pady=2)
 
-            # Store references for updates
+            # Details button
+            details_button = ctk.CTkButton(
+                card_frame,
+                text="Details",
+                command=lambda name=model_key: self._show_model_details(name),
+                width=80,
+                height=25,
+                font=ctk.CTkFont(size=10)
+            )
+            details_button.pack(pady=(5, 10))
+
+            # Store references to update later
             self.model_status_cards[model_key] = {
+                'card_frame': card_frame,
                 'indicator': status_indicator,
                 'status_text': status_text,
                 'version_label': version_label,
                 'trained_label': trained_label,
-                'description': description
+                'details_button': details_button
             }
 
     def _update_model_status(self):
         """Update model status displays."""
-        if not self.ml_engine or not hasattr(self.ml_engine, 'models'):
+        if not self.ml_engine:
             # Show offline status for all models
             for model_key, card_refs in self.model_status_cards.items():
                 card_refs['indicator'].configure(text_color="gray")
                 card_refs['status_text'].configure(text="Offline")
                 card_refs['version_label'].configure(text="v1.0.0")
-                card_refs['trained_label'].configure(text="Never trained")
+                card_refs['trained_label'].configure(text="Engine offline")
             return
 
         try:
-            models = self.ml_engine.models
+            # Get models from various possible locations
+            models = {}
+            if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
+                models = self.ml_engine.models
+            elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
+                models = self.ml_engine.ml_engine.models
+                
+            self.logger.debug(f"Found {len(models)} models for status update: {list(models.keys())}")
             
             for model_key, card_refs in self.model_status_cards.items():
                 if model_key in models:
                     model = models[model_key]
                     
                     # Check if model is trained
-                    is_trained = hasattr(model, 'is_trained') and model.is_trained
+                    is_trained = False
+                    try:
+                        is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
+                                   (hasattr(model, '_is_trained') and model._is_trained)
+                    except:
+                        is_trained = False
                     
                     if is_trained:
                         # Get accuracy if available
                         accuracy = 0
-                        if hasattr(model, 'performance_metrics') and model.performance_metrics:
-                            metrics = model.performance_metrics
-                            accuracy = metrics.get('accuracy', metrics.get('r2_score', 0))
+                        try:
+                            if hasattr(model, 'performance_metrics') and model.performance_metrics:
+                                metrics = model.performance_metrics
+                                accuracy = metrics.get('accuracy', metrics.get('r2_score', 0))
+                        except:
+                            accuracy = 0
                         
                         if accuracy > 0:
                             card_refs['indicator'].configure(text_color="green")
@@ -266,14 +297,20 @@ class MLToolsPage(BasePage):
                     
                     # Update version
                     version = getattr(model, 'version', '1.0.0')
-                    card_refs['version_label'].configure(text=f"v{version}")
+                    if not version.startswith('v'):
+                        version = f"v{version}"
+                    card_refs['version_label'].configure(text=version)
                     
                     # Update last trained info
                     last_trained = getattr(model, 'last_trained', None)
                     if last_trained and is_trained:
                         try:
-                            trained_date = datetime.fromisoformat(last_trained)
-                            days_ago = (datetime.now() - trained_date).days
+                            if isinstance(last_trained, str):
+                                trained_date = datetime.fromisoformat(last_trained.replace('Z', '+00:00'))
+                            else:
+                                trained_date = last_trained
+                            
+                            days_ago = (datetime.now() - trained_date.replace(tzinfo=None)).days
                             
                             if days_ago == 0:
                                 trained_text = "Today"
@@ -283,7 +320,7 @@ class MLToolsPage(BasePage):
                                 trained_text = f"{days_ago} days ago"
                                 
                             card_refs['trained_label'].configure(text=trained_text)
-                        except ValueError:
+                        except (ValueError, AttributeError):
                             card_refs['trained_label'].configure(text="Recently")
                     else:
                         card_refs['trained_label'].configure(text="Never trained")
@@ -293,7 +330,7 @@ class MLToolsPage(BasePage):
                     card_refs['indicator'].configure(text_color="red")
                     card_refs['status_text'].configure(text="Not Found")
                     card_refs['version_label'].configure(text="v1.0.0")
-                    card_refs['trained_label'].configure(text="Never trained")
+                    card_refs['trained_label'].configure(text="Missing")
                     
         except Exception as e:
             self.logger.error(f"Error updating model status: {e}")
@@ -304,18 +341,29 @@ class MLToolsPage(BasePage):
 
     def _check_models_status(self) -> bool:
         """Check if models are ready for use."""
-        if not self.ml_engine or not hasattr(self.ml_engine, 'models'):
+        if not self.ml_engine:
             return False
             
         try:
-            models = self.ml_engine.models
+            # Get models from various possible locations
+            models = {}
+            if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
+                models = self.ml_engine.models
+            elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
+                models = self.ml_engine.ml_engine.models
+                
             if not models:
                 return False
                 
             # Check if at least one model is trained
             for model in models.values():
-                if hasattr(model, 'is_trained') and model.is_trained:
-                    return True
+                try:
+                    is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
+                               (hasattr(model, '_is_trained') and model._is_trained)
+                    if is_trained:
+                        return True
+                except:
+                    continue
                     
             return False
             
@@ -1107,14 +1155,27 @@ class MLToolsPage(BasePage):
             # Update status to show initialization in progress
             self._update_ml_status("Initializing...", "orange")
             
-            # Use the main window's ML engine if available
+            # Use the main window's ML predictor if available
             if hasattr(self.main_window, 'ml_predictor') and self.main_window.ml_predictor:
+                # Get the ML engine from the predictor
                 if hasattr(self.main_window.ml_predictor, 'ml_engine'):
                     self.ml_engine = self.main_window.ml_predictor.ml_engine
                     self.logger.info("Using main window's ML engine")
                 else:
+                    # If predictor doesn't have ml_engine, treat the predictor as the engine
                     self.ml_engine = self.main_window.ml_predictor
                     self.logger.info("Using main window's ML predictor as engine")
+                    
+                # Ensure the engine has a models dictionary
+                if not hasattr(self.ml_engine, 'models'):
+                    self.ml_engine.models = {}
+                    
+                # If models is empty but we have models in the predictor, copy them
+                if not self.ml_engine.models:
+                    if hasattr(self.main_window.ml_predictor, 'ml_engine') and hasattr(self.main_window.ml_predictor.ml_engine, 'models'):
+                        self.ml_engine.models = self.main_window.ml_predictor.ml_engine.models
+                        self.logger.info(f"Found {len(self.ml_engine.models)} models in predictor's ML engine")
+                        
             else:
                 self.logger.warning("Main window ML predictor not available")
                 self._update_ml_status("No ML Engine", "red")
@@ -1123,21 +1184,27 @@ class MLToolsPage(BasePage):
             # Ensure proper model initialization
             self._ensure_models_initialized()
 
-            # Check if models are available and trained
+            # Check if models are available and update status accordingly
             models_ready = self._check_models_status()
+            model_count = len(self.ml_engine.models) if hasattr(self.ml_engine, 'models') else 0
             
-            if models_ready:
+            if model_count == 0:
+                self._update_ml_status("No Models", "red")
+                self.logger.warning("No models found in ML engine")
+            elif models_ready:
                 self._update_ml_status("Ready", "green")
-                self.logger.info("ML Engine initialized and ready")
+                self.logger.info(f"ML Engine ready with {model_count} models")
             else:
                 self._update_ml_status("Models Need Training", "orange")
-                self.logger.info("ML Engine initialized but models need training")
+                self.logger.info(f"ML Engine initialized but {model_count} models need training")
 
             # Update model status display
             self._update_model_status()
 
         except Exception as e:
             self.logger.error(f"Failed to initialize ML engine: {e}")
+            import traceback
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.ml_engine = None
             self._update_ml_status("Error", "red")
 
@@ -1779,23 +1846,45 @@ Performance Metrics:
         # Run comparison in background thread
         def compare():
             try:
-                # Get all available models
-                models = self.ml_engine.models
+                # Get all available models from various locations
+                models = {}
+                if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
+                    models = self.ml_engine.models
+                elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
+                    models = self.ml_engine.ml_engine.models
+                    
                 if not models:
                     self.after(0, lambda: messagebox.showinfo(
                         "No Models", 
-                        "No models available for comparison"
+                        "No models available for comparison. Models may still be initializing."
                     ))
                     return
 
-                # Count trained models
-                trained_models = {name: model for name, model in models.items() 
-                                if hasattr(model, 'is_trained') and model.is_trained}
+                # Log models found
+                self.logger.info(f"Found {len(models)} models for comparison: {list(models.keys())}")
+
+                # Count trained and untrained models
+                trained_models = {}
+                untrained_models = {}
                 
-                if len(trained_models) < 1:
+                for name, model in models.items():
+                    try:
+                        is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
+                                   (hasattr(model, '_is_trained') and model._is_trained)
+                        if is_trained:
+                            trained_models[name] = model
+                        else:
+                            untrained_models[name] = model
+                    except:
+                        untrained_models[name] = model
+                
+                self.logger.info(f"Found {len(trained_models)} trained models and {len(untrained_models)} untrained models")
+                
+                # Allow comparison even if no models are trained yet
+                if len(models) < 1:
                     self.after(0, lambda: messagebox.showinfo(
-                        "No Trained Models", 
-                        "No trained models available for comparison. Please train models first."
+                        "No Models", 
+                        "No models available for comparison."
                     ))
                     return
 
@@ -1804,19 +1893,23 @@ Performance Metrics:
                     'performance_comparison': {},
                     'feature_importance_comparison': {},
                     'resource_usage': {},
-                    'prediction_quality': {}
+                    'prediction_quality': {},
+                    'trained_count': len(trained_models),
+                    'total_count': len(models)
                 }
 
-                # Analyze each trained model
-                for model_name, model in trained_models.items():
+                # Analyze each model (both trained and untrained)
+                for model_name, model in models.items():
                     model_analysis = self._analyze_model_performance(model_name, model)
                     comparison_data['models'][model_name] = model_analysis
 
                 # Generate comparison metrics
-                comparison_data['performance_comparison'] = self._compare_model_performance(trained_models)
-                comparison_data['feature_importance_comparison'] = self._compare_feature_importance(trained_models)
-                comparison_data['resource_usage'] = self._analyze_resource_usage(trained_models)
-                comparison_data['prediction_quality'] = self._analyze_prediction_quality(trained_models)
+                if len(models) >= 1:
+                    # Use all models for comparison, not just trained ones
+                    comparison_data['performance_comparison'] = self._compare_model_performance(models)
+                    comparison_data['feature_importance_comparison'] = self._compare_feature_importance(models)
+                    comparison_data['resource_usage'] = self._analyze_resource_usage(models)
+                    comparison_data['prediction_quality'] = self._analyze_prediction_quality(models)
 
                 self.model_comparison_data = comparison_data
 
@@ -1825,6 +1918,8 @@ Performance Metrics:
 
             except Exception as e:
                 self.logger.error(f"Model comparison failed: {e}")
+                import traceback
+                self.logger.error(f"Full traceback: {traceback.format_exc()}")
                 self.after(0, lambda: messagebox.showerror(
                     "Comparison Error", f"Failed to compare models:\n{str(e)}"
                 ))
@@ -1911,9 +2006,12 @@ Performance Metrics:
     def _display_model_comparison(self):
         """Display model comparison results in UI."""
         if not self.model_comparison_data:
+            self.logger.warning("No comparison data available to display")
             return
 
         try:
+            self.logger.info("Displaying model comparison results")
+            
             # Update performance comparison chart
             self._update_performance_comparison_chart()
             
@@ -1929,8 +2027,26 @@ Performance Metrics:
             # Enable export button
             self.export_comparison_btn.configure(state="normal")
             
+            # Show summary message
+            summary = self.model_comparison_data.get('performance_comparison', {}).get('summary', {})
+            if summary and 'best_model' in summary:
+                total_models = summary.get('total_models', 0)
+                trained_models = summary.get('trained_models', 0)
+                best_model = summary.get('best_model', 'Unknown')
+                
+                messagebox.showinfo(
+                    "Comparison Complete",
+                    f"Model comparison completed!\n\n"
+                    f"Total models: {total_models}\n"
+                    f"Trained models: {trained_models}\n"
+                    f"Best performing: {best_model}"
+                )
+            
         except Exception as e:
-            logger.error(f"Error displaying model comparison: {e}")
+            self.logger.error(f"Error displaying model comparison: {e}")
+            import traceback
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
+            messagebox.showerror("Display Error", f"Failed to display comparison results:\n{str(e)}")
 
     def _update_performance_comparison_chart(self):
         """Update the performance comparison chart."""
@@ -1941,8 +2057,11 @@ Performance Metrics:
             if not ranking:
                 # Show message when no data available
                 self.perf_comparison_chart.clear_chart()
+                self.logger.info("No ranking data available for performance chart")
                 return
 
+            self.logger.info(f"Updating performance chart with {len(ranking)} models")
+            
             # Prepare chart data
             model_names = [item[0] for item in ranking]
             scores = [item[1]['composite'] for item in ranking]
@@ -1950,33 +2069,48 @@ Performance Metrics:
             # Clear and update chart
             self.perf_comparison_chart.clear_chart()
             
-            # Create simple bar chart data
+            # Create bar chart
             import matplotlib.pyplot as plt
             fig = self.perf_comparison_chart.figure
             fig.clear()
+            
             ax = fig.add_subplot(111)
+            bars = ax.bar(model_names, scores, color=['green' if item[1].get('is_trained', False) else 'orange' for item in ranking])
             
-            colors = ['#2ecc71' if i == 0 else '#3498db' if i == 1 else '#f39c12' 
-                     for i in range(len(model_names))]
-            
-            bars = ax.bar(model_names, scores, color=colors, alpha=0.8)
-            ax.set_xlabel('Model')
-            ax.set_ylabel('Performance Score')
             ax.set_title('Model Performance Comparison')
-            ax.set_ylim(0, 1)
+            ax.set_ylabel('Composite Score')
+            ax.set_xlabel('Models')
+            ax.tick_params(axis='x', rotation=45)
             
             # Add value labels on bars
             for bar, score in zip(bars, scores):
                 height = bar.get_height()
                 ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{score:.2f}', ha='center', va='bottom')
+                       f'{score:.2f}', ha='center', va='bottom', fontsize=9)
             
-            plt.xticks(rotation=45)
-            plt.tight_layout()
+            fig.tight_layout()
             self.perf_comparison_chart.canvas.draw()
+            
+            self.logger.info("Performance comparison chart updated successfully")
             
         except Exception as e:
             self.logger.error(f"Error updating performance comparison chart: {e}")
+            import traceback
+            self.logger.error(f"Chart update traceback: {traceback.format_exc()}")
+            
+            # Show error message in chart area
+            try:
+                fig = self.perf_comparison_chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f'Chart Error:\n{str(e)}', 
+                       ha='center', va='center', transform=ax.transAxes,
+                       bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.5))
+                ax.set_title('Performance Comparison - Error')
+                fig.tight_layout()
+                self.perf_comparison_chart.canvas.draw()
+            except:
+                pass
 
     def _run_trend_analysis(self):
         """Run advanced trend analysis on model performance."""
@@ -2869,57 +3003,76 @@ Performance Metrics:
     def _update_prediction_quality_display(self):
         """Update prediction quality analysis display."""
         try:
-            self.quality_analysis_frame.configure(state='normal')
-            self.quality_analysis_frame.delete('1.0', ctk.END)
-            
-            if not self.model_comparison_data:
-                self.quality_analysis_frame.insert('1.0', "No comparison data available")
-                self.quality_analysis_frame.configure(state='disabled')
-                return
-            
             quality_data = self.model_comparison_data.get('prediction_quality', {})
             
-            content = "PREDICTION QUALITY ANALYSIS\n"
-            content += "=" * 40 + "\n\n"
+            # Clear and update text
+            self.quality_analysis_frame.configure(state="normal")
+            self.quality_analysis_frame.delete("1.0", "end")
             
-            # Accuracy distribution
-            acc_dist = quality_data.get('accuracy_distribution', {})
-            if acc_dist:
-                content += "ACCURACY DISTRIBUTION:\n"
-                content += f"  Mean: {acc_dist['mean']:.2%}\n"
-                content += f"  Standard Deviation: {acc_dist['std']:.2%}\n"
-                content += f"  Range: {acc_dist['min']:.2%} - {acc_dist['max']:.2%}\n\n"
-            
-            # Reliability scores
-            reliability = quality_data.get('reliability_scores', {})
-            if reliability:
-                content += "MODEL RELIABILITY SCORES:\n"
-                for model_name, scores in reliability.items():
-                    content += f"  {model_name}:\n"
-                    content += f"    Accuracy: {scores['accuracy']:.2%}\n"
-                    content += f"    Consistency: {scores['consistency']:.2f}\n"
-                    content += f"    Robustness: {scores['robustness']:.2f}\n"
-                content += "\n"
-            
-            # Quality insights
-            content += "QUALITY INSIGHTS:\n"
-            if acc_dist.get('std', 0) < 0.05:
-                content += "• Models show consistent performance across evaluations\n"
+            if not quality_data:
+                self.quality_analysis_frame.insert("1.0", 
+                    "Prediction Quality Analysis\n"
+                    "=" * 30 + "\n\n"
+                    "No prediction quality data available yet.\n"
+                    "Data will be populated after model training and predictions.\n\n"
+                    "This section will show:\n"
+                    "• Model accuracy metrics\n"
+                    "• Prediction confidence scores\n"
+                    "• Error rate analysis\n"
+                    "• Comparative performance metrics\n"
+                )
             else:
-                content += "• High variability detected - investigate model differences\n"
+                analysis_text = "Prediction Quality Analysis\n" + "=" * 30 + "\n\n"
                 
-            if acc_dist.get('mean', 0) > 0.9:
-                content += "• Excellent overall model performance\n"
-            elif acc_dist.get('mean', 0) > 0.8:
-                content += "• Good overall model performance\n"
-            else:
-                content += "• Models may need optimization\n"
+                models_data = self.model_comparison_data.get('models', {})
+                for model_name, model_data in models_data.items():
+                    analysis_text += f"{model_name.replace('_', ' ').title()}:\n"
+                    analysis_text += "-" * 20 + "\n"
+                    
+                    is_trained = model_data.get('is_trained', False)
+                    analysis_text += f"Status: {'Trained' if is_trained else 'Not Trained'}\n"
+                    
+                    if is_trained:
+                        metrics = model_data.get('performance_metrics', {})
+                        if metrics:
+                            accuracy = metrics.get('accuracy', 0)
+                            analysis_text += f"Accuracy: {accuracy:.2%}\n"
+                            
+                            if 'precision' in metrics:
+                                analysis_text += f"Precision: {metrics['precision']:.2%}\n"
+                            if 'recall' in metrics:
+                                analysis_text += f"Recall: {metrics['recall']:.2%}\n"
+                            if 'f1_score' in metrics:
+                                analysis_text += f"F1 Score: {metrics['f1_score']:.2%}\n"
+                        
+                        efficiency = model_data.get('efficiency', 0)
+                        analysis_text += f"Efficiency Score: {efficiency:.2f}\n"
+                    else:
+                        analysis_text += "Model requires training to show quality metrics.\n"
+                    
+                    analysis_text += "\n"
+                
+                # Add summary
+                summary = self.model_comparison_data.get('performance_comparison', {}).get('summary', {})
+                if summary and 'best_model' in summary:
+                    analysis_text += "Summary:\n" + "-" * 10 + "\n"
+                    analysis_text += f"Best Model: {summary['best_model']}\n"
+                    analysis_text += f"Total Models: {summary['total_models']}\n"
+                    analysis_text += f"Trained Models: {summary['trained_models']}\n"
+                    analysis_text += f"Average Accuracy: {summary.get('average_accuracy', 0):.2%}\n"
+                
+                self.quality_analysis_frame.insert("1.0", analysis_text)
             
-            self.quality_analysis_frame.insert('1.0', content)
-            self.quality_analysis_frame.configure(state='disabled')
+            self.quality_analysis_frame.configure(state="disabled")
             
         except Exception as e:
-            logger.error(f"Error updating prediction quality display: {e}")
+            self.logger.error(f"Error updating prediction quality display: {e}")
+            
+            # Show error message
+            self.quality_analysis_frame.configure(state="normal")
+            self.quality_analysis_frame.delete("1.0", "end")
+            self.quality_analysis_frame.insert("1.0", f"Error loading prediction quality data:\n{str(e)}")
+            self.quality_analysis_frame.configure(state="disabled")
 
     def _get_classification_stats(self, model) -> Dict[str, Any]:
         """Get statistics for classification models."""
@@ -3115,103 +3268,124 @@ Performance Metrics:
     def _update_feature_comparison_display(self):
         """Update feature importance comparison display."""
         try:
-            # Clear existing widgets
+            # Clear existing content
             for widget in self.feature_comparison_frame.winfo_children():
                 widget.destroy()
             
-            if not self.model_comparison_data:
-                return
-                
-            feature_comparison = self.model_comparison_data.get('feature_importance_comparison', {})
+            feature_data = self.model_comparison_data.get('feature_importance_comparison', {})
             
-            if not feature_comparison:
-                no_data_label = ctk.CTkLabel(
+            if not feature_data:
+                # Show placeholder when no data
+                placeholder_label = ctk.CTkLabel(
                     self.feature_comparison_frame,
-                    text="No feature importance data available",
-                    font=ctk.CTkFont(size=12)
+                    text="Feature importance data will be shown here after model training",
+                    font=ctk.CTkFont(size=12),
+                    text_color="gray"
                 )
-                no_data_label.pack(pady=20)
+                placeholder_label.pack(pady=20)
                 return
             
-            # Display feature rankings
-            rankings = feature_comparison.get('feature_rankings', {})
-            if rankings:
-                title_label = ctk.CTkLabel(
-                    self.feature_comparison_frame,
-                    text="Feature Importance Ranking (Average Across Models)",
-                    font=ctk.CTkFont(size=14, weight="bold")
-                )
-                title_label.pack(pady=(10, 5))
+            # Create feature importance display
+            title_label = ctk.CTkLabel(
+                self.feature_comparison_frame,
+                text="Feature Importance Comparison",
+                font=ctk.CTkFont(size=14, weight="bold")
+            )
+            title_label.pack(pady=(10, 20))
+            
+            # Display feature importance for each model
+            models_data = self.model_comparison_data.get('models', {})
+            for model_name, model_data in models_data.items():
+                model_frame = ctk.CTkFrame(self.feature_comparison_frame)
+                model_frame.pack(fill='x', padx=10, pady=5)
                 
-                for i, (feature, importance) in enumerate(list(rankings.items())[:10], 1):
-                    feature_frame = ctk.CTkFrame(self.feature_comparison_frame)
-                    feature_frame.pack(fill='x', padx=10, pady=2)
-                    
-                    rank_label = ctk.CTkLabel(
-                        feature_frame,
-                        text=f"#{i}",
-                        font=ctk.CTkFont(size=12, weight="bold"),
-                        width=30
-                    )
-                    rank_label.pack(side='left', padx=(10, 5), pady=5)
-                    
-                    feature_label = ctk.CTkLabel(
-                        feature_frame,
-                        text=feature,
-                        font=ctk.CTkFont(size=12)
-                    )
-                    feature_label.pack(side='left', padx=(5, 10), pady=5)
-                    
-                    importance_label = ctk.CTkLabel(
-                        feature_frame,
-                        text=f"{importance:.4f}",
-                        font=ctk.CTkFont(size=12),
+                model_label = ctk.CTkLabel(
+                    model_frame,
+                    text=f"{model_name.replace('_', ' ').title()}",
+                    font=ctk.CTkFont(size=12, weight="bold")
+                )
+                model_label.pack(pady=(10, 5))
+                
+                features = model_data.get('feature_importance', {})
+                if features:
+                    for feature, importance in sorted(features.items(), key=lambda x: x[1], reverse=True):
+                        feature_frame = ctk.CTkFrame(model_frame)
+                        feature_frame.pack(fill='x', padx=10, pady=2)
+                        
+                        feature_name = ctk.CTkLabel(
+                            feature_frame,
+                            text=feature.replace('_', ' ').title(),
+                            font=ctk.CTkFont(size=10)
+                        )
+                        feature_name.pack(side='left', padx=10, pady=5)
+                        
+                        importance_bar = ctk.CTkProgressBar(
+                            feature_frame,
+                            width=200,
+                            height=10
+                        )
+                        importance_bar.pack(side='right', padx=10, pady=5)
+                        importance_bar.set(importance)
+                        
+                        importance_value = ctk.CTkLabel(
+                            feature_frame,
+                            text=f"{importance:.2f}",
+                            font=ctk.CTkFont(size=9),
+                            text_color="gray"
+                        )
+                        importance_value.pack(side='right', padx=5, pady=5)
+                else:
+                    no_data_label = ctk.CTkLabel(
+                        model_frame,
+                        text="No feature importance data available",
+                        font=ctk.CTkFont(size=10),
                         text_color="gray"
                     )
-                    importance_label.pack(side='right', padx=(10, 10), pady=5)
+                    no_data_label.pack(pady=10)
                     
         except Exception as e:
             self.logger.error(f"Error updating feature comparison display: {e}")
-    
+            
     def _update_resource_usage_display(self):
         """Update resource usage metrics display."""
         try:
-            if not self.model_comparison_data:
-                return
-                
-            resource_usage = self.model_comparison_data.get('resource_usage', {})
+            resource_data = self.model_comparison_data.get('resource_usage', {})
             
-            # Update training time card
-            training_times = resource_usage.get('training_times', {})
-            if training_times:
-                avg_time = np.mean(list(training_times.values()))
-                self.training_time_card.update_value(f"{avg_time:.1f}s")
-                
-                # Set color based on performance
-                color = 'success' if avg_time < 60 else 'warning' if avg_time < 300 else 'danger'
-                self.training_time_card.set_color_scheme(color)
+            # Default values
+            avg_training_time = "N/A"
+            avg_memory_usage = "N/A"
+            avg_prediction_speed = "N/A"
             
-            # Update memory usage card
-            memory_usage = resource_usage.get('memory_usage', {})
-            if memory_usage:
-                avg_memory = np.mean(list(memory_usage.values()))
-                self.memory_usage_card.update_value(f"{avg_memory:.1f}MB")
+            if resource_data:
+                # Calculate averages from resource data
+                training_times = resource_data.get('training_times', {})
+                memory_usage = resource_data.get('memory_usage', {})
+                prediction_speeds = resource_data.get('prediction_speeds', {})
                 
-                color = 'success' if avg_memory < 100 else 'warning' if avg_memory < 500 else 'danger'
-                self.memory_usage_card.set_color_scheme(color)
+                if training_times:
+                    avg_time = np.mean(list(training_times.values()))
+                    avg_training_time = f"{avg_time:.2f}s"
+                    
+                if memory_usage:
+                    avg_memory = np.mean(list(memory_usage.values()))
+                    avg_memory_usage = f"{avg_memory:.1f}MB"
+                    
+                if prediction_speeds:
+                    avg_speed = np.mean(list(prediction_speeds.values()))
+                    avg_prediction_speed = f"{avg_speed:.1f}ms"
             
-            # Update prediction speed card
-            prediction_speeds = resource_usage.get('prediction_speeds', {})
-            if prediction_speeds:
-                avg_speed = np.mean(list(prediction_speeds.values()))
-                self.prediction_speed_card.update_value(f"{avg_speed:.1f}ms")
-                
-                color = 'success' if avg_speed < 10 else 'warning' if avg_speed < 100 else 'danger'
-                self.prediction_speed_card.set_color_scheme(color)
-                
+            # Update metric cards
+            self.training_time_card.update_value(avg_training_time)
+            self.memory_usage_card.update_value(avg_memory_usage)
+            self.prediction_speed_card.update_value(avg_prediction_speed)
+            
         except Exception as e:
             self.logger.error(f"Error updating resource usage display: {e}")
-
+            # Set error values
+            self.training_time_card.update_value("Error")
+            self.memory_usage_card.update_value("Error")
+            self.prediction_speed_card.update_value("Error")
+            
     def _apply_optimization_recommendation(self, recommendation: Dict[str, Any]) -> Dict[str, Any]:
         """Apply a specific optimization recommendation."""
         result = {
@@ -3556,38 +3730,76 @@ Performance Metrics:
         except Exception as e:
             self.logger.error(f"Error updating analytics data: {e}")
 
-    def _compare_model_performance(self, trained_models):
-        """Compare performance across different trained models."""
+    def _compare_model_performance(self, models: Dict) -> Dict[str, Any]:
+        """Compare performance metrics across models."""
+        comparison = {
+            'overall_ranking': [],
+            'accuracy_comparison': {},
+            'training_time_comparison': {},
+            'efficiency_comparison': {},
+            'summary': {}
+        }
+        
         try:
-            performance_data = []
+            model_scores = []
             
-            for model_name, model_info in trained_models.items():
-                # Extract performance metrics from model info
-                accuracy = model_info.get('accuracy', 0.85 + (hash(model_name) % 15) / 100)
-                precision = model_info.get('precision', 0.82 + (hash(model_name) % 18) / 100)
-                recall = model_info.get('recall', 0.88 + (hash(model_name) % 12) / 100)
-                f1_score = model_info.get('f1_score', 0.84 + (hash(model_name) % 16) / 100)
+            for model_name, model in models.items():
+                # Calculate composite score for ranking
+                accuracy = 0
+                training_time = 1
+                efficiency = 0.5
                 
-                # Calculate composite score
-                composite_score = (accuracy + precision + recall + f1_score) / 4
+                # Get metrics if model is trained
+                try:
+                    is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
+                               (hasattr(model, '_is_trained') and model._is_trained)
+                    
+                    if is_trained and hasattr(model, 'performance_metrics') and model.performance_metrics:
+                        metrics = model.performance_metrics
+                        accuracy = metrics.get('accuracy', metrics.get('r2_score', 0))
+                        training_time = max(metrics.get('training_time', 1), 1)
+                        
+                    efficiency = self._calculate_efficiency_score(model)
+                except Exception as e:
+                    self.logger.warning(f"Error getting metrics for {model_name}: {e}")
                 
-                performance_data.append({
-                    'model': model_name,
+                # Composite score (accuracy weighted most heavily)
+                composite = (0.6 * accuracy) + (0.2 * efficiency) + (0.2 * (1 / np.log(training_time + 1)))
+                
+                model_scores.append((model_name, {
                     'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'f1_score': f1_score,
-                    'composite_score': composite_score
-                })
+                    'training_time': training_time,
+                    'efficiency': efficiency,
+                    'composite': composite,
+                    'is_trained': is_trained if 'is_trained' in locals() else False
+                }))
+                
+                # Store individual comparisons
+                comparison['accuracy_comparison'][model_name] = accuracy
+                comparison['training_time_comparison'][model_name] = training_time
+                comparison['efficiency_comparison'][model_name] = efficiency
             
             # Sort by composite score
-            performance_data.sort(key=lambda x: x['composite_score'], reverse=True)
+            model_scores.sort(key=lambda x: x[1]['composite'], reverse=True)
+            comparison['overall_ranking'] = model_scores
             
-            return performance_data
+            # Generate summary
+            if model_scores:
+                best_model = model_scores[0]
+                comparison['summary'] = {
+                    'best_model': best_model[0],
+                    'best_score': best_model[1]['composite'],
+                    'total_models': len(model_scores),
+                    'trained_models': sum(1 for _, data in model_scores if data.get('is_trained', False)),
+                    'average_accuracy': np.mean([data['accuracy'] for _, data in model_scores]),
+                    'average_efficiency': np.mean([data['efficiency'] for _, data in model_scores])
+                }
             
         except Exception as e:
-            self.logger.error(f"Error comparing model performance: {e}")
-            return []
+            self.logger.error(f"Error in model performance comparison: {e}")
+            comparison['summary'] = {'error': str(e)}
+        
+        return comparison
 
     def _create_mock_performance_data(self):
         """Create mock performance comparison data for testing."""
