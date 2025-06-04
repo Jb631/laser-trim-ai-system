@@ -365,4 +365,4 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.validation_text.delete("1.0", ctk.END)
         self.validation_text.insert("1.0", validation_text)
 
-    def _format_validation_details(self, result: Analysis
+    def _format_validation_details(self, result: Analys
