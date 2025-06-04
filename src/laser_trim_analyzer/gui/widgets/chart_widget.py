@@ -700,7 +700,10 @@ class ChartWidget(ctk.CTkFrame):
             ('All files', '*.*')
         ]
 
+        # Use parent window for dialog to ensure proper modal behavior
+        parent = self.winfo_toplevel()
         filename = filedialog.asksaveasfilename(
+            parent=parent,
             defaultextension='.png',
             filetypes=filetypes,
             title='Export Chart'
@@ -708,10 +711,18 @@ class ChartWidget(ctk.CTkFrame):
 
         if filename:
             try:
+                # Ensure directory exists
+                from pathlib import Path
+                Path(filename).parent.mkdir(parents=True, exist_ok=True)
+                
+                # Save with high quality
                 self.figure.savefig(filename, dpi=300, bbox_inches='tight')
                 messagebox.showinfo("Export Successful",
                                     f"Chart exported to {filename}")
             except Exception as e:
+                import traceback
+                print(f"Export error: {e}")
+                print(traceback.format_exc())
                 messagebox.showerror("Export Error",
                                      f"Failed to export chart: {str(e)}")
 

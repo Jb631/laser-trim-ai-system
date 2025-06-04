@@ -1150,9 +1150,13 @@ class BatchProcessingPage(BasePage):
         self.batch_results = results
         
         # Hide progress dialog
-        if self.progress_dialog:
-            self.progress_dialog.hide()
-            self.progress_dialog = None
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            try:
+                self.progress_dialog.hide()
+            except Exception as e:
+                self.logger.error(f"Error hiding progress dialog: {e}")
+            finally:
+                self.progress_dialog = None
         
         # Calculate summary statistics
         total_processed = len(results)
@@ -1318,20 +1322,74 @@ class BatchProcessingPage(BasePage):
             for file_path_str, result in self.batch_results.items():
                 file_name = Path(file_path_str).name
                 
-                # Summary row
-                summary_data.append({
-                    'File': file_name,
-                    'Model': result.metadata.model,
-                    'Serial': result.metadata.serial,
-                    'System_Type': result.metadata.system_type.value,
-                    'Analysis_Date': result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    'Overall_Status': result.overall_status.value,
-                    'Validation_Status': result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A',
-                    'Processing_Time': f"{result.processing_time:.2f}",
-                    'Track_Count': len(result.tracks),
-                    'Pass_Count': sum(1 for track in result.tracks.values() if track.overall_status.value == 'Pass'),
-                    'Fail_Count': sum(1 for track in result.tracks.values() if track.overall_status.value != 'Pass')
-                })
+                try:
+                    # Get values safely with error handling
+                    model = getattr(result.metadata, 'model', 'Unknown')
+                    serial = getattr(result.metadata, 'serial', 'Unknown')
+                    
+                    # Handle system_type safely
+                    system_type = 'Unknown'
+                    if hasattr(result.metadata, 'system_type'):
+                        system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
+                    
+                    # Handle analysis_date safely
+                    analysis_date = 'Unknown'
+                    if hasattr(result.metadata, 'analysis_date'):
+                        if hasattr(result.metadata.analysis_date, 'strftime'):
+                            analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            analysis_date = str(result.metadata.analysis_date)
+                    
+                    # Handle overall_status safely
+                    overall_status = 'Unknown'
+                    if hasattr(result, 'overall_status'):
+                        overall_status = getattr(result.overall_status, 'value', str(result.overall_status))
+                    
+                    # Handle validation_status safely
+                    validation_status = 'N/A'
+                    if hasattr(result, 'overall_validation_status'):
+                        validation_status = getattr(result.overall_validation_status, 'value', 
+                                                   str(result.overall_validation_status))
+                    
+                    # Get track counts safely
+                    track_count = 0
+                    pass_count = 0
+                    fail_count = 0
+                    
+                    if hasattr(result, 'tracks'):
+                        track_count = len(result.tracks)
+                        for track in result.tracks.values():
+                            if hasattr(track, 'overall_status'):
+                                track_status = getattr(track.overall_status, 'value', str(track.overall_status))
+                                if track_status == 'Pass':
+                                    pass_count += 1
+                                else:
+                                    fail_count += 1
+                    
+                    # Summary row
+                    summary_data.append({
+                        'File': file_name,
+                        'Model': model,
+                        'Serial': serial,
+                        'System_Type': system_type,
+                        'Analysis_Date': analysis_date,
+                        'Overall_Status': overall_status,
+                        'Validation_Status': validation_status,
+                        'Processing_Time': f"{getattr(result, 'processing_time', 0):.2f}",
+                        'Track_Count': track_count,
+                        'Pass_Count': pass_count,
+                        'Fail_Count': fail_count
+                    })
+                except Exception as e:
+                    # Log error and continue with next result
+                    logger.error(f"Error processing result for export: {e}")
+                    # Add minimal data for this file
+                    summary_data.append({
+                        'File': file_name,
+                        'Model': 'Error',
+                        'Serial': 'Error',
+                        'Error': str(e)
+                    })
                 
                 # Individual track data
                 for track_id, track in result.tracks.items():

@@ -885,6 +885,7 @@ class DatabaseManager:
             List of analysis IDs
         """
         if not analysis_list:
+            self.logger.warning("Empty analysis list provided to save_analysis_batch")
             return []
             
         analysis_ids = []
