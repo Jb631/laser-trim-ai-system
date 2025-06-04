@@ -297,34 +297,53 @@ class MLConfig(BaseSettings):
     enabled: bool = Field(default=True, description="Enable ML features")
     model_path: Path = Field(
         default=Path.home() / ".laser_trim_analyzer" / "models",
-        description="ML model storage path"
+        description="ML models directory"
     )
-
+    
     # Failure prediction
     failure_prediction_enabled: bool = Field(default=True)
-    failure_prediction_confidence_threshold: float = Field(default=0.8, ge=0, le=1)
-
+    failure_prediction_confidence_threshold: float = Field(default=0.85, ge=0.5, le=1.0)  # Increased for production
+    
     # Threshold optimization
     threshold_optimization_enabled: bool = Field(default=True)
-    threshold_optimization_min_samples: int = Field(default=100, ge=10)
-
-    # Model training
-    retrain_interval_days: int = Field(default=30, ge=1)
-    min_training_samples: int = Field(default=1000, ge=100)
+    threshold_optimization_min_samples: int = Field(default=500, ge=50)  # Increased for production
+    
+    # Model retraining
+    retrain_interval_days: int = Field(default=30, ge=1, description="Days between automatic retraining")
+    min_training_samples: int = Field(default=1000, ge=100, description="Minimum samples required for training")  # Increased for production
+    
+    # Performance thresholds
+    model_performance_threshold: float = Field(default=0.80, ge=0.5, le=1.0)
+    drift_detection_threshold: float = Field(default=0.15, ge=0.01, le=1.0)
+    
+    @field_validator('model_path')
+    @classmethod
+    def ensure_model_directory(cls, v: Path) -> Path:
+        """Ensure model directory exists."""
+        try:
+            v.mkdir(parents=True, exist_ok=True)
+            return v
+        except Exception as e:
+            logger.warning(f"Could not create model directory {v}: {e}")
+            # Fallback to temp directory
+            fallback = Path(tempfile.gettempdir()) / "laser_trim_analyzer" / "models"
+            fallback.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Using fallback model directory: {fallback}")
+            return fallback
 
 
 class APIConfig(BaseSettings):
     """API configuration for AI services."""
-    enabled: bool = Field(default=False, description="Enable AI API integration")
+    enabled: bool = Field(default=False, description="Enable AI API integration - disabled by default for security")
     base_url: str = Field(default="http://localhost:8000", description="API base URL")
     api_key: Optional[str] = Field(default=None, description="API authentication key")
     timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
     max_retries: int = Field(default=3, ge=0, description="Maximum retry attempts")
 
-    # AI features
-    enable_anomaly_detection: bool = Field(default=True)
-    enable_quality_predictions: bool = Field(default=True)
-    enable_maintenance_suggestions: bool = Field(default=True)
+    # AI features - disabled by default for production
+    enable_anomaly_detection: bool = Field(default=False)
+    enable_quality_predictions: bool = Field(default=False)
+    enable_maintenance_suggestions: bool = Field(default=False)
 
 
 class GUIConfig(BaseSettings):

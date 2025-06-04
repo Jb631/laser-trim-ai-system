@@ -1010,6 +1010,31 @@ Metrics:
     def _update_dashboard_metrics(self, data: List[Dict[str, Any]]):
         """Update analytics dashboard with current data metrics."""
         if not data:
+            # Show empty state guidance
+            self.total_records_card.update_value("0")
+            self.pass_rate_card.update_value("--")
+            self.trend_direction_card.update_value("--")
+            self.prediction_accuracy_card.update_value("--")
+            self.sigma_correlation_card.update_value("--")
+            self.linearity_stability_card.update_value("--")
+            self.quality_score_card.update_value("--")
+            self.anomaly_count_card.update_value("--")
+            
+            # Update results tree with empty state message
+            if hasattr(self, 'results_tree'):
+                for item in self.results_tree.get_children():
+                    self.results_tree.delete(item)
+                    
+                # Insert empty state guidance
+                empty_message = self.results_tree.insert('', 'end', values=(
+                    'No Data Available',
+                    'To view historical data, please:',
+                    '1. Go to Analysis tab',
+                    '2. Process Excel files',
+                    '3. Return here to see results',
+                    '', '', '', ''
+                ))
+                
             return
             
         try:
