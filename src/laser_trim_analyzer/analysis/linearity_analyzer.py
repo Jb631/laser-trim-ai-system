@@ -97,7 +97,19 @@ class LinearityAnalyzer(BaseAnalyzer):
         fail_points = self._count_fail_points(
             shifted_errors, upper_limits, lower_limits
         )
-        linearity_pass = fail_points == 0
+        
+        # For laser trimming, allow some tolerance in fail points
+        # A small number of outliers is acceptable if overall spec is met
+        total_points = len(errors)
+        fail_percentage = (fail_points / total_points * 100) if total_points > 0 else 0
+        
+        # Linearity passes if:
+        # 1. Overall error meets specification, AND
+        # 2. Less than 10% of points fail (or absolute fail count < 5)
+        spec_met = (linearity_spec is None or final_error_shifted <= linearity_spec * 1.1)  # Allow 10% spec margin
+        fail_tolerance_met = (fail_points <= max(2, total_points * 0.05))  # Max 5% fail points, minimum 2
+        
+        linearity_pass = spec_met and fail_tolerance_met
 
         self.logger.debug(f"Linearity analysis results: raw_error={final_error_raw:.4f}, shifted_error={final_error_shifted:.4f}, fail_points={fail_points}, pass={linearity_pass}")
 

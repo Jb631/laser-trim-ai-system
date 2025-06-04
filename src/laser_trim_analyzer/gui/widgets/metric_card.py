@@ -80,6 +80,7 @@ class MetricCard(ttk.Frame):
                  show_sparkline: bool = True,
                  on_click: Optional[Callable] = None,
                  color_scheme: str = "neutral",
+                 status: str = None,  # For backward compatibility
                  **kwargs):
         """
         Initialize metric card.
@@ -93,9 +94,17 @@ class MetricCard(ttk.Frame):
             show_sparkline: Whether to show sparkline
             on_click: Callback when card is clicked
             color_scheme: Color scheme to use ("neutral", "success", "warning", "danger", "info")
+            status: Alias for color_scheme (for backward compatibility)
         """
-        # Don't pass color_scheme to the ttk.Frame constructor
-        super().__init__(parent, **kwargs)
+        # Handle status parameter as alias for color_scheme
+        if status is not None:
+            color_scheme = status
+            
+        # Filter out parameters that shouldn't be passed to ttk.Frame
+        filtered_kwargs = {k: v for k, v in kwargs.items() 
+                          if k not in ['color_scheme', 'status']}
+        
+        super().__init__(parent, **filtered_kwargs)
 
         self.title = title
         self.value = value

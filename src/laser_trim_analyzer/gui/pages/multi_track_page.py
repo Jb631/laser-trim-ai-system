@@ -15,6 +15,7 @@ import numpy as np
 import threading
 import os
 from pathlib import Path
+import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -29,6 +30,8 @@ from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
+# Get logger
+logger = logging.getLogger(__name__)
 
 class MultiTrackPage(BasePage):
     """Multi-track analysis and comparison page."""
@@ -237,27 +240,88 @@ class MultiTrackPage(BasePage):
         self.comparison_tabview.add("Detailed")
         self.comparison_tabview.add("Charts")
 
-        # Placeholder for charts
-        self.summary_chart_label = ctk.CTkLabel(
-            self.comparison_tabview.tab("Summary"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.summary_chart_label.pack(expand=True)
+        # Create actual chart widgets instead of placeholders
+        try:
+            from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+            
+            # Summary chart for overview metrics
+            self.summary_chart = ChartWidget(
+                self.comparison_tabview.tab("Summary"),
+                chart_type='bar',
+                title="Track Summary Comparison",
+                figsize=(10, 4)
+            )
+            self.summary_chart.pack(fill='both', expand=True)
+            
+            # Detailed comparison charts
+            detailed_frame = ctk.CTkFrame(self.comparison_tabview.tab("Detailed"))
+            detailed_frame.pack(fill='both', expand=True, padx=5, pady=5)
+            
+            # Sigma comparison chart
+            self.sigma_comparison_chart = ChartWidget(
+                detailed_frame,
+                chart_type='bar',
+                title="Sigma Gradient Comparison",
+                figsize=(10, 3)
+            )
+            self.sigma_comparison_chart.pack(fill='x', padx=5, pady=(5, 2))
+            
+            # Linearity comparison chart
+            self.linearity_comparison_chart = ChartWidget(
+                detailed_frame,
+                chart_type='bar',
+                title="Linearity Error Comparison",
+                figsize=(10, 3)
+            )
+            self.linearity_comparison_chart.pack(fill='x', padx=5, pady=(2, 5))
+            
+            # Charts tab for profile comparisons
+            self.profile_comparison_chart = ChartWidget(
+                self.comparison_tabview.tab("Charts"),
+                chart_type='line',
+                title="Error Profile Comparison",
+                figsize=(10, 4)
+            )
+            self.profile_comparison_chart.pack(fill='both', expand=True)
+            
+            # Initialize comparison charts dictionary for easy access
+            self.comparison_charts = {
+                'summary': self.summary_chart,
+                'sigma': self.sigma_comparison_chart,
+                'linearity': self.linearity_comparison_chart,
+                'profile': self.profile_comparison_chart
+            }
+            
+        except ImportError as e:
+            logger.warning(f"Could not create chart widgets: {e}")
+            # Fallback to placeholder labels
+            self.summary_chart_label = ctk.CTkLabel(
+                self.comparison_tabview.tab("Summary"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.summary_chart_label.pack(expand=True)
 
-        self.detailed_chart_label = ctk.CTkLabel(
-            self.comparison_tabview.tab("Detailed"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.detailed_chart_label.pack(expand=True)
+            self.detailed_chart_label = ctk.CTkLabel(
+                self.comparison_tabview.tab("Detailed"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.detailed_chart_label.pack(expand=True)
 
-        self.charts_chart_label = ctk.CTkLabel(
-            self.comparison_tabview.tab("Charts"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.charts_chart_label.pack(expand=True)
+            self.charts_chart_label = ctk.CTkLabel(
+                self.comparison_tabview.tab("Charts"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.charts_chart_label.pack(expand=True)
+            
+            # Set chart objects to None for safe access
+            self.comparison_charts = {}
+            self.summary_chart = None
+            self.sigma_comparison_chart = None
+            self.linearity_comparison_chart = None
+            self.profile_comparison_chart = None
 
     def _create_consistency_section(self):
         """Create consistency analysis section (matching batch processing theme)."""
@@ -943,7 +1007,384 @@ class MultiTrackPage(BasePage):
 
     def _view_individual_tracks(self):
         """Open individual track analysis in separate windows."""
-        messagebox.showinfo("Coming Soon", "Individual track viewer will be implemented in the next version.")
+        if not self.current_unit_data or not self.current_unit_data.get('tracks'):
+            messagebox.showwarning("No Data", "No track data available to view")
+            return
+
+        try:
+            # Create track selection dialog
+            dialog = ctk.CTkToplevel(self.winfo_toplevel())
+            dialog.title("Individual Track Viewer")
+            dialog.geometry("800x600")
+            dialog.transient(self.winfo_toplevel())
+            
+            # Main container
+            main_frame = ctk.CTkFrame(dialog)
+            main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Header
+            header_label = ctk.CTkLabel(
+                main_frame,
+                text="Select Track to View Details",
+                font=ctk.CTkFont(size=16, weight="bold")
+            )
+            header_label.pack(pady=(10, 20))
+            
+            # Track list
+            track_list_frame = ctk.CTkFrame(main_frame)
+            track_list_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+            
+            # Create scrollable frame for tracks
+            tracks_scroll = ctk.CTkScrollableFrame(track_list_frame)
+            tracks_scroll.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Add track cards
+            for track_id, result in self.current_unit_data['tracks'].items():
+                primary_track = result.primary_track
+                if primary_track:
+                    # Track card
+                    track_card = ctk.CTkFrame(tracks_scroll)
+                    track_card.pack(fill='x', padx=5, pady=5)
+                    
+                    # Track info layout
+                    info_frame = ctk.CTkFrame(track_card)
+                    info_frame.pack(fill='x', padx=10, pady=10)
+                    
+                    # Left side - basic info
+                    left_frame = ctk.CTkFrame(info_frame)
+                    left_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
+                    
+                    ctk.CTkLabel(
+                        left_frame,
+                        text=f"Track {track_id}",
+                        font=ctk.CTkFont(size=14, weight="bold")
+                    ).pack(anchor='w', padx=10, pady=(10, 5))
+                    
+                    ctk.CTkLabel(
+                        left_frame,
+                        text=f"Status: {primary_track.overall_status.value}",
+                        font=ctk.CTkFont(size=12)
+                    ).pack(anchor='w', padx=10, pady=2)
+                    
+                    ctk.CTkLabel(
+                        left_frame,
+                        text=f"Sigma: {primary_track.sigma_analysis.sigma_gradient:.6f}",
+                        font=ctk.CTkFont(size=12)
+                    ).pack(anchor='w', padx=10, pady=2)
+                    
+                    ctk.CTkLabel(
+                        left_frame,
+                        text=f"Linearity: {primary_track.linearity_analysis.final_linearity_error_shifted:.4f}%",
+                        font=ctk.CTkFont(size=12)
+                    ).pack(anchor='w', padx=10, pady=(2, 10))
+                    
+                    # Right side - action button
+                    right_frame = ctk.CTkFrame(info_frame)
+                    right_frame.pack(side='right', padx=10, pady=10)
+                    
+                    view_btn = ctk.CTkButton(
+                        right_frame,
+                        text="View Details",
+                        command=lambda tid=track_id, track=primary_track: self._show_track_details(tid, track),
+                        width=100
+                    )
+                    view_btn.pack(pady=10)
+            
+            # Close button
+            close_btn = ctk.CTkButton(
+                main_frame,
+                text="Close",
+                command=dialog.destroy,
+                width=100
+            )
+            close_btn.pack(pady=10)
+            
+        except Exception as e:
+            self.logger.error(f"Error opening individual track viewer: {e}")
+            messagebox.showerror("Error", f"Failed to open track viewer:\n{str(e)}")
+
+    def _show_track_details(self, track_id: str, track_data):
+        """Show detailed analysis for a specific track."""
+        try:
+            # Create detailed track window
+            detail_window = ctk.CTkToplevel(self.winfo_toplevel())
+            detail_window.title(f"Track {track_id} - Detailed Analysis")
+            detail_window.geometry("1000x700")
+            detail_window.transient(self.winfo_toplevel())
+            
+            # Create notebook for different sections
+            notebook = ctk.CTkTabview(detail_window)
+            notebook.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Overview tab
+            overview_tab = notebook.add("Overview")
+            self._create_track_overview_tab(overview_tab, track_id, track_data)
+            
+            # Sigma analysis tab
+            sigma_tab = notebook.add("Sigma Analysis")
+            self._create_track_sigma_tab(sigma_tab, track_data)
+            
+            # Linearity analysis tab
+            linearity_tab = notebook.add("Linearity Analysis")
+            self._create_track_linearity_tab(linearity_tab, track_data)
+            
+            # Resistance analysis tab
+            resistance_tab = notebook.add("Resistance Analysis")
+            self._create_track_resistance_tab(resistance_tab, track_data)
+            
+            # Data visualization tab
+            viz_tab = notebook.add("Data Visualization")
+            self._create_track_visualization_tab(viz_tab, track_data)
+            
+            # Set default tab
+            notebook.set("Overview")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing track details: {e}")
+            messagebox.showerror("Error", f"Failed to show track details:\n{str(e)}")
+
+    def _create_track_overview_tab(self, parent, track_id: str, track_data):
+        """Create overview tab for individual track."""
+        # Scrollable frame
+        scroll_frame = ctk.CTkScrollableFrame(parent)
+        scroll_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Basic information section
+        info_frame = ctk.CTkFrame(scroll_frame)
+        info_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            info_frame,
+            text="Track Information",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        info_text = f"""Track ID: {track_id}
+Overall Status: {track_data.overall_status.value}
+Risk Category: {track_data.failure_prediction.risk_category.value if track_data.failure_prediction else 'Unknown'}
+
+Unit Properties:
+• Travel Length: {track_data.unit_properties.travel_length:.2f} mm
+• Unit Length: {track_data.unit_properties.unit_length:.2f} mm  
+• Resistance Before: {track_data.unit_properties.resistance_before:.2f} Ω
+• Resistance After: {track_data.unit_properties.resistance_after:.2f} Ω
+• Resistance Change: {track_data.unit_properties.resistance_change_percent:.2f}%
+"""
+        
+        info_display = ctk.CTkTextbox(info_frame, height=200)
+        info_display.pack(fill='x', padx=10, pady=(0, 10))
+        info_display.insert('1.0', info_text)
+        info_display.configure(state='disabled')
+        
+        # Quick metrics section
+        metrics_frame = ctk.CTkFrame(scroll_frame)
+        metrics_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            metrics_frame,
+            text="Quick Metrics",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        metrics_container = ctk.CTkFrame(metrics_frame)
+        metrics_container.pack(fill='x', padx=10, pady=(0, 10))
+        
+        # Metric cards
+        sigma_card = MetricCard(
+            metrics_container,
+            title="Sigma Gradient",
+            value=f"{track_data.sigma_analysis.sigma_gradient:.6f}",
+            status="success" if track_data.sigma_analysis.sigma_pass else "danger"
+        )
+        sigma_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        
+        linearity_card = MetricCard(
+            metrics_container,
+            title="Linearity Error",
+            value=f"{track_data.linearity_analysis.final_linearity_error_shifted:.4f}%",
+            status="success" if track_data.linearity_analysis.linearity_pass else "danger"
+        )
+        linearity_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        
+        # Analysis summary
+        summary_frame = ctk.CTkFrame(scroll_frame)
+        summary_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            summary_frame,
+            text="Analysis Summary",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        summary_text = f"""Sigma Analysis:
+• Gradient: {track_data.sigma_analysis.sigma_gradient:.6f}
+• Threshold: {track_data.sigma_analysis.sigma_threshold:.6f}
+• Pass: {'✓' if track_data.sigma_analysis.sigma_pass else '✗'}
+
+Linearity Analysis:
+• Error (Shifted): {track_data.linearity_analysis.final_linearity_error_shifted:.4f}%
+• Specification: {track_data.linearity_analysis.linearity_spec:.4f}%
+• Pass: {'✓' if track_data.linearity_analysis.linearity_pass else '✗'}
+
+Trim Effectiveness:
+• Improvement: {track_data.trim_effectiveness.improvement_percent:.2f}%
+• Effectiveness Grade: {track_data.trim_effectiveness.effectiveness_grade}
+"""
+        
+        summary_display = ctk.CTkTextbox(summary_frame, height=200)
+        summary_display.pack(fill='x', padx=10, pady=(0, 10))
+        summary_display.insert('1.0', summary_text)
+        summary_display.configure(state='disabled')
+
+    def _create_track_sigma_tab(self, parent, track_data):
+        """Create sigma analysis tab."""
+        scroll_frame = ctk.CTkScrollableFrame(parent)
+        scroll_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        sigma = track_data.sigma_analysis
+        
+        # Sigma metrics
+        metrics_frame = ctk.CTkFrame(scroll_frame)
+        metrics_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            metrics_frame,
+            text="Sigma Analysis Details",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        metrics_text = f"""Primary Measurements:
+• Sigma Gradient: {sigma.sigma_gradient:.6f}
+• Sigma Threshold: {sigma.sigma_threshold:.6f}
+• Pass Status: {'PASS' if sigma.sigma_pass else 'FAIL'}
+
+Improvement Analysis:
+• Improvement Percent: {sigma.improvement_percent:.2f}%
+• Absolute Improvement: {sigma.absolute_improvement:.6f}
+
+Statistical Analysis:
+• Sigma Rating: {getattr(sigma, 'sigma_rating', 'Not calculated')}
+• Process Capability: {getattr(sigma, 'process_capability', 'Not calculated')}
+"""
+        
+        metrics_display = ctk.CTkTextbox(metrics_frame, height=200)
+        metrics_display.pack(fill='x', padx=10, pady=(0, 10))
+        metrics_display.insert('1.0', metrics_text)
+        metrics_display.configure(state='disabled')
+
+    def _create_track_linearity_tab(self, parent, track_data):
+        """Create linearity analysis tab."""
+        scroll_frame = ctk.CTkScrollableFrame(parent)
+        scroll_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        linearity = track_data.linearity_analysis
+        
+        # Linearity metrics
+        metrics_frame = ctk.CTkFrame(scroll_frame)
+        metrics_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            metrics_frame,
+            text="Linearity Analysis Details",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        metrics_text = f"""Primary Measurements:
+• Final Linearity Error (Shifted): {linearity.final_linearity_error_shifted:.4f}%
+• Linearity Specification: {linearity.linearity_spec:.4f}%
+• Pass Status: {'PASS' if linearity.linearity_pass else 'FAIL'}
+
+Analysis Details:
+• Independent Linearity: {getattr(linearity, 'independent_linearity', 'Not calculated'):.4f}%
+• Zero Based Linearity: {getattr(linearity, 'zero_based_linearity', 'Not calculated'):.4f}%
+• End Point Linearity: {getattr(linearity, 'end_point_linearity', 'Not calculated'):.4f}%
+
+Quality Metrics:
+• Linearity Grade: {getattr(linearity, 'linearity_grade', 'Not assigned')}
+• Analysis Quality: {getattr(linearity, 'analysis_quality', 'Not rated')}
+"""
+        
+        metrics_display = ctk.CTkTextbox(metrics_frame, height=200)
+        metrics_display.pack(fill='x', padx=10, pady=(0, 10))
+        metrics_display.insert('1.0', metrics_text)
+        metrics_display.configure(state='disabled')
+
+    def _create_track_resistance_tab(self, parent, track_data):
+        """Create resistance analysis tab."""
+        scroll_frame = ctk.CTkScrollableFrame(parent)
+        scroll_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        resistance = track_data.resistance_analysis
+        props = track_data.unit_properties
+        
+        # Resistance metrics
+        metrics_frame = ctk.CTkFrame(scroll_frame)
+        metrics_frame.pack(fill='x', pady=(0, 10))
+        
+        ctk.CTkLabel(
+            metrics_frame,
+            text="Resistance Analysis Details",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor='w', padx=10, pady=(10, 5))
+        
+        metrics_text = f"""Resistance Values:
+• Before Trim: {props.resistance_before:.2f} Ω
+• After Trim: {props.resistance_after:.2f} Ω
+• Change: {props.resistance_change_percent:.2f}%
+
+Analysis Results:
+• Resistance Stability: {getattr(resistance, 'resistance_stability', 'Not calculated')}
+• Temperature Coefficient: {getattr(resistance, 'temperature_coefficient', 'Not measured')}
+• Process Variation: {getattr(resistance, 'process_variation', 'Not calculated')}
+
+Quality Assessment:
+• Stability Grade: {getattr(resistance, 'stability_grade', 'Not assigned')}
+• Reliability Score: {getattr(resistance, 'reliability_score', 'Not calculated')}
+"""
+        
+        metrics_display = ctk.CTkTextbox(metrics_frame, height=200)
+        metrics_display.pack(fill='x', padx=10, pady=(0, 10))
+        metrics_display.insert('1.0', metrics_text)
+        metrics_display.configure(state='disabled')
+
+    def _create_track_visualization_tab(self, parent, track_data):
+        """Create data visualization tab."""
+        scroll_frame = ctk.CTkScrollableFrame(parent)
+        scroll_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Check if we have position and error data
+        if hasattr(track_data, 'position_data') and hasattr(track_data, 'error_data'):
+            # Error profile chart
+            from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+            
+            error_chart = ChartWidget(
+                scroll_frame,
+                chart_type='line',
+                title='Error Profile vs Position',
+                figsize=(10, 4)
+            )
+            error_chart.pack(fill='x', padx=10, pady=10)
+            
+            # Plot error data
+            if track_data.position_data and track_data.error_data:
+                error_chart.plot_line(
+                    x_data=track_data.position_data,
+                    y_data=track_data.error_data,
+                    label="Error Profile",
+                    color='primary',
+                    xlabel="Position (mm)",
+                    ylabel="Error (%)"
+                )
+        else:
+            # No chart data available
+            no_data_frame = ctk.CTkFrame(scroll_frame)
+            no_data_frame.pack(fill='x', pady=10)
+            
+            ctk.CTkLabel(
+                no_data_frame,
+                text="No position/error data available for visualization",
+                font=ctk.CTkFont(size=12)
+            ).pack(pady=20)
 
     def _load_multi_track_from_database(self, model: str, serial: str):
         """Load multi-track data for a specific unit from database."""

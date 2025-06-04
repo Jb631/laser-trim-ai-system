@@ -238,19 +238,26 @@ class ResistanceAnalysis(BaseAnalysisModel):
     @computed_field
     @property
     def resistance_stability_grade(self) -> str:
-        """Get resistance stability grade."""
+        """Get resistance stability grade appropriate for laser trimming processes."""
         if self.resistance_change_percent is None:
             return "Not Available"
         
         abs_change = abs(self.resistance_change_percent)
-        if abs_change <= 0.01:
-            return "Excellent (±0.01%)"
-        elif abs_change <= 0.1:
-            return "Good (±0.1%)"
-        elif abs_change <= 1.0:
-            return "Acceptable (±1.0%)"
+        
+        # Laser trimming appropriate thresholds
+        # Large changes are normal and expected for achieving target specs
+        if abs_change <= 50.0:  # Up to 50% change is acceptable for laser trimming
+            if abs_change <= 5.0:
+                return "Minimal Trim (<5%)"
+            elif abs_change <= 15.0:
+                return "Light Trim (5-15%)"
+            elif abs_change <= 30.0:
+                return "Standard Trim (15-30%)"
+            else:
+                return "Heavy Trim (30-50%)"
         else:
-            return "Poor (>1.0%)"
+            # Only flag as concerning if change is extreme (>50%)
+            return "Extreme Trim (>50%)"
 
 
 class TrimEffectiveness(BaseAnalysisModel):
@@ -400,6 +407,10 @@ class AnalysisResult(BaseAnalysisModel):
     # Validation and errors
     validation_issues: List[str] = Field(default_factory=list, description="Validation warnings/errors")
     processing_errors: List[str] = Field(default_factory=list, description="Processing errors")
+    
+    # Missing validation attributes that UI expects
+    validation_warnings: List[str] = Field(default_factory=list, description="All validation warnings")
+    validation_recommendations: List[str] = Field(default_factory=list, description="All validation recommendations")
 
     # Overall validation status
     overall_validation_status: ValidationStatus = Field(default=ValidationStatus.NOT_VALIDATED, description="Overall validation status")

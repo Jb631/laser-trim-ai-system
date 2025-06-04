@@ -22,8 +22,8 @@ from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
 from laser_trim_analyzer.ml.models import ModelFactory
 from laser_trim_analyzer.database.models import MLPrediction as DBMLPrediction
 
-# Import the existing ML predictor implementation
-from laser_trim_analyzer.ml.ml_predictor_class import MLPredictor as MLPredictorImpl
+# Remove the import of the deleted ML predictor implementation
+# from laser_trim_analyzer.ml.ml_predictor_class import MLPredictor as MLPredictorImpl
 
 
 @dataclass
@@ -109,13 +109,7 @@ class MLPredictor:
             model_dir.mkdir(parents=True, exist_ok=True)
 
             # Initialize implementation predictor
-            self._impl_predictor = MLPredictorImpl(
-                model_dir=str(model_dir),
-                db_manager=None,  # We'll use our own DB manager
-                cache_size=1000,
-                update_interval_hours=24,
-                logger=self.logger
-            )
+            self._impl_predictor = None
 
             # Load or register models with MLEngine
             self._register_models()
@@ -139,66 +133,117 @@ class MLPredictor:
         """Register ML models with the engine."""
         from laser_trim_analyzer.ml.models import ThresholdOptimizer, FailurePredictor, DriftDetector
         
-        # Create default model configs
-        failure_config = ModelConfig({
-            'model_type': 'failure_predictor',
-            'version': '1.0',
-            'features': ['sigma_gradient', 'sigma_threshold', 'linearity_pass',
-                      'resistance_change_percent', 'trim_improvement_percent',
-                      'failure_probability', 'worst_zone'],
-            'hyperparameters': {
-                'n_estimators': 200,
-                'max_depth': 15,
-                'min_samples_split': 10,
-                'min_samples_leaf': 5
-            }
-        })
-        
-        threshold_config = ModelConfig({
-            'model_type': 'threshold_optimizer',
-            'version': '1.0',
-            'features': ['sigma_gradient', 'linearity_spec', 'travel_length',
-                      'unit_length', 'resistance_change_percent'],
-            'hyperparameters': {
-                'n_estimators': 100,
-                'max_depth': 10,
-                'min_samples_split': 5,
-                'min_samples_leaf': 2
-            }
-        })
-        
-        drift_config = ModelConfig({
-            'model_type': 'drift_detector',
-            'version': '1.0',
-            'features': ['sigma_gradient', 'linearity_spec', 'resistance_change_percent',
-                      'travel_length', 'unit_length'],
-            'hyperparameters': {
-                'n_estimators': 100,
-                'contamination': 0.05,
-                'max_samples': 'auto'
-            }
-        })
+        try:
+            # Ensure models dictionary exists
+            if not hasattr(self.ml_engine, 'models'):
+                self.ml_engine.models = {}
+            
+            # Create model configs first
+            failure_config = ModelConfig({
+                'model_type': 'failure_predictor',
+                'version': '1.0.0',
+                'features': ['sigma_gradient', 'sigma_threshold', 'linearity_pass',
+                          'resistance_change_percent', 'trim_improvement_percent',
+                          'failure_probability', 'worst_zone'],
+                'hyperparameters': {
+                    'n_estimators': 200,
+                    'max_depth': 15,
+                    'min_samples_split': 10,
+                    'min_samples_leaf': 5
+                },
+                'training_params': {
+                    'test_size': 0.2,
+                    'random_state': 42,
+                    'cv_folds': 5
+                }
+            })
+            
+            threshold_config = ModelConfig({
+                'model_type': 'threshold_optimizer',
+                'version': '1.0.0',
+                'features': ['sigma_gradient', 'linearity_spec', 'travel_length',
+                          'unit_length', 'resistance_change_percent'],
+                'hyperparameters': {
+                    'n_estimators': 100,
+                    'max_depth': 10,
+                    'min_samples_split': 5,
+                    'min_samples_leaf': 2
+                },
+                'training_params': {
+                    'test_size': 0.2,
+                    'random_state': 42,
+                    'cv_folds': 5
+                }
+            })
+            
+            drift_config = ModelConfig({
+                'model_type': 'drift_detector',
+                'version': '1.0.0',
+                'features': ['sigma_gradient', 'linearity_spec', 'resistance_change_percent',
+                          'travel_length', 'unit_length'],
+                'hyperparameters': {
+                    'n_estimators': 100,
+                    'contamination': 0.05,
+                    'max_samples': 'auto'
+                },
+                'training_params': {
+                    'test_size': 0.2,
+                    'random_state': 42
+                }
+            })
+            
+            # Create and register failure predictor
+            failure_predictor = FailurePredictor(failure_config, self.logger)
+            failure_predictor.model_type = 'failure_predictor'
+            failure_predictor.is_trained = False
+            failure_predictor.version = '1.0.0'
+            failure_predictor.last_trained = None
+            failure_predictor.training_samples = 0
+            failure_predictor.performance_metrics = {}
+            failure_predictor.prediction_count = 0
+            
+            self.ml_engine.models['failure_predictor'] = failure_predictor
+            self.logger.info("Registered model: failure_predictor")
+            
+            # Create and register threshold optimizer
+            threshold_optimizer = ThresholdOptimizer(threshold_config, self.logger)
+            threshold_optimizer.model_type = 'threshold_optimizer'
+            threshold_optimizer.is_trained = False
+            threshold_optimizer.version = '1.0.0'
+            threshold_optimizer.last_trained = None
+            threshold_optimizer.training_samples = 0
+            threshold_optimizer.performance_metrics = {}
+            threshold_optimizer.prediction_count = 0
+            
+            self.ml_engine.models['threshold_optimizer'] = threshold_optimizer
+            self.logger.info("Registered model: threshold_optimizer")
+            
+            # Create and register drift detector
+            drift_detector = DriftDetector(drift_config, self.logger)
+            drift_detector.model_type = 'drift_detector'
+            drift_detector.is_trained = False
+            drift_detector.version = '1.0.0'
+            drift_detector.last_trained = None
+            drift_detector.training_samples = 0
+            drift_detector.performance_metrics = {}
+            drift_detector.prediction_count = 0
+            
+            self.ml_engine.models['drift_detector'] = drift_detector
+            self.logger.info("Registered model: drift_detector")
 
-        # Register failure predictor
-        self.ml_engine.register_model(
-            'failure_predictor',
-            FailurePredictor,
-            failure_config
-        )
-
-        # Register threshold optimizer
-        self.ml_engine.register_model(
-            'threshold_optimizer',
-            ThresholdOptimizer,
-            threshold_config
-        )
-
-        # Register drift detector
-        self.ml_engine.register_model(
-            'drift_detector',
-            DriftDetector,
-            drift_config
-        )
+            # Store configs if supported
+            if not hasattr(self.ml_engine, 'model_configs'):
+                self.ml_engine.model_configs = {}
+                
+            self.ml_engine.model_configs['failure_predictor'] = failure_config
+            self.ml_engine.model_configs['threshold_optimizer'] = threshold_config
+            self.ml_engine.model_configs['drift_detector'] = drift_config
+            
+            self.logger.info(f"Successfully registered {len(self.ml_engine.models)} models")
+            
+        except Exception as e:
+            self.logger.error(f"Error registering models: {e}")
+            raise
 
     def _check_models_need_training(self) -> bool:
         """Check if models need initial training."""

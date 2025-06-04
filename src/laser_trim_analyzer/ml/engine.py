@@ -769,11 +769,31 @@ class MLEngine:
             self.performance_history[model_name] = self.performance_history[model_name][-100:]
 
     def _get_model_class(self, model_name: str) -> type:
-        """Get model class by name (to be implemented based on your models)."""
-        # This should be implemented based on your specific model classes
-        # For now, returning a placeholder
-
-        return None
+        """Get model class by name."""
+        # Import the actual model classes
+        try:
+            from laser_trim_analyzer.ml.models import (
+                ThresholdOptimizer, 
+                FailurePredictor, 
+                DriftDetector,
+                ModelEnsemble,
+                AdaptiveThresholdOptimizer
+            )
+            
+            # Map model names to their classes
+            model_classes = {
+                'threshold_optimizer': ThresholdOptimizer,
+                'adaptive_threshold_optimizer': AdaptiveThresholdOptimizer,
+                'failure_predictor': FailurePredictor,
+                'drift_detector': DriftDetector,
+                'ensemble': ModelEnsemble
+            }
+            
+            return model_classes.get(model_name)
+            
+        except ImportError as e:
+            self.logger.error(f"Failed to import model class for {model_name}: {e}")
+            return None
 
     def save_engine_state(self) -> None:
         """Save the current state of the ML engine."""
