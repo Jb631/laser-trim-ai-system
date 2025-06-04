@@ -365,4 +365,182 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.validation_text.delete("1.0", ctk.END)
         self.validation_text.insert("1.0", validation_text)
 
-    def _format_validation_details(self, result: Analys
+    def _format_validation_details(self, result: AnalysisResult) -> str:
+        """Format validation details for display."""
+        details = []
+        
+        # Basic validation info
+        details.append("=== VALIDATION SUMMARY ===")
+        
+        if hasattr(result, 'overall_validation_status'):
+            details.append(f"Overall Status: {result.overall_validation_status.value}")
+        
+        if hasattr(result, 'validation_grade'):
+            details.append(f"Validation Grade: {result.validation_grade}")
+        
+        details.append("")
+        
+        # Validation warnings
+        if hasattr(result, 'validation_warnings') and result.validation_warnings:
+            details.append("=== WARNINGS ===")
+            for i, warning in enumerate(result.validation_warnings[:10], 1):
+                details.append(f"{i}. {warning}")
+            
+            if len(result.validation_warnings) > 10:
+                details.append(f"... and {len(result.validation_warnings) - 10} more warnings")
+            
+            details.append("")
+        
+        # Validation recommendations
+        if hasattr(result, 'validation_recommendations') and result.validation_recommendations:
+            details.append("=== RECOMMENDATIONS ===")
+            for i, rec in enumerate(result.validation_recommendations[:5], 1):
+                details.append(f"{i}. {rec}")
+            
+            if len(result.validation_recommendations) > 5:
+                details.append(f"... and {len(result.validation_recommendations) - 5} more recommendations")
+            
+            details.append("")
+        
+        # Track validation details
+        if hasattr(result, 'tracks') and result.tracks:
+            details.append("=== TRACK VALIDATION ===")
+            for track_id, track_data in result.tracks.items():
+                details.append(f"Track {track_id}:")
+                
+                if hasattr(track_data, 'validation_status'):
+                    details.append(f"  Status: {track_data.validation_status.value}")
+                
+                if hasattr(track_data, 'validation_warnings') and track_data.validation_warnings:
+                    details.append(f"  Warnings: {len(track_data.validation_warnings)}")
+                    for warning in track_data.validation_warnings[:3]:
+                        details.append(f"    • {warning}")
+                
+                details.append("")
+        
+        # If no validation details available
+        if len(details) <= 3:
+            details = ["No detailed validation information available."]
+        
+        return "\n".join(details)
+
+    def _on_track_selected(self, selected_track: str):
+        """Handle track selection change."""
+        if self.current_result and hasattr(self.current_result, 'tracks'):
+            if selected_track in self.current_result.tracks:
+                track_data = self.current_result.tracks[selected_track]
+                self._display_track_details(selected_track, track_data)
+            else:
+                self._clear_track_details()
+
+    def _display_track_details(self, track_id: str, track_data):
+        """Display details for selected track."""
+        try:
+            # Sigma analysis
+            if hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis:
+                sigma_gradient = getattr(track_data.sigma_analysis, 'sigma_gradient', None)
+                if sigma_gradient is not None:
+                    self.sigma_gradient_card.update_value(f"{sigma_gradient:.4f}", "info")
+                else:
+                    self.sigma_gradient_card.update_value("N/A", "neutral")
+                
+                sigma_pass = getattr(track_data.sigma_analysis, 'sigma_pass', None)
+                if sigma_pass is not None:
+                    pass_text = "PASS" if sigma_pass else "FAIL"
+                    color = "success" if sigma_pass else "danger"
+                    self.sigma_pass_card.update_value(pass_text, color)
+                else:
+                    self.sigma_pass_card.update_value("N/A", "neutral")
+            else:
+                self.sigma_gradient_card.update_value("N/A", "neutral")
+                self.sigma_pass_card.update_value("N/A", "neutral")
+            
+            # Linearity analysis
+            if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
+                linearity_error = getattr(track_data.linearity_analysis, 'final_linearity_error_shifted', None)
+                if linearity_error is not None:
+                    self.linearity_error_card.update_value(f"{linearity_error:.3f}", "info")
+                else:
+                    self.linearity_error_card.update_value("N/A", "neutral")
+                
+                linearity_pass = getattr(track_data.linearity_analysis, 'linearity_pass', None)
+                if linearity_pass is not None:
+                    pass_text = "PASS" if linearity_pass else "FAIL"
+                    color = "success" if linearity_pass else "danger"
+                    self.linearity_pass_card.update_value(pass_text, color)
+                else:
+                    self.linearity_pass_card.update_value("N/A", "neutral")
+            else:
+                self.linearity_error_card.update_value("N/A", "neutral")
+                self.linearity_pass_card.update_value("N/A", "neutral")
+                
+        except Exception as e:
+            logger.error(f"Error displaying track details: {e}")
+            self._clear_track_details()
+
+    def _clear_track_details(self):
+        """Clear track detail cards."""
+        self.sigma_gradient_card.update_value("N/A", "neutral")
+        self.sigma_pass_card.update_value("N/A", "neutral")
+        self.linearity_error_card.update_value("N/A", "neutral")
+        self.linearity_pass_card.update_value("N/A", "neutral")
+
+    def _get_status_color_scheme(self, status) -> str:
+        """Get color scheme for analysis status."""
+        if hasattr(status, 'value'):
+            status_value = status.value.lower()
+        else:
+            status_value = str(status).lower()
+        
+        if 'pass' in status_value:
+            return "success"
+        elif 'fail' in status_value:
+            return "danger"
+        elif 'warning' in status_value:
+            return "warning"
+        else:
+            return "neutral"
+
+    def _get_validation_color_scheme(self, validation_status) -> str:
+        """Get color scheme for validation status."""
+        if hasattr(validation_status, 'value'):
+            status_value = validation_status.value.lower()
+        else:
+            status_value = str(validation_status).lower()
+        
+        if 'validated' in status_value:
+            return "success"
+        elif 'failed' in status_value:
+            return "danger"
+        elif 'warning' in status_value:
+            return "warning"
+        else:
+            return "neutral"
+
+    def clear(self):
+        """Clear all displayed data."""
+        self.current_result = None
+        
+        # Reset header
+        self.subtitle_label.configure(text="No analysis completed")
+        
+        # Reset status cards
+        self.overall_status_card.update_value("Unknown", "neutral")
+        self.validation_status_card.update_value("Unknown", "neutral")
+        self.validation_grade_card.update_value("N/A", "neutral")
+        self.processing_time_card.update_value("0s", "info")
+        
+        # Reset metadata cards
+        self.model_card.update_value("Unknown", "info")
+        self.serial_card.update_value("Unknown", "info")
+        self.system_card.update_value("Unknown", "info")
+        self.date_card.update_value("Unknown", "info")
+        
+        # Reset track selector
+        self.track_selector.configure(values=["No tracks"])
+        self.track_var.set("No tracks")
+        self._clear_track_details()
+        
+        # Clear validation text
+        self.validation_text.delete("1.0", ctk.END)
+        self.validation_text.insert("1.0", "No validation details available.")
