@@ -388,6 +388,9 @@ class HomePage(BasePage):
     def _update_ui(self, stats: Dict[str, Any], trend_data: List[Dict[str, Any]],
                    activities: List[Dict[str, Any]]):
         """Update UI with refreshed data."""
+        # Check if we have any data at all
+        has_data = stats.get('units_tested', 0) > 0 or len(activities) > 0
+        
         # Update stat cards - only update the ones that exist
         try:
             if 'units_tested' in self.stat_cards:
@@ -420,7 +423,24 @@ class HomePage(BasePage):
                         
                         self.activity_list.insert('end', activity_text)
                 else:
-                    self.activity_list.insert('1.0', "No recent activity")
+                    if not has_data:
+                        # Show empty state guidance
+                        empty_state_message = (
+                            "No analysis data found.\n\n"
+                            "To get started:\n"
+                            "• Go to the Analysis tab\n"
+                            "• Load Excel files for processing\n"
+                            "• Build up a history of analysis results\n"
+                            "• Return here to see your dashboard\n\n"
+                            "Once you have data, this area will show:\n"
+                            "• Recent analysis completions\n"
+                            "• Processing status updates\n"
+                            "• Quality alerts and notifications"
+                        )
+                    else:
+                        empty_state_message = "No recent activity today"
+                    
+                    self.activity_list.insert('1.0', empty_state_message)
                 
                 self.activity_list.configure(state="disabled")
                 self.activity_list.see('end')

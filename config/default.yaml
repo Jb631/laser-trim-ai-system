@@ -15,7 +15,7 @@ processing:
   cache_enabled: true
   cache_ttl: 3600
   file_extensions: [".xlsx", ".xls"]
-  skip_patterns: ["~$*", ".*", "_backup_*"]
+  skip_patterns: ["~$*", ".*", "_backup_*", "*_test_*", "*_sample_*"]
 
 analysis:
   sigma_scaling_factor: 24.0

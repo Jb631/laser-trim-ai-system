@@ -381,4 +381,89 @@ class MainWindow:
                 
                 self.db_manager = DatabaseManager(db_path_str)
                 self.db_status.set("Connected")
-                self.logger
+                self.logger.info("Database connected")
+            except Exception as e:
+                self.logger.error(f"Could not connect to database: {e}")
+                self.db_status.set("Disconnected")
+
+        # Initialize ML predictor
+        if self.enable_ml.get():
+            try:
+                self.ml_predictor = FailurePredictor()
+                self.ml_status.set("Available")
+                self.logger.info("ML predictor initialized")
+            except Exception as e:
+                self.logger.error(f"Could not initialize ML predictor: {e}")
+                self.ml_status.set("Not Available")
+
+        # Initialize API client
+        if self.enable_api.get():
+            try:
+                self.api_client = AIServiceClient()
+                self.api_status.set("Connected")
+                self.logger.info("API client initialized")
+            except Exception as e:
+                self.logger.error(f"Could not initialize API client: {e}")
+                self.api_status.set("Not Connected")
+
+    def _determine_initial_page(self):
+        """Determine which page to show initially based on user's data state."""
+        try:
+            # Check if user has any historical data
+            has_data = False
+            if hasattr(self, 'db_manager') and self.db_manager:
+                try:
+                    recent_data = self.db_manager.get_historical_data(limit=1)
+                    has_data = len(recent_data) > 0
+                except Exception as e:
+                    self.logger.warning(f"Could not check for historical data: {e}")
+            
+            # Determine initial page based on data availability
+            if has_data:
+                # User has data, show home dashboard
+                self._show_page('home')
+                self.logger.info("User has historical data - showing home dashboard")
+            else:
+                # New user or no data, show analysis page with onboarding
+                self._show_page('analysis')
+                self.logger.info("No historical data found - showing analysis page for onboarding")
+                
+                # Show onboarding guidance after a brief delay
+                self.root.after(1000, self._show_onboarding_guidance)
+                
+        except Exception as e:
+            self.logger.error(f"Error determining initial page: {e}")
+            # Fallback to analysis page
+            self._show_page('analysis')
+
+    def _show_onboarding_guidance(self):
+        """Show onboarding guidance for new users."""
+        try:
+            from tkinter import messagebox
+            
+            # Check if we're still on the analysis page
+            if self.current_page.get() == 'analysis':
+                result = messagebox.showinfo(
+                    "Welcome to Laser Trim Analyzer",
+                    "Welcome to the Laser Trim Analyzer!\n\n"
+                    "To get started:\n"
+                    "1. Click 'Browse Files' to select Excel files for analysis\n"
+                    "2. Or drag and drop files directly onto the interface\n"
+                    "3. Review and process your files to build a data history\n"
+                    "4. Once you have data, you can explore ML tools and reports\n\n"
+                    "Need help? Check the documentation or contact support."
+                )
+                
+        except Exception as e:
+            self.logger.warning(f"Could not show onboarding guidance: {e}")
+
+    def _show_page(self, page_name):
+        """Show the specified page."""
+        self.current_page.set(page_name)
+        # Implement the logic to show the specified page
+
+    def _schedule_ui_update(self):
+        """Schedule a UI update."""
+        # Implement the logic to schedule a UI update
+
+# ... rest of the existing code ...

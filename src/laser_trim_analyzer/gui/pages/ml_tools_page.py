@@ -1,4 +1,4 @@
-"""
+﻿"""
 ML Tools Page for Laser Trim Analyzer
 
 Provides interface for machine learning model management,
@@ -3858,7 +3858,6 @@ Performance Metrics:
                 'drift_detector': 70
             }
         }
-
     def _create_mock_prediction_quality(self):
         """Create mock prediction quality data for testing."""
         return {
