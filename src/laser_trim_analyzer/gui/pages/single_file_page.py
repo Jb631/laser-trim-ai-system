@@ -293,7 +293,7 @@ class SingleFilePage(BasePage):
         self.clear_button.pack(side='left', padx=(0, 10), pady=10)
 
     def _create_results_section(self):
-        """Create results display section (matching batch processing theme)."""
+        """Create results display section with empty state handling."""
         self.results_frame = ctk.CTkFrame(self.main_container)
         self.results_frame.pack(fill='both', expand=True, pady=(0, 20))
         
@@ -304,9 +304,36 @@ class SingleFilePage(BasePage):
         )
         self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
         
-        # Results display widget
+        # Empty state container
+        self.empty_state_frame = ctk.CTkFrame(self.results_frame)
+        self.empty_state_frame.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        
+        empty_icon = ctk.CTkLabel(
+            self.empty_state_frame,
+            text="📊",  # Unicode chart icon
+            font=ctk.CTkFont(size=48)
+        )
+        empty_icon.pack(pady=(30, 10))
+        
+        empty_title = ctk.CTkLabel(
+            self.empty_state_frame,
+            text="No Analysis Results Yet",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        empty_title.pack(pady=(0, 10))
+        
+        empty_message = ctk.CTkLabel(
+            self.empty_state_frame,
+            text="Select an Excel file and click 'Analyze File' to begin.\n"
+                 "Results will appear here once analysis is complete.",
+            font=ctk.CTkFont(size=12),
+            justify="center"
+        )
+        empty_message.pack(pady=(0, 30))
+        
+        # Results display widget (initially hidden)
         self.analysis_display = AnalysisDisplayWidget(self.results_frame)
-        self.analysis_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.analysis_display.pack_forget()  # Hidden until results exist
 
     def _browse_file(self):
         """Browse for Excel file."""

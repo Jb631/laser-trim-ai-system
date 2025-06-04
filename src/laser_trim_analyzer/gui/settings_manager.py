@@ -24,28 +24,28 @@ class SettingsManager:
         self.settings = {}
         self.callbacks = {}  # Setting change callbacks
         
-        # Default settings
+        # Production default settings
         self.default_settings = {
-            # UI/UX Preferences
+            # UI/UX Preferences - minimal defaults
             "theme": {
-                "mode": "dark",  # light, dark, system
-                "color_scheme": "blue",  # blue, green, red, orange
-                "font_family": "Segoe UI",
-                "font_size": 12,
-                "enable_animations": True,
+                "mode": "system",  # Use system default
+                "color_scheme": "blue",  
+                "font_family": None,  # Use system default
+                "font_size": None,  # Use system default
+                "enable_animations": False,  # Disabled by default for performance
                 "compact_mode": False,
                 "high_contrast": False
             },
             
-            # Analysis Preferences
+            # Analysis Preferences - production defaults
             "analysis": {
-                "auto_save_results": True,
-                "default_export_format": "excel",  # excel, csv, pdf
-                "sigma_threshold": 0.1,
-                "linearity_threshold": 0.05,
-                "enable_ml_predictions": True,
-                "confidence_threshold": 0.8,
-                "batch_size_limit": 1000
+                "auto_save_results": False,  # Require explicit save in production
+                "default_export_format": "xlsx",  # Standard Excel format
+                "sigma_threshold": None,  # Must be configured per model
+                "linearity_threshold": None,  # Must be configured per model
+                "enable_ml_predictions": False,  # Disabled until trained
+                "confidence_threshold": 0.95,  # High confidence for production
+                "batch_size_limit": 100  # Conservative initial limit
             },
             
             # Display Preferences
