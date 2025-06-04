@@ -41,9 +41,7 @@ from laser_trim_analyzer.database.manager import DatabaseManager
 
 # Import widgets and dialogs
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
-from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
-from laser_trim_analyzer.gui.dialogs.settings_dialog import SettingsDialog
 
 # Try to import ML modules
 try:
@@ -192,6 +190,62 @@ class MainWindow:
         # Bind global stop processing shortcut
         self.root.bind('<Control-q>', self._emergency_stop_all)
         self.root.bind('<Escape>', self._emergency_stop_current)
+
+    def _get_window_size_class(self):
+        """Get current window size class for responsive design."""
+        width = self.root.winfo_width()
+        if width < 1200:
+            return "compact"
+        elif width < 1600:
+            return "normal"
+        else:
+            return "large"
+
+    def _on_window_configure(self, event):
+        """Handle window resize events."""
+        if event.widget == self.root:
+            new_size_class = self._get_window_size_class()
+            if new_size_class != self._window_size_class:
+                self._window_size_class = new_size_class
+                self._schedule_ui_update()
+
+    def _on_closing(self):
+        """Handle window closing event."""
+        try:
+            # Save window state to settings
+            from laser_trim_analyzer.gui.settings_manager import settings_manager
+            settings_manager.set("window.width", self.root.winfo_width())
+            settings_manager.set("window.height", self.root.winfo_height())
+            settings_manager.set("window.x", self.root.winfo_x())
+            settings_manager.set("window.y", self.root.winfo_y())
+            settings_manager.set("window.maximized", self.root.state() == 'zoomed')
+        except Exception as e:
+            self.logger.warning(f"Could not save window state: {e}")
+        
+        # Stop all processing
+        self._shutdown_requested = True
+        
+        # Wait for threads to finish (with timeout)
+        for thread in self._active_threads:
+            if thread.is_alive():
+                thread.join(timeout=2.0)
+        
+        self.root.destroy()
+
+    def _emergency_stop_all(self, event=None):
+        """Emergency stop all processing."""
+        self._shutdown_requested = True
+        self.status_text.set("Stopping all operations...")
+        self.logger.warning("Emergency stop requested")
+
+    def _emergency_stop_current(self, event=None):
+        """Emergency stop current operation."""
+        current_page_name = self.current_page.get()
+        current_page = self.pages.get(current_page_name)
+        
+        if hasattr(current_page, 'stop_processing'):
+            current_page.stop_processing()
+            self.status_text.set("Operation stopped")
 
     def _setup_styles(self):
         """Configure ttk styles for modern dark appearance"""
@@ -697,45 +751,4 @@ class MainWindow:
                     'Model': result.model,
                     'Serial': result.serial,
                     'System': result.system.value if hasattr(result.system, 'value') else str(result.system),
-                    'Status': result.overall_status.value if hasattr(result.overall_status, 'value') else str(result.overall_status),
-                    'Sigma Gradient': getattr(primary_track, 'sigma_gradient', None) if primary_track else None,
-                    'Sigma Pass': getattr(primary_track, 'sigma_pass', None) if primary_track else None,
-                    'Linearity Pass': getattr(primary_track, 'linearity_pass', None) if primary_track else None,
-                    'Risk Category': getattr(primary_track.risk_category, 'value', None) if primary_track and hasattr(primary_track, 'risk_category') else None,
-                    'Processing Time': getattr(result, 'processing_time', None)
-                }
-                data.append(row)
-            
-            df = pd.DataFrame(data)
-            
-            # Save to file
-            if filename.endswith('.xlsx'):
-                df.to_excel(filename, index=False)
-            else:
-                df.to_csv(filename, index=False)
-            
-            messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}")
-            
-        except Exception as e:
-            self.logger.error(f"Export error: {e}")
-            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
-
-    def _show_settings(self):
-        """Show settings dialog"""
-        try:
-            from laser_trim_analyzer.gui.settings_manager import SettingsDialog, settings_manager
-            dialog = SettingsDialog(self.root, settings_manager)
-            dialog.wait_window()  # Wait for dialog to close
-            
-            # Reinitialize services if settings changed
-            self._init_services()
-            self._schedule_ui_update()
-        except Exception as e:
-            self.logger.error(f"Error showing settings: {e}")
-            messagebox.showerror("Settings Error", f"Failed to open settings: {str(e)}")
-    
-    def _schedule_ui_update(self):
-        """Schedule a UI update to prevent excessive refreshes"""
-        if not self._ui_update_scheduled:
-            self._ui_update_scheduled = True
-            self.root
+                    'Status': result.
