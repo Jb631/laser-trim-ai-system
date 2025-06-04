@@ -40,18 +40,38 @@ class BatchProcessingPage(BasePage):
     """Batch processing page with comprehensive validation and responsive design."""
 
     def __init__(self, parent, main_window):
-        """Initialize batch processing page."""
+        """Initialize batch processing page with configuration validation."""
         super().__init__(parent, main_window)
         
-        self.analyzer_config = get_config()
-        self.processor = LaserTrimProcessor(self.analyzer_config)
+        # Get configuration with validation
+        try:
+            self.analyzer_config = get_config()
+            if not self._validate_configuration():
+                self._show_configuration_error()
+                return
+        except Exception as e:
+            self._show_configuration_error(str(e))
+            return
+            
+        try:
+            self.processor = LaserTrimProcessor(self.analyzer_config)
+        except Exception as e:
+            self._show_processor_error(str(e))
+            return
         
-        # State
+        # Initialize state
         self.selected_files: List[Path] = []
         self.batch_results: Dict[str, AnalysisResult] = {}
         self.processing_thread: Optional[threading.Thread] = None
         self.is_processing = False
         self.validation_results: Dict[str, bool] = {}
+        
+        # Validate required directories exist
+        self._ensure_required_directories()
+        
+        # Check if this is first run
+        if self.analyzer_config.first_run:
+            self.after(500, self._show_first_run_dialog)
         
         # Processing control
         self._stop_event = threading.Event()
