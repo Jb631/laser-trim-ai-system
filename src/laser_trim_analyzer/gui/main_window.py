@@ -381,4 +381,4 @@ class MainWindow:
                 
                 self.db_manager = DatabaseManager(db_path_str)
                 self.db_status.set("Connected")
-                self.
+                self.logger
