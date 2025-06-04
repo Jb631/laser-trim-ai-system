@@ -12,6 +12,7 @@ import threading
 from typing import Optional, Dict, List, Any, Callable
 from pathlib import Path
 from dataclasses import dataclass
+import logging
 
 # Import TkinterDnD2 for drag and drop support
 try:
@@ -101,14 +102,34 @@ class MainWindow:
         self._show_page("home")
 
     def _setup_window(self):
-        """Configure the main window"""
+        """Configure the main window with responsive design capabilities"""
         self.root.title(f"{APP_NAME} - Professional Edition")
-        self.root.geometry("1400x900")
-        self.root.minsize(1200, 800)
         
-        # Disable window updates during initialization to prevent flashing
-        self.root.withdraw()
-
+        # Get screen dimensions for responsive sizing
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        
+        # Calculate responsive window size (80% of screen, with min/max limits)
+        min_width, min_height = 1000, 700
+        max_width, max_height = 1800, 1200
+        
+        window_width = max(min_width, min(max_width, int(screen_width * 0.8)))
+        window_height = max(min_height, min(max_height, int(screen_height * 0.8)))
+        
+        # Center the window
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.root.minsize(min_width, min_height)
+        
+        # Make window resizable with proper weight configuration
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        
+        # Enable responsive window state
+        self.root.state('normal')  # Start in normal state, not maximized
+        
         # Try to set DPI awareness on Windows
         if sys.platform == 'win32':
             try:
@@ -119,17 +140,17 @@ class MainWindow:
 
         # Define color scheme from config or defaults
         self.colors = {
-            'bg_primary': '#f0f2f5',
-            'bg_secondary': '#ffffff',
-            'bg_dark': '#1a1a2e',
-            'accent': '#0f4c75',
-            'accent_light': '#3282b8',
-            'success': '#4caf50',
-            'warning': '#ff9800',
-            'danger': '#f44336',
-            'text_primary': '#212121',
-            'text_secondary': '#757575',
-            'border': '#e0e0e0'
+            'bg_primary': '#2b2b2b',      # Dark primary background
+            'bg_secondary': '#3c3c3c',    # Dark secondary background
+            'bg_dark': '#1e1e1e',         # Darker background
+            'accent': '#0078d4',          # Modern blue accent
+            'accent_light': '#4a9eff',    # Light blue accent
+            'success': '#107c10',         # Dark green
+            'warning': '#ff8c00',         # Orange
+            'danger': '#d13438',          # Red
+            'text_primary': '#ffffff',    # White text
+            'text_secondary': '#cccccc',  # Light gray text
+            'border': '#555555'           # Gray border
         }
 
         # Configure ttk styles
@@ -161,22 +182,50 @@ class MainWindow:
         self.api_status = tk.StringVar(value="Not Connected")
         self.status_text = tk.StringVar(value="Ready")
         
-        # Bind cleanup on window close
+        # Responsive design state
+        self._window_size_class = self._get_window_size_class()
+        
+        # Bind to window events
+        self.root.bind('<Configure>', self._on_window_configure)
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
+        # Bind global stop processing shortcut
+        self.root.bind('<Control-q>', self._emergency_stop_all)
+        self.root.bind('<Escape>', self._emergency_stop_current)
 
     def _setup_styles(self):
-        """Configure ttk styles for modern appearance"""
+        """Configure ttk styles for modern dark appearance"""
         self.style = ttk.Style()
+        
+        # Use a dark-friendly theme as base
         self.style.theme_use('clam')
+        
+        # Update color scheme to be consistently dark
+        self.colors = {
+            'bg_primary': '#2b2b2b',      # Dark primary background
+            'bg_secondary': '#3c3c3c',    # Dark secondary background
+            'bg_dark': '#1e1e1e',         # Darker background
+            'accent': '#0078d4',          # Modern blue accent
+            'accent_light': '#4a9eff',    # Light blue accent
+            'success': '#107c10',         # Dark green
+            'warning': '#ff8c00',         # Orange
+            'danger': '#d13438',          # Red
+            'text_primary': '#ffffff',    # White text
+            'text_secondary': '#cccccc',  # Light gray text
+            'border': '#555555'           # Gray border
+        }
 
-        # Configure frame styles
+        # Configure frame styles for dark theme
         self.style.configure('TFrame', background=self.colors['bg_primary'])
         self.style.configure('Card.TFrame',
                              background=self.colors['bg_secondary'],
                              relief='flat', borderwidth=1)
         self.style.configure('Dark.TFrame', background=self.colors['bg_dark'])
 
-        # Configure label styles
+        # Configure label styles for dark theme
+        self.style.configure('TLabel',
+                             background=self.colors['bg_primary'],
+                             foreground=self.colors['text_primary'])
         self.style.configure('Title.TLabel',
                              font=('Segoe UI', 24, 'bold'),
                              background=self.colors['bg_primary'],
@@ -186,7 +235,16 @@ class MainWindow:
                              background=self.colors['bg_secondary'],
                              foreground=self.colors['text_primary'])
 
-        # Configure button styles
+        # Configure button styles for dark theme
+        self.style.configure('TButton',
+                             background=self.colors['bg_secondary'],
+                             foreground=self.colors['text_primary'],
+                             bordercolor=self.colors['border'],
+                             focuscolor=self.colors['accent'])
+        self.style.map('TButton',
+                       background=[('active', self.colors['accent']),
+                                   ('pressed', self.colors['accent_light'])])
+        
         self.style.configure('Primary.TButton',
                              font=('Segoe UI', 10, 'bold'))
         self.style.map('Primary.TButton',
@@ -200,6 +258,61 @@ class MainWindow:
                              borderwidth=0,
                              background=self.colors['bg_dark'],
                              foreground='white')
+
+        # Configure entry styles for dark theme
+        self.style.configure('TEntry',
+                             fieldbackground=self.colors['bg_secondary'],
+                             background=self.colors['bg_secondary'],
+                             foreground=self.colors['text_primary'],
+                             bordercolor=self.colors['border'])
+        
+        # Configure combobox styles for dark theme  
+        self.style.configure('TCombobox',
+                             fieldbackground=self.colors['bg_secondary'],
+                             background=self.colors['bg_secondary'],
+                             foreground=self.colors['text_primary'],
+                             bordercolor=self.colors['border'])
+        
+        # Configure checkbutton styles for dark theme
+        self.style.configure('TCheckbutton',
+                             background=self.colors['bg_primary'],
+                             foreground=self.colors['text_primary'],
+                             focuscolor=self.colors['accent'])
+        
+        # Configure notebook (tab) styles for dark theme
+        self.style.configure('TNotebook',
+                             background=self.colors['bg_primary'],
+                             bordercolor=self.colors['border'])
+        self.style.configure('TNotebook.Tab',
+                             background=self.colors['bg_secondary'],
+                             foreground=self.colors['text_primary'],
+                             padding=[20, 10])
+        self.style.map('TNotebook.Tab',
+                       background=[('selected', self.colors['accent']),
+                                   ('active', self.colors['bg_secondary'])])
+        
+        # Configure treeview styles for dark theme
+        self.style.configure('Treeview',
+                             background=self.colors['bg_secondary'],
+                             foreground=self.colors['text_primary'],
+                             fieldbackground=self.colors['bg_secondary'],
+                             bordercolor=self.colors['border'])
+        self.style.configure('Treeview.Heading',
+                             background=self.colors['bg_dark'],
+                             foreground=self.colors['text_primary'])
+        
+        # Configure progressbar styles for dark theme
+        self.style.configure('TProgressbar',
+                             background=self.colors['accent'],
+                             troughcolor=self.colors['bg_secondary'],
+                             bordercolor=self.colors['border'])
+        
+        # Configure scrollbar styles for dark theme
+        self.style.configure('TScrollbar',
+                             background=self.colors['bg_secondary'],
+                             troughcolor=self.colors['bg_primary'],
+                             bordercolor=self.colors['border'],
+                             arrowcolor=self.colors['text_secondary'])
 
     def _init_services(self):
         """Initialize backend services"""
@@ -236,14 +349,15 @@ class MainWindow:
         # Initialize ML
         if HAS_ML and self.enable_ml.get():
             try:
-                # Pass config to FailurePredictor
-                from laser_trim_analyzer.ml.engine import ModelConfig
-                ml_config = ModelConfig()  # Default config
-                self.ml_predictor = FailurePredictor(ml_config)
-                self.ml_status.set("Ready")
+                from laser_trim_analyzer.ml.predictors import MLPredictor
+                self.ml_predictor = MLPredictor(self.config, logger=logging.getLogger(__name__))
+                if self.ml_predictor.initialize():
+                    self.ml_status.set("Ready")
+                else:
+                    self.ml_status.set("Not Ready")
             except Exception as e:
                 self.ml_status.set("Error")
-                print(f"ML initialization error: {e}")
+                print(f"Failed to initialize ML Predictor: {e}")
 
         # Initialize API client
         if HAS_API and self.enable_api.get():
@@ -347,7 +461,9 @@ class MainWindow:
         # Navigation items
         nav_items = [
             ("🏠 Home", "home"),
+            ("📄 Single File", "single_file"),
             ("📊 Analysis", "analysis"),
+            ("📦 Batch Processing", "batch_processing"),
             ("📈 Historical Data", "historical"),
             ("📋 Model Summary", "model_summary"),
             ("🔗 Multi-Track", "multi_track"),
@@ -410,16 +526,21 @@ class MainWindow:
         """Create all application pages"""
         from laser_trim_analyzer.gui.pages.home_page import HomePage
         from laser_trim_analyzer.gui.pages.analysis_page import AnalysisPage
+        from laser_trim_analyzer.gui.pages.batch_processing_page import BatchProcessingPage
         from laser_trim_analyzer.gui.pages.historical_page import HistoricalPage
         from laser_trim_analyzer.gui.pages.model_summary_page import ModelSummaryPage
         from laser_trim_analyzer.gui.pages.multi_track_page import MultiTrackPage
         from laser_trim_analyzer.gui.pages.ml_tools_page import MLToolsPage
         from laser_trim_analyzer.gui.pages.ai_insights_page import AIInsightsPage
         from laser_trim_analyzer.gui.pages.settings_page import SettingsPage
+        from laser_trim_analyzer.gui.pages.single_file_page import SingleFilePage
 
         # Create page instances
+        self.pages = {}
         self.pages['home'] = HomePage(self.content_frame, self)
         self.pages['analysis'] = AnalysisPage(self.content_frame, self)
+        self.pages['single_file'] = SingleFilePage(self.content_frame, main_window=self)
+        self.pages['batch_processing'] = BatchProcessingPage(self.content_frame, main_window=self)
         self.pages['historical'] = HistoricalPage(self.content_frame, self)
         self.pages['model_summary'] = ModelSummaryPage(self.content_frame, self)
         self.pages['multi_track'] = MultiTrackPage(self.content_frame, self)
@@ -597,6 +718,81 @@ class MainWindow:
             # Force quit if cleanup fails
             import sys
             sys.exit(0)
+
+    def _get_window_size_class(self) -> str:
+        """Determine the current window size class."""
+        try:
+            width = self.root.winfo_width()
+            if width <= 1000:
+                return 'small'
+            elif width <= 1400:
+                return 'medium'
+            else:
+                return 'large'
+        except tk.TclError:
+            return 'medium'  # Default fallback
+
+    def _on_window_configure(self, event):
+        """Handle window resize events for responsive design."""
+        # Only handle window resize events for the root window
+        if event.widget != self.root:
+            return
+            
+        new_size_class = self._get_window_size_class()
+        if new_size_class != self._window_size_class:
+            self._window_size_class = new_size_class
+            self._handle_window_size_change(new_size_class)
+
+    def _handle_window_size_change(self, size_class: str):
+        """Handle window size class changes."""
+        # Update UI layout based on new size class
+        if hasattr(self, 'pages') and self.pages:
+            current_page_name = self.current_page.get()
+            if current_page_name in self.pages:
+                current_page = self.pages[current_page_name]
+                if hasattr(current_page, '_handle_responsive_layout'):
+                    try:
+                        current_page._handle_responsive_layout(size_class)
+                    except Exception as e:
+                        print(f"Error updating page layout: {e}")
+
+    def _emergency_stop_all(self, event=None):
+        """Emergency stop all processing (Ctrl+Q)."""
+        if self.is_processing:
+            result = messagebox.askyesno(
+                "Emergency Stop",
+                "Stop all processing operations?\n\n"
+                "This will immediately halt all running processes."
+            )
+            if result:
+                self._stop_all_processing()
+                messagebox.showinfo("Stopped", "All processing operations have been stopped.")
+
+    def _emergency_stop_current(self, event=None):
+        """Stop current page processing (Escape)."""
+        if self.is_processing:
+            current_page_name = self.current_page.get()
+            if hasattr(self, 'pages') and current_page_name in self.pages:
+                current_page = self.pages[current_page_name]
+                if hasattr(current_page, 'request_stop_processing'):
+                    current_page.request_stop_processing()
+                    self.status_text.set("Stop requested...")
+
+    def _stop_all_processing(self):
+        """Stop all processing in all pages."""
+        self.is_processing = False
+        self._shutdown_requested = True
+        
+        # Stop processing in all pages
+        if hasattr(self, 'pages'):
+            for page in self.pages.values():
+                if hasattr(page, 'request_stop_processing'):
+                    page.request_stop_processing()
+        
+        # Clean up threads
+        self._cleanup_threads()
+        
+        self.status_text.set("All processing stopped")
 
     def run(self):
         """Start the application"""

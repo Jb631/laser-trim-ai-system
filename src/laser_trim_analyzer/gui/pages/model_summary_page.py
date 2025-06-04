@@ -7,6 +7,7 @@ including sigma trending, key metrics, and export capabilities.
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import customtkinter as ctk
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 import pandas as pd
@@ -24,6 +25,7 @@ import seaborn as sns
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
+from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
@@ -38,353 +40,293 @@ class ModelSummaryPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the model summary page with proper positioning."""
-        # Create scrollable main frame without shifting
-        main_container = ttk.Frame(self)
-        main_container.pack(fill='both', expand=True)
+        """Create model summary page content with consistent theme (matching batch processing)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Canvas and scrollbar
-        canvas = tk.Canvas(main_container)
-        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Add mouse wheel scrolling support
-        add_mousewheel_support(scrollable_frame, canvas)
-        
-        # Pack scrollbar first to avoid shifting
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        
-        # Create content in scrollable frame
-        content_frame = scrollable_frame
-        
-        # Title and model selection
-        self._create_header_section(content_frame)
-        
-        # Key metrics cards
-        self._create_metrics_section(content_frame)
-        
-        # Sigma trend chart
-        self._create_trend_section(content_frame)
-        
-        # Additional analysis charts
-        self._create_analysis_section(content_frame)
-        
-        # Export and print controls
-        self._create_actions_section(content_frame)
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_model_selection()
+        self._create_metrics_section()
+        self._create_trend_section()
+        self._create_analysis_section()
+        self._create_actions_section()
 
-    def _create_header_section(self, parent):
-        """Create header with title and model selection using responsive layout."""
-        header_frame = ttk.Frame(parent)
-        header_frame.pack(fill='x', padx=20, pady=(20, 10))
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
 
-        # Configure grid for responsive layout
-        header_frame.columnconfigure(0, weight=1)
-        header_frame.columnconfigure(1, weight=0, minsize=300)
-
-        # Title on the left
-        title_label = ttk.Label(
-            header_frame,
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="Model Summary & Analysis",
-            font=('Segoe UI', 24, 'bold')
+            font=ctk.CTkFont(size=24, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky='w')
+        self.title_label.pack(pady=15)
 
-        # Model selection on the right with responsive layout
-        selection_frame = ttk.Frame(header_frame)
-        selection_frame.grid(row=0, column=1, sticky='e', padx=(10, 0))
-        
-        # Configure selection frame for responsiveness
-        selection_frame.grid_columnconfigure(1, weight=1)
+    def _create_model_selection(self):
+        """Create model selection section (matching batch processing theme)."""
+        self.selection_frame = ctk.CTkFrame(self.main_container)
+        self.selection_frame.pack(fill='x', pady=(0, 20))
 
-        ttk.Label(
-            selection_frame,
-            text="Select Model:",
-            font=('Segoe UI', 12)
-        ).grid(row=0, column=0, sticky='w', padx=(0, 10))
+        self.selection_label = ctk.CTkLabel(
+            self.selection_frame,
+            text="Model Selection:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.selection_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Selection container
+        self.selection_container = ctk.CTkFrame(self.selection_frame)
+        self.selection_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # Model selection row
+        selection_row = ctk.CTkFrame(self.selection_container)
+        selection_row.pack(fill='x', padx=10, pady=(10, 10))
+
+        model_label = ctk.CTkLabel(selection_row, text="Select Model:")
+        model_label.pack(side='left', padx=10, pady=10)
 
         self.model_var = tk.StringVar()
-        self.model_combo = ttk.Combobox(
-            selection_frame,
-            textvariable=self.model_var,
-            state='readonly',
-            font=('Segoe UI', 11)
+        self.model_combo = ctk.CTkComboBox(
+            selection_row,
+            variable=self.model_var,
+            width=200,
+            height=30,
+            command=self._on_model_selected
         )
-        self.model_combo.grid(row=0, column=1, sticky='ew', padx=(0, 10))
-        self.model_combo.bind('<<ComboboxSelected>>', self._on_model_selected)
+        self.model_combo.pack(side='left', padx=(0, 20), pady=10)
 
-        # Refresh button
-        ttk.Button(
-            selection_frame,
+        self.refresh_btn = ctk.CTkButton(
+            selection_row,
             text="🔄 Refresh",
-            command=self._load_models
-        ).grid(row=0, column=2, sticky='w')
+            command=self._load_models,
+            width=100,
+            height=30
+        )
+        self.refresh_btn.pack(side='left', padx=10, pady=10)
 
-        # Selected model info (full width below header)
-        self.model_info_label = ttk.Label(
-            parent,
+        # Model info display
+        self.model_info_label = ctk.CTkLabel(
+            self.selection_container,
             text="No model selected",
-            font=('Segoe UI', 11),
-            foreground=self.colors['text_secondary']
+            font=ctk.CTkFont(size=12)
         )
-        self.model_info_label.pack(fill='x', padx=20, pady=(0, 10))
+        self.model_info_label.pack(padx=10, pady=(0, 10))
 
-    def _create_metrics_section(self, parent):
-        """Create key metrics display with responsive layout."""
-        metrics_frame = ttk.LabelFrame(
-            parent,
-            text="Key Performance Metrics",
-            padding=15
+    def _create_metrics_section(self):
+        """Create key metrics display section (matching batch processing theme)."""
+        self.metrics_frame = ctk.CTkFrame(self.main_container)
+        self.metrics_frame.pack(fill='x', pady=(0, 20))
+
+        self.metrics_label = ctk.CTkLabel(
+            self.metrics_frame,
+            text="Key Performance Metrics:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        metrics_frame.pack(fill='x', padx=20, pady=10)
+        self.metrics_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create responsive grid of metric cards
-        self.metrics_grid = ttk.Frame(metrics_frame)
-        self.metrics_grid.pack(fill='x')
+        # Metrics container
+        self.metrics_container = ctk.CTkFrame(self.metrics_frame)
+        self.metrics_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Configure grid for responsive layout - 4 columns
-        for i in range(4):
-            self.metrics_grid.columnconfigure(i, weight=1, minsize=160)
+        # Row 1 of metrics
+        metrics_row1 = ctk.CTkFrame(self.metrics_container)
+        metrics_row1.pack(fill='x', padx=10, pady=(10, 5))
 
-        # Initialize metric cards with responsive positioning
         self.metric_cards = {}
         
-        # Row 1: Basic metrics
-        self.metric_cards['total_units'] = StatCard(
-            self.metrics_grid,
+        self.metric_cards['total_units'] = MetricCard(
+            metrics_row1,
             title="Total Units",
             value="--",
-            unit="",
-            color_scheme="default"
+            color_scheme="neutral"
         )
-        self.metric_cards['total_units'].grid(row=0, column=0, padx=5, pady=5, sticky='ew')
+        self.metric_cards['total_units'].pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
 
-        self.metric_cards['pass_rate'] = StatCard(
-            self.metrics_grid,
+        self.metric_cards['pass_rate'] = MetricCard(
+            metrics_row1,
             title="Overall Pass Rate",
-            value="--",
-            unit="%",
+            value="--%",
             color_scheme="success"
         )
-        self.metric_cards['pass_rate'].grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        self.metric_cards['pass_rate'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.metric_cards['sigma_avg'] = StatCard(
-            self.metrics_grid,
+        self.metric_cards['sigma_avg'] = MetricCard(
+            metrics_row1,
             title="Avg Sigma Gradient",
             value="--",
-            unit="",
             color_scheme="warning"
         )
-        self.metric_cards['sigma_avg'].grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+        self.metric_cards['sigma_avg'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.metric_cards['recent_trend'] = StatCard(
-            self.metrics_grid,
+        self.metric_cards['recent_trend'] = MetricCard(
+            metrics_row1,
             title="7-Day Trend",
             value="--",
-            unit="",
-            color_scheme="default"
-        )
-        self.metric_cards['recent_trend'].grid(row=0, column=3, padx=5, pady=5, sticky='ew')
-
-        # Row 2: Advanced metrics
-        self.metric_cards['sigma_std'] = StatCard(
-            self.metrics_grid,
-            title="Sigma Std Dev",
-            value="--",
-            unit="",
             color_scheme="info"
         )
-        self.metric_cards['sigma_std'].grid(row=1, column=0, padx=5, pady=5, sticky='ew')
+        self.metric_cards['recent_trend'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
-        self.metric_cards['linearity_rate'] = StatCard(
-            self.metrics_grid,
-            title="Linearity Pass Rate",
+        # Row 2 of metrics
+        metrics_row2 = ctk.CTkFrame(self.metrics_container)
+        metrics_row2.pack(fill='x', padx=10, pady=(5, 10))
+
+        self.metric_cards['sigma_std'] = MetricCard(
+            metrics_row2,
+            title="Sigma Std Dev",
             value="--",
-            unit="%",
-            color_scheme="success"
+            color_scheme="neutral"
         )
-        self.metric_cards['linearity_rate'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+        self.metric_cards['sigma_std'].pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
 
-        self.metric_cards['resistance_avg'] = StatCard(
-            self.metrics_grid,
-            title="Avg Resistance Change",
-            value="--",
-            unit="%",
-            color_scheme="warning"
-        )
-        self.metric_cards['resistance_avg'].grid(row=1, column=2, padx=5, pady=5, sticky='ew')
-
-        self.metric_cards['high_risk'] = StatCard(
-            self.metrics_grid,
+        self.metric_cards['high_risk'] = MetricCard(
+            metrics_row2,
             title="High Risk Units",
             value="--",
-            unit="",
             color_scheme="danger"
         )
-        self.metric_cards['high_risk'].grid(row=1, column=3, padx=5, pady=5, sticky='ew')
+        self.metric_cards['high_risk'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-    def _create_trend_section(self, parent):
-        """Create sigma trend chart section with responsive layout."""
-        trend_frame = ttk.LabelFrame(
-            parent,
-            text="Sigma Gradient Trending",
-            padding=15
+        self.metric_cards['validation_rate'] = MetricCard(
+            metrics_row2,
+            title="Validation Rate",
+            value="--%",
+            color_scheme="info"
         )
-        trend_frame.pack(fill='x', padx=20, pady=10)
+        self.metric_cards['validation_rate'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        # Chart controls with responsive layout
-        controls_frame = ttk.Frame(trend_frame)
-        controls_frame.pack(fill='x', pady=(0, 10))
-        
-        # Configure controls for responsive layout
-        controls_frame.grid_columnconfigure(1, weight=1)
-        controls_frame.grid_columnconfigure(3, weight=1)
-
-        ttk.Label(controls_frame, text="Time Range:").grid(row=0, column=0, sticky='w', padx=(0, 10))
-
-        self.time_range_var = tk.StringVar(value="Last 30 days")
-        time_combo = ttk.Combobox(
-            controls_frame,
-            textvariable=self.time_range_var,
-            values=["Last 7 days", "Last 30 days", "Last 90 days", "Last 6 months", "Last year", "All time"],
-            state='readonly'
+        self.metric_cards['date_range'] = MetricCard(
+            metrics_row2,
+            title="Date Range",
+            value="--",
+            color_scheme="neutral"
         )
-        time_combo.grid(row=0, column=1, sticky='ew', padx=(0, 20))
-        time_combo.bind('<<ComboboxSelected>>', self._update_trend_chart)
+        self.metric_cards['date_range'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
-        ttk.Label(controls_frame, text="Chart Type:").grid(row=0, column=2, sticky='w', padx=(0, 10))
+    def _create_trend_section(self):
+        """Create sigma trend chart section (matching batch processing theme)."""
+        self.trend_frame = ctk.CTkFrame(self.main_container)
+        self.trend_frame.pack(fill='both', expand=True, pady=(0, 20))
 
-        self.chart_type_var = tk.StringVar(value="Scatter with Trend")
-        chart_type_combo = ttk.Combobox(
-            controls_frame,
-            textvariable=self.chart_type_var,
-            values=["Scatter with Trend", "Line Plot", "Box Plot by Week"],
-            state='readonly'
+        self.trend_label = ctk.CTkLabel(
+            self.trend_frame,
+            text="Sigma Gradient Trend:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        chart_type_combo.grid(row=0, column=3, sticky='ew')
-        chart_type_combo.bind('<<ComboboxSelected>>', self._update_trend_chart)
+        self.trend_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Sigma trend chart with responsive sizing
-        self.sigma_chart = ChartWidget(
-            trend_frame,
-            chart_type='scatter',
-            title="Sigma Gradient Over Time"
-            # Remove fixed figsize for responsive behavior
+        # Chart container
+        self.trend_container = ctk.CTkFrame(self.trend_frame)
+        self.trend_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+        # Create matplotlib chart widget
+        self.trend_chart = ChartWidget(
+            self.trend_container,
+            title="Sigma Gradient Trend",
+            chart_type="line"
         )
-        self.sigma_chart.pack(fill='x', pady=(10, 0), expand=True)
+        self.trend_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
-    def _create_analysis_section(self, parent):
-        """Create additional analysis charts with responsive layout."""
-        analysis_frame = ttk.LabelFrame(
-            parent,
-            text="Detailed Analysis",
-            padding=15
+    def _create_analysis_section(self):
+        """Create additional analysis charts section (matching batch processing theme)."""
+        self.analysis_frame = ctk.CTkFrame(self.main_container)
+        self.analysis_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.analysis_label = ctk.CTkLabel(
+            self.analysis_frame,
+            text="Additional Analysis:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        analysis_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        self.analysis_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create notebook for different analysis views with responsive sizing
-        self.analysis_notebook = ttk.Notebook(analysis_frame)
-        self.analysis_notebook.pack(fill='both', expand=True)
+        # Analysis container with tabs
+        self.analysis_container = ctk.CTkFrame(self.analysis_frame)
+        self.analysis_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        # Distribution Analysis tab with responsive charts
-        dist_frame = ttk.Frame(self.analysis_notebook)
-        self.analysis_notebook.add(dist_frame, text="Distribution Analysis")
+        # Analysis tabs
+        self.analysis_tabview = ctk.CTkTabview(self.analysis_container)
+        self.analysis_tabview.pack(fill='both', expand=True, padx=10, pady=10)
 
+        # Add tabs with charts
+        self.analysis_tabview.add("Distribution")
+        self.analysis_tabview.add("Pass/Fail Trend")
+        self.analysis_tabview.add("Correlation")
+
+        # Distribution chart
         self.distribution_chart = ChartWidget(
-            dist_frame,
-            chart_type='histogram',
-            title="Sigma Gradient Distribution"
-            # Remove fixed figsize for responsive behavior
+            self.analysis_tabview.tab("Distribution"),
+            title="Sigma Gradient Distribution",
+            chart_type="histogram"
         )
-        self.distribution_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        self.distribution_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-        # Pass/Fail Analysis tab with responsive charts
-        passfail_frame = ttk.Frame(self.analysis_notebook)
-        self.analysis_notebook.add(passfail_frame, text="Pass/Fail Analysis")
-
+        # Pass/Fail chart
         self.passfail_chart = ChartWidget(
-            passfail_frame,
-            chart_type='bar',
-            title="Pass/Fail Rate by Time Period"
-            # Remove fixed figsize for responsive behavior
+            self.analysis_tabview.tab("Pass/Fail Trend"),
+            title="Monthly Pass Rate",
+            chart_type="bar"
         )
-        self.passfail_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        self.passfail_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-        # Quality Correlation tab with responsive charts
-        correlation_frame = ttk.Frame(self.analysis_notebook)
-        self.analysis_notebook.add(correlation_frame, text="Quality Correlations")
-
+        # Correlation chart
         self.correlation_chart = ChartWidget(
-            correlation_frame,
-            chart_type='scatter',
-            title="Sigma vs. Linearity Error Correlation"
-            # Remove fixed figsize for responsive behavior
+            self.analysis_tabview.tab("Correlation"),
+            title="Sigma vs Linearity Correlation",
+            chart_type="scatter"
         )
-        self.correlation_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        self.correlation_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-    def _create_actions_section(self, parent):
-        """Create export and print action buttons with responsive layout."""
-        actions_frame = ttk.LabelFrame(
-            parent,
-            text="Export & Reports",
-            padding=15
+    def _create_actions_section(self):
+        """Create export and print controls section (matching batch processing theme)."""
+        self.actions_frame = ctk.CTkFrame(self.main_container)
+        self.actions_frame.pack(fill='x', pady=(0, 20))
+
+        self.actions_label = ctk.CTkLabel(
+            self.actions_frame,
+            text="Export & Actions:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        actions_frame.pack(fill='x', padx=20, pady=(10, 20))
+        self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Button container with responsive layout
-        btn_container = ttk.Frame(actions_frame)
-        btn_container.pack(fill='x')
-        
-        # Configure button container for responsive layout
-        btn_container.grid_columnconfigure(0, weight=1)
-        btn_container.grid_columnconfigure(1, weight=1)
-        btn_container.grid_columnconfigure(2, weight=1)
-        btn_container.grid_columnconfigure(3, weight=2)  # Extra space for stats
+        # Actions container
+        self.actions_container = ctk.CTkFrame(self.actions_frame)
+        self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Export to Excel button
-        self.export_excel_btn = ttk.Button(
-            btn_container,
+        # Action buttons
+        button_frame = ctk.CTkFrame(self.actions_container)
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
+
+        self.export_excel_btn = ctk.CTkButton(
+            button_frame,
             text="📊 Export to Excel",
             command=self._export_to_excel,
-            style='Primary.TButton',
-            state='disabled'
+            width=150,
+            height=40
         )
-        self.export_excel_btn.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        self.export_excel_btn.pack(side='left', padx=(10, 10), pady=10)
 
-        # Generate PDF Report button
-        self.generate_report_btn = ttk.Button(
-            btn_container,
-            text="📄 Generate PDF Report",
-            command=self._generate_pdf_report,
-            state='disabled'
-        )
-        self.generate_report_btn.grid(row=0, column=1, sticky='ew', padx=(0, 10))
-
-        # Export chart data button
-        self.export_chart_btn = ttk.Button(
-            btn_container,
+        self.export_chart_btn = ctk.CTkButton(
+            button_frame,
             text="📈 Export Chart Data",
             command=self._export_chart_data,
-            state='disabled'
+            width=150,
+            height=40
         )
-        self.export_chart_btn.grid(row=0, column=2, sticky='ew', padx=(0, 10))
+        self.export_chart_btn.pack(side='left', padx=(0, 10), pady=10)
 
-        # Quick stats label with responsive positioning
-        self.quick_stats_label = ttk.Label(
-            btn_container,
-            text="",
-            font=('Segoe UI', 10),
-            foreground=self.colors['text_secondary']
+        self.generate_pdf_btn = ctk.CTkButton(
+            button_frame,
+            text="📄 Generate PDF Report",
+            command=self._generate_pdf_report,
+            width=180,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="green",
+            hover_color="darkgreen"
         )
-        self.quick_stats_label.grid(row=0, column=3, sticky='e')
+        self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
 
     def _load_models(self):
         """Load available models from database."""
@@ -404,7 +346,8 @@ class ModelSummaryPage(BasePage):
                 
                 models = [row[0] for row in results if row[0]]
 
-            self.model_combo['values'] = models
+            # Fix: Use configure() instead of ['values'] for CTk widgets
+            self.model_combo.configure(values=models)
             if models and not self.model_var.get():
                 self.model_var.set(models[0])
                 self._on_model_selected()
@@ -422,15 +365,15 @@ class ModelSummaryPage(BasePage):
             return
 
         self.selected_model = model
-        self.model_info_label.config(text=f"Loading data for model: {model}...")
+        self.model_info_label.configure(text=f"Loading data for model: {model}...")
         self.logger.info(f"Loading model data for: {model}")
 
         # Clear existing charts
         try:
-            self.sigma_chart.clear_chart()
-            self.distribution_chart.clear_chart() 
-            self.passfail_chart.clear_chart()
-            self.correlation_chart.clear_chart()
+            self.trend_chart.clear()
+            self.distribution_chart.clear()
+            self.passfail_chart.clear()
+            self.correlation_chart.clear()
         except Exception as e:
             self.logger.warning(f"Error clearing charts: {e}")
 
@@ -452,7 +395,7 @@ class ModelSummaryPage(BasePage):
             )
 
             if not historical_data:
-                self.after(0, lambda: self.model_info_label.config(
+                self.after(0, lambda: self.model_info_label.configure(
                     text=f"No data found for model: {model}"
                 ))
                 return
@@ -554,7 +497,7 @@ class ModelSummaryPage(BasePage):
                 except (AttributeError, ValueError):
                     date_range = "Date format error"
             
-            self.model_info_label.config(
+            self.model_info_label.configure(
                 text=f"Model: {model} | {len(df)} data points | Date range: {date_range}"
             )
 
@@ -576,27 +519,28 @@ class ModelSummaryPage(BasePage):
                 self.logger.error(f"Error updating analysis charts: {e}")
 
             # Always enable action buttons if we have data
-            self.export_excel_btn.config(state='normal')
-            self.generate_report_btn.config(state='normal')
-            self.export_chart_btn.config(state='normal')
+            self.export_excel_btn.configure(state='normal')
+            self.generate_pdf_btn.configure(state='normal')
+            self.export_chart_btn.configure(state='normal')
 
             # Update quick stats
-            self.quick_stats_label.config(
-                text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}"
-            )
+            if hasattr(self, 'quick_stats_label'):
+                self.quick_stats_label.configure(
+                    text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}"
+                )
             
             self.logger.info(f"Successfully updated model display for {model} with {len(df)} data points")
             
         except Exception as e:
             self.logger.error(f"Error updating model display: {e}")
-            self.model_info_label.config(
+            self.model_info_label.configure(
                 text=f"Error displaying model data: {str(e)}"
             )
             # Still enable buttons if we have data
             if self.model_data is not None and len(self.model_data) > 0:
-                self.export_excel_btn.config(state='normal')
-                self.generate_report_btn.config(state='normal')
-                self.export_chart_btn.config(state='normal')
+                self.export_excel_btn.configure(state='normal')
+                self.generate_pdf_btn.configure(state='normal')
+                self.export_chart_btn.configure(state='normal')
 
     def _update_metrics(self, df: pd.DataFrame):
         """Update metric cards with calculated values."""
@@ -607,7 +551,7 @@ class ModelSummaryPage(BasePage):
         sigma_std = df['sigma_gradient'].std()
 
         # Advanced metrics
-        linearity_rate = df['linearity_pass'].mean() * 100 if df['linearity_pass'].notna().any() else 0
+        validation_rate = df['linearity_pass'].mean() * 100 if df['linearity_pass'].notna().any() else 0
         resistance_avg = df['resistance_change_percent'].mean() if df['resistance_change_percent'].notna().any() else 0
         high_risk = (df['risk_category'] == 'High').sum() if df['risk_category'].notna().any() else 0
 
@@ -620,282 +564,70 @@ class ModelSummaryPage(BasePage):
         else:
             trend_text = "No recent data"
 
-        # Update cards
-        self.metric_cards['total_units'].update_value(total_units)
-        self.metric_cards['pass_rate'].update_value(f"{pass_rate:.1f}")
-        self.metric_cards['sigma_avg'].update_value(f"{sigma_avg:.4f}")
-        self.metric_cards['recent_trend'].update_value(trend_text)
-        self.metric_cards['sigma_std'].update_value(f"{sigma_std:.4f}")
-        self.metric_cards['linearity_rate'].update_value(f"{linearity_rate:.1f}")
-        self.metric_cards['resistance_avg'].update_value(f"{resistance_avg:.1f}")
-        self.metric_cards['high_risk'].update_value(high_risk)
+        # Update cards with safe access
+        try:
+            self.metric_cards['total_units'].update_value(total_units)
+            self.metric_cards['pass_rate'].update_value(f"{pass_rate:.1f}")
+            self.metric_cards['sigma_avg'].update_value(f"{sigma_avg:.4f}")
+            self.metric_cards['recent_trend'].update_value(trend_text)
+            self.metric_cards['sigma_std'].update_value(f"{sigma_std:.4f}")
+            self.metric_cards['validation_rate'].update_value(f"{validation_rate:.1f}")
+            self.metric_cards['high_risk'].update_value(high_risk)
+            
+            # Date range formatting
+            min_date = df['trim_date'].min()
+            max_date = df['trim_date'].max()
+            if pd.notna(min_date) and pd.notna(max_date):
+                date_range = f"{min_date.strftime('%m/%d')} - {max_date.strftime('%m/%d')}"
+            else:
+                date_range = "N/A"
+            self.metric_cards['date_range'].update_value(date_range)
+        except Exception as e:
+            self.logger.warning(f"Error updating individual metric cards: {e}")
 
         # Update colors based on values
-        if pass_rate >= 95:
-            self.metric_cards['pass_rate'].set_color_scheme('success')
-        elif pass_rate >= 90:
-            self.metric_cards['pass_rate'].set_color_scheme('warning')
-        else:
-            self.metric_cards['pass_rate'].set_color_scheme('danger')
+        try:
+            if pass_rate >= 95:
+                self.metric_cards['pass_rate'].set_color_scheme('success')
+            elif pass_rate >= 90:
+                self.metric_cards['pass_rate'].set_color_scheme('warning')
+            else:
+                self.metric_cards['pass_rate'].set_color_scheme('danger')
+        except Exception as e:
+            self.logger.warning(f"Error updating metric card colors: {e}")
 
-    def _update_trend_chart(self, event=None):
+    def _update_trend_chart(self):
         """Update the sigma trend chart."""
         if self.model_data is None or len(self.model_data) == 0:
             return
 
         df = self.model_data.copy()
         
-        # Apply time range filter
-        time_range = self.time_range_var.get()
-        if time_range != "All time":
-            days_map = {
-                "Last 7 days": 7,
-                "Last 30 days": 30,
-                "Last 90 days": 90,
-                "Last 6 months": 180,
-                "Last year": 365
-            }
-            days_back = days_map.get(time_range, 30)
-            cutoff_date = datetime.now() - timedelta(days=days_back)
-            df = df[df['trim_date'] >= cutoff_date]
-
-        if len(df) == 0:
-            self.sigma_chart.clear_chart()
-            return
-
-        # Sort by date
-        df = df.sort_values('trim_date')
-
-        # Create chart based on selected type
-        chart_type = self.chart_type_var.get()
-        self.sigma_chart.clear_chart()
-
+        # For now, just show basic trend information in the label
         try:
-            if chart_type == "Scatter with Trend":
-                # Scatter plot with trend line
-                x_data = df['trim_date'].tolist()
-                y_data = df['sigma_gradient'].tolist()
+            # Sort by date
+            df = df.sort_values('trim_date')
+            
+            # Calculate basic trend statistics
+            sigma_values = df['sigma_gradient'].dropna()
+            if len(sigma_values) > 1:
+                # Calculate trend direction
+                first_half = sigma_values[:len(sigma_values)//2].mean()
+                second_half = sigma_values[len(sigma_values)//2:].mean()
+                trend_direction = "↗️ Increasing" if second_half > first_half else "↘️ Decreasing"
                 
-                # Color by pass/fail
-                colors = ['pass' if status == 'Pass' else 'fail' for status in df['track_status']]
+                trend_info = f"Trend: {trend_direction}\n"
+                trend_info += f"Data points: {len(sigma_values)}\n"
+                trend_info += f"Range: {sigma_values.min():.4f} - {sigma_values.max():.4f}\n"
+                trend_info += f"Average: {sigma_values.mean():.4f}"
                 
-                self.sigma_chart.plot_scatter(
-                    x_data=x_data,
-                    y_data=y_data,
-                    colors=colors,
-                    xlabel="Trim Date",
-                    ylabel="Sigma Gradient",
-                    alpha=0.6
-                )
+                self.trend_chart.update_chart_data(df[['trim_date', 'sigma_gradient']])
+            else:
+                self.trend_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
                 
-                # Fix date formatting on x-axis
-                try:
-                    ax = self.sigma_chart.figure.axes[0]
-                    
-                    # Import date formatting utilities
-                    from matplotlib.dates import DateFormatter, MonthLocator, DayLocator
-                    import matplotlib.dates as mdates
-                    
-                    # Convert datetime objects to matplotlib dates for proper formatting
-                    x_dates_mpl = [mdates.date2num(d) for d in x_data]
-                    
-                    # Set date formatter based on data range
-                    date_range = (max(x_data) - min(x_data)).days
-                    
-                    if date_range <= 30:  # Less than a month
-                        ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
-                        ax.xaxis.set_major_locator(DayLocator(interval=max(1, date_range // 10)))
-                    elif date_range <= 90:  # Less than 3 months
-                        ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
-                        ax.xaxis.set_major_locator(DayLocator(interval=max(1, date_range // 8)))
-                    else:  # More than 3 months
-                        ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
-                        ax.xaxis.set_major_locator(MonthLocator())
-                    
-                    # Rotate dates for better readability
-                    ax.tick_params(axis='x', rotation=45)
-                    
-                    # Ensure the x-axis uses proper date formatting
-                    ax.xaxis_date()
-                    
-                    # Ensure tight layout
-                    self.sigma_chart.figure.tight_layout()
-                    
-                except Exception as e:
-                    self.logger.warning(f"Could not format dates on trend chart: {e}")
-                
-                # Add legend for pass/fail colors
-                try:
-                    import matplotlib.patches as mpatches
-                    pass_patch = mpatches.Patch(color=self.sigma_chart.qa_colors['pass'], label='Pass')
-                    fail_patch = mpatches.Patch(color=self.sigma_chart.qa_colors['fail'], label='Fail')
-                    ax.legend(handles=[pass_patch, fail_patch], loc='upper right')
-                except Exception as e:
-                    self.logger.warning(f"Could not add legend to trend chart: {e}")
-                
-                # Add trend line with better error handling
-                if len(df) > 2:  # Need at least 3 points for trend
-                    try:
-                        # Convert dates to numeric for trend calculation
-                        x_numeric = [mdates.date2num(d) for d in x_data]
-                        y_numeric = df['sigma_gradient'].values
-                        
-                        # Check for valid data
-                        if len(x_numeric) == len(y_numeric) and len(set(x_numeric)) > 1:
-                            # Filter out any NaN values
-                            valid_mask = ~(np.isnan(x_numeric) | np.isnan(y_numeric))
-                            x_clean = np.array(x_numeric)[valid_mask]
-                            y_clean = np.array(y_numeric)[valid_mask]
-                            
-                            if len(x_clean) > 2 and len(set(x_clean)) > 1:
-                                # Use robust polynomial fitting with error handling
-                                try:
-                                    z = np.polyfit(x_clean, y_clean, 1)
-                                    trend_line = np.poly1d(z)
-                                    
-                                    # Create trend line data using original x data for proper plotting
-                                    trend_y = [trend_line(x) for x in x_numeric]
-                                    
-                                    self.sigma_chart.plot_line(
-                                        x_data=x_data,
-                                        y_data=trend_y,
-                                        label="Trend",
-                                        color='trend',
-                                        linewidth=2
-                                    )
-                                except np.linalg.LinAlgError:
-                                    # SVD didn't converge or rank deficient
-                                    self.logger.warning("Could not compute trend line: numerical issues")
-                                except Exception as e:
-                                    self.logger.warning(f"Trend line calculation failed: {e}")
-                            else:
-                                self.logger.warning("Insufficient valid data points for trend line")
-                        else:
-                            self.logger.warning("Invalid data for trend calculation")
-                    except Exception as e:
-                        self.logger.error(f"Error calculating trend line: {e}")
-
-            elif chart_type == "Line Plot":
-                # Daily averages line plot
-                try:
-                    daily_avg = df.groupby(df['trim_date'].dt.date)['sigma_gradient'].mean().reset_index()
-                    
-                    # Convert date column back to datetime for proper plotting
-                    daily_avg['trim_date'] = pd.to_datetime(daily_avg['trim_date'])
-                    
-                    x_data_line = daily_avg['trim_date'].tolist()
-                    y_data_line = daily_avg['sigma_gradient'].tolist()
-                    
-                    self.sigma_chart.plot_line(
-                        x_data=x_data_line,
-                        y_data=y_data_line,
-                        label="Daily Average",
-                        color='primary',
-                        marker='o'
-                    )
-                    
-                    # Fix date formatting on x-axis for line plot
-                    try:
-                        ax = self.sigma_chart.figure.axes[0]
-                        from matplotlib.dates import DateFormatter, MonthLocator, DayLocator
-                        import matplotlib.dates as mdates
-                        
-                        # Ensure x-axis uses proper date formatting
-                        ax.xaxis_date()
-                        
-                        date_range = len(daily_avg)
-                        
-                        if date_range <= 30:
-                            ax.xaxis.set_major_formatter(DateFormatter('%m/%d/%Y'))
-                        else:
-                            ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
-                            ax.xaxis.set_major_locator(MonthLocator())
-                        
-                        ax.tick_params(axis='x', rotation=45)
-                        self.sigma_chart.figure.tight_layout()
-                        
-                    except Exception as e:
-                        self.logger.warning(f"Could not format dates on line chart: {e}")
-                    
-                    # Add trend line to line plot
-                    if len(x_data_line) > 2:
-                        try:
-                            x_numeric = [mdates.date2num(d) for d in x_data_line]
-                            y_numeric = np.array(y_data_line)
-                            
-                            # Filter out any NaN values
-                            valid_mask = ~(np.isnan(x_numeric) | np.isnan(y_numeric))
-                            x_clean = np.array(x_numeric)[valid_mask]
-                            y_clean = y_numeric[valid_mask]
-                            
-                            if len(x_clean) > 2:
-                                try:
-                                    z = np.polyfit(x_clean, y_clean, 1)
-                                    trend_line = np.poly1d(z)
-                                    trend_y = [trend_line(x) for x in x_numeric]
-                                    
-                                    self.sigma_chart.plot_line(
-                                        x_data=x_data_line,
-                                        y_data=trend_y,
-                                        label="Trend",
-                                        color='trend',
-                                        linewidth=2,
-                                        linestyle='--'
-                                    )
-                                except np.linalg.LinAlgError:
-                                    # SVD didn't converge or rank deficient
-                                    self.logger.warning("Could not compute trend line for line plot")
-                                except Exception as e:
-                                    self.logger.warning(f"Trend line calculation failed for line plot: {e}")
-                        except Exception as e:
-                            self.logger.error(f"Error calculating trend line for line plot: {e}")
-                        
-                except Exception as e:
-                    self.logger.error(f"Error creating line plot: {e}")
-
-            elif chart_type == "Box Plot by Week":
-                # Weekly box plots
-                try:
-                    df['week'] = df['trim_date'].dt.to_period('W').astype(str)
-                    weeks = sorted(df['week'].unique())
-                    
-                    if len(weeks) > 0:
-                        data_by_week = []
-                        valid_weeks = []
-                        
-                        for week in weeks:
-                            week_data = df[df['week'] == week]['sigma_gradient'].dropna().tolist()
-                            if len(week_data) > 0:  # Only include weeks with data
-                                data_by_week.append(week_data)
-                                valid_weeks.append(week)
-                        
-                        if len(data_by_week) > 0:
-                            self.sigma_chart.plot_box(
-                                data=data_by_week,
-                                labels=valid_weeks,
-                                xlabel="Week",
-                                ylabel="Sigma Gradient"
-                            )
-                        else:
-                            self.logger.warning("No valid weekly data for box plot")
-                    else:
-                        self.logger.warning("No weekly data available")
-                except Exception as e:
-                    self.logger.error(f"Error creating box plot: {e}")
-                    
         except Exception as e:
             self.logger.error(f"Error updating trend chart: {e}")
-            # Show error message on chart
-            try:
-                ax = self.sigma_chart.figure.add_subplot(111)
-                ax.text(0.5, 0.5, f'Chart Error: {str(e)[:50]}...', 
-                       ha='center', va='center', transform=ax.transAxes, fontsize=12,
-                       bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral"))
-                ax.set_xlim(0, 1)
-                ax.set_ylim(0, 1)
-                self.sigma_chart.canvas.draw()
-            except:
-                pass
+            self.trend_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
 
     def _update_analysis_charts(self):
         """Update the additional analysis charts."""
@@ -906,23 +638,23 @@ class ModelSummaryPage(BasePage):
         df = self.model_data
 
         try:
-            # Distribution chart
-            self.distribution_chart.clear_chart()
+            # Distribution analysis
             sigma_data = df['sigma_gradient'].dropna()
             if len(sigma_data) > 0:
-                self.distribution_chart.plot_histogram(
-                    data=sigma_data.tolist(),
-                    bins=min(30, max(10, len(sigma_data) // 5)),  # Adaptive bin count
-                    color='primary',
-                    xlabel="Sigma Gradient",
-                    ylabel="Frequency"
-                )
-                self.logger.info(f"Updated distribution chart with {len(sigma_data)} data points")
+                distribution_info = f"Distribution Analysis:\n"
+                distribution_info += f"Data points: {len(sigma_data)}\n"
+                distribution_info += f"Mean: {sigma_data.mean():.4f}\n"
+                distribution_info += f"Std Dev: {sigma_data.std():.4f}\n"
+                distribution_info += f"Min: {sigma_data.min():.4f}\n"
+                distribution_info += f"Max: {sigma_data.max():.4f}"
+                
+                self.distribution_chart.update_chart_data(df[['trim_date', 'sigma_gradient']])
+                self.logger.info(f"Updated distribution analysis with {len(sigma_data)} data points")
             else:
-                self.logger.warning("No valid sigma gradient data for distribution chart")
+                self.distribution_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
+                self.logger.warning("No valid sigma gradient data")
 
             # Pass/Fail analysis by month
-            self.passfail_chart.clear_chart()
             try:
                 # Create month-year periods for better grouping
                 df_copy = df.copy()
@@ -933,34 +665,27 @@ class ModelSummaryPage(BasePage):
                 }).reset_index()
                 
                 if len(monthly_stats) > 0:
-                    monthly_stats['month_str'] = monthly_stats['month_year'].astype(str)
+                    passfail_info = f"Monthly Pass Rate Analysis:\n"
+                    for idx, row in monthly_stats.iterrows():
+                        month = str(row['month_year'])
+                        rate = row['track_status']
+                        status_icon = "✅" if rate >= 95 else "⚠️" if rate >= 90 else "❌"
+                        passfail_info += f"{month}: {rate:.1f}% {status_icon}\n"
                     
-                    # Color coding based on pass rate
-                    colors = []
-                    for rate in monthly_stats['track_status']:
-                        if rate >= 95:
-                            colors.append('pass')
-                        elif rate >= 90:
-                            colors.append('warning')
-                        else:
-                            colors.append('fail')
+                    overall_rate = df['track_status'].eq('Pass').mean() * 100
+                    passfail_info += f"\nOverall: {overall_rate:.1f}%"
                     
-                    self.passfail_chart.plot_bar(
-                        categories=monthly_stats['month_str'].tolist(),
-                        values=monthly_stats['track_status'].tolist(),
-                        colors=colors,
-                        xlabel="Month",
-                        ylabel="Pass Rate (%)"
-                    )
-                    self.logger.info(f"Updated pass/fail chart with {len(monthly_stats)} months")
+                    self.passfail_chart.update_chart_data(monthly_stats[['month_year', 'track_status']])
+                    self.logger.info(f"Updated pass/fail analysis with {len(monthly_stats)} months")
                 else:
-                    self.logger.warning("No monthly statistics available for pass/fail chart")
+                    self.passfail_chart.update_chart_data(pd.DataFrame({'month_year': [], 'track_status': []}))
+                    self.logger.warning("No monthly statistics available")
                     
             except Exception as e:
-                self.logger.error(f"Error creating pass/fail chart: {e}")
+                self.logger.error(f"Error creating pass/fail analysis: {e}")
+                self.passfail_chart.update_chart_data(pd.DataFrame({'month_year': [], 'track_status': []}))
 
-            # Correlation chart
-            self.correlation_chart.clear_chart()
+            # Correlation analysis
             try:
                 # Check if linearity data exists
                 linearity_col = None
@@ -978,67 +703,49 @@ class ModelSummaryPage(BasePage):
                     common_idx = sigma_clean.index.intersection(linearity_clean.index)
                     
                     if len(common_idx) > 5:  # Need at least 5 points for meaningful correlation
-                        x_data = sigma_clean.loc[common_idx].tolist()
-                        y_data = linearity_clean.loc[common_idx].tolist()
+                        x_data = sigma_clean.loc[common_idx].values
+                        y_data = linearity_clean.loc[common_idx].values
                         
-                        # Color by pass/fail status
-                        status_data = df.loc[common_idx, 'track_status']
-                        colors = ['pass' if status == 'Pass' else 'fail' for status in status_data]
-                        
-                        self.correlation_chart.plot_scatter(
-                            x_data=x_data,
-                            y_data=y_data,
-                            colors=colors,
-                            xlabel="Sigma Gradient",
-                            ylabel=f"Linearity Error ({linearity_col.replace('_', ' ').title()})",
-                            alpha=0.6
-                        )
-                        
-                        # Add legend for pass/fail colors
-                        ax = self.correlation_chart.figure.axes[0]
-                        
-                        # Create legend handles
-                        import matplotlib.patches as mpatches
-                        pass_patch = mpatches.Patch(color=self.correlation_chart.qa_colors['pass'], label='Pass')
-                        fail_patch = mpatches.Patch(color=self.correlation_chart.qa_colors['fail'], label='Fail')
-                        ax.legend(handles=[pass_patch, fail_patch], loc='upper right')
-                        
-                        # Calculate and display correlation
+                        # Calculate correlation
                         correlation = np.corrcoef(x_data, y_data)[0, 1]
-                        if not np.isnan(correlation):
-                            # Add correlation text to chart
-                            ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
-                                   transform=ax.transAxes, fontsize=10,
-                                   bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
                         
-                        self.logger.info(f"Updated correlation chart with {len(x_data)} data points")
+                        correlation_info = f"Sigma vs Linearity Correlation:\n"
+                        correlation_info += f"Data points: {len(x_data)}\n"
+                        correlation_info += f"Correlation: {correlation:.3f}\n"
+                        
+                        if abs(correlation) >= 0.7:
+                            correlation_info += "Strong correlation 💪"
+                        elif abs(correlation) >= 0.4:
+                            correlation_info += "Moderate correlation 📊"
+                        else:
+                            correlation_info += "Weak correlation 📈"
+                        
+                        # Pass/fail breakdown
+                        status_data = df.loc[common_idx, 'track_status']
+                        pass_count = (status_data == 'Pass').sum()
+                        fail_count = len(status_data) - pass_count
+                        correlation_info += f"\n\nPass: {pass_count} | Fail: {fail_count}"
+                        
+                        self.correlation_chart.update_chart_data(pd.DataFrame({'x': x_data, 'y': y_data}))
+                        self.logger.info(f"Updated correlation analysis with {len(x_data)} data points")
                     else:
-                        self.logger.warning(f"Insufficient data for correlation chart: {len(common_idx)} points")
-                        # Show a message on the chart
-                        ax = self.correlation_chart.figure.add_subplot(111)
-                        ax.text(0.5, 0.5, 'Insufficient data for correlation analysis\n(Need at least 5 data points)', 
-                               ha='center', va='center', transform=ax.transAxes, fontsize=12,
-                               bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow"))
-                        ax.set_xlim(0, 1)
-                        ax.set_ylim(0, 1)
-                        self.correlation_chart.canvas.draw()
+                        self.correlation_chart.update_chart_data(pd.DataFrame({'x': [], 'y': []}))
+                        self.logger.warning(f"Insufficient data for correlation analysis\n(Need at least 5 data points, have {len(common_idx)})")
                 else:
-                    self.logger.warning("No linearity error data available for correlation chart")
-                    # Show a message on the chart
-                    ax = self.correlation_chart.figure.add_subplot(111)
-                    ax.text(0.5, 0.5, 'No linearity data available\nfor correlation analysis', 
-                           ha='center', va='center', transform=ax.transAxes, fontsize=12,
-                           bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue"))
-                    ax.set_xlim(0, 1)
-                    ax.set_ylim(0, 1)
-                    self.correlation_chart.canvas.draw()
+                    self.correlation_chart.update_chart_data(pd.DataFrame({'x': [], 'y': []}))
+                    self.logger.warning("No linearity data available\nfor correlation analysis")
                     
             except Exception as e:
-                self.logger.error(f"Error creating correlation chart: {e}")
+                self.logger.error(f"Error creating correlation analysis: {e}")
+                self.correlation_chart.update_chart_data(pd.DataFrame({'x': [], 'y': []}))
 
         except Exception as e:
             self.logger.error(f"Error updating analysis charts: {e}")
-            messagebox.showerror("Chart Error", f"Failed to update analysis charts:\n{str(e)}")
+            # Update all charts with error message
+            error_msg = f"Analysis error: {str(e)[:30]}..."
+            self.distribution_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
+            self.passfail_chart.update_chart_data(pd.DataFrame({'month_year': [], 'track_status': []}))
+            self.correlation_chart.update_chart_data(pd.DataFrame({'x': [], 'y': []}))
 
     def _export_to_excel(self):
         """Export model data to Excel file."""

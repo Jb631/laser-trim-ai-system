@@ -7,6 +7,7 @@ particularly for System B multi-track files with TA, TB identifiers.
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import customtkinter as ctk
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 import pandas as pd
@@ -19,9 +20,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+# Import SQLAlchemy func for database queries
+from sqlalchemy import func
+
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
+from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
@@ -34,417 +39,299 @@ class MultiTrackPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the multi-track analysis page with proper positioning."""
-        # Create scrollable main frame without shifting
-        main_container = ttk.Frame(self)
-        main_container.pack(fill='both', expand=True)
+        """Create multi-track page content with consistent theme (matching batch processing)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Canvas and scrollbar
-        canvas = tk.Canvas(main_container)
-        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Add mouse wheel scrolling support
-        add_mousewheel_support(scrollable_frame, canvas)
-        
-        # Pack scrollbar first to avoid shifting
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        
-        # Create content in scrollable frame
-        content_frame = scrollable_frame
-        
-        # Title and file selection
-        self._create_header_section(content_frame)
-        
-        # Unit overview metrics
-        self._create_overview_section(content_frame)
-        
-        # Track comparison charts
-        self._create_comparison_section(content_frame)
-        
-        # Consistency analysis
-        self._create_consistency_section(content_frame)
-        
-        # Export controls
-        self._create_actions_section(content_frame)
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_file_selection()
+        self._create_overview_section()
+        self._create_comparison_section()
+        self._create_consistency_section()
+        self._create_actions_section()
 
-    def _create_header_section(self, parent):
-        """Create header with title and file selection."""
-        header_frame = ttk.Frame(parent)
-        header_frame.pack(fill='x', padx=20, pady=(20, 10))
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
 
-        # Configure grid for responsive layout
-        header_frame.columnconfigure(0, weight=1)
-        header_frame.columnconfigure(1, weight=0)
-
-        # Title on the left
-        title_label = ttk.Label(
-            header_frame,
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="Multi-Track Unit Analysis",
-            font=('Segoe UI', 24, 'bold')
+            font=ctk.CTkFont(size=24, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky='w')
+        self.title_label.pack(pady=15)
 
-        # File selection on the right
-        selection_frame = ttk.Frame(header_frame)
-        selection_frame.grid(row=0, column=1, sticky='e', padx=(10, 0))
+    def _create_file_selection(self):
+        """Create file selection section (matching batch processing theme)."""
+        self.selection_frame = ctk.CTkFrame(self.main_container)
+        self.selection_frame.pack(fill='x', pady=(0, 20))
 
-        ttk.Button(
-            selection_frame,
+        self.selection_label = ctk.CTkLabel(
+            self.selection_frame,
+            text="File Selection:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.selection_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Selection container
+        self.selection_container = ctk.CTkFrame(self.selection_frame)
+        self.selection_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # Selection buttons row
+        button_frame = ctk.CTkFrame(self.selection_container)
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
+
+        self.select_file_btn = ctk.CTkButton(
+            button_frame,
             text="📁 Select Track File",
             command=self._select_track_file,
-            style='Primary.TButton'
-        ).pack(side='left', padx=(0, 10))
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="blue",
+            hover_color="darkblue"
+        )
+        self.select_file_btn.pack(side='left', padx=(10, 10), pady=10)
 
-        ttk.Button(
-            selection_frame,
+        self.analyze_folder_btn = ctk.CTkButton(
+            button_frame,
             text="📂 Analyze Folder",
             command=self._analyze_folder,
-        ).pack(side='left', padx=(0, 10))
+            width=150,
+            height=40
+        )
+        self.analyze_folder_btn.pack(side='left', padx=(0, 10), pady=10)
 
-        ttk.Button(
-            selection_frame,
+        self.from_database_btn = ctk.CTkButton(
+            button_frame,
             text="🗄️ From Database",
             command=self._select_unit_from_database,
-        ).pack(side='left')
+            width=150,
+            height=40
+        )
+        self.from_database_btn.pack(side='left', padx=(0, 10), pady=10)
 
-        # Selected unit info (full width below header)
-        self.unit_info_label = ttk.Label(
-            parent,
+        # Unit info display
+        self.unit_info_label = ctk.CTkLabel(
+            self.selection_container,
             text="Select a track file to begin multi-track analysis",
-            font=('Segoe UI', 11),
-            foreground=self.colors['text_secondary']
+            font=ctk.CTkFont(size=12)
         )
-        self.unit_info_label.pack(fill='x', padx=20, pady=(0, 10))
+        self.unit_info_label.pack(padx=10, pady=(0, 10))
 
-    def _create_overview_section(self, parent):
-        """Create unit overview metrics."""
-        overview_frame = ttk.LabelFrame(
-            parent,
-            text="Unit Overview",
-            padding=15
+    def _create_overview_section(self):
+        """Create unit overview metrics section (matching batch processing theme)."""
+        self.overview_frame = ctk.CTkFrame(self.main_container)
+        self.overview_frame.pack(fill='x', pady=(0, 20))
+
+        self.overview_label = ctk.CTkLabel(
+            self.overview_frame,
+            text="Unit Overview:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        overview_frame.pack(fill='x', padx=20, pady=10)
+        self.overview_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create 2x4 grid of metric cards
-        self.overview_grid = ttk.Frame(overview_frame)
-        self.overview_grid.pack(fill='x')
+        # Overview container
+        self.overview_container = ctk.CTkFrame(self.overview_frame)
+        self.overview_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Configure grid
-        for i in range(4):
-            self.overview_grid.columnconfigure(i, weight=1, minsize=180)
+        # Row 1 of overview metrics
+        overview_row1 = ctk.CTkFrame(self.overview_container)
+        overview_row1.pack(fill='x', padx=10, pady=(10, 5))
 
-        # Initialize overview cards
         self.overview_cards = {}
         
-        # Row 1: Basic info
-        self.overview_cards['unit_id'] = StatCard(
-            self.overview_grid,
+        self.overview_cards['unit_id'] = MetricCard(
+            overview_row1,
             title="Unit ID",
             value="--",
-            unit="",
-            color_scheme="default"
+            color_scheme="neutral"
         )
-        self.overview_cards['unit_id'].grid(row=0, column=0, padx=5, pady=5, sticky='ew')
+        self.overview_cards['unit_id'].pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
 
-        self.overview_cards['track_count'] = StatCard(
-            self.overview_grid,
+        self.overview_cards['track_count'] = MetricCard(
+            overview_row1,
             title="Track Count",
-            value="--",
-            unit="tracks",
+            value="-- tracks",
             color_scheme="info"
         )
-        self.overview_cards['track_count'].grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        self.overview_cards['track_count'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.overview_cards['overall_status'] = StatCard(
-            self.overview_grid,
+        self.overview_cards['overall_status'] = MetricCard(
+            overview_row1,
             title="Overall Status",
             value="--",
-            unit="",
-            color_scheme="default"
+            color_scheme="neutral"
         )
-        self.overview_cards['overall_status'].grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+        self.overview_cards['overall_status'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.overview_cards['consistency'] = StatCard(
-            self.overview_grid,
+        self.overview_cards['consistency'] = MetricCard(
+            overview_row1,
             title="Track Consistency",
             value="--",
-            unit="",
-            color_scheme="default"
+            color_scheme="neutral"
         )
-        self.overview_cards['consistency'].grid(row=0, column=3, padx=5, pady=5, sticky='ew')
+        self.overview_cards['consistency'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
-        # Row 2: Performance metrics
-        self.overview_cards['sigma_cv'] = StatCard(
-            self.overview_grid,
+        # Row 2 of overview metrics
+        overview_row2 = ctk.CTkFrame(self.overview_container)
+        overview_row2.pack(fill='x', padx=10, pady=(5, 10))
+
+        self.overview_cards['sigma_cv'] = MetricCard(
+            overview_row2,
             title="Sigma Variation (CV)",
-            value="--",
-            unit="%",
+            value="--%",
             color_scheme="warning"
         )
-        self.overview_cards['sigma_cv'].grid(row=1, column=0, padx=5, pady=5, sticky='ew')
+        self.overview_cards['sigma_cv'].pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
 
-        self.overview_cards['linearity_cv'] = StatCard(
-            self.overview_grid,
+        self.overview_cards['linearity_cv'] = MetricCard(
+            overview_row2,
             title="Linearity Variation (CV)",
-            value="--",
-            unit="%",
+            value="--%",
             color_scheme="warning"
         )
-        self.overview_cards['linearity_cv'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+        self.overview_cards['linearity_cv'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.overview_cards['validation_grade'] = StatCard(
-            self.overview_grid,
-            title="Validation Grade",
+        self.overview_cards['resistance_cv'] = MetricCard(
+            overview_row2,
+            title="Resistance Variation (CV)",
+            value="--%",
+            color_scheme="warning"
+        )
+        self.overview_cards['resistance_cv'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
+
+        self.overview_cards['risk_level'] = MetricCard(
+            overview_row2,
+            title="Risk Level",
             value="--",
-            unit="",
-            color_scheme="info"
+            color_scheme="neutral"
         )
-        self.overview_cards['validation_grade'].grid(row=1, column=2, padx=5, pady=5, sticky='ew')
+        self.overview_cards['risk_level'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
-        self.overview_cards['issues_found'] = StatCard(
-            self.overview_grid,
-            title="Issues Found",
-            value="--",
-            unit="",
-            color_scheme="danger"
+    def _create_comparison_section(self):
+        """Create track comparison charts section (matching batch processing theme)."""
+        self.comparison_frame = ctk.CTkFrame(self.main_container)
+        self.comparison_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.comparison_label = ctk.CTkLabel(
+            self.comparison_frame,
+            text="Track Comparison:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.overview_cards['issues_found'].grid(row=1, column=3, padx=5, pady=5, sticky='ew')
+        self.comparison_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-    def _create_comparison_section(self, parent):
-        """Create track comparison charts section."""
-        comparison_frame = ttk.LabelFrame(
-            parent,
-            text="Track Comparison",
-            padding=15
-        )
-        comparison_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        # Comparison container with tabs
+        self.comparison_container = ctk.CTkFrame(self.comparison_frame)
+        self.comparison_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        # Create notebook for different comparison views
-        self.comparison_notebook = ttk.Notebook(comparison_frame)
-        self.comparison_notebook.pack(fill='both', expand=True)
+        # Comparison tabs
+        self.comparison_tabview = ctk.CTkTabview(self.comparison_container)
+        self.comparison_tabview.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Summary comparison tab
-        self._create_summary_tab()
-
-        # Detailed analysis tab
-        self._create_detailed_tab()
-
-        # Charts tab
-        self._create_charts_tab()
-
-    def _create_summary_tab(self):
-        """Create summary comparison tab with responsive layout."""
-        summary_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(summary_frame, text="📊 Summary")
-
-        # Create treeview for track comparison with responsive sizing
-        tree_frame = ttk.Frame(summary_frame)
-        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Configure tree frame for responsiveness
-        tree_frame.grid_columnconfigure(0, weight=1)
-        tree_frame.grid_rowconfigure(0, weight=1)
-
-        # Track comparison tree with responsive columns
-        columns = ('Track', 'Status', 'Sigma Gradient', 'Sigma Pass', 'Linearity Pass', 'Risk')
-        self.track_tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show='tree headings'
-            # Remove fixed height for responsive behavior
-        )
-
-        # Configure columns with responsive widths
-        self.track_tree.heading('#0', text='')
-        self.track_tree.column('#0', width=0, stretch=False)
-
-        # Configure responsive column widths
-        column_configs = [
-            ('Track', 100, True),
-            ('Status', 80, True),
-            ('Sigma Gradient', 120, True),
-            ('Sigma Pass', 100, True),
-            ('Linearity Pass', 120, True),
-            ('Risk', 80, True)
-        ]
-
-        for col, width, stretch in column_configs:
-            self.track_tree.heading(col, text=col)
-            self.track_tree.column(col, width=width, stretch=stretch, minwidth=60)
-
-        # Scrollbars
-        v_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.track_tree.yview)
-        h_scrollbar = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.track_tree.xview)
-        
-        self.track_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
-
-        # Grid layout for responsive control
-        self.track_tree.grid(row=0, column=0, sticky='nsew')
-        v_scrollbar.grid(row=0, column=1, sticky='ns')
-        h_scrollbar.grid(row=1, column=0, sticky='ew')
-
-    def _create_detailed_tab(self):
-        """Create detailed analysis tab with responsive layout."""
-        detailed_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(detailed_frame, text="📋 Detailed Analysis")
-
-        # Scrollable text area for detailed information with responsive sizing
-        text_frame = ttk.Frame(detailed_frame)
-        text_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Configure text frame for responsiveness
-        text_frame.grid_columnconfigure(0, weight=1)
-        text_frame.grid_rowconfigure(0, weight=1)
-
-        # Text widget with scrollbar - responsive height
-        self.detailed_text = tk.Text(
-            text_frame,
-            wrap='word',
-            font=('Consolas', 10),
-            state='disabled'
-            # Remove fixed height for responsive behavior
-        )
-        
-        text_scrollbar = ttk.Scrollbar(text_frame, orient='vertical', command=self.detailed_text.yview)
-        self.detailed_text.configure(yscrollcommand=text_scrollbar.set)
-
-        # Grid layout for responsive control
-        self.detailed_text.grid(row=0, column=0, sticky='nsew')
-        text_scrollbar.grid(row=0, column=1, sticky='ns')
-
-    def _create_charts_tab(self):
-        """Create charts tab with responsive layout."""
-        charts_frame = ttk.Frame(self.comparison_notebook)
-        self.comparison_notebook.add(charts_frame, text="📈 Charts")
-
-        # Chart display area with responsive sizing
-        self.chart_display = ttk.Frame(charts_frame)
-        self.chart_display.pack(fill='both', expand=True, padx=10, pady=10)
+        # Add tabs
+        self.comparison_tabview.add("Summary")
+        self.comparison_tabview.add("Detailed")
+        self.comparison_tabview.add("Charts")
 
         # Placeholder for charts
-        placeholder_label = ttk.Label(
-            self.chart_display,
-            text="Track comparison charts will be displayed here",
-            font=('Segoe UI', 12),
-            foreground=self.colors['text_secondary']
+        self.summary_chart_label = ctk.CTkLabel(
+            self.comparison_tabview.tab("Summary"),
+            text="No data loaded",
+            font=ctk.CTkFont(size=12)
         )
-        placeholder_label.pack(expand=True)
+        self.summary_chart_label.pack(expand=True)
 
-    def _create_consistency_section(self, parent):
-        """Create consistency analysis section."""
-        consistency_frame = ttk.LabelFrame(
-            parent,
-            text="Consistency Analysis",
-            padding=15
+        self.detailed_chart_label = ctk.CTkLabel(
+            self.comparison_tabview.tab("Detailed"),
+            text="No data loaded",
+            font=ctk.CTkFont(size=12)
         )
-        consistency_frame.pack(fill='x', padx=20, pady=10)
+        self.detailed_chart_label.pack(expand=True)
 
-        # Issues list
-        issues_label = ttk.Label(
-            consistency_frame,
-            text="Consistency Issues:",
-            font=('Segoe UI', 12, 'bold')
+        self.charts_chart_label = ctk.CTkLabel(
+            self.comparison_tabview.tab("Charts"),
+            text="No data loaded",
+            font=ctk.CTkFont(size=12)
         )
-        issues_label.pack(anchor='w', pady=(0, 10))
+        self.charts_chart_label.pack(expand=True)
 
-        # Create frame for issues list with scrollbar
-        issues_container = ttk.Frame(consistency_frame)
-        issues_container.pack(fill='x', pady=(0, 10))
+    def _create_consistency_section(self):
+        """Create consistency analysis section (matching batch processing theme)."""
+        self.consistency_frame = ctk.CTkFrame(self.main_container)
+        self.consistency_frame.pack(fill='both', expand=True, pady=(0, 20))
 
-        self.issues_text = tk.Text(
-            issues_container,
-            height=6,
-            wrap='word',
-            state='disabled',
-            font=('Segoe UI', 10)
+        self.consistency_label = ctk.CTkLabel(
+            self.consistency_frame,
+            text="Consistency Analysis:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        
-        issues_scrollbar = ttk.Scrollbar(
-            issues_container,
-            orient='vertical',
-            command=self.issues_text.yview
+        self.consistency_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Consistency container
+        self.consistency_container = ctk.CTkFrame(self.consistency_frame)
+        self.consistency_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+        # Consistency display
+        self.consistency_display = ctk.CTkTextbox(
+            self.consistency_container,
+            height=200,
+            state="disabled"
         )
-        self.issues_text.config(yscrollcommand=issues_scrollbar.set)
+        self.consistency_display.pack(fill='both', expand=True, padx=10, pady=10)
 
-        self.issues_text.pack(side='left', fill='both', expand=True)
-        issues_scrollbar.pack(side='right', fill='y')
+    def _create_actions_section(self):
+        """Create export and actions section (matching batch processing theme)."""
+        self.actions_frame = ctk.CTkFrame(self.main_container)
+        self.actions_frame.pack(fill='x', pady=(0, 20))
 
-        # Recommendations
-        recommendations_label = ttk.Label(
-            consistency_frame,
-            text="Recommendations:",
-            font=('Segoe UI', 12, 'bold')
+        self.actions_label = ctk.CTkLabel(
+            self.actions_frame,
+            text="Export & Actions:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        recommendations_label.pack(anchor='w', pady=(10, 5))
+        self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        self.recommendations_text = tk.Text(
-            consistency_frame,
-            height=4,
-            wrap='word',
-            state='disabled',
-            font=('Segoe UI', 10)
-        )
-        self.recommendations_text.pack(fill='x')
+        # Actions container
+        self.actions_container = ctk.CTkFrame(self.actions_frame)
+        self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
 
-    def _create_actions_section(self, parent):
-        """Create export and action buttons."""
-        actions_frame = ttk.LabelFrame(
-            parent,
-            text="Actions",
-            padding=15
-        )
-        actions_frame.pack(fill='x', padx=20, pady=(10, 20))
+        # Action buttons
+        button_frame = ctk.CTkFrame(self.actions_container)
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
 
-        # Button container
-        btn_container = ttk.Frame(actions_frame)
-        btn_container.pack(fill='x')
-
-        # Export comparison report button
-        self.export_report_btn = ttk.Button(
-            btn_container,
+        self.export_report_btn = ctk.CTkButton(
+            button_frame,
             text="📊 Export Comparison Report",
             command=self._export_comparison_report,
-            style='Primary.TButton',
-            state='disabled'
+            width=200,
+            height=40
         )
-        self.export_report_btn.pack(side='left', padx=(0, 10))
+        self.export_report_btn.pack(side='left', padx=(10, 10), pady=10)
 
-        # Generate PDF report button
-        self.generate_pdf_btn = ttk.Button(
-            btn_container,
+        self.generate_pdf_btn = ctk.CTkButton(
+            button_frame,
             text="📄 Generate PDF Report",
             command=self._generate_pdf_report,
-            state='disabled'
+            width=180,
+            height=40
         )
-        self.generate_pdf_btn.pack(side='left', padx=(0, 10))
+        self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
 
-        # View individual tracks button
-        self.view_tracks_btn = ttk.Button(
-            btn_container,
-            text="👁 View Individual Tracks",
+        self.view_tracks_btn = ctk.CTkButton(
+            button_frame,
+            text="👁️ View Individual Tracks",
             command=self._view_individual_tracks,
-            state='disabled'
+            width=180,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="green",
+            hover_color="darkgreen"
         )
-        self.view_tracks_btn.pack(side='left')
-
-        # Status label
-        self.status_label = ttk.Label(
-            btn_container,
-            text="",
-            font=('Segoe UI', 10),
-            foreground=self.colors['text_secondary']
-        )
-        self.status_label.pack(side='right')
+        self.view_tracks_btn.pack(side='left', padx=(0, 10), pady=10)
 
     def _select_track_file(self):
         """Select a single track file to analyze."""
@@ -467,67 +354,159 @@ class MultiTrackPage(BasePage):
             self._analyze_folder_tracks(Path(folder))
 
     def _analyze_track_file(self, file_path: Path):
-        """Analyze a track file and find related tracks."""
-        self.unit_info_label.config(text=f"Analyzing: {file_path.name}...")
-        self.status_label.config(text="Processing...")
-        
+        """Analyze a single multi-track file."""
+        self.unit_info_label.configure(text=f"Analyzing: {file_path.name}...")
+        self.update()
+
         # Run analysis in background thread
-        thread = threading.Thread(
-            target=self._run_multi_track_analysis,
+        threading.Thread(
+            target=self._run_file_analysis,
             args=(file_path,),
             daemon=True
-        )
-        thread.start()
+        ).start()
 
     def _analyze_folder_tracks(self, folder_path: Path):
         """Analyze all track files in a folder and group by units."""
-        self.unit_info_label.config(text=f"Analyzing folder: {folder_path.name}...")
-        self.status_label.config(text="Scanning folder...")
+        self.unit_info_label.configure(text=f"Analyzing folder: {folder_path.name}...")
+        self.update()
         
         # Run analysis in background thread
-        thread = threading.Thread(
+        threading.Thread(
             target=self._run_folder_analysis,
             args=(folder_path,),
             daemon=True
-        )
-        thread.start()
+        ).start()
 
-    def _run_multi_track_analysis(self, file_path: Path):
-        """Run multi-track analysis in background thread."""
+    def _run_file_analysis(self, file_path: Path):
+        """Run analysis for a single track file and find related tracks."""
         try:
-            if not self.main_window.processor:
-                raise ValueError("Processor not available")
-
-            # Use the new multi-track analysis method
-            import asyncio
+            self.after(0, lambda: self.unit_info_label.configure(text=f"Analyzing {file_path.name}..."))
             
-            # Get or create event loop
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # Extract unit information from filename
+            filename = file_path.stem
+            parts = filename.split('_')
             
-            # Run the analysis
-            unit_data = loop.run_until_complete(
-                self.main_window.processor.analyze_multi_track_unit(file_path)
-            )
-            
-            if unit_data:
-                self.current_unit_data = unit_data
-                self.comparison_data = unit_data.get('comparison')
-                
-                # Update UI in main thread
-                self.after(0, self._update_multi_track_display)
-            else:
+            if len(parts) < 2:
                 self.after(0, lambda: messagebox.showerror(
-                    "Error", "Failed to analyze track file"
+                    "Invalid File", 
+                    "Filename must contain model and serial (e.g., 8340_12345_TA.xlsx)"
                 ))
-
+                return
+            
+            model = parts[0]
+            serial = parts[1]
+            
+            # Extract track ID if present
+            current_track_id = None
+            for part in parts:
+                if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
+                    current_track_id = part
+                    break
+            
+            # Search for related track files in the same directory
+            folder_path = file_path.parent
+            excel_files = list(folder_path.glob("*.xlsx")) + list(folder_path.glob("*.xls"))
+            
+            # Find files with same model/serial
+            related_files = []
+            for excel_file in excel_files:
+                file_parts = excel_file.stem.split('_')
+                if len(file_parts) >= 2 and file_parts[0] == model and file_parts[1] == serial:
+                    # Check if it has a track identifier
+                    has_track_id = any(len(part) == 2 and part[0] == 'T' and part[1].isalpha() 
+                                     for part in file_parts)
+                    if has_track_id:
+                        related_files.append(excel_file)
+            
+            if len(related_files) < 2:
+                # Single track file - still analyze but note it's not multi-track
+                self.after(0, lambda: messagebox.showinfo(
+                    "Single Track", 
+                    f"Only one track file found for {model}/{serial}.\n"
+                    "Analyzing as single track. Use 'From Database' to find historical tracks."
+                ))
+                
+                # Create single track unit data
+                self.current_unit_data = {
+                    'model': model,
+                    'serial': serial,
+                    'total_files': 1,
+                    'track_count': 1,
+                    'overall_status': 'UNKNOWN',
+                    'files': [{
+                        'filename': file_path.name,
+                        'file_path': str(file_path),
+                        'status': 'PENDING',
+                        'track_count': 1,
+                        'tracks': {current_track_id or 'T1': {
+                            'track_id': current_track_id or 'T1',
+                            'status': 'PENDING',
+                            'file_path': str(file_path)
+                        }}
+                    }],
+                    'sigma_cv': 0,
+                    'linearity_cv': 0,
+                    'consistency': 'SINGLE_TRACK'
+                }
+                
+                self.after(0, self._update_multi_track_display)
+                return
+            
+            # Multiple track files found
+            track_data = []
+            for track_file in related_files:
+                file_parts = track_file.stem.split('_')
+                track_id = None
+                for part in file_parts:
+                    if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
+                        track_id = part
+                        break
+                
+                track_data.append({
+                    'track_id': track_id or f'T{len(track_data)+1}',
+                    'file_path': str(track_file),
+                    'filename': track_file.name,
+                    'status': 'FOUND'
+                })
+            
+            # Sort tracks by track ID
+            track_data.sort(key=lambda x: x['track_id'])
+            
+            # Create multi-track unit data
+            tracks_dict = {track['track_id']: track for track in track_data}
+            
+            self.current_unit_data = {
+                'model': model,
+                'serial': serial,
+                'total_files': len(related_files),
+                'track_count': len(related_files),
+                'overall_status': 'FOUND',
+                'files': [{
+                    'filename': f"{model}_{serial}_MultiTrack.xlsx",
+                    'status': 'FOUND',
+                    'track_count': len(related_files),
+                    'tracks': tracks_dict
+                }],
+                'sigma_cv': 0,  # Will be calculated if analysis is run
+                'linearity_cv': 0,  # Will be calculated if analysis is run
+                'consistency': 'PENDING_ANALYSIS'
+            }
+            
+            # Update UI
+            self.after(0, self._update_multi_track_display)
+            
+            # Show confirmation dialog
+            track_list = ', '.join([track['track_id'] for track in track_data])
+            self.after(0, lambda: messagebox.showinfo(
+                "Multi-Track Unit Found",
+                f"Found {len(related_files)} track files for {model}/{serial}:\n{track_list}\n\n"
+                "Track files have been grouped for comparison analysis."
+            ))
+            
         except Exception as e:
-            self.logger.error(f"Multi-track analysis failed: {e}")
+            self.logger.error(f"File analysis failed: {e}")
             self.after(0, lambda: messagebox.showerror(
-                "Error", f"Analysis failed:\n{str(e)}"
+                "Error", f"File analysis failed:\n{str(e)}"
             ))
 
     def _run_folder_analysis(self, folder_path: Path):
@@ -606,7 +585,7 @@ class MultiTrackPage(BasePage):
 
         listbox = tk.Listbox(list_frame, font=('Segoe UI', 10))
         scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
-        listbox.config(yscrollcommand=scrollbar.set)
+        listbox.configure(yscrollcommand=scrollbar.set)
 
         # Populate listbox
         unit_list = []
@@ -655,7 +634,7 @@ class MultiTrackPage(BasePage):
         """Update the display with current unit data with enhanced safety checks."""
         if not self.current_unit_data:
             # Show empty state
-            self.unit_info_label.config(text="No multi-track data loaded. Select a file, folder, or unit from database to begin analysis.")
+            self.unit_info_label.configure(text="No multi-track data loaded. Select a file, folder, or unit from database to begin analysis.")
             
             # Reset all overview cards to empty state
             for card in self.overview_cards.values():
@@ -681,7 +660,7 @@ class MultiTrackPage(BasePage):
                 track_count = unit_data.get('track_count', 0)
                 status = unit_data.get('overall_status', 'UNKNOWN')
                 
-                self.unit_info_label.config(
+                self.unit_info_label.configure(
                     text=f"Unit: {model}/{serial} | {file_count} files | {track_count} tracks | Status: {status}"
                 )
                 
@@ -726,7 +705,7 @@ class MultiTrackPage(BasePage):
                 track_count = len(unit_data.get('tracks', {}))
                 overall_status = unit_data.get('overall_status', 'UNKNOWN')
                 
-                self.unit_info_label.config(
+                self.unit_info_label.configure(
                     text=f"Unit: {unit_id} | {track_count} tracks | Status: {overall_status}"
                 )
                 
@@ -760,15 +739,15 @@ class MultiTrackPage(BasePage):
 
             # Enable action buttons
             if hasattr(self, 'export_report_btn'):
-                self.export_report_btn.config(state='normal')
+                self.export_report_btn.configure(state='normal')
             if hasattr(self, 'generate_pdf_btn'):
-                self.generate_pdf_btn.config(state='normal')
+                self.generate_pdf_btn.configure(state='normal')
             
             self.logger.info("Successfully updated multi-track display")
             
         except Exception as e:
             self.logger.error(f"Error updating multi-track display: {e}")
-            self.unit_info_label.config(text="Error displaying multi-track data - check logs")
+            self.unit_info_label.configure(text="Error displaying multi-track data - check logs")
 
     def _update_comparison_charts(self):
         """Update comparison charts with track data."""
@@ -837,67 +816,36 @@ class MultiTrackPage(BasePage):
         """Update consistency analysis text fields."""
         if not self.comparison_data:
             # Clear text fields and show no data message
-            self.issues_text.config(state='normal')
-            self.issues_text.delete(1.0, tk.END)
-            self.issues_text.insert(tk.END, "No comparison data available.")
-            self.issues_text.config(state='disabled')
+            self.consistency_display.configure(state='normal')
+            self.consistency_display.delete(1.0, tk.END)
+            self.consistency_display.insert(tk.END, "No comparison data available.")
+            self.consistency_display.configure(state='disabled')
             
-            self.recommendations_text.config(state='normal')
-            self.recommendations_text.delete(1.0, tk.END)
-            self.recommendations_text.insert(tk.END, "Load multi-track data to see recommendations.")
-            self.recommendations_text.config(state='disabled')
             return
 
         try:
             comparison = self.comparison_data
             
-            # Update issues text
-            self.issues_text.config(state='normal')
-            self.issues_text.delete(1.0, tk.END)
+            # Update consistency display
+            self.consistency_display.configure(state='normal')
+            self.consistency_display.delete(1.0, tk.END)
             
             if comparison.get('consistency_issues'):
                 for i, issue in enumerate(comparison['consistency_issues'], 1):
-                    self.issues_text.insert(tk.END, f"{i}. {issue}\n")
+                    self.consistency_display.insert(tk.END, f"{i}. {issue}\n")
             else:
-                self.issues_text.insert(tk.END, "No consistency issues found. All tracks show good agreement.")
+                self.consistency_display.insert(tk.END, "No consistency issues found. All tracks show good agreement.")
             
-            self.issues_text.config(state='disabled')
-            
-            # Update recommendations text
-            self.recommendations_text.config(state='normal')
-            self.recommendations_text.delete(1.0, tk.END)
-            
-            if comparison.get('recommendations'):
-                for i, rec in enumerate(comparison['recommendations'], 1):
-                    self.recommendations_text.insert(tk.END, f"{i}. {rec}\n")
-            else:
-                # Generate default recommendations based on analysis
-                recommendations = []
-                if comparison.get('has_issues'):
-                    recommendations.append("Review tracks with high variation for potential manufacturing issues.")
-                    recommendations.append("Consider additional quality control measures for this unit type.")
-                else:
-                    recommendations.append("Unit shows good track consistency.")
-                    recommendations.append("Continue with current manufacturing process.")
-                
-                for i, rec in enumerate(recommendations, 1):
-                    self.recommendations_text.insert(tk.END, f"{i}. {rec}\n")
-            
-            self.recommendations_text.config(state='disabled')
+            self.consistency_display.configure(state='disabled')
             
         except Exception as e:
             self.logger.error(f"Error updating consistency analysis: {e}")
             
             # Show error state
-            self.issues_text.config(state='normal')
-            self.issues_text.delete(1.0, tk.END)
-            self.issues_text.insert(tk.END, f"Error loading consistency data: {str(e)}")
-            self.issues_text.config(state='disabled')
-            
-            self.recommendations_text.config(state='normal')
-            self.recommendations_text.delete(1.0, tk.END)
-            self.recommendations_text.insert(tk.END, "Unable to generate recommendations due to data error.")
-            self.recommendations_text.config(state='disabled')
+            self.consistency_display.configure(state='normal')
+            self.consistency_display.delete(1.0, tk.END)
+            self.consistency_display.insert(tk.END, f"Error loading consistency data: {str(e)}")
+            self.consistency_display.configure(state='disabled')
 
     def _export_comparison_report(self):
         """Export multi-track comparison report to Excel."""
@@ -1166,7 +1114,7 @@ class MultiTrackPage(BasePage):
 
             listbox = tk.Listbox(list_frame, font=('Segoe UI', 10))
             scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=listbox.yview)
-            listbox.config(yscrollcommand=scrollbar.set)
+            listbox.configure(yscrollcommand=scrollbar.set)
 
             # Populate listbox
             unit_list = []
@@ -1188,7 +1136,7 @@ class MultiTrackPage(BasePage):
                     model, serial = unit_list[selection[0]]
                     dialog.destroy()
                     # Load data from database
-                    self.unit_info_label.config(text=f"Loading data for {model}/{serial}...")
+                    self.unit_info_label.configure(text=f"Loading data for {model}/{serial}...")
                     threading.Thread(
                         target=self._load_multi_track_from_database,
                         args=(model, serial),

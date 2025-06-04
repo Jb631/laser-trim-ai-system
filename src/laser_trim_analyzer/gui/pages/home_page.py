@@ -4,16 +4,14 @@ Home Page for Laser Trim Analyzer
 Displays dashboard with key metrics and recent activity.
 """
 
-import tkinter as tk
-from tkinter import ttk
+import customtkinter as ctk
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import threading
 
 from laser_trim_analyzer.gui.pages.base_page import BasePage
-from laser_trim_analyzer.gui.widgets.stat_card import StatCard
+from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class HomePage(BasePage):
@@ -25,13 +23,14 @@ class HomePage(BasePage):
     - Recent activity list
     - Quick action buttons
     - Real-time stats from database
+    - Responsive design
     """
 
-    def __init__(self, parent: ttk.Frame, main_window: Any):
+    def __init__(self, parent, main_window: Any):
         """Initialize home page."""
         # Initialize stat cards dict before parent init
         self.stat_cards = {}
-        self.activity_tree = None
+        self.activity_list = None
         self.trend_chart = None
 
         super().__init__(parent, main_window)
@@ -40,222 +39,150 @@ class HomePage(BasePage):
         self._start_auto_refresh()
 
     def _create_page(self):
-        """Create home page content."""
-        # Main container with padding
-        container = ttk.Frame(self, style='TFrame')
-        container.pack(fill='both', expand=True, padx=20, pady=20)
+        """Create home page content with responsive design (matching batch processing theme)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Title
-        title_label = ttk.Label(
-            container,
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_stats_section()
+        self._create_activity_section()
+        self._create_quick_actions_section()
+
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
+
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="Quality Analysis Dashboard",
-            style='Title.TLabel'
+            font=ctk.CTkFont(size=24, weight="bold")
         )
-        title_label.pack(anchor='w', pady=(0, 10))
+        self.title_label.pack(pady=15)
 
         # Subtitle with current date
-        subtitle_label = ttk.Label(
-            container,
+        self.subtitle_label = ctk.CTkLabel(
+            self.header_frame,
             text=f"Welcome back! Today is {datetime.now().strftime('%B %d, %Y')}",
-            font=('Segoe UI', 11),
-            foreground=self.colors['text_secondary']
+            font=ctk.CTkFont(size=12)
         )
-        subtitle_label.pack(anchor='w', pady=(0, 20))
+        self.subtitle_label.pack(pady=(0, 15))
 
-        # Create main content area with two columns
-        content_frame = ttk.Frame(container)
-        content_frame.pack(fill='both', expand=True)
+    def _create_stats_section(self):
+        """Create statistics cards section (matching batch processing theme)."""
+        self.stats_frame = ctk.CTkFrame(self.main_container)
+        self.stats_frame.pack(fill='x', pady=(0, 20))
 
-        # Left column - Stats and charts
-        left_column = ttk.Frame(content_frame)
-        left_column.pack(side='left', fill='both', expand=True, padx=(0, 10))
-
-        # Right column - Recent activity
-        right_column = ttk.Frame(content_frame)
-        right_column.pack(side='right', fill='both', expand=True, padx=(10, 0))
-
-        # Create sections
-        self._create_stats_section(left_column)
-        self._create_trend_section(left_column)
-        self._create_quick_actions_section(left_column)
-        self._create_activity_section(right_column)
-
-    def _create_stats_section(self, parent):
-        """Create statistics cards section."""
-        # Stats frame
-        stats_frame = ttk.LabelFrame(
-            parent,
-            text="Today's Performance",
-            padding=15
+        self.stats_label = ctk.CTkLabel(
+            self.stats_frame,
+            text="Today's Performance:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        stats_frame.pack(fill='x', pady=(0, 20))
+        self.stats_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create 3x2 grid of stat cards
-        stats_grid = ttk.Frame(stats_frame)
-        stats_grid.pack(fill='x')
+        # Metrics container
+        self.stats_metrics_frame = ctk.CTkFrame(self.stats_frame)
+        self.stats_metrics_frame.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Configure grid
-        for i in range(3):
-            stats_grid.columnconfigure(i, weight=1, minsize=180)
-
-        # Row 1: Basic performance metrics
-        self.stat_cards['units_tested'] = StatCard(
-            stats_grid,
+        # Create metric cards (matching batch processing layout)
+        self.stat_cards['units_tested'] = MetricCard(
+            self.stats_metrics_frame,
             title="Units Tested",
-            value=0,
-            unit="",
-            color_scheme="default"
+            value="0",
+            color_scheme="neutral"
         )
-        self.stat_cards['units_tested'].grid(row=0, column=0, padx=5, pady=5, sticky='ew')
+        self.stat_cards['units_tested'].pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
 
-        self.stat_cards['pass_rate'] = StatCard(
-            stats_grid,
+        self.stat_cards['pass_rate'] = MetricCard(
+            self.stats_metrics_frame,
             title="Pass Rate",
-            value=0.0,
-            unit="%",
+            value="0%",
             color_scheme="success"
         )
-        self.stat_cards['pass_rate'].grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        self.stat_cards['pass_rate'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        self.stat_cards['validation_rate'] = StatCard(
-            stats_grid,
+        self.stat_cards['validation_rate'] = MetricCard(
+            self.stats_metrics_frame,
             title="Validation Success",
-            value=0.0,
-            unit="%",
+            value="0%",
             color_scheme="info"
         )
-        self.stat_cards['validation_rate'].grid(row=0, column=2, padx=5, pady=5, sticky='ew')
+        self.stat_cards['validation_rate'].pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
 
-        # Row 2: Quality metrics
-        self.stat_cards['avg_sigma'] = StatCard(
-            stats_grid,
+        self.stat_cards['avg_sigma'] = MetricCard(
+            self.stats_metrics_frame,
             title="Avg Sigma Gradient",
-            value=0.0,
-            unit="",
+            value="0.000",
             color_scheme="warning"
         )
-        self.stat_cards['avg_sigma'].grid(row=1, column=0, padx=5, pady=5, sticky='ew')
+        self.stat_cards['avg_sigma'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
-        self.stat_cards['industry_grade'] = StatCard(
-            stats_grid,
-            title="Avg Industry Grade",
-            value="--",
-            unit="",
-            color_scheme="info"
+    def _create_activity_section(self):
+        """Create recent activity section (matching batch processing theme)."""
+        self.activity_frame = ctk.CTkFrame(self.main_container)
+        self.activity_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.activity_label = ctk.CTkLabel(
+            self.activity_frame,
+            text="Recent Activity:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.stat_cards['industry_grade'].grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+        self.activity_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        self.stat_cards['high_risk'] = StatCard(
-            stats_grid,
-            title="High Risk Units",
-            value=0,
-            unit="",
-            color_scheme="danger"
+        # Activity list
+        self.activity_list = ctk.CTkTextbox(
+            self.activity_frame,
+            height=200,
+            state="disabled"
         )
-        self.stat_cards['high_risk'].grid(row=1, column=2, padx=5, pady=5, sticky='ew')
+        self.activity_list.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-    def _create_trend_section(self, parent):
-        """Create trend chart section."""
-        # Trend frame
-        trend_frame = ttk.LabelFrame(
-            parent,
-            text="7-Day Pass Rate Trend",
-            padding=15
+    def _create_quick_actions_section(self):
+        """Create quick actions section (matching batch processing theme)."""
+        self.actions_frame = ctk.CTkFrame(self.main_container)
+        self.actions_frame.pack(fill='x', pady=(0, 20))
+
+        self.actions_label = ctk.CTkLabel(
+            self.actions_frame,
+            text="Quick Actions:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        trend_frame.pack(fill='both', expand=True, pady=(0, 20))
+        self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create chart widget
-        self.trend_chart = ChartWidget(
-            trend_frame,
-            chart_type='line',
-            title="",
-            figsize=(6, 3)
+        # Actions container
+        self.actions_container = ctk.CTkFrame(self.actions_frame)
+        self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        self.new_analysis_button = ctk.CTkButton(
+            self.actions_container,
+            text="New Analysis",
+            command=self._quick_new_analysis,
+            width=120,
+            height=40
         )
-        self.trend_chart.pack(fill='both', expand=True)
+        self.new_analysis_button.pack(side='left', padx=(10, 10), pady=10)
 
-    def _create_quick_actions_section(self, parent):
-        """Create quick actions section."""
-        # Actions frame
-        actions_frame = ttk.LabelFrame(
-            parent,
-            text="Quick Actions",
-            padding=15
+        self.view_reports_button = ctk.CTkButton(
+            self.actions_container,
+            text="View Reports",
+            command=self._view_reports,
+            width=120,
+            height=40
         )
-        actions_frame.pack(fill='x')
+        self.view_reports_button.pack(side='left', padx=(0, 10), pady=10)
 
-        # Button container
-        btn_container = ttk.Frame(actions_frame)
-        btn_container.pack(fill='x')
-
-        # Quick action buttons
-        ttk.Button(
-            btn_container,
-            text="📁 New Analysis",
-            style='Primary.TButton',
-            command=self._quick_new_analysis
-        ).pack(side='left', padx=(0, 10))
-
-        ttk.Button(
-            btn_container,
-            text="📊 View Reports",
-            command=self._view_reports
-        ).pack(side='left', padx=(0, 10))
-
-        ttk.Button(
-            btn_container,
-            text="🔄 Refresh Data",
-            command=self.refresh
-        ).pack(side='left')
-
-    def _create_activity_section(self, parent):
-        """Create recent activity section."""
-        # Activity frame
-        activity_frame = ttk.LabelFrame(
-            parent,
-            text="Recent Activity",
-            padding=15
+        self.high_risk_button = ctk.CTkButton(
+            self.actions_container,
+            text="High Risk Units",
+            command=self._show_high_risk_details,
+            width=120,
+            height=40,
+            fg_color="orange",
+            hover_color="darkorange"
         )
-        activity_frame.pack(fill='both', expand=True)
-
-        # Create treeview for activity
-        columns = ('Time', 'Action', 'Details', 'Status')
-        self.activity_tree = ttk.Treeview(
-            activity_frame,
-            columns=columns,
-            show='tree headings',
-            height=15
-        )
-
-        # Configure columns
-        self.activity_tree.column('#0', width=0, stretch=False)
-        self.activity_tree.column('Time', width=100)
-        self.activity_tree.column('Action', width=150)
-        self.activity_tree.column('Details', width=200)
-        self.activity_tree.column('Status', width=80)
-
-        # Set headings
-        for col in columns:
-            self.activity_tree.heading(col, text=col)
-
-        # Create scrollbar
-        scrollbar = ttk.Scrollbar(
-            activity_frame,
-            orient='vertical',
-            command=self.activity_tree.yview
-        )
-        self.activity_tree.configure(yscrollcommand=scrollbar.set)
-
-        # Pack
-        self.activity_tree.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
-
-        # Add mouse wheel scrolling support
-        add_mousewheel_support(self.activity_tree)
-
-        # Add tags for status colors
-        self.activity_tree.tag_configure('pass', foreground=self.colors['success'])
-        self.activity_tree.tag_configure('fail', foreground=self.colors['danger'])
-        self.activity_tree.tag_configure('warning', foreground=self.colors['warning'])
+        self.high_risk_button.pack(side='left', padx=(0, 10), pady=10)
 
     def refresh(self):
         """Refresh dashboard data from database."""
@@ -460,48 +387,46 @@ class HomePage(BasePage):
     def _update_ui(self, stats: Dict[str, Any], trend_data: List[Dict[str, Any]],
                    activities: List[Dict[str, Any]]):
         """Update UI with refreshed data."""
-        # Update stat cards
-        self.stat_cards['units_tested'].update_value(stats['units_tested'])
-        self.stat_cards['pass_rate'].update_value(stats['pass_rate'])
-        self.stat_cards['validation_rate'].update_value(stats['validation_rate'])
-        self.stat_cards['avg_sigma'].update_value(stats['avg_sigma'])
-        self.stat_cards['industry_grade'].update_value(stats['avg_industry_grade'])
-        self.stat_cards['high_risk'].update_value(stats['high_risk_count'])
+        # Update stat cards - only update the ones that exist
+        try:
+            if 'units_tested' in self.stat_cards:
+                self.stat_cards['units_tested'].update_value(str(stats.get('units_tested', 0)))
+            if 'pass_rate' in self.stat_cards:
+                self.stat_cards['pass_rate'].update_value(f"{stats.get('pass_rate', 0):.1f}%")
+            if 'validation_rate' in self.stat_cards:
+                self.stat_cards['validation_rate'].update_value(f"{stats.get('validation_rate', 0):.1f}%")
+            if 'avg_sigma' in self.stat_cards:
+                self.stat_cards['avg_sigma'].update_value(f"{stats.get('avg_sigma', 0):.4f}")
+        except Exception as e:
+            self.logger.warning(f"Error updating stat cards: {e}")
 
-        # Update trend chart
-        if trend_data:
-            dates = [d['date'] for d in trend_data]
-            values = [d['pass_rate'] for d in trend_data]
+        # Update activity list using the text widget
+        try:
+            if hasattr(self, 'activity_list') and self.activity_list:
+                self.activity_list.configure(state="normal")
+                self.activity_list.delete('1.0', 'end')
+                
+                if activities:
+                    for activity in activities[-10:]:  # Show last 10 activities
+                        timestamp = activity.get('timestamp', 'Unknown time')
+                        action = activity.get('action', 'Unknown action')
+                        details = activity.get('details', '')
+                        
+                        activity_text = f"[{timestamp}] {action}"
+                        if details:
+                            activity_text += f": {details}"
+                        activity_text += "\n"
+                        
+                        self.activity_list.insert('end', activity_text)
+                else:
+                    self.activity_list.insert('1.0', "No recent activity")
+                
+                self.activity_list.configure(state="disabled")
+                self.activity_list.see('end')
+        except Exception as e:
+            self.logger.warning(f"Error updating activity list: {e}")
 
-            self.trend_chart.clear_chart()
-            self.trend_chart.plot_line(
-                dates, values,
-                label="Pass Rate",
-                color='primary',
-                marker='o',
-                xlabel="Date",
-                ylabel="Pass Rate (%)"
-            )
-            self.trend_chart.add_threshold_lines({'Target': 95})
-
-        # Update activity list
-        # Clear existing items
-        for item in self.activity_tree.get_children():
-            self.activity_tree.delete(item)
-
-        # Add new items
-        for activity in activities:
-            self.activity_tree.insert(
-                '',
-                'end',
-                values=(
-                    activity['time'],
-                    activity['action'],
-                    activity['details'],
-                    activity['status']
-                ),
-                tags=(activity['tag'],)
-            )
+        self.logger.debug("Home page UI updated successfully")
 
     def _start_auto_refresh(self):
         """Start automatic refresh timer."""

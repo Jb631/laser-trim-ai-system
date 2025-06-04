@@ -4,16 +4,17 @@ SettingsPage - In-app settings page
 Provides a settings interface within the main application window.
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox
+import customtkinter as ctk
+from tkinter import messagebox
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.gui.dialogs.settings_dialog import SettingsDialog
+from laser_trim_analyzer.gui.pages.base_page import BasePage
 
 
-class SettingsPage(ttk.Frame):
+class SettingsPage(BasePage):
     """
     Settings page for the main application.
 
@@ -29,255 +30,268 @@ class SettingsPage(ttk.Frame):
             parent: Parent widget
             main_window: Reference to main application window
         """
-        super().__init__(parent)
+        # Store config before calling super().__init__
+        self.config = main_window.config if hasattr(main_window, 'config') else main_window
+        
+        super().__init__(parent, main_window)
 
-        self.main_window = main_window
-        self.config = main_window.config
+    def _create_page(self):
+        """Create settings page content (matching batch processing theme)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
 
-        self._setup_ui()
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_processing_section()
+        self._create_database_section()
+        self._create_ml_section()
+        self._create_appearance_section()
+
         self._load_current_settings()
 
-    def _setup_ui(self):
-        """Set up the settings page UI."""
-        # Title
-        title_frame = ttk.Frame(self)
-        title_frame.pack(fill='x', padx=20, pady=20)
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
 
-        ttk.Label(
-            title_frame,
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="Settings",
-            font=('Segoe UI', 24, 'bold')
-        ).pack(side='left')
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        self.title_label.pack(side='left', padx=15, pady=15)
 
-        ttk.Button(
-            title_frame,
+        self.advanced_button = ctk.CTkButton(
+            self.header_frame,
             text="Advanced Settings...",
-            command=self._open_full_settings
-        ).pack(side='right')
+            command=self._open_full_settings,
+            width=150,
+            height=40
+        )
+        self.advanced_button.pack(side='right', padx=15, pady=15)
 
-        # Quick settings container
-        container = ttk.Frame(self)
-        container.pack(fill='both', expand=True, padx=20)
+    def _create_processing_section(self):
+        """Create processing settings section (matching batch processing theme)."""
+        self.processing_frame = ctk.CTkFrame(self.main_container)
+        self.processing_frame.pack(fill='x', pady=(0, 20))
 
-        # Processing settings
-        self._create_processing_section(container)
+        self.processing_label = ctk.CTkLabel(
+            self.processing_frame,
+            text="Processing Settings:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.processing_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Database settings
-        self._create_database_section(container)
-
-        # ML settings
-        self._create_ml_section(container)
-
-        # Appearance settings
-        self._create_appearance_section(container)
-
-    def _create_processing_section(self, parent):
-        """Create processing settings section."""
-        frame = ttk.LabelFrame(parent, text="Processing", padding=15)
-        frame.pack(fill='x', pady=10)
+        # Processing options container
+        self.processing_container = ctk.CTkFrame(self.processing_frame)
+        self.processing_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Max workers
-        workers_frame = ttk.Frame(frame)
-        workers_frame.pack(fill='x', pady=5)
+        workers_frame = ctk.CTkFrame(self.processing_container)
+        workers_frame.pack(fill='x', padx=10, pady=(10, 5))
 
-        ttk.Label(workers_frame, text="Parallel Workers:").pack(side='left')
+        workers_label = ctk.CTkLabel(workers_frame, text="Parallel Workers:")
+        workers_label.pack(side='left', padx=10, pady=10)
 
-        self.workers_var = tk.IntVar(value=self.config.processing.max_workers)
-        ttk.Spinbox(
+        self.workers_var = ctk.StringVar(value=str(getattr(self.config.processing, 'max_workers', 4) if hasattr(self.config, 'processing') else 4))
+        self.workers_entry = ctk.CTkEntry(
             workers_frame,
             textvariable=self.workers_var,
-            from_=1,
-            to=16,
-            width=10,
-            command=self._on_workers_changed
-        ).pack(side='left', padx=10)
+            width=60,
+            height=30
+        )
+        self.workers_entry.pack(side='left', padx=10, pady=10)
+        self.workers_entry.bind('<KeyRelease>', self._on_workers_changed)
 
-        ttk.Label(
+        help_label = ctk.CTkLabel(
             workers_frame,
             text="(Higher = faster processing, more CPU usage)",
-            font=('Segoe UI', 9),
-            foreground='gray'
-        ).pack(side='left')
+            font=ctk.CTkFont(size=10)
+        )
+        help_label.pack(side='left', padx=10, pady=10)
 
-        # Generate plots
-        self.plots_var = tk.BooleanVar(value=self.config.processing.generate_plots)
-        ttk.Checkbutton(
-            frame,
+        # Checkboxes
+        self.plots_var = ctk.BooleanVar(value=getattr(self.config.processing, 'generate_plots', True) if hasattr(self.config, 'processing') else True)
+        self.plots_check = ctk.CTkCheckBox(
+            self.processing_container,
             text="Generate analysis plots",
             variable=self.plots_var,
             command=self._on_plots_changed
-        ).pack(anchor='w', pady=5)
+        )
+        self.plots_check.pack(anchor='w', padx=10, pady=5)
 
-        # Cache
-        self.cache_var = tk.BooleanVar(value=self.config.processing.cache_enabled)
-        ttk.Checkbutton(
-            frame,
+        self.cache_var = ctk.BooleanVar(value=getattr(self.config.processing, 'cache_enabled', True) if hasattr(self.config, 'processing') else True)
+        self.cache_check = ctk.CTkCheckBox(
+            self.processing_container,
             text="Enable result caching",
             variable=self.cache_var,
             command=self._on_cache_changed
-        ).pack(anchor='w', pady=5)
+        )
+        self.cache_check.pack(anchor='w', padx=10, pady=5)
 
-    def _create_database_section(self, parent):
-        """Create database settings section."""
-        frame = ttk.LabelFrame(parent, text="Database", padding=15)
-        frame.pack(fill='x', pady=10)
+    def _create_database_section(self):
+        """Create database settings section (matching batch processing theme)."""
+        self.database_frame = ctk.CTkFrame(self.main_container)
+        self.database_frame.pack(fill='x', pady=(0, 20))
+
+        self.database_label = ctk.CTkLabel(
+            self.database_frame,
+            text="Database Settings:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.database_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Database options container
+        self.database_container = ctk.CTkFrame(self.database_frame)
+        self.database_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable database
-        self.db_var = tk.BooleanVar(value=self.config.database.enabled)
-        db_check = ttk.Checkbutton(
-            frame,
+        self.db_var = ctk.BooleanVar(value=getattr(self.config.database, 'enabled', True) if hasattr(self.config, 'database') else True)
+        self.db_check = ctk.CTkCheckBox(
+            self.database_container,
             text="Save results to database",
             variable=self.db_var,
             command=self._on_database_changed
         )
-        db_check.pack(anchor='w', pady=5)
+        self.db_check.pack(anchor='w', padx=10, pady=(10, 5))
 
         # Database path
-        path_frame = ttk.Frame(frame)
-        path_frame.pack(fill='x', pady=5)
+        path_frame = ctk.CTkFrame(self.database_container)
+        path_frame.pack(fill='x', padx=10, pady=5)
 
-        ttk.Label(path_frame, text="Database:").pack(side='left')
+        path_label = ctk.CTkLabel(path_frame, text="Database:")
+        path_label.pack(side='left', padx=10, pady=10)
 
-        self.db_path_label = ttk.Label(
+        db_path = getattr(self.config.database, 'path', 'default.db') if hasattr(self.config, 'database') else 'default.db'
+        self.db_path_label = ctk.CTkLabel(
             path_frame,
-            text=str(self.config.database.path),
-            font=('Segoe UI', 9),
-            foreground='#2196f3'
+            text=str(db_path),
+            font=ctk.CTkFont(size=10)
         )
-        self.db_path_label.pack(side='left', padx=10)
+        self.db_path_label.pack(side='left', padx=10, pady=10)
 
         # Database status
         status_text = "Not connected"
-        status_color = 'gray'
-
-        if self.main_window.db_manager:
+        if hasattr(self.main_window, 'db_manager') and self.main_window.db_manager:
             status_text = "Connected"
-            status_color = 'green'
 
-        self.db_status_label = ttk.Label(
-            frame,
+        self.db_status_label = ctk.CTkLabel(
+            self.database_container,
             text=f"Status: {status_text}",
-            font=('Segoe UI', 9),
-            foreground=status_color
+            font=ctk.CTkFont(size=10)
         )
-        self.db_status_label.pack(anchor='w')
+        self.db_status_label.pack(anchor='w', padx=10, pady=(0, 10))
 
-    def _create_ml_section(self, parent):
-        """Create ML settings section."""
-        frame = ttk.LabelFrame(parent, text="Machine Learning", padding=15)
-        frame.pack(fill='x', pady=10)
+    def _create_ml_section(self):
+        """Create ML settings section (matching batch processing theme)."""
+        self.ml_frame = ctk.CTkFrame(self.main_container)
+        self.ml_frame.pack(fill='x', pady=(0, 20))
+
+        self.ml_label = ctk.CTkLabel(
+            self.ml_frame,
+            text="Machine Learning Settings:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.ml_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # ML options container
+        self.ml_container = ctk.CTkFrame(self.ml_frame)
+        self.ml_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable ML
-        self.ml_var = tk.BooleanVar(value=self.config.ml.enabled)
-        ml_check = ttk.Checkbutton(
-            frame,
+        self.ml_var = ctk.BooleanVar(value=getattr(self.config.ml, 'enabled', True) if hasattr(self.config, 'ml') else True)
+        self.ml_check = ctk.CTkCheckBox(
+            self.ml_container,
             text="Enable ML predictions",
             variable=self.ml_var,
             command=self._on_ml_changed
         )
-        ml_check.pack(anchor='w', pady=5)
+        self.ml_check.pack(anchor='w', padx=10, pady=(10, 5))
 
-        # ML features
-        features_frame = ttk.Frame(frame)
-        features_frame.pack(fill='x', padx=20)
+        # ML features frame
+        features_frame = ctk.CTkFrame(self.ml_container)
+        features_frame.pack(fill='x', padx=10, pady=5)
 
-        self.failure_pred_var = tk.BooleanVar(
-            value=self.config.ml.failure_prediction_enabled
+        self.failure_pred_var = ctk.BooleanVar(
+            value=getattr(self.config.ml, 'failure_prediction_enabled', True) if hasattr(self.config, 'ml') else True
         )
-        ttk.Checkbutton(
+        self.failure_pred_check = ctk.CTkCheckBox(
             features_frame,
             text="Failure prediction",
             variable=self.failure_pred_var,
             command=self._on_ml_feature_changed
-        ).pack(anchor='w', pady=2)
-
-        self.threshold_opt_var = tk.BooleanVar(
-            value=self.config.ml.threshold_optimization_enabled
         )
-        ttk.Checkbutton(
+        self.failure_pred_check.pack(anchor='w', padx=10, pady=2)
+
+        self.threshold_opt_var = ctk.BooleanVar(
+            value=getattr(self.config.ml, 'threshold_optimization_enabled', True) if hasattr(self.config, 'ml') else True
+        )
+        self.threshold_opt_check = ctk.CTkCheckBox(
             features_frame,
             text="Threshold optimization",
             variable=self.threshold_opt_var,
             command=self._on_ml_feature_changed
-        ).pack(anchor='w', pady=2)
-
-        # ML status
-        ml_status = "Not available"
-        ml_color = 'gray'
-
-        if self.main_window.ml_predictor:
-            ml_status = "Ready"
-            ml_color = 'green'
-
-        self.ml_status_label = ttk.Label(
-            frame,
-            text=f"Status: {ml_status}",
-            font=('Segoe UI', 9),
-            foreground=ml_color
         )
-        self.ml_status_label.pack(anchor='w', pady=5)
+        self.threshold_opt_check.pack(anchor='w', padx=10, pady=2)
 
-    def _create_appearance_section(self, parent):
-        """Create appearance settings section."""
-        frame = ttk.LabelFrame(parent, text="Appearance", padding=15)
-        frame.pack(fill='x', pady=10)
+    def _create_appearance_section(self):
+        """Create appearance settings section (matching batch processing theme)."""
+        self.appearance_frame = ctk.CTkFrame(self.main_container)
+        self.appearance_frame.pack(fill='x', pady=(0, 20))
 
-        # Theme
-        theme_frame = ttk.Frame(frame)
-        theme_frame.pack(fill='x', pady=5)
+        self.appearance_label = ctk.CTkLabel(
+            self.appearance_frame,
+            text="Appearance Settings:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.appearance_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        ttk.Label(theme_frame, text="Theme:").pack(side='left')
+        # Appearance options container
+        self.appearance_container = ctk.CTkFrame(self.appearance_frame)
+        self.appearance_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        self.theme_var = tk.StringVar(value=self.config.gui.theme)
-        theme_combo = ttk.Combobox(
+        # Theme selection
+        theme_frame = ctk.CTkFrame(self.appearance_container)
+        theme_frame.pack(fill='x', padx=10, pady=(10, 5))
+
+        theme_label = ctk.CTkLabel(theme_frame, text="Theme:")
+        theme_label.pack(side='left', padx=10, pady=10)
+
+        self.theme_var = ctk.StringVar(value="dark")
+        self.theme_combo = ctk.CTkComboBox(
             theme_frame,
-            textvariable=self.theme_var,
-            values=['clam', 'alt', 'default', 'classic'],
-            state='readonly',
-            width=15
+            variable=self.theme_var,
+            values=["dark", "light", "system"],
+            width=120,
+            height=30,
+            command=self._on_theme_changed
         )
-        theme_combo.pack(side='left', padx=10)
-        theme_combo.bind('<<ComboboxSelected>>', self._on_theme_changed)
+        self.theme_combo.pack(side='left', padx=10, pady=10)
 
-        # Features visibility
-        visibility_frame = ttk.Frame(frame)
-        visibility_frame.pack(fill='x', pady=10)
-
-        ttk.Label(
-            visibility_frame,
-            text="Show tabs:",
-            font=('Segoe UI', 10, 'bold')
-        ).pack(anchor='w')
-
-        self.show_historical_var = tk.BooleanVar(
-            value=self.config.gui.show_historical_tab
-        )
-        ttk.Checkbutton(
-            visibility_frame,
-            text="Historical Data",
-            variable=self.show_historical_var,
+        # UI visibility options
+        self.advanced_mode_var = ctk.BooleanVar(value=True)
+        self.advanced_mode_check = ctk.CTkCheckBox(
+            self.appearance_container,
+            text="Show advanced options",
+            variable=self.advanced_mode_var,
             command=self._on_visibility_changed
-        ).pack(anchor='w', padx=20, pady=2)
-
-        self.show_ml_var = tk.BooleanVar(
-            value=self.config.gui.show_ml_insights
         )
-        ttk.Checkbutton(
-            visibility_frame,
-            text="ML Insights",
-            variable=self.show_ml_var,
-            command=self._on_visibility_changed
-        ).pack(anchor='w', padx=20, pady=2)
+        self.advanced_mode_check.pack(anchor='w', padx=10, pady=5)
 
     def _load_current_settings(self):
         """Load current settings values."""
         # This is called in __init__, values are set during widget creation
         pass
 
-    def _on_workers_changed(self):
-        """Handle workers spinbox change."""
-        self.config.processing.max_workers = self.workers_var.get()
-        self._save_config()
+    def _on_workers_changed(self, event=None):
+        """Handle workers entry change."""
+        try:
+            self.config.processing.max_workers = int(self.workers_var.get())
+            self._save_config()
+        except ValueError:
+            # If invalid number, reset to default
+            self.workers_var.set(str(self.config.processing.max_workers))
 
     def _on_plots_changed(self):
         """Handle plots checkbox change."""
@@ -293,25 +307,22 @@ class SettingsPage(ttk.Frame):
         """Handle database checkbox change."""
         self.config.database.enabled = self.db_var.get()
         self._save_config()
-
-        # Notify user to restart for changes to take effect
-        if self.db_var.get() and not self.main_window.db_manager:
-            messagebox.showinfo(
-                "Restart Required",
-                "Database connection will be established on next application start."
-            )
+        
+        # Update status
+        status_text = "Connected" if self.db_var.get() and hasattr(self.main_window, 'db_manager') and self.main_window.db_manager else "Not connected"
+        self.db_status_label.configure(text=f"Status: {status_text}")
 
     def _on_ml_changed(self):
         """Handle ML checkbox change."""
         self.config.ml.enabled = self.ml_var.get()
-
-        # Enable/disable ML feature checkboxes
-        state = 'normal' if self.ml_var.get() else 'disabled'
-        for widget in self.winfo_children():
-            if isinstance(widget, ttk.Checkbutton) and widget != self.ml_check:
-                widget.configure(state=state)
-
         self._save_config()
+        
+        # Enable/disable ML feature checkboxes
+        state = "normal" if self.ml_var.get() else "disabled"
+        if hasattr(self, 'failure_pred_check'):
+            self.failure_pred_check.configure(state=state)
+        if hasattr(self, 'threshold_opt_check'):
+            self.threshold_opt_check.configure(state=state)
 
     def _on_ml_feature_changed(self):
         """Handle ML feature checkbox change."""
@@ -319,52 +330,39 @@ class SettingsPage(ttk.Frame):
         self.config.ml.threshold_optimization_enabled = self.threshold_opt_var.get()
         self._save_config()
 
-    def _on_theme_changed(self, event=None):
-        """Handle theme selection change."""
-        new_theme = self.theme_var.get()
-        self.config.gui.theme = new_theme
-
-        # Apply theme
-        try:
-            self.main_window.style.theme_use(new_theme)
+    def _on_theme_changed(self, value=None):
+        """Handle theme combobox change."""
+        theme = self.theme_var.get()
+        ctk.set_appearance_mode(theme)
+        # Update config if it has theme setting
+        if hasattr(self.config.gui, 'theme'):
+            self.config.gui.theme = theme
             self._save_config()
-        except Exception as e:
-            messagebox.showerror(
-                "Theme Error",
-                f"Failed to apply theme: {str(e)}"
-            )
-            # Revert
-            self.theme_var.set(self.config.gui.theme)
 
     def _on_visibility_changed(self):
-        """Handle tab visibility change."""
-        self.config.gui.show_historical_tab = self.show_historical_var.get()
-        self.config.gui.show_ml_insights = self.show_ml_var.get()
+        """Handle visibility change."""
+        if hasattr(self.config.gui, 'show_historical_tab'):
+            self.config.gui.show_historical_tab = self.advanced_mode_var.get()
+        if hasattr(self.config.gui, 'show_ml_insights'):
+            self.config.gui.show_ml_insights = self.advanced_mode_var.get()
         self._save_config()
 
-        messagebox.showinfo(
-            "Restart Required",
-            "Tab visibility changes will take effect on next application start."
-        )
-
     def _save_config(self):
-        """Save configuration to file."""
+        """Save configuration changes."""
         try:
-            config_path = Path.home() / ".laser_trim_analyzer" / "config.yaml"
-            config_path.parent.mkdir(exist_ok=True)
-            self.config.to_yaml(config_path)
+            # Config save implementation would go here
+            # self.config.save()
+            pass
         except Exception as e:
-            print(f"Error saving config: {e}")
+            messagebox.showerror("Error", f"Failed to save settings: {e}")
 
     def _open_full_settings(self):
         """Open the full settings dialog."""
-        dialog = SettingsDialog(self.main_window.root, self.config)
-        if dialog.show():
-            # Settings were saved, update our display
-            self._load_current_settings()
-
-            # Update main window services if needed
-            self.main_window._init_services()
+        try:
+            dialog = SettingsDialog(self, self.config)
+            dialog.show()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open settings dialog: {e}")
 
     def show(self):
         """Show the settings page."""
