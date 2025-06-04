@@ -43,6 +43,18 @@ class SingleFilePage(BasePage):
         self.analyzer_config = get_config()
         self.processor = LaserTrimProcessor(self.analyzer_config)
         
+        # Get database manager if available
+        self.db_manager = None
+        try:
+            if hasattr(main_window, 'db_manager'):
+                self.db_manager = main_window.db_manager
+            elif hasattr(self.analyzer_config, 'database') and self.analyzer_config.database.enabled:
+                from laser_trim_analyzer.database.manager import DatabaseManager
+                self.db_manager = DatabaseManager(self.analyzer_config)
+                logger.info("Database manager initialized for single file page")
+        except Exception as e:
+            logger.warning(f"Failed to initialize database manager: {e}")
+        
         # State
         self.current_file: Optional[Path] = None
         self.current_result: Optional[AnalysisResult] = None

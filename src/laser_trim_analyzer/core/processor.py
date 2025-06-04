@@ -852,19 +852,19 @@ class LaserTrimProcessor:
             processed_count: Number of files processed so far
             elapsed_time: Elapsed time in seconds
         """
-        # FIXED: Aggressive memory management for large batches
+        # Aggressive memory management for large batches
         import gc
         import matplotlib.pyplot as plt
         
         # Force garbage collection every 50 files or every 10 minutes
-        gc_interval = self.config.processing.garbage_collection_interval
+        gc_interval = getattr(self.config.processing, 'garbage_collection_interval', 50)
         if processed_count % gc_interval == 0:
             self.logger.debug(f"Forcing garbage collection after {processed_count} files")
             collected = gc.collect()
             self.logger.debug(f"Garbage collector released {collected} objects")
         
         # Close matplotlib figures to prevent memory leaks
-        matplotlib_interval = self.config.processing.matplotlib_cleanup_interval
+        matplotlib_interval = getattr(self.config.processing, 'matplotlib_cleanup_interval', 25)
         if processed_count % matplotlib_interval == 0:
             plt.close('all')  # Close all matplotlib figures
             self.logger.debug("Closed all matplotlib figures to free memory")
@@ -894,7 +894,7 @@ class LaserTrimProcessor:
             memory_mb = process.memory_info().rss / 1024 / 1024
             
             # Warn if memory usage is getting high
-            memory_threshold = self.config.processing.memory_throttle_threshold
+            memory_threshold = getattr(self.config.processing, 'memory_throttle_threshold', 1000)
             if memory_mb > memory_threshold:
                 self.logger.warning(f"High memory usage detected: {memory_mb:.1f} MB "
                                   f"(threshold: {memory_threshold} MB)")
@@ -909,6 +909,9 @@ class LaserTrimProcessor:
                         cache_keys = list(self._file_cache.keys())
                         for key in cache_keys[:-10]:  # Keep only 10 most recent
                             del self._file_cache[key]
+                    
+                    # Add small delay to allow OS to reclaim memory
+                    await asyncio.sleep(0.5)
                         
         except ImportError:
             # psutil not available, skip memory monitoring

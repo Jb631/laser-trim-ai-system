@@ -1061,43 +1061,50 @@ class BatchProcessingPage(BasePage):
         saved_count = 0
         failed_count = 0
         
-        for file_path, result in results.items():
+        # Use batch save if available for better performance
+        if hasattr(self.db_manager, 'save_analysis_batch'):
             try:
-                # Check for cancellation during database save
+                # Check for cancellation
                 if self._is_processing_cancelled():
                     logger.info("Cancellation requested during database save")
-                    break
-                    
-                # Check for duplicates
-                existing_id = self.db_manager.check_duplicate_analysis(
-                    result.metadata.model,
-                    result.metadata.serial,
-                    result.metadata.file_date
-                )
+                    return
                 
-                if existing_id:
-                    logger.info(f"Duplicate found for {Path(file_path).name} (ID: {existing_id})")
-                    result.db_id = existing_id
-                else:
-                    # Try normal save first
-                    try:
-                        result.db_id = self.db_manager.save_analysis(result)
-                        saved_count += 1
-                        
-                        # Validate the save
-                        if not self.db_manager.validate_saved_analysis(result.db_id):
-                            raise RuntimeError("Database validation failed")
-                            
-                    except Exception as save_error:
-                        logger.warning(f"Normal save failed for {Path(file_path).name}, trying force save: {save_error}")
-                        # Try force save as fallback
-                        result.db_id = self.db_manager.force_save_analysis(result)
-                        saved_count += 1
-                        logger.info(f"Force saved {Path(file_path).name} to database")
+                # Convert to list for batch save
+                result_list = list(results.values())
+                if result_list:
+                    analysis_ids = self.db_manager.save_analysis_batch(result_list)
+                    saved_count = len(analysis_ids)
+                    logger.info(f"Batch saved {saved_count} analyses to database")
                     
+                    # Update result objects with database IDs
+                    for result, db_id in zip(result_list, analysis_ids):
+                        result.db_id = db_id
             except Exception as e:
-                logger.error(f"Database save failed for {Path(file_path).name}: {e}")
-                failed_count += 1
+                logger.error(f"Batch database save failed: {e}")
+                # Fall back to individual saves
+                logger.info("Falling back to individual saves")
+                for file_path, result in results.items():
+                    try:
+                        # Individual save logic
+                        self._save_individual_analysis(file_path, result)
+                        saved_count += 1
+                    except Exception as e:
+                        logger.error(f"Database save failed for {Path(file_path).name}: {e}")
+                        failed_count += 1
+        else:
+            # Individual saves if batch save not available
+            for file_path, result in results.items():
+                try:
+                    # Check for cancellation during database save
+                    if self._is_processing_cancelled():
+                        logger.info("Cancellation requested during database save")
+                        break
+                        
+                    self._save_individual_analysis(file_path, result)
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"Database save failed for {Path(file_path).name}: {e}")
+                    failed_count += 1
         
         logger.info(f"Database save complete: {saved_count} saved, {failed_count} failed")
         
@@ -1110,6 +1117,33 @@ class BatchProcessingPage(BasePage):
                 f"Failed: {failed_count}\n\n"
                 f"Check logs for details."
             ))
+
+    def _save_individual_analysis(self, file_path: str, result: AnalysisResult):
+        """Save an individual analysis to the database with error handling."""
+        # Check for duplicates
+        existing_id = self.db_manager.check_duplicate_analysis(
+            result.metadata.model,
+            result.metadata.serial,
+            result.metadata.file_date
+        )
+        
+        if existing_id:
+            logger.info(f"Duplicate found for {Path(file_path).name} (ID: {existing_id})")
+            result.db_id = existing_id
+        else:
+            # Try normal save first
+            try:
+                result.db_id = self.db_manager.save_analysis(result)
+                
+                # Validate the save
+                if not self.db_manager.validate_saved_analysis(result.db_id):
+                    raise RuntimeError("Database validation failed")
+                    
+            except Exception as save_error:
+                logger.warning(f"Normal save failed for {Path(file_path).name}, trying force save: {save_error}")
+                # Try force save as fallback
+                result.db_id = self.db_manager.force_save_analysis(result)
+                logger.info(f"Force saved {Path(file_path).name} to database")
 
     def _handle_batch_success(self, results: Dict[str, AnalysisResult], output_dir: Optional[Path]):
         """Handle successful batch completion."""

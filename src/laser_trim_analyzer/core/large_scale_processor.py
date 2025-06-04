@@ -422,9 +422,39 @@ class LargeScaleProcessor:
             for file_path, result in results.items():
                 batch_data.append(result)
             
-            # Batch insert to database
-            # This would need to be implemented in DatabaseManager
-            self.logger.info(f"Committing {len(batch_data)} results to database")
+            # Use batch save if available
+            if hasattr(self.db_manager, 'save_analysis_batch'):
+                self.logger.info(f"Committing {len(batch_data)} results to database using batch save")
+                analysis_ids = self.db_manager.save_analysis_batch(batch_data)
+                
+                # Update results with database IDs
+                for result, db_id in zip(batch_data, analysis_ids):
+                    result.db_id = db_id
+                    
+                self.logger.info(f"Successfully committed {len(analysis_ids)} results to database")
+            else:
+                # Fall back to individual saves
+                self.logger.info(f"Batch save not available, using individual saves for {len(batch_data)} results")
+                saved_count = 0
+                
+                for result in batch_data:
+                    try:
+                        # Check for duplicates
+                        existing_id = self.db_manager.check_duplicate_analysis(
+                            result.metadata.model,
+                            result.metadata.serial,
+                            result.metadata.file_date
+                        )
+                        
+                        if existing_id:
+                            result.db_id = existing_id
+                        else:
+                            result.db_id = self.db_manager.save_analysis(result)
+                            saved_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Failed to save result: {e}")
+                
+                self.logger.info(f"Individually saved {saved_count} results to database")
             
         except Exception as e:
             self.logger.error(f"Database batch commit failed: {e}")

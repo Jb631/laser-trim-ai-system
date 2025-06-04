@@ -1042,6 +1042,16 @@ class DatabaseManager:
                     self.logger.error(f"No tracks found for analysis ID {analysis_id}")
                     return False
                 
+                # Verify track data integrity
+                tracks = session.query(DBTrackResult).filter(
+                    DBTrackResult.analysis_id == analysis_id
+                ).all()
+                
+                for track in tracks:
+                    if track.track_id is None or track.sigma_gradient is None:
+                        self.logger.error(f"Track data incomplete for analysis ID {analysis_id}")
+                        return False
+                
                 self.logger.info(f"Analysis ID {analysis_id} validated: {track_count} tracks")
                 return True
                 

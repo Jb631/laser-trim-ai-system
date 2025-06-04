@@ -143,12 +143,16 @@ class ChartWidget(ctk.CTkFrame):
                 self._plot_scatter_from_data(data)
             elif self.chart_type == 'histogram':
                 self._plot_histogram_from_data(data)
+            elif self.chart_type == 'heatmap':
+                self._plot_heatmap_from_data(data)
             else:
                 # Default to line plot
                 self._plot_line_from_data(data)
                 
         except Exception as e:
+            import traceback
             print(f"Error updating chart: {e}")
+            print(traceback.format_exc())
             self.clear_chart()
             
     def _plot_line_from_data(self, data: pd.DataFrame):
@@ -286,6 +290,78 @@ class ChartWidget(ctk.CTkFrame):
         if self.title:
             ax.set_title(self.title)
         ax.grid(True, alpha=0.3, axis='y')
+        self.figure.tight_layout()
+        self.canvas.draw()
+        
+    def _plot_heatmap_from_data(self, data: pd.DataFrame):
+        """Plot heatmap from DataFrame."""
+        ax = self.figure.add_subplot(111)
+        
+        # Check for required columns
+        if 'x_values' in data.columns and 'y_values' in data.columns and 'values' in data.columns:
+            try:
+                # Pivot data for heatmap
+                pivot_data = data.pivot(index='y_values', columns='x_values', values='values')
+                
+                # Create heatmap
+                im = ax.imshow(pivot_data.values, cmap='RdYlGn', aspect='auto', interpolation='nearest')
+                
+                # Set labels
+                ax.set_xticks(range(len(pivot_data.columns)))
+                ax.set_yticks(range(len(pivot_data.index)))
+                ax.set_xticklabels(pivot_data.columns)
+                ax.set_yticklabels(pivot_data.index)
+                
+                # Add colorbar
+                cbar = self.figure.colorbar(im, ax=ax)
+                
+                # Add text annotations if not too many cells
+                if pivot_data.size <= 100:  # Only add text for reasonably sized heatmaps
+                    for i in range(len(pivot_data.index)):
+                        for j in range(len(pivot_data.columns)):
+                            value = pivot_data.values[i, j]
+                            ax.text(j, i, f'{value:.2f}', ha='center', va='center', 
+                                   color='black' if 0.3 < im.norm(value) < 0.7 else 'white')
+                
+            except Exception as e:
+                ax.text(0.5, 0.5, f"Error creating heatmap: {str(e)}", 
+                       ha='center', va='center', transform=ax.transAxes)
+        
+        # Alternative format with matrix data
+        elif 'matrix_data' in data.columns and 'row_labels' in data.columns and 'col_labels' in data.columns:
+            try:
+                matrix = data['matrix_data'].iloc[0]  # Assuming it's stored as a single cell
+                row_labels = data['row_labels'].iloc[0]
+                col_labels = data['col_labels'].iloc[0]
+                
+                if isinstance(matrix, str):
+                    # Try to parse if it's stored as string
+                    import json
+                    matrix = json.loads(matrix)
+                
+                # Create heatmap
+                im = ax.imshow(matrix, cmap='RdYlGn', aspect='auto')
+                
+                # Set labels
+                ax.set_xticks(range(len(col_labels)))
+                ax.set_yticks(range(len(row_labels)))
+                ax.set_xticklabels(col_labels)
+                ax.set_yticklabels(row_labels)
+                
+                # Add colorbar
+                cbar = self.figure.colorbar(im, ax=ax)
+                
+            except Exception as e:
+                ax.text(0.5, 0.5, f"Error parsing matrix data: {str(e)}", 
+                       ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, "Heatmap requires 'x_values', 'y_values', and 'values' columns", 
+                   ha='center', va='center', transform=ax.transAxes)
+        
+        if self.title:
+            ax.set_title(self.title)
+            
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
         self.figure.tight_layout()
         self.canvas.draw()
 
