@@ -2,18 +2,22 @@
 Historical Data Page for Laser Trim Analyzer
 
 Provides interface for querying and analyzing historical QA data
-with charts and export functionality.
+with advanced analytics, charts, and export functionality.
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import pandas as pd
 import numpy as np
 import logging
 import threading
+import seaborn as sns
+from scipy import stats
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -23,40 +27,273 @@ from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, Analys
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
+# Get logger
+logger = logging.getLogger(__name__)
 
 class HistoricalPage(BasePage):
-    """Historical data analysis page."""
+    """Advanced historical data analysis page with analytics features."""
 
     def __init__(self, parent, main_window):
         self.current_data = None
+        self.analytics_results = {}
+        self.trend_analysis_data = {}
+        self.correlation_matrix = None
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Create historical page content with consistent theme (matching batch processing)."""
-        # Main scrollable container (matching batch processing theme)
+        """Create enhanced historical page content with advanced analytics."""
+        # Main scrollable container
         self.main_container = ctk.CTkScrollableFrame(self)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Create sections in order (matching batch processing pattern)
+        # Create enhanced sections
         self._create_header()
         self._create_query_section_ctk()
+        self._create_analytics_dashboard()
         self._create_results_section_ctk()
         self._create_charts_section_ctk()
+        self._create_advanced_analytics_section()
 
     def _create_header(self):
-        """Create header section (matching batch processing theme)."""
+        """Create enhanced header section."""
         self.header_frame = ctk.CTkFrame(self.main_container)
         self.header_frame.pack(fill='x', pady=(0, 20))
 
         self.title_label = ctk.CTkLabel(
             self.header_frame,
-            text="Historical Data Analysis",
+            text="Advanced Historical Data Analytics",
             font=ctk.CTkFont(size=24, weight="bold")
         )
         self.title_label.pack(pady=15)
+
+        # Analytics status indicator
+        self.analytics_status_frame = ctk.CTkFrame(self.header_frame)
+        self.analytics_status_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        self.analytics_status_label = ctk.CTkLabel(
+            self.analytics_status_frame,
+            text="Analytics Status: Ready",
+            font=ctk.CTkFont(size=12)
+        )
+        self.analytics_status_label.pack(side='left', padx=10, pady=10)
+        
+        self.analytics_indicator = ctk.CTkLabel(
+            self.analytics_status_frame,
+            text="●",
+            font=ctk.CTkFont(size=16),
+            text_color="green"
+        )
+        self.analytics_indicator.pack(side='right', padx=10, pady=10)
+
+    def _create_analytics_dashboard(self):
+        """Create quick analytics dashboard."""
+        self.dashboard_frame = ctk.CTkFrame(self.main_container)
+        self.dashboard_frame.pack(fill='x', pady=(0, 20))
+
+        self.dashboard_label = ctk.CTkLabel(
+            self.dashboard_frame,
+            text="Analytics Dashboard:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.dashboard_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Dashboard metrics container
+        self.metrics_container = ctk.CTkFrame(self.dashboard_frame)
+        self.metrics_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # Row 1 of metrics
+        metrics_row1 = ctk.CTkFrame(self.metrics_container)
+        metrics_row1.pack(fill='x', padx=10, pady=(10, 5))
+
+        self.total_records_card = MetricCard(
+            metrics_row1,
+            title="Total Records",
+            value="--",
+            color_scheme="info"
+        )
+        self.total_records_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.pass_rate_card = MetricCard(
+            metrics_row1,
+            title="Overall Pass Rate",
+            value="--",
+            color_scheme="success"
+        )
+        self.pass_rate_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.trend_direction_card = MetricCard(
+            metrics_row1,
+            title="Trend Direction",
+            value="--",
+            color_scheme="neutral"
+        )
+        self.trend_direction_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.prediction_accuracy_card = MetricCard(
+            metrics_row1,
+            title="Prediction Accuracy",
+            value="--",
+            color_scheme="warning"
+        )
+        self.prediction_accuracy_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        # Row 2 of metrics
+        metrics_row2 = ctk.CTkFrame(self.metrics_container)
+        metrics_row2.pack(fill='x', padx=10, pady=(5, 10))
+
+        self.sigma_correlation_card = MetricCard(
+            metrics_row2,
+            title="Sigma Correlation",
+            value="--",
+            color_scheme="info"
+        )
+        self.sigma_correlation_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.linearity_stability_card = MetricCard(
+            metrics_row2,
+            title="Linearity Stability",
+            value="--",
+            color_scheme="success"
+        )
+        self.linearity_stability_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.quality_score_card = MetricCard(
+            metrics_row2,
+            title="Quality Score",
+            value="--",
+            color_scheme="warning"
+        )
+        self.quality_score_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+        self.anomaly_count_card = MetricCard(
+            metrics_row2,
+            title="Anomalies Detected",
+            value="--",
+            color_scheme="danger"
+        )
+        self.anomaly_count_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+
+    def _create_advanced_analytics_section(self):
+        """Create advanced analytics section."""
+        self.advanced_frame = ctk.CTkFrame(self.main_container)
+        self.advanced_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.advanced_label = ctk.CTkLabel(
+            self.advanced_frame,
+            text="Advanced Analytics:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.advanced_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Analytics controls
+        controls_frame = ctk.CTkFrame(self.advanced_frame)
+        controls_frame.pack(fill='x', padx=15, pady=(0, 10))
+
+        self.trend_analysis_btn = ctk.CTkButton(
+            controls_frame,
+            text="📈 Trend Analysis",
+            command=self._run_trend_analysis,
+            width=140,
+            height=40
+        )
+        self.trend_analysis_btn.pack(side='left', padx=(10, 5), pady=10)
+
+        self.correlation_analysis_btn = ctk.CTkButton(
+            controls_frame,
+            text="🔗 Correlation Analysis",
+            command=self._run_correlation_analysis,
+            width=140,
+            height=40
+        )
+        self.correlation_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.statistical_summary_btn = ctk.CTkButton(
+            controls_frame,
+            text="📊 Statistical Summary",
+            command=self._generate_statistical_summary,
+            width=140,
+            height=40
+        )
+        self.statistical_summary_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.predictive_analysis_btn = ctk.CTkButton(
+            controls_frame,
+            text="🔮 Predictive Analysis",
+            command=self._run_predictive_analysis,
+            width=140,
+            height=40
+        )
+        self.predictive_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.anomaly_detection_btn = ctk.CTkButton(
+            controls_frame,
+            text="🚨 Detect Anomalies",
+            command=self._detect_anomalies,
+            width=140,
+            height=40
+        )
+        self.anomaly_detection_btn.pack(side='left', padx=(5, 10), pady=10)
+
+        # Analytics results tabview
+        self.analytics_tabview = ctk.CTkTabview(self.advanced_frame)
+        self.analytics_tabview.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+        # Add analytics tabs
+        self.analytics_tabview.add("Trend Analysis")
+        self.analytics_tabview.add("Correlation Matrix")
+        self.analytics_tabview.add("Statistical Summary")
+        self.analytics_tabview.add("Predictive Models")
+        self.analytics_tabview.add("Anomaly Detection")
+
+        # Trend analysis tab
+        self.trend_analysis_chart = ChartWidget(
+            self.analytics_tabview.tab("Trend Analysis"),
+            chart_type='line',
+            title="Performance Trends Over Time",
+            figsize=(12, 6)
+        )
+        self.trend_analysis_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Correlation matrix tab
+        self.correlation_chart = ChartWidget(
+            self.analytics_tabview.tab("Correlation Matrix"),
+            chart_type='heatmap',
+            title="Parameter Correlation Matrix",
+            figsize=(10, 8)
+        )
+        self.correlation_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Statistical summary tab
+        self.stats_display = ctk.CTkTextbox(
+            self.analytics_tabview.tab("Statistical Summary"),
+            height=400,
+            state="disabled"
+        )
+        self.stats_display.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Predictive models tab
+        predictive_frame = ctk.CTkFrame(self.analytics_tabview.tab("Predictive Models"))
+        predictive_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        self.prediction_chart = ChartWidget(
+            predictive_frame,
+            chart_type='scatter',
+            title="Actual vs Predicted Values",
+            figsize=(10, 6)
+        )
+        self.prediction_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Anomaly detection tab
+        self.anomaly_display = ctk.CTkTextbox(
+            self.analytics_tabview.tab("Anomaly Detection"),
+            height=400,
+            state="disabled"
+        )
+        self.anomaly_display.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_query_section_ctk(self):
         """Create query filters section (matching batch processing theme)."""
@@ -222,7 +459,7 @@ class HistoricalPage(BasePage):
         self.results_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
     def _create_charts_section_ctk(self):
-        """Create data visualization section (matching batch processing theme)."""
+        """Create charts section (matching batch processing theme)."""
         self.charts_frame = ctk.CTkFrame(self.main_container)
         self.charts_frame.pack(fill='both', expand=True, pady=(0, 20))
 
@@ -246,27 +483,62 @@ class HistoricalPage(BasePage):
         self.chart_tabview.add("Sigma Distribution")
         self.chart_tabview.add("Model Comparison")
 
-        # Placeholder for charts
-        self.trend_chart_label = ctk.CTkLabel(
-            self.chart_tabview.tab("Pass Rate Trend"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.trend_chart_label.pack(expand=True)
+        # Create actual chart widgets instead of placeholder labels
+        try:
+            from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+            
+            self.trend_chart = ChartWidget(
+                self.chart_tabview.tab("Pass Rate Trend"),
+                chart_type='line',
+                title="Pass Rate Over Time",
+                figsize=(10, 4)
+            )
+            self.trend_chart.pack(fill='both', expand=True)
+            
+            self.dist_chart = ChartWidget(
+                self.chart_tabview.tab("Sigma Distribution"),
+                chart_type='histogram',
+                title="Sigma Gradient Distribution",
+                figsize=(10, 4)
+            )
+            self.dist_chart.pack(fill='both', expand=True)
+            
+            self.comp_chart = ChartWidget(
+                self.chart_tabview.tab("Model Comparison"),
+                chart_type='bar',
+                title="Pass Rate by Model",
+                figsize=(10, 4)
+            )
+            self.comp_chart.pack(fill='both', expand=True)
+            
+        except ImportError as e:
+            logger.warning(f"Could not create chart widgets: {e}")
+            # Fallback to placeholder labels
+            self.trend_chart_label = ctk.CTkLabel(
+                self.chart_tabview.tab("Pass Rate Trend"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.trend_chart_label.pack(expand=True)
 
-        self.distribution_chart_label = ctk.CTkLabel(
-            self.chart_tabview.tab("Sigma Distribution"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.distribution_chart_label.pack(expand=True)
+            self.distribution_chart_label = ctk.CTkLabel(
+                self.chart_tabview.tab("Sigma Distribution"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.distribution_chart_label.pack(expand=True)
 
-        self.comparison_chart_label = ctk.CTkLabel(
-            self.chart_tabview.tab("Model Comparison"),
-            text="No data loaded",
-            font=ctk.CTkFont(size=12)
-        )
-        self.comparison_chart_label.pack(expand=True)
+            self.comparison_chart_label = ctk.CTkLabel(
+                self.chart_tabview.tab("Model Comparison"),
+                text="Chart widgets not available",
+                font=ctk.CTkFont(size=12)
+            )
+            self.comparison_chart_label.pack(expand=True)
+            
+            # Set chart objects to None for safe access
+            self.trend_chart = None
+            self.dist_chart = None
+            self.comp_chart = None
 
     def _run_query(self):
         """Run database query with current filters."""
@@ -383,6 +655,12 @@ class HistoricalPage(BasePage):
             # Store current data for potential export
             self.current_data = results
             
+            # CRITICAL FIX: Update charts when data is loaded
+            try:
+                self._update_charts(results)
+            except Exception as e:
+                logger.error(f"Error updating charts: {e}")
+            
             logger.info(f"Displayed {len(results)} query results")
             
         except Exception as e:
@@ -394,21 +672,45 @@ class HistoricalPage(BasePage):
 
     def _update_charts(self, results):
         """Update all charts with query results."""
-        if not results or self.current_data is None:
+        if not results:
             return
 
-        # Update pass rate trend
-        self._update_trend_chart()
-
-        # Update sigma distribution
-        self._update_distribution_chart()
-
-        # Update model comparison
-        self._update_comparison_chart()
+        try:
+            # Convert database results to DataFrame format for chart consumption
+            chart_data = []
+            for result in results:
+                record = {
+                    'date': result.timestamp if hasattr(result, 'timestamp') else None,
+                    'file_date': getattr(result, 'file_date', None),
+                    'model': getattr(result, 'model', 'Unknown'),
+                    'serial': getattr(result, 'serial', 'Unknown'),
+                    'status': result.overall_status.value,
+                    'sigma_gradient': None
+                }
+                
+                # Extract sigma gradient from first track if available
+                if result.tracks and len(result.tracks) > 0:
+                    track = result.tracks[0]
+                    if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                        record['sigma_gradient'] = track.sigma_gradient
+                
+                chart_data.append(record)
+            
+            # Store as DataFrame for chart methods
+            import pandas as pd
+            self.current_data = pd.DataFrame(chart_data)
+            
+            # Update individual charts
+            self._update_trend_chart()
+            self._update_distribution_chart()
+            self._update_comparison_chart()
+            
+        except Exception as e:
+            logger.error(f"Error preparing chart data: {e}")
 
     def _update_trend_chart(self):
         """Update pass rate trend chart."""
-        if self.current_data is None or len(self.current_data) == 0:
+        if self.current_data is None or len(self.current_data) == 0 or not hasattr(self, 'trend_chart') or self.trend_chart is None:
             return
 
         # Group by date and calculate pass rate
@@ -447,7 +749,8 @@ class HistoricalPage(BasePage):
 
     def _update_distribution_chart(self):
         """Update sigma gradient distribution chart."""
-        if self.current_data is None or 'sigma_gradient' not in self.current_data.columns:
+        if (self.current_data is None or 'sigma_gradient' not in self.current_data.columns or 
+            not hasattr(self, 'dist_chart') or self.dist_chart is None):
             return
 
         # Get sigma values
@@ -468,7 +771,8 @@ class HistoricalPage(BasePage):
 
     def _update_comparison_chart(self):
         """Update model comparison chart."""
-        if self.current_data is None or len(self.current_data) == 0:
+        if (self.current_data is None or len(self.current_data) == 0 or 
+            not hasattr(self, 'comp_chart') or self.comp_chart is None):
             return
 
         # Calculate pass rate by model
@@ -689,3 +993,695 @@ Metrics:
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
             self.logger.error(f"Export failed: {e}")
+
+    def _update_analytics_status(self, status: str, color: str):
+        """Update analytics status indicator."""
+        self.analytics_status_label.configure(text=f"Analytics Status: {status}")
+        
+        color_map = {
+            "green": "#00ff00",
+            "orange": "#ffa500",
+            "red": "#ff0000",
+            "gray": "#808080"
+        }
+        
+        self.analytics_indicator.configure(text_color=color_map.get(color, "#808080"))
+
+    def _update_dashboard_metrics(self, data: List[Dict[str, Any]]):
+        """Update analytics dashboard with current data metrics."""
+        if not data:
+            return
+            
+        try:
+            # Convert to DataFrame for analysis
+            df = pd.DataFrame(data)
+            
+            # Total records
+            total_records = len(df)
+            self.total_records_card.update_value(str(total_records))
+            
+            # Pass rate calculation
+            if 'overall_status' in df.columns:
+                pass_count = len(df[df['overall_status'] == 'PASS'])
+                pass_rate = (pass_count / total_records) * 100 if total_records > 0 else 0
+                self.pass_rate_card.update_value(f"{pass_rate:.1f}%")
+                
+                # Set color based on pass rate
+                if pass_rate >= 95:
+                    self.pass_rate_card.set_color_scheme('success')
+                elif pass_rate >= 85:
+                    self.pass_rate_card.set_color_scheme('warning')
+                else:
+                    self.pass_rate_card.set_color_scheme('danger')
+            
+            # Trend direction (simplified)
+            if 'timestamp' in df.columns and len(df) > 1:
+                # Sort by timestamp and check recent trend
+                df_sorted = df.sort_values('timestamp')
+                recent_data = df_sorted.tail(min(10, len(df_sorted)))
+                
+                if 'sigma_gradient' in df.columns:
+                    sigma_trend = np.polyfit(range(len(recent_data)), recent_data['sigma_gradient'], 1)[0]
+                    trend_direction = "Improving" if sigma_trend < 0 else "Declining" if sigma_trend > 0 else "Stable"
+                    self.trend_direction_card.update_value(trend_direction)
+                    
+                    # Set color based on trend
+                    color_scheme = 'success' if trend_direction == 'Improving' else 'danger' if trend_direction == 'Declining' else 'neutral'
+                    self.trend_direction_card.set_color_scheme(color_scheme)
+            
+            # Sigma correlation (if multiple parameters available)
+            if 'sigma_gradient' in df.columns and 'linearity_error' in df.columns:
+                correlation = df['sigma_gradient'].corr(df['linearity_error'])
+                self.sigma_correlation_card.update_value(f"{correlation:.3f}")
+                
+                # Set color based on correlation strength
+                abs_corr = abs(correlation)
+                if abs_corr > 0.7:
+                    self.sigma_correlation_card.set_color_scheme('danger')
+                elif abs_corr > 0.3:
+                    self.sigma_correlation_card.set_color_scheme('warning')
+                else:
+                    self.sigma_correlation_card.set_color_scheme('success')
+            
+            # Linearity stability (coefficient of variation)
+            if 'linearity_error' in df.columns:
+                cv = df['linearity_error'].std() / df['linearity_error'].mean() if df['linearity_error'].mean() != 0 else 0
+                stability = max(0, (1 - cv) * 100)  # Convert to stability percentage
+                self.linearity_stability_card.update_value(f"{stability:.1f}%")
+                
+                # Set color based on stability
+                if stability >= 80:
+                    self.linearity_stability_card.set_color_scheme('success')
+                elif stability >= 60:
+                    self.linearity_stability_card.set_color_scheme('warning')
+                else:
+                    self.linearity_stability_card.set_color_scheme('danger')
+            
+            # Quality score (composite metric)
+            quality_factors = []
+            if pass_rate:
+                quality_factors.append(pass_rate / 100)
+            if 'linearity_stability_card' in locals() and stability:
+                quality_factors.append(stability / 100)
+                
+            if quality_factors:
+                quality_score = np.mean(quality_factors) * 100
+                self.quality_score_card.update_value(f"{quality_score:.1f}%")
+                
+                if quality_score >= 90:
+                    self.quality_score_card.set_color_scheme('success')
+                elif quality_score >= 70:
+                    self.quality_score_card.set_color_scheme('warning')
+                else:
+                    self.quality_score_card.set_color_scheme('danger')
+            
+        except Exception as e:
+            logger.error(f"Error updating dashboard metrics: {e}")
+
+    def _run_trend_analysis(self):
+        """Run comprehensive trend analysis."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
+            return
+            
+        self._update_analytics_status("Running Trend Analysis...", "orange")
+        self.trend_analysis_btn.configure(state="disabled", text="Analyzing...")
+        
+        def analyze():
+            try:
+                trend_data = self._calculate_trend_analysis(self.current_data)
+                self.trend_analysis_data = trend_data
+                
+                # Update UI
+                self.after(0, lambda: self._display_trend_analysis(trend_data))
+                
+            except Exception as e:
+                logger.error(f"Trend analysis failed: {e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "Analysis Error", f"Trend analysis failed:\n{str(e)}"
+                ))
+            finally:
+                self.after(0, lambda: self.trend_analysis_btn.configure(
+                    state="normal", text="📈 Trend Analysis"
+                ))
+                self.after(0, lambda: self._update_analytics_status("Ready", "green"))
+
+        threading.Thread(target=analyze, daemon=True).start()
+
+    def _calculate_trend_analysis(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Calculate comprehensive trend analysis from historical data."""
+        trend_data = {
+            'time_series': {},
+            'trends': {},
+            'seasonality': {},
+            'forecasts': {},
+            'change_points': {}
+        }
+        
+        try:
+            df = pd.DataFrame(data)
+            
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df = df.sort_values('timestamp')
+                
+                # Analyze sigma gradient trends
+                if 'sigma_gradient' in df.columns:
+                    sigma_trends = self._analyze_parameter_trend(df, 'sigma_gradient', 'timestamp')
+                    trend_data['trends']['sigma_gradient'] = sigma_trends
+                
+                # Analyze linearity error trends
+                if 'linearity_error' in df.columns:
+                    linearity_trends = self._analyze_parameter_trend(df, 'linearity_error', 'timestamp')
+                    trend_data['trends']['linearity_error'] = linearity_trends
+                
+                # Analyze pass rate trends over time
+                if 'overall_status' in df.columns:
+                    pass_rate_trends = self._analyze_pass_rate_trends(df)
+                    trend_data['trends']['pass_rate'] = pass_rate_trends
+                
+                # Detect change points
+                trend_data['change_points'] = self._detect_change_points(df)
+                
+                # Generate forecasts
+                trend_data['forecasts'] = self._generate_forecasts(df)
+                
+        except Exception as e:
+            logger.error(f"Error in trend analysis calculation: {e}")
+            
+        return trend_data
+
+    def _analyze_parameter_trend(self, df: pd.DataFrame, parameter: str, time_col: str) -> Dict[str, Any]:
+        """Analyze trend for a specific parameter."""
+        analysis = {
+            'slope': 0,
+            'r_squared': 0,
+            'trend_direction': 'stable',
+            'significance': 'low',
+            'volatility': 0
+        }
+        
+        try:
+            if parameter not in df.columns or df[parameter].isna().all():
+                return analysis
+                
+            # Remove NaN values
+            clean_df = df.dropna(subset=[parameter, time_col])
+            if len(clean_df) < 3:
+                return analysis
+            
+            # Convert timestamps to numeric for regression
+            x_numeric = (clean_df[time_col] - clean_df[time_col].min()).dt.total_seconds()
+            y = clean_df[parameter]
+            
+            # Linear regression
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, y)
+            
+            analysis['slope'] = slope
+            analysis['r_squared'] = r_value ** 2
+            analysis['p_value'] = p_value
+            
+            # Determine trend direction
+            if abs(slope) < std_err:
+                analysis['trend_direction'] = 'stable'
+            elif slope > 0:
+                analysis['trend_direction'] = 'increasing'
+            else:
+                analysis['trend_direction'] = 'decreasing'
+            
+            # Determine significance
+            if p_value < 0.01:
+                analysis['significance'] = 'high'
+            elif p_value < 0.05:
+                analysis['significance'] = 'medium'
+            else:
+                analysis['significance'] = 'low'
+            
+            # Calculate volatility (coefficient of variation)
+            analysis['volatility'] = y.std() / y.mean() if y.mean() != 0 else 0
+            
+        except Exception as e:
+            logger.error(f"Error analyzing parameter trend for {parameter}: {e}")
+            
+        return analysis
+
+    def _run_correlation_analysis(self):
+        """Run correlation analysis between parameters."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
+            return
+            
+        self._update_analytics_status("Running Correlation Analysis...", "orange")
+        self.correlation_analysis_btn.configure(state="disabled", text="Analyzing...")
+        
+        def analyze():
+            try:
+                correlation_data = self._calculate_correlation_matrix(self.current_data)
+                self.correlation_matrix = correlation_data
+                
+                # Update UI
+                self.after(0, lambda: self._display_correlation_analysis(correlation_data))
+                
+            except Exception as e:
+                logger.error(f"Correlation analysis failed: {e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "Analysis Error", f"Correlation analysis failed:\n{str(e)}"
+                ))
+            finally:
+                self.after(0, lambda: self.correlation_analysis_btn.configure(
+                    state="normal", text="🔗 Correlation Analysis"
+                ))
+                self.after(0, lambda: self._update_analytics_status("Ready", "green"))
+
+        threading.Thread(target=analyze, daemon=True).start()
+
+    def _generate_statistical_summary(self):
+        """Generate comprehensive statistical summary."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
+            return
+            
+        self._update_analytics_status("Generating Statistical Summary...", "orange")
+        self.statistical_summary_btn.configure(state="disabled", text="Generating...")
+        
+        def generate():
+            try:
+                summary_data = self._calculate_statistical_summary(self.current_data)
+                self.after(0, lambda: self._display_statistical_summary(summary_data))
+                
+            except Exception as e:
+                logger.error(f"Statistical summary generation failed: {e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "Error", f"Failed to generate statistical summary:\n{str(e)}"
+                ))
+            finally:
+                self.after(0, lambda: self.statistical_summary_btn.configure(
+                    state="normal", text="📊 Statistical Summary"
+                ))
+                self.after(0, lambda: self._update_analytics_status("Ready", "green"))
+
+        threading.Thread(target=generate, daemon=True).start()
+
+    def _calculate_statistical_summary(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Calculate comprehensive statistical summary of historical data."""
+        summary = {
+            'total_records': 0,
+            'pass_rate': 0,
+            'parameter_stats': {},
+            'model_breakdown': {},
+            'temporal_analysis': {}
+        }
+        
+        try:
+            df = pd.DataFrame(data)
+            summary['total_records'] = len(df)
+            
+            if 'status' in df.columns:
+                pass_count = len(df[df['status'] == 'Pass'])
+                summary['pass_rate'] = (pass_count / len(df)) * 100 if len(df) > 0 else 0
+            
+            # Analyze numerical parameters
+            numerical_params = ['sigma_gradient', 'linearity_error', 'resistance_change_percent']
+            for param in numerical_params:
+                if param in df.columns:
+                    values = df[param].dropna()
+                    if len(values) > 0:
+                        summary['parameter_stats'][param] = {
+                            'mean': values.mean(),
+                            'median': values.median(),
+                            'std': values.std(),
+                            'min': values.min(),
+                            'max': values.max(),
+                            'count': len(values)
+                        }
+            
+            # Model breakdown
+            if 'model' in df.columns:
+                model_counts = df['model'].value_counts()
+                summary['model_breakdown'] = model_counts.to_dict()
+            
+            # Temporal analysis
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                date_range = df['timestamp'].max() - df['timestamp'].min()
+                summary['temporal_analysis'] = {
+                    'date_range_days': date_range.days,
+                    'earliest_record': df['timestamp'].min().isoformat(),
+                    'latest_record': df['timestamp'].max().isoformat()
+                }
+                
+        except Exception as e:
+            logger.error(f"Error calculating statistical summary: {e}")
+            summary['error'] = str(e)
+            
+        return summary
+
+    def _display_statistical_summary(self, summary_data: Dict[str, Any]):
+        """Display statistical summary in the UI."""
+        try:
+            self.stats_display.configure(state='normal')
+            self.stats_display.delete('1.0', ctk.END)
+            
+            content = "COMPREHENSIVE STATISTICAL SUMMARY\n"
+            content += "=" * 60 + "\n\n"
+            
+            # Basic statistics
+            content += f"Total Records: {summary_data.get('total_records', 0)}\n"
+            content += f"Pass Rate: {summary_data.get('pass_rate', 0):.2f}%\n\n"
+            
+            # Parameter statistics
+            param_stats = summary_data.get('parameter_stats', {})
+            if param_stats:
+                content += "PARAMETER STATISTICS:\n"
+                for param, stats in param_stats.items():
+                    content += f"\n{param.replace('_', ' ').title()}:\n"
+                    content += f"  Mean: {stats['mean']:.6f}\n"
+                    content += f"  Median: {stats['median']:.6f}\n"
+                    content += f"  Std Dev: {stats['std']:.6f}\n"
+                    content += f"  Range: {stats['min']:.6f} - {stats['max']:.6f}\n"
+                    content += f"  Sample Count: {stats['count']}\n"
+                content += "\n"
+            
+            # Model breakdown
+            model_breakdown = summary_data.get('model_breakdown', {})
+            if model_breakdown:
+                content += "MODEL BREAKDOWN:\n"
+                for model, count in sorted(model_breakdown.items(), key=lambda x: x[1], reverse=True):
+                    percentage = (count / summary_data.get('total_records', 1)) * 100
+                    content += f"  {model}: {count} records ({percentage:.1f}%)\n"
+                content += "\n"
+            
+            # Temporal analysis
+            temporal = summary_data.get('temporal_analysis', {})
+            if temporal:
+                content += "TEMPORAL ANALYSIS:\n"
+                content += f"  Date Range: {temporal.get('date_range_days', 0)} days\n"
+                content += f"  Earliest: {temporal.get('earliest_record', 'Unknown')}\n"
+                content += f"  Latest: {temporal.get('latest_record', 'Unknown')}\n"
+            
+            self.stats_display.insert('1.0', content)
+            self.stats_display.configure(state='disabled')
+            
+        except Exception as e:
+            logger.error(f"Error displaying statistical summary: {e}")
+
+    def _calculate_correlation_matrix(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Calculate correlation matrix for numerical parameters."""
+        try:
+            df = pd.DataFrame(data)
+            
+            # Select numerical columns for correlation
+            numerical_cols = ['sigma_gradient', 'linearity_error', 'resistance_change_percent', 
+                            'unit_length', 'travel_length']
+            
+            # Filter to available columns
+            available_cols = [col for col in numerical_cols if col in df.columns]
+            
+            if len(available_cols) < 2:
+                return {'matrix': None, 'error': 'Insufficient numerical columns for correlation'}
+            
+            correlation_df = df[available_cols].corr()
+            
+            # Find strong correlations
+            strong_correlations = []
+            for i, col1 in enumerate(available_cols):
+                for j, col2 in enumerate(available_cols):
+                    if i < j:  # Avoid duplicates
+                        corr_val = correlation_df.loc[col1, col2]
+                        if abs(corr_val) > 0.5:  # Threshold for "strong" correlation
+                            strong_correlations.append({
+                                'param1': col1,
+                                'param2': col2,
+                                'correlation': corr_val,
+                                'strength': 'strong' if abs(corr_val) > 0.7 else 'moderate'
+                            })
+            
+            return {
+                'matrix': correlation_df,
+                'strong_correlations': strong_correlations,
+                'parameters': available_cols
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating correlation matrix: {e}")
+            return {'matrix': None, 'error': str(e)}
+
+    def _run_predictive_analysis(self):
+        """Run predictive analysis to forecast future performance."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
+            return
+            
+        self._update_analytics_status("Running Predictive Analysis...", "orange")
+        self.predictive_analysis_btn.configure(state="disabled", text="Predicting...")
+        
+        def analyze():
+            try:
+                prediction_data = self._build_predictive_models(self.current_data)
+                
+                # Update UI
+                self.after(0, lambda: self._display_predictive_analysis(prediction_data))
+                
+            except Exception as e:
+                logger.error(f"Predictive analysis failed: {e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "Analysis Error", f"Predictive analysis failed:\n{str(e)}"
+                ))
+            finally:
+                self.after(0, lambda: self.predictive_analysis_btn.configure(
+                    state="normal", text="🔮 Predictive Analysis"
+                ))
+                self.after(0, lambda: self._update_analytics_status("Ready", "green"))
+
+        threading.Thread(target=analyze, daemon=True).start()
+
+    def _build_predictive_models(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build simple predictive models from historical data."""
+        try:
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import mean_squared_error, r2_score
+            
+            df = pd.DataFrame(data)
+            
+            # Prepare features and targets
+            feature_cols = ['sigma_gradient', 'linearity_error', 'unit_length', 'travel_length']
+            available_features = [col for col in feature_cols if col in df.columns]
+            
+            if len(available_features) < 2:
+                return {'error': 'Insufficient features for predictive modeling'}
+            
+            # Remove rows with missing values
+            clean_df = df.dropna(subset=available_features)
+            
+            if len(clean_df) < 10:
+                return {'error': 'Insufficient data points for reliable prediction'}
+            
+            models = {}
+            
+            # Predict sigma gradient
+            if 'sigma_gradient' in clean_df.columns and len(available_features) > 1:
+                target_features = [col for col in available_features if col != 'sigma_gradient']
+                
+                X = clean_df[target_features]
+                y = clean_df['sigma_gradient']
+                
+                if len(X) > 5:
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+                    
+                    model = RandomForestRegressor(n_estimators=50, random_state=42)
+                    model.fit(X_train, y_train)
+                    
+                    y_pred = model.predict(X_test)
+                    
+                    models['sigma_gradient'] = {
+                        'model': model,
+                        'features': target_features,
+                        'mse': mean_squared_error(y_test, y_pred),
+                        'r2_score': r2_score(y_test, y_pred),
+                        'actual': y_test.tolist(),
+                        'predicted': y_pred.tolist(),
+                        'feature_importance': dict(zip(target_features, model.feature_importances_))
+                    }
+            
+            return models
+            
+        except ImportError:
+            return {'error': 'Scikit-learn not available for predictive modeling'}
+        except Exception as e:
+            logger.error(f"Error building predictive models: {e}")
+            return {'error': str(e)}
+
+    def _detect_anomalies(self):
+        """Detect anomalies in the historical data."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
+            return
+            
+        self._update_analytics_status("Detecting Anomalies...", "orange")
+        self.anomaly_detection_btn.configure(state="disabled", text="Detecting...")
+        
+        def detect():
+            try:
+                anomaly_data = self._find_anomalies(self.current_data)
+                
+                # Update dashboard
+                anomaly_count = len(anomaly_data.get('anomalies', []))
+                self.anomaly_count_card.update_value(str(anomaly_count))
+                
+                if anomaly_count == 0:
+                    self.anomaly_count_card.set_color_scheme('success')
+                elif anomaly_count <= 5:
+                    self.anomaly_count_card.set_color_scheme('warning')
+                else:
+                    self.anomaly_count_card.set_color_scheme('danger')
+                
+                # Update UI
+                self.after(0, lambda: self._display_anomaly_results(anomaly_data))
+                
+            except Exception as e:
+                logger.error(f"Anomaly detection failed: {e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "Analysis Error", f"Anomaly detection failed:\n{str(e)}"
+                ))
+            finally:
+                self.after(0, lambda: self.anomaly_detection_btn.configure(
+                    state="normal", text="🚨 Detect Anomalies"
+                ))
+                self.after(0, lambda: self._update_analytics_status("Ready", "green"))
+
+        threading.Thread(target=detect, daemon=True).start()
+
+    def _find_anomalies(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Find anomalies using statistical methods."""
+        try:
+            df = pd.DataFrame(data)
+            anomalies = []
+            
+            # Parameters to check for anomalies
+            numerical_params = ['sigma_gradient', 'linearity_error', 'resistance_change_percent']
+            
+            for param in numerical_params:
+                if param in df.columns:
+                    values = df[param].dropna()
+                    
+                    if len(values) > 3:
+                        # Use IQR method for anomaly detection
+                        Q1 = values.quantile(0.25)
+                        Q3 = values.quantile(0.75)
+                        IQR = Q3 - Q1
+                        
+                        lower_bound = Q1 - 1.5 * IQR
+                        upper_bound = Q3 + 1.5 * IQR
+                        
+                        # Find outliers
+                        outliers = df[(df[param] < lower_bound) | (df[param] > upper_bound)]
+                        
+                        for idx, row in outliers.iterrows():
+                            anomalies.append({
+                                'index': idx,
+                                'parameter': param,
+                                'value': row[param],
+                                'expected_range': f"{lower_bound:.4f} - {upper_bound:.4f}",
+                                'severity': 'high' if (row[param] < Q1 - 3*IQR or row[param] > Q3 + 3*IQR) else 'medium',
+                                'timestamp': row.get('timestamp', 'Unknown'),
+                                'model': row.get('model', 'Unknown'),
+                                'serial': row.get('serial', 'Unknown')
+                            })
+            
+            # Statistical summary
+            summary = {
+                'total_records': len(df),
+                'anomalies_found': len(anomalies),
+                'anomaly_rate': (len(anomalies) / len(df)) * 100 if len(df) > 0 else 0,
+                'parameters_checked': numerical_params,
+                'severity_breakdown': {
+                    'high': len([a for a in anomalies if a['severity'] == 'high']),
+                    'medium': len([a for a in anomalies if a['severity'] == 'medium'])
+                }
+            }
+            
+            return {
+                'anomalies': anomalies,
+                'summary': summary
+            }
+            
+        except Exception as e:
+            logger.error(f"Error finding anomalies: {e}")
+            return {'anomalies': [], 'summary': {}, 'error': str(e)}
+
+    def _display_trend_analysis(self, trend_data: Dict[str, Any]):
+        """Display trend analysis results."""
+        try:
+            # Update trend chart
+            self._update_trend_analysis_chart(trend_data)
+            
+        except Exception as e:
+            logger.error(f"Error displaying trend analysis: {e}")
+
+    def _display_correlation_analysis(self, correlation_data: Dict[str, Any]):
+        """Display correlation analysis results."""
+        try:
+            # Update correlation heatmap
+            self._update_correlation_heatmap(correlation_data)
+            
+        except Exception as e:
+            logger.error(f"Error displaying correlation analysis: {e}")
+
+    def _display_predictive_analysis(self, prediction_data: Dict[str, Any]):
+        """Display predictive analysis results."""
+        try:
+            if 'error' in prediction_data:
+                # Show error message
+                self.prediction_chart.clear_chart()
+                return
+                
+            # Update prediction chart
+            self._update_prediction_chart(prediction_data)
+            
+        except Exception as e:
+            logger.error(f"Error displaying predictive analysis: {e}")
+
+    def _display_anomaly_results(self, anomaly_data: Dict[str, Any]):
+        """Display anomaly detection results."""
+        try:
+            self.anomaly_display.configure(state='normal')
+            self.anomaly_display.delete('1.0', ctk.END)
+            
+            content = "ANOMALY DETECTION RESULTS\n"
+            content += "=" * 50 + "\n\n"
+            
+            summary = anomaly_data.get('summary', {})
+            anomalies = anomaly_data.get('anomalies', [])
+            
+            content += f"Total Records Analyzed: {summary.get('total_records', 0)}\n"
+            content += f"Anomalies Found: {summary.get('anomalies_found', 0)}\n"
+            content += f"Anomaly Rate: {summary.get('anomaly_rate', 0):.2f}%\n\n"
+            
+            # Severity breakdown
+            severity = summary.get('severity_breakdown', {})
+            content += "SEVERITY BREAKDOWN:\n"
+            content += f"  High: {severity.get('high', 0)}\n"
+            content += f"  Medium: {severity.get('medium', 0)}\n\n"
+            
+            # List anomalies
+            if anomalies:
+                content += "DETECTED ANOMALIES:\n"
+                for i, anomaly in enumerate(anomalies[:20], 1):  # Show first 20
+                    content += f"\n{i}. {anomaly['parameter'].upper()} ANOMALY\n"
+                    content += f"   Value: {anomaly['value']:.6f}\n"
+                    content += f"   Expected Range: {anomaly['expected_range']}\n"
+                    content += f"   Severity: {anomaly['severity']}\n"
+                    content += f"   Model/Serial: {anomaly['model']}/{anomaly['serial']}\n"
+                    content += f"   Timestamp: {anomaly['timestamp']}\n"
+                
+                if len(anomalies) > 20:
+                    content += f"\n... and {len(anomalies) - 20} more anomalies\n"
+            else:
+                content += "No anomalies detected. All data points are within expected ranges.\n"
+            
+            self.anomaly_display.insert('1.0', content)
+            self.anomaly_display.configure(state='disabled')
+            
+        except Exception as e:
+            logger.error(f"Error displaying anomaly results: {e}")
