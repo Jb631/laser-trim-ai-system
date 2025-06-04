@@ -11,7 +11,10 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, IsolationForest
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import (
+    mean_squared_error, r2_score, accuracy_score, precision_score, 
+    recall_score, f1_score, roc_auc_score, mean_absolute_error
+)
 from sklearn.preprocessing import StandardScaler
 from scipy import stats
 import logging
@@ -1152,13 +1155,37 @@ class AdaptiveThresholdOptimizer(ThresholdOptimizer):
     def _calculate_performance(self, outcomes: pd.Series,
                                thresholds: np.ndarray) -> Dict[str, float]:
         """Calculate performance metrics for given thresholds."""
-        # This would need actual sigma gradient values to properly calculate
-        # For now, return placeholder metrics
-        return {
-            'pass_rate': float(outcomes.mean()),
-            'threshold_mean': float(thresholds.mean()),
-            'threshold_std': float(thresholds.std())
-        }
+        try:
+            # Calculate basic metrics
+            pass_rate = float(outcomes.mean()) if len(outcomes) > 0 else 0.0
+            threshold_mean = float(thresholds.mean()) if len(thresholds) > 0 else 0.0
+            threshold_std = float(thresholds.std()) if len(thresholds) > 0 else 0.0
+            
+            # Calculate threshold effectiveness
+            threshold_variance = threshold_std / threshold_mean if threshold_mean > 0 else 0.0
+            
+            # Calculate consistency metrics
+            threshold_range = float(np.max(thresholds) - np.min(thresholds)) if len(thresholds) > 0 else 0.0
+            threshold_cv = threshold_std / threshold_mean if threshold_mean > 0 else 0.0
+            
+            return {
+                'pass_rate': pass_rate,
+                'threshold_mean': threshold_mean,
+                'threshold_std': threshold_std,
+                'threshold_variance': threshold_variance,
+                'threshold_range': threshold_range,
+                'threshold_cv': threshold_cv,
+                'sample_count': len(outcomes)
+            }
+            
+        except Exception as e:
+            # Fallback to basic metrics if calculation fails
+            return {
+                'pass_rate': float(outcomes.mean()) if len(outcomes) > 0 else 0.0,
+                'threshold_mean': float(thresholds.mean()) if len(thresholds) > 0 else 0.0,
+                'threshold_std': float(thresholds.std()) if len(thresholds) > 0 else 0.0,
+                'sample_count': len(outcomes)
+            }
 
     def _retrain_with_adaptation(self, X_new: pd.DataFrame, y_new: pd.Series) -> None:
         """Retrain model with new and historical data."""

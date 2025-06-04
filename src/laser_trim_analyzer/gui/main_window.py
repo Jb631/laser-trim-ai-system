@@ -353,10 +353,13 @@ class MainWindow:
                 self.ml_predictor = MLPredictor(self.config, logger=logging.getLogger(__name__))
                 if self.ml_predictor.initialize():
                     self.ml_status.set("Ready")
+                    logging.getLogger(__name__).info("ML Predictor initialized successfully")
                 else:
-                    self.ml_status.set("Not Ready")
+                    self.ml_status.set("Models Need Training")
+                    logging.getLogger(__name__).info("ML Predictor initialized but models need training")
             except Exception as e:
                 self.ml_status.set("Error")
+                logging.getLogger(__name__).error(f"Failed to initialize ML Predictor: {e}")
                 print(f"Failed to initialize ML Predictor: {e}")
 
         # Initialize API client

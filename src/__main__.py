@@ -9,124 +9,122 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional
+import asyncio
+import signal
+import os
+import traceback
+import atexit
 
 import click
 from rich.console import Console
 from rich.logging import RichHandler
 
 from laser_trim_analyzer.core.config import get_config
+from laser_trim_analyzer.core.utils import setup_logging
 from laser_trim_analyzer.core.constants import APP_NAME, APP_AUTHOR
 
 # Set up rich console for better output
 console = Console()
 
+# Global shutdown flag
+_shutdown_requested = False
 
-def setup_logging(debug: bool = False) -> None:
-    """Set up application logging with rich handler."""
-    config = get_config()
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global _shutdown_requested
+    print(f"\nReceived signal {signum}, initiating graceful shutdown...")
+    _shutdown_requested = True
+    sys.exit(0)
 
-    # Create log directory
-    config.log_directory.mkdir(parents=True, exist_ok=True)
-
-    # Set up formatters
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    # File handler
-    log_file = config.log_directory / f"laser_trim_analyzer.log"
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(file_formatter)
-    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-
-    # Console handler with Rich
-    console_handler = RichHandler(
-        console=console,
-        show_time=False,
-        show_path=debug
-    )
-    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-
-    # Root logger configuration
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG if debug else logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-
-    # Reduce noise from some libraries
-    logging.getLogger("matplotlib").setLevel(logging.WARNING)
-    logging.getLogger("PIL").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+def cleanup_resources():
+    """Cleanup resources on exit."""
+    try:
+        # Force close any remaining matplotlib figures
+        import matplotlib.pyplot as plt
+        plt.close('all')
+    except ImportError:
+        pass
     
-    # Reduce noise from analysis modules during normal operation only
-    if not debug:
-        logging.getLogger("laser_trim_analyzer.analysis").setLevel(logging.WARNING)
-        logging.getLogger("laser_trim_analyzer.gui.widgets").setLevel(logging.WARNING)
-        logging.getLogger("laser_trim_analyzer.database").setLevel(logging.WARNING)
-    else:
-        # In debug mode, ensure analysis modules are debug level
-        logging.getLogger("laser_trim_analyzer.analysis").setLevel(logging.DEBUG)
-        logging.getLogger("laser_trim_analyzer.core").setLevel(logging.DEBUG)
-
-
-def run_gui(debug: bool = False) -> None:
-    """Run the GUI application."""
-    setup_logging(debug)
-
     try:
-        # Import here to avoid circular imports and heavy imports when using CLI
+        # Stop any asyncio loops
+        if asyncio._get_running_loop():
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.stop()
+    except:
+        pass
+    
+    print("Application cleanup completed.")
+
+@click.command()
+@click.option('--debug', is_flag=True, help='Enable debug mode with verbose logging')
+@click.version_option(version='2.0.0', prog_name='Laser Trim Analyzer')
+def main(debug: bool):
+    """Main entry point for the Laser Trim Analyzer."""
+    global _shutdown_requested
+    
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Register cleanup function
+    atexit.register(cleanup_resources)
+    
+    try:
+        # Initialize configuration and logging
+        config = get_config()
+        
+        # Set up logging level
+        log_level = logging.DEBUG if debug else logging.INFO
+        
+        # Override debug setting if flag provided
+        if debug:
+            config.debug = True
+            console.print("[yellow]Debug mode enabled[/yellow]")
+        
+        # Setup logging with output directory and level
+        logger = setup_logging(config.log_directory, log_level)
+        logger.info("Laser Trim Analyzer - Starting GUI mode...")
+        
+        if debug:
+            logger.debug("Debug logging enabled")
+            logger.debug(f"Configuration: {config}")
+        
+        # Check for shutdown before starting GUI
+        if _shutdown_requested:
+            return
+            
+        # Import and start GUI (heavy imports after signal handlers are set)
         from laser_trim_analyzer.gui.main_window import MainWindow
-
-        console.print(f"[bold blue]{APP_NAME}[/bold blue] - Starting GUI mode...")
-
-        app = MainWindow()
-        if hasattr(app, 'run'):
+        
+        # Check for shutdown after imports
+        if _shutdown_requested:
+            return
+            
+        # Create and run the GUI application
+        app = MainWindow(config)
+        
+        # Run with proper exception handling
+        try:
             app.run()
-        else:
-            app.root.mainloop()
-
-    except ImportError as e:
-        console.print(f"[red]Error: Could not import GUI components: {e}[/red]")
-        console.print("Make sure GUI dependencies are installed: pip install customtkinter")
-        sys.exit(1)
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received, shutting down...")
+        except Exception as e:
+            logger.error(f"Application error: {e}")
+            logger.error(traceback.format_exc())
+        finally:
+            # Ensure cleanup
+            cleanup_resources()
+            
+    except KeyboardInterrupt:
+        print("\nShutdown requested by user.")
     except Exception as e:
-        console.print(f"[red]Error starting GUI: {e}[/red]")
-        logging.exception("GUI startup error")
+        print(f"Fatal error: {e}")
+        traceback.print_exc()
         sys.exit(1)
-
-
-def run_cli(args: list) -> None:
-    """Run the CLI application."""
-    try:
-        # Import here to avoid circular imports
-        from laser_trim_analyzer.cli import cli
-
-        # Remove the first argument (script name) if present
-        if args and args[0].endswith(('.py', '__main__')):
-            args = args[1:]
-
-        cli(args)
-
-    except ImportError as e:
-        console.print(f"[red]Error: Could not import CLI components: {e}[/red]")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Error in CLI: {e}[/red]")
-        logging.exception("CLI error")
-        sys.exit(1)
-
-
-def main() -> None:
-    """Main entry point that determines whether to run GUI or CLI."""
-    # Check for debug flag early
-    debug = '--debug' in sys.argv or '-d' in sys.argv
-
-    # If no arguments or common GUI indicators, run GUI
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and debug):
-        run_gui(debug)
-    else:
-        # Otherwise, run CLI
-        run_cli(sys.argv)
+    finally:
+        # Final cleanup
+        cleanup_resources()
 
 
 if __name__ == "__main__":

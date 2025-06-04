@@ -8,6 +8,7 @@ import customtkinter as ctk
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import threading
+import time
 
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
@@ -456,3 +457,71 @@ class HomePage(BasePage):
         """Called when page is shown."""
         # Refresh data when page is shown
         self.refresh()
+
+    def _update_home_ui(self):
+        """Update the home page UI with current data."""
+        try:
+            # Throttle updates to prevent excessive database queries
+            current_time = time.time()
+            if hasattr(self, '_last_update_time'):
+                time_since_last_update = current_time - self._last_update_time
+                if time_since_last_update < 5.0:  # Minimum 5 seconds between updates
+                    return
+            
+            self._last_update_time = current_time
+            
+            # Update recent files
+            self._update_recent_files()
+            
+            # Update statistics with timeout
+            try:
+                self._update_statistics_with_timeout()
+            except Exception as e:
+                self.logger.warning(f"Statistics update failed: {e}")
+                
+            # Update productivity metrics
+            try:
+                self._update_productivity_metrics()
+            except Exception as e:
+                self.logger.warning(f"Productivity metrics update failed: {e}")
+                
+            self.logger.debug("Home page UI updated successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating home UI: {e}")
+            # Don't let UI update errors crash the application
+    
+    def _update_statistics_with_timeout(self):
+        """Update statistics with timeout to prevent hanging."""
+        import threading
+        import queue
+        
+        result_queue = queue.Queue()
+        
+        def fetch_stats():
+            try:
+                if self.db_manager:
+                    stats = self.db_manager.get_statistics()
+                    result_queue.put(('success', stats))
+                else:
+                    result_queue.put(('error', 'No database connection'))
+            except Exception as e:
+                result_queue.put(('error', str(e)))
+        
+        # Run database query in background thread with timeout
+        thread = threading.Thread(target=fetch_stats)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=2.0)  # 2 second timeout
+        
+        try:
+            result_type, data = result_queue.get_nowait()
+            if result_type == 'success':
+                self._display_statistics(data)
+            else:
+                self.logger.warning(f"Statistics fetch failed: {data}")
+        except queue.Empty:
+            self.logger.warning("Statistics fetch timed out")
+            # Use cached data if available
+            if hasattr(self, '_cached_stats'):
+                self._display_statistics(self._cached_stats)

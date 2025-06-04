@@ -148,3 +148,4 @@ Thumbs.db
 /models/
 /cache/
 .laser_trim_analyzer/
+.aider*
