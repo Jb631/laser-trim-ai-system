@@ -429,17 +429,25 @@ class LaserTrimProcessor:
             overall_validation_status = self._determine_overall_validation_status(tracks)
             validation_grade = self._calculate_overall_validation_grade(tracks)
 
+            # Collect all validation warnings and recommendations from tracks
+            all_validation_warnings = []
+            all_validation_recommendations = []
+            for track_data in tracks.values():
+                if hasattr(track_data, 'validation_warnings'):
+                    all_validation_warnings.extend(track_data.validation_warnings)
+                if hasattr(track_data, 'validation_recommendations'):
+                    all_validation_recommendations.extend(track_data.validation_recommendations)
+
             # Create result
             result = AnalysisResult(
                 metadata=metadata,
                 tracks=tracks,
-                primary_track=primary_track,
                 overall_status=overall_status,
                 overall_validation_status=overall_validation_status,
-                validation_grade=validation_grade,
                 processing_time=(datetime.now() - start_time).total_seconds(),
-                file_hash=file_hash,
-                processing_errors=processing_errors if processing_errors else []
+                processing_errors=processing_errors if processing_errors else [],
+                validation_warnings=all_validation_warnings,
+                validation_recommendations=all_validation_recommendations
             )
 
             # Step 7: Add ML predictions with error handling
@@ -1466,31 +1474,48 @@ class LaserTrimProcessor:
         return stats
 
     def _determine_overall_validation_status(self, tracks: Dict[str, TrackData]) -> ValidationStatus:
-        """Determine overall validation status from all tracks."""
+        """Determine overall validation status from all tracks - laser trimming focused."""
         if not tracks:
             return ValidationStatus.NOT_VALIDATED
         
-        statuses = []
+        # For laser trimming, success means:
+        # 1. Linearity meets specification (most important)
+        # 2. Sigma is reasonable (process control)
+        # 3. Resistance changes are irrelevant if specs are met
+        
+        all_warnings = []
+        critical_failures = []
+        
         for track_data in tracks.values():
-            if hasattr(track_data, 'validation_status'):
-                statuses.append(track_data.validation_status)
-            # Also check individual analysis validation statuses
-            for analysis in [track_data.sigma_analysis, track_data.linearity_analysis, track_data.resistance_analysis]:
-                if hasattr(analysis, 'validation_status'):
-                    statuses.append(analysis.validation_status)
+            # Check linearity - this is the PRIMARY goal of laser trimming
+            if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
+                if not track_data.linearity_analysis.linearity_pass:
+                    critical_failures.append("Linearity specification not met")
+                else:
+                    # Linearity passed - this is success for laser trimming
+                    pass
+            
+            # Check sigma - should be reasonable but not critical
+            if hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis:
+                if track_data.sigma_analysis.sigma_gradient > 1.0:  # Very high sigma
+                    all_warnings.append("High sigma gradient - check process control")
+                elif not track_data.sigma_analysis.sigma_pass:
+                    all_warnings.append("Sigma slightly above threshold")
+            
+            # Resistance changes are NORMAL and EXPECTED in laser trimming
+            # Only flag extreme cases (>50% change)
+            if hasattr(track_data, 'resistance_analysis') and track_data.resistance_analysis:
+                if (track_data.resistance_analysis.resistance_change_percent and 
+                    abs(track_data.resistance_analysis.resistance_change_percent) > 50):
+                    all_warnings.append("Very large resistance change - verify process")
         
-        if not statuses:
-            return ValidationStatus.NOT_VALIDATED
-        
-        # Priority: FAILED > WARNING > VALIDATED > NOT_VALIDATED
-        if ValidationStatus.FAILED in statuses:
-            return ValidationStatus.FAILED
-        elif ValidationStatus.WARNING in statuses:
-            return ValidationStatus.WARNING
-        elif ValidationStatus.VALIDATED in statuses:
-            return ValidationStatus.VALIDATED
+        # Determine overall status based on laser trimming success criteria
+        if critical_failures:
+            return ValidationStatus.FAILED  # Failed to meet primary specifications
+        elif all_warnings:
+            return ValidationStatus.WARNING  # Met specs but with concerns
         else:
-            return ValidationStatus.NOT_VALIDATED
+            return ValidationStatus.VALIDATED  # Successful trim
 
     def _calculate_overall_validation_grade(self, tracks: Dict[str, TrackData]) -> str:
         """Calculate overall validation grade from all tracks."""

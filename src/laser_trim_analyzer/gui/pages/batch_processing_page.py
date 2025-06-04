@@ -599,8 +599,8 @@ class BatchProcessingPage(BasePage):
         if validation_result.is_valid:
             self._update_batch_status("Batch Validation Passed", "green")
             
-            # Show validation metrics
-            self.batch_validation_frame.grid()
+            # Show validation metrics (use pack since parent uses pack)
+            self.batch_validation_frame.pack(fill='x', pady=(0, 20))
             
             metadata = validation_result.metadata
             total_files = len(self.selected_files)
@@ -630,8 +630,8 @@ class BatchProcessingPage(BasePage):
         else:
             self._update_batch_status("Batch Validation Failed", "red")
             
-            # Show validation metrics with errors
-            self.batch_validation_frame.grid()
+            # Show validation metrics with errors (use pack since parent uses pack)
+            self.batch_validation_frame.pack(fill='x', pady=(0, 20))
             total_files = len(self.selected_files)
             self.total_files_card.update_value(str(total_files), "danger")
             self.valid_files_card.update_value("0", "danger")
@@ -986,21 +986,28 @@ class BatchProcessingPage(BasePage):
         return results
     
     def _process_single_file_safe(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
-        """Safely process a single file with cancellation checks."""
+        """Safely process a single file with error handling."""
+        logger = logging.getLogger(__name__)
+        
         try:
             # Check for cancellation before processing
             if self._is_processing_cancelled():
                 return None
-                
+            
             # Configure processor for this file
             processor_config = self.analyzer_config.copy() if hasattr(self.analyzer_config, 'copy') else self.analyzer_config
             
-            # Process the file
+            # Update processor config based on UI settings
+            if hasattr(processor_config, 'processing'):
+                processor_config.processing.generate_plots = self.generate_plots_var.get()
+                # Set comprehensive validation if that setting exists
+                if hasattr(processor_config.processing, 'comprehensive_validation'):
+                    processor_config.processing.comprehensive_validation = self.comprehensive_validation_var.get()
+            
+            # Process the file (only pass valid parameters)
             result = self.processor.process_file(
                 file_path,
-                output_dir=output_dir,
-                generate_plots=self.generate_plots_var.get(),
-                comprehensive_validation=self.comprehensive_validation_var.get()
+                output_dir=output_dir
             )
             
             # Check for cancellation after processing
@@ -1267,13 +1274,142 @@ class BatchProcessingPage(BasePage):
 
     def _export_batch_excel(self, file_path: Path):
         """Export batch results to Excel format."""
-        # Implementation for batch Excel export with comprehensive validation data
-        pass
+        import pandas as pd
+        
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            # Summary sheet
+            summary_data = []
+            all_track_data = []
+            
+            for file_path_str, result in self.batch_results.items():
+                file_name = Path(file_path_str).name
+                
+                # Summary row
+                summary_data.append({
+                    'File': file_name,
+                    'Model': result.metadata.model,
+                    'Serial': result.metadata.serial,
+                    'System_Type': result.metadata.system_type.value,
+                    'Analysis_Date': result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Overall_Status': result.overall_status.value,
+                    'Validation_Status': result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A',
+                    'Processing_Time': f"{result.processing_time:.2f}",
+                    'Track_Count': len(result.tracks),
+                    'Pass_Count': sum(1 for track in result.tracks.values() if track.overall_status.value == 'Pass'),
+                    'Fail_Count': sum(1 for track in result.tracks.values() if track.overall_status.value != 'Pass')
+                })
+                
+                # Individual track data
+                for track_id, track in result.tracks.items():
+                    track_row = {
+                        'File': file_name,
+                        'Model': result.metadata.model,
+                        'Serial': result.metadata.serial,
+                        'Track_ID': track_id,
+                        'Track_Status': track.overall_status.value,
+                        'Sigma_Gradient': track.sigma_analysis.sigma_gradient if track.sigma_analysis else None,
+                        'Sigma_Threshold': track.sigma_analysis.sigma_threshold if track.sigma_analysis else None,
+                        'Sigma_Pass': track.sigma_analysis.sigma_pass if track.sigma_analysis else None,
+                        'Linearity_Spec': track.linearity_analysis.linearity_spec if track.linearity_analysis else None,
+                        'Linearity_Pass': track.linearity_analysis.linearity_pass if track.linearity_analysis else None,
+                        'Risk_Category': track.risk_category.value if hasattr(track, 'risk_category') else 'Unknown'
+                    }
+                    all_track_data.append(track_row)
+            
+            # Write summary sheet
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Batch Summary', index=False)
+            
+            # Write track details sheet
+            tracks_df = pd.DataFrame(all_track_data)
+            tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+            
+            # Statistics sheet
+            stats_data = {
+                'Metric': [
+                    'Total Files Processed',
+                    'Total Files Selected',
+                    'Success Rate',
+                    'Total Tracks Analyzed', 
+                    'Tracks Passed',
+                    'Tracks Failed',
+                    'Pass Rate',
+                    'Files Validated',
+                    'Files with Warnings',
+                    'Files with Validation Errors'
+                ],
+                'Value': [
+                    len(self.batch_results),
+                    len(self.selected_files),
+                    f"{len(self.batch_results)/len(self.selected_files)*100:.1f}%",
+                    sum(len(r.tracks) for r in self.batch_results.values()),
+                    sum(sum(1 for t in r.tracks.values() if t.overall_status.value == 'Pass') for r in self.batch_results.values()),
+                    sum(sum(1 for t in r.tracks.values() if t.overall_status.value != 'Pass') for r in self.batch_results.values()),
+                    f"{sum(sum(1 for t in r.tracks.values() if t.overall_status.value == 'Pass') for r in self.batch_results.values()) / sum(len(r.tracks) for r in self.batch_results.values()) * 100:.1f}%" if sum(len(r.tracks) for r in self.batch_results.values()) > 0 else "0%",
+                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'VALIDATED'),
+                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'WARNING'),
+                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'FAILED')
+                ]
+            }
+            
+            stats_df = pd.DataFrame(stats_data)
+            stats_df.to_excel(writer, sheet_name='Statistics', index=False)
 
     def _export_batch_csv(self, file_path: Path):
         """Export batch results to CSV format."""
-        # Implementation for batch CSV export
-        pass
+        import pandas as pd
+        
+        # Create comprehensive CSV export
+        export_data = []
+        
+        for file_path_str, result in self.batch_results.items():
+            file_name = Path(file_path_str).name
+            
+            for track_id, track in result.tracks.items():
+                row = {
+                    'File': file_name,
+                    'Model': result.metadata.model,
+                    'Serial': result.metadata.serial,
+                    'System_Type': result.metadata.system_type.value,
+                    'Analysis_Date': result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Track_ID': track_id,
+                    'Overall_Status': result.overall_status.value,
+                    'Track_Status': track.overall_status.value,
+                    'Processing_Time': f"{result.processing_time:.2f}",
+                    'Validation_Status': result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A'
+                }
+                
+                # Add detailed analysis data
+                if track.sigma_analysis:
+                    row.update({
+                        'Sigma_Gradient': track.sigma_analysis.sigma_gradient,
+                        'Sigma_Threshold': track.sigma_analysis.sigma_threshold,
+                        'Sigma_Pass': track.sigma_analysis.sigma_pass,
+                        'Sigma_Improvement': track.sigma_analysis.improvement_percent if hasattr(track.sigma_analysis, 'improvement_percent') else None
+                    })
+                
+                if track.linearity_analysis:
+                    row.update({
+                        'Linearity_Spec': track.linearity_analysis.linearity_spec,
+                        'Linearity_Pass': track.linearity_analysis.linearity_pass,
+                        'Linearity_Error': track.linearity_analysis.linearity_error if hasattr(track.linearity_analysis, 'linearity_error') else None
+                    })
+                
+                if track.resistance_analysis:
+                    row.update({
+                        'Resistance_Before': track.resistance_analysis.resistance_before if hasattr(track.resistance_analysis, 'resistance_before') else None,
+                        'Resistance_After': track.resistance_analysis.resistance_after if hasattr(track.resistance_analysis, 'resistance_after') else None,
+                        'Resistance_Change_Percent': track.resistance_analysis.resistance_change_percent if hasattr(track.resistance_analysis, 'resistance_change_percent') else None
+                    })
+                
+                if hasattr(track, 'risk_category'):
+                    row['Risk_Category'] = track.risk_category.value
+                
+                export_data.append(row)
+        
+        # Convert to DataFrame and save
+        df = pd.DataFrame(export_data)
+        df.to_csv(file_path, index=False)
 
     def _clear_results(self):
         """Clear batch processing results."""

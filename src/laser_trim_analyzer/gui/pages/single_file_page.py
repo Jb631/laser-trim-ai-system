@@ -199,34 +199,34 @@ class SingleFilePage(BasePage):
         self.file_status_card = MetricCard(
             self.validation_metrics_frame,
             title="File Status",
-            value="Unknown",
-            color_scheme="neutral"
+            value="--",
+            status="info"
         )
-        self.file_status_card.pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
+        self.file_status_card.pack(side='left', padx=10, pady=10, fill='both', expand=True)
         
         self.file_size_card = MetricCard(
             self.validation_metrics_frame,
-            title="File Size",
-            value="0 MB",
-            color_scheme="neutral"
+            title="File Size", 
+            value="--",
+            status="info"
         )
-        self.file_size_card.pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
+        self.file_size_card.pack(side='left', padx=10, pady=10, fill='both', expand=True)
         
         self.sheet_count_card = MetricCard(
             self.validation_metrics_frame,
-            title="Sheet Count",
-            value="0",
-            color_scheme="neutral"
+            title="Sheets Found",
+            value="--",
+            status="info"
         )
-        self.sheet_count_card.pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
+        self.sheet_count_card.pack(side='left', padx=10, pady=10, fill='both', expand=True)
         
         self.validation_grade_card = MetricCard(
             self.validation_metrics_frame,
             title="Validation Grade",
             value="--",
-            color_scheme="neutral"
+            status="info"
         )
-        self.validation_grade_card.pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
+        self.validation_grade_card.pack(side='left', padx=10, pady=10, fill='both', expand=True)
 
     def _create_controls_section(self):
         """Create processing controls section (matching batch processing theme)."""
@@ -575,7 +575,11 @@ class SingleFilePage(BasePage):
             self._update_validation_status("Analysis Complete - Not Validated", "gray")
         
         # Display results
-        self.analysis_display.display_result(result)
+        try:
+            self.analysis_display.display_result(result)
+        except Exception as e:
+            logger.error(f"Failed to display analysis result: {e}")
+            # Continue with other operations even if display fails
         
         # Enable export button
         self.export_button.configure(state="normal")
@@ -583,19 +587,31 @@ class SingleFilePage(BasePage):
         # Re-enable controls
         self._set_controls_state("normal")
         
-        # Show success message with validation info
+        # Show success notification using non-blocking approach
         success_msg = f"Analysis completed successfully!\n\n"
         success_msg += f"Status: {result.overall_status.value}\n"
         success_msg += f"Validation: {result.overall_validation_status.value}\n"
         success_msg += f"Processing time: {result.processing_time:.2f}s"
         
-        if hasattr(result, 'validation_grade') and result.validation_grade:
-            success_msg += f"\nValidation Grade: {result.validation_grade}"
+        # Use computed property instead of non-existent attribute
+        try:
+            validation_grade = result.validation_grade
+            if validation_grade and validation_grade != "Not Validated":
+                success_msg += f"\nValidation Grade: {validation_grade}"
+        except Exception as e:
+            logger.debug(f"Could not get validation grade: {e}")
         
         if output_dir:
             success_msg += f"\n\nOutputs saved to: {output_dir}"
         
-        messagebox.showinfo("Analysis Complete", success_msg)
+        # Use after() to show dialog on next UI cycle to avoid blocking
+        def show_success_message():
+            try:
+                messagebox.showinfo("Analysis Complete", success_msg)
+            except Exception as e:
+                logger.error(f"Failed to show success message: {e}")
+        
+        self.after(100, show_success_message)  # Small delay to ensure UI is responsive
         
         logger.info(f"Analysis completed successfully: {result.overall_status.value}")
 
@@ -662,13 +678,123 @@ class SingleFilePage(BasePage):
 
     def _export_excel(self, file_path: Path):
         """Export results to Excel format."""
-        # Implementation for Excel export with validation data
-        pass
+        import pandas as pd
+        from openpyxl import Workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        
+        result = self.current_result
+        
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            # Summary sheet
+            summary_data = {
+                'Metric': ['File', 'Model', 'Serial', 'System Type', 'Analysis Date', 'Overall Status', 
+                          'Validation Status', 'Processing Time (s)', 'Track Count'],
+                'Value': [
+                    result.metadata.file_name,
+                    result.metadata.model,
+                    result.metadata.serial,
+                    result.metadata.system_type.value,
+                    result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    result.overall_status.value,
+                    result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A',
+                    f"{result.processing_time:.2f}",
+                    len(result.tracks)
+                ]
+            }
+            
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Track details sheet
+            track_details = []
+            for track_id, track in result.tracks.items():
+                track_details.append({
+                    'Track_ID': track_id,
+                    'Sigma_Gradient': track.sigma_analysis.sigma_gradient if track.sigma_analysis else None,
+                    'Sigma_Threshold': track.sigma_analysis.sigma_threshold if track.sigma_analysis else None,
+                    'Sigma_Pass': track.sigma_analysis.sigma_pass if track.sigma_analysis else None,
+                    'Linearity_Spec': track.linearity_analysis.linearity_spec if track.linearity_analysis else None,
+                    'Linearity_Pass': track.linearity_analysis.linearity_pass if track.linearity_analysis else None,
+                    'Overall_Status': track.overall_status.value,
+                    'Risk_Category': track.risk_category.value if hasattr(track, 'risk_category') else 'Unknown'
+                })
+            
+            if track_details:
+                tracks_df = pd.DataFrame(track_details)
+                tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+            
+            # Validation details if available
+            if hasattr(result, 'validation_details') and result.validation_details:
+                validation_data = []
+                for detail in result.validation_details:
+                    validation_data.append({
+                        'Check': detail.get('check', 'Unknown'),
+                        'Status': detail.get('status', 'Unknown'),
+                        'Message': detail.get('message', 'No message'),
+                        'Severity': detail.get('severity', 'Info')
+                    })
+                
+                if validation_data:
+                    validation_df = pd.DataFrame(validation_data)
+                    validation_df.to_excel(writer, sheet_name='Validation', index=False)
 
     def _export_csv(self, file_path: Path):
         """Export results to CSV format."""
-        # Implementation for CSV export
-        pass
+        import pandas as pd
+        
+        result = self.current_result
+        
+        # Create comprehensive export data
+        export_data = []
+        
+        for track_id, track in result.tracks.items():
+            row = {
+                'File': result.metadata.file_name,
+                'Model': result.metadata.model,
+                'Serial': result.metadata.serial,
+                'System_Type': result.metadata.system_type.value,
+                'Analysis_Date': result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
+                'Track_ID': track_id,
+                'Overall_Status': result.overall_status.value,
+                'Track_Status': track.overall_status.value,
+                'Processing_Time': f"{result.processing_time:.2f}",
+                'Validation_Status': result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A'
+            }
+            
+            # Add sigma analysis data
+            if track.sigma_analysis:
+                row.update({
+                    'Sigma_Gradient': track.sigma_analysis.sigma_gradient,
+                    'Sigma_Threshold': track.sigma_analysis.sigma_threshold,
+                    'Sigma_Pass': track.sigma_analysis.sigma_pass,
+                    'Sigma_Improvement': track.sigma_analysis.improvement_percent if hasattr(track.sigma_analysis, 'improvement_percent') else None
+                })
+            
+            # Add linearity analysis data  
+            if track.linearity_analysis:
+                row.update({
+                    'Linearity_Spec': track.linearity_analysis.linearity_spec,
+                    'Linearity_Pass': track.linearity_analysis.linearity_pass,
+                    'Linearity_Error': track.linearity_analysis.linearity_error if hasattr(track.linearity_analysis, 'linearity_error') else None
+                })
+            
+            # Add resistance analysis data
+            if track.resistance_analysis:
+                row.update({
+                    'Resistance_Before': track.resistance_analysis.resistance_before if hasattr(track.resistance_analysis, 'resistance_before') else None,
+                    'Resistance_After': track.resistance_analysis.resistance_after if hasattr(track.resistance_analysis, 'resistance_after') else None,
+                    'Resistance_Change_Percent': track.resistance_analysis.resistance_change_percent if hasattr(track.resistance_analysis, 'resistance_change_percent') else None
+                })
+            
+            # Add risk category
+            if hasattr(track, 'risk_category'):
+                row['Risk_Category'] = track.risk_category.value
+            
+            export_data.append(row)
+        
+        # Convert to DataFrame and save
+        df = pd.DataFrame(export_data)
+        df.to_csv(file_path, index=False)
 
     def _clear_results(self):
         """Clear analysis results."""
