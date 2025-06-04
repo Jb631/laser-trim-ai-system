@@ -153,6 +153,23 @@ class AnalysisInput:
             issues.append("Error data is empty")
         if len(self.position) != len(self.error):
             issues.append("Position and error arrays have different lengths")
+            
+        # Validate upper and lower limits if provided
+        if self.upper_limit and len(self.upper_limit) != len(self.position):
+            issues.append("Upper limit array length doesn't match position array")
+        if self.lower_limit and len(self.lower_limit) != len(self.position):
+            issues.append("Lower limit array length doesn't match position array")
+            
+        # Check for NaN or invalid values
+        try:
+            import numpy as np
+            if np.isnan(np.array(self.position, dtype=float)).any():
+                issues.append("Position data contains NaN values")
+            if np.isnan(np.array(self.error, dtype=float)).any():
+                issues.append("Error data contains NaN values")
+        except Exception:
+            # If we can't check for NaN, just continue
+            pass
 
         return issues
 
@@ -684,8 +701,13 @@ class AnalyticsEngine:
 
         # Plugin storage
         self._plugins: Dict[str, AnalyzerPlugin] = {}
+        
+        # Results cache for performance
+        self._results_cache = {}
+        self._cache_enabled = True
+        self._max_cache_size = 100
 
-        self.logger.info(f"Analytics engine initialized with profile: {config.profile}")
+        self.logger.info(f"Analytics engine initialized with profile: {self.config.profile}")
 
     def register_plugin(self, plugin: AnalyzerPlugin) -> None:
         """
@@ -714,6 +736,31 @@ class AnalyticsEngine:
         issues = input_data.validate()
         if issues:
             raise ValueError(f"Input validation failed: {', '.join(issues)}")
+            
+        # Check cache if enabled
+        if self._cache_enabled:
+            # Create a simple cache key based on input data
+            import hashlib
+            import json
+            
+            # Create a simplified representation for hashing
+            cache_dict = {
+                "position_len": len(input_data.position),
+                "error_len": len(input_data.error),
+                "position_sum": sum(input_data.position),
+                "error_sum": sum(input_data.error),
+                "sigma_gradient": input_data.sigma_gradient,
+                "sigma_threshold": input_data.sigma_threshold,
+                "linearity_spec": input_data.linearity_spec,
+                "profile": self.config.profile.name,
+                "enabled_analyses": ",".join(sorted(self.config.enabled_analyses))
+            }
+            
+            cache_key = hashlib.md5(json.dumps(cache_dict, sort_keys=True).encode()).hexdigest()
+            
+            if cache_key in self._results_cache:
+                self.logger.debug(f"Using cached result for analysis")
+                return self._results_cache[cache_key]
 
         result = CompleteAnalysisResult()
 
@@ -767,6 +814,17 @@ class AnalyticsEngine:
                 self.logger.error(f"Error in {analysis_name} analysis: {e}")
                 if self.config.profile == AnalysisProfile.DETAILED:
                     raise  # Re-raise in detailed mode for debugging
+                    
+        # Cache the result if enabled
+        if self._cache_enabled:
+            # Manage cache size
+            if len(self._results_cache) >= self._max_cache_size:
+                # Remove oldest entry (first key)
+                if self._results_cache:
+                    del self._results_cache[next(iter(self._results_cache))]
+                    
+            # Store in cache
+            self._results_cache[cache_key] = result
 
         return result
 
@@ -827,6 +885,30 @@ class AnalyticsEngine:
             return self._plugins[analysis_name].required_inputs
         else:
             raise ValueError(f"Unknown analyzer: {analysis_name}")
+            
+    def clear_cache(self):
+        """Clear the results cache."""
+        cache_size = len(self._results_cache)
+        self._results_cache.clear()
+        self.logger.debug(f"Cleared analytics cache ({cache_size} entries)")
+        
+    def set_cache_enabled(self, enabled: bool):
+        """Enable or disable results caching."""
+        self._cache_enabled = enabled
+        self.logger.debug(f"Analytics cache {'enabled' if enabled else 'disabled'}")
+        
+    def set_max_cache_size(self, size: int):
+        """Set maximum cache size."""
+        self._max_cache_size = size
+        
+        # Trim cache if needed
+        if len(self._results_cache) > size:
+            # Remove oldest entries
+            keys_to_remove = list(self._results_cache.keys())[:(len(self._results_cache) - size)]
+            for key in keys_to_remove:
+                del self._results_cache[key]
+            
+            self.logger.debug(f"Trimmed analytics cache to {size} entries")
 
 
 # ============================================================================
