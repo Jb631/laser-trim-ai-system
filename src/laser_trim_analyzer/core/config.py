@@ -374,8 +374,10 @@ class Config(BaseSettings):
 
     # Application info
     app_name: str = Field(default="Laser Trim Analyzer", description="Application name")
-    version: str = Field(default="2.0.0", description="Application version")
+    version: str = Field(default="2.1.0", description="Application version")
     debug: bool = Field(default=False, description="Debug mode")
+    first_run: bool = Field(default=True, description="First run flag")
+    initialized: bool = Field(default=False, description="Initialization complete flag")
 
     # Sub-configurations
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
