@@ -79,19 +79,22 @@ class MetricCard(ttk.Frame):
                  thresholds: Optional[dict] = None,
                  show_sparkline: bool = True,
                  on_click: Optional[Callable] = None,
+                 color_scheme: str = "neutral",
                  **kwargs):
         """
-        Initialize MetricCard.
+        Initialize metric card.
 
         Args:
             parent: Parent widget
-            title: Metric title
-            value: Current metric value
+            title: Card title
+            value: Initial value
             unit: Unit of measurement (e.g., '%', 'mm')
             thresholds: Dict with 'good', 'warning', 'critical' values
             show_sparkline: Whether to show sparkline
             on_click: Callback when card is clicked
+            color_scheme: Color scheme to use ("neutral", "success", "warning", "danger", "info")
         """
+        # Don't pass color_scheme to the ttk.Frame constructor
         super().__init__(parent, **kwargs)
 
         self.title = title
@@ -100,6 +103,7 @@ class MetricCard(ttk.Frame):
         self.thresholds = thresholds or {'good': 95, 'warning': 90, 'critical': 80}
         self.show_sparkline = show_sparkline
         self.on_click = on_click
+        self.color_scheme = color_scheme
         self.historical_values = []
 
         # Colors
@@ -108,6 +112,9 @@ class MetricCard(ttk.Frame):
             'warning': '#f39c12',
             'critical': '#e74c3c',
             'neutral': '#3498db',
+            'success': '#27ae60',
+            'danger': '#e74c3c',
+            'info': '#3498db',
             'bg_light': '#ecf0f1',
             'text_dark': '#2c3e50',
             'text_light': '#7f8c8d'
@@ -118,8 +125,8 @@ class MetricCard(ttk.Frame):
 
     def _setup_ui(self):
         """Set up the card UI."""
-        # Configure style
-        self.configure(relief='solid', borderwidth=1, padding=15)
+        # Configure the frame (remove unsupported parameters)
+        # CustomTkinter doesn't support relief, borderwidth, padding
 
         # Create fonts
         title_font = font.Font(family='Segoe UI', size=10, weight='normal')
@@ -172,7 +179,7 @@ class MetricCard(ttk.Frame):
 
     def _on_enter(self, event):
         """Handle mouse enter."""
-        self.configure(relief='solid', borderwidth=2)
+        self.configure(relief='raised', borderwidth=1)
 
     def _on_leave(self, event):
         """Handle mouse leave."""
@@ -228,15 +235,16 @@ class MetricCard(ttk.Frame):
 
     def _get_value_color(self) -> str:
         """Get color based on value and thresholds."""
-        if not self.thresholds:
-            return self.colors['neutral']
+        # Use explicit color scheme if it's not neutral or if there are no thresholds
+        if self.color_scheme != "neutral" or not self.thresholds:
+            return self.colors.get(self.color_scheme, self.colors['neutral'])
             
-        # Check if value is numeric
+        # Check if value is numeric for threshold-based coloring
         try:
             numeric_value = float(self.value)
         except (ValueError, TypeError):
-            # For non-numeric values, use neutral color
-            return self.colors['neutral']
+            # For non-numeric values, use color scheme
+            return self.colors.get(self.color_scheme, self.colors['neutral'])
 
         # Determine if higher or lower is better based on threshold order
         if self.thresholds.get('good', 0) > self.thresholds.get('critical', 0):
@@ -295,6 +303,18 @@ class MetricCard(ttk.Frame):
     def update_thresholds(self, thresholds: dict):
         """Update threshold values."""
         self.thresholds = thresholds
+        self._update_display()
+
+    def update_value(self, value, color_scheme: str = None):
+        """Update the card value and optionally color scheme."""
+        self.value = value
+        if color_scheme:
+            self.color_scheme = color_scheme
+        self._update_display()
+
+    def set_color_scheme(self, color_scheme: str):
+        """Set the color scheme for the card."""
+        self.color_scheme = color_scheme
         self._update_display()
 
 

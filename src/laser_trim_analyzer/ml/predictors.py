@@ -18,7 +18,7 @@ from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import (
     AnalysisResult, TrackData, RiskCategory, AnalysisStatus
 )
-from laser_trim_analyzer.ml.engine import MLEngine
+from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
 from laser_trim_analyzer.ml.models import ModelFactory
 from laser_trim_analyzer.database.models import MLPrediction as DBMLPrediction
 
@@ -137,28 +137,67 @@ class MLPredictor:
 
     def _register_models(self):
         """Register ML models with the engine."""
+        from laser_trim_analyzer.ml.models import ThresholdOptimizer, FailurePredictor, DriftDetector
+        
+        # Create default model configs
+        failure_config = ModelConfig({
+            'model_type': 'failure_predictor',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'sigma_threshold', 'linearity_pass',
+                      'resistance_change_percent', 'trim_improvement_percent',
+                      'failure_probability', 'worst_zone'],
+            'hyperparameters': {
+                'n_estimators': 200,
+                'max_depth': 15,
+                'min_samples_split': 10,
+                'min_samples_leaf': 5
+            }
+        })
+        
+        threshold_config = ModelConfig({
+            'model_type': 'threshold_optimizer',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'linearity_spec', 'travel_length',
+                      'unit_length', 'resistance_change_percent'],
+            'hyperparameters': {
+                'n_estimators': 100,
+                'max_depth': 10,
+                'min_samples_split': 5,
+                'min_samples_leaf': 2
+            }
+        })
+        
+        drift_config = ModelConfig({
+            'model_type': 'drift_detector',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'linearity_spec', 'resistance_change_percent',
+                      'travel_length', 'unit_length'],
+            'hyperparameters': {
+                'n_estimators': 100,
+                'contamination': 0.05,
+                'max_samples': 'auto'
+            }
+        })
+
         # Register failure predictor
         self.ml_engine.register_model(
             'failure_predictor',
-            ModelFactory.create_failure_predictor,
-            self.ml_engine.model_configs.get('failure_predictor',
-                                             ModelFactory.create_failure_predictor().config)
+            FailurePredictor,
+            failure_config
         )
 
         # Register threshold optimizer
         self.ml_engine.register_model(
             'threshold_optimizer',
-            ModelFactory.create_threshold_optimizer,
-            self.ml_engine.model_configs.get('threshold_optimizer',
-                                             ModelFactory.create_threshold_optimizer().config)
+            ThresholdOptimizer,
+            threshold_config
         )
 
         # Register drift detector
         self.ml_engine.register_model(
             'drift_detector',
-            ModelFactory.create_drift_detector,
-            self.ml_engine.model_configs.get('drift_detector',
-                                             ModelFactory.create_drift_detector().config)
+            DriftDetector,
+            drift_config
         )
 
     def _check_models_need_training(self) -> bool:

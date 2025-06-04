@@ -1212,19 +1212,19 @@ class ModelFactory:
     @staticmethod
     def create_threshold_optimizer(adaptive: bool = False, **kwargs) -> ThresholdOptimizer:
         """Create threshold optimizer model."""
-        config = ModelConfig(
-            model_type='threshold_optimizer',
-            version='1.0',
-            features=['sigma_gradient', 'linearity_spec', 'travel_length',
+        config = ModelConfig({
+            'model_type': 'threshold_optimizer',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'linearity_spec', 'travel_length',
                       'unit_length', 'resistance_change_percent'],
-            hyperparameters={
+            'hyperparameters': {
                 'n_estimators': 100,
                 'max_depth': 10,
                 'min_samples_split': 5,
                 'min_samples_leaf': 2,
                 **kwargs
             }
-        )
+        })
 
         if adaptive:
             return AdaptiveThresholdOptimizer(config)
@@ -1233,38 +1233,38 @@ class ModelFactory:
     @staticmethod
     def create_failure_predictor(**kwargs) -> FailurePredictor:
         """Create failure predictor model."""
-        config = ModelConfig(
-            model_type='failure_predictor',
-            version='1.0',
-            features=['sigma_gradient', 'sigma_threshold', 'linearity_pass',
+        config = ModelConfig({
+            'model_type': 'failure_predictor',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'sigma_threshold', 'linearity_pass',
                       'resistance_change_percent', 'trim_improvement_percent',
                       'failure_probability', 'worst_zone'],
-            hyperparameters={
+            'hyperparameters': {
                 'n_estimators': 200,
                 'max_depth': 15,
                 'min_samples_split': 10,
                 'min_samples_leaf': 5,
                 **kwargs
             }
-        )
+        })
 
         return FailurePredictor(config)
 
     @staticmethod
     def create_drift_detector(**kwargs) -> DriftDetector:
         """Create drift detector model."""
-        config = ModelConfig(
-            model_type='drift_detector',
-            version='1.0',
-            features=['sigma_gradient', 'linearity_spec', 'resistance_change_percent',
+        config = ModelConfig({
+            'model_type': 'drift_detector',
+            'version': '1.0',
+            'features': ['sigma_gradient', 'linearity_spec', 'resistance_change_percent',
                       'travel_length', 'unit_length'],
-            hyperparameters={
+            'hyperparameters': {
                 'n_estimators': 100,
                 'contamination': 0.05,
                 'max_samples': 'auto',
                 **kwargs
             }
-        )
+        })
 
         return DriftDetector(config)
 
@@ -1273,14 +1273,14 @@ class ModelFactory:
                         combination_method: str = 'weighted_average',
                         **kwargs) -> ModelEnsemble:
         """Create ensemble model."""
-        config = ModelConfig(
-            model_type='ensemble',
-            version='1.0',
-            features=[],  # Inherited from component models
-            hyperparameters={
+        config = ModelConfig({
+            'model_type': 'ensemble',
+            'version': '1.0',
+            'features': [],  # Inherited from component models
+            'hyperparameters': {
                 'combination_method': combination_method,
                 **kwargs
             }
-        )
+        })
 
         return ModelEnsemble(models, config)

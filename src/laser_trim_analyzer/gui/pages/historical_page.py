@@ -13,6 +13,7 @@ from typing import Optional, Dict, List, Any
 import pandas as pd
 import numpy as np
 import logging
+import threading
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -34,431 +35,362 @@ class HistoricalPage(BasePage):
         super().__init__(parent, main_window)
 
     def _create_page(self):
-        """Set up the historical data page with scrollable layout."""
-        # Create scrollable main frame without shifting
-        main_container = ttk.Frame(self)
-        main_container.pack(fill='both', expand=True)
+        """Create historical page content with consistent theme (matching batch processing)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Canvas and scrollbar
-        canvas = tk.Canvas(main_container)
-        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Add mouse wheel scrolling support
-        add_mousewheel_support(scrollable_frame, canvas)
-        
-        # Pack scrollbar first to avoid shifting
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        
-        # Title in scrollable frame
-        title_frame = ttk.Frame(scrollable_frame)
-        title_frame.pack(fill='x', padx=20, pady=(20, 10))
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_query_section_ctk()
+        self._create_results_section_ctk()
+        self._create_charts_section_ctk()
 
-        ttk.Label(
-            title_frame,
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
+
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="Historical Data Analysis",
-            font=('Segoe UI', 24, 'bold')
-        ).pack(side='left')
-
-        # Create main sections in scrollable frame
-        self._create_query_section(scrollable_frame)
-        self._create_results_section(scrollable_frame)
-        self._create_charts_section(scrollable_frame)
-
-    def _create_query_section(self, parent):
-        """Create query filters section with responsive layout."""
-        query_frame = ttk.LabelFrame(
-            parent,
-            text="Query Filters",
-            padding=15
+            font=ctk.CTkFont(size=24, weight="bold")
         )
-        query_frame.pack(fill='x', padx=20, pady=10)
+        self.title_label.pack(pady=15)
 
-        # Create responsive grid for filters
-        filters_grid = ttk.Frame(query_frame)
-        filters_grid.pack(fill='x')
-        
-        # Configure grid for responsive layout
-        for i in range(6):  # 6 columns
-            filters_grid.grid_columnconfigure(i, weight=1, minsize=120)
+    def _create_query_section_ctk(self):
+        """Create query filters section (matching batch processing theme)."""
+        self.query_frame = ctk.CTkFrame(self.main_container)
+        self.query_frame.pack(fill='x', pady=(0, 20))
+
+        self.query_label = ctk.CTkLabel(
+            self.query_frame,
+            text="Query Filters:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.query_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Filters container
+        self.filters_container = ctk.CTkFrame(self.query_frame)
+        self.filters_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # First row of filters
+        filter_row1 = ctk.CTkFrame(self.filters_container)
+        filter_row1.pack(fill='x', padx=10, pady=(10, 5))
 
         # Model filter
-        ttk.Label(filters_grid, text="Model:").grid(
-            row=0, column=0, sticky='w', padx=(0, 10), pady=5
-        )
+        model_label = ctk.CTkLabel(filter_row1, text="Model:")
+        model_label.pack(side='left', padx=10, pady=10)
+
         self.model_var = tk.StringVar()
-        self.model_entry = ttk.Entry(
-            filters_grid,
-            textvariable=self.model_var
+        self.model_entry = ctk.CTkEntry(
+            filter_row1,
+            textvariable=self.model_var,
+            width=120,
+            height=30
         )
-        self.model_entry.grid(row=0, column=1, sticky='ew', padx=(0, 20), pady=5)
+        self.model_entry.pack(side='left', padx=(0, 20), pady=10)
 
         # Serial filter
-        ttk.Label(filters_grid, text="Serial:").grid(
-            row=0, column=2, sticky='w', padx=(0, 10), pady=5
-        )
+        serial_label = ctk.CTkLabel(filter_row1, text="Serial:")
+        serial_label.pack(side='left', padx=10, pady=10)
+
         self.serial_var = tk.StringVar()
-        self.serial_entry = ttk.Entry(
-            filters_grid,
-            textvariable=self.serial_var
+        self.serial_entry = ctk.CTkEntry(
+            filter_row1,
+            textvariable=self.serial_var,
+            width=120,
+            height=30
         )
-        self.serial_entry.grid(row=0, column=3, sticky='ew', padx=(0, 20), pady=5)
+        self.serial_entry.pack(side='left', padx=(0, 20), pady=10)
 
         # Date range
-        ttk.Label(filters_grid, text="Date Range:").grid(
-            row=0, column=4, sticky='w', padx=(0, 10), pady=5
-        )
+        date_label = ctk.CTkLabel(filter_row1, text="Date Range:")
+        date_label.pack(side='left', padx=10, pady=10)
+
         self.date_range_var = tk.StringVar(value="Last 30 days")
-        self.date_combo = ttk.Combobox(
-            filters_grid,
-            textvariable=self.date_range_var,
+        self.date_combo = ctk.CTkComboBox(
+            filter_row1,
+            variable=self.date_range_var,
             values=[
                 "Today", "Last 7 days", "Last 30 days",
                 "Last 90 days", "Last year", "All time"
             ],
-            state='readonly'
+            width=120,
+            height=30
         )
-        self.date_combo.grid(row=0, column=5, sticky='ew', pady=5)
+        self.date_combo.pack(side='left', padx=(0, 10), pady=10)
 
         # Second row of filters
+        filter_row2 = ctk.CTkFrame(self.filters_container)
+        filter_row2.pack(fill='x', padx=10, pady=(5, 10))
+
         # Status filter
-        ttk.Label(filters_grid, text="Status:").grid(
-            row=1, column=0, sticky='w', padx=(0, 10), pady=5
-        )
+        status_label = ctk.CTkLabel(filter_row2, text="Status:")
+        status_label.pack(side='left', padx=10, pady=10)
+
         self.status_var = tk.StringVar(value="All")
-        self.status_combo = ttk.Combobox(
-            filters_grid,
-            textvariable=self.status_var,
+        self.status_combo = ctk.CTkComboBox(
+            filter_row2,
+            variable=self.status_var,
             values=["All", "Pass", "Fail", "Warning"],
-            state='readonly'
+            width=100,
+            height=30
         )
-        self.status_combo.grid(row=1, column=1, sticky='ew', pady=5)
+        self.status_combo.pack(side='left', padx=(0, 20), pady=10)
 
-        # Risk category filter
-        ttk.Label(filters_grid, text="Risk:").grid(
-            row=1, column=2, sticky='w', padx=(0, 10), pady=5
-        )
+        # Risk filter
+        risk_label = ctk.CTkLabel(filter_row2, text="Risk:")
+        risk_label.pack(side='left', padx=10, pady=10)
+
         self.risk_var = tk.StringVar(value="All")
-        self.risk_combo = ttk.Combobox(
-            filters_grid,
-            textvariable=self.risk_var,
+        self.risk_combo = ctk.CTkComboBox(
+            filter_row2,
+            variable=self.risk_var,
             values=["All", "High", "Medium", "Low"],
-            state='readonly'
+            width=100,
+            height=30
         )
-        self.risk_combo.grid(row=1, column=3, sticky='ew', pady=5)
+        self.risk_combo.pack(side='left', padx=(0, 20), pady=10)
 
-        # Limit results
-        ttk.Label(filters_grid, text="Limit:").grid(
-            row=1, column=4, sticky='w', padx=(0, 10), pady=5
-        )
+        # Limit filter
+        limit_label = ctk.CTkLabel(filter_row2, text="Limit:")
+        limit_label.pack(side='left', padx=10, pady=10)
+
         self.limit_var = tk.StringVar(value="100")
-        self.limit_combo = ttk.Combobox(
-            filters_grid,
-            textvariable=self.limit_var,
+        self.limit_combo = ctk.CTkComboBox(
+            filter_row2,
+            variable=self.limit_var,
             values=["50", "100", "500", "1000", "All"],
-            state='readonly'
+            width=100,
+            height=30
         )
-        self.limit_combo.grid(row=1, column=5, sticky='ew', pady=5)
+        self.limit_combo.pack(side='left', padx=(0, 10), pady=10)
 
-        # Action buttons with responsive layout
-        button_frame = ttk.Frame(query_frame)
-        button_frame.pack(fill='x', pady=(15, 0))
-        
-        # Configure button frame for responsive layout
-        button_frame.grid_columnconfigure(0, weight=1)
-        button_frame.grid_columnconfigure(1, weight=1)
-        button_frame.grid_columnconfigure(2, weight=1)
-        button_frame.grid_columnconfigure(3, weight=2)  # Extra space
+        # Action buttons
+        button_frame = ctk.CTkFrame(self.filters_container)
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
 
-        self.query_btn = ttk.Button(
+        self.query_btn = ctk.CTkButton(
             button_frame,
             text="Run Query",
             command=self._run_query,
-            style='Primary.TButton'
+            width=120,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="blue",
+            hover_color="darkblue"
         )
-        self.query_btn.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        self.query_btn.pack(side='left', padx=(10, 10), pady=10)
 
-        clear_btn = ttk.Button(
+        clear_btn = ctk.CTkButton(
             button_frame,
             text="Clear Filters",
-            command=self._clear_filters
+            command=self._clear_filters,
+            width=120,
+            height=40
         )
-        clear_btn.grid(row=0, column=1, sticky='ew', padx=(0, 10))
+        clear_btn.pack(side='left', padx=(0, 10), pady=10)
 
-        export_btn = ttk.Button(
+        export_btn = ctk.CTkButton(
             button_frame,
             text="Export Results",
-            command=self._export_results
+            command=self._export_results,
+            width=120,
+            height=40
         )
-        export_btn.grid(row=0, column=2, sticky='ew', padx=(0, 10))
+        export_btn.pack(side='left', padx=(0, 10), pady=10)
 
-    def _create_results_section(self, parent):
-        """Create results table section with responsive height management."""
-        results_frame = ttk.LabelFrame(
-            parent,
-            text="Query Results",
-            padding=10
+    def _create_results_section_ctk(self):
+        """Create results display section (matching batch processing theme)."""
+        self.results_frame = ctk.CTkFrame(self.main_container)
+        self.results_frame.pack(fill='x', pady=(0, 20))
+
+        self.results_label = ctk.CTkLabel(
+            self.results_frame,
+            text="Query Results:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        results_frame.pack(fill='both', expand=True, padx=20, pady=10)  # Changed to expand
+        self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Create treeview with scrollbars and responsive layout
-        tree_frame = ttk.Frame(results_frame)
-        tree_frame.pack(fill='both', expand=True)  # Changed to expand
-        
-        # Configure tree frame for responsiveness
-        tree_frame.grid_columnconfigure(0, weight=1)
-        tree_frame.grid_rowconfigure(0, weight=1)
-
-        # Scrollbars
-        vsb = ttk.Scrollbar(tree_frame, orient='vertical')
-        hsb = ttk.Scrollbar(tree_frame, orient='horizontal')
-
-        # Treeview with responsive dimensions
-        columns = (
-            'Date', 'Model', 'Serial', 'System', 'Status',
-            'Sigma Gradient', 'Sigma Pass', 'Linearity Pass',
-            'Risk Category', 'Processing Time'
+        # Results display
+        self.results_display = ctk.CTkTextbox(
+            self.results_frame,
+            height=200,
+            state="disabled"
         )
+        self.results_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        self.results_tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show='tree headings',
-            yscrollcommand=vsb.set,
-            xscrollcommand=hsb.set
-            # Remove fixed height for responsive behavior
+    def _create_charts_section_ctk(self):
+        """Create data visualization section (matching batch processing theme)."""
+        self.charts_frame = ctk.CTkFrame(self.main_container)
+        self.charts_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.charts_label = ctk.CTkLabel(
+            self.charts_frame,
+            text="Data Visualization:",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
+        self.charts_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Configure scrollbars
-        vsb.config(command=self.results_tree.yview)
-        hsb.config(command=self.results_tree.xview)
+        # Charts container
+        self.charts_container = ctk.CTkFrame(self.charts_frame)
+        self.charts_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        # Configure columns with responsive widths
-        self.results_tree.column('#0', width=0, stretch=False)
-        
-        # Define responsive column widths
-        column_configs = [
-            ('Date', 150, True),
-            ('Model', 80, True),
-            ('Serial', 100, True),
-            ('System', 60, True),
-            ('Status', 80, True),
-            ('Sigma Gradient', 100, True),
-            ('Sigma Pass', 80, True),
-            ('Linearity Pass', 100, True),
-            ('Risk Category', 90, True),
-            ('Processing Time', 100, True)
-        ]
-        
-        for col, width, stretch in column_configs:
-            self.results_tree.column(col, width=width, stretch=stretch, minwidth=50)
+        # Chart tabs
+        self.chart_tabview = ctk.CTkTabview(self.charts_container)
+        self.chart_tabview.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Configure headings
-        for col in columns:
-            self.results_tree.heading(col, text=col, command=lambda c=col: self._sort_column(c))
+        # Add tabs
+        self.chart_tabview.add("Pass Rate Trend")
+        self.chart_tabview.add("Sigma Distribution")
+        self.chart_tabview.add("Model Comparison")
 
-        # Grid layout for responsive control
-        self.results_tree.grid(row=0, column=0, sticky='nsew')
-        vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
-
-        # Add mouse wheel scrolling support to treeview
-        add_mousewheel_support(self.results_tree)
-
-        # Summary label with responsive positioning
-        self.summary_label = ttk.Label(
-            results_frame,
+        # Placeholder for charts
+        self.trend_chart_label = ctk.CTkLabel(
+            self.chart_tabview.tab("Pass Rate Trend"),
             text="No data loaded",
-            font=('Segoe UI', 10)
+            font=ctk.CTkFont(size=12)
         )
-        self.summary_label.pack(pady=(10, 0), expand=True)
+        self.trend_chart_label.pack(expand=True)
 
-        # Bind double-click to view details
-        self.results_tree.bind('<Double-1>', self._view_details)
-
-    def _create_charts_section(self, parent):
-        """Create charts section with responsive layout."""
-        charts_frame = ttk.LabelFrame(
-            parent,
-            text="Data Visualization",
-            padding=10
+        self.distribution_chart_label = ctk.CTkLabel(
+            self.chart_tabview.tab("Sigma Distribution"),
+            text="No data loaded",
+            font=ctk.CTkFont(size=12)
         )
-        charts_frame.pack(fill='both', expand=True, padx=20, pady=(0, 20))
+        self.distribution_chart_label.pack(expand=True)
 
-        # Create notebook for different charts with responsive sizing
-        self.chart_notebook = ttk.Notebook(charts_frame)
-        self.chart_notebook.pack(fill='both', expand=True)
-
-        # Pass rate trend chart with responsive dimensions
-        trend_frame = ttk.Frame(self.chart_notebook)
-        self.chart_notebook.add(trend_frame, text="Pass Rate Trend")
-
-        self.trend_chart = ChartWidget(
-            trend_frame,
-            chart_type='line',
-            title="Pass Rate Trend Over Time"
-            # Remove fixed figsize for responsive behavior
+        self.comparison_chart_label = ctk.CTkLabel(
+            self.chart_tabview.tab("Model Comparison"),
+            text="No data loaded",
+            font=ctk.CTkFont(size=12)
         )
-        self.trend_chart.pack(fill='both', expand=True, padx=10, pady=10)
-
-        # Sigma distribution chart with responsive dimensions
-        dist_frame = ttk.Frame(self.chart_notebook)
-        self.chart_notebook.add(dist_frame, text="Sigma Distribution")
-
-        self.dist_chart = ChartWidget(
-            dist_frame,
-            chart_type='histogram',
-            title="Sigma Gradient Distribution"
-            # Remove fixed figsize for responsive behavior
-        )
-        self.dist_chart.pack(fill='both', expand=True, padx=10, pady=10)
-
-        # Model comparison chart with responsive dimensions
-        comp_frame = ttk.Frame(self.chart_notebook)
-        self.chart_notebook.add(comp_frame, text="Model Comparison")
-
-        self.comp_chart = ChartWidget(
-            comp_frame,
-            chart_type='bar',
-            title="Pass Rate by Model"
-            # Remove fixed figsize for responsive behavior
-        )
-        self.comp_chart.pack(fill='both', expand=True, padx=10, pady=10)
+        self.comparison_chart_label.pack(expand=True)
 
     def _run_query(self):
-        """Execute database query with current filters."""
+        """Run database query with current filters."""
         if not self.db_manager:
             messagebox.showerror("Error", "Database not connected")
             return
 
-        # Disable query button
-        self.query_btn.config(state='disabled', text='Querying...')
-        self.update()
+        # Update UI and run query in background
+        self.query_btn.configure(state='disabled', text='Querying...')
+        thread = threading.Thread(target=self._run_query_background, daemon=True)
+        thread.start()
 
+    def _run_query_background(self):
+        """Run database query in background thread."""
         try:
-            # Get filter values
-            model = self.model_var.get() or None
-            serial = self.serial_var.get() or None
-            status = None if self.status_var.get() == "All" else self.status_var.get()
-            risk = None if self.risk_var.get() == "All" else self.risk_var.get()
-
-            # Calculate date range
-            days_back = self._get_days_back()
+            # Get filter values - use the actual variables that exist in the UI
+            model = self.model_var.get().strip() if self.model_var.get().strip() else None
+            serial = self.serial_var.get().strip() if self.serial_var.get().strip() else None
+            status = self.status_var.get() if self.status_var.get() != "All" else None
+            risk = self.risk_var.get() if self.risk_var.get() != "All" else None
+            
+            # Get date range
+            start_date = None
+            end_date = None
+            date_range = self.date_range_var.get()
+            
+            if date_range != "All time":
+                days_map = {
+                    "Today": 1,
+                    "Last 7 days": 7,
+                    "Last 30 days": 30,
+                    "Last 90 days": 90,
+                    "Last year": 365
+                }
+                days_back = days_map.get(date_range, 30)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days_back)
 
             # Get limit
             limit_str = self.limit_var.get()
             limit = None if limit_str == "All" else int(limit_str)
 
-            # Query database
+            # Query database using the correct parameters
             results = self.db_manager.get_historical_data(
                 model=model,
                 serial=serial,
-                days_back=days_back,
+                start_date=start_date,
+                end_date=end_date,
                 status=status,
                 risk_category=risk,
                 limit=limit,
                 include_tracks=True
             )
 
-            # Update UI with results
-            self._display_results(results)
-
-            # Update charts
-            self._update_charts(results)
+            # Update UI in main thread
+            self.after(0, self._display_results, results)
+            self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
 
         except Exception as e:
-            messagebox.showerror("Query Error", f"Failed to query database:\n{str(e)}")
-
-        finally:
-            self.query_btn.config(state='normal', text='Run Query')
+            self.after(0, lambda: messagebox.showerror("Query Error", f"Failed to query database:\n{str(e)}"))
+            self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
 
     def _display_results(self, results):
-        """Display query results in treeview."""
-        # Clear existing items
-        for item in self.results_tree.get_children():
-            self.results_tree.delete(item)
-
-        if not results:
-            self.summary_label.config(text="No results found")
-            return
-
-        # Convert to DataFrame for easier handling
-        data = []
-        for result in results:
-            # Get primary track data
-            primary_track = None
-            if result.tracks:
-                primary_track = result.tracks[0]
-
-            row = {
-                'id': result.id,
-                'timestamp': safe_datetime_convert(result.timestamp),
-                'file_date': safe_datetime_convert(result.file_date),
-                'model': result.model,
-                'serial': result.serial,
-                'system': result.system.value,
-                'status': result.overall_status.value,
-                'sigma_gradient': primary_track.sigma_gradient if primary_track else None,
-                'sigma_pass': primary_track.sigma_pass if primary_track else None,
-                'linearity_pass': primary_track.linearity_pass if primary_track else None,
-                'risk_category': primary_track.risk_category.value if primary_track and primary_track.risk_category else None,
-                'processing_time': result.processing_time
-            }
-            data.append(row)
-
-        self.current_data = pd.DataFrame(data)
-
-        # Insert into treeview
-        for _, row in self.current_data.iterrows():
-            # Use file_date if available, otherwise fall back to timestamp
-            date_to_display = row['file_date'] if pd.notna(row['file_date']) else row['timestamp']
+        """Display query results in the CTk textbox."""
+        try:
+            # Clear existing results
+            self.results_display.configure(state="normal")
+            self.results_display.delete('1.0', 'end')
             
-            values = (
-                date_to_display.strftime('%Y-%m-%d %H:%M') if pd.notna(date_to_display) else '',
-                row['model'],
-                row['serial'],
-                row['system'],
-                row['status'],
-                f"{row['sigma_gradient']:.6f}" if pd.notna(row['sigma_gradient']) else '',
-                '✓' if row['sigma_pass'] else '✗' if pd.notna(row['sigma_pass']) else '',
-                '✓' if row['linearity_pass'] else '✗' if pd.notna(row['linearity_pass']) else '',
-                row['risk_category'] if pd.notna(row['risk_category']) else '',
-                f"{row['processing_time']:.2f}s" if pd.notna(row['processing_time']) else ''
-            )
-
-            # Color based on status
-            tags = []
-            if row['status'] == 'Pass':
-                tags.append('pass')
-            elif row['status'] == 'Fail':
-                tags.append('fail')
-            elif row['status'] == 'Warning':
-                tags.append('warning')
-
-            self.results_tree.insert('', 'end', values=values, tags=tags)
-
-        # Configure tag colors
-        self.results_tree.tag_configure('pass', foreground='#27ae60')
-        self.results_tree.tag_configure('fail', foreground='#e74c3c')
-        self.results_tree.tag_configure('warning', foreground='#f39c12')
-
-        # Update summary
-        total = len(self.current_data)
-        passed = (self.current_data['status'] == 'Pass').sum()
-        failed = (self.current_data['status'] == 'Fail').sum()
-
-        self.summary_label.config(
-            text=f"Total: {total} | Passed: {passed} | Failed: {failed} | Pass Rate: {passed / total * 100:.1f}%"
-        )
+            if not results:
+                self.results_display.insert('1.0', "No data found matching the criteria")
+                self.results_display.configure(state="disabled")
+                return
+                
+            # Display summary
+            total_count = len(results)
+            pass_count = sum(1 for r in results if r.overall_status.value == "Pass")
+            fail_count = total_count - pass_count
+            pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
+            
+            summary = f"Query Results Summary:\n"
+            summary += f"Total Records: {total_count}\n"
+            summary += f"Pass: {pass_count} ({pass_rate:.1f}%)\n"
+            summary += f"Fail: {fail_count} ({100-pass_rate:.1f}%)\n\n"
+            
+            # Display detailed results
+            summary += "Detailed Results:\n"
+            summary += "-" * 80 + "\n"
+            summary += f"{'Date':<12} {'Model':<8} {'Serial':<12} {'Status':<8} {'Sigma':<10} {'Pass':<6}\n"
+            summary += "-" * 80 + "\n"
+            
+            for result in results:
+                date_str = result.timestamp.strftime('%Y-%m-%d') if hasattr(result, 'timestamp') else 'Unknown'
+                model = getattr(result, 'model', 'Unknown')[:8]
+                serial = getattr(result, 'serial', 'Unknown')[:12]
+                status = result.overall_status.value[:8]
+                
+                # Get sigma and pass info from first track
+                sigma = "N/A"
+                sigma_pass = "N/A"
+                if result.tracks and len(result.tracks) > 0:
+                    track = result.tracks[0]
+                    if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                        sigma = f"{track.sigma_gradient:.4f}"
+                    if hasattr(track, 'sigma_pass'):
+                        sigma_pass = "✓" if track.sigma_pass else "✗"
+                
+                line = f"{date_str:<12} {model:<8} {serial:<12} {status:<8} {sigma:<10} {sigma_pass:<6}\n"
+                summary += line
+            
+            self.results_display.insert('1.0', summary)
+            self.results_display.configure(state="disabled")
+            
+            # Store current data for potential export
+            self.current_data = results
+            
+            logger.info(f"Displayed {len(results)} query results")
+            
+        except Exception as e:
+            logger.error(f"Error displaying results: {e}")
+            self.results_display.configure(state="normal")
+            self.results_display.delete('1.0', 'end')
+            self.results_display.insert('1.0', f"Error displaying results: {str(e)}")
+            self.results_display.configure(state="disabled")
 
     def _update_charts(self, results):
         """Update all charts with query results."""
@@ -686,7 +618,7 @@ class HistoricalPage(BasePage):
 
         text = tk.Text(text_frame, wrap='word', width=70, height=20)
         scroll = ttk.Scrollbar(text_frame, command=text.yview)
-        text.config(yscrollcommand=scroll.set)
+        text.configure(yscrollcommand=scroll.set)
 
         text.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
@@ -709,7 +641,7 @@ Metrics:
 """
 
         text.insert('1.0', details)
-        text.config(state='disabled')
+        text.configure(state='disabled')
 
         # Close button
         ttk.Button(

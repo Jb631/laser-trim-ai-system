@@ -7,6 +7,7 @@ and automated report generation.
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import customtkinter as ctk
 from datetime import datetime
 import threading
 import json
@@ -31,48 +32,197 @@ class AIInsightsPage(BasePage):
         self._initialize_ai_client()
 
     def _create_page(self):
-        """Set up the AI insights page."""
-        # Create scrollable frame
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        """Create AI insights page content with consistent theme (matching batch processing)."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Add mouse wheel support to the main canvas
-        add_mousewheel_support(canvas)
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Create content in scrollable frame
-        content_frame = scrollable_frame
-        
-        # Title
-        title_frame = ttk.Frame(content_frame)
-        title_frame.pack(fill='x', padx=20, pady=(20, 10))
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_insights_section()
+        self._create_chat_section()
+        self._create_report_section()
 
-        ttk.Label(
-            title_frame,
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
+
+        self.title_label = ctk.CTkLabel(
+            self.header_frame,
             text="AI-Powered Insights",
-            font=('Segoe UI', 24, 'bold')
-        ).pack(side='left')
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        self.title_label.pack(pady=15)
 
-        # Alert stack for AI recommendations
-        self.alert_stack = AlertStack(content_frame, max_alerts=3)
-        self.alert_stack.pack(fill='x', padx=20, pady=(0, 10))
+    def _create_insights_section(self):
+        """Create automatic insights section (matching batch processing theme)."""
+        self.insights_frame = ctk.CTkFrame(self.main_container)
+        self.insights_frame.pack(fill='x', pady=(0, 20))
 
-        # Create main sections in content_frame
-        self._create_insights_section(content_frame)
-        self._create_chat_section(content_frame)
-        self._create_report_section(content_frame)
+        self.insights_label = ctk.CTkLabel(
+            self.insights_frame,
+            text="Automatic Insights:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.insights_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Insights container
+        self.insights_container = ctk.CTkFrame(self.insights_frame)
+        self.insights_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # Controls row
+        controls_frame = ctk.CTkFrame(self.insights_container)
+        controls_frame.pack(fill='x', padx=10, pady=(10, 10))
+
+        type_label = ctk.CTkLabel(controls_frame, text="Analysis Type:")
+        type_label.pack(side='left', padx=10, pady=10)
+
+        self.analysis_type_var = tk.StringVar(value="failures")
+        self.analysis_type_combo = ctk.CTkComboBox(
+            controls_frame,
+            variable=self.analysis_type_var,
+            values=["failures", "improvements", "report", "trends"],
+            width=150,
+            height=30
+        )
+        self.analysis_type_combo.pack(side='left', padx=(0, 20), pady=10)
+
+        self.generate_insights_btn = ctk.CTkButton(
+            controls_frame,
+            text="Generate Insights",
+            command=self._generate_insights,
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="blue",
+            hover_color="darkblue"
+        )
+        self.generate_insights_btn.pack(side='right', padx=10, pady=10)
+
+        # Insights display
+        self.insights_display = ctk.CTkTextbox(
+            self.insights_container,
+            height=200,
+            state="disabled"
+        )
+        self.insights_display.pack(fill='x', padx=10, pady=(0, 10))
+
+    def _create_chat_section(self):
+        """Create QA assistant chat interface (matching batch processing theme)."""
+        self.chat_frame = ctk.CTkFrame(self.main_container)
+        self.chat_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.chat_label = ctk.CTkLabel(
+            self.chat_frame,
+            text="QA Assistant Chat:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.chat_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Chat container
+        self.chat_container = ctk.CTkFrame(self.chat_frame)
+        self.chat_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+        # Chat display
+        self.chat_display = ctk.CTkTextbox(
+            self.chat_container,
+            height=300,
+            state="disabled"
+        )
+        self.chat_display.pack(fill='both', expand=True, padx=10, pady=(10, 10))
+
+        # Chat input row
+        input_frame = ctk.CTkFrame(self.chat_container)
+        input_frame.pack(fill='x', padx=10, pady=(0, 10))
+
+        self.chat_entry = ctk.CTkEntry(
+            input_frame,
+            placeholder_text="Ask the AI assistant about quality analysis...",
+            height=40
+        )
+        self.chat_entry.pack(side='left', fill='x', expand=True, padx=(10, 10), pady=10)
+
+        self.send_btn = ctk.CTkButton(
+            input_frame,
+            text="Send",
+            command=self._send_chat_message,
+            width=80,
+            height=40
+        )
+        self.send_btn.pack(side='right', padx=(0, 10), pady=10)
+
+        # Bind Enter key to send message
+        self.chat_entry.bind('<Return>', lambda e: self._send_chat_message())
+
+        # Initialize chat with welcome message
+        self._add_chat_message("AI Assistant", "Hello! I'm your QA assistant. I can help you understand your analysis data, suggest improvements, and answer questions about quality metrics.", is_user=False)
+
+    def _create_report_section(self):
+        """Create automated report generation section (matching batch processing theme)."""
+        self.report_frame = ctk.CTkFrame(self.main_container)
+        self.report_frame.pack(fill='x', pady=(0, 20))
+
+        self.report_label = ctk.CTkLabel(
+            self.report_frame,
+            text="Automated Report Generation:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.report_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # Report container
+        self.report_container = ctk.CTkFrame(self.report_frame)
+        self.report_container.pack(fill='x', padx=15, pady=(0, 15))
+
+        # Report controls
+        controls_frame = ctk.CTkFrame(self.report_container)
+        controls_frame.pack(fill='x', padx=10, pady=(10, 10))
+
+        report_type_label = ctk.CTkLabel(controls_frame, text="Report Type:")
+        report_type_label.pack(side='left', padx=10, pady=10)
+
+        self.report_type_var = tk.StringVar(value="summary")
+        self.report_type_combo = ctk.CTkComboBox(
+            controls_frame,
+            variable=self.report_type_var,
+            values=["summary", "detailed", "trends", "failures"],
+            width=120,
+            height=30
+        )
+        self.report_type_combo.pack(side='left', padx=(0, 20), pady=10)
+
+        days_label = ctk.CTkLabel(controls_frame, text="Days:")
+        days_label.pack(side='left', padx=10, pady=10)
+
+        self.days_var = tk.StringVar(value="30")
+        self.days_combo = ctk.CTkComboBox(
+            controls_frame,
+            variable=self.days_var,
+            values=["7", "30", "90", "365"],
+            width=80,
+            height=30
+        )
+        self.days_combo.pack(side='left', padx=(0, 20), pady=10)
+
+        self.generate_report_btn = ctk.CTkButton(
+            controls_frame,
+            text="Generate Report",
+            command=self._generate_report,
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="green",
+            hover_color="darkgreen"
+        )
+        self.generate_report_btn.pack(side='right', padx=10, pady=10)
+
+        # Report status
+        self.report_status = ctk.CTkLabel(
+            self.report_container,
+            text="Ready to generate reports",
+            font=ctk.CTkFont(size=12)
+        )
+        self.report_status.pack(padx=10, pady=(0, 10))
 
     def _initialize_ai_client(self):
         """Initialize AI client if configured."""
@@ -96,336 +246,39 @@ class AIInsightsPage(BasePage):
                 max_retries=self.main_window.config.api.max_retries
             )
 
-            # Show success alert
-            self.alert_stack.add_alert(
-                alert_type='success',
-                title='AI Connected',
-                message=f'Connected to {provider.value} AI service',
-                auto_dismiss=5
-            )
+            # Log success instead of using alert_stack
+            self.logger.info(f'Connected to {provider.value} AI service')
 
         except Exception as e:
             self.logger.error(f"Failed to initialize AI client: {e}")
-            self.alert_stack.add_alert(
-                alert_type='error',
-                title='AI Connection Failed',
-                message=str(e),
-                dismissible=True
-            )
-
-    def _create_insights_section(self, content_frame):
-        """Create automatic insights section."""
-        insights_frame = ttk.LabelFrame(
-            content_frame,
-            text="Automatic Insights",
-            padding=15
-        )
-        insights_frame.pack(fill='x', padx=20, pady=10)
-
-        # Controls
-        controls_frame = ttk.Frame(insights_frame)
-        controls_frame.pack(fill='x', pady=(0, 10))
-
-        ttk.Label(controls_frame, text="Analysis Type:").pack(side='left', padx=(0, 10))
-
-        self.analysis_type_var = tk.StringVar(value="failures")
-        analysis_types = [
-            ("Failure Analysis", "failures"),
-            ("Process Improvements", "improvements"),
-            ("Quality Report", "report"),
-            ("Trend Analysis", "trends")
-        ]
-
-        for text, value in analysis_types:
-            ttk.Radiobutton(
-                controls_frame,
-                text=text,
-                variable=self.analysis_type_var,
-                value=value
-            ).pack(side='left', padx=(0, 15))
-
-        ttk.Button(
-            controls_frame,
-            text="Generate Insights",
-            command=self._generate_insights,
-            style='Primary.TButton'
-        ).pack(side='right')
-
-        # Insights display
-        self.insights_frame = ttk.Frame(insights_frame)
-        self.insights_frame.pack(fill='both', expand=True)
-
-        # Insights text with scrollbar
-        text_frame = ttk.Frame(self.insights_frame)
-        text_frame.pack(fill='both', expand=True)
-
-        self.insights_text = tk.Text(
-            text_frame,
-            height=12,
-            wrap='word',
-            font=('Segoe UI', 10)
-        )
-        scroll = ttk.Scrollbar(text_frame, command=self.insights_text.yview)
-        self.insights_text.config(yscrollcommand=scroll.set)
-
-        # Add mouse wheel support to insights text
-        add_mousewheel_support(self.insights_text)
-
-        self.insights_text.pack(side='left', fill='both', expand=True)
-        scroll.pack(side='right', fill='y')
-
-        # Configure text tags for formatting
-        self.insights_text.tag_configure('heading', font=('Segoe UI', 12, 'bold'))
-        self.insights_text.tag_configure('positive', foreground='#27ae60')
-        self.insights_text.tag_configure('warning', foreground='#f39c12')
-        self.insights_text.tag_configure('error', foreground='#e74c3c')
-
-    def _create_chat_section(self, content_frame):
-        """Create QA assistant chat interface."""
-        chat_frame = ttk.LabelFrame(
-            content_frame,
-            text="QA Assistant Chat",
-            padding=15
-        )
-        chat_frame.pack(fill='both', expand=True, padx=20, pady=10)
-
-        # Chat display
-        chat_display_frame = ttk.Frame(chat_frame)
-        chat_display_frame.pack(fill='both', expand=True)
-
-        # Chat history with scrollbar
-        chat_scroll_frame = ttk.Frame(chat_display_frame)
-        chat_scroll_frame.pack(fill='both', expand=True)
-
-        self.chat_canvas = tk.Canvas(
-            chat_scroll_frame,
-            bg='white',
-            highlightthickness=1,
-            highlightbackground='#e0e0e0'
-        )
-        chat_scrollbar = ttk.Scrollbar(
-            chat_scroll_frame,
-            orient='vertical',
-            command=self.chat_canvas.yview
-        )
-        self.chat_canvas.configure(yscrollcommand=chat_scrollbar.set)
-
-        # Add mouse wheel support to chat canvas
-        add_mousewheel_support(self.chat_canvas)
-
-        self.chat_canvas.pack(side='left', fill='both', expand=True)
-        chat_scrollbar.pack(side='right', fill='y')
-
-        # Chat message frame
-        self.chat_messages_frame = ttk.Frame(self.chat_canvas)
-        self.chat_canvas_window = self.chat_canvas.create_window(
-            (0, 0),
-            window=self.chat_messages_frame,
-            anchor='nw'
-        )
-
-        # Bind canvas resize
-        self.chat_messages_frame.bind(
-            '<Configure>',
-            lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox('all'))
-        )
-        self.chat_canvas.bind(
-            '<Configure>',
-            lambda e: self.chat_canvas.itemconfig(
-                self.chat_canvas_window,
-                # Continue _create_chat_section
-                width=e.width
-            )
-        )
-
-        # Add welcome message
-        self._add_chat_message(
-            "AI Assistant",
-            "Hello! I'm your QA assistant. I can help you understand your analysis results, "
-            "identify patterns, and suggest improvements. What would you like to know?",
-            is_user=False
-        )
-
-        # Chat input
-        input_frame = ttk.Frame(chat_frame)
-        input_frame.pack(fill='x', pady=(10, 0))
-
-        self.chat_input = tk.Text(
-            input_frame,
-            height=3,
-            wrap='word',
-            font=('Segoe UI', 10)
-        )
-        self.chat_input.pack(side='left', fill='both', expand=True, padx=(0, 10))
-
-        # Bind Enter key to send message
-        self.chat_input.bind('<Return>', lambda e: self._send_chat_message() if not e.state else None)
-        self.chat_input.bind('<Shift-Return>', lambda e: None)  # Allow Shift+Enter for new line
-
-        send_btn = ttk.Button(
-            input_frame,
-            text="Send",
-            command=self._send_chat_message,
-            style='Primary.TButton'
-        )
-        send_btn.pack(side='right')
-
-        # Suggested questions
-        suggestions_frame = ttk.Frame(chat_frame)
-        suggestions_frame.pack(fill='x', pady=(10, 0))
-
-        ttk.Label(
-            suggestions_frame,
-            text="Suggested questions:",
-            font=('Segoe UI', 9, 'italic')
-        ).pack(anchor='w')
-
-        suggestions = [
-            "What is the current pass rate trend?",
-            "Which models have the highest failure risk?",
-            "How can I improve sigma gradient performance?",
-            "Explain the recent anomalies"
-        ]
-
-        suggestion_btns_frame = ttk.Frame(suggestions_frame)
-        suggestion_btns_frame.pack(fill='x', pady=(5, 0))
-
-        for suggestion in suggestions:
-            ttk.Button(
-                suggestion_btns_frame,
-                text=suggestion,
-                command=lambda s=suggestion: self._use_suggestion(s)
-            ).pack(side='left', padx=(0, 5))
-
-    def _create_report_section(self, content_frame):
-        """Create automated report generation section."""
-        report_frame = ttk.LabelFrame(
-            content_frame,
-            text="AI Report Generation",
-            padding=15
-        )
-        report_frame.pack(fill='x', padx=20, pady=(0, 20))
-
-        # Report options
-        options_frame = ttk.Frame(report_frame)
-        options_frame.pack(fill='x')
-
-        # Report type
-        ttk.Label(options_frame, text="Report Type:").grid(
-            row=0, column=0, sticky='w', padx=(0, 10), pady=5
-        )
-
-        self.report_type_var = tk.StringVar(value="comprehensive")
-        report_types = [
-            ("Comprehensive Analysis", "comprehensive"),
-            ("Executive Summary", "executive"),
-            ("Technical Details", "technical"),
-            ("Maintenance Report", "maintenance")
-        ]
-
-        col = 1
-        for text, value in report_types:
-            ttk.Radiobutton(
-                options_frame,
-                text=text,
-                variable=self.report_type_var,
-                value=value
-            ).grid(row=0, column=col, sticky='w', padx=(0, 15), pady=5)
-            col += 1
-
-        # Date range
-        ttk.Label(options_frame, text="Data Range:").grid(
-            row=1, column=0, sticky='w', padx=(0, 10), pady=5
-        )
-
-        self.report_range_var = tk.StringVar(value="30")
-        range_frame = ttk.Frame(options_frame)
-        range_frame.grid(row=1, column=1, columnspan=2, sticky='w', pady=5)
-
-        ttk.Label(range_frame, text="Last").pack(side='left', padx=(0, 5))
-        ttk.Entry(
-            range_frame,
-            textvariable=self.report_range_var,
-            width=10
-        ).pack(side='left', padx=(0, 5))
-        ttk.Label(range_frame, text="days").pack(side='left')
-
-        # Include options
-        ttk.Label(options_frame, text="Include:").grid(
-            row=2, column=0, sticky='w', padx=(0, 10), pady=5
-        )
-
-        include_frame = ttk.Frame(options_frame)
-        include_frame.grid(row=2, column=1, columnspan=3, sticky='w', pady=5)
-
-        self.include_charts = tk.BooleanVar(value=True)
-        self.include_predictions = tk.BooleanVar(value=True)
-        self.include_recommendations = tk.BooleanVar(value=True)
-
-        ttk.Checkbutton(
-            include_frame,
-            text="Charts & Visualizations",
-            variable=self.include_charts
-        ).pack(side='left', padx=(0, 15))
-
-        ttk.Checkbutton(
-            include_frame,
-            text="Predictions",
-            variable=self.include_predictions
-        ).pack(side='left', padx=(0, 15))
-
-        ttk.Checkbutton(
-            include_frame,
-            text="Recommendations",
-            variable=self.include_recommendations
-        ).pack(side='left')
-
-        # Generate button and progress
-        action_frame = ttk.Frame(report_frame)
-        action_frame.pack(fill='x', pady=(15, 0))
-
-        self.generate_report_btn = ttk.Button(
-            action_frame,
-            text="Generate Report",
-            command=self._generate_report,
-            style='Primary.TButton'
-        )
-        self.generate_report_btn.pack(side='left', padx=(0, 20))
-
-        self.report_progress = ttk.Progressbar(
-            action_frame,
-            mode='indeterminate',
-            length=200
-        )
-        self.report_progress.pack(side='left', padx=(0, 10))
-
-        self.report_status_label = ttk.Label(action_frame, text="")
-        self.report_status_label.pack(side='left')
+            # Log error instead of using alert_stack
+            self.logger.error(f'AI Connection Failed: {str(e)}')
 
     def _generate_insights(self):
         """Generate AI insights based on selected type."""
         if not self.ai_client:
-            messagebox.showerror("Error", "AI service not connected")
-            return
-
-        analysis_type = self.analysis_type_var.get()
-
-        # Get recent data from database
-        if not self.main_window.db_manager:
-            messagebox.showerror("Error", "Database not connected")
+            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
             return
 
         # Clear previous insights
-        self.insights_text.delete('1.0', tk.END)
-        self.insights_text.insert('1.0', "Generating insights...\n", 'heading')
+        self.insights_display.configure(state="normal")
+        self.insights_display.delete('1.0', 'end')
+        self.insights_display.insert('1.0', "Generating insights...\n")
+        self.insights_display.configure(state="disabled")
         self.update()
 
-        # Run in thread
+        # Get analysis type
+        analysis_type = self.analysis_type_var.get()
+
+        # Disable button during generation
+        self.generate_insights_btn.configure(state="disabled")
+
+        # Run in background thread
         thread = threading.Thread(
             target=self._run_insight_generation,
-            args=(analysis_type,)
+            args=(analysis_type,),
+            daemon=True
         )
-        thread.daemon = True
         thread.start()
 
     def _run_insight_generation(self, analysis_type: str):
@@ -465,11 +318,8 @@ class AIInsightsPage(BasePage):
             self.winfo_toplevel().after(0, lambda: self._display_insights(response.content))
 
             # Show cost info
-            self.winfo_toplevel().after(0, lambda: self.alert_stack.add_alert(
-                alert_type='info',
-                title='Analysis Complete',
-                message=f'Cost: ${response.cost:.4f} | Tokens: {sum(response.tokens_used.values())}',
-                auto_dismiss=10
+            self.winfo_toplevel().after(0, lambda: self.logger.info(
+                f'Analysis Complete - Cost: ${response.cost:.4f} | Tokens: {sum(response.tokens_used.values())}'
             ))
 
         except Exception as e:
@@ -540,130 +390,97 @@ class AIInsightsPage(BasePage):
         return summary
 
     def _display_insights(self, content: str, is_error: bool = False):
-        """Display AI insights with formatting."""
-        self.insights_text.delete('1.0', tk.END)
+        """Display AI insights with formatting in CTk textbox."""
+        try:
+            self.insights_display.configure(state="normal")
+            self.insights_display.delete('1.0', 'end')
 
-        if is_error:
-            self.insights_text.insert('1.0', content, 'error')
-            return
+            if is_error:
+                self.insights_display.insert('1.0', f"Error generating insights:\n{content}")
+                self.insights_display.configure(state="disabled")
+                return
 
-        # Parse and format content
-        lines = content.split('\n')
-        for line in lines:
-            if not line.strip():
-                self.insights_text.insert(tk.END, '\n')
-                continue
+            # Format the content nicely
+            lines = content.split('\n')
+            formatted_content = ""
+            
+            for line in lines:
+                if not line.strip():
+                    formatted_content += '\n'
+                    continue
 
-            # Detect formatting
-            if line.strip().startswith('#'):
-                # Heading
-                text = line.strip('#').strip()
-                self.insights_text.insert(tk.END, text + '\n', 'heading')
-            elif line.strip().startswith('✓') or 'positive' in line.lower() or 'good' in line.lower():
-                # Positive point
-                self.insights_text.insert(tk.END, line + '\n', 'positive')
-            elif line.strip().startswith('⚠') or 'warning' in line.lower() or 'concern' in line.lower():
-                # Warning point
-                self.insights_text.insert(tk.END, line + '\n', 'warning')
-            elif line.strip().startswith('✗') or 'error' in line.lower() or 'critical' in line.lower():
-                # Error point
-                self.insights_text.insert(tk.END, line + '\n', 'error')
-            else:
-                # Normal text
-                self.insights_text.insert(tk.END, line + '\n')
+                if line.strip().startswith('#'):
+                    # Heading
+                    text = line.strip('#').strip()
+                    formatted_content += f"{text}\n"
+                elif line.strip().startswith('✓') or 'positive' in line.lower() or 'good' in line.lower():
+                    # Positive point
+                    formatted_content += f"{line}\n"
+                elif line.strip().startswith('⚠') or 'warning' in line.lower() or 'concern' in line.lower():
+                    # Warning point
+                    formatted_content += f"{line}\n"
+                elif line.strip().startswith('✗') or 'error' in line.lower() or 'critical' in line.lower():
+                    # Error point
+                    formatted_content += f"{line}\n"
+                else:
+                    # Normal text
+                    formatted_content += f"{line}\n"
 
-        # Save current analysis
-        self.current_analysis = content
+            self.insights_display.insert('1.0', formatted_content)
+            self.insights_display.configure(state="disabled")
+
+            # Save current analysis
+            self.current_analysis = content
+
+        except Exception as e:
+            print(f"Error displaying insights: {e}")
 
     def _add_chat_message(self, sender: str, message: str, is_user: bool = True):
-        """Add a message to the chat display."""
-        # Create message frame
-        msg_frame = ttk.Frame(self.chat_messages_frame)
-        msg_frame.pack(fill='x', padx=10, pady=5)
-
-        # Message bubble
-        bubble_frame = ttk.Frame(
-            msg_frame,
-            relief='solid',
-            borderwidth=1,
-            style='Card.TFrame'
-        )
-
-        if is_user:
-            bubble_frame.pack(side='right', padx=(50, 0))
-            bg_color = '#e3f2fd'
-        else:
-            bubble_frame.pack(side='left', padx=(0, 50))
-            bg_color = '#f5f5f5'
-
-        # Sender label
-        sender_label = ttk.Label(
-            bubble_frame,
-            text=sender,
-            font=('Segoe UI', 9, 'bold')
-        )
-        sender_label.pack(anchor='w', padx=10, pady=(5, 0))
-
-        # Message text
-        msg_text = tk.Text(
-            bubble_frame,
-            wrap='word',
-            width=50,
-            height=1,
-            font=('Segoe UI', 10),
-            bg=bg_color,
-            relief='flat',
-            padx=10,
-            pady=5
-        )
-        msg_text.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        msg_text.insert('1.0', message)
-
-        # Adjust height
-        msg_text.update_idletasks()
-        lines = int(msg_text.index('end-1c').split('.')[0])
-        msg_text.config(height=lines, state='disabled')
-
-        # Add to history
-        self.chat_history.append({
-            'sender': sender,
-            'message': message,
-            'timestamp': datetime.now(),
-            'is_user': is_user
-        })
-
-        # Scroll to bottom
-        self.chat_canvas.update_idletasks()
-        self.chat_canvas.yview_moveto(1.0)
+        """Add a message to the chat display using CTk textbox."""
+        try:
+            self.chat_display.configure(state="normal")
+            
+            # Add timestamp and sender
+            timestamp = datetime.now().strftime("%H:%M")
+            sender_prefix = "You" if is_user else sender
+            
+            # Add the message with formatting
+            self.chat_display.insert('end', f"[{timestamp}] {sender_prefix}:\n")
+            self.chat_display.insert('end', f"{message}\n\n")
+            
+            # Scroll to bottom
+            self.chat_display.see('end')
+            self.chat_display.configure(state="disabled")
+            
+        except Exception as e:
+            print(f"Error adding chat message: {e}")
 
     def _send_chat_message(self):
         """Send user message to AI assistant."""
-        message = self.chat_input.get('1.0', 'end-1c').strip()
+        message = self.chat_entry.get().strip()
         if not message:
             return
 
         if not self.ai_client:
-            messagebox.showerror("Error", "AI service not connected")
+            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
             return
 
         # Add user message to chat
         self._add_chat_message("You", message, is_user=True)
 
         # Clear input
-        self.chat_input.delete('1.0', tk.END)
+        self.chat_entry.delete(0, 'end')
 
         # Add thinking indicator
         self._add_chat_message("AI Assistant", "Thinking...", is_user=False)
 
-        # Process in thread
+        # Process in background
         thread = threading.Thread(
             target=self._process_chat_message,
-            args=(message,)
+            args=(message,),
+            daemon=True
         )
-        thread.daemon = True
         thread.start()
-
-        return 'break'  # Prevent default Enter behavior
 
     def _process_chat_message(self, message: str):
         """Process chat message with AI."""
@@ -707,42 +524,37 @@ class AIInsightsPage(BasePage):
 
     def _use_suggestion(self, suggestion: str):
         """Use a suggested question."""
-        self.chat_input.delete('1.0', tk.END)
-        self.chat_input.insert('1.0', suggestion)
+        self.chat_entry.delete('0', tk.END)
+        self.chat_entry.insert('0', suggestion)
         self._send_chat_message()
 
     def _generate_report(self):
-        """Generate AI-powered report."""
+        """Generate automated AI report."""
         if not self.ai_client:
-            messagebox.showerror("Error", "AI service not connected")
-            return
-
-        if not self.main_window.db_manager:
-            messagebox.showerror("Error", "Database not connected")
+            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
             return
 
         # Get parameters
         report_type = self.report_type_var.get()
-        days = int(self.report_range_var.get())
+        days = int(self.days_var.get())
 
         # Disable button and start progress
-        self.generate_report_btn.config(state='disabled')
-        self.report_progress.start(10)
-        self.report_status_label.config(text="Generating report...")
+        self.generate_report_btn.configure(state="disabled")
+        self.report_status.configure(text="Generating report...")
 
         # Run in thread
         thread = threading.Thread(
             target=self._run_report_generation,
-            args=(report_type, days)
+            args=(report_type, days),
+            daemon=True
         )
-        thread.daemon = True
         thread.start()
 
     def _run_report_generation(self, report_type: str, days: int):
         """Run report generation in background."""
         try:
             # Update status
-            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status.config(
                 text="Loading data..."
             ))
 
@@ -763,7 +575,7 @@ class AIInsightsPage(BasePage):
             data_summary = self._prepare_data_summary(results)
 
             # Update status
-            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status.config(
                 text="Generating AI content..."
             ))
 
@@ -805,8 +617,7 @@ class AIInsightsPage(BasePage):
         finally:
             # Re-enable button and stop progress
             self.winfo_toplevel().after(0, lambda: self.generate_report_btn.config(state='normal'))
-            self.winfo_toplevel().after(0, self.report_progress.stop)
-            self.winfo_toplevel().after(0, lambda: self.report_status_label.config(text=""))
+            self.winfo_toplevel().after(0, lambda: self.report_status.config(text=""))
 
     def _save_report(self, content: str, report_type: str, data_summary: Dict[str, Any]):
         """Save generated report to file."""
@@ -830,7 +641,7 @@ class AIInsightsPage(BasePage):
         {'=' * 50}
         Type: {report_type.title()}
         Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        Data Period: Last {self.report_range_var.get()} days
+        Data Period: Last {self.days_var.get()} days
         Total Units Analyzed: {data_summary['total_units']}
         Overall Pass Rate: {data_summary['pass_rate']:.1f}%
 
@@ -854,16 +665,7 @@ class AIInsightsPage(BasePage):
             )
 
             # Show alert
-            self.alert_stack.add_alert(
-                alert_type='success',
-                title='Report Generated',
-                message=f'{report_type.title()} report saved',
-                auto_dismiss=5,
-                actions=[{
-                    'text': 'Open',
-                    'command': lambda: self._open_file(filename)
-                }]
-            )
+            self.logger.info(f'{report_type.title()} report saved to {filename}')
 
         except Exception as e:
             messagebox.showerror(

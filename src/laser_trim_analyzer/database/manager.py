@@ -524,7 +524,7 @@ class DatabaseManager:
                 },
                 "recent_trend": [
                     {
-                        "date": date.isoformat() if date else None,
+                        "date": date.isoformat() if date and hasattr(date, 'isoformat') else str(date) if date else None,
                         "count": count,
                         "avg_sigma": float(avg_sigma or 0)
                     }
@@ -706,7 +706,7 @@ class DatabaseManager:
                 "batch_id": batch.id,
                 "batch_name": batch.batch_name,
                 "batch_type": batch.batch_type,
-                "created_date": batch.created_date.isoformat() if batch.created_date else None,
+                "created_date": batch.created_date.isoformat() if batch.created_date and hasattr(batch.created_date, 'isoformat') else str(batch.created_date) if batch.created_date else None,
                 "model": batch.model,
                 "statistics": {
                     "total_units": batch.total_units,

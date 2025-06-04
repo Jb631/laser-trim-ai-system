@@ -7,6 +7,7 @@ Supports multiple chart types for QA data visualization.
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import customtkinter as ctk
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
@@ -22,9 +23,10 @@ from typing import (
 )
 from datetime import datetime
 import pandas as pd
+import matplotlib.dates as mdates
 
 
-class ChartWidget(ttk.Frame):
+class ChartWidget(ctk.CTkFrame):
     """
     Enhanced matplotlib chart widget for QA data visualization.
 
@@ -34,6 +36,7 @@ class ChartWidget(ttk.Frame):
     - Export to various formats
     - Customizable styling
     - Real-time updates
+    - CustomTkinter integration
     """
 
     def __init__(self, parent, chart_type: str = 'line',
@@ -79,8 +82,6 @@ class ChartWidget(ttk.Frame):
 
     def _setup_ui(self):
         """Set up the chart widget UI."""
-        self.configure(relief='solid', borderwidth=1, padding=5)
-
         # Create matplotlib figure
         self.figure = Figure(figsize=self.figsize, dpi=100)
         self.figure.patch.set_facecolor('white')
@@ -90,7 +91,7 @@ class ChartWidget(ttk.Frame):
         self.canvas.get_tk_widget().pack(fill='both', expand=True)
 
         # Create toolbar frame
-        toolbar_frame = ttk.Frame(self)
+        toolbar_frame = ctk.CTkFrame(self)
         toolbar_frame.pack(fill='x', side='bottom')
 
         # Add navigation toolbar
@@ -98,26 +99,199 @@ class ChartWidget(ttk.Frame):
         self.toolbar.update()
 
         # Add custom buttons
-        ttk.Separator(toolbar_frame, orient='vertical').pack(side='left', fill='y', padx=5)
-
         # Export button
-        export_btn = ttk.Button(toolbar_frame, text="Export",
-                                command=self._export_chart)
-        export_btn.pack(side='left', padx=2)
+        export_btn = ctk.CTkButton(toolbar_frame, text="Export",
+                                command=self._export_chart, width=80, height=25)
+        export_btn.pack(side='left', padx=2, pady=2)
 
         # Clear button
-        clear_btn = ttk.Button(toolbar_frame, text="Clear",
-                               command=self.clear_chart)
-        clear_btn.pack(side='left', padx=2)
+        clear_btn = ctk.CTkButton(toolbar_frame, text="Clear",
+                               command=self.clear_chart, width=80, height=25)
+        clear_btn.pack(side='left', padx=2, pady=2)
 
         # Chart type selector
-        ttk.Label(toolbar_frame, text="Type:").pack(side='left', padx=(10, 2))
+        ctk.CTkLabel(toolbar_frame, text="Type:").pack(side='left', padx=(10, 2))
         self.type_var = tk.StringVar(value=self.chart_type)
-        type_combo = ttk.Combobox(toolbar_frame, textvariable=self.type_var,
-                                  values=['line', 'bar', 'scatter', 'histogram', 'heatmap'],
-                                  width=10, state='readonly')
+        type_combo = ctk.CTkComboBox(toolbar_frame, variable=self.type_var,
+                                   values=['line', 'bar', 'scatter', 'histogram', 'heatmap'],
+                                   width=120,
+                                   command=self._change_chart_type)
         type_combo.pack(side='left', padx=2)
-        type_combo.bind('<<ComboboxSelected>>', lambda e: self._change_chart_type())
+
+    def update_chart_data(self, data: pd.DataFrame):
+        """
+        Update chart with new data based on chart type.
+        
+        Args:
+            data: DataFrame with columns appropriate for the chart type
+        """
+        # Store data for chart type changes
+        self._last_data = data.copy() if data is not None and len(data) > 0 else None
+        
+        if data is None or len(data) == 0:
+            self.clear_chart()
+            return
+            
+        try:
+            self.clear_chart()
+            
+            if self.chart_type == 'line':
+                self._plot_line_from_data(data)
+            elif self.chart_type == 'bar':
+                self._plot_bar_from_data(data)
+            elif self.chart_type == 'scatter':
+                self._plot_scatter_from_data(data)
+            elif self.chart_type == 'histogram':
+                self._plot_histogram_from_data(data)
+            else:
+                # Default to line plot
+                self._plot_line_from_data(data)
+                
+        except Exception as e:
+            print(f"Error updating chart: {e}")
+            self.clear_chart()
+            
+    def _plot_line_from_data(self, data: pd.DataFrame):
+        """Plot line chart from DataFrame."""
+        ax = self.figure.add_subplot(111)
+        
+        if 'trim_date' in data.columns and 'sigma_gradient' in data.columns:
+            # Sort by date
+            data_sorted = data.sort_values('trim_date')
+            x_data = data_sorted['trim_date']
+            y_data = data_sorted['sigma_gradient']
+            
+            # Convert dates to numeric for trend calculation
+            x_numeric = mdates.date2num(pd.to_datetime(x_data))
+            
+            # Plot the actual data points and line
+            ax.plot(x_data, y_data, marker='o', linewidth=2, markersize=4, 
+                   color=self.qa_colors['primary'], label='Sigma Gradient', alpha=0.8)
+            
+            # Add trend line if we have enough data points
+            if len(x_data) >= 3:
+                # Calculate linear trend
+                z = np.polyfit(x_numeric, y_data, 1)
+                p = np.poly1d(z)
+                trend_y = p(x_numeric)
+                
+                ax.plot(x_data, trend_y, "--", color=self.qa_colors['warning'], 
+                       linewidth=2, alpha=0.7, label=f'Trend (slope: {z[0]:.6f})')
+                
+                # Add legend
+                ax.legend(loc='upper right', fontsize=9)
+            
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Sigma Gradient')
+            
+            # Format x-axis dates
+            if len(x_data) > 0:
+                ax.tick_params(axis='x', rotation=45)
+                
+        if self.title:
+            ax.set_title(self.title)
+        ax.grid(True, alpha=0.3)
+        self.figure.tight_layout()
+        self.canvas.draw()
+        
+    def _plot_bar_from_data(self, data: pd.DataFrame):
+        """Plot bar chart from DataFrame."""
+        ax = self.figure.add_subplot(111)
+        
+        if 'month_year' in data.columns and 'track_status' in data.columns:
+            categories = [str(m) for m in data['month_year']]
+            values = data['track_status'].tolist()
+            
+            # Color code based on pass rate
+            colors = []
+            for rate in values:
+                if rate >= 95:
+                    colors.append(self.qa_colors['pass'])
+                elif rate >= 90:
+                    colors.append(self.qa_colors['warning'])
+                else:
+                    colors.append(self.qa_colors['fail'])
+            
+            bars = ax.bar(categories, values, color=colors)
+            
+            # Add value labels on bars
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width() / 2., height,
+                       f'{height:.1f}%', ha='center', va='bottom', fontsize=9)
+            
+            ax.set_xlabel('Month')
+            ax.set_ylabel('Pass Rate (%)')
+            ax.set_ylim(0, 100)
+            
+            if len(categories) > 5:
+                ax.tick_params(axis='x', rotation=45)
+                
+        if self.title:
+            ax.set_title(self.title)
+        ax.grid(True, alpha=0.3, axis='y')
+        self.figure.tight_layout()
+        self.canvas.draw()
+        
+    def _plot_scatter_from_data(self, data: pd.DataFrame):
+        """Plot scatter chart from DataFrame."""
+        ax = self.figure.add_subplot(111)
+        
+        if 'x' in data.columns and 'y' in data.columns:
+            x_data = data['x']
+            y_data = data['y']
+            
+            ax.scatter(x_data, y_data, alpha=0.6, s=50, color=self.qa_colors['primary'])
+            ax.set_xlabel('Sigma Gradient')
+            ax.set_ylabel('Linearity Error')
+            
+            # Add correlation if enough points
+            if len(x_data) > 5:
+                correlation = np.corrcoef(x_data, y_data)[0, 1]
+                if not np.isnan(correlation):
+                    ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
+                           transform=ax.transAxes, fontsize=10,
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
+                
+        if self.title:
+            ax.set_title(self.title)
+        ax.grid(True, alpha=0.3)
+        self.figure.tight_layout()
+        self.canvas.draw()
+        
+    def _plot_histogram_from_data(self, data: pd.DataFrame):
+        """Plot histogram from DataFrame."""
+        ax = self.figure.add_subplot(111)
+        
+        if 'sigma_gradient' in data.columns:
+            sigma_data = data['sigma_gradient'].dropna()
+            
+            if len(sigma_data) > 0:
+                ax.hist(sigma_data, bins=min(30, max(10, len(sigma_data) // 5)), 
+                       alpha=0.7, edgecolor='black', color=self.qa_colors['primary'])
+                
+                # Add statistics
+                mean = sigma_data.mean()
+                std = sigma_data.std()
+                ax.axvline(mean, color='red', linestyle='--', linewidth=2,
+                          label=f'Mean: {mean:.4f}')
+                ax.axvline(mean + std, color='orange', linestyle='--', linewidth=1,
+                          label=f'±1σ: {std:.4f}')
+                ax.axvline(mean - std, color='orange', linestyle='--', linewidth=1)
+                
+                ax.set_xlabel('Sigma Gradient')
+                ax.set_ylabel('Frequency')
+                ax.legend()
+                
+        if self.title:
+            ax.set_title(self.title)
+        ax.grid(True, alpha=0.3, axis='y')
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def clear(self):
+        """Clear the chart (alias for clear_chart for compatibility)."""
+        self.clear_chart()
 
     def plot_line(self, x_data: List, y_data: List, label: str = "",
                   color: Optional[str] = None, marker: Optional[str] = None,
@@ -295,7 +469,7 @@ class ChartWidget(ttk.Frame):
 
         # Color the boxes
         colors = [self.qa_colors['primary'], self.qa_colors['secondary'], 
-                  self.qa_colors['warning'], self.qa_colors['success']]
+                  self.qa_colors['warning'], self.qa_colors['pass']]
         
         for patch, color in zip(bp['boxes'], colors * (len(bp['boxes']) // len(colors) + 1)):
             patch.set_facecolor(color)
@@ -430,10 +604,16 @@ class ChartWidget(ttk.Frame):
         self.figure.clear()
         self.canvas.draw()
 
-    def _change_chart_type(self):
-        """Change chart type."""
-        self.chart_type = self.type_var.get()
-        # Optionally redraw with new type
+    def _change_chart_type(self, new_value=None):
+        """Change chart type and refresh if data exists."""
+        if new_value:
+            self.chart_type = new_value
+        else:
+            self.chart_type = self.type_var.get()
+        
+        # If we have data stored, re-plot with new chart type
+        if hasattr(self, '_last_data') and self._last_data is not None:
+            self.update_chart_data(self._last_data)
 
     def _export_chart(self):
         """Export chart to file."""

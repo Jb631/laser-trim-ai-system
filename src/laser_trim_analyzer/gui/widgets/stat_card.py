@@ -43,8 +43,8 @@ class StatCard(ttk.Frame):
 
     def _setup_ui(self):
         """Set up the card UI."""
-        # Configure card style
-        self.configure(relief="solid", borderwidth=1, padding=15)
+        # Configure the frame (remove unsupported parameters)
+        # CustomTkinter doesn't support relief, borderwidth, padding
 
         # Get colors for the scheme
         scheme = self.colors.get(self.color_scheme, self.colors["default"])

@@ -27,19 +27,21 @@ from laser_trim_analyzer.gui.widgets.progress_widgets import ProgressDialog
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
+from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
 
 logger = logging.getLogger(__name__)
 
 
-class SingleFileAnalysisPage(ctk.CTkFrame):
-    """Single file analysis page with comprehensive validation."""
+class SingleFilePage(BasePage):
+    """Single file analysis page with comprehensive validation and responsive design."""
 
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
+    def __init__(self, parent, main_window=None, **kwargs):
+        # Initialize with BasePage for responsive design and stop functionality
+        super().__init__(parent, main_window, **kwargs)
         
-        self.config = get_config()
-        self.processor = LaserTrimProcessor(self.config)
-        self.db_manager = DatabaseManager()
+        self.analyzer_config = get_config()
+        self.processor = LaserTrimProcessor(self.analyzer_config)
         
         # State
         self.current_file: Optional[Path] = None
@@ -47,247 +49,258 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
         self.analysis_thread: Optional[threading.Thread] = None
         self.is_analyzing = False
         
-        # Create UI
-        self._create_widgets()
-        self._setup_layout()
-        
         logger.info("Single file analysis page initialized")
 
-    def _create_widgets(self):
-        """Create UI widgets."""
+    def _create_page(self):
+        """Create page content with responsive design."""
+        # Main scrollable container (matching batch processing theme)
+        self.main_container = ctk.CTkScrollableFrame(self)
+        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Header with validation status
-        self.header_frame = ctk.CTkFrame(self)
+        # Create sections in order (matching batch processing pattern)
+        self._create_header()
+        self._create_file_selection()
+        self._create_options_section()
+        self._create_prevalidation_section()
+        self._create_controls_section()
+        self._create_results_section()
+
+    def _create_header(self):
+        """Create header section (matching batch processing theme)."""
+        self.header_frame = ctk.CTkFrame(self.main_container)
+        self.header_frame.pack(fill='x', pady=(0, 20))
         
         self.title_label = ctk.CTkLabel(
             self.header_frame,
             text="Single File Analysis",
             font=ctk.CTkFont(size=24, weight="bold")
         )
+        self.title_label.pack(pady=15)
         
-        # Validation status indicator
+        # Validation status frame (matching batch processing pattern)
         self.validation_status_frame = ctk.CTkFrame(self.header_frame)
+        self.validation_status_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
         self.validation_status_label = ctk.CTkLabel(
             self.validation_status_frame,
             text="Validation Status: Not Started",
             font=ctk.CTkFont(size=12)
         )
+        self.validation_status_label.pack(side='left', padx=10, pady=10)
+        
         self.validation_indicator = ctk.CTkLabel(
             self.validation_status_frame,
             text="●",
             font=ctk.CTkFont(size=16),
             text_color="gray"
         )
-        
-        # File selection
-        self.file_frame = ctk.CTkFrame(self)
+        self.validation_indicator.pack(side='right', padx=10, pady=10)
+
+    def _create_file_selection(self):
+        """Create file selection section (matching batch processing theme)."""
+        self.file_frame = ctk.CTkFrame(self.main_container)
+        self.file_frame.pack(fill='x', pady=(0, 20))
         
         self.file_label = ctk.CTkLabel(
             self.file_frame,
-            text="Select Excel File:",
+            text="File Selection:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
+        self.file_label.pack(anchor='w', padx=15, pady=(15, 5))
+        
+        # File input container
+        self.file_input_frame = ctk.CTkFrame(self.file_frame)
+        self.file_input_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.file_entry = ctk.CTkEntry(
-            self.file_frame,
+            self.file_input_frame,
             placeholder_text="No file selected...",
-            width=400,
+            height=40,
             state="readonly"
         )
+        self.file_entry.pack(side='left', fill='x', expand=True, padx=(10, 10), pady=10)
         
         self.browse_button = ctk.CTkButton(
-            self.file_frame,
+            self.file_input_frame,
             text="Browse",
             command=self._browse_file,
-            width=100
+            width=100,
+            height=40
         )
+        self.browse_button.pack(side='right', padx=(0, 10), pady=10)
         
         self.validate_button = ctk.CTkButton(
-            self.file_frame,
+            self.file_input_frame,
             text="Pre-validate",
             command=self._pre_validate_file,
             width=120,
-            state="disabled"
-        )
-        
-        # Analysis controls
-        self.controls_frame = ctk.CTkFrame(self)
-        
-        self.analyze_button = ctk.CTkButton(
-            self.controls_frame,
-            text="Analyze File",
-            command=self._start_analysis,
-            width=150,
             height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
             state="disabled"
         )
-        
-        self.export_button = ctk.CTkButton(
-            self.controls_frame,
-            text="Export Results",
-            command=self._export_results,
-            width=120,
-            state="disabled"
-        )
-        
-        self.clear_button = ctk.CTkButton(
-            self.controls_frame,
-            text="Clear",
-            command=self._clear_results,
-            width=100
-        )
-        
-        # Analysis options
-        self.options_frame = ctk.CTkFrame(self)
+        self.validate_button.pack(side='right', padx=(0, 10), pady=10)
+
+    def _create_options_section(self):
+        """Create analysis options section (matching batch processing theme)."""
+        self.options_frame = ctk.CTkFrame(self.main_container)
+        self.options_frame.pack(fill='x', pady=(0, 20))
         
         self.options_label = ctk.CTkLabel(
             self.options_frame,
             text="Analysis Options:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
+        self.options_label.pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Options container
+        self.options_container = ctk.CTkFrame(self.options_frame)
+        self.options_container.pack(fill='x', padx=15, pady=(0, 15))
         
         self.generate_plots_var = ctk.BooleanVar(value=True)
         self.generate_plots_check = ctk.CTkCheckBox(
-            self.options_frame,
+            self.options_container,
             text="Generate Plots",
             variable=self.generate_plots_var
         )
+        self.generate_plots_check.pack(side='left', padx=(10, 20), pady=10)
         
         self.save_to_db_var = ctk.BooleanVar(value=True)
         self.save_to_db_check = ctk.CTkCheckBox(
-            self.options_frame,
+            self.options_container,
             text="Save to Database",
             variable=self.save_to_db_var
         )
+        self.save_to_db_check.pack(side='left', padx=(0, 20), pady=10)
         
         self.comprehensive_validation_var = ctk.BooleanVar(value=True)
         self.comprehensive_validation_check = ctk.CTkCheckBox(
-            self.options_frame,
+            self.options_container,
             text="Comprehensive Validation",
             variable=self.comprehensive_validation_var
         )
-        
-        # Pre-validation metrics (initially hidden)
-        self.prevalidation_frame = ctk.CTkFrame(self)
-        self.prevalidation_frame.grid_remove()  # Hidden initially
+        self.comprehensive_validation_check.pack(side='left', padx=(0, 20), pady=10)
+
+    def _create_prevalidation_section(self):
+        """Create pre-validation results section (matching batch processing theme)."""
+        self.prevalidation_frame = ctk.CTkFrame(self.main_container)
+        # Initially hidden - will be shown when validation runs
         
         self.prevalidation_label = ctk.CTkLabel(
             self.prevalidation_frame,
             text="Pre-validation Results:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
+        self.prevalidation_label.pack(anchor='w', padx=15, pady=(15, 10))
         
-        # Create metric cards for pre-validation
+        # Metrics container
+        self.validation_metrics_frame = ctk.CTkFrame(self.prevalidation_frame)
+        self.validation_metrics_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        # Create metric cards (matching batch processing layout)
         self.file_status_card = MetricCard(
-            self.prevalidation_frame,
+            self.validation_metrics_frame,
             title="File Status",
             value="Unknown",
             color_scheme="neutral"
         )
+        self.file_status_card.pack(side='left', fill='x', expand=True, padx=(10, 5), pady=10)
         
         self.file_size_card = MetricCard(
-            self.prevalidation_frame,
+            self.validation_metrics_frame,
             title="File Size",
             value="0 MB",
             color_scheme="neutral"
         )
+        self.file_size_card.pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
         
         self.sheet_count_card = MetricCard(
-            self.prevalidation_frame,
+            self.validation_metrics_frame,
             title="Sheet Count",
             value="0",
             color_scheme="neutral"
         )
+        self.sheet_count_card.pack(side='left', fill='x', expand=True, padx=(5, 5), pady=10)
         
-        self.system_type_card = MetricCard(
-            self.prevalidation_frame,
-            title="System Type",
-            value="Unknown",
+        self.validation_grade_card = MetricCard(
+            self.validation_metrics_frame,
+            title="Validation Grade",
+            value="--",
             color_scheme="neutral"
         )
+        self.validation_grade_card.pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
+
+    def _create_controls_section(self):
+        """Create processing controls section (matching batch processing theme)."""
+        self.controls_frame = ctk.CTkFrame(self.main_container)
+        self.controls_frame.pack(fill='x', pady=(0, 20))
         
-        # Results display
-        self.results_frame = ctk.CTkFrame(self)
+        self.controls_label = ctk.CTkLabel(
+            self.controls_frame,
+            text="Processing Controls:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.controls_label.pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Controls container
+        self.controls_container = ctk.CTkFrame(self.controls_frame)
+        self.controls_container.pack(fill='x', padx=15, pady=(0, 15))
+        
+        self.analyze_button = ctk.CTkButton(
+            self.controls_container,
+            text="Analyze File",
+            command=self._start_analysis,
+            width=150,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            state="disabled",
+            fg_color="green",
+            hover_color="darkgreen"
+        )
+        self.analyze_button.pack(side='left', padx=(10, 10), pady=10)
+        
+        self.export_button = ctk.CTkButton(
+            self.controls_container,
+            text="Export Results",
+            command=self._export_results,
+            width=120,
+            height=40,
+            state="disabled"
+        )
+        self.export_button.pack(side='left', padx=(0, 10), pady=10)
+        
+        self.clear_button = ctk.CTkButton(
+            self.controls_container,
+            text="Clear",
+            command=self._clear_results,
+            width=100,
+            height=40
+        )
+        self.clear_button.pack(side='left', padx=(0, 10), pady=10)
+
+    def _create_results_section(self):
+        """Create results display section (matching batch processing theme)."""
+        self.results_frame = ctk.CTkFrame(self.main_container)
+        self.results_frame.pack(fill='both', expand=True, pady=(0, 20))
         
         self.results_label = ctk.CTkLabel(
             self.results_frame,
             text="Analysis Results:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
+        self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
         
-        # Create scrollable frame for results
-        self.results_scroll = ctk.CTkScrollableFrame(
-            self.results_frame,
-            height=400
-        )
-        
-        # Analysis display widget
-        self.analysis_display = AnalysisDisplayWidget(self.results_scroll)
-        
-        # Progress indicator
-        self.progress_dialog: Optional[ProgressDialog] = None
+        # Results display widget
+        self.analysis_display = AnalysisDisplayWidget(self.results_frame)
+        self.analysis_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+    def _create_widgets(self):
+        """Create UI widgets."""
+        # This method is no longer needed as widgets are created in individual sections
+        pass
 
     def _setup_layout(self):
         """Setup widget layout."""
-        self.grid_rowconfigure(7, weight=1)  # Results frame expands
-        self.grid_columnconfigure(0, weight=1)
-        
-        # Header
-        self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
-        self.header_frame.grid_columnconfigure(0, weight=1)
-        
-        self.title_label.grid(row=0, column=0, sticky="w")
-        self.validation_status_frame.grid(row=0, column=1, sticky="e")
-        
-        self.validation_status_frame.grid_columnconfigure(0, weight=1)
-        self.validation_status_label.grid(row=0, column=0, padx=(0, 10))
-        self.validation_indicator.grid(row=0, column=1)
-        
-        # File selection
-        self.file_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
-        self.file_frame.grid_columnconfigure(1, weight=1)
-        
-        self.file_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
-        self.file_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 10))
-        self.browse_button.grid(row=1, column=2, padx=(0, 10))
-        self.validate_button.grid(row=1, column=3)
-        
-        # Analysis options
-        self.options_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=10)
-        self.options_frame.grid_columnconfigure(4, weight=1)
-        
-        self.options_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
-        self.generate_plots_check.grid(row=1, column=0, sticky="w", padx=(0, 20))
-        self.save_to_db_check.grid(row=1, column=1, sticky="w", padx=(0, 20))
-        self.comprehensive_validation_check.grid(row=1, column=2, sticky="w", padx=(0, 20))
-        
-        # Pre-validation metrics (row 3, initially hidden)
-        self.prevalidation_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
-        self.prevalidation_frame.grid_columnconfigure([0, 1, 2, 3], weight=1)
-        
-        self.prevalidation_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
-        self.file_status_card.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-        self.file_size_card.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        self.sheet_count_card.grid(row=1, column=2, padx=5, pady=5, sticky="ew")
-        self.system_type_card.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
-        
-        # Controls
-        self.controls_frame.grid(row=4, column=0, sticky="ew", padx=20, pady=10)
-        
-        self.analyze_button.grid(row=0, column=0, padx=(0, 10))
-        self.export_button.grid(row=0, column=1, padx=(0, 10))
-        self.clear_button.grid(row=0, column=2)
-        
-        # Results
-        self.results_frame.grid(row=5, column=0, sticky="nsew", padx=20, pady=10)
-        self.results_frame.grid_rowconfigure(1, weight=1)
-        self.results_frame.grid_columnconfigure(0, weight=1)
-        
-        self.results_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
-        self.results_scroll.grid(row=1, column=0, sticky="nsew")
-        
-        self.analysis_display.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        # This method is no longer needed as layout is handled in _create_page
+        pass
 
     def _browse_file(self):
         """Browse for Excel file."""
@@ -309,6 +322,9 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
             # Enable validation button
             self.validate_button.configure(state="normal")
             
+            # Enable analyze button immediately when file is selected
+            self.analyze_button.configure(state="normal")
+            
             # Reset validation status
             self._update_validation_status("File Selected", "orange")
             
@@ -329,7 +345,7 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
                 
                 validation_result = validate_excel_file(
                     file_path=self.current_file,
-                    max_file_size_mb=self.config.processing.max_file_size_mb
+                    max_file_size_mb=self.analyzer_config.processing.max_file_size_mb
                 )
                 
                 # Update UI on main thread
@@ -348,7 +364,7 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
             self._update_validation_status("Validation Passed", "green")
             
             # Show pre-validation metrics
-            self.prevalidation_frame.grid()
+            self.prevalidation_frame.pack(fill='x', pady=(0, 20), before=self.controls_frame)
             
             # Update metric cards with validation data
             metadata = validation_result.metadata
@@ -363,8 +379,8 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
             self.sheet_count_card.update_value(str(sheet_count),
                                              "success" if sheet_count > 0 else "danger")
             
-            system_type = metadata.get('detected_system', 'Unknown')
-            self.system_type_card.update_value(system_type, "info")
+            validation_grade = metadata.get('validation_grade', '--')
+            self.validation_grade_card.update_value(validation_grade, "info")
             
             # Enable analysis button
             self.analyze_button.configure(state="normal")
@@ -378,7 +394,7 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
             self._update_validation_status("Validation Failed", "red")
             
             # Update file status card
-            self.prevalidation_frame.grid()
+            self.prevalidation_frame.pack(fill='x', pady=(0, 20), before=self.controls_frame)
             self.file_status_card.update_value("Invalid", "danger")
             
             # Show errors
@@ -443,19 +459,28 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
             # Create output directory if plots requested
             output_dir = None
             if self.generate_plots_var.get():
-                output_dir = self.config.output_directory / "single_analysis" / datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Use data_directory from config and create output subdirectory
+                base_dir = self.analyzer_config.data_directory if hasattr(self.analyzer_config, 'data_directory') else Path.home() / "LaserTrimResults"
+                output_dir = base_dir / "single_analysis" / datetime.now().strftime("%Y%m%d_%H%M%S")
                 ensure_directory(output_dir)
             
             # Progress callback
             def progress_callback(message: str, progress: float):
                 if self.progress_dialog:
-                    self.after(0, lambda: self.progress_dialog.update_progress(message, progress))
+                    self.after(0, lambda m=message, p=progress: self.progress_dialog.update_progress(m, p))
             
-            # Run analysis with asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
+            # Run analysis with asyncio in a more robust way
             try:
+                # Check if there's already an event loop
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # No loop in this thread, create one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                # Run the async process_file method
                 result = loop.run_until_complete(
                     self.processor.process_file(
                         file_path=self.current_file,
@@ -464,44 +489,55 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
                     )
                 )
                 
-                # Save to database if requested
-                if self.save_to_db_var.get() and self.db_manager:
-                    try:
-                        # Check for duplicates
-                        existing_id = self.db_manager.check_duplicate_analysis(
-                            result.metadata.model,
-                            result.metadata.serial,
-                            result.metadata.file_date
-                        )
-                        
-                        if existing_id:
-                            logger.info(f"Duplicate analysis found (ID: {existing_id})")
-                            result.db_id = existing_id
-                        else:
-                            # Try normal save first
-                            try:
-                                result.db_id = self.db_manager.save_analysis(result)
-                                logger.info(f"Saved to database with ID: {result.db_id}")
-                                
-                                # Validate the save
-                                if not self.db_manager.validate_saved_analysis(result.db_id):
-                                    raise RuntimeError("Database validation failed")
-                                    
-                            except Exception as save_error:
-                                logger.warning(f"Normal save failed, trying force save: {save_error}")
-                                # Try force save as fallback
-                                result.db_id = self.db_manager.force_save_analysis(result)
-                                logger.info(f"Force saved to database with ID: {result.db_id}")
+            except Exception as process_error:
+                # If the processor fails, provide a detailed error message
+                error_msg = f"Processing failed: {str(process_error)}"
+                if "Config object has no attribute" in str(process_error):
+                    error_msg = f"Configuration error: {str(process_error)}. Please check your configuration settings."
+                elif "No module named" in str(process_error):
+                    error_msg = f"Missing dependency: {str(process_error)}. Please ensure all required packages are installed."
+                elif "Permission denied" in str(process_error):
+                    error_msg = f"File access error: {str(process_error)}. Please check file permissions."
+                else:
+                    error_msg = f"Processing error: {str(process_error)}"
+                
+                raise ProcessingError(error_msg)
+                
+            # Save to database if requested
+            if self.save_to_db_var.get() and self.db_manager:
+                try:
+                    # Check for duplicates
+                    existing_id = self.db_manager.check_duplicate_analysis(
+                        result.metadata.model,
+                        result.metadata.serial,
+                        result.metadata.file_date
+                    )
+                    
+                    if existing_id:
+                        logger.info(f"Duplicate analysis found (ID: {existing_id})")
+                        result.db_id = existing_id
+                    else:
+                        # Try normal save first
+                        try:
+                            result.db_id = self.db_manager.save_analysis(result)
+                            logger.info(f"Saved to database with ID: {result.db_id}")
                             
-                    except Exception as e:
-                        logger.error(f"Database save failed: {e}")
-                        # Continue without database save
-                
-                # Update UI on main thread
-                self.after(0, self._handle_analysis_success, result, output_dir)
-                
-            finally:
-                loop.close()
+                            # Validate the save
+                            if not self.db_manager.validate_saved_analysis(result.db_id):
+                                raise RuntimeError("Database validation failed")
+                                
+                        except Exception as save_error:
+                            logger.warning(f"Normal save failed, trying force save: {save_error}")
+                            # Try force save as fallback
+                            result.db_id = self.db_manager.force_save_analysis(result)
+                            logger.info(f"Force saved to database with ID: {result.db_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Database save failed: {e}")
+                    # Continue without database save
+            
+            # Update UI on main thread
+            self.after(0, self._handle_analysis_success, result, output_dir)
                 
         except ValidationError as e:
             logger.error(f"Validation error during analysis: {e}")
@@ -642,7 +678,7 @@ class SingleFileAnalysisPage(ctk.CTkFrame):
         
         # Hide pre-validation frame if no file selected
         if not self.current_file:
-            self.prevalidation_frame.grid_remove()
+            self.prevalidation_frame.pack_forget()
             self._update_validation_status("Not Started", "gray")
         
         logger.info("Results cleared") 

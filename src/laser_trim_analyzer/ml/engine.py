@@ -808,6 +808,17 @@ class MLEngine:
 
             # Restore retraining schedule
             for name, dt_str in state.get('retraining_schedule', {}).items():
-                self.retraining_schedule[name] = datetime.fromisoformat(dt_str)
+                try:
+                    if isinstance(dt_str, str):
+                        self.retraining_schedule[name] = datetime.fromisoformat(dt_str)
+                    elif isinstance(dt_str, datetime):
+                        self.retraining_schedule[name] = dt_str
+                    else:
+                        # Skip invalid values
+                        self.logger.warning(f"Invalid datetime value for {name}: {dt_str}")
+                        continue
+                except ValueError as e:
+                    self.logger.warning(f"Failed to parse datetime for {name}: {dt_str} - {e}")
+                    continue
 
             self.logger.info("ML Engine state loaded")

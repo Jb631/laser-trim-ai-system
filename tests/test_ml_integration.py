@@ -215,13 +215,13 @@ class TestMLEngine:
     def test_model_registration_and_training(self, ml_engine, training_data):
         """Test model registration and training."""
         # Register threshold optimizer
-        config = ModelConfig(
-            model_type='threshold_optimizer',
-            version='1.0.0',
-            features=['sigma_gradient', 'unit_length', 'resistance_change_percent'],
-            target='optimal_threshold',
-            hyperparameters={'n_estimators': 50, 'max_depth': 5}
-        )
+        config = ModelConfig({
+            'model_type': 'threshold_optimizer',
+            'version': '1.0.0',
+            'features': ['sigma_gradient', 'unit_length', 'resistance_change_percent'],
+            'target': 'optimal_threshold',
+            'hyperparameters': {'n_estimators': 50, 'max_depth': 5}
+        })
 
         ml_engine.register_model('threshold_opt_v1', ThresholdOptimizer, config)
 
@@ -259,12 +259,12 @@ class TestMLEngine:
     def test_model_versioning(self, ml_engine, training_data):
         """Test model version control."""
         # Train multiple versions
-        config = ModelConfig(
-            model_type='failure_predictor',
-            version='1.0.0',
-            features=['sigma_gradient', 'linearity_pass', 'failure_probability'],
-            target='risk_category'
-        )
+        config = ModelConfig({
+            'model_type': 'failure_predictor',
+            'version': '1.0.0',
+            'features': ['sigma_gradient', 'linearity_pass', 'failure_probability'],
+            'target': 'risk_category'
+        })
 
         ml_engine.register_model('failure_model', FailurePredictor, config)
 
@@ -293,17 +293,17 @@ class TestMLEngine:
     def test_automated_retraining(self, ml_engine, training_data):
         """Test automated retraining pipeline."""
         # Register model with retraining criteria
-        config = ModelConfig(
-            model_type='threshold_optimizer',
-            version='1.0.0',
-            features=['sigma_gradient', 'unit_length'],
-            target='optimal_threshold',
-            retraining_criteria={
+        config = ModelConfig({
+            'model_type': 'threshold_optimizer',
+            'version': '1.0.0',
+            'features': ['sigma_gradient', 'unit_length'],
+            'target': 'optimal_threshold',
+            'retraining_criteria': {
                 'min_samples': 100,
                 'max_days_since_training': 1,  # Force retraining
                 'performance_threshold': 0.99  # High threshold to force retraining
             }
-        )
+        })
 
         ml_engine.register_model('auto_retrain_model', ThresholdOptimizer, config)
 
@@ -323,12 +323,12 @@ class TestMLEngine:
 
     def test_model_performance_tracking(self, ml_engine, training_data):
         """Test performance tracking over time."""
-        config = ModelConfig(
-            model_type='threshold_optimizer',
-            version='1.0.0',
-            features=['sigma_gradient'],
-            target='optimal_threshold'
-        )
+        config = ModelConfig({
+            'model_type': 'threshold_optimizer',
+            'version': '1.0.0',
+            'features': ['sigma_gradient'],
+            'target': 'optimal_threshold'
+        })
 
         ml_engine.register_model('tracked_model', ThresholdOptimizer, config)
 

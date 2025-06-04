@@ -33,7 +33,8 @@ class TrackDetailWidget(ttk.Frame):
 
     def _setup_ui(self):
         """Set up track detail UI."""
-        self.configure(relief='solid', borderwidth=1, padding=10)
+        # Configure the frame (remove unsupported parameters)
+        # CustomTkinter doesn't support relief, borderwidth, padding
 
         # Track header
         header_frame = ttk.Frame(self)
@@ -156,17 +157,18 @@ class FileAnalysisWidget(ttk.Frame):
 
     def _setup_ui(self):
         """Set up the widget UI."""
-        self.configure(relief='solid', borderwidth=1, padding=15)
+        # Configure the frame (remove unsupported parameters)
+        # CustomTkinter doesn't support relief, borderwidth, padding
 
         # Main container
         self.main_container = ttk.Frame(self)
         self.main_container.pack(fill='both', expand=True)
 
         # Header section
-        self._create_header_section()
+        self._create_header()
 
         # Progress section
-        self._create_progress_section()
+        self._create_progress()
 
         # Action buttons
         self._create_action_section()
@@ -175,17 +177,13 @@ class FileAnalysisWidget(ttk.Frame):
         self.details_container = ttk.Frame(self)
         # Don't pack initially
 
-        # Add hover effect
-        self.bind("<Enter>", lambda e: self.configure(relief='solid', borderwidth=2))
-        self.bind("<Leave>", lambda e: self.configure(relief='solid', borderwidth=1))
-
-    def _create_header_section(self):
+    def _create_header(self):
         """Create header section with file info."""
-        header_frame = ttk.Frame(self.main_container)
-        header_frame.pack(fill='x', pady=(0, 10))
+        self.header_frame = ttk.Frame(self.main_container)
+        self.header_frame.pack(fill='x', padx=10, pady=(10, 5))
 
         # Left side - File info
-        info_frame = ttk.Frame(header_frame)
+        info_frame = ttk.Frame(self.header_frame)
         info_frame.pack(side='left', fill='both', expand=True)
 
         # Filename
@@ -214,7 +212,7 @@ class FileAnalysisWidget(ttk.Frame):
         self.timestamp_label.pack(side='left')
 
         # Right side - Status
-        status_frame = ttk.Frame(header_frame)
+        status_frame = ttk.Frame(self.header_frame)
         status_frame.pack(side='right', padx=(10, 0))
 
         self.status_label = ttk.Label(status_frame, text="PENDING",
@@ -227,7 +225,7 @@ class FileAnalysisWidget(ttk.Frame):
                                         width=3, command=self._toggle_expand)
         # Don't pack initially
 
-    def _create_progress_section(self):
+    def _create_progress(self):
         """Create progress bar section."""
         self.progress_frame = ttk.Frame(self.main_container)
         # Don't pack initially
