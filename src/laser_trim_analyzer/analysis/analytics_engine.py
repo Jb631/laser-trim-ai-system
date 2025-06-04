@@ -787,9 +787,16 @@ class AnalyticsEngine:
                     )
                     continue
 
-                # Run analysis
+                # Run analysis with better error handling
                 self.logger.debug(f"Running {analysis_name} analysis")
-                analysis_result = analyzer.analyze(input_data, self.config)
+                try:
+                    analysis_result = analyzer.analyze(input_data, self.config)
+                except Exception as analysis_error:
+                    self.logger.error(f"Error in {analysis_name} analyzer: {analysis_error}")
+                    # Re-raise in detailed mode, otherwise continue with next analyzer
+                    if self.config.profile == AnalysisProfile.DETAILED:
+                        raise
+                    continue
 
                 # Store result
                 if analysis_name == "linearity":
@@ -888,9 +895,13 @@ class AnalyticsEngine:
             
     def clear_cache(self):
         """Clear the results cache."""
-        cache_size = len(self._results_cache)
-        self._results_cache.clear()
-        self.logger.debug(f"Cleared analytics cache ({cache_size} entries)")
+        if hasattr(self, '_results_cache'):
+            cache_size = len(self._results_cache)
+            self._results_cache.clear()
+            self.logger.debug(f"Cleared analytics cache ({cache_size} entries)")
+        else:
+            self._results_cache = {}
+            self.logger.debug("Initialized empty analytics cache")
         
     def set_cache_enabled(self, enabled: bool):
         """Enable or disable results caching."""

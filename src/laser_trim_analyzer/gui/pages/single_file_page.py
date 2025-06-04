@@ -588,7 +588,14 @@ class SingleFilePage(BasePage):
         
         # Display results
         try:
-            self.analysis_display.display_result(result)
+            try:
+                self.analysis_display.display_result(result)
+            except AttributeError:
+                # Fallback if display_result doesn't exist
+                if hasattr(self.analysis_display, 'update_data'):
+                    self.analysis_display.update_data(result)
+                elif hasattr(self.analysis_display, 'set_data'):
+                    self.analysis_display.set_data(result)
         except Exception as e:
             logger.error(f"Failed to display analysis result: {e}")
             # Continue with other operations even if display fails
@@ -697,22 +704,65 @@ class SingleFilePage(BasePage):
         result = self.current_result
         
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            # Summary sheet
-            summary_data = {
-                'Metric': ['File', 'Model', 'Serial', 'System Type', 'Analysis Date', 'Overall Status', 
-                          'Validation Status', 'Processing Time (s)', 'Track Count'],
-                'Value': [
-                    result.metadata.file_name,
-                    result.metadata.model,
-                    result.metadata.serial,
-                    result.metadata.system_type.value,
-                    result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    result.overall_status.value,
-                    result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A',
-                    f"{result.processing_time:.2f}",
-                    len(result.tracks)
-                ]
-            }
+            try:
+                # Get values safely with error handling
+                file_name = getattr(result.metadata, 'file_name', 
+                                   getattr(result.metadata, 'filename', 'Unknown'))
+                model = getattr(result.metadata, 'model', 'Unknown')
+                serial = getattr(result.metadata, 'serial', 'Unknown')
+                
+                # Handle system_type safely
+                system_type = 'Unknown'
+                if hasattr(result.metadata, 'system_type'):
+                    system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
+                
+                # Handle analysis_date safely
+                analysis_date = 'Unknown'
+                if hasattr(result.metadata, 'analysis_date'):
+                    if hasattr(result.metadata.analysis_date, 'strftime'):
+                        analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        analysis_date = str(result.metadata.analysis_date)
+                
+                # Handle overall_status safely
+                overall_status = 'Unknown'
+                if hasattr(result, 'overall_status'):
+                    overall_status = getattr(result.overall_status, 'value', str(result.overall_status))
+                
+                # Handle validation_status safely
+                validation_status = 'N/A'
+                if hasattr(result, 'overall_validation_status'):
+                    validation_status = getattr(result.overall_validation_status, 'value', 
+                                              str(result.overall_validation_status))
+                
+                # Get track count safely
+                track_count = 0
+                if hasattr(result, 'tracks'):
+                    track_count = len(result.tracks)
+                
+                # Summary sheet
+                summary_data = {
+                    'Metric': ['File', 'Model', 'Serial', 'System Type', 'Analysis Date', 'Overall Status', 
+                              'Validation Status', 'Processing Time (s)', 'Track Count'],
+                    'Value': [
+                        file_name,
+                        model,
+                        serial,
+                        system_type,
+                        analysis_date,
+                        overall_status,
+                        validation_status,
+                        f"{getattr(result, 'processing_time', 0):.2f}",
+                        track_count
+                    ]
+                }
+            except Exception as e:
+                # Fallback if there's an error
+                logger.error(f"Error preparing export data: {e}")
+                summary_data = {
+                    'Metric': ['Error'],
+                    'Value': [f"Error preparing data: {str(e)}"]
+                }
             
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)

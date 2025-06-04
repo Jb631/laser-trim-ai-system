@@ -860,27 +860,41 @@ class LaserTrimProcessor:
         gc_interval = getattr(self.config.processing, 'garbage_collection_interval', 50)
         if processed_count % gc_interval == 0:
             self.logger.debug(f"Forcing garbage collection after {processed_count} files")
-            collected = gc.collect()
-            self.logger.debug(f"Garbage collector released {collected} objects")
+            try:
+                collected = gc.collect()
+                self.logger.debug(f"Garbage collector released {collected} objects")
+            except Exception as e:
+                self.logger.warning(f"Error during garbage collection: {e}")
         
         # Close matplotlib figures to prevent memory leaks
         matplotlib_interval = getattr(self.config.processing, 'matplotlib_cleanup_interval', 25)
         if processed_count % matplotlib_interval == 0:
-            plt.close('all')  # Close all matplotlib figures
-            self.logger.debug("Closed all matplotlib figures to free memory")
+            try:
+                plt.close('all')  # Close all matplotlib figures
+                self.logger.debug("Closed all matplotlib figures to free memory")
+            except Exception as e:
+                self.logger.warning(f"Error closing matplotlib figures: {e}")
         
         # Clear file cache periodically for very large batches
-        if hasattr(self, '_file_cache') and len(self._file_cache) > 100:
-            cache_size_before = len(self._file_cache)
-            # Keep only the most recent 50 entries
-            if cache_size_before > 50:
-                # Convert to list of (key, timestamp) pairs, sort by timestamp, keep newest 50
-                cache_items = list(self._file_cache.items())
-                # For simplicity, just clear half the cache
-                keys_to_remove = list(self._file_cache.keys())[:-50]
-                for key in keys_to_remove:
-                    del self._file_cache[key]
-                self.logger.debug(f"Reduced cache from {cache_size_before} to {len(self._file_cache)} entries")
+        if hasattr(self, '_file_cache'):
+            try:
+                cache_size_before = len(self._file_cache)
+                if cache_size_before > 100:
+                    # Keep only the most recent 50 entries
+                    if cache_size_before > 50:
+                        # For simplicity, just clear half the cache
+                        keys_to_remove = list(self._file_cache.keys())[:-50]
+                        for key in keys_to_remove:
+                            del self._file_cache[key]
+                        self.logger.debug(f"Reduced cache from {cache_size_before} to {len(self._file_cache)} entries")
+            except Exception as e:
+                self.logger.warning(f"Error managing file cache: {e}")
+                # If error occurs, try to clear the entire cache
+                try:
+                    self._file_cache.clear()
+                    self.logger.debug("Cleared entire file cache due to error")
+                except:
+                    pass
         
         # Log memory usage and performance stats
         processing_rate = processed_count / elapsed_time if elapsed_time > 0 else 0

@@ -367,15 +367,22 @@ class LargeScaleProcessor:
                     if memory_mb > self.stats['peak_memory_mb']:
                         self.stats['peak_memory_mb'] = memory_mb
                     
+                    # Check if memory_limit_mb exists in config
+                    memory_limit = getattr(self.config.processing, 'memory_limit_mb', 2000)
+                    
                     # Log high memory usage
-                    if memory_mb > self.config.processing.memory_limit_mb * 0.8:
+                    if memory_mb > memory_limit * 0.8:
                         self.logger.warning(f"High memory usage: {memory_mb:.1f} MB")
                     
                     time.sleep(5)  # Check every 5 seconds
                     
+                except AttributeError:
+                    # Handle missing attributes gracefully
+                    self.logger.warning("Memory monitoring: config attribute missing")
+                    time.sleep(5)
                 except Exception as e:
                     self.logger.error(f"Memory monitoring error: {e}")
-                    break
+                    time.sleep(10)  # Longer delay after error
         
         self._memory_monitor = threading.Thread(target=monitor_memory, daemon=True)
         self._memory_monitor.start()
