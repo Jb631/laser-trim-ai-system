@@ -187,7 +187,9 @@ class HomePage(BasePage):
 
     def refresh(self):
         """Refresh dashboard data from database."""
-        if not self.db_manager:
+        if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
+            # Update UI with empty data
+            self._update_ui({}, [], [])
             return
 
         # Run database queries in background thread
@@ -213,7 +215,7 @@ class HomePage(BasePage):
 
     def _get_today_stats(self) -> Dict[str, Any]:
         """Get today's statistics."""
-        if not self.main_window.db_manager:
+        if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
             return {
                 "units_tested": 0,
                 "pass_rate": 0.0,
@@ -325,7 +327,7 @@ class HomePage(BasePage):
                 date_end = date_start + timedelta(days=1)
 
                 # Get data for this day
-                results = self.db_manager.get_historical_data(
+                results = self.main_window.db_manager.get_historical_data(
                     start_date=date_start,
                     end_date=date_end
                 )
@@ -354,7 +356,7 @@ class HomePage(BasePage):
         """Get recent activity from database."""
         try:
             # Get recent analyses
-            results = self.db_manager.get_historical_data(
+            results = self.main_window.db_manager.get_historical_data(
                 days_back=1,
                 limit=20,
                 include_tracks=False
@@ -412,7 +414,7 @@ class HomePage(BasePage):
                 
                 if activities:
                     for activity in activities[-10:]:  # Show last 10 activities
-                        timestamp = activity.get('timestamp', 'Unknown time')
+                        timestamp = activity.get('time', activity.get('timestamp', 'Unknown time'))
                         action = activity.get('action', 'Unknown action')
                         details = activity.get('details', '')
                         
@@ -469,47 +471,13 @@ class HomePage(BasePage):
 
     def _show_high_risk_details(self):
         """Show details of high risk units."""
-        # Could open a dialog or navigate to filtered view
-        self.main_window._show_page('historical')
-        # TODO: Add filtering for high risk units
+        # Navigate to historical page with high risk filter applied
+        self.main_window._show_page('historical', risk_category='High')
 
     def on_show(self):
         """Called when page is shown."""
         # Refresh data when page is shown
         self.refresh()
-
-    def _update_home_ui(self):
-        """Update the home page UI with current data."""
-        try:
-            # Throttle updates to prevent excessive database queries
-            current_time = time.time()
-            if hasattr(self, '_last_update_time'):
-                time_since_last_update = current_time - self._last_update_time
-                if time_since_last_update < 5.0:  # Minimum 5 seconds between updates
-                    return
-            
-            self._last_update_time = current_time
-            
-            # Update recent files
-            self._update_recent_files()
-            
-            # Update statistics with timeout
-            try:
-                self._update_statistics_with_timeout()
-            except Exception as e:
-                self.logger.warning(f"Statistics update failed: {e}")
-                
-            # Update productivity metrics
-            try:
-                self._update_productivity_metrics()
-            except Exception as e:
-                self.logger.warning(f"Productivity metrics update failed: {e}")
-                
-            self.logger.debug("Home page UI updated successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error updating home UI: {e}")
-            # Don't let UI update errors crash the application
     
     def _update_statistics_with_timeout(self):
         """Update statistics with timeout to prevent hanging."""

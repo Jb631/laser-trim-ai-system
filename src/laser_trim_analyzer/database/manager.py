@@ -775,4 +775,25 @@ class DatabaseManager:
                 }
 
                 for risk_category, count, avg_prob in results:
-                    if risk_
+                    if risk_category:
+                        category_name = risk_category.value
+                        summary["categories"][category_name] = {
+                            "count": count,
+                            "percentage": 0,  # Will calculate after total
+                            "avg_failure_probability": float(avg_prob or 0)
+                        }
+                        summary["total"] += count
+
+                # Calculate percentages
+                if summary["total"] > 0:
+                    for category in summary["categories"].values():
+                        category["percentage"] = (category["count"] / summary["total"]) * 100
+
+                return summary
+
+        except SQLAlchemyError as e:
+            self.logger.error(f"Database error in get_risk_summary: {e}")
+            raise DatabaseError(f"Failed to get risk summary: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error in get_risk_summary: {e}")
+            raise DatabaseError(f"Unexpected error getting risk summary: {e}")

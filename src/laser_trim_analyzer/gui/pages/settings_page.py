@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from laser_trim_analyzer.core.config import Config
-from laser_trim_analyzer.gui.dialogs.settings_dialog import SettingsDialog
 from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.settings_manager import settings_manager, SettingsDialog
 
 
 class SettingsPage(BasePage):
@@ -258,7 +258,9 @@ class SettingsPage(BasePage):
         theme_label = ctk.CTkLabel(theme_frame, text="Theme:")
         theme_label.pack(side='left', padx=10, pady=10)
 
-        self.theme_var = ctk.StringVar(value="dark")
+        # Get current theme from settings manager
+        current_theme = settings_manager.get('theme.mode', 'dark')
+        self.theme_var = ctk.StringVar(value=current_theme)
         self.theme_combo = ctk.CTkComboBox(
             theme_frame,
             variable=self.theme_var,
@@ -270,7 +272,7 @@ class SettingsPage(BasePage):
         self.theme_combo.pack(side='left', padx=10, pady=10)
 
         # UI visibility options
-        self.advanced_mode_var = ctk.BooleanVar(value=True)
+        self.advanced_mode_var = ctk.BooleanVar(value=settings_manager.get('advanced.experimental_features', False))
         self.advanced_mode_check = ctk.CTkCheckBox(
             self.appearance_container,
             text="Show advanced options",
@@ -287,38 +289,59 @@ class SettingsPage(BasePage):
     def _on_workers_changed(self, event=None):
         """Handle workers entry change."""
         try:
-            self.config.processing.max_workers = int(self.workers_var.get())
+            workers = int(self.workers_var.get())
+            if hasattr(self.config, 'processing'):
+                self.config.processing.max_workers = workers
+            # Also save in settings manager for persistence
+            settings_manager.set('performance.thread_pool_size', workers)
             self._save_config()
         except ValueError:
             # If invalid number, reset to default
-            self.workers_var.set(str(self.config.processing.max_workers))
+            default_workers = getattr(self.config.processing, 'max_workers', 4) if hasattr(self.config, 'processing') else 4
+            self.workers_var.set(str(default_workers))
 
     def _on_plots_changed(self):
         """Handle plots checkbox change."""
-        self.config.processing.generate_plots = self.plots_var.get()
+        value = self.plots_var.get()
+        if hasattr(self.config, 'processing'):
+            self.config.processing.generate_plots = value
+        # Save in settings manager
+        settings_manager.set('display.include_charts', value)
         self._save_config()
 
     def _on_cache_changed(self):
         """Handle cache checkbox change."""
-        self.config.processing.cache_enabled = self.cache_var.get()
+        value = self.cache_var.get()
+        if hasattr(self.config, 'processing'):
+            self.config.processing.cache_enabled = value
+        # Save in settings manager
+        settings_manager.set('performance.enable_caching', value)
         self._save_config()
 
     def _on_database_changed(self):
         """Handle database checkbox change."""
-        self.config.database.enabled = self.db_var.get()
+        value = self.db_var.get()
+        if hasattr(self.config, 'database'):
+            self.config.database.enabled = value
+        # Save in settings manager
+        settings_manager.set('data.auto_backup', value)
         self._save_config()
         
         # Update status
-        status_text = "Connected" if self.db_var.get() and hasattr(self.main_window, 'db_manager') and self.main_window.db_manager else "Not connected"
+        status_text = "Connected" if value and hasattr(self.main_window, 'db_manager') and self.main_window.db_manager else "Not connected"
         self.db_status_label.configure(text=f"Status: {status_text}")
 
     def _on_ml_changed(self):
         """Handle ML checkbox change."""
-        self.config.ml.enabled = self.ml_var.get()
+        value = self.ml_var.get()
+        if hasattr(self.config, 'ml'):
+            self.config.ml.enabled = value
+        # Save in settings manager
+        settings_manager.set('analysis.enable_ml_predictions', value)
         self._save_config()
         
         # Enable/disable ML feature checkboxes
-        state = "normal" if self.ml_var.get() else "disabled"
+        state = "normal" if value else "disabled"
         if hasattr(self, 'failure_pred_check'):
             self.failure_pred_check.configure(state=state)
         if hasattr(self, 'threshold_opt_check'):
@@ -326,41 +349,91 @@ class SettingsPage(BasePage):
 
     def _on_ml_feature_changed(self):
         """Handle ML feature checkbox change."""
-        self.config.ml.failure_prediction_enabled = self.failure_pred_var.get()
-        self.config.ml.threshold_optimization_enabled = self.threshold_opt_var.get()
+        if hasattr(self.config, 'ml'):
+            self.config.ml.failure_prediction_enabled = self.failure_pred_var.get()
+            self.config.ml.threshold_optimization_enabled = self.threshold_opt_var.get()
+        # Save in settings manager
+        settings_manager.set('notifications.notification_types.ml_insights', self.failure_pred_var.get())
         self._save_config()
 
     def _on_theme_changed(self, value=None):
         """Handle theme combobox change."""
         theme = self.theme_var.get()
         ctk.set_appearance_mode(theme)
+        # Save in settings manager
+        settings_manager.set('theme.mode', theme)
+        settings_manager.apply_theme()
         # Update config if it has theme setting
-        if hasattr(self.config.gui, 'theme'):
+        if hasattr(self.config, 'gui') and hasattr(self.config.gui, 'theme'):
             self.config.gui.theme = theme
-            self._save_config()
+        self._save_config()
 
     def _on_visibility_changed(self):
         """Handle visibility change."""
-        if hasattr(self.config.gui, 'show_historical_tab'):
-            self.config.gui.show_historical_tab = self.advanced_mode_var.get()
-        if hasattr(self.config.gui, 'show_ml_insights'):
-            self.config.gui.show_ml_insights = self.advanced_mode_var.get()
+        value = self.advanced_mode_var.get()
+        if hasattr(self.config, 'gui'):
+            if hasattr(self.config.gui, 'show_historical_tab'):
+                self.config.gui.show_historical_tab = value
+            if hasattr(self.config.gui, 'show_ml_insights'):
+                self.config.gui.show_ml_insights = value
+        # Save in settings manager
+        settings_manager.set('advanced.experimental_features', value)
         self._save_config()
 
     def _save_config(self):
         """Save configuration changes."""
         try:
-            # Config save implementation would go here
-            # self.config.save()
-            pass
+            # Save settings manager configuration
+            settings_manager.save_settings()
+            
+            # If the main config has a save method, use it
+            if hasattr(self.config, 'save'):
+                self.config.save()
+            elif hasattr(self.config, 'write') or hasattr(self.config, 'dump'):
+                # Try alternative save methods
+                config_file = Path.home() / ".laser_trim_analyzer" / "config.yaml"
+                config_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Create a dictionary from the config for saving
+                config_dict = {
+                    'database': {
+                        'enabled': getattr(self.config.database, 'enabled', True) if hasattr(self.config, 'database') else True,
+                        'path': str(getattr(self.config.database, 'path', '')) if hasattr(self.config, 'database') else ''
+                    },
+                    'processing': {
+                        'max_workers': getattr(self.config.processing, 'max_workers', 4) if hasattr(self.config, 'processing') else 4,
+                        'generate_plots': getattr(self.config.processing, 'generate_plots', True) if hasattr(self.config, 'processing') else True,
+                        'cache_enabled': getattr(self.config.processing, 'cache_enabled', True) if hasattr(self.config, 'processing') else True
+                    },
+                    'ml': {
+                        'enabled': getattr(self.config.ml, 'enabled', True) if hasattr(self.config, 'ml') else True,
+                        'failure_prediction_enabled': getattr(self.config.ml, 'failure_prediction_enabled', True) if hasattr(self.config, 'ml') else True,
+                        'threshold_optimization_enabled': getattr(self.config.ml, 'threshold_optimization_enabled', True) if hasattr(self.config, 'ml') else True
+                    }
+                }
+                
+                # Save to YAML file
+                import yaml
+                with open(config_file, 'w') as f:
+                    yaml.dump(config_dict, f)
+                    
+            self.logger.info("Settings saved successfully")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save settings: {e}")
+            self.logger.error(f"Failed to save settings: {e}")
+            messagebox.showwarning("Warning", "Some settings may not persist after restart")
 
     def _open_full_settings(self):
         """Open the full settings dialog."""
         try:
-            dialog = SettingsDialog(self, self.config)
-            dialog.show()
+            dialog = SettingsDialog(self, settings_manager)
+            # Center the dialog
+            dialog.update_idletasks()
+            width = dialog.winfo_width()
+            height = dialog.winfo_height()
+            x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+            y = (dialog.winfo_screenheight() // 2) - (height // 2)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+            dialog.focus()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open settings dialog: {e}")
 

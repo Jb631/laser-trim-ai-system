@@ -15,7 +15,7 @@ from typing import Optional, Dict, List, Any
 
 from laser_trim_analyzer.core.models import AnalysisResult
 from laser_trim_analyzer.gui.pages.base_page import BasePage
-from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
+# Removed alert_banner import to prevent glitching issues
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
@@ -37,11 +37,25 @@ class AIInsightsPage(BasePage):
         self.main_container = ctk.CTkScrollableFrame(self)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
+        # Create simple alert frame at the top of main container to prevent glitching
+        self.alert_frame = ctk.CTkFrame(self.main_container)
+        self.alert_frame.pack(fill='x', pady=(0, 10))
+        self.alert_message = ctk.CTkLabel(
+            self.alert_frame,
+            text="",
+            font=ctk.CTkFont(size=12)
+        )
+        self.alert_message.pack(padx=10, pady=5)
+        self.alert_frame.pack_forget()  # Initially hidden
+        
         # Create sections in order (matching batch processing pattern)
         self._create_header()
         self._create_insights_section()
         self._create_chat_section()
         self._create_report_section()
+        
+        # Apply hover fixes after creation
+        self.after(100, self._apply_hover_fixes)
 
     def _create_header(self):
         """Create header section (matching batch processing theme)."""
@@ -156,7 +170,10 @@ class AIInsightsPage(BasePage):
         self.chat_entry.bind('<Return>', lambda e: self._send_chat_message())
 
         # Initialize chat with welcome message
-        self._add_chat_message("AI Assistant", "Hello! I'm your QA assistant. I can help you understand your analysis data, suggest improvements, and answer questions about quality metrics.", is_user=False)
+        if self.ai_client:
+            self._add_chat_message("AI Assistant", "Hello! I'm your QA assistant. I can help you understand your analysis data, suggest improvements, and answer questions about quality metrics.", is_user=False)
+        else:
+            self._add_chat_message("System", "AI features are not configured. To enable AI assistance, please configure API settings in the Settings page.", is_user=False)
 
     def _create_report_section(self):
         """Create automated report generation section (matching batch processing theme)."""
@@ -226,13 +243,22 @@ class AIInsightsPage(BasePage):
 
     def _initialize_ai_client(self):
         """Initialize AI client if configured."""
-        if not self.main_window.config.api.enabled:
-            return
-
         try:
+            # Check if API is configured
+            if not hasattr(self.main_window, 'config') or not hasattr(self.main_window.config, 'api'):
+                self.logger.info("API configuration not available")
+                return
+                
+            if not self.main_window.config.api.enabled:
+                self.logger.info("API is disabled in configuration")
+                return
+
             # Determine provider
-            if self.main_window.config.api.api_key:
-                if 'claude' in self.main_window.config.api.base_url.lower():
+            api_key = getattr(self.main_window.config.api, 'api_key', None)
+            base_url = getattr(self.main_window.config.api, 'base_url', '')
+            
+            if api_key:
+                if 'claude' in base_url.lower():
                     provider = AIProvider.ANTHROPIC
                 else:
                     provider = AIProvider.OPENAI
@@ -241,23 +267,32 @@ class AIInsightsPage(BasePage):
 
             self.ai_client = QAAIAnalyzer(
                 provider=provider,
-                api_key=self.main_window.config.api.api_key,
+                api_key=api_key,
                 cache_ttl_hours=24,
-                max_retries=self.main_window.config.api.max_retries
+                max_retries=getattr(self.main_window.config.api, 'max_retries', 3)
             )
 
-            # Log success instead of using alert_stack
+            # Show success notification
             self.logger.info(f'Connected to {provider.value} AI service')
+            self.after(500, lambda: self.show_notification(
+                f'Connected to {provider.value} AI service', 'success'
+            ))
 
         except Exception as e:
             self.logger.error(f"Failed to initialize AI client: {e}")
-            # Log error instead of using alert_stack
-            self.logger.error(f'AI Connection Failed: {str(e)}')
+            # Show error notification
+            self.after(500, lambda: self.show_notification(
+                f'AI is not configured. AI features will be unavailable.', 'warning'
+            ))
 
     def _generate_insights(self):
         """Generate AI insights based on selected type."""
         if not self.ai_client:
-            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
+            self.show_notification("AI is not configured. Please check API settings.", "warning")
+            self.insights_display.configure(state="normal")
+            self.insights_display.delete('1.0', 'end')
+            self.insights_display.insert('1.0', "AI Features Not Available\n\nTo use AI features:\n1. Configure API settings in Settings page\n2. Ensure API key is valid\n3. Check internet connection\n\nYou can still use all other features without AI.")
+            self.insights_display.configure(state="disabled")
             return
 
         # Clear previous insights
@@ -284,6 +319,14 @@ class AIInsightsPage(BasePage):
     def _run_insight_generation(self, analysis_type: str):
         """Run insight generation in background."""
         try:
+            # Check if database is available
+            if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
+                self.winfo_toplevel().after(0, lambda: self._display_insights(
+                    "Database not connected. Please ensure database is configured and connected.",
+                    is_error=True
+                ))
+                return
+                
             # Get recent data
             results = self.main_window.db_manager.get_historical_data(
                 days_back=30,
@@ -318,9 +361,8 @@ class AIInsightsPage(BasePage):
             self.winfo_toplevel().after(0, lambda: self._display_insights(response.content))
 
             # Show cost info
-            self.winfo_toplevel().after(0, lambda: self.logger.info(
-                f'Analysis Complete - Cost: ${response.cost:.4f} | Tokens: {sum(response.tokens_used.values())}'
-            ))
+            cost_msg = f'Analysis Complete - Cost: ${response.cost:.4f} | Tokens: {sum(response.tokens_used.values())}'
+            self.winfo_toplevel().after(0, lambda: self.show_notification(cost_msg, 'info'))
 
         except Exception as e:
             self.winfo_toplevel().after(0, lambda: self._display_insights(
@@ -462,7 +504,8 @@ class AIInsightsPage(BasePage):
             return
 
         if not self.ai_client:
-            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
+            self._add_chat_message("System", "AI is not configured. Please configure API settings to use chat features.", is_user=False)
+            self.chat_entry.delete(0, 'end')
             return
 
         # Add user message to chat
@@ -517,10 +560,32 @@ class AIInsightsPage(BasePage):
 
     def _remove_last_message(self):
         """Remove the last message from chat (for removing 'thinking' indicator)."""
-        children = self.chat_messages_frame.winfo_children()
-        if children:
-            children[-1].destroy()
-            self.chat_history.pop()
+        try:
+            self.chat_display.configure(state="normal")
+            
+            # Find and remove the last "Thinking..." message
+            content = self.chat_display.get("1.0", "end-1c")
+            lines = content.split('\n')
+            
+            # Find the last occurrence of "Thinking..."
+            for i in range(len(lines) - 1, -1, -1):
+                if "Thinking..." in lines[i]:
+                    # Remove this line and the timestamp line before it
+                    if i > 0:
+                        lines.pop(i)  # Remove "Thinking..."
+                        lines.pop(i-1)  # Remove timestamp line
+                        # Also remove empty line after if exists
+                        if i < len(lines) and not lines[i-1].strip():
+                            lines.pop(i-1)
+                    break
+            
+            # Update the display
+            self.chat_display.delete("1.0", "end")
+            self.chat_display.insert("1.0", '\n'.join(lines))
+            self.chat_display.configure(state="disabled")
+            
+        except Exception as e:
+            self.logger.debug(f"Error removing last message: {e}")
 
     def _use_suggestion(self, suggestion: str):
         """Use a suggested question."""
@@ -531,7 +596,8 @@ class AIInsightsPage(BasePage):
     def _generate_report(self):
         """Generate automated AI report."""
         if not self.ai_client:
-            messagebox.showerror("AI Not Available", "AI client is not configured or connected")
+            self.show_notification("AI is not configured. Please check API settings.", "warning")
+            self.report_status.configure(text="AI not available")
             return
 
         # Get parameters
@@ -553,8 +619,15 @@ class AIInsightsPage(BasePage):
     def _run_report_generation(self, report_type: str, days: int):
         """Run report generation in background."""
         try:
+            # Check if database is available
+            if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
+                self.winfo_toplevel().after(0, lambda: self.show_notification(
+                    "Database not connected. Cannot generate report.", "error"
+                ))
+                return
+                
             # Update status
-            self.winfo_toplevel().after(0, lambda: self.report_status.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status.configure(
                 text="Loading data..."
             ))
 
@@ -575,14 +648,14 @@ class AIInsightsPage(BasePage):
             data_summary = self._prepare_data_summary(results)
 
             # Update status
-            self.winfo_toplevel().after(0, lambda: self.report_status.config(
+            self.winfo_toplevel().after(0, lambda: self.report_status.configure(
                 text="Generating AI content..."
             ))
 
             # Generate report content based on type
-            if report_type == "comprehensive":
+            if report_type == "detailed":
                 response = self.ai_client.generate_report(data_summary)
-            elif report_type == "executive":
+            elif report_type == "summary":
                 response = self.ai_client.custom_analysis(
                     system_prompt="You are an executive report writer. Create concise, high-level summaries.",
                     user_prompt="Create an executive summary of this QA data:\n\n{data}",
@@ -594,12 +667,8 @@ class AIInsightsPage(BasePage):
                     user_prompt="Create a technical analysis report:\n\n{data}",
                     data=data_summary
                 )
-            else:  # maintenance
-                response = self.ai_client.custom_analysis(
-                    system_prompt="You are a maintenance planning expert. Focus on equipment and process maintenance needs.",
-                    user_prompt="Create a maintenance report based on this QA data:\n\n{data}",
-                    data=data_summary
-                )
+            else:  # failures
+                response = self.ai_client.analyze_failures(data_summary)
 
             # Save report
             self.winfo_toplevel().after(0, lambda: self._save_report(
@@ -615,9 +684,9 @@ class AIInsightsPage(BasePage):
             ))
 
         finally:
-            # Re-enable button and stop progress
-            self.winfo_toplevel().after(0, lambda: self.generate_report_btn.config(state='normal'))
-            self.winfo_toplevel().after(0, lambda: self.report_status.config(text=""))
+            # Re-enable button and update status
+            self.winfo_toplevel().after(0, lambda: self.generate_report_btn.configure(state='normal'))
+            self.winfo_toplevel().after(0, lambda: self.report_status.configure(text="Ready to generate reports"))
 
     def _save_report(self, content: str, report_type: str, data_summary: Dict[str, Any]):
         """Save generated report to file."""
@@ -664,8 +733,8 @@ class AIInsightsPage(BasePage):
                 f"Report saved successfully to:\n{filename}"
             )
 
-            # Show alert
-            self.logger.info(f'{report_type.title()} report saved to {filename}')
+            # Show notification
+            self.show_notification(f'{report_type.title()} report saved successfully', 'success')
 
         except Exception as e:
             messagebox.showerror(
@@ -687,3 +756,66 @@ class AIInsightsPage(BasePage):
                 os.system(f'xdg-open "{filename}"')
         except Exception as e:
             messagebox.showerror("Error", f"Could not open file:\n{str(e)}")
+    
+    def _apply_hover_fixes(self):
+        """Apply hover fixes to prevent glitching and shifting."""
+        try:
+            # Import hover fix utilities
+            from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
+            
+            # Fix hover glitches on all widgets
+            fix_hover_glitches(self)
+            
+            # Stabilize layout to prevent shifting
+            stabilize_layout(self.main_container)
+            
+            # Specifically fix buttons that might have hover issues
+            buttons_to_fix = [
+                self.generate_insights_btn,
+                self.send_btn,
+                self.generate_report_btn
+            ]
+            
+            for button in buttons_to_fix:
+                if hasattr(button, '_hover_color'):
+                    button._hover_color = None  # Disable default hover
+                    
+            self.logger.debug("Hover fixes applied successfully to AI Insights page")
+        except Exception as e:
+            self.logger.warning(f"Failed to apply hover fixes: {e}")
+    
+    def on_show(self):
+        """Called when page is shown."""
+        # Re-check AI client status
+        if not self.ai_client and hasattr(self.main_window, 'config') and hasattr(self.main_window.config, 'api'):
+            self._initialize_ai_client()
+            
+    def on_hide(self):
+        """Called when page is hidden."""
+        # Hide any visible alerts
+        if hasattr(self, 'alert_frame'):
+            self.alert_frame.pack_forget()
+    
+    def show_notification(self, message: str, alert_type: str = "info"):
+        """Show notification using simple alert frame to prevent glitching."""
+        try:
+            # Color scheme for alert types
+            colors = {
+                'info': {'fg': "#3498db", 'bg': ("#e3f2fd", "#1976d2")},
+                'success': {'fg': "#27ae60", 'bg': ("#e8f5e9", "#2e7d32")},
+                'warning': {'fg': "#f39c12", 'bg': ("#fff3e0", "#f57c00")},
+                'error': {'fg': "#e74c3c", 'bg': ("#ffebee", "#c62828")}
+            }
+            
+            color = colors.get(alert_type, colors['info'])
+            
+            # Update alert message
+            self.alert_frame.configure(fg_color=color['bg'])
+            self.alert_message.configure(text=message, text_color=color['fg'])
+            self.alert_frame.pack(fill='x', pady=(0, 10))
+            
+            # Auto-hide after 5 seconds
+            self.after(5000, lambda: self.alert_frame.pack_forget())
+            
+        except Exception as e:
+            self.logger.error(f"Error showing notification: {e}")

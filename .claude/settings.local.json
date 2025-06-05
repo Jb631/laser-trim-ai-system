@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(touch:*)",
+      "Bash(python:*)",
+      "Bash(./venv/bin/python -m src.laser_trim_analyzer:*)",
+      "Bash(venv/Scripts/python.exe -m:*)",
+      "Bash(rg:*)",
+      "Bash(rm:*)"
+    ],
+    "deny": []
+  }
+}

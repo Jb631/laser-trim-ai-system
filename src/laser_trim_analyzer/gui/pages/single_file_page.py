@@ -29,6 +29,7 @@ from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
+from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +44,7 @@ class SingleFilePage(BasePage):
         self.analyzer_config = get_config()
         self.processor = LaserTrimProcessor(self.analyzer_config)
         
-        # Get database manager if available
-        self._db_manager = None
-        try:
-            if hasattr(main_window, 'db_manager') and main_window.db_manager:
-                self._db_manager = main_window.db_manager
-            elif hasattr(self.analyzer_config, 'database') and self.analyzer_config.database.enabled:
-                from laser_trim_analyzer.database.manager import DatabaseManager
-                self._db_manager = DatabaseManager(self.analyzer_config)
-                logger.info("Database manager initialized for single file page")
-        except Exception as e:
-            logger.warning(f"Failed to initialize database manager: {e}")
+        # Note: Database manager will be accessed via main_window.db_manager when needed
         
         # State
         self.current_file: Optional[Path] = None
@@ -65,7 +56,31 @@ class SingleFilePage(BasePage):
         # Create the page content
         self._create_page()
         
+        # Apply hover fixes after page creation
+        self.after(100, self._apply_hover_fixes)
+        
         logger.info("Single file analysis page initialized")
+    
+    def _apply_hover_fixes(self):
+        """Apply hover fixes to prevent glitching and shifting."""
+        try:
+            # Fix hover glitches on all widgets
+            fix_hover_glitches(self)
+            
+            # Stabilize layout to prevent shifting
+            stabilize_layout(self.main_container)
+            
+            # Lock positions of key frames to prevent shifting
+            if hasattr(self, 'file_frame'):
+                self.file_frame.update_idletasks()
+            if hasattr(self, 'options_frame'):
+                self.options_frame.update_idletasks()
+            if hasattr(self, 'controls_frame'):
+                self.controls_frame.update_idletasks()
+                
+            logger.debug("Hover fixes applied successfully")
+        except Exception as e:
+            logger.warning(f"Failed to apply hover fixes: {e}")
 
     def _create_page(self):
         """Create page content with responsive design."""
@@ -268,9 +283,10 @@ class SingleFilePage(BasePage):
             height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             state="disabled",
-            fg_color="green",
-            hover_color="darkgreen"
+            fg_color="green"
         )
+        # Apply stable hover effect separately to prevent glitching
+        self.analyze_button._hover_color = None  # Disable default hover
         self.analyze_button.pack(side='left', padx=(10, 10), pady=10)
         
         self.export_button = ctk.CTkButton(
@@ -590,10 +606,10 @@ class SingleFilePage(BasePage):
                 raise ProcessingError(error_msg)
                 
             # Save to database if requested
-            if self.save_to_db_var.get() and self._db_manager:
+            if self.save_to_db_var.get() and hasattr(self.main_window, 'db_manager') and self.main_window.db_manager:
                 try:
                     # Check for duplicates
-                    existing_id = self._db_manager.check_duplicate_analysis(
+                    existing_id = self.main_window.db_manager.check_duplicate_analysis(
                         result.metadata.model,
                         result.metadata.serial,
                         result.metadata.file_date
@@ -605,17 +621,17 @@ class SingleFilePage(BasePage):
                     else:
                         # Try normal save first
                         try:
-                            result.db_id = self._db_manager.save_analysis(result)
+                            result.db_id = self.main_window.db_manager.save_analysis(result)
                             logger.info(f"Saved to database with ID: {result.db_id}")
                             
                             # Validate the save
-                            if not self._db_manager.validate_saved_analysis(result.db_id):
+                            if not self.main_window.db_manager.validate_saved_analysis(result.db_id):
                                 raise RuntimeError("Database validation failed")
                                 
                         except Exception as save_error:
                             logger.warning(f"Normal save failed, trying force save: {save_error}")
                             # Try force save as fallback
-                            result.db_id = self._db_manager.force_save_analysis(result)
+                            result.db_id = self.main_window.db_manager.force_save_analysis(result)
                             logger.info(f"Force saved to database with ID: {result.db_id}")
                         
                 except Exception as e:
