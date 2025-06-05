@@ -29,6 +29,8 @@ from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+from laser_trim_analyzer.gui.widgets.track_viewer import IndividualTrackViewer
+from laser_trim_analyzer.analysis.consistency_analyzer import ConsistencyAnalyzer
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ class MultiTrackPage(BasePage):
     def __init__(self, parent, main_window):
         self.current_unit_data = None
         self.comparison_data = None
+        self.consistency_analyzer = ConsistencyAnalyzer()
         super().__init__(parent, main_window)
 
     def _create_page(self):
@@ -52,6 +55,7 @@ class MultiTrackPage(BasePage):
         self._create_file_selection()
         self._create_overview_section()
         self._create_comparison_section()
+        self._create_individual_track_viewer()
         self._create_consistency_section()
         self._create_actions_section()
 
@@ -322,6 +326,26 @@ class MultiTrackPage(BasePage):
             self.sigma_comparison_chart = None
             self.linearity_comparison_chart = None
             self.profile_comparison_chart = None
+    
+    def _create_individual_track_viewer(self):
+        """Create individual track viewer section."""
+        self.track_viewer_frame = ctk.CTkFrame(self.main_container)
+        self.track_viewer_frame.pack(fill='both', expand=True, pady=(0, 20))
+        
+        self.track_viewer_label = ctk.CTkLabel(
+            self.track_viewer_frame,
+            text="Individual Track Details:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.track_viewer_label.pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Track viewer container
+        self.track_viewer_container = ctk.CTkFrame(self.track_viewer_frame)
+        self.track_viewer_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        
+        # Create the individual track viewer widget
+        self.individual_track_viewer = IndividualTrackViewer(self.track_viewer_container)
+        self.individual_track_viewer.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_consistency_section(self):
         """Create consistency analysis section (matching batch processing theme)."""
@@ -790,6 +814,12 @@ class MultiTrackPage(BasePage):
                     consistency = "GOOD" if len(tracks) > 1 else "N/A"
                     self.overview_cards['consistency'].update_value(consistency)
 
+            # Update individual track viewer
+            try:
+                self._update_individual_track_viewer()
+            except Exception as e:
+                self.logger.warning(f"Failed to update track viewer: {e}")
+            
             # Update charts with current data
             try:
                 self._update_comparison_charts()
@@ -877,38 +907,76 @@ class MultiTrackPage(BasePage):
                 color_idx += 1
 
     def _update_consistency_analysis(self):
-        """Update consistency analysis text fields."""
-        if not self.comparison_data:
-            # Clear text fields and show no data message
-            self.consistency_display.configure(state='normal')
-            self.consistency_display.delete(1.0, tk.END)
-            self.consistency_display.insert(tk.END, "No comparison data available.")
+        """Update consistency analysis using the ConsistencyAnalyzer."""
+        self.consistency_display.configure(state='normal')
+        self.consistency_display.delete("1.0", "end")
+        
+        if not self.current_unit_data:
+            self.consistency_display.insert("1.0", "No unit data available for consistency analysis.")
             self.consistency_display.configure(state='disabled')
-            
             return
-
+            
         try:
-            comparison = self.comparison_data
+            # Extract tracks data for analysis
+            tracks_data = {}
             
-            # Update consistency display
-            self.consistency_display.configure(state='normal')
-            self.consistency_display.delete(1.0, tk.END)
+            # Check different data formats
+            if 'tracks' in self.current_unit_data:
+                # Direct tracks format
+                tracks_data = self.current_unit_data['tracks']
+            elif 'files' in self.current_unit_data:
+                # File-based format - extract all tracks
+                for file_data in self.current_unit_data.get('files', []):
+                    file_tracks = file_data.get('tracks', {})
+                    tracks_data.update(file_tracks)
+                    
+            if not tracks_data:
+                self.consistency_display.insert("1.0", "No track data found for consistency analysis.")
+                self.consistency_display.configure(state='disabled')
+                return
+                
+            # Perform consistency analysis
+            consistency_metrics = self.consistency_analyzer.analyze_tracks(tracks_data)
             
-            if comparison.get('consistency_issues'):
-                for i, issue in enumerate(comparison['consistency_issues'], 1):
-                    self.consistency_display.insert(tk.END, f"{i}. {issue}\n")
-            else:
-                self.consistency_display.insert(tk.END, "No consistency issues found. All tracks show good agreement.")
+            # Generate and display report
+            report = self.consistency_analyzer.generate_consistency_report(consistency_metrics)
+            self.consistency_display.insert("1.0", report)
             
-            self.consistency_display.configure(state='disabled')
+            # Update overview card with consistency rating
+            if hasattr(self, 'overview_cards') and 'consistency' in self.overview_cards:
+                self.overview_cards['consistency'].update_value(consistency_metrics.overall_consistency)
+                
+                # Set color based on consistency
+                color_map = {
+                    'EXCELLENT': 'success',
+                    'GOOD': 'info', 
+                    'FAIR': 'warning',
+                    'POOR': 'danger',
+                    'N/A - Single Track': 'neutral'
+                }
+                color = color_map.get(consistency_metrics.overall_consistency, 'neutral')
+                self.overview_cards['consistency'].set_color_scheme(color)
+                
+            # Update CV cards if they exist
+            if hasattr(self, 'overview_cards'):
+                if 'sigma_cv' in self.overview_cards:
+                    self.overview_cards['sigma_cv'].update_value(f"{consistency_metrics.sigma_cv:.1f}%")
+                if 'linearity_cv' in self.overview_cards:
+                    self.overview_cards['linearity_cv'].update_value(f"{consistency_metrics.linearity_cv:.1f}%")
+                    
+            # Store metrics in comparison_data for export
+            if not self.comparison_data:
+                self.comparison_data = {}
+            self.comparison_data['consistency_metrics'] = consistency_metrics
+            self.comparison_data['consistency_issues'] = consistency_metrics.issues
             
         except Exception as e:
-            self.logger.error(f"Error updating consistency analysis: {e}")
+            self.logger.error(f"Consistency analysis failed: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            self.consistency_display.insert("1.0", f"Error performing consistency analysis:\n{str(e)}")
             
-            # Show error state
-            self.consistency_display.configure(state='normal')
-            self.consistency_display.delete(1.0, tk.END)
-            self.consistency_display.insert(tk.END, f"Error loading consistency data: {str(e)}")
+        finally:
             self.consistency_display.configure(state='disabled')
 
     def _export_comparison_report(self):
@@ -1003,7 +1071,266 @@ class MultiTrackPage(BasePage):
 
     def _generate_pdf_report(self):
         """Generate PDF report for multi-track analysis."""
-        messagebox.showinfo("Coming Soon", "PDF report generation will be implemented in the next version.")
+        if not self.current_unit_data or not self.current_unit_data.get('tracks'):
+            messagebox.showwarning("No Data", "No multi-track data available to generate report")
+            return
+        
+        # Ask for save location
+        default_filename = f"{self.current_unit_data.get('model', 'unit')}_{self.current_unit_data.get('serial', 'unknown')}_multi_track_report.pdf"
+        filename = filedialog.asksaveasfilename(
+            title="Save PDF Report",
+            defaultextension=".pdf",
+            initialfile=default_filename,
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            # Import matplotlib backends for PDF
+            from matplotlib.backends.backend_pdf import PdfPages
+            import matplotlib.pyplot as plt
+            from matplotlib.gridspec import GridSpec
+            
+            # Create PDF with multiple pages
+            with PdfPages(filename) as pdf:
+                # Page 1: Summary and Overview
+                fig = plt.figure(figsize=(8.5, 11))
+                fig.suptitle(f'Multi-Track Analysis Report\n{self.current_unit_data.get("model", "N/A")} - {self.current_unit_data.get("serial", "N/A")}', 
+                            fontsize=16, fontweight='bold')
+                
+                # Create grid layout
+                gs = GridSpec(6, 2, figure=fig, hspace=0.4, wspace=0.3)
+                
+                # Summary text
+                ax_summary = fig.add_subplot(gs[0:2, :])
+                ax_summary.axis('off')
+                
+                summary_text = f"""
+Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Unit Information:
+• Model: {self.current_unit_data.get('model', 'N/A')}
+• Serial: {self.current_unit_data.get('serial', 'N/A')}
+• Total Tracks: {self.current_unit_data.get('track_count', 0)}
+• Overall Status: {self.current_unit_data.get('overall_status', 'N/A')}
+
+Consistency Analysis:
+• Consistency Grade: {self.current_unit_data.get('consistency', 'N/A')}
+• Sigma CV: {self.current_unit_data.get('sigma_cv', 0):.2f}%
+• Linearity CV: {self.current_unit_data.get('linearity_cv', 0):.2f}%
+"""
+                ax_summary.text(0.1, 0.9, summary_text, transform=ax_summary.transAxes, 
+                               fontsize=10, verticalalignment='top', fontfamily='monospace')
+                
+                # Track summary table
+                ax_table = fig.add_subplot(gs[2:4, :])
+                ax_table.axis('off')
+                
+                # Prepare table data
+                table_data = [['Track ID', 'Status', 'Sigma Gradient', 'Linearity Error (%)']]
+                
+                if 'tracks' in self.current_unit_data:
+                    for track_id, result in self.current_unit_data['tracks'].items():
+                        if hasattr(result, 'primary_track') and result.primary_track:
+                            primary_track = result.primary_track
+                            table_data.append([
+                                track_id,
+                                primary_track.status.value,
+                                f"{primary_track.sigma_analysis.sigma_gradient:.6f}",
+                                f"{primary_track.linearity_analysis.final_linearity_error_shifted:.4f}"
+                            ])
+                
+                if len(table_data) > 1:
+                    table = ax_table.table(cellText=table_data[1:], 
+                                         colLabels=table_data[0],
+                                         cellLoc='center',
+                                         loc='center',
+                                         colWidths=[0.2, 0.2, 0.3, 0.3])
+                    table.auto_set_font_size(False)
+                    table.set_fontsize(9)
+                    table.scale(1.2, 1.5)
+                    
+                    # Color code status cells
+                    for i in range(1, len(table_data)):
+                        status = table_data[i][1]
+                        if status == 'PASS':
+                            table[(i, 1)].set_facecolor('#90EE90')
+                        elif status == 'FAIL':
+                            table[(i, 1)].set_facecolor('#FFB6C1')
+                        elif status == 'WARNING':
+                            table[(i, 1)].set_facecolor('#FFFFE0')
+                
+                # Risk Assessment
+                ax_risk = fig.add_subplot(gs[4:6, :])
+                ax_risk.axis('off')
+                
+                risk_text = self._generate_risk_assessment_text()
+                ax_risk.text(0.1, 0.9, risk_text, transform=ax_risk.transAxes,
+                           fontsize=10, verticalalignment='top', fontfamily='monospace')
+                
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+                
+                # Page 2: Track Comparison Charts
+                if 'tracks' in self.current_unit_data and len(self.current_unit_data['tracks']) > 0:
+                    fig2 = plt.figure(figsize=(8.5, 11))
+                    fig2.suptitle('Track Comparison Charts', fontsize=16, fontweight='bold')
+                    
+                    # Prepare data for charts
+                    track_ids = []
+                    sigma_values = []
+                    linearity_values = []
+                    
+                    for track_id, result in self.current_unit_data['tracks'].items():
+                        if hasattr(result, 'primary_track') and result.primary_track:
+                            track_ids.append(track_id)
+                            sigma_values.append(result.primary_track.sigma_analysis.sigma_gradient)
+                            linearity_values.append(result.primary_track.linearity_analysis.final_linearity_error_shifted)
+                    
+                    if track_ids:
+                        # Sigma comparison
+                        ax1 = fig2.add_subplot(2, 1, 1)
+                        bars1 = ax1.bar(track_ids, sigma_values, color='skyblue', edgecolor='navy')
+                        ax1.set_xlabel('Track ID')
+                        ax1.set_ylabel('Sigma Gradient')
+                        ax1.set_title('Sigma Gradient by Track')
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # Add value labels on bars
+                        for bar, value in zip(bars1, sigma_values):
+                            height = bar.get_height()
+                            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                                   f'{value:.6f}', ha='center', va='bottom', fontsize=8)
+                        
+                        # Linearity comparison
+                        ax2 = fig2.add_subplot(2, 1, 2)
+                        bars2 = ax2.bar(track_ids, linearity_values, color='lightcoral', edgecolor='darkred')
+                        ax2.set_xlabel('Track ID')
+                        ax2.set_ylabel('Linearity Error (%)')
+                        ax2.set_title('Linearity Error by Track')
+                        ax2.grid(True, alpha=0.3)
+                        
+                        # Add value labels on bars
+                        for bar, value in zip(bars2, linearity_values):
+                            height = bar.get_height()
+                            ax2.text(bar.get_x() + bar.get_width()/2., height,
+                                   f'{value:.4f}', ha='center', va='bottom', fontsize=8)
+                    
+                    plt.tight_layout()
+                    pdf.savefig(fig2, bbox_inches='tight')
+                    plt.close(fig2)
+                
+                # Page 3: Individual Track Error Plots (if available)
+                track_count = 0
+                tracks_per_page = 4
+                track_list = []
+                
+                if 'tracks' in self.current_unit_data:
+                    for track_id, result in self.current_unit_data['tracks'].items():
+                        if hasattr(result, 'primary_track') and result.primary_track:
+                            primary_track = result.primary_track
+                            if hasattr(primary_track, 'position_data') and hasattr(primary_track, 'error_data'):
+                                if primary_track.position_data is not None and primary_track.error_data is not None:
+                                    track_list.append((track_id, primary_track))
+                
+                if track_list:
+                    # Create pages with 4 tracks each
+                    for page_start in range(0, len(track_list), tracks_per_page):
+                        fig3 = plt.figure(figsize=(8.5, 11))
+                        fig3.suptitle('Track Error Plots', fontsize=16, fontweight='bold')
+                        
+                        page_tracks = track_list[page_start:page_start + tracks_per_page]
+                        
+                        for i, (track_id, primary_track) in enumerate(page_tracks):
+                            ax = fig3.add_subplot(2, 2, i + 1)
+                            
+                            # Plot error data
+                            ax.plot(primary_track.position_data, primary_track.error_data, 
+                                   'b-', linewidth=1.5, label='Error')
+                            
+                            # Add zero line
+                            ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+                            
+                            # Add limit lines if available
+                            if hasattr(primary_track, 'limits') and primary_track.limits:
+                                if hasattr(primary_track.limits, 'upper_limit'):
+                                    ax.axhline(y=primary_track.limits.upper_limit, 
+                                             color='r', linestyle='--', alpha=0.7, label='Upper Limit')
+                                if hasattr(primary_track.limits, 'lower_limit'):
+                                    ax.axhline(y=primary_track.limits.lower_limit, 
+                                             color='r', linestyle='--', alpha=0.7, label='Lower Limit')
+                            
+                            ax.set_xlabel('Position')
+                            ax.set_ylabel('Error (%)')
+                            ax.set_title(f'Track {track_id}')
+                            ax.grid(True, alpha=0.3)
+                            ax.legend(fontsize=8)
+                        
+                        plt.tight_layout()
+                        pdf.savefig(fig3, bbox_inches='tight')
+                        plt.close(fig3)
+            
+            messagebox.showinfo("Success", f"PDF report saved to:\n{filename}")
+            self.logger.info(f"PDF report generated: {filename}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate PDF report: {e}")
+            messagebox.showerror("Error", f"Failed to generate PDF report:\n{str(e)}")
+    
+    def _generate_risk_assessment_text(self) -> str:
+        """Generate risk assessment text based on consistency analysis."""
+        consistency = self.current_unit_data.get('consistency', 'UNKNOWN')
+        sigma_cv = self.current_unit_data.get('sigma_cv', 0)
+        linearity_cv = self.current_unit_data.get('linearity_cv', 0)
+        
+        risk_level = "UNKNOWN"
+        recommendations = []
+        
+        if consistency == 'EXCELLENT':
+            risk_level = "LOW"
+            recommendations = [
+                "• Excellent track-to-track consistency",
+                "• Continue current manufacturing process",
+                "• Regular monitoring recommended"
+            ]
+        elif consistency == 'GOOD':
+            risk_level = "LOW-MEDIUM"
+            recommendations = [
+                "• Good overall consistency",
+                "• Minor variations detected",
+                "• Review process parameters periodically"
+            ]
+        elif consistency == 'FAIR':
+            risk_level = "MEDIUM"
+            recommendations = [
+                "• Moderate consistency issues detected",
+                "• Review laser trimming parameters",
+                "• Consider process optimization"
+            ]
+        elif consistency == 'POOR':
+            risk_level = "HIGH"
+            recommendations = [
+                "• Significant track-to-track variations",
+                "• Immediate process review recommended",
+                "• Check equipment calibration",
+                "• Consider re-trimming if possible"
+            ]
+        
+        text = f"""
+Risk Assessment:
+• Risk Level: {risk_level}
+• Consistency Grade: {consistency}
+
+Key Metrics:
+• Sigma Coefficient of Variation: {sigma_cv:.2f}%
+• Linearity Coefficient of Variation: {linearity_cv:.2f}%
+
+Recommendations:
+{chr(10).join(recommendations)}
+"""
+        return text
 
     def _view_individual_tracks(self):
         """Open individual track analysis in separate windows."""
@@ -1603,4 +1930,76 @@ Quality Assessment:
 
     def on_show(self):
         """Called when page is shown."""
-        pass 
+        pass
+    
+    def _update_individual_track_viewer(self):
+        """Update the individual track viewer with current unit data."""
+        if not self.current_unit_data or not hasattr(self, 'individual_track_viewer'):
+            return
+            
+        try:
+            # Extract track data from current unit
+            tracks_data = {}
+            
+            # Check if we have file-based data
+            if 'files' in self.current_unit_data:
+                for file_data in self.current_unit_data.get('files', []):
+                    file_tracks = file_data.get('tracks', {})
+                    for track_id, track_data in file_tracks.items():
+                        # Format track data for viewer
+                        formatted_track = {
+                            'track_id': track_id,
+                            'position': track_data.get('position', track_id),
+                            'serial': self.current_unit_data.get('serial', 'Unknown'),
+                            'timestamp': track_data.get('timestamp'),
+                            'overall_status': track_data.get('status', 'Unknown'),
+                            'validation_status': track_data.get('validation_status', 'Unknown'),
+                            'sigma_gradient': track_data.get('sigma_gradient'),
+                            'sigma_spec': track_data.get('sigma_spec'),
+                            'sigma_margin': track_data.get('sigma_margin'),
+                            'linearity_error': track_data.get('linearity_error'),
+                            'linearity_spec': track_data.get('linearity_spec'),
+                            'resistance_change': track_data.get('resistance_change'),
+                            'trim_stability': track_data.get('trim_stability'),
+                            'industry_grade': track_data.get('industry_grade', 'N/A'),
+                            'error_profile': track_data.get('error_profile', {}),
+                            'statistics': track_data.get('statistics', {}),
+                            'file_path': track_data.get('file_path')
+                        }
+                        tracks_data[track_id] = formatted_track
+                        
+            # Check if we have direct tracks data
+            elif 'tracks' in self.current_unit_data:
+                tracks = self.current_unit_data.get('tracks', {})
+                for track_id, track_data in tracks.items():
+                    formatted_track = {
+                        'track_id': track_id,
+                        'position': track_data.get('position', track_id),
+                        'serial': track_data.get('serial', self.current_unit_data.get('serial', 'Unknown')),
+                        'timestamp': track_data.get('timestamp'),
+                        'overall_status': track_data.get('overall_status', 'Unknown'),
+                        'validation_status': track_data.get('validation_status', 'Unknown'),
+                        'sigma_gradient': track_data.get('sigma_gradient'),
+                        'sigma_spec': track_data.get('sigma_spec'),
+                        'sigma_margin': track_data.get('sigma_margin'),
+                        'linearity_error': track_data.get('linearity_error'),
+                        'linearity_spec': track_data.get('linearity_spec'),
+                        'resistance_change': track_data.get('resistance_change'),
+                        'trim_stability': track_data.get('trim_stability'),
+                        'industry_grade': track_data.get('industry_grade', 'N/A'),
+                        'error_profile': track_data.get('error_profile', {}),
+                        'statistics': track_data.get('statistics', {})
+                    }
+                    tracks_data[track_id] = formatted_track
+                    
+            # Load tracks into viewer
+            if tracks_data:
+                self.individual_track_viewer.load_tracks(tracks_data)
+            else:
+                # Clear viewer if no tracks
+                self.individual_track_viewer.load_tracks({})
+                
+        except Exception as e:
+            self.logger.error(f"Error updating individual track viewer: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc()) 

@@ -417,9 +417,17 @@ class ModernQAApp:
         self.date_range.set('Last 30 days')
         self.date_range.grid(row=0, column=3, padx=10, pady=5)
 
+        # Risk filter
+        ttk.Label(filters_grid, text="Risk Level:", style='Card.TLabel').grid(row=1, column=0, sticky='w', pady=5)
+        self.risk_var = tk.StringVar(value="All")
+        self.risk_filter = ttk.Combobox(filters_grid, textvariable=self.risk_var, 
+                                       values=['All', 'High', 'Medium', 'Low'],
+                                       width=15, state='readonly')
+        self.risk_filter.grid(row=1, column=1, padx=10, pady=5)
+
         # Query button
         ttk.Button(filters_grid, text="Run Query", style='Primary.TButton',
-                   command=self._query_historical).grid(row=0, column=4, padx=20, pady=5)
+                   command=self._query_historical).grid(row=0, column=4, padx=20, pady=5, rowspan=2)
 
         # Results chart
         chart_frame = self._create_card(page, "Trend Analysis", height=300)
@@ -563,8 +571,13 @@ class ModernQAApp:
                   foreground=self.colors['text_primary'],
                   background=self.colors['bg_secondary']).pack(anchor='w')
 
-    def _show_page(self, page_name):
-        """Show the selected page"""
+    def _show_page(self, page_name, **kwargs):
+        """Show the selected page
+        
+        Args:
+            page_name: Name of the page to show
+            **kwargs: Additional parameters to pass to the page
+        """
         # Hide all pages
         for page in self.pages.values():
             page.pack_forget()
@@ -573,6 +586,15 @@ class ModernQAApp:
         if page_name in self.pages:
             self.pages[page_name].pack(fill='both', expand=True)
             self.current_page.set(page_name)
+            
+            # If navigating to historical page with filter parameters
+            if page_name == 'historical' and kwargs:
+                # Apply filters directly for the simple historical implementation
+                if 'risk_category' in kwargs and hasattr(self, 'risk_var'):
+                    self.risk_var.set(kwargs['risk_category'])
+                    # Trigger query after setting filter
+                    if hasattr(self, '_query_historical'):
+                        self._query_historical()
 
     def _initialize_services(self):
         """Initialize database and ML services"""

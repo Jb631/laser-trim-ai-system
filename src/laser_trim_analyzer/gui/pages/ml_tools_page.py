@@ -29,6 +29,16 @@ from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
 # Import the actual ML components
 from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
+from laser_trim_analyzer.ml.ml_manager import get_ml_manager
+
+# Import model info analyzers
+from laser_trim_analyzer.gui.pages.ml_model_info_analyzers import (
+    analyze_model_info,
+    compare_model_performance_info,
+    compare_feature_importance_info,
+    analyze_resource_usage_info,
+    analyze_prediction_quality_info
+)
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -36,10 +46,12 @@ logger = logging.getLogger(__name__)
 # Try to import ML components
 try:
     from laser_trim_analyzer.ml.engine import MLEngine
+    from laser_trim_analyzer.ml.ml_manager import get_ml_manager
     HAS_ML = True
 except ImportError:
     HAS_ML = False
     MLEngine = None
+    get_ml_manager = None
 
 
 class MLToolsPage(BasePage):
@@ -47,6 +59,7 @@ class MLToolsPage(BasePage):
 
     def __init__(self, parent, main_window):
         self.ml_engine = None
+        self.ml_manager = None
         self.current_model_stats = {}
         self.model_comparison_data = {}
         self.optimization_recommendations = []
@@ -66,24 +79,26 @@ class MLToolsPage(BasePage):
     def _poll_status(self):
         """Poll ML engine status and update UI."""
         try:
-            if self.ml_engine:
-                # Check if models status has changed
-                models_ready = self._check_models_status()
-                current_status = self.ml_status_label.cget('text')
+            if self.ml_manager:
+                # Get current status from ML manager
+                status = self.ml_manager.get_status()
                 
-                if models_ready and "Models Need Training" in current_status:
-                    self._update_ml_status("Ready", "green")
-                elif not models_ready and "Ready" in current_status:
-                    self._update_ml_status("Models Need Training", "orange")
-                    
-                # Update model status cards
+                # Update main status indicator
+                self._update_ml_status(status['status'], status['color'])
+                
+                # Update model status cards with real data
                 self._update_model_status()
+                
+                # Check if ML engine is now available
+                if self.ml_engine is None and status['engine_ready']:
+                    self.ml_engine = self.ml_manager.ml_engine
+                    self.logger.info("ML engine now available")
                 
         except Exception as e:
             self.logger.error(f"Error during status polling: {e}")
         finally:
-            # Schedule next poll in 30 seconds
-            self._status_poll_job = self.after(30000, self._poll_status)
+            # Schedule next poll in 5 seconds for faster updates
+            self._status_poll_job = self.after(5000, self._poll_status)
             
     def _stop_status_polling(self):
         """Stop status polling."""
@@ -244,7 +259,7 @@ class MLToolsPage(BasePage):
 
     def _update_model_status(self):
         """Update model status displays."""
-        if not self.ml_engine:
+        if not self.ml_manager:
             # Show offline status for all models
             for model_key, card_refs in self.model_status_cards.items():
                 card_refs['indicator'].configure(text_color="gray")
@@ -254,36 +269,24 @@ class MLToolsPage(BasePage):
             return
 
         try:
-            # Get models from various possible locations
-            models = {}
-            if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
-                models = self.ml_engine.models
-            elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
-                models = self.ml_engine.ml_engine.models
-                
-            self.logger.debug(f"Found {len(models)} models for status update: {list(models.keys())}")
+            # Get model status from ML manager
+            status = self.ml_manager.get_status()
+            models_info = self.ml_manager.get_all_models_info()
+            
+            self.logger.debug(f"Found {len(models_info)} models for status update: {list(models_info.keys())}")
             
             for model_key, card_refs in self.model_status_cards.items():
-                if model_key in models:
-                    model = models[model_key]
+                if model_key in models_info:
+                    model_info = models_info[model_key]
                     
-                    # Check if model is trained
-                    is_trained = False
-                    try:
-                        is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
-                                   (hasattr(model, '_is_trained') and model._is_trained)
-                    except:
-                        is_trained = False
+                    # Check model status
+                    model_status = model_info.get('status', 'Unknown')
+                    is_trained = model_info.get('trained', False)
                     
-                    if is_trained:
-                        # Get accuracy if available
-                        accuracy = 0
-                        try:
-                            if hasattr(model, 'performance_metrics') and model.performance_metrics:
-                                metrics = model.performance_metrics
-                                accuracy = metrics.get('accuracy', metrics.get('r2_score', 0))
-                        except:
-                            accuracy = 0
+                    if model_status == 'Ready' and is_trained:
+                        # Get performance metrics
+                        performance = model_info.get('performance', {})
+                        accuracy = performance.get('accuracy', performance.get('r2_score', 0))
                         
                         if accuracy > 0:
                             card_refs['indicator'].configure(text_color="green")
@@ -291,44 +294,56 @@ class MLToolsPage(BasePage):
                         else:
                             card_refs['indicator'].configure(text_color="green")
                             card_refs['status_text'].configure(text="Ready")
-                    else:
+                    elif model_status == 'Not Trained':
                         card_refs['indicator'].configure(text_color="orange")
                         card_refs['status_text'].configure(text="Not Trained")
+                    elif model_status == 'Error':
+                        card_refs['indicator'].configure(text_color="red")
+                        card_refs['status_text'].configure(text="Error")
+                        error_msg = model_info.get('error', '')
+                        if error_msg:
+                            self.logger.error(f"Model {model_key} error: {error_msg}")
+                    else:
+                        card_refs['indicator'].configure(text_color="gray")
+                        card_refs['status_text'].configure(text=model_status)
                     
-                    # Update version
-                    version = getattr(model, 'version', '1.0.0')
-                    if not version.startswith('v'):
-                        version = f"v{version}"
-                    card_refs['version_label'].configure(text=version)
+                    # Update version - always show v1.0.0 for consistency
+                    card_refs['version_label'].configure(text="v1.0.0")
                     
                     # Update last trained info
-                    last_trained = getattr(model, 'last_trained', None)
-                    if last_trained and is_trained:
+                    last_training = model_info.get('last_training')
+                    if last_training and is_trained:
                         try:
-                            if isinstance(last_trained, str):
-                                trained_date = datetime.fromisoformat(last_trained.replace('Z', '+00:00'))
+                            if isinstance(last_training, str):
+                                trained_date = datetime.fromisoformat(last_training.replace('Z', '+00:00'))
+                            elif isinstance(last_training, datetime):
+                                trained_date = last_training
                             else:
-                                trained_date = last_trained
+                                trained_date = None
                             
-                            days_ago = (datetime.now() - trained_date.replace(tzinfo=None)).days
-                            
-                            if days_ago == 0:
-                                trained_text = "Today"
-                            elif days_ago == 1:
-                                trained_text = "Yesterday"
+                            if trained_date:
+                                days_ago = (datetime.now() - trained_date.replace(tzinfo=None)).days
+                                
+                                if days_ago == 0:
+                                    trained_text = "Today"
+                                elif days_ago == 1:
+                                    trained_text = "Yesterday"
+                                else:
+                                    trained_text = f"{days_ago} days ago"
                             else:
-                                trained_text = f"{days_ago} days ago"
+                                trained_text = "Recently"
                                 
                             card_refs['trained_label'].configure(text=trained_text)
-                        except (ValueError, AttributeError):
+                        except (ValueError, AttributeError, TypeError) as e:
+                            self.logger.debug(f"Error parsing training date: {e}")
                             card_refs['trained_label'].configure(text="Recently")
                     else:
                         card_refs['trained_label'].configure(text="Never trained")
                         
                 else:
-                    # Model not found
+                    # Model not registered
                     card_refs['indicator'].configure(text_color="red")
-                    card_refs['status_text'].configure(text="Not Found")
+                    card_refs['status_text'].configure(text="Not Registered")
                     card_refs['version_label'].configure(text="v1.0.0")
                     card_refs['trained_label'].configure(text="Missing")
                     
@@ -341,35 +356,11 @@ class MLToolsPage(BasePage):
 
     def _check_models_status(self) -> bool:
         """Check if models are ready for use."""
-        if not self.ml_engine:
+        if not self.ml_manager:
             return False
             
-        try:
-            # Get models from various possible locations
-            models = {}
-            if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
-                models = self.ml_engine.models
-            elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
-                models = self.ml_engine.ml_engine.models
-                
-            if not models:
-                return False
-                
-            # Check if at least one model is trained
-            for model in models.values():
-                try:
-                    is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
-                               (hasattr(model, '_is_trained') and model._is_trained)
-                    if is_trained:
-                        return True
-                except:
-                    continue
-                    
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"Error checking models status: {e}")
-            return False
+        status = self.ml_manager.get_status()
+        return status.get('trained_count', 0) > 0
 
     def _create_model_comparison_section(self):
         """Create advanced model comparison section."""
@@ -976,7 +967,7 @@ class MLToolsPage(BasePage):
         try:
             if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
                 self.logger.warning("Database manager not available")
-                return self._create_mock_training_data()
+                return []  # Return empty list instead of mock data
 
             # Check database path and connection
             db_manager = self.main_window.db_manager
@@ -1005,10 +996,10 @@ class MLToolsPage(BasePage):
                         self.logger.info(f"Using {len(records)} most recent records for training")
                     else:
                         self.logger.warning("No historical data found in database at all")
-                        return self._create_mock_training_data()
+                        return []  # Return empty list instead of mock data
                 else:
                     self.logger.warning("No historical data found in database at all")
-                    return self._create_mock_training_data()
+                    return []  # Return empty list instead of mock data
 
             # Convert database records to training data format
             training_data = []
@@ -1053,43 +1044,10 @@ class MLToolsPage(BasePage):
 
         except Exception as e:
             self.logger.error(f"Error getting training data: {e}")
-            # Try to provide mock data for testing if no real data is available
-            self.logger.info("Creating mock training data for testing")
-            return self._create_mock_training_data()
+            # Return empty list if there's an error
+            self.logger.info("No training data available due to error")
+            return []
 
-    def _create_mock_training_data(self) -> List[Dict[str, Any]]:
-        """Create mock training data for testing when database is empty."""
-        import random
-        import numpy as np
-        
-        mock_data = []
-        
-        # Generate 100 mock samples
-        for i in range(100):
-            # Simulate realistic data ranges
-            sigma_gradient = random.uniform(0.1, 2.0)
-            linearity_spec = 0.04
-            resistance_change = random.uniform(-10, 10)
-            
-            sample = {
-                'file_date': (datetime.now() - timedelta(days=random.randint(1, 90))).isoformat(),
-                'model': f'M{random.randint(1000, 9999)}',
-                'serial': f'S{random.randint(100000, 999999)}',
-                'track_id': f'Track_{i}',
-                'sigma_gradient': sigma_gradient,
-                'sigma_threshold': sigma_gradient + random.uniform(0.1, 0.3),
-                'sigma_pass': sigma_gradient < 1.0,
-                'unit_length': random.uniform(10, 100),
-                'travel_length': random.uniform(50, 500),
-                'linearity_spec': linearity_spec,
-                'linearity_pass': abs(resistance_change) < 5.0,
-                'resistance_change_percent': resistance_change,
-                'risk_category': 'Low' if sigma_gradient < 1.0 and abs(resistance_change) < 5.0 else 'Medium' if sigma_gradient < 1.5 else 'High'
-            }
-            mock_data.append(sample)
-        
-        self.logger.info(f"Created {len(mock_data)} mock training samples")
-        return mock_data
 
     def _create_optimization_recommendations_section(self):
         """Create optimization recommendations section."""
@@ -1146,59 +1104,25 @@ class MLToolsPage(BasePage):
     def _initialize_ml_engine(self):
         """Initialize ML engine if available."""
         # Check if ML is available
-        if not HAS_ML:
+        if not HAS_ML or not get_ml_manager:
             self.logger.info("ML components not available")
             self._update_ml_status("Not Available", "gray")
             return
             
         try:
-            # Update status to show initialization in progress
-            self._update_ml_status("Initializing...", "orange")
+            # Get the ML manager instance
+            self.ml_manager = get_ml_manager()
+            self.ml_engine = self.ml_manager.ml_engine
             
-            # Use the main window's ML predictor if available
-            if hasattr(self.main_window, 'ml_predictor') and self.main_window.ml_predictor:
-                # Get the ML engine from the predictor
-                if hasattr(self.main_window.ml_predictor, 'ml_engine'):
-                    self.ml_engine = self.main_window.ml_predictor.ml_engine
-                    self.logger.info("Using main window's ML engine")
-                else:
-                    # If predictor doesn't have ml_engine, treat the predictor as the engine
-                    self.ml_engine = self.main_window.ml_predictor
-                    self.logger.info("Using main window's ML predictor as engine")
-                    
-                # Ensure the engine has a models dictionary
-                if not hasattr(self.ml_engine, 'models'):
-                    self.ml_engine.models = {}
-                    
-                # If models is empty but we have models in the predictor, copy them
-                if not self.ml_engine.models:
-                    if hasattr(self.main_window.ml_predictor, 'ml_engine') and hasattr(self.main_window.ml_predictor.ml_engine, 'models'):
-                        self.ml_engine.models = self.main_window.ml_predictor.ml_engine.models
-                        self.logger.info(f"Found {len(self.ml_engine.models)} models in predictor's ML engine")
-                        
-            else:
-                self.logger.warning("Main window ML predictor not available")
-                self._update_ml_status("No ML Engine", "red")
-                return
-
-            # Ensure proper model initialization
-            self._ensure_models_initialized()
-
-            # Check if models are available and update status accordingly
-            models_ready = self._check_models_status()
-            model_count = len(self.ml_engine.models) if hasattr(self.ml_engine, 'models') else 0
+            # The ML manager initializes asynchronously, so we'll rely on status polling
+            # to update the UI once initialization is complete
+            self.logger.info("ML manager obtained, waiting for initialization")
             
-            if model_count == 0:
-                self._update_ml_status("No Models", "red")
-                self.logger.warning("No models found in ML engine")
-            elif models_ready:
-                self._update_ml_status("Ready", "green")
-                self.logger.info(f"ML Engine ready with {model_count} models")
-            else:
-                self._update_ml_status("Models Need Training", "orange")
-                self.logger.info(f"ML Engine initialized but {model_count} models need training")
-
-            # Update model status display
+            # Get initial status
+            status = self.ml_manager.get_status()
+            self._update_ml_status(status['status'], status['color'])
+            
+            # Update model status display with initial state
             self._update_model_status()
 
         except Exception as e:
@@ -1206,6 +1130,7 @@ class MLToolsPage(BasePage):
             import traceback
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.ml_engine = None
+            self.ml_manager = None
             self._update_ml_status("Error", "red")
 
     def _ensure_models_initialized(self):
@@ -1836,8 +1761,8 @@ Performance Metrics:
 
     def _run_model_comparison(self):
         """Run comprehensive model comparison analysis."""
-        if not self.ml_engine:
-            messagebox.showwarning("No ML Engine", "ML engine not available for comparison")
+        if not self.ml_manager:
+            messagebox.showwarning("No ML Manager", "ML manager not available for comparison")
             return
 
         # Update button state
@@ -1846,14 +1771,10 @@ Performance Metrics:
         # Run comparison in background thread
         def compare():
             try:
-                # Get all available models from various locations
-                models = {}
-                if hasattr(self.ml_engine, 'models') and self.ml_engine.models:
-                    models = self.ml_engine.models
-                elif hasattr(self.ml_engine, 'ml_engine') and hasattr(self.ml_engine.ml_engine, 'models'):
-                    models = self.ml_engine.ml_engine.models
-                    
-                if not models:
+                # Get all models info from ML manager
+                models_info = self.ml_manager.get_all_models_info()
+                
+                if not models_info:
                     self.after(0, lambda: messagebox.showinfo(
                         "No Models", 
                         "No models available for comparison. Models may still be initializing."
@@ -1861,32 +1782,13 @@ Performance Metrics:
                     return
 
                 # Log models found
-                self.logger.info(f"Found {len(models)} models for comparison: {list(models.keys())}")
+                self.logger.info(f"Found {len(models_info)} models for comparison: {list(models_info.keys())}")
 
                 # Count trained and untrained models
-                trained_models = {}
-                untrained_models = {}
+                trained_count = sum(1 for info in models_info.values() if info.get('trained', False))
+                untrained_count = len(models_info) - trained_count
                 
-                for name, model in models.items():
-                    try:
-                        is_trained = (hasattr(model, 'is_trained') and model.is_trained) or \
-                                   (hasattr(model, '_is_trained') and model._is_trained)
-                        if is_trained:
-                            trained_models[name] = model
-                        else:
-                            untrained_models[name] = model
-                    except:
-                        untrained_models[name] = model
-                
-                self.logger.info(f"Found {len(trained_models)} trained models and {len(untrained_models)} untrained models")
-                
-                # Allow comparison even if no models are trained yet
-                if len(models) < 1:
-                    self.after(0, lambda: messagebox.showinfo(
-                        "No Models", 
-                        "No models available for comparison."
-                    ))
-                    return
+                self.logger.info(f"Found {trained_count} trained models and {untrained_count} untrained models")
 
                 comparison_data = {
                     'models': {},
@@ -1894,22 +1796,22 @@ Performance Metrics:
                     'feature_importance_comparison': {},
                     'resource_usage': {},
                     'prediction_quality': {},
-                    'trained_count': len(trained_models),
-                    'total_count': len(models)
+                    'trained_count': trained_count,
+                    'total_count': len(models_info)
                 }
 
                 # Analyze each model (both trained and untrained)
-                for model_name, model in models.items():
-                    model_analysis = self._analyze_model_performance(model_name, model)
+                for model_name, info in models_info.items():
+                    model_analysis = analyze_model_info(model_name, info)
                     comparison_data['models'][model_name] = model_analysis
 
                 # Generate comparison metrics
-                if len(models) >= 1:
+                if len(models_info) >= 1:
                     # Use all models for comparison, not just trained ones
-                    comparison_data['performance_comparison'] = self._compare_model_performance(models)
-                    comparison_data['feature_importance_comparison'] = self._compare_feature_importance(models)
-                    comparison_data['resource_usage'] = self._analyze_resource_usage(models)
-                    comparison_data['prediction_quality'] = self._analyze_prediction_quality(models)
+                    comparison_data['performance_comparison'] = compare_model_performance_info(models_info)
+                    comparison_data['feature_importance_comparison'] = compare_feature_importance_info(models_info)
+                    comparison_data['resource_usage'] = analyze_resource_usage_info(models_info)
+                    comparison_data['prediction_quality'] = analyze_prediction_quality_info(models_info)
 
                 self.model_comparison_data = comparison_data
 
@@ -2109,7 +2011,8 @@ Performance Metrics:
                 ax.set_title('Performance Comparison - Error')
                 fig.tight_layout()
                 self.perf_comparison_chart.canvas.draw()
-            except:
+            except Exception as chart_error:
+                self.logger.error(f"Failed to display chart error message: {chart_error}")
                 pass
 
     def _run_trend_analysis(self):
@@ -3717,15 +3620,13 @@ Performance Metrics:
     def _update_analytics_data(self, model_type: str):
         """Update analytics data after training."""
         try:
-            analytics_data = {
-                'performance_comparison': self._create_mock_performance_data(),
-                'feature_importance': self._create_mock_feature_importance(),
-                'resource_usage': self._create_mock_resource_usage(),
-                'prediction_quality': self._create_mock_prediction_quality()
-            }
+            # Analytics data will be generated from real model metrics
+            # Not using mock data anymore
+            self.logger.info(f"Analytics update requested for {model_type} - will be generated from real metrics")
             
-            # Update analytics display
-            self.after(0, lambda: self._display_analytics_data(analytics_data))
+            # Trigger model comparison to update analytics
+            if self.ml_manager:
+                self.after(500, self._run_model_comparison)
             
         except Exception as e:
             self.logger.error(f"Error updating analytics data: {e}")
@@ -3801,88 +3702,19 @@ Performance Metrics:
         
         return comparison
 
-    def _create_mock_performance_data(self):
-        """Create mock performance comparison data for testing."""
-        return [
-            {
-                'model': 'failure_predictor',
-                'accuracy': 0.934,
-                'precision': 0.901,
-                'recall': 0.945,
-                'f1_score': 0.923,
-                'composite_score': 0.926
-            },
-            {
-                'model': 'threshold_optimizer',
-                'accuracy': 0.887,
-                'precision': 0.912,
-                'recall': 0.863,
-                'f1_score': 0.887,
-                'composite_score': 0.887
-            },
-            {
-                'model': 'drift_detector',
-                'accuracy': 0.856,
-                'precision': 0.834,
-                'recall': 0.891,
-                'f1_score': 0.862,
-                'composite_score': 0.861
-            }
-        ]
-
-    def _create_mock_feature_importance(self):
-        """Create mock feature importance data for testing."""
-        return {
-            'sigma_gradient': 0.45,
-            'linearity_spec': 0.25,
-            'travel_length': 0.15,
-            'unit_length': 0.15
-        }
-
-    def _create_mock_resource_usage(self):
-        """Create mock resource usage data for testing."""
-        return {
-            'training_times': {
-                'threshold_optimizer': 120,
-                'failure_predictor': 150,
-                'drift_detector': 180
-            },
-            'memory_usage': {
-                'threshold_optimizer': 100,
-                'failure_predictor': 120,
-                'drift_detector': 150
-            },
-            'prediction_speeds': {
-                'threshold_optimizer': 50,
-                'failure_predictor': 60,
-                'drift_detector': 70
-            }
-        }
-    def _create_mock_prediction_quality(self):
-        """Create mock prediction quality data for testing."""
-        return {
-            'accuracy_distribution': {
-                'mean': 0.92,
-                'std': 0.02,
-                'min': 0.90,
-                'max': 0.94,
-                'range': 0.04
-            },
-            'reliability_scores': {
-                'threshold_optimizer': {
-                    'accuracy': 0.91,
-                    'consistency': 0.90,
-                    'robustness': 0.92
-                },
-                'failure_predictor': {
-                    'accuracy': 0.90,
-                    'consistency': 0.89,
-                    'robustness': 0.91
-                },
-                'drift_detector': {
-                    'accuracy': 0.92,
-                    'consistency': 0.91,
-                    'robustness': 0.93
-                }
-            }
-        }
+    # Mock data methods removed - using real data from models
+    
+    def on_show(self):
+        """Called when page is shown."""
+        # Start ML engine initialization if needed
+        if not self.ml_manager:
+            self._initialize_ml_engine()
+        
+        # Update displays if ML manager is available
+        if self.ml_manager:
+            self._update_model_status()
+    
+    def on_hide(self):
+        """Called when page is hidden."""
+        # Stop status polling when page is hidden
+        self._stop_status_polling()

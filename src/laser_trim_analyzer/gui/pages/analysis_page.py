@@ -24,6 +24,8 @@ from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWidget
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
+logger = logging.getLogger(__name__)
+
 
 class AnalysisPage(BasePage):
     """
@@ -44,6 +46,8 @@ class AnalysisPage(BasePage):
         self.processor: Optional[LaserTrimProcessor] = None
         self.is_processing = False
         self.current_task = None
+        self._cancel_requested = False  # Cancellation flag
+        self._processing_thread = None  # Track current processing thread
         
         # File state management
         self._file_selection_lock = threading.Lock()
@@ -66,10 +70,18 @@ class AnalysisPage(BasePage):
         self.alert_stack = None
         self.progress_frame = None
         self.results_notebook = None
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = None
+        self.progress_label = None
         
         # UI state management
         self._ui_update_lock = threading.Lock()
         self._last_ui_update = 0
+
+        # Note: Database manager will be accessed via main_window.db_manager when needed
+        
+        # Initialize logger
+        self.logger = logger
 
         super().__init__(parent, main_window)
 
@@ -78,6 +90,13 @@ class AnalysisPage(BasePage):
         # Main scrollable container (matching batch processing theme)
         self.main_container = ctk.CTkScrollableFrame(self)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Create alert stack for notifications
+        self.alert_stack = SimpleAlertStack(self.main_container)
+        self.alert_stack.pack(fill='x', pady=(0, 10))
+        
+        # Create progress frame (initially hidden)
+        self._create_progress_frame()
         
         # Create sections in order (matching batch processing pattern)
         self._create_header()
@@ -235,6 +254,28 @@ class AnalysisPage(BasePage):
             state="disabled"
         )
         self.results_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+    
+    def _create_progress_frame(self):
+        """Create progress frame for showing analysis progress."""
+        self.progress_frame = ctk.CTkFrame(self.main_container)
+        # Initially hidden - will be shown during processing
+        
+        # Progress label
+        self.progress_label = ctk.CTkLabel(
+            self.progress_frame,
+            text="Processing...",
+            font=ctk.CTkFont(size=12)
+        )
+        self.progress_label.pack(anchor='w', padx=15, pady=(10, 5))
+        
+        # Progress bar
+        self.progress_bar = ctk.CTkProgressBar(
+            self.progress_frame,
+            width=400,
+            height=20,
+            variable=self.progress_var
+        )
+        self.progress_bar.pack(fill='x', padx=15, pady=(0, 10))
 
     def _handle_files_dropped(self, files: List[str]):
         """Handle files dropped in the drop zone."""
@@ -357,6 +398,10 @@ class AnalysisPage(BasePage):
     def _processing_complete_responsive(self, results: List[AnalysisResult]):
         """Handle processing completion with CTk updates."""
         self.is_processing = False
+        self._processing_thread = None  # Clear thread reference
+        
+        # Hide progress bar
+        self.progress_frame.pack_forget()
         
         # Update UI state
         self._update_ui_state()
@@ -375,6 +420,10 @@ class AnalysisPage(BasePage):
     def _processing_error_responsive(self, error: str):
         """Handle processing error with CTk updates."""
         self.is_processing = False
+        self._processing_thread = None  # Clear thread reference
+        
+        # Hide progress bar
+        self.progress_frame.pack_forget()
         
         # Update UI state
         self._update_ui_state()
@@ -395,6 +444,9 @@ class AnalysisPage(BasePage):
         if not self.input_files or self.is_processing:
             return
 
+        # Reset cancellation flag
+        self._cancel_requested = False
+        
         self.is_processing = True
         self._update_ui_state()
 
@@ -419,8 +471,8 @@ class AnalysisPage(BasePage):
         self._ensure_files_visible_responsive()
 
         # Start processing in background thread with responsive UI updates
-        thread = threading.Thread(target=self._process_files_thread_responsive, daemon=True)
-        thread.start()
+        self._processing_thread = threading.Thread(target=self._process_files_thread_responsive, daemon=True)
+        self._processing_thread.start()
 
         # Schedule UI responsiveness checks
         self._schedule_responsiveness_checks()
@@ -467,6 +519,7 @@ class AnalysisPage(BasePage):
                 self.file_tree.tag_configure('processing', foreground='orange')
                 self.file_tree.tag_configure('completed', foreground='green')
                 self.file_tree.tag_configure('error', foreground='red')
+                self.file_tree.tag_configure('cancelled', foreground='gray')
                 
         except Exception as e:
             self.logger.warning(f"Error ensuring files visible: {e}")
@@ -474,14 +527,16 @@ class AnalysisPage(BasePage):
     def _schedule_responsiveness_checks(self):
         """Schedule periodic UI responsiveness checks during processing."""
         def check_responsiveness():
-            if self.is_processing:
+            if self.is_processing and not self._cancel_requested:
                 # Update UI to ensure responsiveness
                 try:
                     self.update_idletasks()
                     # Schedule next check
                     self.after(500, check_responsiveness)  # Check every 500ms
-                except:
-                    pass  # If UI is being destroyed, stop checks
+                except Exception as e:
+                    # If UI is being destroyed or other error, stop checks
+                    self.logger.debug(f"Responsiveness check error (likely UI destruction): {e}")
+                    pass
                     
         # Start responsiveness checks
         self.after(500, check_responsiveness)
@@ -489,6 +544,11 @@ class AnalysisPage(BasePage):
     def _process_files_thread_responsive(self):
         """Background thread for file processing with responsive UI updates."""
         try:
+            # Check for early cancellation
+            if self._cancel_requested:
+                self.logger.info("Processing cancelled before starting")
+                return
+                
             # Create event loop for async processing
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -496,12 +556,22 @@ class AnalysisPage(BasePage):
             # Run async processing with responsive updates
             results = loop.run_until_complete(self._process_files_async_responsive())
 
+            # Check if cancelled during processing
+            if self._cancel_requested:
+                self.logger.info("Processing was cancelled")
+                return
+                
             # Update UI in main thread
             self.after(0, self._processing_complete_responsive, results)
 
+        except asyncio.CancelledError:
+            self.logger.info("Processing cancelled via asyncio")
         except Exception as e:
-            self.logger.error(f"Processing error: {e}")
-            self.after(0, self._processing_error_responsive, str(e))
+            if not self._cancel_requested:
+                self.logger.error(f"Processing error: {e}")
+                self.after(0, self._processing_error_responsive, str(e))
+            else:
+                self.logger.info("Processing cancelled with exception")
 
         finally:
             loop.close()
@@ -512,25 +582,26 @@ class AnalysisPage(BasePage):
         self.after(0, self._update_progress_responsive, 5, "Initializing processor...")
         
         try:
-            self.processor = LaserTrimProcessor(
-                config=self.config,
-                db_manager=self.db_manager if self.enable_database.get() else None,
-                ml_predictor=self.main_window.ml_predictor if self.enable_ml.get() else None,
-                logger=self.logger
-            )
+            # Initialize processor if not already done
+            if not self.processor:
+                self._initialize_processor()
         except Exception as e:
             self.logger.error(f"Failed to initialize processor: {e}")
             raise ProcessingError(f"Processor initialization failed: {e}")
 
         # Configure based on options
-        self.config.processing.generate_plots = (
-                self.enable_plots.get() and self.processing_mode.get() == 'detail'
-        )
+        if hasattr(self.processor, 'config') and hasattr(self.processor.config, 'processing'):
+            self.processor.config.processing.generate_plots = (
+                    self.enable_plots.get() and self.processing_mode.get() == 'detail'
+            )
 
         # Create output directory with feedback
         self.after(0, self._update_progress_responsive, 10, "Creating output directory...")
         try:
-            output_dir = self.config.data_directory / datetime.now().strftime("%Y%m%d_%H%M%S")
+            from laser_trim_analyzer.core.config import get_config
+            config = get_config()
+            base_dir = getattr(config, 'data_directory', Path.home() / "LaserTrimResults")
+            output_dir = base_dir / "analysis" / datetime.now().strftime("%Y%m%d_%H%M%S")
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             self.logger.error(f"Failed to create output directory: {e}")
@@ -548,6 +619,11 @@ class AnalysisPage(BasePage):
 
         # Process files with enhanced error handling and state preservation
         for i, file_path in enumerate(self.input_files):
+            # Check for cancellation before processing each file
+            if self._cancel_requested:
+                self.logger.info(f"Processing cancelled at file {i+1} of {total_files}")
+                raise asyncio.CancelledError("User requested cancellation")
+                
             # Calculate progress with proper scaling
             base_progress = 15 + (i / total_files) * 80  # Scale to 15-95%
             
@@ -559,28 +635,43 @@ class AnalysisPage(BasePage):
             self.after(0, self._update_file_status_responsive, str(file_path), 'Processing')
 
             try:
-                # Process file with responsive progress callbacks
-                result = await self.processor.process_file(
-                    file_path,
-                    output_dir / file_path.stem,
-                    progress_callback=lambda msg, prog: self.after(
+                # Create a cancellable progress callback
+                def cancellable_progress_callback(msg, prog):
+                    if self._cancel_requested:
+                        raise asyncio.CancelledError("User requested cancellation")
+                    self.after(
                         0, self._update_progress_responsive,
                         base_progress + (prog * 0.8),  # Scale sub-progress within file progress
                         f"{file_path.name}: {msg}"
                     )
+                
+                # Process file with responsive progress callbacks
+                result = await self.processor.process_file(
+                    file_path,
+                    output_dir / file_path.stem,
+                    progress_callback=cancellable_progress_callback
                 )
 
+                # Check for cancellation after processing
+                if self._cancel_requested:
+                    self.logger.info(f"Processing cancelled after {file_path.name}")
+                    raise asyncio.CancelledError("User requested cancellation")
+                    
                 # Store result to prevent loss
                 self._processing_results[str(file_path)] = result
 
                 # Save to database if enabled with non-blocking feedback
-                if self.enable_database.get() and self.db_manager:
+                if self.enable_database.get() and hasattr(self.main_window, 'db_manager') and self.main_window.db_manager:
+                    # Check for cancellation before database save
+                    if self._cancel_requested:
+                        raise asyncio.CancelledError("User requested cancellation")
+                        
                     try:
                         self.after(0, self._update_progress_responsive, 
                                   base_progress + 70, f"Saving {file_path.name} to database...")
                         
                         # Check for duplicates first
-                        existing_id = self.db_manager.check_duplicate_analysis(
+                        existing_id = self.main_window.db_manager.check_duplicate_analysis(
                             result.metadata.model,
                             result.metadata.serial,
                             result.metadata.file_date
@@ -592,17 +683,17 @@ class AnalysisPage(BasePage):
                         else:
                             # Try normal save first
                             try:
-                                result.db_id = self.db_manager.save_analysis(result)
+                                result.db_id = self.main_window.db_manager.save_analysis(result)
                                 self.logger.info(f"Saved analysis to database with ID: {result.db_id}")
                                 
                                 # Validate the save
-                                if not self.db_manager.validate_saved_analysis(result.db_id):
+                                if not self.main_window.db_manager.validate_saved_analysis(result.db_id):
                                     raise RuntimeError("Database validation failed")
                                     
                             except Exception as save_error:
                                 self.logger.warning(f"Normal save failed, trying force save: {save_error}")
                                 # Try force save as fallback
-                                result.db_id = self.db_manager.force_save_analysis(result)
+                                result.db_id = self.main_window.db_manager.force_save_analysis(result)
                                 self.logger.info(f"Force saved analysis to database with ID: {result.db_id}")
                         
                     except Exception as e:
@@ -615,9 +706,16 @@ class AnalysisPage(BasePage):
                 # Update file widget with results (responsive)
                 self.after(0, self._update_file_widget_responsive, str(file_path), result)
 
+                # Check for cancellation before sleep
+                if self._cancel_requested:
+                    raise asyncio.CancelledError("User requested cancellation")
+                    
                 # Allow UI breathing room between files
                 await asyncio.sleep(0.1)  # 100ms pause between files
 
+            except asyncio.CancelledError:
+                # Re-raise cancellation errors
+                raise
             except Exception as e:
                 self.logger.error(f"Error processing {file_path.name}: {e}")
                 self.after(0, self._update_file_status_responsive, str(file_path), 'Error')
@@ -630,6 +728,10 @@ class AnalysisPage(BasePage):
                     'file_path': str(file_path)
                 }
 
+        # Check for cancellation before final update
+        if self._cancel_requested:
+            raise asyncio.CancelledError("User requested cancellation")
+            
         # Final progress update
         self.after(0, self._update_progress_responsive, 95, "Finalizing results...")
         
@@ -951,28 +1053,102 @@ Contact support if issues persist.
 
     def _cancel_analysis(self):
         """Cancel ongoing analysis with responsive feedback."""
-        if self.current_task:
-            # TODO: Implement proper cancellation
-            pass
-
-        self.is_processing = False
-        self._update_ui_state()
+        # Set cancellation flag
+        self._cancel_requested = True
         
-        # Hide progress smoothly
-        self.after(100, lambda: self.progress_frame.pack_forget())
+        # Log cancellation request
+        self.logger.info("Analysis cancellation requested by user")
+        
+        # Update progress to show cancellation
+        if hasattr(self, 'progress_label'):
+            self.progress_label.config(text="Cancelling analysis...")
+        
+        # If there's a current processing thread, wait briefly for it to stop
+        if self._processing_thread and self._processing_thread.is_alive():
+            # Start a separate thread to handle cancellation cleanup
+            cleanup_thread = threading.Thread(
+                target=self._handle_cancellation_cleanup,
+                daemon=True
+            )
+            cleanup_thread.start()
+        else:
+            # No active thread, immediately clean up
+            self._finalize_cancellation()
 
-        # Show responsive cancellation feedback
-        self.alert_stack.add_alert(
-            alert_type='warning',
-            title='Analysis Cancelled',
-            message='Processing was cancelled by user. Files remain loaded for retry.',
-            auto_dismiss=5,
-            allow_scroll=True,
-            actions=[
-                {'text': 'Restart Analysis', 'command': lambda: self._start_analysis()},
-                {'text': 'Clear Files', 'command': lambda: self._clear_files()}
-            ]
-        )
+    def _handle_cancellation_cleanup(self):
+        """Handle cancellation cleanup in a separate thread."""
+        try:
+            # Wait for up to 5 seconds for the processing thread to stop
+            timeout = 5.0
+            start_time = time_module.time()
+            
+            while self._processing_thread and self._processing_thread.is_alive():
+                if time_module.time() - start_time > timeout:
+                    self.logger.warning("Processing thread did not stop within timeout")
+                    break
+                time_module.sleep(0.1)
+            
+            # Schedule UI cleanup in main thread
+            self.after(0, self._finalize_cancellation)
+            
+        except Exception as e:
+            self.logger.error(f"Error during cancellation cleanup: {e}")
+            self.after(0, self._finalize_cancellation)
+    
+    def _finalize_cancellation(self):
+        """Finalize cancellation and update UI."""
+        try:
+            # Reset processing state
+            self.is_processing = False
+            self._cancel_requested = False
+            self._processing_thread = None
+            
+            # Update UI state
+            self._update_ui_state()
+            
+            # Hide progress smoothly
+            self.after(100, lambda: self.progress_frame.pack_forget())
+            
+            # Update file statuses to show cancelled state
+            for file_path in self.input_files:
+                file_str = str(file_path)
+                # Check if file was being processed or hasn't been processed yet
+                if file_str in self._processing_results:
+                    result = self._processing_results[file_str]
+                    if isinstance(result, dict) and result.get('status') == 'Processing':
+                        self._update_file_status_responsive(file_str, 'Cancelled')
+                elif file_str in self.file_widgets:
+                    # File was not yet processed, mark as cancelled
+                    widget_data = self.file_widgets[file_str]
+                    if isinstance(widget_data, dict) and widget_data.get('tree_mode'):
+                        # Tree view mode
+                        item_id = widget_data['tree_item']
+                        if hasattr(self, 'file_tree') and self.file_tree.exists(item_id):
+                            current_values = list(self.file_tree.item(item_id, 'values'))
+                            if current_values[2] in ['Ready', 'Processing']:
+                                current_values[2] = 'Cancelled'
+                                self.file_tree.item(item_id, values=current_values)
+                                self.file_tree.item(item_id, tags=('cancelled',))
+                    else:
+                        # Individual widget mode
+                        if hasattr(widget_data, 'update_data'):
+                            widget_data.update_data({'status': 'Cancelled'})
+            
+            # Show responsive cancellation feedback
+            self.alert_stack.add_alert(
+                alert_type='warning',
+                title='Analysis Cancelled',
+                message='Processing was cancelled by user. Files remain loaded for retry.',
+                auto_dismiss=5,
+                allow_scroll=True,
+                actions=[
+                    {'text': 'Restart Analysis', 'command': lambda: self._start_analysis()},
+                    {'text': 'Clear Files', 'command': lambda: self._clear_files()}
+                ]
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error finalizing cancellation: {e}")
 
     def _dismiss_large_batch_alert(self):
         """Dismiss the large batch mode alert."""
@@ -982,6 +1158,31 @@ Contact support if issues persist.
             self.alert_stack.clear_all()
         except Exception as e:
             self.logger.error(f"Error dismissing large batch alert: {e}")
+
+    def _show_empty_results(self):
+        """Show empty results state."""
+        self.results_display.configure(state="normal")
+        self.results_display.delete('1.0', 'end')
+        self.results_display.insert('end', "No analysis results yet")
+        self.results_display.configure(state="disabled")
+
+    def _initialize_processor(self):
+        """Initialize the processor with proper configuration."""
+        try:
+            from laser_trim_analyzer.core.config import get_config
+            config = get_config()
+            
+            # Initialize processor with database manager and ML predictor if available
+            self.processor = LaserTrimProcessor(
+                config=config,
+                db_manager=self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None,
+                ml_predictor=self.main_window.ml_predictor if hasattr(self.main_window, 'ml_predictor') else None,
+                logger=self.logger
+            )
+            logger.info("Processor initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize processor: {e}")
+            raise ProcessingError(f"Failed to initialize processor: {e}")
 
 class SimpleAlertStack(ttk.Frame):
     """Simplified alert stack without complex animations that cause glitching."""

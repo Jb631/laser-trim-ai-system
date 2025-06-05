@@ -42,6 +42,7 @@ class HistoricalPage(BasePage):
         self.analytics_results = {}
         self.trend_analysis_data = {}
         self.correlation_matrix = None
+        self._pending_filters = {}  # Store filters to apply after UI is created
         super().__init__(parent, main_window)
 
     def _create_page(self):
@@ -1710,3 +1711,34 @@ Metrics:
             
         except Exception as e:
             logger.error(f"Error displaying anomaly results: {e}")
+    
+    def set_filter(self, **kwargs):
+        """Set filter values for the historical page.
+        
+        Args:
+            **kwargs: Filter parameters (e.g., risk_category='High')
+        """
+        # Store filters to apply when page is shown
+        self._pending_filters = kwargs
+        
+        # If UI is already created, apply filters immediately
+        if hasattr(self, 'risk_combo') and 'risk_category' in kwargs:
+            self.risk_var.set(kwargs['risk_category'])
+            # Run query automatically after setting filter
+            self._run_query()
+    
+    def on_show(self):
+        """Called when page is shown."""
+        # Apply any pending filters
+        if self._pending_filters:
+            if hasattr(self, 'risk_combo') and 'risk_category' in self._pending_filters:
+                self.risk_var.set(self._pending_filters['risk_category'])
+            
+            # Clear pending filters after applying
+            self._pending_filters = {}
+            
+            # Run query automatically with the applied filter
+            self._run_query()
+        
+        # Call parent on_show
+        super().on_show()
