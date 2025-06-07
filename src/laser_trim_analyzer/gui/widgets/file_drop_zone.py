@@ -12,6 +12,8 @@ from typing import List, Optional, Callable, Set
 import os
 import threading
 import time
+import tempfile
+import shutil
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -19,6 +21,16 @@ try:
 except ImportError:
     HAS_DND = False
     DND_FILES = None
+
+# Import security utilities
+try:
+    from laser_trim_analyzer.core.security import (
+        SecurityValidator, SecureFileProcessor,
+        get_security_validator
+    )
+    HAS_SECURITY = True
+except ImportError:
+    HAS_SECURITY = False
 
 
 class FileDropZone(ttk.Frame):
@@ -281,9 +293,27 @@ class FileDropZone(ttk.Frame):
                         # Recursively find valid files in folder
                         for found_file in file_path.rglob('*'):
                             if found_file.is_file() and found_file.suffix.lower() in self.accept_extensions:
-                                # Skip temporary files
-                                if not found_file.name.startswith('~'):
-                                    valid_files.append(found_file)
+                                # Skip temporary files and hidden files
+                                if not found_file.name.startswith('~') and not found_file.name.startswith('.'):
+                                    # Security check for files from folders
+                                    if security_validator and HAS_SECURITY:
+                                        try:
+                                            path_result = security_validator.validate_input(
+                                                found_file,
+                                                'file_path',
+                                                {
+                                                    'allowed_extensions': self.accept_extensions,
+                                                    'check_extension': True
+                                                }
+                                            )
+                                            
+                                            if path_result.is_safe and not path_result.threats_detected:
+                                                valid_files.append(Path(path_result.sanitized_value))
+                                        except:
+                                            # Fall back to adding if security check fails
+                                            valid_files.append(found_file)
+                                    else:
+                                        valid_files.append(found_file)
                             
                             # Update progress every 100 files
                             total_checked += 1
@@ -331,13 +361,59 @@ class FileDropZone(ttk.Frame):
         self.secondary_label.config(text='or click browse to select files')
 
     def _validate_files_sync(self, files: List[Path]) -> List[Path]:
-        """Validate and filter dropped files synchronously (for individual files only)."""
+        """Validate and filter dropped files synchronously with security checks."""
         valid_files = []
+        
+        # Get security validator if available
+        security_validator = None
+        if HAS_SECURITY:
+            try:
+                security_validator = get_security_validator()
+            except:
+                pass
 
         for file_path in files:
             if file_path.is_file():
-                # Check extension
+                # Security validation if available
+                if security_validator:
+                    try:
+                        # Validate file path for security threats
+                        path_result = security_validator.validate_input(
+                            file_path,
+                            'file_path',
+                            {
+                                'allowed_extensions': self.accept_extensions,
+                                'check_extension': True
+                            }
+                        )
+                        
+                        if not path_result.is_safe:
+                            print(f"Security validation failed for {file_path}: {path_result.validation_errors}")
+                            continue
+                            
+                        if path_result.threats_detected:
+                            print(f"Security threat detected in {file_path}: {path_result.threats_detected}")
+                            continue
+                            
+                        # Use sanitized path
+                        file_path = Path(path_result.sanitized_value)
+                    except Exception as e:
+                        print(f"Security validation error for {file_path}: {e}")
+                        # Continue with basic validation if security check fails
+                
+                # Basic extension check
                 if file_path.suffix.lower() in self.accept_extensions:
+                    # Additional file size check
+                    try:
+                        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+                        max_size_mb = 100  # Default max size
+                        
+                        if file_size_mb > max_size_mb:
+                            print(f"File too large: {file_path.name} ({file_size_mb:.1f}MB)")
+                            continue
+                    except:
+                        pass
+                    
                     valid_files.append(file_path)
 
         return valid_files

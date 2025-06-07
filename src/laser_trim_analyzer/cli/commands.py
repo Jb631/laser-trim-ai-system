@@ -31,6 +31,7 @@ from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor, process_large_directory
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.report_generator import ReportGenerator
+from laser_trim_analyzer.cli.cache_commands import register_cache_commands
 
 # Try to import ML components
 try:
@@ -1171,6 +1172,8 @@ def _display_batch_results(results: Dict, stats: Dict):
 # Entry point for script execution
 def main():
     """Main entry point for the CLI."""
+    # Register cache commands
+    register_cache_commands(cli)
     cli(obj={})
 
 

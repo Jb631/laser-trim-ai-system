@@ -1,0 +1,45 @@
+# MANIFEST.in
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+include setup.cfg
+
+# Include all configuration files
+recursive-include config *.yaml *.yml *.json
+recursive-include configs *.yaml *.yml *.json
+
+# Include documentation
+recursive-include docs *.md *.rst *.txt
+
+# Include example files
+recursive-include examples *.py *.ipynb
+
+# Include test files
+recursive-include tests *.py *.yaml *.json
+
+# Include package data
+recursive-include src/laser_trim_analyzer *.yaml *.json *.txt
+include src/laser_trim_analyzer/py.typed
+
+# Include templates and static files if any
+recursive-include src/laser_trim_analyzer/templates *
+recursive-include src/laser_trim_analyzer/static *
+
+# Exclude compiled Python files and cache
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude .git*
+global-exclude *.swp
+global-exclude *~
+
+# Exclude build artifacts
+prune build
+prune dist
+prune *.egg-info
+prune .tox
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache

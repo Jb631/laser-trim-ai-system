@@ -8,6 +8,24 @@ from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWidget
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
+from laser_trim_analyzer.gui.widgets.analysis_display import AnalysisDisplayWidget
+from laser_trim_analyzer.gui.widgets.animated_widgets import (
+    AnimatedProgressBar,
+    FadeInFrame,
+    SlideInFrame,
+    AnimatedButton,
+    LoadingSpinner,
+    AnimatedNotification,
+    AccessibilityHelper
+)
+from laser_trim_analyzer.gui.widgets.batch_results_widget import BatchResultsWidget
+from laser_trim_analyzer.gui.widgets.track_viewer import IndividualTrackViewer
+from laser_trim_analyzer.gui.widgets.progress_widgets import (
+    ProgressDialog,
+    BatchProgressDialog,
+    SimpleProgressBar,
+    ProgressIndicator
+)
 
 
 def add_mousewheel_support(widget, canvas=None):
@@ -56,5 +74,19 @@ __all__ = [
     "ChartWidget",
     "AlertBanner",
     "AlertStack",
+    "AnalysisDisplayWidget",
+    "AnimatedProgressBar",
+    "FadeInFrame",
+    "SlideInFrame",
+    "AnimatedButton",
+    "LoadingSpinner",
+    "AnimatedNotification",
+    "AccessibilityHelper",
+    "BatchResultsWidget",
+    "IndividualTrackViewer",
+    "ProgressDialog",
+    "BatchProgressDialog",
+    "SimpleProgressBar",
+    "ProgressIndicator",
     "add_mousewheel_support"
 ]

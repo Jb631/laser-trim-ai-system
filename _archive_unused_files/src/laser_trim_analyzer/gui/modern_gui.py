@@ -33,6 +33,15 @@ except ImportError:
     HAS_DATABASE = False
     DatabaseManager = None
 
+# Try to import session management
+try:
+    from laser_trim_analyzer.core.session_manager import (
+        get_session_manager, SessionStatus, require_session
+    )
+    HAS_SESSION_MANAGEMENT = True
+except ImportError:
+    HAS_SESSION_MANAGEMENT = False
+
 try:
     # from ml_threshold_optimizer import MLThresholdOptimizer  # TODO: Fix this import
     # from enhanced_qa_dashboard import EnhancedQADashboard  # TODO: Fix this import
@@ -75,6 +84,12 @@ class ModernQAApp:
         self.db_manager = None
         self.ml_optimizer = None
         self.is_processing = False
+        
+        # Session management
+        self.session_id = None
+        self.session_manager = None
+        if HAS_SESSION_MANAGEMENT:
+            self._init_session()
 
         # Processing options
         self.processing_mode = tk.StringVar(value="detail")
@@ -631,6 +646,62 @@ class ModernQAApp:
             except Exception as e:
                 self.ml_status.set("Error")
                 print(f"ML initialization error: {e}")
+    
+    def _init_session(self):
+        """Initialize session management."""
+        try:
+            # Get session manager
+            self.session_manager = get_session_manager(
+                session_timeout_minutes=120,  # 2 hour timeout for desktop app
+                max_sessions=10  # Limited sessions for desktop app
+            )
+            
+            # Create a new session
+            import platform
+            user_data = {
+                'app_version': '2.0.0',
+                'platform': platform.system(),
+                'start_time': datetime.now().isoformat()
+            }
+            
+            self.session_id = self.session_manager.create_session(
+                user_data=user_data,
+                user_agent=f"LaserTrimAnalyzer/2.0 ({platform.system()})"
+            )
+            
+            if self.session_id:
+                print(f"Session created: {self.session_id[:8]}...")
+                
+                # Set up session refresh timer
+                self._refresh_session()
+            else:
+                print("Failed to create session")
+                
+        except Exception as e:
+            print(f"Session initialization error: {e}")
+            self.session_id = None
+    
+    def _refresh_session(self):
+        """Refresh session to prevent timeout during active use."""
+        if self.session_id and self.session_manager:
+            try:
+                if self.session_manager.validate_session(self.session_id):
+                    # Update session data with current state
+                    session_data = {
+                        'last_activity': datetime.now().isoformat(),
+                        'files_processed': len(self.input_files),
+                        'processing_active': self.is_processing
+                    }
+                    self.session_manager.update_session_data(self.session_id, session_data)
+                    
+                    # Schedule next refresh in 10 minutes
+                    self.root.after(600000, self._refresh_session)  # 10 minutes
+                else:
+                    # Session expired, create new one
+                    print("Session expired, creating new session")
+                    self._init_session()
+            except Exception as e:
+                print(f"Session refresh error: {e}")
 
     def _browse_files(self):
         """Browse for files to analyze"""

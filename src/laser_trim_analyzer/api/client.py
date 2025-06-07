@@ -18,25 +18,33 @@ from enum import Enum
 import logging
 import pickle
 import pandas as pd
+import socket
+import urllib.parse
+from concurrent.futures import TimeoutError as FutureTimeoutError
+
+# Import error handling utilities
+from laser_trim_analyzer.core.error_handlers import (
+    ErrorCode, ErrorCategory, ErrorSeverity,
+    error_handler, handle_errors
+)
 
 # AI Provider imports
 try:
     import anthropic
-
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
 
 try:
     import openai
-
     HAS_OPENAI = True
 except ImportError:
     HAS_OPENAI = False
 
 try:
     import requests  # For Ollama
-
+    from requests.adapters import HTTPAdapter
+    from requests.packages.urllib3.util.retry import Retry
     HAS_OLLAMA = True
 except ImportError:
     HAS_OLLAMA = False
@@ -301,8 +309,13 @@ class AnthropicClient(BaseAIClient):
             raise ImportError("anthropic package not installed. Run: pip install anthropic")
         self.client = anthropic.Anthropic(api_key=self.api_key)
 
+    @handle_errors(
+        category=ErrorCategory.NETWORK,
+        severity=ErrorSeverity.ERROR,
+        max_retries=3
+    )
     def complete(self, prompt: AnalysisPrompt) -> AIResponse:
-        """Get completion from Claude."""
+        """Get completion from Claude with comprehensive error handling."""
         start_time = time.time()
 
         try:
@@ -327,8 +340,80 @@ class AnthropicClient(BaseAIClient):
                 response_time=time.time() - start_time
             )
 
+        except anthropic.APIConnectionError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.NETWORK_CONNECTION_FAILED,
+                user_message="Failed to connect to Claude API. Please check your internet connection.",
+                recovery_suggestions=[
+                    "Check your internet connection",
+                    "Verify API endpoint is accessible",
+                    "Try again in a few moments"
+                ],
+                additional_data={'endpoint': 'anthropic', 'model': self.model}
+            )
+            raise
+            
+        except anthropic.RateLimitError as e:
+            retry_after = getattr(e, 'retry_after', 60)
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.API_RATE_LIMITED,
+                user_message=f"API rate limit reached. Please wait {retry_after} seconds.",
+                recovery_suggestions=[
+                    f"Wait {retry_after} seconds before retrying",
+                    "Consider upgrading your API plan",
+                    "Reduce request frequency"
+                ],
+                additional_data={'retry_after': retry_after, 'model': self.model}
+            )
+            raise
+            
+        except anthropic.AuthenticationError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.API_AUTHENTICATION_FAILED,
+                user_message="API authentication failed. Please check your API key.",
+                recovery_suggestions=[
+                    "Verify your API key is correct",
+                    "Check if the API key has expired",
+                    "Ensure the key has necessary permissions"
+                ]
+            )
+            raise
+            
+        except anthropic.APITimeoutError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.NETWORK_TIMEOUT,
+                user_message="Request timed out. The AI service may be slow.",
+                recovery_suggestions=[
+                    "Try again with a shorter prompt",
+                    "Check if the service is experiencing issues",
+                    "Increase timeout settings if possible"
+                ],
+                additional_data={'model': self.model, 'max_tokens': prompt.max_tokens}
+            )
+            raise
+            
         except Exception as e:
             self.logger.error(f"Anthropic API error: {str(e)}")
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.UNKNOWN_ERROR,
+                user_message="An error occurred while communicating with Claude API.",
+                technical_details=str(e)
+            )
             raise
 
     def stream_complete(self, prompt: AnalysisPrompt) -> Generator[str, None, AIResponse]:
@@ -377,8 +462,13 @@ class OpenAIClient(BaseAIClient):
         openai.api_key = self.api_key
         self.client = openai.OpenAI(api_key=self.api_key)
 
+    @handle_errors(
+        category=ErrorCategory.NETWORK,
+        severity=ErrorSeverity.ERROR,
+        max_retries=3
+    )
     def complete(self, prompt: AnalysisPrompt) -> AIResponse:
-        """Get completion from GPT."""
+        """Get completion from GPT with comprehensive error handling."""
         start_time = time.time()
 
         try:
@@ -405,8 +495,80 @@ class OpenAIClient(BaseAIClient):
                 response_time=time.time() - start_time
             )
 
+        except openai.APIConnectionError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.NETWORK_CONNECTION_FAILED,
+                user_message="Failed to connect to OpenAI API. Please check your internet connection.",
+                recovery_suggestions=[
+                    "Check your internet connection",
+                    "Verify API endpoint is accessible",
+                    "Try again in a few moments"
+                ],
+                additional_data={'endpoint': 'openai', 'model': self.model}
+            )
+            raise
+            
+        except openai.RateLimitError as e:
+            retry_after = 60  # Default retry time
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.API_RATE_LIMITED,
+                user_message=f"API rate limit reached. Please wait before retrying.",
+                recovery_suggestions=[
+                    "Wait before retrying",
+                    "Consider upgrading your API plan",
+                    "Reduce request frequency"
+                ],
+                additional_data={'model': self.model}
+            )
+            raise
+            
+        except openai.AuthenticationError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.API_AUTHENTICATION_FAILED,
+                user_message="API authentication failed. Please check your API key.",
+                recovery_suggestions=[
+                    "Verify your API key is correct",
+                    "Check if the API key has expired",
+                    "Ensure the key has necessary permissions"
+                ]
+            )
+            raise
+            
+        except openai.Timeout as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.NETWORK_TIMEOUT,
+                user_message="Request timed out. The AI service may be slow.",
+                recovery_suggestions=[
+                    "Try again with a shorter prompt",
+                    "Check if the service is experiencing issues",
+                    "Consider using a faster model"
+                ],
+                additional_data={'model': self.model, 'max_tokens': prompt.max_tokens}
+            )
+            raise
+            
         except Exception as e:
             self.logger.error(f"OpenAI API error: {str(e)}")
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.UNKNOWN_ERROR,
+                user_message="An error occurred while communicating with OpenAI API.",
+                technical_details=str(e)
+            )
             raise
 
     def stream_complete(self, prompt: AnalysisPrompt) -> Generator[str, None, AIResponse]:
@@ -451,20 +613,88 @@ class OpenAIClient(BaseAIClient):
 
 
 class OllamaClient(BaseAIClient):
-    """Ollama local LLM client."""
+    """Ollama local LLM client with robust error handling."""
 
     def __init__(self, model: str = "llama2", base_url: str = "http://localhost:11434"):
         super().__init__(model)
         if not HAS_OLLAMA:
             raise ImportError("requests package not installed. Run: pip install requests")
         self.base_url = base_url
+        
+        # Create session with retry strategy
+        self.session = self._create_retry_session()
+        
+        # Test connection on init
+        self._test_connection()
+    
+    def _create_retry_session(self) -> requests.Session:
+        """Create a requests session with retry strategy."""
+        session = requests.Session()
+        
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            method_whitelist=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
+            backoff_factor=1,
+            raise_on_status=False
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # Set timeout for all requests
+        session.timeout = 30
+        
+        return session
+    
+    def _test_connection(self):
+        """Test connection to Ollama server."""
+        try:
+            response = self.session.get(f"{self.base_url}/api/tags", timeout=5)
+            response.raise_for_status()
+        except requests.ConnectionError:
+            error_handler.handle_error(
+                error=ConnectionError("Cannot connect to Ollama server"),
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.NETWORK_CONNECTION_FAILED,
+                user_message="Cannot connect to local Ollama server. Please ensure Ollama is running.",
+                recovery_suggestions=[
+                    "Start Ollama server: 'ollama serve'",
+                    "Check if Ollama is installed",
+                    "Verify the server URL is correct"
+                ],
+                additional_data={'base_url': self.base_url}
+            )
+            raise
+        except Exception as e:
+            self.logger.warning(f"Ollama connection test failed: {e}")
+    
+    def _is_server_available(self) -> bool:
+        """Check if Ollama server is available."""
+        try:
+            response = self.session.get(f"{self.base_url}/api/tags", timeout=2)
+            return response.status_code == 200
+        except Exception:
+            return False
 
+    @handle_errors(
+        category=ErrorCategory.NETWORK,
+        severity=ErrorSeverity.ERROR,
+        max_retries=2
+    )
     def complete(self, prompt: AnalysisPrompt) -> AIResponse:
-        """Get completion from Ollama."""
+        """Get completion from Ollama with comprehensive error handling."""
         start_time = time.time()
 
         try:
-            response = requests.post(
+            # Check if server is reachable
+            if not self._is_server_available():
+                raise ConnectionError("Ollama server is not available")
+            
+            response = self.session.post(
                 f"{self.base_url}/api/generate",
                 json={
                     "model": self.model,
@@ -474,29 +704,109 @@ class OllamaClient(BaseAIClient):
                         "temperature": prompt.temperature,
                         "num_predict": prompt.max_tokens
                     }
-                }
+                },
+                timeout=60  # Longer timeout for local models
             )
             response.raise_for_status()
 
             data = response.json()
-            content = data["response"]
+            content = data.get("response", "")
+            
+            if not content:
+                raise ValueError("Empty response from Ollama")
 
             # Estimate tokens
             tokens_in = self.count_tokens(prompt.system + prompt.user)
             tokens_out = self.count_tokens(content)
-
-            return AIResponse(
-                content=content,
-                provider=AIProvider.OLLAMA.value,
-                model=self.model,
-                tokens_used={"input": tokens_in, "output": tokens_out},
-                cost=0.0,  # Local models are free
-                response_time=time.time() - start_time
+            
+        except requests.ConnectionError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.NETWORK_CONNECTION_FAILED,
+                user_message="Cannot connect to Ollama server. Please ensure it's running.",
+                recovery_suggestions=[
+                    "Start Ollama: 'ollama serve'",
+                    f"Check if the model is downloaded: 'ollama pull {self.model}'",
+                    "Verify firewall is not blocking port 11434"
+                ],
+                additional_data={'base_url': self.base_url, 'model': self.model}
             )
-
+            raise
+            
+        except requests.Timeout as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.WARNING,
+                code=ErrorCode.NETWORK_TIMEOUT,
+                user_message="Request to Ollama timed out. The model may be loading or slow.",
+                recovery_suggestions=[
+                    "Wait for model to fully load",
+                    "Try a smaller/faster model",
+                    "Increase system resources"
+                ],
+                additional_data={'model': self.model, 'timeout': 60}
+            )
+            raise
+            
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                error_handler.handle_error(
+                    error=e,
+                    category=ErrorCategory.NETWORK,
+                    severity=ErrorSeverity.ERROR,
+                    code=ErrorCode.MODEL_NOT_FOUND,
+                    user_message=f"Model '{self.model}' not found in Ollama.",
+                    recovery_suggestions=[
+                        f"Download the model: 'ollama pull {self.model}'",
+                        "List available models: 'ollama list'",
+                        "Use a different model"
+                    ]
+                )
+            else:
+                error_handler.handle_error(
+                    error=e,
+                    category=ErrorCategory.NETWORK,
+                    severity=ErrorSeverity.ERROR,
+                    code=ErrorCode.UNKNOWN_ERROR,
+                    user_message=f"Ollama server error: {e.response.status_code}",
+                    technical_details=e.response.text if e.response else str(e)
+                )
+            raise
+            
+        except ValueError as e:
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.VALIDATION,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.INVALID_INPUT,
+                user_message="Invalid response from Ollama server.",
+                technical_details=str(e)
+            )
+            raise
+            
         except Exception as e:
             self.logger.error(f"Ollama API error: {str(e)}")
+            error_handler.handle_error(
+                error=e,
+                category=ErrorCategory.NETWORK,
+                severity=ErrorSeverity.ERROR,
+                code=ErrorCode.UNKNOWN_ERROR,
+                user_message="An error occurred while communicating with Ollama.",
+                technical_details=str(e)
+            )
             raise
+            
+        return AIResponse(
+            content=content,
+            provider=AIProvider.OLLAMA.value,
+            model=self.model,
+            tokens_used={"input": tokens_in, "output": tokens_out},
+            cost=0.0,  # Local models are free
+            response_time=time.time() - start_time
+        )
 
     def stream_complete(self, prompt: AnalysisPrompt) -> Generator[str, None, AIResponse]:
         """Stream completion from Ollama."""
