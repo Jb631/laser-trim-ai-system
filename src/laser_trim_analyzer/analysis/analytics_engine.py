@@ -14,6 +14,16 @@ import numpy as np
 import pandas as pd
 from contextlib import contextmanager
 
+# Import memory safety if available
+try:
+    from laser_trim_analyzer.core.memory_safety import (
+        memory_safe_array, memory_safe_string,
+        get_memory_validator, MemoryIssueType
+    )
+    HAS_MEMORY_SAFETY = True
+except ImportError:
+    HAS_MEMORY_SAFETY = False
+
 
 # ============================================================================
 # Data Classes for Structured Results
@@ -153,6 +163,38 @@ class AnalysisInput:
             issues.append("Error data is empty")
         if len(self.position) != len(self.error):
             issues.append("Position and error arrays have different lengths")
+            
+        # Memory safety validation
+        if HAS_MEMORY_SAFETY:
+            validator = get_memory_validator()
+            
+            # Check array sizes
+            for arr_name, arr_data in [('position', self.position), ('error', self.error)]:
+                if arr_data:
+                    valid, issue = validator.validate_array_operation(
+                        arr_data,
+                        f"AnalysisInput.{arr_name}"
+                    )
+                    if not valid and issue:
+                        issues.append(f"{arr_name}: {issue.description}")
+                        
+            # Check upper and lower limits
+            for limit_name, limit_data in [('upper_limit', self.upper_limit), 
+                                          ('lower_limit', self.lower_limit)]:
+                if limit_data:
+                    valid, issue = validator.validate_array_operation(
+                        limit_data,
+                        f"AnalysisInput.{limit_name}"
+                    )
+                    if not valid and issue:
+                        issues.append(f"{limit_name}: {issue.description}")
+        else:
+            # Basic size checks without memory safety module
+            MAX_ARRAY_SIZE = 10_000_000  # 10M elements
+            if self.position and len(self.position) > MAX_ARRAY_SIZE:
+                issues.append(f"Position array too large: {len(self.position)} elements")
+            if self.error and len(self.error) > MAX_ARRAY_SIZE:
+                issues.append(f"Error array too large: {len(self.error)} elements")
             
         # Validate upper and lower limits if provided
         if self.upper_limit and len(self.upper_limit) != len(self.position):

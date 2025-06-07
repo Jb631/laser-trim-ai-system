@@ -29,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pydantic_core.core_schema import none_schema
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import cross_val_score, train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
@@ -446,19 +445,36 @@ class MLEngine:
     - Model deployment and serving
     """
 
-    def __init__(self, data_path: str, models_path: str,
+    def __init__(self, data_path: Optional[str] = None, models_path: Optional[str] = None,
                  logger: Optional[logging.Logger] = None):
         """
         Initialize ML Engine.
 
         Args:
-            data_path: Path to data storage
-            models_path: Path to model storage
+            data_path: Path to data storage (optional, defaults to ~/.laser_trim_analyzer/ml_data)
+            models_path: Path to model storage (optional, defaults to ~/.laser_trim_analyzer/models)
             logger: Optional logger instance
         """
+        # Set default paths if not provided
+        if data_path is None:
+            data_path = str(Path.home() / '.laser_trim_analyzer' / 'ml_data')
+        if models_path is None:
+            models_path = str(Path.home() / '.laser_trim_analyzer' / 'models')
+            
         self.data_path = Path(data_path)
         self.models_path = Path(models_path)
-        self.logger = logger or setup_logger(str(self.models_path / 'logs'))
+        
+        # Ensure directories exist
+        self.data_path.mkdir(parents=True, exist_ok=True)
+        self.models_path.mkdir(parents=True, exist_ok=True)
+        
+        # Set up logger
+        if logger is None:
+            logs_path = self.models_path / 'logs'
+            logs_path.mkdir(exist_ok=True)
+            self.logger = setup_logger(str(logs_path))
+        else:
+            self.logger = logger
 
         # Initialize components
         self.feature_engineering = FeatureEngineering(self.logger)

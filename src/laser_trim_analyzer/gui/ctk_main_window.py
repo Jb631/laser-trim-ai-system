@@ -8,23 +8,35 @@ from typing import Dict, Optional, Any
 import logging
 from pathlib import Path
 import sys
+from tkinter import messagebox
 
-# Import pages
-from laser_trim_analyzer.gui.pages import (
-    HomePage, AnalysisPage, HistoricalPage, ModelSummaryPage,
-    MLToolsPage, AIInsightsPage, SettingsPage
-)
-
-# Import additional pages
+# Import pages with better error handling
 try:
-    from laser_trim_analyzer.gui.pages.single_file_page import SingleFilePage
-    from laser_trim_analyzer.gui.pages.batch_processing_page import BatchProcessingPage
-    from laser_trim_analyzer.gui.pages.multi_track_page import MultiTrackPage
+    from laser_trim_analyzer.gui.pages import (
+        HomePage, AnalysisPage, HistoricalPage, ModelSummaryPage,
+        MLToolsPage, AIInsightsPage, SettingsPage,
+        SingleFilePage, BatchProcessingPage, MultiTrackPage
+    )
 except ImportError as e:
-    logging.warning(f"Could not import some pages: {e}")
-    SingleFilePage = None
-    BatchProcessingPage = None
-    MultiTrackPage = None
+    logging.error(f"Error importing pages: {e}", exc_info=True)
+    # Try individual imports as fallback
+    from laser_trim_analyzer.gui.pages import HomePage, AnalysisPage, HistoricalPage, ModelSummaryPage
+    from laser_trim_analyzer.gui.pages import MLToolsPage, AIInsightsPage, SettingsPage
+    try:
+        from laser_trim_analyzer.gui.pages import SingleFilePage
+    except ImportError:
+        logging.warning("Could not import SingleFilePage")
+        SingleFilePage = None
+    try:
+        from laser_trim_analyzer.gui.pages import BatchProcessingPage
+    except ImportError:
+        logging.warning("Could not import BatchProcessingPage")
+        BatchProcessingPage = None
+    try:
+        from laser_trim_analyzer.gui.pages import MultiTrackPage
+    except ImportError:
+        logging.warning("Could not import MultiTrackPage")
+        MultiTrackPage = None
 
 # Import managers
 from laser_trim_analyzer.database.manager import DatabaseManager
@@ -206,19 +218,57 @@ class CTkMainWindow(ctk.CTk):
                     page.grid(row=0, column=0, sticky="nsew")
                     page.grid_remove()  # Hide initially
                     self.pages[page_name] = page
+                    self.logger.info(f"Successfully created {page_name} page")
                 except Exception as e:
-                    self.logger.error(f"Could not create {page_name} page: {e}")
-                    # Create placeholder frame
+                    self.logger.error(f"Could not create {page_name} page: {e}", exc_info=True)
+                    # Create placeholder frame with error details
                     placeholder = ctk.CTkFrame(self.main_frame)
                     placeholder.grid(row=0, column=0, sticky="nsew")
                     placeholder.grid_remove()
                     
+                    # Error frame
+                    error_frame = ctk.CTkFrame(placeholder)
+                    error_frame.pack(expand=True, padx=20, pady=20)
+                    
                     label = ctk.CTkLabel(
-                        placeholder,
-                        text=f"{page_name.title()} Page\n\nUnder Construction",
-                        font=ctk.CTkFont(size=24)
+                        error_frame,
+                        text=f"{page_name.title()} Page",
+                        font=ctk.CTkFont(size=24, weight="bold")
                     )
-                    label.pack(expand=True)
+                    label.pack(pady=(0, 10))
+                    
+                    error_label = ctk.CTkLabel(
+                        error_frame,
+                        text="Error Loading Page",
+                        font=ctk.CTkFont(size=16),
+                        text_color="red"
+                    )
+                    error_label.pack(pady=5)
+                    
+                    # More detailed error message
+                    error_msg = str(e)
+                    if "No module named" in error_msg:
+                        error_msg += "\n\nThis may be a missing dependency or import error."
+                    elif "has no attribute" in error_msg:
+                        error_msg += "\n\nThis may be a configuration or initialization error."
+                    
+                    detail_label = ctk.CTkLabel(
+                        error_frame,
+                        text=f"Error: {error_msg}",
+                        font=ctk.CTkFont(size=12),
+                        wraplength=400
+                    )
+                    detail_label.pack(pady=5)
+                    
+                    # Add retry button for some pages
+                    if page_name in ['batch', 'ml_tools']:
+                        retry_button = ctk.CTkButton(
+                            error_frame,
+                            text="Retry Loading",
+                            command=lambda p=page_name: self._retry_page_load(p),
+                            width=120
+                        )
+                        retry_button.pack(pady=10)
                     
                     self.pages[page_name] = placeholder
     
@@ -326,6 +376,36 @@ class CTkMainWindow(ctk.CTk):
     def run(self):
         """Start the application"""
         self.mainloop()
+    
+    def _retry_page_load(self, page_name: str):
+        """Retry loading a failed page"""
+        try:
+            # Remove old placeholder
+            if page_name in self.pages:
+                self.pages[page_name].destroy()
+                del self.pages[page_name]
+            
+            # Try to recreate the page
+            page_classes = {
+                "batch": BatchProcessingPage,
+                "ml_tools": MLToolsPage,
+            }
+            
+            if page_name in page_classes and page_classes[page_name] is not None:
+                page = page_classes[page_name](self.main_frame, self)
+                page.grid(row=0, column=0, sticky="nsew")
+                page.grid_remove()
+                self.pages[page_name] = page
+                self.logger.info(f"Successfully reloaded {page_name} page")
+                
+                # Show the newly loaded page
+                self._show_page(page_name)
+            else:
+                self.logger.error(f"Cannot retry loading {page_name} - class not available")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to retry loading {page_name}: {e}", exc_info=True)
+            messagebox.showerror("Retry Failed", f"Could not reload {page_name} page:\n{str(e)}")
     
     def on_closing(self):
         """Handle window closing"""

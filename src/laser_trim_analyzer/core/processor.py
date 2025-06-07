@@ -46,6 +46,11 @@ from laser_trim_analyzer.utils.validators import (
     validate_resistance_values, AnalysisValidator, BatchValidator,
     ValidationResult as UtilsValidationResult
 )
+# Import security utilities
+from laser_trim_analyzer.core.security import (
+    SecurityValidator, SecureFileProcessor, SecurityLevel,
+    get_security_validator, validate_inputs
+)
 # Try to import ML components
 try:
     from laser_trim_analyzer.ml.predictors import MLPredictor, PredictionResult
@@ -75,6 +80,26 @@ else:
     else:
         MLPredictorType = MLPredictor
         PredictionResultType = PredictionResult
+
+# Import memory safety if available
+try:
+    from laser_trim_analyzer.core.memory_safety import (
+        get_memory_validator, SafeCache, memory_safe_context
+    )
+    HAS_MEMORY_SAFETY = True
+except ImportError:
+    HAS_MEMORY_SAFETY = False
+
+# Import secure logging if available
+try:
+    from laser_trim_analyzer.core.secure_logging import (
+        get_logger, logged_function, LogLevel
+    )
+    HAS_SECURE_LOGGING = True
+    logger = get_logger(__name__)
+except ImportError:
+    HAS_SECURE_LOGGING = False
+    logger = logging.getLogger(__name__)
 
 
 class LaserTrimProcessor:
@@ -266,16 +291,50 @@ class LaserTrimProcessor:
         # Step 1: Pre-flight file validation with comprehensive error handling
         self.logger.info(f"Starting comprehensive validation for: {file_path.name}")
         
+        # Log input parameters for debugging
+        if HAS_SECURE_LOGGING:
+            self.logger.debug("process_file input parameters", context={
+                'file_path': str(file_path),
+                'file_size_mb': file_path.stat().st_size / (1024 * 1024) if file_path.exists() else 0,
+                'output_dir': str(output_dir) if output_dir else None,
+                'has_progress_callback': progress_callback is not None
+            })
+        
         try:
-            # Validate file exists and is readable
-            if not file_path.exists():
-                raise FileNotFoundError(f"File not found: {file_path}")
+            # Security validation first
+            security_validator = get_security_validator()
+            
+            # Validate file path for security threats
+            path_result = security_validator.validate_input(
+                file_path,
+                'file_path',
+                {
+                    'require_absolute': False,
+                    'allowed_extensions': ['.xlsx', '.xls', '.xlsm'],
+                    'check_extension': True
+                }
+            )
+            
+            if not path_result.is_safe:
+                self._processing_stats["validation_failures"] += 1
+                raise ValidationError(f"Security validation failed: {'; '.join(path_result.validation_errors)}")
                 
-            if not file_path.is_file():
-                raise ValidationError(f"Path is not a file: {file_path}")
+            if path_result.threats_detected:
+                self.logger.warning(f"Security threats detected: {path_result.threats_detected}")
+                raise ValidationError(f"Security threat detected: {path_result.threats_detected[0].value}")
+            
+            # Use sanitized path
+            safe_file_path = Path(path_result.sanitized_value)
+            
+            # Validate file exists and is readable
+            if not safe_file_path.exists():
+                raise FileNotFoundError(f"File not found: {safe_file_path}")
+                
+            if not safe_file_path.is_file():
+                raise ValidationError(f"Path is not a file: {safe_file_path}")
                 
             # Check file size before processing
-            file_size = file_path.stat().st_size
+            file_size = safe_file_path.stat().st_size
             max_size = getattr(self.config.processing, 'max_file_size_mb', 100) * 1024 * 1024
             if file_size > max_size:
                 raise ValidationError(f"File too large: {file_size / 1024 / 1024:.1f}MB > {max_size / 1024 / 1024:.1f}MB")
@@ -288,7 +347,7 @@ class LaserTrimProcessor:
             # Try basic Excel file validation
             try:
                 file_validation = validate_excel_file(
-                    file_path=file_path,
+                    file_path=safe_file_path,
                     max_file_size_mb=getattr(self.config.processing, 'max_file_size_mb', 100)
                 )
                 
@@ -316,11 +375,14 @@ class LaserTrimProcessor:
                 try:
                     import pandas as pd
                     # Try to read the Excel file to check if it's valid
-                    excel_file = pd.ExcelFile(file_path)
+                    excel_file = pd.ExcelFile(safe_file_path)
                     sheet_names = excel_file.sheet_names
                     self.logger.info(f"Basic validation passed - Found {len(sheet_names)} sheets")
                 except Exception as excel_error:
                     raise ValidationError(f"File is not a valid Excel file: {excel_error}")
+            
+            # Update file_path to use the safe path
+            file_path = safe_file_path
             
         except Exception as e:
             self._processing_stats["validation_failures"] += 1
@@ -495,6 +557,20 @@ class LaserTrimProcessor:
             
             safe_progress_callback("Analysis complete", 1.0)
             self.logger.info(f"Successfully processed {file_path.name} in {result.processing_time:.2f}s")
+            
+            # Log output summary for debugging
+            if HAS_SECURE_LOGGING:
+                self.logger.debug("process_file output summary", context={
+                    'file_path': str(file_path),
+                    'processing_time': result.processing_time,
+                    'overall_status': result.overall_status.value,
+                    'validation_status': result.overall_validation_status.value,
+                    'num_tracks': len(result.tracks),
+                    'num_errors': len(result.processing_errors),
+                    'num_warnings': len(result.validation_warnings),
+                    'has_ml_predictions': bool(self.ml_predictor),
+                    'output_generated': bool(output_dir)
+                })
             
             return result
 
@@ -1544,12 +1620,16 @@ class LaserTrimProcessor:
             return ValidationStatus.VALIDATED  # Successful trim
 
     def _calculate_overall_validation_grade(self, tracks: Dict[str, TrackData]) -> str:
-        """Calculate overall validation grade from all tracks."""
+        """Calculate overall validation grade from all tracks.
+        
+        Uses the same grading logic as the model's validation_grade property
+        to ensure consistency across the application.
+        """
         if not tracks:
             return "Not Available"
         
         grades = []
-        grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0, "F": 0}
+        grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0.5, "F": 0}
         
         for track_data in tracks.values():
             # Collect grades from different analyses
@@ -1565,15 +1645,17 @@ class LaserTrimProcessor:
         # Calculate average grade
         avg_grade = sum(grades) / len(grades)
         
-        # Convert back to letter grade
+        # Convert back to letter grade with descriptions
         if avg_grade >= 3.5:
             return "A - Excellent"
         elif avg_grade >= 2.5:
             return "B - Good"
         elif avg_grade >= 1.5:
             return "C - Acceptable"
-        elif avg_grade >= 0.5:
-            return "D - Poor"
+        elif avg_grade >= 0.75:
+            return "D - Below Average"
+        elif avg_grade >= 0.25:
+            return "E - Poor"
         else:
             return "F - Failed"
 

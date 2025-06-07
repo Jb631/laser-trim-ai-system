@@ -83,19 +83,33 @@ class ValidationResult(BaseAnalysisModel):
     @computed_field
     @property
     def validation_grade(self) -> str:
-        """Get validation grade (A-F)."""
-        if not self.is_valid:
-            return "F"
-        elif self.deviation_percent <= 1.0:
+        """Get validation grade (A-F) based on deviation percentage.
+        
+        Grades are assigned based on how close the calculated value is to the
+        expected industry standard value, regardless of strict pass/fail status.
+        This provides a more nuanced view of performance quality.
+        
+        Grade Scale:
+        - A: ≤ 2% deviation (Excellent)
+        - B: ≤ 5% deviation (Good)
+        - C: ≤ 10% deviation (Acceptable)
+        - D: ≤ 20% deviation (Below Average)
+        - E: ≤ 30% deviation (Poor)
+        - F: > 30% deviation (Failed)
+        """
+        # Grade based on deviation percentage, not just pass/fail
+        if self.deviation_percent <= 2.0:
             return "A"
-        elif self.deviation_percent <= 3.0:
-            return "B"
         elif self.deviation_percent <= 5.0:
-            return "C"
+            return "B"
         elif self.deviation_percent <= 10.0:
+            return "C"
+        elif self.deviation_percent <= 20.0:
             return "D"
-        else:
+        elif self.deviation_percent <= 30.0:
             return "E"
+        else:
+            return "F"
 
 
 class FileMetadata(BaseAnalysisModel):
@@ -450,26 +464,31 @@ class AnalysisResult(BaseAnalysisModel):
     @computed_field
     @property
     def validation_grade(self) -> str:
-        """Get overall validation grade."""
+        """Get overall validation grade based on all track analyses.
+        
+        The overall grade is calculated as the average of all individual
+        analysis grades, providing a comprehensive quality assessment.
+        """
         if self.overall_validation_status == ValidationStatus.NOT_VALIDATED:
             return "Not Validated"
-        elif self.overall_validation_status == ValidationStatus.FAILED:
-            return "F"
         
         # Calculate average grade from all tracks
         grades = []
         for track in self.tracks.values():
-            if track.sigma_analysis.validation_result:
+            if track.sigma_analysis and track.sigma_analysis.validation_result:
                 grades.append(track.sigma_analysis.validation_result.validation_grade)
-            if track.linearity_analysis.validation_result:
+            if track.linearity_analysis and track.linearity_analysis.validation_result:
                 grades.append(track.linearity_analysis.validation_result.validation_grade)
+            if track.resistance_analysis and track.resistance_analysis.validation_result:
+                grades.append(track.resistance_analysis.validation_result.validation_grade)
         
         if not grades:
             return "Incomplete"
         
         # Convert grades to numeric and average
-        grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0, "F": 0}
-        avg_grade = sum(grade_values.get(g, 0) for g in grades) / len(grades)
+        grade_values = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0.5, "F": 0}
+        numeric_grades = [grade_values.get(g[0] if g else 'F', 0) for g in grades]
+        avg_grade = sum(numeric_grades) / len(numeric_grades)
         
         if avg_grade >= 3.5:
             return "A"
@@ -477,8 +496,10 @@ class AnalysisResult(BaseAnalysisModel):
             return "B"
         elif avg_grade >= 1.5:
             return "C"
-        elif avg_grade >= 0.5:
+        elif avg_grade >= 0.75:
             return "D"
+        elif avg_grade >= 0.25:
+            return "E"
         else:
             return "F"
 

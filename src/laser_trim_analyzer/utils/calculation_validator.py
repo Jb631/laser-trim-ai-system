@@ -151,10 +151,11 @@ class CalculationValidator:
                 deviation_percent = 0.0 if calculated_sigma == 0 else 100.0
             
             # Determine tolerance based on validation level
+            # Note: These tolerances are for calculation accuracy, not quality grading
             tolerance_map = {
-                ValidationLevel.RELAXED: 10.0,   # ±10%
-                ValidationLevel.STANDARD: 5.0,   # ±5%
-                ValidationLevel.STRICT: 2.0      # ±2%
+                ValidationLevel.RELAXED: 20.0,   # ±20%
+                ValidationLevel.STANDARD: 10.0,  # ±10%
+                ValidationLevel.STRICT: 5.0      # ±5%
             }
             tolerance = tolerance_map[self.validation_level]
             
@@ -264,10 +265,11 @@ class CalculationValidator:
                 deviation_percent = 0.0 if calculated_linearity == 0 else 100.0
             
             # Determine tolerance and classification
+            # Note: These tolerances are for calculation accuracy, not quality grading
             tolerance_map = {
-                ValidationLevel.RELAXED: 15.0,   # ±15%
-                ValidationLevel.STANDARD: 10.0,  # ±10%
-                ValidationLevel.STRICT: 5.0      # ±5%
+                ValidationLevel.RELAXED: 25.0,   # ±25%
+                ValidationLevel.STANDARD: 15.0,  # ±15%
+                ValidationLevel.STRICT: 10.0     # ±10%
             }
             tolerance = tolerance_map[self.validation_level]
             

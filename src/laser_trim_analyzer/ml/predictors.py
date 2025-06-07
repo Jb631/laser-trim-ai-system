@@ -22,6 +22,26 @@ from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
 from laser_trim_analyzer.ml.models import ModelFactory
 from laser_trim_analyzer.database.models import MLPrediction as DBMLPrediction
 
+# Import secure logging with fallback
+try:
+    from laser_trim_analyzer.core.secure_logging import (
+        SecureLogger, LogLevel, logged_function, get_logger
+    )
+    HAS_SECURE_LOGGING = True
+except ImportError:
+    HAS_SECURE_LOGGING = False
+    # Fallback to standard logging
+    SecureLogger = None
+    logged_function = lambda **kwargs: lambda func: func
+    get_logger = lambda name: logging.getLogger(name)
+
+# Import security module if available
+try:
+    from laser_trim_analyzer.core.security import get_security_validator
+    HAS_SECURITY = True
+except ImportError:
+    HAS_SECURITY = False
+
 # Remove the import of the deleted ML predictor implementation
 # from laser_trim_analyzer.ml.ml_predictor_class import MLPredictor as MLPredictorImpl
 
@@ -63,7 +83,34 @@ class MLPredictor:
             logger: Logger instance
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        
+        # Initialize secure logger
+        if HAS_SECURE_LOGGING and not logger:
+            self.logger = get_logger(
+                'laser_trim_analyzer.ml.predictors',
+                log_level=LogLevel.DEBUG if config.debug_mode else LogLevel.INFO
+            )
+        else:
+            self.logger = logger or logging.getLogger(__name__)
+        
+        # Log initialization
+        if HAS_SECURE_LOGGING:
+            self.logger.info(
+                "Initializing ML Predictor",
+                context={
+                    'config': {
+                        'model_path': str(config.ml.model_path),
+                        'enabled': config.ml.enabled,
+                        'failure_prediction_confidence_threshold': config.ml.failure_prediction_confidence_threshold
+                    },
+                    'secure_logging': HAS_SECURE_LOGGING,
+                    'security_module': HAS_SECURITY
+                }
+            )
+        else:
+            self.logger.info(
+                f"Initializing ML Predictor - model_path: {config.ml.model_path}, enabled: {config.ml.enabled}"
+            )
 
         # Initialize ML Engine if not provided
         if ml_engine is None:
@@ -96,6 +143,7 @@ class MLPredictor:
             'range_utilization_percent': 'Range Utilization (%)'
         }
 
+    @logged_function(log_inputs=True, log_outputs=True, log_performance=True)
     def initialize(self) -> bool:
         """
         Initialize ML models and predictor.
@@ -104,9 +152,17 @@ class MLPredictor:
             True if initialization successful
         """
         try:
+            if HAS_SECURE_LOGGING:
+                self.logger.start_performance_tracking('ml_initialization')
+            
             # Create model directory if it doesn't exist
             model_dir = self.config.ml.model_path
             model_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.debug(
+                "Created model directory",
+                context={'model_dir': str(model_dir)} if HAS_SECURE_LOGGING else {}
+            )
 
             # Initialize implementation predictor
             self._impl_predictor = None
@@ -116,24 +172,54 @@ class MLPredictor:
 
             # Check if models need training
             if self._check_models_need_training():
-                self.logger.info("ML models need training. Will use default predictions.")
+                self.logger.info(
+                    "ML models need training. Will use default predictions.",
+                    context={
+                        'models_checked': ['failure_predictor', 'anomaly_detector', 'threshold_optimizer'],
+                        'models_found': False
+                    } if HAS_SECURE_LOGGING else {}
+                )
                 # Don't fail initialization, just mark models as not loaded
                 self._models_loaded = False
             else:
                 self._models_loaded = True
+                self.logger.info(
+                    "ML models loaded successfully",
+                    context={'models_loaded': True} if HAS_SECURE_LOGGING else {}
+                )
 
-            self.logger.info("ML Predictor initialized successfully")
+            if HAS_SECURE_LOGGING:
+                init_time = self.logger.end_performance_tracking('ml_initialization')
+                self.logger.info(
+                    "ML Predictor initialized successfully",
+                    performance={'initialization_time_ms': init_time * 1000}
+                )
+            else:
+                self.logger.info("ML Predictor initialized successfully")
+            
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize ML Predictor: {e}")
+            if HAS_SECURE_LOGGING:
+                self.logger.error(
+                    f"Failed to initialize ML Predictor: {e}",
+                    error=e
+                )
+            else:
+                self.logger.error(f"Failed to initialize ML Predictor: {e}")
             return False
 
+    @logged_function(log_performance=True)
     def _register_models(self):
         """Register ML models with the engine."""
         from laser_trim_analyzer.ml.models import ThresholdOptimizer, FailurePredictor, DriftDetector
         
         try:
+            self.logger.debug(
+                "Starting model registration",
+                context={'ml_engine_id': id(self.ml_engine)} if HAS_SECURE_LOGGING else {}
+            )
+            
             # Ensure models dictionary exists
             if not hasattr(self.ml_engine, 'models'):
                 self.ml_engine.models = {}
@@ -203,7 +289,15 @@ class MLPredictor:
             failure_predictor.prediction_count = 0
             
             self.ml_engine.models['failure_predictor'] = failure_predictor
-            self.logger.info("Registered model: failure_predictor")
+            self.logger.info(
+                "Registered model: failure_predictor",
+                context={
+                    'model_type': 'failure_predictor',
+                    'version': '1.0.0',
+                    'features': failure_config.features,
+                    'hyperparameters': failure_config.hyperparameters
+                } if HAS_SECURE_LOGGING else {}
+            )
             
             # Create and register threshold optimizer
             threshold_optimizer = ThresholdOptimizer(threshold_config, self.logger)
@@ -216,7 +310,15 @@ class MLPredictor:
             threshold_optimizer.prediction_count = 0
             
             self.ml_engine.models['threshold_optimizer'] = threshold_optimizer
-            self.logger.info("Registered model: threshold_optimizer")
+            self.logger.info(
+                "Registered model: threshold_optimizer",
+                context={
+                    'model_type': 'threshold_optimizer',
+                    'version': '1.0.0',
+                    'features': threshold_config.features,
+                    'hyperparameters': threshold_config.hyperparameters
+                } if HAS_SECURE_LOGGING else {}
+            )
             
             # Create and register drift detector
             drift_detector = DriftDetector(drift_config, self.logger)
@@ -229,7 +331,15 @@ class MLPredictor:
             drift_detector.prediction_count = 0
             
             self.ml_engine.models['drift_detector'] = drift_detector
-            self.logger.info("Registered model: drift_detector")
+            self.logger.info(
+                "Registered model: drift_detector",
+                context={
+                    'model_type': 'drift_detector',
+                    'version': '1.0.0',
+                    'features': drift_config.features,
+                    'hyperparameters': drift_config.hyperparameters
+                } if HAS_SECURE_LOGGING else {}
+            )
 
             # Store configs if supported
             if not hasattr(self.ml_engine, 'model_configs'):
@@ -239,10 +349,23 @@ class MLPredictor:
             self.ml_engine.model_configs['threshold_optimizer'] = threshold_config
             self.ml_engine.model_configs['drift_detector'] = drift_config
             
-            self.logger.info(f"Successfully registered {len(self.ml_engine.models)} models")
+            self.logger.info(
+                f"Successfully registered {len(self.ml_engine.models)} models",
+                context={
+                    'models_registered': list(self.ml_engine.models.keys()),
+                    'total_models': len(self.ml_engine.models)
+                } if HAS_SECURE_LOGGING else {}
+            )
             
         except Exception as e:
-            self.logger.error(f"Error registering models: {e}")
+            if HAS_SECURE_LOGGING:
+                self.logger.error(
+                    f"Error registering models: {e}",
+                    error=e,
+                    context={'models_registered_so_far': list(self.ml_engine.models.keys()) if hasattr(self.ml_engine, 'models') else []}
+                )
+            else:
+                self.logger.error(f"Error registering models: {e}")
             raise
 
     def _check_models_need_training(self) -> bool:
@@ -255,9 +378,10 @@ class MLPredictor:
                 return True
         return False
 
+    @logged_function(log_performance=True)
     async def predict(self, analysis_result: AnalysisResult) -> Dict[str, Any]:
         """
-        Make predictions for an analysis result.
+        Make predictions for an analysis result with input validation.
 
         Args:
             analysis_result: Complete analysis result
@@ -265,6 +389,52 @@ class MLPredictor:
         Returns:
             Dictionary with predictions for all tracks
         """
+        if HAS_SECURE_LOGGING:
+            self.logger.start_performance_tracking('ml_prediction')
+            self.logger.debug(
+                "Starting ML prediction",
+                context={
+                    'model': analysis_result.metadata.model,
+                    'serial': analysis_result.metadata.serial,
+                    'track_count': len(analysis_result.tracks),
+                    'file_date': str(analysis_result.metadata.file_date)
+                }
+            )
+        
+        # Validate inputs if security is available
+        if HAS_SECURITY:
+            try:
+                validator = get_security_validator()
+                
+                # Validate model and serial
+                model_result = validator.validate_input(
+                    analysis_result.metadata.model,
+                    'model_number'
+                )
+                if not model_result.is_safe:
+                    self.logger.warning(
+                        f"Invalid model number for ML: {model_result.validation_errors}",
+                        security={'validation_errors': model_result.validation_errors} if HAS_SECURE_LOGGING else {}
+                    )
+                    return {}
+                    
+                serial_result = validator.validate_input(
+                    analysis_result.metadata.serial,
+                    'serial_number'
+                )
+                if not serial_result.is_safe:
+                    self.logger.warning(
+                        f"Invalid serial number for ML: {serial_result.validation_errors}",
+                        security={'validation_errors': serial_result.validation_errors} if HAS_SECURE_LOGGING else {}
+                    )
+                    return {}
+            except Exception as e:
+                self.logger.warning(
+                    f"Security validation error in ML: {e}",
+                    error=e if HAS_SECURE_LOGGING else None
+                )
+                # Continue with prediction if security check fails
+        
         if not self._models_loaded:
             # Return empty predictions instead of error
             return {}
@@ -274,6 +444,16 @@ class MLPredictor:
         # Process each track
         for track_id, track_data in analysis_result.tracks.items():
             try:
+                if HAS_SECURE_LOGGING:
+                    self.logger.trace(
+                        f"Predicting for track {track_id}",
+                        context={
+                            'track_id': track_id,
+                            'sigma_gradient': track_data.sigma_analysis.sigma_gradient,
+                            'linearity_pass': track_data.linearity_analysis.linearity_pass
+                        }
+                    )
+                
                 track_predictions = await self._predict_for_track(
                     track_data,
                     analysis_result.metadata.model,
@@ -283,11 +463,29 @@ class MLPredictor:
                 predictions[track_id] = track_predictions
 
             except Exception as e:
-                self.logger.error(f"Prediction failed for track {track_id}: {e}")
+                if HAS_SECURE_LOGGING:
+                    self.logger.error(
+                        f"Prediction failed for track {track_id}: {e}",
+                        error=e,
+                        context={'track_id': track_id, 'model': analysis_result.metadata.model}
+                    )
+                else:
+                    self.logger.error(f"Prediction failed for track {track_id}: {e}")
                 predictions[track_id] = self._get_default_predictions()
 
         # Add file-level predictions
         predictions['overall'] = self._aggregate_predictions(predictions)
+        
+        if HAS_SECURE_LOGGING:
+            pred_time = self.logger.end_performance_tracking('ml_prediction')
+            self.logger.info(
+                "ML prediction completed",
+                context={
+                    'tracks_processed': len(predictions) - 1,  # Excluding 'overall'
+                    'overall_risk': predictions.get('overall', {}).get('overall_risk', 'Unknown')
+                },
+                performance={'total_prediction_time_ms': pred_time * 1000}
+            )
 
         return predictions
 
@@ -301,35 +499,116 @@ class MLPredictor:
         """Make predictions for a single track."""
         import time
         start_time = time.time()
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.debug(
+                f"Preparing data for track {track_id}",
+                context={'model': model, 'serial': serial}
+            )
 
         # Prepare data for predictor
         analysis_data = self._prepare_track_data(track_data, model, serial, track_id)
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.trace(
+                "Track data prepared",
+                context={
+                    'track_id': track_id,
+                    'features_extracted': list(analysis_data.keys()),
+                    'sigma_gradient': analysis_data.get('Sigma Gradient'),
+                    'risk_category': analysis_data.get('Risk Category')
+                }
+            )
 
         # Get predictions from implementation
         ml_predictions = self._impl_predictor.predict_real_time(analysis_data)
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.debug(
+                "Raw ML predictions received",
+                context={
+                    'track_id': track_id,
+                    'prediction_keys': list(ml_predictions.keys()) if ml_predictions else [],
+                    'has_predictions': 'predictions' in ml_predictions
+                }
+            )
 
         # Parse predictions into structured result
         pred_data = ml_predictions.get('predictions', {})
 
+        # Validate and sanitize prediction outputs
+        failure_prob = pred_data.get('failure_probability', 0.0)
+        anomaly_score = pred_data.get('anomaly_score', 0.0)
+        quality_score = pred_data.get('quality_score', 0.0)
+        suggested_threshold = pred_data.get('suggested_threshold')
+        
+        # Ensure probabilities are in valid range [0, 1]
+        failure_prob = max(0.0, min(1.0, float(failure_prob) if failure_prob is not None else 0.0))
+        anomaly_score = max(0.0, min(1.0, float(anomaly_score) if anomaly_score is not None else 0.0))
+        confidence_score = max(0.0, min(1.0, float(quality_score) / 100.0 if quality_score is not None else 0.0))
+        
+        # Validate suggested threshold
+        if suggested_threshold is not None:
+            try:
+                suggested_threshold = float(suggested_threshold)
+                # Ensure threshold is within reasonable range
+                if suggested_threshold < 0 or suggested_threshold > 1000:
+                    self.logger.warning(f"Invalid suggested threshold: {suggested_threshold}")
+                    suggested_threshold = None
+            except (ValueError, TypeError):
+                suggested_threshold = None
+        
+        # Sanitize warnings and recommendations
+        warnings = ml_predictions.get('warnings', [])
+        recommendations = ml_predictions.get('recommendations', [])
+        
+        # Ensure warnings and recommendations are lists of strings
+        if not isinstance(warnings, list):
+            warnings = []
+        else:
+            warnings = [str(w) for w in warnings[:10]]  # Limit to 10 warnings
+            
+        if not isinstance(recommendations, list):
+            recommendations = []
+        else:
+            recommendations = [str(r) for r in recommendations[:10]]  # Limit to 10 recommendations
+        
         result = PredictionResult(
-            failure_probability=pred_data.get('failure_probability', 0.0),
-            risk_category=self._determine_risk_category(
-                pred_data.get('failure_probability', 0.0)
-            ),
-            is_anomaly=pred_data.get('is_anomaly', False),
-            anomaly_score=pred_data.get('anomaly_score', 0.0),
-            suggested_threshold=pred_data.get('suggested_threshold'),
-            confidence_score=pred_data.get('quality_score', 0.0) / 100.0,
-            warnings=ml_predictions.get('warnings', []),
-            recommendations=ml_predictions.get('recommendations', [])
+            failure_probability=failure_prob,
+            risk_category=self._determine_risk_category(failure_prob),
+            is_anomaly=bool(pred_data.get('is_anomaly', False)),
+            anomaly_score=anomaly_score,
+            suggested_threshold=suggested_threshold,
+            confidence_score=confidence_score,
+            warnings=warnings,
+            recommendations=recommendations
         )
 
         # Track performance
+        prediction_time = time.time() - start_time
         self.prediction_count += 1
-        self.total_prediction_time += (time.time() - start_time)
+        self.total_prediction_time += prediction_time
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.debug(
+                f"Track prediction completed for {track_id}",
+                context={
+                    'track_id': track_id,
+                    'failure_probability': failure_prob,
+                    'risk_category': result.risk_category,
+                    'is_anomaly': result.is_anomaly,
+                    'anomaly_score': anomaly_score,
+                    'confidence_score': confidence_score,
+                    'suggested_threshold': suggested_threshold,
+                    'warning_count': len(warnings),
+                    'recommendation_count': len(recommendations)
+                },
+                performance={'track_prediction_time_ms': prediction_time * 1000}
+            )
 
         return result
 
+    @logged_function(log_performance=True)
     def _prepare_track_data(
             self,
             track_data: TrackData,
@@ -337,7 +616,57 @@ class MLPredictor:
             serial: str,
             track_id: str
     ) -> Dict[str, Any]:
-        """Prepare track data for ML predictor."""
+        """Prepare and validate track data for ML predictor."""
+        if HAS_SECURE_LOGGING:
+            self.logger.trace(
+                "Preparing track data for ML",
+                context={'track_id': track_id, 'model': model}
+            )
+        
+        # Validate numeric inputs if security is available
+        if HAS_SECURITY:
+            try:
+                validator = get_security_validator()
+                
+                # Validate critical numeric values
+                numeric_validations = [
+                    ('sigma_gradient', track_data.sigma_analysis.sigma_gradient),
+                    ('sigma_threshold', track_data.sigma_analysis.sigma_threshold),
+                    ('unit_length', track_data.unit_properties.unit_length),
+                    ('travel_length', track_data.travel_length),
+                    ('linearity_spec', track_data.linearity_analysis.linearity_spec)
+                ]
+                
+                for field_name, value in numeric_validations:
+                    if value is not None:
+                        result = validator.validate_input(
+                            value,
+                            'number',
+                            {'min': 0, 'max': 1e6}  # Reasonable range for measurements
+                        )
+                        if not result.is_safe:
+                            if HAS_SECURE_LOGGING:
+                                self.logger.warning(
+                                    f"Invalid {field_name} value: {result.validation_errors}",
+                                    security={
+                                        'field': field_name,
+                                        'validation_errors': result.validation_errors,
+                                        'original_value': str(value)[:50]  # Truncate for safety
+                                    }
+                                )
+                            else:
+                                self.logger.warning(f"Invalid {field_name} value: {result.validation_errors}")
+                            # Use sanitized value
+                            value = result.sanitized_value or 0
+            except Exception as e:
+                if HAS_SECURE_LOGGING:
+                    self.logger.warning(
+                        f"ML input validation error: {e}",
+                        error=e
+                    )
+                else:
+                    self.logger.warning(f"ML input validation error: {e}")
+        
         data = {
             'File': f"{model}_{serial}.xlsx",
             'Model': model,
@@ -366,6 +695,21 @@ class MLPredictor:
 
         if track_data.dynamic_range:
             data['Range Utilization (%)'] = track_data.dynamic_range.range_utilization_percent
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.trace(
+                "Track data prepared successfully",
+                context={
+                    'track_id': track_id,
+                    'feature_count': len(data),
+                    'has_optional_features': {
+                        'trim_effectiveness': 'Trim Improvement (%)' in data,
+                        'linearity_error': 'Final Linearity Error (Shifted)' in data,
+                        'failure_probability': 'Failure Probability' in data,
+                        'range_utilization': 'Range Utilization (%)' in data
+                    }
+                }
+            )
 
         return data
 
@@ -431,6 +775,7 @@ class MLPredictor:
             recommendations=[]
         )
 
+    @logged_function(log_inputs=True, log_outputs=True, log_performance=True)
     def check_for_drift(self, recent_results: List[AnalysisResult]) -> Dict[str, Any]:
         """
         Check for manufacturing drift in recent results.
@@ -442,9 +787,24 @@ class MLPredictor:
             Drift analysis results
         """
         if not self._models_loaded or not recent_results:
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "Drift check skipped",
+                    context={
+                        'models_loaded': self._models_loaded,
+                        'results_count': len(recent_results) if recent_results else 0
+                    }
+                )
             return {}
 
         try:
+            if HAS_SECURE_LOGGING:
+                self.logger.start_performance_tracking('drift_detection')
+                self.logger.info(
+                    "Starting drift detection",
+                    context={'result_count': len(recent_results)}
+                )
+            
             # Convert results to DataFrame
             data_for_drift = []
             for result in recent_results:
@@ -460,19 +820,52 @@ class MLPredictor:
                     })
 
             df = pd.DataFrame(data_for_drift)
+            
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "Data prepared for drift detection",
+                    context={
+                        'data_points': len(data_for_drift),
+                        'models': df['model'].unique().tolist() if 'model' in df else [],
+                        'date_range': {
+                            'start': str(df['timestamp'].min()) if 'timestamp' in df and len(df) > 0 else None,
+                            'end': str(df['timestamp'].max()) if 'timestamp' in df and len(df) > 0 else None
+                        }
+                    }
+                )
 
             # Use MLEngine's drift detector if available
             if 'drift_detector' in self.ml_engine.models:
                 drift_detector = self.ml_engine.models['drift_detector']
                 drift_analysis = drift_detector.analyze_drift(df)
+                
+                if HAS_SECURE_LOGGING:
+                    drift_time = self.logger.end_performance_tracking('drift_detection')
+                    self.logger.info(
+                        "Drift detection completed",
+                        context={
+                            'drift_detected': drift_analysis.get('drift_detected', False),
+                            'drift_metrics': drift_analysis.get('metrics', {})
+                        },
+                        performance={'drift_detection_time_ms': drift_time * 1000}
+                    )
+                
                 return drift_analysis
 
             return {'drift_detected': False, 'message': 'Drift detector not available'}
 
         except Exception as e:
-            self.logger.error(f"Drift detection failed: {e}")
+            if HAS_SECURE_LOGGING:
+                self.logger.error(
+                    f"Drift detection failed: {e}",
+                    error=e,
+                    context={'result_count': len(recent_results)}
+                )
+            else:
+                self.logger.error(f"Drift detection failed: {e}")
             return {'error': str(e)}
 
+    @logged_function(log_inputs=True, log_outputs=True, log_performance=True)
     def suggest_threshold_adjustments(
             self,
             model: str,
@@ -489,25 +882,70 @@ class MLPredictor:
             Suggested thresholds or None
         """
         if not self._models_loaded:
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "Threshold suggestion skipped - models not loaded",
+                    context={'model': model}
+                )
             return None
 
         try:
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    "Suggesting threshold adjustments",
+                    context={
+                        'model': model,
+                        'result_count': len(recent_results),
+                        'date_range': {
+                            'start': str(min(r.metadata.file_date for r in recent_results)) if recent_results else None,
+                            'end': str(max(r.metadata.file_date for r in recent_results)) if recent_results else None
+                        }
+                    }
+                )
+            
             # Get recommended thresholds from predictor
             if hasattr(self._impl_predictor, 'thresholds'):
                 model_thresholds = self._impl_predictor.thresholds.get(model)
                 if model_thresholds:
-                    return {
+                    suggestions = {
                         'recommended': model_thresholds.get('recommended'),
                         'confidence': model_thresholds.get('confidence', 0.8),
                         'based_on_samples': model_thresholds.get('sample_count', 0)
                     }
+                    
+                    if HAS_SECURE_LOGGING:
+                        self.logger.info(
+                            "Threshold suggestions generated",
+                            context={
+                                'model': model,
+                                'recommended_threshold': suggestions['recommended'],
+                                'confidence': suggestions['confidence'],
+                                'sample_count': suggestions['based_on_samples']
+                            }
+                        )
+                    
+                    return suggestions
 
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "No threshold data available for model",
+                    context={'model': model}
+                )
+            
             return None
 
         except Exception as e:
-            self.logger.error(f"Threshold suggestion failed: {e}")
+            if HAS_SECURE_LOGGING:
+                self.logger.error(
+                    f"Threshold suggestion failed: {e}",
+                    error=e,
+                    context={'model': model}
+                )
+            else:
+                self.logger.error(f"Threshold suggestion failed: {e}")
             return None
 
+    @logged_function(log_outputs=True)
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get ML predictor performance statistics."""
         stats = {
@@ -526,9 +964,16 @@ class MLPredictor:
                 'anomaly_detection_rate': impl_stats.get('anomaly_detection_rate', 0),
                 'model_versions': impl_stats.get('model_versions', {})
             })
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.info(
+                "ML performance stats retrieved",
+                context=stats
+            )
 
         return stats
 
+    @logged_function(log_performance=True)
     def update_models(self) -> bool:
         """
         Check for and load updated models.
@@ -536,11 +981,29 @@ class MLPredictor:
         Returns:
             True if models were updated
         """
+        if HAS_SECURE_LOGGING:
+            self.logger.info("Checking for model updates")
+        
         if self._impl_predictor:
             self._impl_predictor.check_for_model_updates()
+            
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    "Model update check completed",
+                    context={'models_updated': True}
+                )
+            
             return True
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.debug(
+                "No implementation predictor available for updates",
+                context={'models_updated': False}
+            )
+        
         return False
 
+    @logged_function(log_performance=True)
     def format_ml_predictions_for_db(
             self,
             predictions: Dict[str, Any],
@@ -556,6 +1019,15 @@ class MLPredictor:
         Returns:
             List of database prediction objects
         """
+        if HAS_SECURE_LOGGING:
+            self.logger.debug(
+                "Formatting ML predictions for database storage",
+                context={
+                    'analysis_id': analysis_id,
+                    'track_count': len([k for k in predictions.keys() if k != 'overall'])
+                }
+            )
+        
         db_predictions = []
 
         for track_id, pred in predictions.items():
@@ -582,5 +1054,26 @@ class MLPredictor:
                     db_pred.recommended_threshold = pred.suggested_threshold
 
                 db_predictions.append(db_pred)
+                
+                if HAS_SECURE_LOGGING:
+                    self.logger.trace(
+                        f"Formatted prediction for track {track_id}",
+                        context={
+                            'track_id': track_id,
+                            'risk_category': pred.risk_category,
+                            'failure_probability': pred.failure_probability,
+                            'has_threshold': pred.suggested_threshold is not None
+                        }
+                    )
+        
+        if HAS_SECURE_LOGGING:
+            self.logger.info(
+                "ML predictions formatted for database",
+                context={
+                    'analysis_id': analysis_id,
+                    'predictions_formatted': len(db_predictions),
+                    'model_version': db_predictions[0].model_version if db_predictions else 'N/A'
+                }
+            )
 
         return db_predictions

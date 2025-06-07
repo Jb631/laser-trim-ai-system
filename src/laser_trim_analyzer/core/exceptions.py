@@ -74,3 +74,8 @@ class ThresholdExceededError(AnalysisError):
         self.metric = metric
         self.value = value
         self.threshold = threshold
+
+
+class CacheError(LaserTrimAnalyzerError):
+    """Raised when cache operations fail."""
+    pass

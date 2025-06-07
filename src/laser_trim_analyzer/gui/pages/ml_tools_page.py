@@ -27,9 +27,35 @@ from laser_trim_analyzer.gui.pages.base_page import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
-# Import the actual ML components
-from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
-from laser_trim_analyzer.ml.ml_manager import get_ml_manager
+# Get logger first
+logger = logging.getLogger(__name__)
+
+# Import the actual ML components with error handling
+try:
+    from laser_trim_analyzer.ml.engine import MLEngine, ModelConfig
+    HAS_ML_ENGINE = True
+except ImportError as e:
+    logger.warning(f"Could not import MLEngine: {e}")
+    HAS_ML_ENGINE = False
+    MLEngine = None
+    ModelConfig = None
+except Exception as e:
+    logger.error(f"Error importing MLEngine: {e}")
+    HAS_ML_ENGINE = False
+    MLEngine = None
+    ModelConfig = None
+
+try:
+    from laser_trim_analyzer.ml.ml_manager import get_ml_manager
+    HAS_ML_MANAGER = True
+except ImportError as e:
+    logger.warning(f"Could not import get_ml_manager: {e}")
+    HAS_ML_MANAGER = False
+    get_ml_manager = None
+except Exception as e:
+    logger.error(f"Error importing get_ml_manager: {e}")
+    HAS_ML_MANAGER = False
+    get_ml_manager = None
 
 # Import model info analyzers
 from laser_trim_analyzer.gui.pages.ml_model_info_analyzers import (
@@ -40,18 +66,11 @@ from laser_trim_analyzer.gui.pages.ml_model_info_analyzers import (
     analyze_prediction_quality_info
 )
 
-# Get logger
-logger = logging.getLogger(__name__)
+# Set overall ML availability based on component imports
+HAS_ML = HAS_ML_ENGINE and HAS_ML_MANAGER
 
-# Try to import ML components
-try:
-    from laser_trim_analyzer.ml.engine import MLEngine
-    from laser_trim_analyzer.ml.ml_manager import get_ml_manager
-    HAS_ML = True
-except ImportError:
-    HAS_ML = False
-    MLEngine = None
-    get_ml_manager = None
+if not HAS_ML:
+    logger.warning(f"ML features not available. HAS_ML_ENGINE={HAS_ML_ENGINE}, HAS_ML_MANAGER={HAS_ML_MANAGER}")
 
 
 class MLToolsPage(BasePage):
@@ -84,7 +103,15 @@ class MLToolsPage(BasePage):
                 status = self.ml_manager.get_status()
                 
                 # Update main status indicator
-                self._update_ml_status(status['status'], status['color'])
+                error_msg = None
+                if status.get('missing_dependencies'):
+                    deps = status['missing_dependencies']
+                    cmd = status.get('install_command', '')
+                    error_msg = f"Missing: {', '.join(deps)}. Install: {cmd}"
+                elif status.get('error'):
+                    error_msg = status['error']
+                    
+                self._update_ml_status(status['status'], status['color'], error_msg)
                 
                 # Update model status cards with real data
                 self._update_model_status()
@@ -96,6 +123,7 @@ class MLToolsPage(BasePage):
                 
         except Exception as e:
             self.logger.error(f"Error during status polling: {e}")
+            self._update_ml_status("Error", "red", str(e))
         finally:
             # Schedule next poll in 5 seconds for faster updates
             self._status_poll_job = self.after(5000, self._poll_status)
@@ -161,6 +189,16 @@ class MLToolsPage(BasePage):
                 text_color="orange"
             )
             self.warning_label.pack(pady=(0, 15))
+            
+            # Add help text
+            help_text = "ML features require scikit-learn and other dependencies.\nCheck application logs for details."
+            self.help_label = ctk.CTkLabel(
+                self.header_frame,
+                text=help_text,
+                font=ctk.CTkFont(size=11),
+                text_color="gray"
+            )
+            self.help_label.pack(pady=(0, 10))
 
     def _create_model_status_section(self):
         """Create model status display section."""
@@ -1112,18 +1150,37 @@ class MLToolsPage(BasePage):
         try:
             # Get the ML manager instance
             self.ml_manager = get_ml_manager()
-            self.ml_engine = self.ml_manager.ml_engine
+            
+            # Check if ML manager has an engine
+            if hasattr(self.ml_manager, 'ml_engine'):
+                self.ml_engine = self.ml_manager.ml_engine
+                self.logger.info("ML engine obtained from manager")
+            else:
+                # Try to create ML engine directly as fallback
+                self.logger.info("ML manager has no engine, attempting direct creation")
+                from laser_trim_analyzer.ml.engine import MLEngine
+                self.ml_engine = MLEngine()
+                # Store it in the manager if possible
+                if hasattr(self.ml_manager, 'ml_engine'):
+                    self.ml_manager.ml_engine = self.ml_engine
             
             # The ML manager initializes asynchronously, so we'll rely on status polling
             # to update the UI once initialization is complete
-            self.logger.info("ML manager obtained, waiting for initialization")
+            self.logger.info("ML initialization started, waiting for completion")
             
             # Get initial status
-            status = self.ml_manager.get_status()
-            self._update_ml_status(status['status'], status['color'])
+            try:
+                status = self.ml_manager.get_status()
+                self._update_ml_status(status['status'], status['color'])
+            except Exception as status_error:
+                self.logger.warning(f"Could not get initial status: {status_error}")
+                self._update_ml_status("Initializing", "orange")
             
             # Update model status display with initial state
             self._update_model_status()
+            
+            # Ensure models are initialized
+            self._ensure_models_initialized()
 
         except Exception as e:
             self.logger.error(f"Failed to initialize ML engine: {e}")
@@ -1132,6 +1189,15 @@ class MLToolsPage(BasePage):
             self.ml_engine = None
             self.ml_manager = None
             self._update_ml_status("Error", "red")
+            
+            # Show user-friendly error message
+            error_msg = str(e)
+            if "No module named" in error_msg:
+                self._update_ml_status("Missing Dependencies", "red")
+            elif "Config object has no attribute" in error_msg:
+                self._update_ml_status("Configuration Error", "red")
+            else:
+                self._update_ml_status("Initialization Failed", "red")
 
     def _ensure_models_initialized(self):
         """Ensure all required models are properly initialized in the ML engine."""
@@ -1169,27 +1235,53 @@ class MLToolsPage(BasePage):
     def _initialize_model(self, model_name: str):
         """Initialize a specific model in the ML engine."""
         try:
+            # Create a default model config
+            from laser_trim_analyzer.ml.engine import ModelConfig
+            config = ModelConfig(
+                model_type=model_name,
+                version='1.0.0',
+                hyperparameters={
+                    'n_estimators': 100,
+                    'max_depth': 10,
+                    'min_samples_split': 5,
+                    'min_samples_leaf': 2
+                },
+                training_params={
+                    'test_size': 0.2,
+                    'random_state': 42,
+                    'cv_folds': 5
+                },
+                feature_settings={}
+            )
+            
             if model_name == 'threshold_optimizer':
                 from laser_trim_analyzer.ml.models import ThresholdOptimizer
-                model = ThresholdOptimizer()
+                model = ThresholdOptimizer(config)
             elif model_name == 'failure_predictor':
                 from laser_trim_analyzer.ml.models import FailurePredictor
-                model = FailurePredictor()
+                model = FailurePredictor(config)
             elif model_name == 'drift_detector':
                 from laser_trim_analyzer.ml.models import DriftDetector
-                model = DriftDetector()
+                model = DriftDetector(config)
             else:
                 self.logger.error(f"Unknown model type: {model_name}")
                 return
                 
-            # Initialize model attributes
-            model.model_type = model_name
-            model.is_trained = False
-            model.version = '1.0.0'
-            model.last_trained = None
-            model.training_samples = 0
-            model.performance_metrics = {}
-            model.prediction_count = 0
+            # Initialize model attributes if not already set
+            if not hasattr(model, 'model_type'):
+                model.model_type = model_name
+            if not hasattr(model, 'is_trained'):
+                model.is_trained = False
+            if not hasattr(model, 'version'):
+                model.version = '1.0.0'
+            if not hasattr(model, 'last_trained'):
+                model.last_trained = None
+            if not hasattr(model, 'training_samples'):
+                model.training_samples = 0
+            if not hasattr(model, 'performance_metrics'):
+                model.performance_metrics = {}
+            if not hasattr(model, 'prediction_count'):
+                model.prediction_count = 0
             
             # Store in ML engine
             self.ml_engine.models[model_name] = model
@@ -1197,6 +1289,8 @@ class MLToolsPage(BasePage):
             
         except Exception as e:
             self.logger.error(f"Error initializing model {model_name}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _register_models(self):
         """Register ML models with the engine."""
@@ -1758,6 +1852,23 @@ Performance Metrics:
         }
         
         self.ml_indicator.configure(text_color=color_map.get(color, "#808080"))
+        
+        # Update or create error label if needed
+        if error_msg and status in ["Missing Dependencies", "Missing scikit-learn", "Error"]:
+            if not hasattr(self, 'ml_error_label'):
+                self.ml_error_label = ctk.CTkLabel(
+                    self.ml_status_frame,
+                    text=error_msg,
+                    font=ctk.CTkFont(size=10),
+                    text_color="red",
+                    wraplength=500
+                )
+                self.ml_error_label.pack(pady=(0, 5))
+            else:
+                self.ml_error_label.configure(text=error_msg)
+                self.ml_error_label.pack(pady=(0, 5))
+        elif hasattr(self, 'ml_error_label'):
+            self.ml_error_label.pack_forget()
 
     def _run_model_comparison(self):
         """Run comprehensive model comparison analysis."""
@@ -3365,7 +3476,15 @@ Performance Metrics:
         """Start model training with improved workflow."""
         try:
             if self.ml_engine is None:
-                messagebox.showerror("Error", "ML engine not initialized")
+                messagebox.showerror(
+                    "ML Engine Not Available", 
+                    "The ML engine is not initialized.\n\n"
+                    "This may be due to:\n"
+                    "• Missing dependencies (scikit-learn, etc.)\n"
+                    "• Configuration errors\n"
+                    "• Initialization still in progress\n\n"
+                    "Please check the application logs for details."
+                )
                 return
 
             # Verify models are available

@@ -26,13 +26,56 @@ from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, Vali
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.file_utils import ensure_directory
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+try:
+    from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+    USING_CTK_BASE = True
+except ImportError as e:
+    logger.warning(f"Could not import CTK BasePage: {e}")
+    from laser_trim_analyzer.gui.pages.base_page import BasePage
+    USING_CTK_BASE = False
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+try:
+    from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
+    USING_CTK_METRIC = True
+except ImportError as e:
+    logger.warning(f"Could not import CTK MetricCard: {e}")
+    from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+    USING_CTK_METRIC = False
 from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
-from laser_trim_analyzer.gui.widgets.batch_results_widget import BatchResultsWidget
-from laser_trim_analyzer.gui.widgets.progress_widgets import BatchProgressDialog
+try:
+    from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
+    USING_CTK_BATCH_RESULTS = True
+except ImportError as e:
+    logger.warning(f"Could not import CTK BatchResultsWidget: {e}")
+    from laser_trim_analyzer.gui.widgets.batch_results_widget import BatchResultsWidget
+    USING_CTK_BATCH_RESULTS = False
+try:
+    from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import BatchProgressDialog
+    USING_CTK_PROGRESS = True
+except ImportError as e:
+    logger.warning(f"Could not import CTK BatchProgressDialog: {e}")
+    from laser_trim_analyzer.gui.widgets.progress_widgets import BatchProgressDialog
+    USING_CTK_PROGRESS = False
 
+# Import security validator
+try:
+    from laser_trim_analyzer.core.security import (
+        SecurityValidator, get_security_validator
+    )
+    HAS_SECURITY = True
+except ImportError:
+    HAS_SECURITY = False
+
+# Import resource management
+try:
+    from laser_trim_analyzer.core.resource_manager import (
+        get_resource_manager, BatchResourceOptimizer, ResourceStatus
+    )
+    HAS_RESOURCE_MANAGER = True
+except ImportError:
+    HAS_RESOURCE_MANAGER = False
+    ResourceStatus = None
+    
 logger = logging.getLogger(__name__)
 
 
@@ -53,8 +96,26 @@ class BatchProcessingPage(BasePage):
             self._show_configuration_error(str(e))
             return
             
+        # Initialize database manager (use main window's db_manager if available)
+        self._db_manager = None
+        if hasattr(self.analyzer_config, 'database') and self.analyzer_config.database.enabled:
+            # First try to use main window's db_manager
+            if self.main_window and hasattr(self.main_window, 'db_manager'):
+                self._db_manager = self.main_window.db_manager
+                logger.info("Using main window's database manager")
+            else:
+                # Create our own if main window doesn't have one
+                try:
+                    self._db_manager = DatabaseManager(self.analyzer_config)
+                    logger.info("Database manager initialized")
+                except Exception as e:
+                    logger.error(f"Failed to initialize database: {e}")
+                    import traceback
+                    logger.error(f"Database initialization traceback:\n{traceback.format_exc()}")
+                    self._db_manager = None
+        
         try:
-            self.processor = LaserTrimProcessor(self.analyzer_config)
+            self.processor = LaserTrimProcessor(self.analyzer_config, db_manager=self._db_manager)
         except Exception as e:
             self._show_processor_error(str(e))
             return
@@ -77,7 +138,18 @@ class BatchProcessingPage(BasePage):
         self._stop_event = threading.Event()
         self._processing_cancelled = False
         
-        logger.info("Batch processing page initialized")
+        # Initialize resource management
+        self.resource_manager = None
+        self.resource_optimizer = None
+        if HAS_RESOURCE_MANAGER:
+            try:
+                self.resource_manager = get_resource_manager()
+                self.resource_optimizer = BatchResourceOptimizer(self.resource_manager)
+                logger.info("Resource management initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize resource management: {e}")
+        
+        logger.info(f"Batch processing page initialized (CTK widgets: Base={USING_CTK_BASE}, Metric={USING_CTK_METRIC}, BatchResults={USING_CTK_BATCH_RESULTS}, Progress={USING_CTK_PROGRESS})")
 
     def _create_page(self):
         """Create UI widgets with responsive design."""
@@ -137,6 +209,144 @@ class BatchProcessingPage(BasePage):
             text_color="gray"
         )
         self.batch_indicator.pack(side='right', padx=10, pady=10)
+
+    def _validate_configuration(self) -> bool:
+        """Validate that the configuration is properly set up."""
+        try:
+            # Check if required directories exist
+            if not hasattr(self.analyzer_config, 'data_directory'):
+                return False
+            if not hasattr(self.analyzer_config, 'processing'):
+                return False
+            return True
+        except Exception:
+            return False
+    
+    def _show_configuration_error(self, error_msg: str = None):
+        """Show configuration error message."""
+        error_text = error_msg or "Configuration Error: Unable to load application configuration."
+        error_label = ctk.CTkLabel(
+            self,
+            text=error_text,
+            font=ctk.CTkFont(size=14),
+            text_color="red"
+        )
+        error_label.pack(expand=True, pady=20)
+        logger.error(f"Configuration error: {error_text}")
+    
+    def _show_processor_error(self, error_msg: str):
+        """Show processor initialization error message."""
+        error_label = ctk.CTkLabel(
+            self,
+            text=f"Processor Error: {error_msg}",
+            font=ctk.CTkFont(size=14),
+            text_color="red"
+        )
+        error_label.pack(expand=True, pady=20)
+        logger.error(f"Processor error: {error_msg}")
+    
+    def _ensure_required_directories(self):
+        """Ensure required directories exist."""
+        try:
+            # Get data directory from config
+            if hasattr(self.analyzer_config, 'data_directory'):
+                data_dir = Path(self.analyzer_config.data_directory)
+            else:
+                # Fallback to default location
+                data_dir = Path.home() / "LaserTrimResults"
+            
+            # Create main data directory if it doesn't exist
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create subdirectories
+            subdirs = ['batch_processing', 'exports', 'reports']
+            for subdir in subdirs:
+                (data_dir / subdir).mkdir(exist_ok=True)
+                
+            logger.info(f"Ensured directories exist at: {data_dir}")
+        except Exception as e:
+            logger.warning(f"Could not create directories: {e}")
+    
+    def _show_first_run_dialog(self):
+        """Show first run dialog for batch processing."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Welcome to Batch Processing")
+        dialog.geometry("600x400")
+        dialog.transient(self)
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 600) // 2
+        y = (dialog.winfo_screenheight() - 400) // 2
+        dialog.geometry(f"600x400+{x}+{y}")
+        
+        # Content
+        content_frame = ctk.CTkFrame(dialog)
+        content_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        title_label = ctk.CTkLabel(
+            content_frame,
+            text="Batch Processing Guide",
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title_label.pack(pady=(0, 20))
+        
+        guide_text = """Welcome to Batch Processing!
+
+This tool allows you to analyze multiple Excel files at once.
+
+Key Features:
+• Process entire folders or selected files
+• Automatic validation of input files
+• Progress tracking and cancellation
+• Export results to Excel/CSV
+• Database integration for historical tracking
+
+Getting Started:
+1. Click 'Select Files' or 'Select Folder'
+2. Optionally run 'Validate Batch'
+3. Click 'Start Processing'
+4. Export results when complete"""
+        
+        guide_label = ctk.CTkLabel(
+            content_frame,
+            text=guide_text,
+            font=ctk.CTkFont(size=12),
+            justify="left"
+        )
+        guide_label.pack(pady=10)
+        
+        # Don't show again checkbox
+        self.dont_show_var = ctk.BooleanVar(value=False)
+        dont_show_check = ctk.CTkCheckBox(
+            content_frame,
+            text="Don't show this again",
+            variable=self.dont_show_var
+        )
+        dont_show_check.pack(pady=10)
+        
+        # OK button
+        ok_button = ctk.CTkButton(
+            content_frame,
+            text="OK",
+            command=lambda: self._close_first_run_dialog(dialog),
+            width=100
+        )
+        ok_button.pack(pady=10)
+        
+    def _close_first_run_dialog(self, dialog):
+        """Close first run dialog and update config if needed."""
+        if self.dont_show_var.get():
+            # Update config to not show again
+            if hasattr(self.analyzer_config, 'first_run'):
+                self.analyzer_config.first_run = False
+                # Save config if possible
+                try:
+                    from laser_trim_analyzer.core.config import save_config
+                    save_config(self.analyzer_config)
+                except:
+                    pass
+        dialog.destroy()
 
     def _create_file_selection(self):
         """Create file selection section."""
@@ -306,6 +516,65 @@ class BatchProcessingPage(BasePage):
             self.save_to_db_check,
             self.comprehensive_validation_check
         ]
+    
+    def _create_resource_monitoring(self):
+        """Create resource monitoring section."""
+        if not HAS_RESOURCE_MANAGER:
+            return
+            
+        self.resource_frame = ctk.CTkFrame(self.main_container)
+        self.resource_frame.pack(fill='x', pady=(0, 20))
+        
+        self.resource_label = ctk.CTkLabel(
+            self.resource_frame,
+            text="Resource Monitoring:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.resource_label.pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Resource status container
+        self.resource_container = ctk.CTkFrame(self.resource_frame)
+        self.resource_container.pack(fill='x', padx=15, pady=(0, 15))
+        
+        # Memory usage
+        self.memory_frame = ctk.CTkFrame(self.resource_container)
+        self.memory_frame.pack(fill='x', pady=(0, 10))
+        
+        self.memory_label = ctk.CTkLabel(
+            self.memory_frame,
+            text="Memory Usage:",
+            font=ctk.CTkFont(size=12)
+        )
+        self.memory_label.pack(side='left', padx=(10, 5))
+        
+        self.memory_progress = ctk.CTkProgressBar(self.memory_frame)
+        self.memory_progress.pack(side='left', fill='x', expand=True, padx=5)
+        self.memory_progress.set(0.5)
+        
+        self.memory_status_label = ctk.CTkLabel(
+            self.memory_frame,
+            text="50% (2.0 GB / 4.0 GB)",
+            font=ctk.CTkFont(size=10)
+        )
+        self.memory_status_label.pack(side='left', padx=(5, 10))
+        
+        # Resource recommendations
+        self.resource_status_label = ctk.CTkLabel(
+            self.resource_container,
+            text="Resources: Normal - Ready for batch processing",
+            font=ctk.CTkFont(size=11),
+            text_color="green"
+        )
+        self.resource_status_label.pack(anchor='w', padx=10, pady=(5, 10))
+        
+        # Resource optimization info
+        self.optimization_label = ctk.CTkLabel(
+            self.resource_container,
+            text="Optimization: Standard processing mode",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        self.optimization_label.pack(anchor='w', padx=10, pady=(0, 5))
 
     def _create_processing_controls(self):
         """Create processing control buttons."""
@@ -457,7 +726,7 @@ class BatchProcessingPage(BasePage):
                 button.pack(side='left', padx=10, pady=10)
 
     def _select_files(self):
-        """Select multiple Excel files."""
+        """Select multiple Excel files with security validation."""
         file_paths = filedialog.askopenfilenames(
             title="Select Excel files",
             filetypes=[
@@ -467,12 +736,61 @@ class BatchProcessingPage(BasePage):
         )
         
         if file_paths:
-            self.selected_files = [Path(f) for f in file_paths]
-            self._update_file_display()
-            self._update_batch_status("Files Selected", "orange")
-            # Enable the start processing button when files are selected
-            self._set_controls_state("normal")
-            logger.info(f"Selected {len(self.selected_files)} files")
+            # Validate files for security if available
+            validated_files = []
+            security_validator = None
+            
+            if HAS_SECURITY:
+                try:
+                    security_validator = get_security_validator()
+                except:
+                    pass
+            
+            for file_path in file_paths:
+                path_obj = Path(file_path)
+                
+                # Security validation if available
+                if security_validator:
+                    try:
+                        path_result = security_validator.validate_input(
+                            path_obj,
+                            'file_path',
+                            {
+                                'allowed_extensions': ['.xlsx', '.xls', '.xlsm'],
+                                'check_extension': True
+                            }
+                        )
+                        
+                        if path_result.is_safe and not path_result.threats_detected:
+                            validated_files.append(Path(path_result.sanitized_value))
+                        else:
+                            logger.warning(f"File rejected for security: {path_obj.name}")
+                    except Exception as e:
+                        logger.warning(f"Security validation error for {path_obj}: {e}")
+                        # Add file anyway if security check fails
+                        validated_files.append(path_obj)
+                else:
+                    validated_files.append(path_obj)
+            
+            if validated_files:
+                self.selected_files = validated_files
+                self._update_file_display()
+                self._update_batch_status("Files Selected", "orange")
+                # Enable the start processing button when files are selected
+                self._set_controls_state("normal")
+                logger.info(f"Selected {len(self.selected_files)} files ({len(file_paths) - len(validated_files)} rejected)")
+                
+                if len(validated_files) < len(file_paths):
+                    rejected_count = len(file_paths) - len(validated_files)
+                    messagebox.showwarning(
+                        "Security Validation",
+                        f"{rejected_count} file(s) were rejected for security reasons."
+                    )
+            else:
+                messagebox.showerror(
+                    "Security Validation",
+                    "All selected files were rejected for security reasons."
+                )
 
     def _select_folder(self):
         """Select folder and find all Excel files."""
@@ -702,6 +1020,20 @@ class BatchProcessingPage(BasePage):
             if not reply:
                 return
         
+        # Check resources before starting
+        if self.resource_manager:
+            status = self.resource_manager.get_current_status()
+            if status.memory_critical:
+                reply = messagebox.askyesno(
+                    "Low Memory Warning",
+                    "System memory is critically low.\n\n"
+                    f"Available: {status.available_memory_mb:.0f}MB\n"
+                    f"Recommended: Wait or close other applications\n\n"
+                    "Continue anyway?"
+                )
+                if not reply:
+                    return
+        
         # Filter to only valid files if validation was run
         processable_files = []
         if self.validation_results:
@@ -841,7 +1173,40 @@ class BatchProcessingPage(BasePage):
                 else:
                     max_workers = base_workers
                 
-                logger.info(f"Processing {file_count} files with {max_workers} workers")
+                # Apply resource optimizations if available
+                processing_params = {
+                    'generate_plots': self.generate_plots_var.get(),
+                    'max_concurrent_files': max_workers,
+                    'max_workers': max_workers
+                }
+                
+                if self.resource_optimizer:
+                    # Get optimized parameters
+                    optimized_params = self.resource_optimizer.optimize_processing_params(
+                        file_count, processing_params
+                    )
+                    
+                    # Apply optimizations
+                    max_workers = optimized_params.get('max_workers', max_workers)
+                    
+                    # Update UI if plots were disabled
+                    if not optimized_params.get('generate_plots') and self.generate_plots_var.get():
+                        self.after(0, lambda: messagebox.showinfo(
+                            "Resource Optimization",
+                            "Plot generation has been disabled to conserve memory for this large batch."
+                        ))
+                        self.generate_plots_var.set(False)
+                    
+                    # Show resource warnings if any
+                    if optimized_params.get('resource_warnings'):
+                        warnings_text = "\n".join(optimized_params['resource_warnings'])
+                        self.after(0, lambda: messagebox.showwarning(
+                            "Resource Warnings",
+                            f"Resource constraints detected:\n\n{warnings_text}\n\n"
+                            "Processing will continue with optimized settings."
+                        ))
+                
+                logger.info(f"Processing {file_count} files with {max_workers} workers (optimized)")
                 
                 # Disable plots for very large batches to save memory
                 if file_count > 200 and self.generate_plots_var.get():
@@ -884,7 +1249,7 @@ class BatchProcessingPage(BasePage):
                 return
             
             # Save to database if requested
-            if self.save_to_db_var.get() and self.db_manager:
+            if self.save_to_db_var.get() and self._db_manager:
                 self._save_batch_to_database(results)
             
             # Final cleanup
@@ -934,7 +1299,12 @@ class BatchProcessingPage(BasePage):
         total_files = len(file_paths)
         
         # Process in chunks to manage memory better
-        chunk_size = min(50, max(10, total_files // 10))  # Adaptive chunk size
+        if self.resource_manager:
+            # Use adaptive chunk size based on resources
+            chunk_size = self.resource_manager.get_adaptive_batch_size(total_files, 0)
+        else:
+            # Fallback to simple adaptive sizing
+            chunk_size = min(50, max(10, total_files // 10))
         
         for chunk_start in range(0, total_files, chunk_size):
             # Check for cancellation at start of each chunk
@@ -994,6 +1364,30 @@ class BatchProcessingPage(BasePage):
                         break
             
             # Memory cleanup after each chunk
+            if self.resource_manager:
+                # Check if we should pause for resources
+                if self.resource_manager.should_pause_processing():
+                    self.logger.info("Pausing for resource recovery...")
+                    
+                    # Update UI to show pause
+                    if progress_callback:
+                        progress_callback(
+                            "Pausing for memory recovery...",
+                            (processed_files / total_files) * 100
+                        )
+                    
+                    # Wait for resources
+                    if not self.resource_manager.wait_for_resources(timeout=30):
+                        self.logger.warning("Resource recovery timeout, continuing anyway")
+                
+                # Adaptive chunk size for next iteration
+                if chunk_end < total_files:
+                    chunk_size = self.resource_manager.get_adaptive_batch_size(
+                        total_files, chunk_end
+                    )
+                    self.logger.debug(f"Next chunk size: {chunk_size}")
+            
+            # Force cleanup
             import gc
             gc.collect()
             
@@ -1078,11 +1472,22 @@ class BatchProcessingPage(BasePage):
 
     def _save_batch_to_database(self, results: Dict[str, AnalysisResult]):
         """Save batch results to database with robust error handling."""
+        if not self._db_manager:
+            logger.error("Database manager is None - cannot save to database!")
+            self.after(0, lambda: messagebox.showerror(
+                "Database Error",
+                "Database is not initialized. Results could not be saved.\n\n"
+                "Please check the database configuration and restart the application."
+            ))
+            return
+            
         saved_count = 0
         failed_count = 0
         
+        logger.info(f"Starting database save for {len(results)} results")
+        
         # Use batch save if available for better performance
-        if hasattr(self.db_manager, 'save_analysis_batch'):
+        if hasattr(self._db_manager, 'save_analysis_batch'):
             try:
                 # Check for cancellation
                 if self._is_processing_cancelled():
@@ -1092,9 +1497,23 @@ class BatchProcessingPage(BasePage):
                 # Convert to list for batch save
                 result_list = list(results.values())
                 if result_list:
-                    analysis_ids = self.db_manager.save_analysis_batch(result_list)
-                    saved_count = len(analysis_ids)
-                    logger.info(f"Batch saved {saved_count} analyses to database")
+                    # Validate results before saving
+                    logger.info(f"Validating {len(result_list)} results before batch save...")
+                    valid_results = []
+                    for i, result in enumerate(result_list):
+                        if result and result.metadata and result.metadata.model and result.metadata.serial:
+                            valid_results.append(result)
+                        else:
+                            logger.warning(f"Skipping invalid result at index {i}: missing required data")
+                    
+                    if not valid_results:
+                        logger.error("No valid results to save!")
+                        return
+                        
+                    logger.info(f"Attempting batch save of {len(valid_results)} valid results...")
+                    analysis_ids = self._db_manager.save_analysis_batch(valid_results)
+                    saved_count = len([id for id in analysis_ids if id is not None])
+                    logger.info(f"Batch saved {saved_count}/{len(valid_results)} analyses to database")
                     
                     # Update result objects with database IDs
                     for result, db_id in zip(result_list, analysis_ids):
@@ -1141,7 +1560,7 @@ class BatchProcessingPage(BasePage):
     def _save_individual_analysis(self, file_path: str, result: AnalysisResult):
         """Save an individual analysis to the database with error handling."""
         # Check for duplicates
-        existing_id = self.db_manager.check_duplicate_analysis(
+        existing_id = self._db_manager.check_duplicate_analysis(
             result.metadata.model,
             result.metadata.serial,
             result.metadata.file_date
@@ -1151,18 +1570,23 @@ class BatchProcessingPage(BasePage):
             logger.info(f"Duplicate found for {Path(file_path).name} (ID: {existing_id})")
             result.db_id = existing_id
         else:
-            # Try normal save first
+            # Try using the debug save method first
             try:
-                result.db_id = self.db_manager.save_analysis(result)
+                # Use debug method if available
+                if hasattr(self._db_manager, 'save_analysis_result'):
+                    logger.debug(f"Using debug save method for {Path(file_path).name}")
+                    result.db_id = self._db_manager.save_analysis_result(result)
+                else:
+                    result.db_id = self._db_manager.save_analysis(result)
                 
                 # Validate the save
-                if not self.db_manager.validate_saved_analysis(result.db_id):
+                if not self._db_manager.validate_saved_analysis(result.db_id):
                     raise RuntimeError("Database validation failed")
                     
             except Exception as save_error:
                 logger.warning(f"Normal save failed for {Path(file_path).name}, trying force save: {save_error}")
                 # Try force save as fallback
-                result.db_id = self.db_manager.force_save_analysis(result)
+                result.db_id = self._db_manager.force_save_analysis(result)
                 logger.info(f"Force saved {Path(file_path).name} to database")
 
     def _handle_batch_success(self, results: Dict[str, AnalysisResult], output_dir: Optional[Path]):
@@ -1227,6 +1651,48 @@ class BatchProcessingPage(BasePage):
         messagebox.showinfo("Batch Processing Complete", success_msg)
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
+    
+    def _on_resource_update(self, status: ResourceStatus):
+        """Handle resource status updates."""
+        if not self.resource_status_label:
+            return
+            
+        # Update UI on main thread
+        self.after(0, self._update_resource_display, status)
+    
+    def _update_resource_display(self, status: ResourceStatus):
+        """Update resource monitoring display."""
+        if not hasattr(self, 'memory_progress'):
+            return
+            
+        # Update memory progress bar
+        memory_percent = status.memory_percent / 100.0
+        self.memory_progress.set(memory_percent)
+        
+        # Update memory label
+        self.memory_status_label.configure(
+            text=f"{status.memory_percent:.0f}% ({status.used_memory_mb:.1f} GB / {status.total_memory_mb:.1f} GB)"
+        )
+        
+        # Update status color and message
+        if status.memory_critical:
+            color = "red"
+            message = "Resources: CRITICAL - Processing may be slow or fail"
+        elif status.memory_warning:
+            color = "orange"
+            message = "Resources: WARNING - Consider closing other applications"
+        else:
+            color = "green"
+            message = "Resources: Normal - Ready for batch processing"
+        
+        self.resource_status_label.configure(text=message, text_color=color)
+        
+        # Update optimization strategy
+        if self.resource_optimizer and hasattr(self, 'selected_files'):
+            strategy = self.resource_optimizer.get_processing_strategy(len(self.selected_files))
+            self.optimization_label.configure(
+                text=f"Optimization: {strategy['description']}"
+            )
 
     def _handle_batch_error(self, error_message: str):
         """Handle batch processing error."""
@@ -1528,4 +1994,17 @@ class BatchProcessingPage(BasePage):
         self.batch_results = {}
         self.batch_results_widget.clear()
         self.export_button.configure(state="disabled")
-        logger.info("Batch results cleared") 
+        logger.info("Batch results cleared")
+    
+    def cleanup(self):
+        """Cleanup resources when page is destroyed."""
+        # Stop any ongoing processing
+        if self.is_processing:
+            self._stop_processing()
+        
+        # Cleanup resource manager callbacks
+        if self.resource_manager:
+            # Remove our callback (would need to track it properly in production)
+            pass
+        
+        super().cleanup() 
