@@ -27,19 +27,25 @@ from laser_trim_analyzer.gui.widgets.progress_widgets import ProgressDialog
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+# from laser_trim_analyzer.gui.pages.base_page import BasePage  # Commented out to avoid widget mismatch
 from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
 from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
 
 logger = logging.getLogger(__name__)
 
 
-class SingleFilePage(BasePage):
+class SingleFilePage(ctk.CTkFrame):
     """Single file analysis page with comprehensive validation and responsive design."""
 
     def __init__(self, parent, main_window=None, **kwargs):
-        # Initialize with BasePage for responsive design and stop functionality
-        super().__init__(parent, main_window, **kwargs)
+        # Initialize as CTkFrame to avoid widget hierarchy issues
+        super().__init__(parent, **kwargs)
+        self.main_window = main_window
+        
+        # Add missing BasePage functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
         
         self.analyzer_config = get_config()
         self.processor = LaserTrimProcessor(self.analyzer_config)
@@ -53,7 +59,10 @@ class SingleFilePage(BasePage):
         self.is_analyzing = False
         self.progress_dialog = None
         
-        # Apply hover fixes after page creation (BasePage already calls _create_page)
+        # Create the page content (now we need to call this explicitly)
+        self._create_page()
+        
+        # Apply hover fixes after page creation
         self.after(100, self._apply_hover_fixes)
         
         logger.info("Single file analysis page initialized")
@@ -81,9 +90,17 @@ class SingleFilePage(BasePage):
 
     def _create_page(self):
         """Create page content with responsive design."""
+        logger.warning(f"DEBUG: _create_page called for {self.__class__.__name__}")
+        
+        # Check if main_container already exists
+        if hasattr(self, 'main_container'):
+            logger.warning(f"DEBUG: main_container already exists! This indicates duplicate creation.")
+            return
+        
         # Main scrollable container (matching batch processing theme)
         self.main_container = ctk.CTkScrollableFrame(self)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        logger.warning(f"DEBUG: Created main_container successfully")
         
         # Create sections in order (matching batch processing pattern)
         self._create_header()
@@ -986,3 +1003,42 @@ class SingleFilePage(BasePage):
             
         except Exception as e:
             logger.error(f"Error clearing results: {e}")
+    
+    # Add BasePage compatibility methods
+    def on_show(self):
+        """Called when page is shown."""
+        self.is_visible = True
+        
+    def on_hide(self):
+        """Called when page is hidden."""
+        self.is_visible = False
+        
+    def refresh(self):
+        """Refresh page content."""
+        pass
+        
+    def mark_needs_refresh(self):
+        """Mark that the page needs refresh on next show."""
+        self.needs_refresh = True
+        
+    def request_stop_processing(self):
+        """Request that any ongoing processing be stopped."""
+        self._stop_requested = True
+        
+    def reset_stop_request(self):
+        """Reset the stop processing flag."""
+        self._stop_requested = False
+        
+    def is_stop_requested(self) -> bool:
+        """Check if processing should be stopped."""
+        return self._stop_requested
+    
+    @property
+    def db_manager(self):
+        """Get database manager from main window."""
+        return getattr(self.main_window, 'db_manager', None)
+
+    @property
+    def app_config(self):
+        """Get configuration from main window."""
+        return getattr(self.main_window, 'config', None)
