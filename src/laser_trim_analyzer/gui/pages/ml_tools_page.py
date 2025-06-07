@@ -1840,7 +1840,7 @@ Performance Metrics:
             logger.error(f"Error updating performance chart: {e}")
             self.perf_chart.clear_chart()
 
-    def _update_ml_status(self, status: str, color: str):
+    def _update_ml_status(self, status: str, color: str, error_msg: str = None):
         """Update ML engine status indicator."""
         self.ml_status_label.configure(text=f"ML Engine Status: {status}")
         
