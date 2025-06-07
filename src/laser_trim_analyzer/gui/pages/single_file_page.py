@@ -53,10 +53,7 @@ class SingleFilePage(BasePage):
         self.is_analyzing = False
         self.progress_dialog = None
         
-        # Create the page content
-        self._create_page()
-        
-        # Apply hover fixes after page creation
+        # Apply hover fixes after page creation (BasePage already calls _create_page)
         self.after(100, self._apply_hover_fixes)
         
         logger.info("Single file analysis page initialized")
@@ -682,6 +679,9 @@ class SingleFilePage(BasePage):
             
             # Display results
             try:
+                # Hide empty state and show analysis display
+                self.empty_state_frame.pack_forget()
+                self.analysis_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
                 self.analysis_display.display_result(result)
             except Exception as e:
                 logger.error(f"Failed to display analysis result: {e}")
@@ -972,6 +972,10 @@ class SingleFilePage(BasePage):
             self.current_result = None
             self.analysis_display.clear()
             self.export_button.configure(state="disabled")
+            
+            # Hide analysis display and show empty state
+            self.analysis_display.pack_forget()
+            self.empty_state_frame.pack(fill='both', expand=True, padx=15, pady=(0, 15))
             
             # Hide pre-validation frame if no file selected
             if not self.current_file:
