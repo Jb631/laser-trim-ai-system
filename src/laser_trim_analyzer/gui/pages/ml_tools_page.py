@@ -6,7 +6,7 @@ training, and optimization with advanced features.
 """
 
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, ttk
 import customtkinter as ctk
 from datetime import datetime, timedelta
 import threading
@@ -1647,11 +1647,11 @@ class MLToolsPage(BasePage):
             dialog.geometry("700x500")
 
             # Create notebook for different sections
-            notebook = tk.Notebook(dialog, padding=10)
+            notebook = ttk.Notebook(dialog, padding=10)
             notebook.pack(fill='both', expand=True)
 
             # Overview tab
-            overview_frame = tk.Frame(notebook)
+            overview_frame = ttk.Frame(notebook)
             notebook.add(overview_frame, text="Overview")
 
             overview_text = tk.Text(overview_frame, wrap='word', width=80, height=20)
@@ -1672,11 +1672,11 @@ Performance Metrics:
 
             # Feature importance tab
             if 'feature_importance' in report:
-                feature_frame = tk.Frame(notebook)
+                feature_frame = ttk.Frame(notebook)
                 notebook.add(feature_frame, text="Feature Importance")
 
                 # Create treeview
-                tree = tk.Treeview(
+                tree = ttk.Treeview(
                     feature_frame,
                     columns=('importance',),
                     show='tree headings',
@@ -1694,11 +1694,11 @@ Performance Metrics:
 
             # Version history tab
             if 'version_history' in report:
-                history_frame = tk.Frame(notebook)
+                history_frame = ttk.Frame(notebook)
                 notebook.add(history_frame, text="Version History")
 
                 # Create treeview
-                tree = tk.Treeview(
+                tree = ttk.Treeview(
                     history_frame,
                     columns=('date', 'samples', 'accuracy'),
                     show='tree headings',
