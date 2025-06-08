@@ -1150,7 +1150,7 @@ class MLToolsPage(BasePage):
         # Check if ML is available
         if not HAS_ML or not get_ml_manager:
             self.logger.info("ML components not available")
-            self._update_ml_status("Not Available", "gray")
+            self._update_ml_status("Not Available", "gray", "ML components not installed")
             return
             
         try:
@@ -1177,10 +1177,10 @@ class MLToolsPage(BasePage):
             # Get initial status
             try:
                 status = self.ml_manager.get_status()
-                self._update_ml_status(status['status'], status['color'])
+                self._update_ml_status(status['status'], status['color'], None)
             except Exception as status_error:
                 self.logger.warning(f"Could not get initial status: {status_error}")
-                self._update_ml_status("Initializing", "orange")
+                self._update_ml_status("Initializing", "orange", None)
             
             # Update model status display with initial state
             self._update_model_status()
@@ -1194,16 +1194,15 @@ class MLToolsPage(BasePage):
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
             self.ml_engine = None
             self.ml_manager = None
-            self._update_ml_status("Error", "red")
             
             # Show user-friendly error message
-            error_msg = str(e)
-            if "No module named" in error_msg:
-                self._update_ml_status("Missing Dependencies", "red")
-            elif "Config object has no attribute" in error_msg:
-                self._update_ml_status("Configuration Error", "red")
+            error_message = str(e)
+            if "No module named" in error_message:
+                self._update_ml_status("Missing Dependencies", "red", error_message)
+            elif "Config object has no attribute" in error_message:
+                self._update_ml_status("Configuration Error", "red", error_message)
             else:
-                self._update_ml_status("Initialization Failed", "red")
+                self._update_ml_status("Initialization Failed", "red", error_message)
 
     def _ensure_models_initialized(self):
         """Ensure all required models are properly initialized in the ML engine."""
@@ -1973,31 +1972,9 @@ Performance Metrics:
                     'efficiency_score': self._calculate_efficiency_score(model)
                 }
 
-                # Get feature importance if available
-                if hasattr(model, 'feature_importance'):
+                # Get feature importance if available - only real data
+                if hasattr(model, 'feature_importance') and model.feature_importance:
                     analysis['feature_importance'] = model.feature_importance
-                elif hasattr(model, 'performance_metrics'):
-                    # Create mock feature importance based on model type
-                    if 'threshold' in model_name:
-                        analysis['feature_importance'] = {
-                            'sigma_gradient': 0.45,
-                            'linearity_spec': 0.25,
-                            'travel_length': 0.15,
-                            'unit_length': 0.15
-                        }
-                    elif 'failure' in model_name:
-                        analysis['feature_importance'] = {
-                            'sigma_pass': 0.35,
-                            'linearity_pass': 0.30,
-                            'resistance_change': 0.20,
-                            'sigma_gradient': 0.15
-                        }
-                    else:  # drift detector
-                        analysis['feature_importance'] = {
-                            'sigma_gradient': 0.40,
-                            'linearity_spec': 0.30,
-                            'unit_length': 0.30
-                        }
 
             except Exception as e:
                 self.logger.warning(f"Failed to analyze model {model_name}: {e}")
@@ -3678,7 +3655,7 @@ Performance Metrics:
                 self.after(0, lambda: self.training_status_label.configure(text=f"Training completed - {successful_trainings}/{total_models} successful"))
                 
                 # Update ML status
-                self.after(0, lambda: self._update_ml_status("Ready", "green"))
+                self.after(0, lambda: self._update_ml_status("Ready", "green", None))
             else:
                 self.after(0, lambda: self._log_training(f"\n❌ All training attempts failed"))
                 self.after(0, lambda: self.training_status_label.configure(text="Training failed"))
