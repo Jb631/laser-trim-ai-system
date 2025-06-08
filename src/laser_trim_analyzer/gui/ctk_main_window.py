@@ -72,6 +72,9 @@ class CTkMainWindow(ctk.CTk):
         
         # Show initial page
         self._show_initial_page()
+        
+        # Bind window close event
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def _setup_window(self):
         """Configure main window"""
@@ -105,6 +108,7 @@ class CTkMainWindow(ctk.CTk):
         # State variables
         self.current_page = None
         self.pages: Dict[str, Any] = {}
+        self.processing_pages: set = set()  # Track pages that are currently processing
         
         # Load saved window state
         try:
@@ -174,6 +178,20 @@ class CTkMainWindow(ctk.CTk):
         ]
         
         self.nav_buttons = {}
+        
+        # Add emergency reset button at the bottom
+        self.reset_button = ctk.CTkButton(
+            self.sidebar_frame,
+            text="🔄 Reset if Frozen",
+            command=self._emergency_reset,
+            width=140,
+            height=30,
+            font=ctk.CTkFont(size=12),
+            fg_color="#8B0000",  # Dark red
+            hover_color="#B22222"  # Lighter red on hover
+        )
+        # Place it at the bottom with some padding
+        self.reset_button.grid(row=20, column=0, padx=20, pady=(10, 20), sticky="s")
         
         for page_name, label, row in nav_buttons:
             button = ctk.CTkButton(
@@ -279,6 +297,56 @@ class CTkMainWindow(ctk.CTk):
             page_name: Name of the page to show
             **kwargs: Additional parameters to pass to the page
         """
+        # Check if any page is currently processing
+        if self.processing_pages and page_name != self.current_page:
+            # Show warning dialog
+            processing_page_names = list(self.processing_pages)
+            message = f"Cannot switch pages while processing is in progress.\n\nCurrently processing on: {', '.join(processing_page_names)}"
+            
+            # Create warning dialog
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("Processing in Progress")
+            dialog.geometry("400x200")
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Center the dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() - 400) // 2
+            y = (dialog.winfo_screenheight() - 200) // 2
+            dialog.geometry(f"400x200+{x}+{y}")
+            
+            # Warning icon and message
+            warning_frame = ctk.CTkFrame(dialog)
+            warning_frame.pack(expand=True, fill="both", padx=20, pady=20)
+            
+            warning_label = ctk.CTkLabel(
+                warning_frame,
+                text="⚠️",
+                font=ctk.CTkFont(size=48)
+            )
+            warning_label.pack(pady=(0, 10))
+            
+            message_label = ctk.CTkLabel(
+                warning_frame,
+                text=message,
+                font=ctk.CTkFont(size=14),
+                wraplength=350
+            )
+            message_label.pack(pady=10)
+            
+            # OK button
+            ok_button = ctk.CTkButton(
+                warning_frame,
+                text="OK",
+                command=dialog.destroy,
+                width=100
+            )
+            ok_button.pack(pady=10)
+            
+            self.logger.warning(f"Navigation blocked: processing in progress on {processing_page_names}")
+            return  # Don't switch pages
+        
         # Update button states
         for name, button in self.nav_buttons.items():
             if name == page_name:
@@ -407,8 +475,197 @@ class CTkMainWindow(ctk.CTk):
             self.logger.error(f"Failed to retry loading {page_name}: {e}", exc_info=True)
             messagebox.showerror("Retry Failed", f"Could not reload {page_name} page:\n{str(e)}")
     
+    def register_processing(self, page_name: str):
+        """Register that a page is currently processing
+        
+        Args:
+            page_name: Name of the page that started processing
+        """
+        self.processing_pages.add(page_name)
+        self.logger.info(f"Page '{page_name}' started processing. Current processing pages: {self.processing_pages}")
+        
+        # Update navigation buttons to show processing state
+        try:
+            for name, button in self.nav_buttons.items():
+                if name != self.current_page:
+                    button.configure(state="disabled")
+        except Exception as e:
+            self.logger.error(f"Error disabling navigation buttons: {e}")
+    
+    def unregister_processing(self, page_name: str):
+        """Unregister that a page has finished processing
+        
+        Args:
+            page_name: Name of the page that finished processing
+        """
+        self.processing_pages.discard(page_name)
+        self.logger.info(f"Page '{page_name}' finished processing. Remaining processing pages: {self.processing_pages}")
+        
+        # Re-enable navigation buttons if no pages are processing
+        if not self.processing_pages:
+            try:
+                for button in self.nav_buttons.values():
+                    button.configure(state="normal")
+                self.logger.info("All navigation buttons re-enabled")
+            except Exception as e:
+                self.logger.error(f"Error re-enabling navigation buttons: {e}")
+                # Force clear processing state as a fallback
+                self.processing_pages.clear()
+    
+    def is_processing(self) -> bool:
+        """Check if any page is currently processing
+        
+        Returns:
+            True if any page is processing, False otherwise
+        """
+        return bool(self.processing_pages)
+    
+    def get_processing_pages(self) -> list:
+        """Get list of pages currently processing
+        
+        Returns:
+            List of page names that are processing
+        """
+        return list(self.processing_pages)
+    
+    def _emergency_reset(self):
+        """Emergency reset to clear frozen state"""
+        self.logger.warning("Emergency reset triggered by user")
+        
+        # Clear all processing states
+        self.processing_pages.clear()
+        
+        # Re-enable all navigation buttons
+        try:
+            for button in self.nav_buttons.values():
+                button.configure(state="normal")
+        except Exception as e:
+            self.logger.error(f"Error re-enabling buttons during emergency reset: {e}")
+        
+        # Try to re-enable controls on current page
+        try:
+            if self.current_page in self.pages:
+                page = self.pages[self.current_page]
+                
+                # Call force cleanup if available
+                if hasattr(page, 'force_cleanup'):
+                    page.force_cleanup()
+                
+                # Try various state reset methods
+                if hasattr(page, '_set_controls_state'):
+                    try:
+                        page._set_controls_state("normal")
+                    except:
+                        pass
+                
+                # Try to directly enable specific buttons
+                for button_name in ['analyze_button', 'start_button', 'validate_button', 
+                                  'browse_button', 'export_button', 'clear_button']:
+                    if hasattr(page, button_name):
+                        try:
+                            button = getattr(page, button_name)
+                            button.configure(state="normal")
+                        except:
+                            pass
+                
+                # Clear analyzing flag if it exists
+                if hasattr(page, 'is_analyzing'):
+                    page.is_analyzing = False
+                    
+        except Exception as e:
+            self.logger.error(f"Error resetting page controls: {e}")
+        
+        # Show confirmation to user
+        try:
+            from tkinter import messagebox
+            messagebox.showinfo("Reset Complete", 
+                              "The app state has been reset.\n\n" +
+                              "If buttons are still unresponsive, try navigating to " +
+                              "another page and back.")
+        except:
+            pass
+        
+        self.logger.info("Emergency reset completed")
+    
     def on_closing(self):
         """Handle window closing"""
+        # Check if any processing is in progress
+        if self.processing_pages:
+            # Show confirmation dialog
+            message = f"Processing is still in progress on: {', '.join(self.processing_pages)}\n\nAre you sure you want to exit?"
+            
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("Confirm Exit")
+            dialog.geometry("400x200")
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Center the dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() - 400) // 2
+            y = (dialog.winfo_screenheight() - 200) // 2
+            dialog.geometry(f"400x200+{x}+{y}")
+            
+            # Frame for content
+            content_frame = ctk.CTkFrame(dialog)
+            content_frame.pack(expand=True, fill="both", padx=20, pady=20)
+            
+            # Warning message
+            warning_label = ctk.CTkLabel(
+                content_frame,
+                text="⚠️",
+                font=ctk.CTkFont(size=48)
+            )
+            warning_label.pack(pady=(0, 10))
+            
+            message_label = ctk.CTkLabel(
+                content_frame,
+                text=message,
+                font=ctk.CTkFont(size=14),
+                wraplength=350
+            )
+            message_label.pack(pady=10)
+            
+            # Button frame
+            button_frame = ctk.CTkFrame(content_frame)
+            button_frame.pack(pady=10)
+            
+            # Result variable
+            result = {"confirmed": False}
+            
+            def confirm_exit():
+                result["confirmed"] = True
+                dialog.destroy()
+            
+            def cancel_exit():
+                dialog.destroy()
+            
+            # Yes/No buttons
+            yes_button = ctk.CTkButton(
+                button_frame,
+                text="Yes, Exit",
+                command=confirm_exit,
+                width=100,
+                fg_color="red",
+                hover_color="darkred"
+            )
+            yes_button.pack(side="left", padx=5)
+            
+            no_button = ctk.CTkButton(
+                button_frame,
+                text="Cancel",
+                command=cancel_exit,
+                width=100
+            )
+            no_button.pack(side="left", padx=5)
+            
+            # Wait for dialog
+            dialog.wait_window()
+            
+            # Check result
+            if not result["confirmed"]:
+                return  # Don't close
+        
         # Save window state
         try:
             settings_manager.set("window.width", self.winfo_width())

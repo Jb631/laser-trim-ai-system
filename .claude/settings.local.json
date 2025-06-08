@@ -30,7 +30,11 @@
       "Bash(../.venv/Scripts/python.exe test_gui_startup.py)",
       "Bash(../.venv/Scripts/python.exe test_excel_processing.py:*)",
       "Bash(../.venv/Scripts/python.exe test_single_file.py:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(echo:*)",
+      "Bash(for file in src/laser_trim_analyzer/gui/widgets/progress*.py src/laser_trim_analyzer/gui/progress*.py)",
+      "Bash(do echo \"=== Checking $file ===\")",
+      "Bash(done)"
     ],
     "deny": []
   }

@@ -296,7 +296,14 @@ class FileDropZone(ttk.Frame):
                                 # Skip temporary files and hidden files
                                 if not found_file.name.startswith('~') and not found_file.name.startswith('.'):
                                     # Security check for files from folders
-                                    if security_validator and HAS_SECURITY:
+                                    security_validator = None
+                                    if HAS_SECURITY:
+                                        try:
+                                            security_validator = get_security_validator()
+                                        except:
+                                            pass
+                                    
+                                    if security_validator:
                                         try:
                                             path_result = security_validator.validate_input(
                                                 found_file,
@@ -318,7 +325,9 @@ class FileDropZone(ttk.Frame):
                             # Update progress every 100 files
                             total_checked += 1
                             if total_checked % 100 == 0:
-                                self.after(0, lambda count=total_checked: 
+                                # Capture the current count value
+                                current_count = total_checked
+                                self.after(0, lambda count=current_count: 
                                          self.secondary_label.config(text=f'Scanned {count} files...'))
                 
                 # Call completion handler on main thread
@@ -455,7 +464,9 @@ class FileDropZone(ttk.Frame):
                     # Update progress every 100 files
                     total_checked += 1
                     if total_checked % 100 == 0:
-                        self.after(0, lambda count=total_checked: 
+                        # Capture the current count value
+                        current_count = total_checked
+                        self.after(0, lambda count=current_count: 
                                  self.secondary_label.config(text=f'Scanned {count} files...'))
                 
                 # Call callback on main thread with results

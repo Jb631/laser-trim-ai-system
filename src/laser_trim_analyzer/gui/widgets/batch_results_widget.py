@@ -130,11 +130,21 @@ class BatchResultsWidget(ctk.CTkFrame):
             width=400
         )
         
+        # Configure tags for row styling
+        self.tree.tag_configure('pass', foreground='#00ff00')
+        self.tree.tag_configure('fail', foreground='#ff0000')
+        self.tree.tag_configure('warning', foreground='#ffaa00')
+        self.tree.tag_configure('error', foreground='#ff0000')
+        self.tree.tag_configure('validated', background='#1a3d1a')
+        self.tree.tag_configure('validation_failed', background='#3d1a1a')
+        self.tree.tag_configure('validation_warning', background='#3d3d1a')
+        
         # Bind tree selection event
         self.tree.bind('<<TreeviewSelect>>', self._on_item_select)
 
     def _setup_layout(self):
         """Setup widget layout."""
+        # Configure grid weights for proper resizing
         self.grid_rowconfigure(1, weight=2)  # Table gets most space
         self.grid_rowconfigure(2, weight=1)  # Details get less space
         self.grid_columnconfigure(0, weight=1)
@@ -206,10 +216,10 @@ class BatchResultsWidget(ctk.CTkFrame):
         linearity_pass = "N/A"
         
         if primary_track:
-            if hasattr(primary_track.sigma_analysis, 'sigma_pass'):
+            if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'sigma_pass'):
                 sigma_pass = "✓" if primary_track.sigma_analysis.sigma_pass else "✗"
             
-            if hasattr(primary_track.linearity_analysis, 'linearity_pass'):
+            if primary_track.linearity_analysis and hasattr(primary_track.linearity_analysis, 'linearity_pass'):
                 linearity_pass = "✓" if primary_track.linearity_analysis.linearity_pass else "✗"
         
         processing_time = f"{result.processing_time:.2f}s" if result.processing_time else "N/A"
@@ -237,7 +247,7 @@ class BatchResultsWidget(ctk.CTkFrame):
         ], tags=tags)
         
         # Store result reference for details view
-        self.tree.set(item_id, 'result_ref', file_path)
+        # Note: ttk.Treeview doesn't have a set() method, so we'll use the file path lookup approach
 
     def _get_row_tags(self, status: AnalysisStatus, validation_status: Optional[ValidationStatus] = None) -> tuple:
         """Get tags for row coloring based on status."""

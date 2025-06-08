@@ -547,6 +547,17 @@ if __name__ == "__main__":
         circular_progress.set_progress(value)
         steps_progress.set_progress(value, f"Step {int(value / 20) + 1} of 5")
 
+    def reset_all():
+        linear_progress.reset()
+        circular_progress.reset()
+        steps_progress.reset()
+        progress_var.set(0)
+
+    def complete_all():
+        linear_progress.complete()
+        circular_progress.complete()
+        steps_progress.complete()
+        progress_var.set(100)
 
     scale = ttk.Scale(
         control_frame,
@@ -564,13 +575,13 @@ if __name__ == "__main__":
     ttk.Button(
         button_frame,
         text="Reset",
-        command=lambda: [p.reset() for p in [linear_progress, circular_progress, steps_progress]]
+        command=reset_all
     ).pack(side='left', padx=5)
 
     ttk.Button(
         button_frame,
         text="Complete",
-        command=lambda: [p.complete() for p in [linear_progress, circular_progress, steps_progress]]
+        command=complete_all
     ).pack(side='left', padx=5)
 
     root.mainloop()
