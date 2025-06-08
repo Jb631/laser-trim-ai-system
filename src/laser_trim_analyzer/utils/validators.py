@@ -550,10 +550,15 @@ def validate_resistance_values(
             logger.warning(f"Resistance validation: {warning_msg}")
 
     # Log validation result
+    change_percent_str = (
+        f"{result.metadata.get('resistance_change_percent'):.1f}%" 
+        if 'resistance_change_percent' in result.metadata 
+        else 'N/A'
+    )
     logger.info(
         f"Resistance validation completed - Valid: {result.is_valid}, "
         f"Untrimmed: {untrimmed}, Trimmed: {trimmed}, "
-        f"Change: {result.metadata.get('resistance_change_percent', 'N/A'):.1f}%"
+        f"Change: {change_percent_str}"
     )
 
     return result
@@ -622,11 +627,16 @@ def validate_sigma_values(
             logger.warning(f"Sigma validation: {warning_msg}")
 
     # Log validation result
+    margin_str = (
+        f"{result.metadata.get('margin_percent'):.1f}%" 
+        if 'margin_percent' in result.metadata 
+        else 'N/A'
+    )
     logger.info(
         f"Sigma validation completed - Valid: {result.is_valid}, "
         f"Pass: {result.metadata['sigma_pass']}, "
         f"Gradient: {sigma_gradient:.4f}, Threshold: {sigma_threshold:.4f}, "
-        f"Margin: {result.metadata.get('margin_percent', 'N/A'):.1f}%"
+        f"Margin: {margin_str}"
     )
 
     return result
