@@ -14,6 +14,7 @@ import tkinter as tk
 import pandas as pd
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, ValidationStatus
+from laser_trim_analyzer.gui.theme_helper import ThemeHelper
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +60,8 @@ class BatchResultsWidget(ctk.CTkFrame):
         style = ttk.Style()
         style.theme_use('clam')
         
-        # Configure colors to match CTk theme
-        style.configure("Treeview",
-                       background="#2b2b2b",
-                       foreground="white",
-                       fieldbackground="#2b2b2b",
-                       borderwidth=0)
-        style.configure("Treeview.Heading",
-                       background="#1f1f1f",
-                       foreground="white",
-                       borderwidth=1,
-                       relief="flat")
-        style.map("Treeview",
-                 background=[('selected', '#1f538d')])
+        # Apply theme-aware styling
+        ThemeHelper.apply_ttk_style(style)
         
         # Define columns
         self.columns = [

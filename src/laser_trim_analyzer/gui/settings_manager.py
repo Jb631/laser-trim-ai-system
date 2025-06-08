@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 import customtkinter as ctk
+from tkinter import messagebox
 import logging
 from datetime import datetime
 
@@ -143,7 +144,15 @@ class SettingsManager:
             
             if config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
-                    saved_settings = json.load(f)
+                    loaded_data = json.load(f)
+                
+                # Handle both old format (direct settings) and new format (with metadata)
+                if isinstance(loaded_data, dict) and 'settings' in loaded_data:
+                    # New format with metadata
+                    saved_settings = loaded_data['settings']
+                else:
+                    # Old format or direct settings
+                    saved_settings = loaded_data
                 
                 # Merge with defaults (in case new settings were added)
                 self.settings = self._merge_settings(self.default_settings.copy(), saved_settings)
@@ -175,13 +184,24 @@ class SettingsManager:
                 "settings": self.settings
             }
             
-            with open(config_path, 'w', encoding='utf-8') as f:
+            # Write to a temporary file first
+            temp_path = config_path.with_suffix('.tmp')
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(settings_with_meta, f, indent=2, ensure_ascii=False)
-                
+                f.flush()  # Ensure all data is written
+                os.fsync(f.fileno())  # Force write to disk
+            
+            # Replace the original file atomically
+            temp_path.replace(config_path)
+            
             logger.info(f"Settings saved to {config_path}")
             
+        except (IOError, OSError) as e:
+            logger.error(f"File system error saving settings: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error saving settings: {e}")
+            raise
     
     def get(self, key_path: str, default=None):
         """Get setting value using dot notation (e.g., 'theme.mode')."""
@@ -229,6 +249,10 @@ class SettingsManager:
             
         except Exception as e:
             logger.error(f"Error setting {key_path}: {e}")
+    
+    def save(self):
+        """Alias for save_settings() for compatibility."""
+        self.save_settings()
     
     def register_callback(self, key_path: str, callback: Callable[[str, Any, Any], None]):
         """Register callback for setting changes."""
@@ -828,8 +852,17 @@ class SettingsDialog(ctk.CTkToplevel):
             self.settings_manager.set("theme.high_contrast", bool(self.high_contrast.get()))
             
             # Analysis
-            self.settings_manager.set("analysis.sigma_threshold", float(self.sigma_threshold.get()))
-            self.settings_manager.set("analysis.linearity_threshold", float(self.linearity_threshold.get()))
+            sigma_val = self.sigma_threshold.get().strip()
+            if sigma_val:
+                self.settings_manager.set("analysis.sigma_threshold", float(sigma_val))
+            else:
+                self.settings_manager.set("analysis.sigma_threshold", None)
+                
+            linearity_val = self.linearity_threshold.get().strip()
+            if linearity_val:
+                self.settings_manager.set("analysis.linearity_threshold", float(linearity_val))
+            else:
+                self.settings_manager.set("analysis.linearity_threshold", None)
             self.settings_manager.set("analysis.confidence_threshold", self.confidence_threshold.get())
             self.settings_manager.set("analysis.batch_size_limit", int(self.batch_size_limit.get()))
             
@@ -840,7 +873,7 @@ class SettingsDialog(ctk.CTkToplevel):
             
         except Exception as e:
             logger.error(f"Error applying settings: {e}")
-            ctk.CTkMessagebox.show_error("Error", f"Failed to apply settings:\n{str(e)}")
+            messagebox.showerror("Error", f"Failed to apply settings:\n{str(e)}")
     
     def cancel(self):
         """Cancel changes and close dialog."""
@@ -848,8 +881,8 @@ class SettingsDialog(ctk.CTkToplevel):
     
     def reset_to_defaults(self):
         """Reset all settings to defaults."""
-        if ctk.CTkMessagebox.show_question("Reset Settings", 
-                                          "Are you sure you want to reset all settings to defaults?"):
+        if messagebox.askyesno("Reset Settings", 
+                               "Are you sure you want to reset all settings to defaults?"):
             self.settings_manager.reset_to_defaults()
             self.load_current_settings()
     
@@ -865,9 +898,9 @@ class SettingsDialog(ctk.CTkToplevel):
         if file_path:
             if self.settings_manager.import_settings(file_path):
                 self.load_current_settings()
-                ctk.CTkMessagebox.show_info("Success", "Settings imported successfully!")
+                messagebox.showinfo("Success", "Settings imported successfully!")
             else:
-                ctk.CTkMessagebox.show_error("Error", "Failed to import settings.")
+                messagebox.showerror("Error", "Failed to import settings.")
     
     def export_settings(self):
         """Export settings to file."""
@@ -881,9 +914,9 @@ class SettingsDialog(ctk.CTkToplevel):
         
         if file_path:
             if self.settings_manager.export_settings(file_path):
-                ctk.CTkMessagebox.show_info("Success", "Settings exported successfully!")
+                messagebox.showinfo("Success", "Settings exported successfully!")
             else:
-                ctk.CTkMessagebox.show_error("Error", "Failed to export settings.")
+                messagebox.showerror("Error", "Failed to export settings.")
 
 
 # Global settings manager instance

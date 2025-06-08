@@ -10,7 +10,7 @@ import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Tuple, Any, Callable, Union
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import pandas as pd
 import numpy as np
@@ -166,7 +166,7 @@ class LaserTrimProcessor:
         self._executor = None
         self._processing_tasks = []
         self._is_processing = False
-        self._processing_lock = asyncio.Lock()
+        self._processing_lock = threading.Lock()
 
         # Initialize processing statistics
         self._processing_stats = {
@@ -267,7 +267,7 @@ class LaserTrimProcessor:
         file_path = Path(file_path)
         
         # Protect against concurrent processing issues
-        async with self._processing_lock:
+        with self._processing_lock:
             return await self._process_file_internal(file_path, output_dir, progress_callback)
 
     async def _process_file_internal(
@@ -704,6 +704,43 @@ class LaserTrimProcessor:
         track_data.overall_validation_status = track_validation_status
 
         return track_data
+
+    def process_file_sync(
+        self,
+        file_path: Union[str, Path],
+        output_dir: Optional[Path] = None,
+        progress_callback: Optional[Callable[[str, float], None]] = None
+    ) -> AnalysisResult:
+        """
+        Synchronous wrapper for process_file method.
+        
+        This is used when calling from non-async contexts like thread pools.
+        
+        Args:
+            file_path: Path to Excel file
+            output_dir: Optional directory for outputs
+            progress_callback: Optional progress callback
+            
+        Returns:
+            AnalysisResult object
+        """
+        import asyncio
+        
+        # Get or create event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're already in an async context, create a new loop
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(asyncio.run, self.process_file(file_path, output_dir, progress_callback))
+                    return future.result()
+        except RuntimeError:
+            # No event loop exists, use asyncio.run
+            pass
+        
+        # Run the async method
+        return asyncio.run(self.process_file(file_path, output_dir, progress_callback))
 
     async def process_batch(
         self,

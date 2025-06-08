@@ -24,6 +24,17 @@ class BatchResultsWidget(ctk.CTkFrame):
         
     def _setup_ui(self):
         """Set up the widget UI."""
+        # Define fixed column widths for alignment
+        self.column_widths = {
+            'File': 250,
+            'Model': 100,
+            'Serial': 100,
+            'Status': 80,
+            'Validation': 100,
+            'Tracks': 60,
+            'Pass/Fail': 80
+        }
+        
         # Header
         header_frame = ctk.CTkFrame(self)
         header_frame.pack(fill='x', padx=5, pady=(5, 0))
@@ -35,19 +46,22 @@ class BatchResultsWidget(ctk.CTkFrame):
             label = ctk.CTkLabel(
                 header_frame,
                 text=header,
-                font=ctk.CTkFont(size=12, weight="bold")
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=self.column_widths[header],
+                anchor='w'
             )
             label.grid(row=0, column=i, padx=5, pady=5, sticky='w')
-            header_frame.columnconfigure(i, weight=1 if i == 0 else 0)
+            # Don't use weight for columns - use fixed widths instead
+            header_frame.columnconfigure(i, weight=0, minsize=self.column_widths[header])
             self.header_labels.append(label)
             
         # Scrollable results area
         self.results_frame = ctk.CTkScrollableFrame(self, height=300)
         self.results_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Configure grid columns
-        for i in range(len(headers)):
-            self.results_frame.columnconfigure(i, weight=1 if i == 0 else 0)
+        # Configure grid columns with same widths as header
+        for i, header in enumerate(headers):
+            self.results_frame.columnconfigure(i, weight=0, minsize=self.column_widths[header])
             
     def display_results(self, results: Dict[str, AnalysisResult]):
         """Display batch processing results."""
@@ -98,26 +112,60 @@ class BatchResultsWidget(ctk.CTkFrame):
         pass_count = 0
         fail_count = 0
         
-        if hasattr(result, 'tracks'):
-            track_count = len(result.tracks)
-            for track in result.tracks.values():
-                if hasattr(track, 'overall_status'):
-                    track_status = getattr(track.overall_status, 'value', str(track.overall_status))
-                    if track_status == 'Pass':
+        if hasattr(result, 'tracks') and result.tracks:
+            # Handle both dict (from analysis) and list (from DB) formats
+            if isinstance(result.tracks, dict):
+                track_count = len(result.tracks)
+                tracks_iter = result.tracks.values()
+            else:
+                track_count = len(result.tracks)
+                tracks_iter = result.tracks
+                
+            for track in tracks_iter:
+                if hasattr(track, 'status'):
+                    # Track has 'status' field, not 'overall_status'
+                    track_status = getattr(track.status, 'value', str(track.status))
+                    if track_status in ['Pass', 'PASS']:
                         pass_count += 1
+                    elif track_status in ['Fail', 'FAIL', 'Warning', 'WARNING', 'Error', 'ERROR']:
+                        fail_count += 1
+                    # If status is not recognized, log it for debugging
                     else:
+                        self.logger.debug(f"Unknown track status: {track_status}")
+                elif hasattr(track, 'overall_status'):
+                    # Analysis tracks might have 'overall_status'
+                    track_status = getattr(track.overall_status, 'value', str(track.overall_status))
+                    if track_status in ['Pass', 'PASS']:
+                        pass_count += 1
+                    elif track_status in ['Fail', 'FAIL', 'Warning', 'WARNING', 'Error', 'ERROR']:
                         fail_count += 1
                         
-        # Create row widgets
-        widgets = [
-            ctk.CTkLabel(self.results_frame, text=file_name[:40] + "..." if len(file_name) > 40 else file_name),
-            ctk.CTkLabel(self.results_frame, text=model),
-            ctk.CTkLabel(self.results_frame, text=serial),
-            ctk.CTkLabel(self.results_frame, text=status, text_color=status_color),
-            ctk.CTkLabel(self.results_frame, text=validation, text_color=validation_color),
-            ctk.CTkLabel(self.results_frame, text=str(track_count)),
-            ctk.CTkLabel(self.results_frame, text=f"{pass_count}/{fail_count}")
+        # Create row widgets with fixed widths matching headers
+        headers = ['File', 'Model', 'Serial', 'Status', 'Validation', 'Tracks', 'Pass/Fail']
+        values = [
+            file_name[:35] + "..." if len(file_name) > 35 else file_name,
+            model,
+            serial,
+            status,
+            validation,
+            str(track_count),
+            f"{pass_count}/{fail_count}"
         ]
+        
+        widgets = []
+        for header, value in zip(headers, values):
+            label = ctk.CTkLabel(
+                self.results_frame, 
+                text=value,
+                width=self.column_widths[header],
+                anchor='w'
+            )
+            # Apply color to status and validation columns
+            if header == 'Status':
+                label.configure(text_color=status_color)
+            elif header == 'Validation':
+                label.configure(text_color=validation_color)
+            widgets.append(label)
         
         # Add widgets to grid
         for col, widget in enumerate(widgets):

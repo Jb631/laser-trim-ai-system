@@ -14,8 +14,10 @@ class SparkLine(ctk.CTkCanvas):
     """Simple sparkline chart for metric visualization."""
 
     def __init__(self, parent, width=80, height=30, **kwargs):
-        super().__init__(parent, width=width, height=height, 
-                        highlightthickness=0, **kwargs)
+        # Set background to match dark theme
+        kwargs['bg'] = '#212121'  # Dark background
+        kwargs['highlightthickness'] = 0
+        super().__init__(parent, width=width, height=height, **kwargs)
         self.data_points = []
         self.line_color = '#3498db'
 
@@ -136,9 +138,8 @@ class MetricCard(ctk.CTkFrame):
         # Configure the frame
         self.configure(corner_radius=10)
 
-        # Main container
-        main_frame = ctk.CTkFrame(self, corner_radius=10)
-        main_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        # Use self as the main container instead of creating nested frame
+        main_frame = self
 
         # Title
         self.title_label = ctk.CTkLabel(

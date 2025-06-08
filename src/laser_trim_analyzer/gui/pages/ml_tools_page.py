@@ -24,7 +24,7 @@ from laser_trim_analyzer.core.models import AnalysisResult
 from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer, DriftDetector
 from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
 # Get logger first
@@ -169,7 +169,7 @@ class MLToolsPage(BasePage):
         self.title_label.pack(pady=15)
 
         # Status indicator
-        self.ml_status_frame = ctk.CTkFrame(self.header_frame)
+        self.ml_status_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.ml_status_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.ml_status_label = ctk.CTkLabel(
@@ -219,7 +219,7 @@ class MLToolsPage(BasePage):
         self.model_status_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Model status cards container
-        self.model_cards_frame = ctk.CTkFrame(self.model_status_frame)
+        self.model_cards_frame = ctk.CTkFrame(self.model_status_frame, fg_color="transparent")
         self.model_cards_frame.pack(fill='x', padx=15, pady=(0, 15))
 
         # Create individual model status cards
@@ -244,7 +244,7 @@ class MLToolsPage(BasePage):
             name_label.pack(pady=(10, 5))
 
             # Status indicator
-            status_frame = ctk.CTkFrame(card_frame)
+            status_frame = ctk.CTkFrame(card_frame, fg_color="transparent")
             status_frame.pack(fill='x', padx=10, pady=5)
 
             status_indicator = ctk.CTkLabel(
@@ -419,7 +419,7 @@ class MLToolsPage(BasePage):
         self.comparison_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Comparison controls
-        controls_frame = ctk.CTkFrame(self.comparison_frame)
+        controls_frame = ctk.CTkFrame(self.comparison_frame, fg_color="transparent")
         controls_frame.pack(fill='x', padx=15, pady=(0, 10))
 
         self.compare_models_btn = ctk.CTkButton(
@@ -468,12 +468,13 @@ class MLToolsPage(BasePage):
 
         # Resource usage metrics
         self.resource_metrics_frame = ctk.CTkFrame(
-            self.comparison_tabview.tab("Resource Usage")
+            self.comparison_tabview.tab("Resource Usage"),
+            fg_color="transparent"
         )
         self.resource_metrics_frame.pack(fill='x', padx=5, pady=5)
 
         # Create resource metric cards
-        resource_cards_frame = ctk.CTkFrame(self.resource_metrics_frame)
+        resource_cards_frame = ctk.CTkFrame(self.resource_metrics_frame, fg_color="transparent")
         resource_cards_frame.pack(fill='x', padx=10, pady=10)
 
         self.training_time_card = MetricCard(

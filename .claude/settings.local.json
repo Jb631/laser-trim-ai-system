@@ -34,7 +34,9 @@
       "Bash(echo:*)",
       "Bash(for file in src/laser_trim_analyzer/gui/widgets/progress*.py src/laser_trim_analyzer/gui/progress*.py)",
       "Bash(do echo \"=== Checking $file ===\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(pip show:*)",
+      "Bash(./venv/Scripts/python.exe test_sqlalchemy_import.py)"
     ],
     "deny": []
   }

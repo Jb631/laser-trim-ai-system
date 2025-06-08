@@ -27,7 +27,7 @@ from sqlalchemy import func
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 from laser_trim_analyzer.gui.widgets.track_viewer import IndividualTrackViewer
 from laser_trim_analyzer.analysis.consistency_analyzer import ConsistencyAnalyzer
@@ -84,11 +84,11 @@ class MultiTrackPage(BasePage):
         self.selection_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Selection container
-        self.selection_container = ctk.CTkFrame(self.selection_frame)
+        self.selection_container = ctk.CTkFrame(self.selection_frame, fg_color="transparent")
         self.selection_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Selection buttons row
-        button_frame = ctk.CTkFrame(self.selection_container)
+        button_frame = ctk.CTkFrame(self.selection_container, fg_color="transparent")
         button_frame.pack(fill='x', padx=10, pady=(10, 10))
 
         self.select_file_btn = ctk.CTkButton(
@@ -142,11 +142,11 @@ class MultiTrackPage(BasePage):
         self.overview_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Overview container
-        self.overview_container = ctk.CTkFrame(self.overview_frame)
+        self.overview_container = ctk.CTkFrame(self.overview_frame, fg_color="transparent")
         self.overview_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Row 1 of overview metrics
-        overview_row1 = ctk.CTkFrame(self.overview_container)
+        overview_row1 = ctk.CTkFrame(self.overview_container, fg_color="transparent")
         overview_row1.pack(fill='x', padx=10, pady=(10, 5))
 
         self.overview_cards = {}
@@ -184,7 +184,7 @@ class MultiTrackPage(BasePage):
         self.overview_cards['consistency'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
         # Row 2 of overview metrics
-        overview_row2 = ctk.CTkFrame(self.overview_container)
+        overview_row2 = ctk.CTkFrame(self.overview_container, fg_color="transparent")
         overview_row2.pack(fill='x', padx=10, pady=(5, 10))
 
         self.overview_cards['sigma_cv'] = MetricCard(
@@ -232,7 +232,7 @@ class MultiTrackPage(BasePage):
         self.comparison_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Comparison container with tabs
-        self.comparison_container = ctk.CTkFrame(self.comparison_frame)
+        self.comparison_container = ctk.CTkFrame(self.comparison_frame, fg_color="transparent")
         self.comparison_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
         # Comparison tabs
@@ -258,7 +258,7 @@ class MultiTrackPage(BasePage):
             self.summary_chart.pack(fill='both', expand=True)
             
             # Detailed comparison charts
-            detailed_frame = ctk.CTkFrame(self.comparison_tabview.tab("Detailed"))
+            detailed_frame = ctk.CTkFrame(self.comparison_tabview.tab("Detailed"), fg_color="transparent")
             detailed_frame.pack(fill='both', expand=True, padx=5, pady=5)
             
             # Sigma comparison chart
@@ -340,7 +340,7 @@ class MultiTrackPage(BasePage):
         self.track_viewer_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Track viewer container
-        self.track_viewer_container = ctk.CTkFrame(self.track_viewer_frame)
+        self.track_viewer_container = ctk.CTkFrame(self.track_viewer_frame, fg_color="transparent")
         self.track_viewer_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
         
         # Create the individual track viewer widget
@@ -360,7 +360,7 @@ class MultiTrackPage(BasePage):
         self.consistency_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Consistency container
-        self.consistency_container = ctk.CTkFrame(self.consistency_frame)
+        self.consistency_container = ctk.CTkFrame(self.consistency_frame, fg_color="transparent")
         self.consistency_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
         # Consistency display
@@ -384,11 +384,11 @@ class MultiTrackPage(BasePage):
         self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Actions container
-        self.actions_container = ctk.CTkFrame(self.actions_frame)
+        self.actions_container = ctk.CTkFrame(self.actions_frame, fg_color="transparent")
         self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Action buttons
-        button_frame = ctk.CTkFrame(self.actions_container)
+        button_frame = ctk.CTkFrame(self.actions_container, fg_color="transparent")
         button_frame.pack(fill='x', padx=10, pady=(10, 10))
 
         self.export_report_btn = ctk.CTkButton(
@@ -820,6 +820,9 @@ class MultiTrackPage(BasePage):
             except Exception as e:
                 self.logger.warning(f"Failed to update track viewer: {e}")
             
+            # Create comparison data for charts
+            self._prepare_comparison_data()
+            
             # Update charts with current data
             try:
                 self._update_comparison_charts()
@@ -843,6 +846,44 @@ class MultiTrackPage(BasePage):
             self.logger.error(f"Error updating multi-track display: {e}")
             self.unit_info_label.configure(text="Error displaying multi-track data - check logs")
 
+    def _prepare_comparison_data(self):
+        """Prepare comparison data from current unit data."""
+        if not self.current_unit_data:
+            return
+            
+        self.comparison_data = {
+            'comparison_performed': True,
+            'sigma_comparison': {'values': {}},
+            'linearity_comparison': {'values': {}}
+        }
+        
+        # Extract data based on format
+        if 'tracks' in self.current_unit_data:
+            # Direct tracks format (from file processing)
+            tracks = self.current_unit_data['tracks']
+            
+            for track_id, track_data in tracks.items():
+                # Handle different data structures
+                if hasattr(track_data, 'primary_track'):
+                    # Object format
+                    primary = track_data.primary_track
+                    if primary:
+                        self.comparison_data['sigma_comparison']['values'][track_id] = getattr(primary, 'sigma_gradient', 0)
+                        self.comparison_data['linearity_comparison']['values'][track_id] = getattr(primary, 'linearity_error', 0)
+                elif isinstance(track_data, dict):
+                    # Dictionary format
+                    self.comparison_data['sigma_comparison']['values'][track_id] = track_data.get('sigma_gradient', 0)
+                    self.comparison_data['linearity_comparison']['values'][track_id] = track_data.get('linearity_error', 0)
+                    
+        elif 'files' in self.current_unit_data:
+            # Database format (tracks are within files)
+            for file_info in self.current_unit_data['files']:
+                for track_id, track_data in file_info['tracks'].items():
+                    # Use file+track as unique key for comparison
+                    display_id = f"{file_info['filename'].split('_')[0]}_{track_id}"
+                    self.comparison_data['sigma_comparison']['values'][display_id] = track_data.get('sigma_gradient', 0)
+                    self.comparison_data['linearity_comparison']['values'][display_id] = track_data.get('linearity_error', 0)
+    
     def _update_comparison_charts(self):
         """Update comparison charts with track data."""
         if not self.comparison_data or not self.comparison_data.get('comparison_performed'):
@@ -1718,9 +1759,14 @@ Quality Assessment:
         try:
             if not self.db_manager:
                 raise ValueError("Database not connected")
+            
+            # Use the db_manager from main_window directly
+            db_manager = self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None
+            if not db_manager:
+                raise ValueError("Database not connected")
 
             # Get all analyses for this model/serial combination
-            historical_data = self.db_manager.get_historical_data(
+            historical_data = db_manager.get_historical_data(
                 model=model,
                 serial=serial,
                 include_tracks=True,
@@ -1835,31 +1881,44 @@ Quality Assessment:
             return
 
         try:
-            # Get all unique model/serial combinations
+            # Get all unique model/serial combinations that have multiple tracks
             with self.db_manager.get_session() as session:
-                from laser_trim_analyzer.database.manager import DBAnalysisResult
+                from laser_trim_analyzer.database.manager import DBAnalysisResult, DBTrackResult
                 
-                results = session.query(
+                # Subquery to get model/serial combinations with their track counts
+                subq = session.query(
                     DBAnalysisResult.model,
                     DBAnalysisResult.serial,
-                    func.count(DBAnalysisResult.id).label('file_count')
+                    func.count(func.distinct(DBTrackResult.track_id)).label('track_count'),
+                    func.count(func.distinct(DBAnalysisResult.id)).label('file_count')
+                ).join(
+                    DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id
                 ).filter(
                     DBAnalysisResult.model.isnot(None),
                     DBAnalysisResult.serial.isnot(None)
                 ).group_by(
                     DBAnalysisResult.model,
                     DBAnalysisResult.serial
-                ).having(
-                    func.count(DBAnalysisResult.id) > 1  # Only units with multiple files
+                ).subquery()
+                
+                # Main query to get only units with multiple tracks
+                results = session.query(
+                    subq.c.model,
+                    subq.c.serial,
+                    subq.c.track_count,
+                    subq.c.file_count
+                ).filter(
+                    subq.c.track_count > 1  # Only units with multiple tracks
                 ).order_by(
-                    DBAnalysisResult.model,
-                    DBAnalysisResult.serial
+                    subq.c.model,
+                    subq.c.serial
                 ).all()
 
             if not results:
                 messagebox.showinfo(
                     "No Multi-Track Units",
-                    "No units with multiple files found in database."
+                    "No units with multiple tracks found in database.\n\n"
+                    "Multi-track units are models that have been analyzed with different track identifiers (TA, TB, TC, etc.)."
                 )
                 return
 
@@ -1872,7 +1931,7 @@ Quality Assessment:
             # Title
             ttk.Label(
                 dialog,
-                text="Units with Multiple Files:",
+                text="Units with Multiple Tracks:",
                 font=('Segoe UI', 14, 'bold')
             ).pack(pady=(10, 20))
 
@@ -1886,8 +1945,8 @@ Quality Assessment:
 
             # Populate listbox
             unit_list = []
-            for model, serial, file_count in results:
-                display_text = f"{model} / {serial} ({file_count} files)"
+            for model, serial, track_count, file_count in results:
+                display_text = f"{model} / {serial} ({track_count} tracks, {file_count} files)"
                 listbox.insert(tk.END, display_text)
                 unit_list.append((model, serial))
 

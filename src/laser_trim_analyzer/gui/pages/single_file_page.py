@@ -24,7 +24,7 @@ from laser_trim_analyzer.core.exceptions import ProcessingError, ValidationError
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.widgets.analysis_display import AnalysisDisplayWidget
 from laser_trim_analyzer.gui.widgets.progress_widgets import ProgressDialog
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 # from laser_trim_analyzer.gui.pages.base_page import BasePage  # Commented out to avoid widget mismatch
@@ -124,7 +124,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.title_label.pack(pady=15)
         
         # Validation status frame (matching batch processing pattern)
-        self.validation_status_frame = ctk.CTkFrame(self.header_frame)
+        self.validation_status_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.validation_status_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.validation_status_label = ctk.CTkLabel(
@@ -155,7 +155,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.file_label.pack(anchor='w', padx=15, pady=(15, 5))
         
         # File input container
-        self.file_input_frame = ctk.CTkFrame(self.file_frame)
+        self.file_input_frame = ctk.CTkFrame(self.file_frame, fg_color="transparent")
         self.file_input_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.file_entry = ctk.CTkEntry(
@@ -198,7 +198,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.options_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Options container
-        self.options_container = ctk.CTkFrame(self.options_frame)
+        self.options_container = ctk.CTkFrame(self.options_frame, fg_color="transparent")
         self.options_container.pack(fill='x', padx=15, pady=(0, 15))
         
         self.generate_plots_var = ctk.BooleanVar(value=True)
@@ -238,7 +238,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.prevalidation_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Metrics container
-        self.validation_metrics_frame = ctk.CTkFrame(self.prevalidation_frame)
+        self.validation_metrics_frame = ctk.CTkFrame(self.prevalidation_frame, fg_color="transparent")
         self.validation_metrics_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         # Create metric cards (matching batch processing layout)
@@ -287,7 +287,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.controls_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Controls container
-        self.controls_container = ctk.CTkFrame(self.controls_frame)
+        self.controls_container = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
         self.controls_container.pack(fill='x', padx=15, pady=(0, 15))
         
         self.analyze_button = ctk.CTkButton(
@@ -316,10 +316,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.export_button._hover_color = None  # Disable default hover
         self.export_button.pack(side='left', padx=(0, 10), pady=10)
         
-        # Bind additional click event as fallback
-        self.export_button.bind("<Button-1>", lambda e: self._handle_export_click())
-        # Also bind ButtonRelease for better compatibility
-        self.export_button.bind("<ButtonRelease-1>", lambda e: self._handle_export_click())
+        # Remove duplicate bindings that were causing multiple exports
         
 
         
@@ -331,6 +328,20 @@ class SingleFilePage(ctk.CTkFrame):
             height=40
         )
         self.clear_button.pack(side='left', padx=(0, 10), pady=10)
+        
+        # Add emergency reset button (initially hidden)
+        self.emergency_button = ctk.CTkButton(
+            self.controls_container,
+            text="⚠️ Reset",
+            command=self._emergency_reset,
+            width=80,
+            height=40,
+            fg_color="red",
+            hover_color="darkred"
+        )
+        # Show only if needed
+        self.emergency_button.pack(side='right', padx=(10, 10), pady=10)
+        self.emergency_button.pack_forget()  # Hide initially
 
     def _create_results_section(self):
         """Create results display section with empty state handling."""
@@ -345,7 +356,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Empty state container
-        self.empty_state_frame = ctk.CTkFrame(self.results_frame)
+        self.empty_state_frame = ctk.CTkFrame(self.results_frame, fg_color="transparent")
         self.empty_state_frame.pack(fill='both', expand=True, padx=15, pady=(0, 15))
         
         empty_icon = ctk.CTkLabel(
@@ -539,6 +550,12 @@ class SingleFilePage(ctk.CTkFrame):
         if self.watchdog_timer:
             self.after_cancel(self.watchdog_timer)
         
+        # Show emergency button when watchdog is active
+        try:
+            self.emergency_button.pack(side='right', padx=(10, 10), pady=10)
+        except:
+            pass
+        
         # Set up new watchdog (5 minutes timeout)
         def watchdog_timeout():
             if self.is_analyzing:
@@ -548,7 +565,7 @@ class SingleFilePage(ctk.CTkFrame):
                 
                 # Try to unregister processing
                 try:
-                    if self.main_window:
+                    if self.main_window and hasattr(self.main_window, 'unregister_processing'):
                         self.main_window.unregister_processing("single_file")
                 except Exception as e:
                     logger.error(f"Watchdog failed to unregister: {e}")
@@ -564,10 +581,17 @@ class SingleFilePage(ctk.CTkFrame):
                 # Hide progress dialog
                 try:
                     if self.progress_dialog:
-                        self.progress_dialog.hide()
+                        if hasattr(self.progress_dialog, 'destroy'):
+                            self.progress_dialog.destroy()
                         self.progress_dialog = None
                 except Exception as e:
                     logger.error(f"Watchdog failed to hide dialog: {e}")
+                
+                # Hide emergency button
+                try:
+                    self.emergency_button.pack_forget()
+                except:
+                    pass
                 
                 # Show timeout message
                 try:
@@ -590,6 +614,12 @@ class SingleFilePage(ctk.CTkFrame):
                 logger.debug("Cancelled analysis watchdog timer")
             except Exception as e:
                 logger.error(f"Failed to cancel watchdog: {e}")
+        
+        # Hide emergency button when watchdog is cancelled
+        try:
+            self.emergency_button.pack_forget()
+        except:
+            pass
 
     def _update_validation_status(self, status: str, color: str):
         """Update validation status indicator."""
@@ -787,6 +817,15 @@ class SingleFilePage(ctk.CTkFrame):
             self._analysis_output_dir = output_dir
             self._analysis_success = True
             logger.info("Analysis completed successfully")
+            
+            # Refresh home page recent activity
+            try:
+                if hasattr(self.main_window, 'pages') and 'home' in self.main_window.pages:
+                    home_page = self.main_window.pages['home']
+                    if hasattr(home_page, 'refresh'):
+                        self.after(0, home_page.refresh)  # Call in main thread
+            except Exception as e:
+                logger.debug(f"Failed to refresh home page: {e}")
                 
         except ValidationError as e:
             logger.error(f"Validation error during analysis: {e}")
@@ -812,13 +851,13 @@ class SingleFilePage(ctk.CTkFrame):
             
             # CRITICAL: Always unregister processing state 
             try:
-                if self.main_window:
+                if self.main_window and hasattr(self.main_window, 'unregister_processing'):
                     self.main_window.unregister_processing("single_file")
                     logger.info("Unregistered processing state in finally block")
             except Exception as e:
                 logger.error(f"Failed to unregister processing in finally: {e}")
             
-            # Schedule UI updates on main thread (non-blocking)
+            # Schedule UI updates on main thread with more robust approach
             def complete_ui_updates():
                 try:
                     # Handle success or error
@@ -832,6 +871,14 @@ class SingleFilePage(ctk.CTkFrame):
                     if self.current_file:
                         self.analyze_button.configure(state="normal")
                     
+                    # Clean up temporary attributes
+                    if hasattr(self, '_analysis_success'):
+                        delattr(self, '_analysis_success')
+                    if hasattr(self, '_analysis_error'):
+                        delattr(self, '_analysis_error')
+                    if hasattr(self, '_analysis_output_dir'):
+                        delattr(self, '_analysis_output_dir')
+                    
                     logger.info("UI updates completed successfully")
                     
                 except Exception as e:
@@ -840,18 +887,40 @@ class SingleFilePage(ctk.CTkFrame):
                     try:
                         if self.current_file:
                             self.analyze_button.configure(state="normal")
+                        self.browse_button.configure(state="normal")
+                        self.clear_button.configure(state="normal")
                     except:
                         pass
             
-            # Schedule the UI update for the next event loop cycle
+            # Use after() with a small delay instead of after_idle() for better reliability
+            # from background threads
             try:
-                self.after_idle(complete_ui_updates)
-            except:
-                # If scheduling fails, try direct execution
+                self.after(10, complete_ui_updates)
+                logger.debug("Scheduled UI updates with after(10)")
+            except Exception as e:
+                logger.error(f"Failed to schedule UI updates: {e}")
+                # If after() fails, try using root window
                 try:
-                    complete_ui_updates()
-                except:
-                    pass
+                    if hasattr(self, 'winfo_toplevel'):
+                        root = self.winfo_toplevel()
+                        root.after(10, complete_ui_updates)
+                        logger.debug("Scheduled UI updates via root window")
+                    else:
+                        # Last resort - schedule on main window
+                        if self.main_window and hasattr(self.main_window, 'after'):
+                            self.main_window.after(10, complete_ui_updates) 
+                            logger.debug("Scheduled UI updates via main window")
+                except Exception as fallback_error:
+                    logger.error(f"All UI update scheduling failed: {fallback_error}")
+                    # Force synchronous update as absolute last resort
+                    try:
+                        self.is_analyzing = False
+                        self._set_controls_state("normal")
+                        if self.current_file:
+                            self.analyze_button.configure(state="normal")
+                        logger.warning("Forced synchronous UI update from thread")
+                    except:
+                        pass
 
     def _handle_success_ui(self):
         """Handle successful analysis UI updates - called from main thread."""
@@ -859,12 +928,26 @@ class SingleFilePage(ctk.CTkFrame):
             result = self.current_result
             output_dir = getattr(self, '_analysis_output_dir', None)
             
-            # Hide progress dialog
+            # Hide progress dialog safely
             if self.progress_dialog:
                 try:
-                    self.progress_dialog.hide()
+                    # First try the normal hide method
+                    if hasattr(self.progress_dialog, 'hide'):
+                        self.progress_dialog.hide()
+                    # Also try destroy in case hide doesn't work
+                    if hasattr(self.progress_dialog, 'destroy'):
+                        try:
+                            self.progress_dialog.destroy()
+                        except:
+                            pass
                 except Exception as e:
                     logger.error(f"Failed to hide progress dialog: {e}")
+                    # Force destroy as fallback
+                    try:
+                        if hasattr(self.progress_dialog, 'winfo_exists') and self.progress_dialog.winfo_exists():
+                            self.progress_dialog.destroy()
+                    except:
+                        pass
                 finally:
                     self.progress_dialog = None
             
@@ -942,12 +1025,26 @@ class SingleFilePage(ctk.CTkFrame):
     def _handle_error_ui(self, error_message: str):
         """Handle analysis error UI updates - called from main thread."""
         try:
-            # Hide progress dialog
+            # Hide progress dialog safely
             if self.progress_dialog:
                 try:
-                    self.progress_dialog.hide()
+                    # First try the normal hide method
+                    if hasattr(self.progress_dialog, 'hide'):
+                        self.progress_dialog.hide()
+                    # Also try destroy in case hide doesn't work
+                    if hasattr(self.progress_dialog, 'destroy'):
+                        try:
+                            self.progress_dialog.destroy()
+                        except:
+                            pass
                 except Exception as e:
                     logger.error(f"Failed to hide progress dialog in error handler: {e}")
+                    # Force destroy as fallback
+                    try:
+                        if hasattr(self.progress_dialog, 'winfo_exists') and self.progress_dialog.winfo_exists():
+                            self.progress_dialog.destroy()
+                    except:
+                        pass
                 finally:
                     self.progress_dialog = None
             
@@ -1064,25 +1161,6 @@ class SingleFilePage(ctk.CTkFrame):
             except:
                 pass
 
-    def _handle_export_click(self):
-        """Handle export button click as fallback."""
-        logger.info("Export button clicked via fallback handler")
-        # Force check if we should process the export
-        try:
-            button_state = str(self.export_button.cget("state"))
-            logger.info(f"Fallback handler - Button state: {button_state}")
-            logger.info(f"Fallback handler - Has result: {self.current_result is not None}")
-            
-            # Process export if we have results, regardless of button state
-            # This helps work around any CTkButton state issues
-            if self.current_result:
-                logger.info("Fallback handler - Processing export despite button state")
-                self._export_results()
-            else:
-                logger.warning("Export button clicked but no results available")
-                messagebox.showwarning("No Results", "No analysis results to export. Please analyze a file first.")
-        except Exception as e:
-            logger.error(f"Error in fallback export handler: {e}")
 
     def _export_results(self):
         """Export analysis results."""
@@ -1246,7 +1324,7 @@ class SingleFilePage(ctk.CTkFrame):
                             'Sigma_Pass': getattr(track.sigma_analysis, 'sigma_pass', None) if track.sigma_analysis else None,
                             'Linearity_Spec': getattr(track.linearity_analysis, 'linearity_spec', None) if track.linearity_analysis else None,
                             'Linearity_Pass': getattr(track.linearity_analysis, 'linearity_pass', None) if track.linearity_analysis else None,
-                            'Overall_Status': getattr(track.overall_status, 'value', str(track.overall_status)),
+                            'Overall_Status': getattr(track.status, 'value', str(track.status)) if hasattr(track, 'status') else 'Unknown',
                             'Risk_Category': getattr(track.risk_category, 'value', str(track.risk_category)) if hasattr(track, 'risk_category') else 'Unknown'
                         })
                     
@@ -1287,7 +1365,7 @@ class SingleFilePage(ctk.CTkFrame):
                     'Analysis_Date': getattr(result.metadata, 'file_date', datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
                     'Track_ID': track_id,
                     'Overall_Status': getattr(result.overall_status, 'value', str(result.overall_status)),
-                    'Track_Status': getattr(track.overall_status, 'value', str(track.overall_status)),
+                    'Track_Status': getattr(track.status, 'value', str(track.status)) if hasattr(track, 'status') else 'Unknown',
                     'Processing_Time': f"{getattr(result, 'processing_time', 0):.2f}",
                     'Validation_Status': getattr(getattr(result, 'overall_validation_status', None), 'value', 'N/A')
                 }
@@ -1416,3 +1494,64 @@ class SingleFilePage(ctk.CTkFrame):
     def app_config(self):
         """Get configuration from main window."""
         return getattr(self.main_window, 'config', None)
+    
+    def _emergency_reset(self):
+        """Emergency reset to recover from frozen state."""
+        logger.warning("Emergency reset triggered by user")
+        
+        try:
+            # Force stop analysis
+            self.is_analyzing = False
+            self._stop_requested = True
+            
+            # Cancel any timers
+            if self.watchdog_timer:
+                try:
+                    self.after_cancel(self.watchdog_timer)
+                    self.watchdog_timer = None
+                except:
+                    pass
+            
+            # Force close progress dialog
+            if self.progress_dialog:
+                try:
+                    if hasattr(self.progress_dialog, 'destroy'):
+                        self.progress_dialog.destroy()
+                except:
+                    pass
+                self.progress_dialog = None
+            
+            # Unregister processing
+            try:
+                if self.main_window and hasattr(self.main_window, 'unregister_processing'):
+                    self.main_window.unregister_processing("single_file")
+            except:
+                pass
+            
+            # Force enable all controls
+            try:
+                self.browse_button.configure(state="normal")
+                self.clear_button.configure(state="normal")
+                if self.current_file:
+                    self.analyze_button.configure(state="normal")
+                    self.validate_button.configure(state="normal")
+                if self.current_result:
+                    self.export_button.configure(state="normal")
+            except Exception as e:
+                logger.error(f"Error enabling controls in emergency reset: {e}")
+            
+            # Hide emergency button after use
+            self.emergency_button.pack_forget()
+            
+            # Show message
+            messagebox.showinfo("Reset Complete", 
+                              "The page has been reset.\n"
+                              "You can now continue using the application.")
+            
+            logger.info("Emergency reset completed")
+            
+        except Exception as e:
+            logger.error(f"Error during emergency reset: {e}")
+            messagebox.showerror("Reset Error", 
+                               f"Reset encountered an error: {str(e)}\n"
+                               "You may need to restart the application.")
