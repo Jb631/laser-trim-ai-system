@@ -29,7 +29,9 @@ class AIInsightsPage(BasePage):
         self.chat_history = []
         self.current_analysis = None
         super().__init__(parent, main_window)
-        self._initialize_ai_client()
+        # Initialize AI client in background to prevent blocking
+        thread = threading.Thread(target=self._initialize_ai_client, daemon=True)
+        thread.start()
 
     def _create_page(self):
         """Create AI insights page content with consistent theme (matching batch processing)."""

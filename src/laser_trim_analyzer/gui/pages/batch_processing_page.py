@@ -38,7 +38,7 @@ try:
     USING_CTK_METRIC = True
 except ImportError as e:
     logger.warning(f"Could not import CTK MetricCard: {e}")
-    from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+    from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
     USING_CTK_METRIC = False
 from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
 try:
@@ -200,7 +200,7 @@ class BatchProcessingPage(BasePage):
         self.title_label.pack(pady=15)
         
         # Batch validation status
-        self.batch_status_frame = ctk.CTkFrame(self.header_frame)
+        self.batch_status_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.batch_status_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.batch_status_label = ctk.CTkLabel(
@@ -295,7 +295,7 @@ class BatchProcessingPage(BasePage):
         self.file_selection_label.pack(anchor='w', padx=15, pady=(15, 5))
         
         # File list display
-        self.file_list_frame = ctk.CTkFrame(self.file_selection_frame)
+        self.file_list_frame = ctk.CTkFrame(self.file_selection_frame, fg_color="transparent")
         self.file_list_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.file_list_label = ctk.CTkLabel(
@@ -313,7 +313,7 @@ class BatchProcessingPage(BasePage):
         self.file_listbox.pack(fill='x', padx=10, pady=(0, 10))
         
         # File selection buttons - responsive layout
-        self.file_buttons_frame = ctk.CTkFrame(self.file_selection_frame)
+        self.file_buttons_frame = ctk.CTkFrame(self.file_selection_frame, fg_color="transparent")
         self.file_buttons_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         # Create buttons that will be arranged responsively
@@ -367,7 +367,7 @@ class BatchProcessingPage(BasePage):
         self.batch_validation_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Validation metrics container
-        self.validation_metrics_frame = ctk.CTkFrame(self.batch_validation_frame)
+        self.validation_metrics_frame = ctk.CTkFrame(self.batch_validation_frame, fg_color="transparent")
         self.validation_metrics_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         # Validation metric cards
@@ -420,7 +420,7 @@ class BatchProcessingPage(BasePage):
         self.options_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Options container for responsive layout
-        self.options_container = ctk.CTkFrame(self.options_frame)
+        self.options_container = ctk.CTkFrame(self.options_frame, fg_color="transparent")
         self.options_container.pack(fill='x', padx=15, pady=(0, 15))
         
         self.generate_plots_var = ctk.BooleanVar(value=False)  # Default off for batch
@@ -467,11 +467,11 @@ class BatchProcessingPage(BasePage):
         self.resource_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Resource status container
-        self.resource_container = ctk.CTkFrame(self.resource_frame)
+        self.resource_container = ctk.CTkFrame(self.resource_frame, fg_color="transparent")
         self.resource_container.pack(fill='x', padx=15, pady=(0, 15))
         
         # Memory usage
-        self.memory_frame = ctk.CTkFrame(self.resource_container)
+        self.memory_frame = ctk.CTkFrame(self.resource_container, fg_color="transparent")
         self.memory_frame.pack(fill='x', pady=(0, 10))
         
         self.memory_label = ctk.CTkLabel(
@@ -523,7 +523,7 @@ class BatchProcessingPage(BasePage):
         self.controls_label.pack(anchor='w', padx=15, pady=(15, 10))
         
         # Controls container
-        self.controls_container = ctk.CTkFrame(self.controls_frame)
+        self.controls_container = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
         self.controls_container.pack(fill='x', padx=15, pady=(0, 15))
         
         self.start_button = ctk.CTkButton(
@@ -1097,16 +1097,8 @@ class BatchProcessingPage(BasePage):
                     
                 return True
             
-            # Run batch processing with asyncio and optimizations
+            # Run batch processing with optimizations
             try:
-                # Check if there's already an event loop
-                loop = None
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    # No loop in this thread, create one
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
                 
                 # Limit max workers based on system resources and file count
                 base_workers = 4  # Default workers since we removed the slider
@@ -1165,13 +1157,11 @@ class BatchProcessingPage(BasePage):
                     # Note: In a real implementation, you'd wait for the user response
                 
                 # Process with memory-efficient batching
-                results = loop.run_until_complete(
-                    self._process_with_memory_management(
-                        file_paths=file_paths,
-                        output_dir=output_dir,
-                        progress_callback=enhanced_progress_callback,
-                        max_workers=max_workers
-                    )
+                results = self._process_with_memory_management(
+                    file_paths=file_paths,
+                    output_dir=output_dir,
+                    progress_callback=enhanced_progress_callback,
+                    max_workers=max_workers
                 )
                 
             except Exception as process_error:
@@ -1234,7 +1224,7 @@ class BatchProcessingPage(BasePage):
             import gc
             gc.collect()
 
-    async def _process_with_memory_management(
+    def _process_with_memory_management(
         self,
         file_paths: List[Path],
         output_dir: Optional[Path],
@@ -1242,7 +1232,6 @@ class BatchProcessingPage(BasePage):
         max_workers: int
     ) -> Dict[str, AnalysisResult]:
         """Process files with enhanced memory management and cancellation support."""
-        import asyncio
         import concurrent.futures
         from pathlib import Path
         
@@ -1346,7 +1335,7 @@ class BatchProcessingPage(BasePage):
             gc.collect()
             
             # Small delay to prevent CPU overload
-            await asyncio.sleep(0.01)
+            time.sleep(0.01)
         
         if failed_files:
             logger.warning(f"Processing completed with {len(failed_files)} failures")
@@ -1386,8 +1375,8 @@ class BatchProcessingPage(BasePage):
                 if hasattr(processor_config.processing, 'comprehensive_validation'):
                     processor_config.processing.comprehensive_validation = self.comprehensive_validation_var.get()
             
-            # Process the file (only pass valid parameters)
-            result = self.processor.process_file(
+            # Process the file using synchronous wrapper for thread pool execution
+            result = self.processor.process_file_sync(
                 file_path,
                 output_dir=output_dir
             )
@@ -1849,10 +1838,24 @@ class BatchProcessingPage(BasePage):
                     fail_count = 0
                     
                     if hasattr(result, 'tracks'):
-                        track_count = len(result.tracks)
-                        for track in result.tracks.values():
+                        # Handle both dict (from analysis) and list (from DB) formats
+                        if isinstance(result.tracks, dict):
+                            track_count = len(result.tracks)
+                            tracks_iter = result.tracks.values()
+                        else:
+                            track_count = len(result.tracks)
+                            tracks_iter = result.tracks
+                            
+                        for track in tracks_iter:
                             if hasattr(track, 'overall_status'):
                                 track_status = getattr(track.overall_status, 'value', str(track.overall_status))
+                                if track_status == 'Pass':
+                                    pass_count += 1
+                                else:
+                                    fail_count += 1
+                            elif hasattr(track, 'status'):
+                                # Database tracks have 'status' not 'overall_status'
+                                track_status = getattr(track.status, 'value', str(track.status))
                                 if track_status == 'Pass':
                                     pass_count += 1
                                 else:

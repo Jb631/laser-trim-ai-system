@@ -193,10 +193,10 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=14, weight="bold")
         )
         
-        # Validation text area
+        # Validation text area (increased height for better visibility)
         self.validation_text = ctk.CTkTextbox(
             self.validation_frame,
-            height=100,
+            height=250,
             width=400
         )
 
@@ -439,7 +439,15 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             # Sigma analysis
             if hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis:
                 sigma_gradient = getattr(track_data.sigma_analysis, 'sigma_gradient', None)
-                if sigma_gradient is not None:
+                sigma_threshold = getattr(track_data.sigma_analysis, 'sigma_threshold', None)
+                
+                if sigma_gradient is not None and sigma_threshold is not None:
+                    # Show gradient with threshold label
+                    self.sigma_gradient_card.update_value(
+                        f"{sigma_gradient:.4f} (Limit: {sigma_threshold:.4f})", 
+                        "info"
+                    )
+                elif sigma_gradient is not None:
                     self.sigma_gradient_card.update_value(f"{sigma_gradient:.4f}", "info")
                 else:
                     self.sigma_gradient_card.update_value("N/A", "neutral")
@@ -458,7 +466,15 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             # Linearity analysis
             if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
                 linearity_error = getattr(track_data.linearity_analysis, 'final_linearity_error_shifted', None)
-                if linearity_error is not None:
+                linearity_spec = getattr(track_data.linearity_analysis, 'linearity_spec', None)
+                
+                if linearity_error is not None and linearity_spec is not None:
+                    # Show error with spec limit label
+                    self.linearity_error_card.update_value(
+                        f"{linearity_error:.3f} (Limit: {linearity_spec:.3f})", 
+                        "info"
+                    )
+                elif linearity_error is not None:
                     self.linearity_error_card.update_value(f"{linearity_error:.3f}", "info")
                 else:
                     self.linearity_error_card.update_value("N/A", "neutral")

@@ -84,11 +84,11 @@ class SettingsPage(BasePage):
         self.processing_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Processing options container
-        self.processing_container = ctk.CTkFrame(self.processing_frame)
+        self.processing_container = ctk.CTkFrame(self.processing_frame, fg_color="transparent")
         self.processing_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Max workers
-        workers_frame = ctk.CTkFrame(self.processing_container)
+        workers_frame = ctk.CTkFrame(self.processing_container, fg_color="transparent")
         workers_frame.pack(fill='x', padx=10, pady=(10, 5))
 
         workers_label = ctk.CTkLabel(workers_frame, text="Parallel Workers:")
@@ -143,7 +143,7 @@ class SettingsPage(BasePage):
         self.database_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Database options container
-        self.database_container = ctk.CTkFrame(self.database_frame)
+        self.database_container = ctk.CTkFrame(self.database_frame, fg_color="transparent")
         self.database_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable database
@@ -157,7 +157,7 @@ class SettingsPage(BasePage):
         self.db_check.pack(anchor='w', padx=10, pady=(10, 5))
 
         # Database path
-        path_frame = ctk.CTkFrame(self.database_container)
+        path_frame = ctk.CTkFrame(self.database_container, fg_color="transparent")
         path_frame.pack(fill='x', padx=10, pady=5)
 
         path_label = ctk.CTkLabel(path_frame, text="Database:")
@@ -196,7 +196,7 @@ class SettingsPage(BasePage):
         self.ml_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # ML options container
-        self.ml_container = ctk.CTkFrame(self.ml_frame)
+        self.ml_container = ctk.CTkFrame(self.ml_frame, fg_color="transparent")
         self.ml_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable ML
@@ -210,7 +210,7 @@ class SettingsPage(BasePage):
         self.ml_check.pack(anchor='w', padx=10, pady=(10, 5))
 
         # ML features frame
-        features_frame = ctk.CTkFrame(self.ml_container)
+        features_frame = ctk.CTkFrame(self.ml_container, fg_color="transparent")
         features_frame.pack(fill='x', padx=10, pady=5)
 
         self.failure_pred_var = ctk.BooleanVar(
@@ -248,11 +248,11 @@ class SettingsPage(BasePage):
         self.appearance_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Appearance options container
-        self.appearance_container = ctk.CTkFrame(self.appearance_frame)
+        self.appearance_container = ctk.CTkFrame(self.appearance_frame, fg_color="transparent")
         self.appearance_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Theme selection
-        theme_frame = ctk.CTkFrame(self.appearance_container)
+        theme_frame = ctk.CTkFrame(self.appearance_container, fg_color="transparent")
         theme_frame.pack(fill='x', padx=10, pady=(10, 5))
 
         theme_label = ctk.CTkLabel(theme_frame, text="Theme:")

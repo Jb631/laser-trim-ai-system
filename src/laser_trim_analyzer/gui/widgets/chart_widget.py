@@ -24,6 +24,7 @@ from typing import (
 from datetime import datetime
 import pandas as pd
 import matplotlib.dates as mdates
+from laser_trim_analyzer.gui.theme_helper import ThemeHelper
 
 
 class ChartWidget(ctk.CTkFrame):
@@ -79,11 +80,25 @@ class ChartWidget(ctk.CTkFrame):
         }
 
         self._setup_ui()
+        
+    def _apply_theme_to_axes(self, ax):
+        """Apply theme colors to matplotlib axes."""
+        # Use white background for charts regardless of theme for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
+        ax.xaxis.label.set_color('black')
+        ax.yaxis.label.set_color('black')
+        if hasattr(ax, 'title'):
+            ax.title.set_color('black')
 
     def _setup_ui(self):
         """Set up the chart widget UI."""
-        # Create matplotlib figure
+        # Create matplotlib figure with theme-aware colors
         self.figure = Figure(figsize=self.figsize, dpi=100)
+        
+        # Use white background for charts for better visibility
         self.figure.patch.set_facecolor('white')
 
         # Create canvas
@@ -111,12 +126,12 @@ class ChartWidget(ctk.CTkFrame):
 
         # Chart type selector
         ctk.CTkLabel(toolbar_frame, text="Type:").pack(side='left', padx=(10, 2))
-        self.type_var = tk.StringVar(value=self.chart_type)
-        type_combo = ctk.CTkComboBox(toolbar_frame, variable=self.type_var,
+        self.type_combo = ctk.CTkComboBox(toolbar_frame,
                                    values=['line', 'bar', 'scatter', 'histogram', 'heatmap'],
                                    width=120,
                                    command=self._change_chart_type)
-        type_combo.pack(side='left', padx=2)
+        self.type_combo.set(self.chart_type)
+        self.type_combo.pack(side='left', padx=2)
 
     def update_chart_data(self, data: pd.DataFrame):
         """
@@ -159,6 +174,15 @@ class ChartWidget(ctk.CTkFrame):
         """Plot line chart from DataFrame."""
         ax = self.figure.add_subplot(111)
         
+        # Apply theme colors to axes
+        colors = ThemeHelper.get_theme_colors()
+        ax.set_facecolor(colors['bg']['secondary'])
+        ax.tick_params(colors=colors['fg']['secondary'])
+        for spine in ax.spines.values():
+            spine.set_color(colors['border']['primary'])
+        ax.xaxis.label.set_color(colors['fg']['primary'])
+        ax.yaxis.label.set_color(colors['fg']['primary'])
+        
         if 'trim_date' in data.columns and 'sigma_gradient' in data.columns:
             # Sort by date
             data_sorted = data.sort_values('trim_date')
@@ -193,8 +217,8 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', rotation=45)
                 
         if self.title:
-            ax.set_title(self.title)
-        ax.grid(True, alpha=0.3)
+            ax.set_title(self.title, color=colors['fg']['primary'])
+        ax.grid(True, alpha=0.3, color=colors['border']['secondary'])
         self.figure.tight_layout()
         self.canvas.draw()
         
@@ -258,8 +282,8 @@ class ChartWidget(ctk.CTkFrame):
                            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
                 
         if self.title:
-            ax.set_title(self.title)
-        ax.grid(True, alpha=0.3)
+            ax.set_title(self.title, color=colors['fg']['primary'])
+        ax.grid(True, alpha=0.3, color=colors['border']['secondary'])
         self.figure.tight_layout()
         self.canvas.draw()
         
@@ -408,6 +432,7 @@ class ChartWidget(ctk.CTkFrame):
                  ylabel: str = "", **kwargs):
         """Plot bar chart."""
         ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        self._apply_theme_to_axes(ax)
 
         # Map QA colors
         if colors:
@@ -453,6 +478,7 @@ class ChartWidget(ctk.CTkFrame):
                      ylabel: str = "", alpha: float = 0.6, **kwargs):
         """Plot scatter chart."""
         ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        self._apply_theme_to_axes(ax)
 
         # Default size
         if sizes is None:
@@ -497,6 +523,7 @@ class ChartWidget(ctk.CTkFrame):
                        ylabel: str = "Frequency", **kwargs):
         """Plot histogram."""
         ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        self._apply_theme_to_axes(ax)
 
         # Use QA color if specified
         if color and color in self.qa_colors:
@@ -679,13 +706,24 @@ class ChartWidget(ctk.CTkFrame):
         """Clear the current chart."""
         self.figure.clear()
         self.canvas.draw()
+    
+    def refresh_theme(self):
+        """Refresh chart colors when theme changes."""
+        colors = ThemeHelper.get_theme_colors()
+        self.figure.patch.set_facecolor(colors['bg']['secondary'])
+        
+        # Update all axes if they exist
+        for ax in self.figure.axes:
+            self._apply_theme_to_axes(ax)
+        
+        self.canvas.draw()
 
     def _change_chart_type(self, new_value=None):
         """Change chart type and refresh if data exists."""
         if new_value:
             self.chart_type = new_value
         else:
-            self.chart_type = self.type_var.get()
+            self.chart_type = self.type_combo.get()
         
         # If we have data stored, re-plot with new chart type
         if hasattr(self, '_last_data') and self._last_data is not None:

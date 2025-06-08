@@ -58,6 +58,9 @@ class CTkMainWindow(ctk.CTk):
         self.config = config or get_config()
         self.logger = logging.getLogger(__name__)
         
+        # Set up global exception handler to prevent crashes
+        self._setup_exception_handler()
+        
         # Window setup
         self._setup_window()
         
@@ -76,6 +79,38 @@ class CTkMainWindow(ctk.CTk):
         # Bind window close event
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+    def _setup_exception_handler(self):
+        """Set up global exception handler to prevent application crashes"""
+        def handle_exception(exc_type, exc_value, exc_traceback):
+            # Don't handle KeyboardInterrupt
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            
+            # Log the error
+            self.logger.error(
+                "Uncaught exception", 
+                exc_info=(exc_type, exc_value, exc_traceback)
+            )
+            
+            # Show error dialog
+            error_msg = f"An unexpected error occurred:\n\n{exc_type.__name__}: {str(exc_value)}\n\nThe application will continue running, but some features may not work correctly."
+            
+            try:
+                messagebox.showerror("Application Error", error_msg)
+            except:
+                # If messagebox fails, at least print to console
+                print(f"ERROR: {error_msg}")
+        
+        # Set the exception handler
+        sys.excepthook = handle_exception
+        
+        # Also handle Tkinter exceptions
+        def handle_tk_error(exc, val, tb):
+            self.logger.error(f"Tkinter error: {val}")
+            # Don't show dialog for every Tkinter error, just log it
+        
+        self.report_callback_exception = handle_tk_error
 
     
     def _setup_window(self):
@@ -121,9 +156,23 @@ class CTkMainWindow(ctk.CTk):
                 saved_height = settings_manager.get("window.height", window_height)
                 saved_x = settings_manager.get("window.x", x)
                 saved_y = settings_manager.get("window.y", y)
+                
+                # Ensure window is within screen bounds
+                saved_width = min(saved_width, screen_width)
+                saved_height = min(saved_height, screen_height)
+                saved_x = max(0, min(saved_x, screen_width - saved_width))
+                saved_y = max(0, min(saved_y, screen_height - saved_height))
+                
+                # Ensure minimum size
+                saved_width = max(saved_width, min_width)
+                saved_height = max(saved_height, min_height)
+                
                 self.geometry(f"{saved_width}x{saved_height}+{saved_x}+{saved_y}")
+                self.logger.info(f"Window state restored: {saved_width}x{saved_height}+{saved_x}+{saved_y}")
         except Exception as e:
             self.logger.warning(f"Could not restore window state: {e}")
+            # Fallback to default geometry
+            self.geometry(f"{window_width}x{window_height}+{x}+{y}")
     
     def _init_services(self):
         """Initialize backend services"""
@@ -342,23 +391,30 @@ class CTkMainWindow(ctk.CTk):
         
         # Hide current page
         if self.current_page and self.current_page in self.pages:
-            self.pages[self.current_page].grid_remove()
-            
-            # Call on_hide if available
-            if hasattr(self.pages[self.current_page], 'on_hide'):
-                self.pages[self.current_page].on_hide()
+            # Use the page's hide() method if available, otherwise use grid_remove()
+            if hasattr(self.pages[self.current_page], 'hide'):
+                self.pages[self.current_page].hide()
+            else:
+                self.pages[self.current_page].grid_remove()
+                # Call on_hide if available (only if we didn't use hide() which already calls it)
+                if hasattr(self.pages[self.current_page], 'on_hide'):
+                    self.pages[self.current_page].on_hide()
         
         # Show new page
         if page_name in self.pages:
-            self.pages[page_name].grid()
+            # Use the page's show() method if available, otherwise use grid()
+            if hasattr(self.pages[page_name], 'show'):
+                self.pages[page_name].show()
+            else:
+                self.pages[page_name].grid()
             self.current_page = page_name
             
             # Pass parameters to the page if it has a set_filter method
             if kwargs and hasattr(self.pages[page_name], 'set_filter'):
                 self.pages[page_name].set_filter(**kwargs)
             
-            # Call on_show if available
-            if hasattr(self.pages[page_name], 'on_show'):
+            # Call on_show if available (only if we didn't use show() which already calls it)
+            if not hasattr(self.pages[page_name], 'show') and hasattr(self.pages[page_name], 'on_show'):
                 self.pages[page_name].on_show()
             
             self.logger.debug(f"Showing page: {page_name} with params: {kwargs}")
@@ -676,14 +732,53 @@ class CTkMainWindow(ctk.CTk):
         
         # Save window state
         try:
-            settings_manager.set("window.width", self.winfo_width())
-            settings_manager.set("window.height", self.winfo_height())
-            settings_manager.set("window.x", self.winfo_x())
-            settings_manager.set("window.y", self.winfo_y())
-            settings_manager.set("window.maximized", self.state() == 'zoomed')
+            # Update idle tasks to ensure we have the current geometry
+            self.update_idletasks()
+            
+            # Get current window state
+            current_state = self.state()
+            
+            # Only save geometry if window is in a normal or maximized state
+            if current_state in ['normal', 'zoomed']:
+                # If maximized, temporarily restore to get normal geometry
+                if current_state == 'zoomed':
+                    self.state('normal')
+                    self.update_idletasks()
+                
+                # Get window geometry
+                width = self.winfo_width()
+                height = self.winfo_height()
+                x = self.winfo_x()
+                y = self.winfo_y()
+                
+                # Validate geometry values
+                if width > 0 and height > 0:
+                    settings_manager.set("window.width", width, save=False)
+                    settings_manager.set("window.height", height, save=False)
+                    settings_manager.set("window.x", x, save=False)
+                    settings_manager.set("window.y", y, save=False)
+                
+                # Restore maximized state if it was maximized
+                if current_state == 'zoomed':
+                    self.state('zoomed')
+                
+                settings_manager.set("window.maximized", current_state == 'zoomed', save=False)
+            
+            # Save current page
+            if self.current_page:
+                settings_manager.set("window.last_page", self.current_page, save=False)
+            
+            # Save all settings at once
             settings_manager.save()
+            self.logger.info(f"Window state saved successfully (state: {current_state})")
+            
         except Exception as e:
-            self.logger.warning(f"Could not save window state: {e}")
+            self.logger.error(f"Error saving window state: {e}", exc_info=True)
+            # Try to save at least something
+            try:
+                settings_manager.save()
+            except:
+                pass
         
         # Destroy window
         self.destroy()

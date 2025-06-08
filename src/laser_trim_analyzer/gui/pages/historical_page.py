@@ -27,7 +27,7 @@ from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, Analys
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
@@ -72,7 +72,7 @@ class HistoricalPage(BasePage):
         self.title_label.pack(pady=15)
 
         # Analytics status indicator
-        self.analytics_status_frame = ctk.CTkFrame(self.header_frame)
+        self.analytics_status_frame = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.analytics_status_frame.pack(fill='x', padx=15, pady=(0, 15))
         
         self.analytics_status_label = ctk.CTkLabel(
@@ -103,11 +103,11 @@ class HistoricalPage(BasePage):
         self.dashboard_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Dashboard metrics container
-        self.metrics_container = ctk.CTkFrame(self.dashboard_frame)
+        self.metrics_container = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
         self.metrics_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Row 1 of metrics
-        metrics_row1 = ctk.CTkFrame(self.metrics_container)
+        metrics_row1 = ctk.CTkFrame(self.metrics_container, fg_color="transparent")
         metrics_row1.pack(fill='x', padx=10, pady=(10, 5))
 
         self.total_records_card = MetricCard(
@@ -143,7 +143,7 @@ class HistoricalPage(BasePage):
         self.prediction_accuracy_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
         # Row 2 of metrics
-        metrics_row2 = ctk.CTkFrame(self.metrics_container)
+        metrics_row2 = ctk.CTkFrame(self.metrics_container, fg_color="transparent")
         metrics_row2.pack(fill='x', padx=10, pady=(5, 10))
 
         self.sigma_correlation_card = MetricCard(
@@ -191,7 +191,7 @@ class HistoricalPage(BasePage):
         self.advanced_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Analytics controls
-        controls_frame = ctk.CTkFrame(self.advanced_frame)
+        controls_frame = ctk.CTkFrame(self.advanced_frame, fg_color="transparent")
         controls_frame.pack(fill='x', padx=15, pady=(0, 10))
 
         self.trend_analysis_btn = ctk.CTkButton(
@@ -277,7 +277,7 @@ class HistoricalPage(BasePage):
         self.stats_display.pack(fill='both', expand=True, padx=5, pady=5)
 
         # Predictive models tab
-        predictive_frame = ctk.CTkFrame(self.analytics_tabview.tab("Predictive Models"))
+        predictive_frame = ctk.CTkFrame(self.analytics_tabview.tab("Predictive Models"), fg_color="transparent")
         predictive_frame.pack(fill='both', expand=True, padx=5, pady=5)
 
         self.prediction_chart = ChartWidget(
@@ -309,11 +309,11 @@ class HistoricalPage(BasePage):
         self.query_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Filters container
-        self.filters_container = ctk.CTkFrame(self.query_frame)
+        self.filters_container = ctk.CTkFrame(self.query_frame, fg_color="transparent")
         self.filters_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # First row of filters
-        filter_row1 = ctk.CTkFrame(self.filters_container)
+        filter_row1 = ctk.CTkFrame(self.filters_container, fg_color="transparent")
         filter_row1.pack(fill='x', padx=10, pady=(10, 5))
 
         # Model filter
@@ -360,7 +360,7 @@ class HistoricalPage(BasePage):
         self.date_combo.pack(side='left', padx=(0, 10), pady=10)
 
         # Second row of filters
-        filter_row2 = ctk.CTkFrame(self.filters_container)
+        filter_row2 = ctk.CTkFrame(self.filters_container, fg_color="transparent")
         filter_row2.pack(fill='x', padx=10, pady=(5, 10))
 
         # Status filter
@@ -716,8 +716,8 @@ class HistoricalPage(BasePage):
 
         # Group by date and calculate pass rate
         df = self.current_data.copy()
-        # Use file_date if available, otherwise timestamp
-        df['date'] = pd.to_datetime(df['file_date'].fillna(df['timestamp'])).dt.date
+        # Use file_date if available, otherwise date
+        df['date'] = pd.to_datetime(df['file_date'].fillna(df['date'])).dt.date
 
         daily_stats = df.groupby('date').agg({
             'status': lambda x: (x == 'Pass').mean() * 100
