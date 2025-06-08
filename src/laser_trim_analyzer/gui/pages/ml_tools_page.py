@@ -116,6 +116,12 @@ class MLToolsPage(BasePage):
                 # Update model status cards with real data
                 self._update_model_status()
                 
+                # Update performance metrics periodically
+                self._update_performance_metrics()
+                
+                # Update performance chart if we have data
+                self._update_performance_chart()
+                
                 # Check if ML engine is now available
                 if self.ml_engine is None and status['engine_ready']:
                     self.ml_engine = self.ml_manager.ml_engine
@@ -2070,41 +2076,44 @@ Performance Metrics:
             if not ranking:
                 # Show message when no data available
                 self.perf_comparison_chart.clear_chart()
-                self.logger.info("No ranking data available for performance chart")
+                ax = self.perf_comparison_chart.figure.add_subplot(111)
+                ax.text(0.5, 0.5, 'No model data available\nRun model comparison to see results', 
+                       horizontalalignment='center', verticalalignment='center', 
+                       transform=ax.transAxes, fontsize=12)
+                self.perf_comparison_chart.canvas.draw()
                 return
-
-            self.logger.info(f"Updating performance chart with {len(ranking)} models")
-            
-            # Prepare chart data
+                
+            # Create chart data
             model_names = [item[0] for item in ranking]
-            scores = [item[1]['composite'] for item in ranking]
+            composite_scores = [item[1]['composite'] for item in ranking]
             
-            # Clear and update chart
+            # Create DataFrame for chart
+            chart_data = pd.DataFrame({
+                'model': model_names,
+                'score': composite_scores
+            })
+            
+            # Update chart
             self.perf_comparison_chart.clear_chart()
+            self.perf_comparison_chart.chart_type = 'bar'
+            self.perf_comparison_chart.title = 'Model Performance Comparison'
             
-            # Create bar chart
-            import matplotlib.pyplot as plt
-            fig = self.perf_comparison_chart.figure
-            fig.clear()
-            
-            ax = fig.add_subplot(111)
-            bars = ax.bar(model_names, scores, color=['green' if item[1].get('is_trained', False) else 'orange' for item in ranking])
-            
+            # Use a simple matplotlib chart since we're working with a bar chart
+            ax = self.perf_comparison_chart.figure.add_subplot(111)
+            bars = ax.bar(chart_data['model'], chart_data['score'], color=['green' if score > 0.1 else 'orange' for score in chart_data['score']])
             ax.set_title('Model Performance Comparison')
-            ax.set_ylabel('Composite Score')
             ax.set_xlabel('Models')
+            ax.set_ylabel('Composite Score')
             ax.tick_params(axis='x', rotation=45)
             
             # Add value labels on bars
-            for bar, score in zip(bars, scores):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{score:.2f}', ha='center', va='bottom', fontsize=9)
-            
-            fig.tight_layout()
+            for bar, score in zip(bars, chart_data['score']):
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                       f'{score:.3f}', ha='center', va='bottom', fontsize=10)
+                       
+            self.perf_comparison_chart.figure.tight_layout()
             self.perf_comparison_chart.canvas.draw()
-            
-            self.logger.info("Performance comparison chart updated successfully")
+            self.logger.info(f"Performance chart updated with {len(ranking)} models")
             
         except Exception as e:
             self.logger.error(f"Error updating performance comparison chart: {e}")
