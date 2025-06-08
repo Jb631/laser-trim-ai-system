@@ -511,6 +511,27 @@ class CTkMainWindow(ctk.CTk):
                 self.logger.error(f"Error re-enabling navigation buttons: {e}")
                 # Force clear processing state as a fallback
                 self.processing_pages.clear()
+        else:
+            self.logger.debug(f"Navigation buttons remain disabled due to ongoing processing: {self.processing_pages}")
+    
+    def force_clear_processing_state(self):
+        """Emergency method to clear all processing state"""
+        self.logger.warning("Force clearing all processing state")
+        self.processing_pages.clear()
+        try:
+            for button in self.nav_buttons.values():
+                button.configure(state="normal")
+            self.logger.info("Emergency: All navigation buttons re-enabled")
+        except Exception as e:
+            self.logger.error(f"Error in emergency navigation button enable: {e}")
+            
+    def get_processing_status(self) -> dict:
+        """Get current processing status for debugging"""
+        return {
+            'processing_pages': list(self.processing_pages),
+            'is_processing': self.is_processing(),
+            'nav_button_states': {name: button.cget('state') for name, button in self.nav_buttons.items()}
+        }
     
     def is_processing(self) -> bool:
         """Check if any page is currently processing
