@@ -321,6 +321,30 @@ class SingleFilePage(ctk.CTkFrame):
         # Also bind ButtonRelease for better compatibility
         self.export_button.bind("<ButtonRelease-1>", lambda e: self._handle_export_click())
         
+        # Add emergency reset button for debugging UI freeze issues
+        self.emergency_button = ctk.CTkButton(
+            self.controls_container,
+            text="Emergency Reset",
+            command=self.force_cleanup,
+            width=120,
+            height=40,
+            fg_color="orange",
+            hover_color="darkorange"
+        )
+        self.emergency_button.pack(side='left', padx=(0, 10), pady=10)
+        
+        # Add diagnostic button for troubleshooting
+        self.diagnostic_button = ctk.CTkButton(
+            self.controls_container,
+            text="UI Diagnostic",
+            command=self.create_diagnostic_window,
+            width=100,
+            height=40,
+            fg_color="purple",
+            hover_color="darkpurple"
+        )
+        self.diagnostic_button.pack(side='left', padx=(0, 10), pady=10)
+        
         self.clear_button = ctk.CTkButton(
             self.controls_container,
             text="Clear",
@@ -1012,11 +1036,26 @@ class SingleFilePage(ctk.CTkFrame):
             if hasattr(self, 'main_window') and self.main_window:
                 try:
                     self.main_window.unregister_processing("single_file")
-                except:
-                    pass
+                    # Also clear the processing_pages set directly if needed
+                    if hasattr(self.main_window, 'processing_pages'):
+                        self.main_window.processing_pages.discard("single_file")
+                        # If no more processing pages, re-enable all navigation
+                        if not self.main_window.processing_pages:
+                            for button in self.main_window.nav_buttons.values():
+                                button.configure(state="normal")
+                except Exception as e:
+                    logger.error(f"Failed to clear main window processing state: {e}")
             
             # Force enable all controls
             self._set_controls_state("normal")
+            
+            # Clear any progress dialog
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                try:
+                    self.progress_dialog.hide()
+                    self.progress_dialog = None
+                except:
+                    pass
             
             # Clear any watchdog timer
             if hasattr(self, 'watchdog_timer') and self.watchdog_timer:
@@ -1025,10 +1064,88 @@ class SingleFilePage(ctk.CTkFrame):
                     self.watchdog_timer = None
                 except:
                     pass
-                    
+            
+            # Force focus back to the main window to ensure it's responsive
+            try:
+                self.focus_set()
+                if self.main_window:
+                    self.main_window.focus_force()
+            except:
+                pass
+            
+            logger.info("Force cleanup completed - UI should be responsive now")
+            
         except Exception as e:
-            logger.error(f"Error in force cleanup: {e}")
-    
+            logger.error(f"Critical error in force cleanup: {e}")
+
+    def add_emergency_button(self):
+        """Add an emergency reset button for debugging UI freeze issues"""
+        try:
+            emergency_button = ctk.CTkButton(
+                self.controls_container,
+                text="Emergency Reset",
+                command=self.force_cleanup,
+                width=120,
+                height=40,
+                fg_color="orange",
+                hover_color="darkorange"
+            )
+            emergency_button.pack(side='left', padx=(0, 10), pady=10)
+            logger.info("Emergency reset button added")
+        except Exception as e:
+            logger.error(f"Failed to add emergency button: {e}")
+
+    def create_diagnostic_window(self):
+        """Create a diagnostic window to show current UI state"""
+        try:
+            diag_window = ctk.CTkToplevel(self)
+            diag_window.title("UI Diagnostic")
+            diag_window.geometry("400x300")
+            
+            # State information
+            state_text = ctk.CTkTextbox(diag_window, height=250)
+            state_text.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Get current state
+            state_info = []
+            state_info.append(f"is_analyzing: {getattr(self, 'is_analyzing', 'Unknown')}")
+            state_info.append(f"current_file: {getattr(self, 'current_file', 'None')}")
+            state_info.append(f"current_result: {getattr(self, 'current_result', 'None')}")
+            
+            if hasattr(self, 'main_window') and self.main_window:
+                state_info.append(f"processing_pages: {getattr(self.main_window, 'processing_pages', 'Unknown')}")
+                # Get full processing status if method exists
+                if hasattr(self.main_window, 'get_processing_status'):
+                    try:
+                        status = self.main_window.get_processing_status()
+                        state_info.append(f"main_window status: {status}")
+                    except Exception as e:
+                        state_info.append(f"main_window status error: {e}")
+                
+            # Button states
+            try:
+                state_info.append(f"analyze_button state: {self.analyze_button.cget('state')}")
+                state_info.append(f"export_button state: {self.export_button.cget('state')}")
+                state_info.append(f"browse_button state: {self.browse_button.cget('state')}")
+                state_info.append(f"clear_button state: {self.clear_button.cget('state')}")
+                if hasattr(self, 'emergency_button'):
+                    state_info.append(f"emergency_button state: {self.emergency_button.cget('state')}")
+            except Exception as e:
+                state_info.append(f"Button state error: {e}")
+            
+            state_text.insert('1.0', '\n'.join(state_info))
+            
+            # Add force cleanup button
+            cleanup_btn = ctk.CTkButton(
+                diag_window,
+                text="Force Cleanup Now",
+                command=lambda: [self.force_cleanup(), diag_window.destroy()]
+            )
+            cleanup_btn.pack(pady=10)
+            
+        except Exception as e:
+            logger.error(f"Failed to create diagnostic window: {e}")
+
     def _set_controls_state(self, state: str):
         """Set state of control buttons.
         
@@ -1055,13 +1172,25 @@ class SingleFilePage(ctk.CTkFrame):
                 # Export button state depends on whether we have results
                 export_state = "normal" if self.current_result else "disabled"
                 self.export_button.configure(state=export_state)
+                
+                # Emergency and diagnostic buttons should always be enabled for troubleshooting
+                if hasattr(self, 'emergency_button'):
+                    self.emergency_button.configure(state="normal")
+                if hasattr(self, 'diagnostic_button'):
+                    self.diagnostic_button.configure(state="normal")
             else:
-                # Disabled state - disable all controls
+                # Disabled state - disable most controls but keep emergency buttons enabled
                 self.analyze_button.configure(state=state)
                 self.validate_button.configure(state=state)
                 self.browse_button.configure(state=state)
                 self.clear_button.configure(state=state)
                 self.export_button.configure(state=state)
+                
+                # Keep emergency buttons enabled for troubleshooting
+                if hasattr(self, 'emergency_button'):
+                    self.emergency_button.configure(state="normal")
+                if hasattr(self, 'diagnostic_button'):
+                    self.diagnostic_button.configure(state="normal")
                 
             logger.debug(f"Controls state set to: {state}")
             
