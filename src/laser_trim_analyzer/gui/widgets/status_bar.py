@@ -67,7 +67,7 @@ class StatusIndicator(tk.Frame):
     def update_status(self, status: str, animate: bool = True):
         """Update indicator status."""
         self.status = status
-        self.label.config(text=f"{self.name}: {status}")
+        self.label.configure(text=f"{self.name}: {status}")
 
         # Get color
         color_key = status.lower()
@@ -283,7 +283,7 @@ class StatusBar(tk.Frame):
             message: Message text
             duration: Duration in milliseconds (None for permanent)
         """
-        self.message_label.config(text=message)
+        self.message_label.configure(text=message)
 
         if duration:
             # Auto-clear after duration
@@ -340,7 +340,7 @@ class StatusBar(tk.Frame):
     def _update_time(self):
         """Update time display."""
         current_time = datetime.now().strftime("%I:%M %p")
-        self.time_label.config(text=current_time)
+        self.time_label.configure(text=current_time)
 
         # Schedule next update
         self.after(1000, self._update_time)

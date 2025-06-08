@@ -6,10 +6,7 @@ Each page represents a different section of functionality.
 """
 
 # Import base page with CustomTkinter support
-try:
-    from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
-except ImportError:
-    from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 
 # Import pages with error handling
 try:
@@ -18,11 +15,7 @@ except ImportError as e:
     print(f"Warning: Could not import HomePage: {e}")
     HomePage = None
 
-try:
-    from laser_trim_analyzer.gui.pages.analysis_page import AnalysisPage
-except ImportError as e:
-    print(f"Warning: Could not import AnalysisPage: {e}")
-    AnalysisPage = None
+
 
 try:
     from laser_trim_analyzer.gui.pages.historical_page import HistoricalPage
@@ -75,7 +68,6 @@ except ImportError as e:
 __all__ = [
     'BasePage',
     'HomePage',
-    'AnalysisPage',
     'HistoricalPage',
     'ModelSummaryPage',
     'MLToolsPage',

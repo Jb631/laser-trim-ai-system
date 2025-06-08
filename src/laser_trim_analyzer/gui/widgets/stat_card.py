@@ -101,19 +101,19 @@ class StatCard(ttk.Frame):
     def update_value(self, value: Union[str, float, int], trend: Optional[str] = None):
         """Update the displayed value and optionally the trend."""
         self.value = value
-        self.value_label.config(text=str(value))
+        self.value_label.configure(text=str(value))
 
         if trend is not None:
             self.trend = trend
             if hasattr(self, 'trend_label'):
-                self.trend_label.config(text="↑" if trend == "up" else "↓")
+                self.trend_label.configure(text="↑" if trend == "up" else "↓")
 
     def set_color_scheme(self, scheme: str):
         """Change the color scheme of the card."""
         if scheme in self.colors:
             self.color_scheme = scheme
             colors = self.colors[scheme]
-            self.value_label.config(foreground=colors["fg"])
+            self.value_label.configure(foreground=colors["fg"])
             if hasattr(self, 'trend_label') and self.trend:
                 trend_color = colors["accent"] if self.trend == "up" else colors["fg"]
-                self.trend_label.config(foreground=trend_color)
+                self.trend_label.configure(foreground=trend_color)

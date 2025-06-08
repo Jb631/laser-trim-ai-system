@@ -321,29 +321,7 @@ class SingleFilePage(ctk.CTkFrame):
         # Also bind ButtonRelease for better compatibility
         self.export_button.bind("<ButtonRelease-1>", lambda e: self._handle_export_click())
         
-        # Add emergency reset button for debugging UI freeze issues
-        self.emergency_button = ctk.CTkButton(
-            self.controls_container,
-            text="Emergency Reset",
-            command=self.force_cleanup,
-            width=120,
-            height=40,
-            fg_color="orange",
-            hover_color="darkorange"
-        )
-        self.emergency_button.pack(side='left', padx=(0, 10), pady=10)
-        
-        # Add diagnostic button for troubleshooting
-        self.diagnostic_button = ctk.CTkButton(
-            self.controls_container,
-            text="UI Diagnostic",
-            command=self.create_diagnostic_window,
-            width=100,
-            height=40,
-            fg_color="purple",
-            hover_color="darkpurple"
-        )
-        self.diagnostic_button.pack(side='left', padx=(0, 10), pady=10)
+
         
         self.clear_button = ctk.CTkButton(
             self.controls_container,
@@ -717,12 +695,25 @@ class SingleFilePage(ctk.CTkFrame):
                 output_dir = base_dir / "single_analysis" / datetime.now().strftime("%Y%m%d_%H%M%S")
                 ensure_directory(output_dir)
             
-            # Progress callback with bounds checking
+            # Progress callback with bounds checking and thread safety
             def progress_callback(message: str, progress: float):
-                if self.progress_dialog:
-                    # Ensure progress is within bounds
-                    safe_progress = max(0.0, min(1.0, progress))
-                    self.after(0, lambda m=message, p=safe_progress: self.progress_dialog.update_progress(m, p))
+                try:
+                    if self.progress_dialog and not self.is_analyzing == False:
+                        # Ensure progress is within bounds
+                        safe_progress = max(0.0, min(1.0, progress))
+                        # Use a more thread-safe approach
+                        if hasattr(self, 'winfo_exists') and self.winfo_exists():
+                            self.after_idle(lambda: update_progress_safe(message, safe_progress))
+                except Exception as e:
+                    logger.debug(f"Progress callback error: {e}")
+            
+            def update_progress_safe(message: str, progress: float):
+                """Safely update progress from main thread."""
+                try:
+                    if self.progress_dialog and hasattr(self.progress_dialog, 'update_progress'):
+                        self.progress_dialog.update_progress(message, progress)
+                except Exception as e:
+                    logger.debug(f"Progress update error: {e}")
             
             # Run analysis with asyncio in a more robust way
             try:
@@ -791,21 +782,27 @@ class SingleFilePage(ctk.CTkFrame):
                     logger.error(f"Database save failed: {e}")
                     # Continue without database save
             
-            # Update UI on main thread
-            self.after(0, self._handle_analysis_success, result, output_dir)
+            # Store result for UI update in finally block
+            self.current_result = result
+            self._analysis_output_dir = output_dir
+            self._analysis_success = True
+            logger.info("Analysis completed successfully")
                 
         except ValidationError as e:
             logger.error(f"Validation error during analysis: {e}")
-            self.after(0, self._handle_analysis_error, f"Validation failed: {str(e)}")
+            self._analysis_error = f"Validation failed: {str(e)}"
+            self._analysis_success = False
             
         except ProcessingError as e:
             logger.error(f"Processing error during analysis: {e}")
-            self.after(0, self._handle_analysis_error, f"Processing failed: {str(e)}")
+            self._analysis_error = f"Processing failed: {str(e)}"
+            self._analysis_success = False
             
         except Exception as e:
             logger.error(f"Unexpected error during analysis: {e}")
             logger.error(traceback.format_exc())
-            self.after(0, self._handle_analysis_error, f"Unexpected error: {str(e)}")
+            self._analysis_error = f"Unexpected error: {str(e)}"
+            self._analysis_success = False
         
         finally:
             self.is_analyzing = False
@@ -813,8 +810,7 @@ class SingleFilePage(ctk.CTkFrame):
             # Cancel watchdog timer
             self._cancel_watchdog()
             
-            # CRITICAL: Always unregister processing state and re-enable controls
-            # Do this synchronously to ensure it happens even if UI is unresponsive
+            # CRITICAL: Always unregister processing state 
             try:
                 if self.main_window:
                     self.main_window.unregister_processing("single_file")
@@ -822,42 +818,46 @@ class SingleFilePage(ctk.CTkFrame):
             except Exception as e:
                 logger.error(f"Failed to unregister processing in finally: {e}")
             
-            # Execute UI cleanup immediately, don't schedule it
-            try:
-                self._set_controls_state("normal")
-                # Ensure analyze button is re-enabled based on file selection
-                if self.current_file:
-                    self.analyze_button.configure(state="normal")
-                logger.info("UI cleanup completed in finally block")
-            except Exception as e:
-                logger.error(f"Failed to cleanup UI in finally: {e}")
-                # Last resort - try to at least enable the analyze button
+            # Schedule UI updates on main thread (non-blocking)
+            def complete_ui_updates():
                 try:
-                    self.analyze_button.configure(state="normal")
-                except:
-                    pass
-            
-            # Also schedule it as backup in case we're in wrong thread
-            def cleanup_ui_backup():
-                try:
+                    # Handle success or error
+                    if hasattr(self, '_analysis_success') and self._analysis_success:
+                        self._handle_success_ui()
+                    elif hasattr(self, '_analysis_error'):
+                        self._handle_error_ui(self._analysis_error)
+                    
+                    # Always re-enable controls
                     self._set_controls_state("normal")
                     if self.current_file:
                         self.analyze_button.configure(state="normal")
+                    
+                    logger.info("UI updates completed successfully")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to complete UI updates: {e}")
+                    # Last resort - just enable the analyze button
+                    try:
+                        if self.current_file:
+                            self.analyze_button.configure(state="normal")
+                    except:
+                        pass
+            
+            # Schedule the UI update for the next event loop cycle
+            try:
+                self.after_idle(complete_ui_updates)
+            except:
+                # If scheduling fails, try direct execution
+                try:
+                    complete_ui_updates()
                 except:
                     pass
-            
-            try:
-                self.after(0, cleanup_ui_backup)
-            except:
-                pass
 
-    def _handle_analysis_success(self, result: AnalysisResult, output_dir: Optional[Path]):
-        """Handle successful analysis completion."""
+    def _handle_success_ui(self):
+        """Handle successful analysis UI updates - called from main thread."""
         try:
-            self.current_result = result
-            
-            # Cancel watchdog since we completed successfully
-            self._cancel_watchdog()
+            result = self.current_result
+            output_dir = getattr(self, '_analysis_output_dir', None)
             
             # Hide progress dialog
             if self.progress_dialog:
@@ -915,55 +915,33 @@ class SingleFilePage(ctk.CTkFrame):
                 except:
                     pass
             
-            # Unregister processing state - MUST happen
-            try:
-                if self.main_window:
-                    self.main_window.unregister_processing("single_file")
-                    logger.info("Unregistered processing in success handler")
-            except Exception as e:
-                logger.error(f"Failed to unregister processing in success handler: {e}")
-            
-            # Show success notification using non-blocking approach
-            success_msg = f"Analysis completed successfully!\n\n"
-            success_msg += f"Status: {result.overall_status.value}\n"
-            
-            if hasattr(result, 'overall_validation_status'):
-                success_msg += f"Validation: {result.overall_validation_status.value}\n"
-            
-            success_msg += f"Processing time: {result.processing_time:.2f}s"
-            
-            # Use computed property instead of non-existent attribute
-            try:
-                validation_grade = getattr(result, 'validation_grade', None)
-                if validation_grade and validation_grade != "Not Validated":
-                    success_msg += f"\nValidation Grade: {validation_grade}"
-            except Exception as e:
-                logger.debug(f"Could not get validation grade: {e}")
-            
-            if output_dir:
-                success_msg += f"\n\nOutputs saved to: {output_dir}"
-            
-            # Use after() to show dialog on next UI cycle to avoid blocking
-            def show_success_message():
+            # Show success notification
+            if result:
+                success_msg = f"Analysis completed successfully!\n\n"
+                success_msg += f"Status: {result.overall_status.value}\n"
+                
+                if hasattr(result, 'overall_validation_status'):
+                    success_msg += f"Validation: {result.overall_validation_status.value}\n"
+                
+                success_msg += f"Processing time: {result.processing_time:.2f}s"
+                
+                if output_dir:
+                    success_msg += f"\n\nOutputs saved to: {output_dir}"
+                
+                # Show success message
                 try:
                     messagebox.showinfo("Analysis Complete", success_msg)
                 except Exception as e:
                     logger.error(f"Failed to show success message: {e}")
             
-            self.after(100, show_success_message)  # Small delay to ensure UI is responsive
-            
-            logger.info(f"Analysis completed successfully: {result.overall_status.value}")
+            logger.info("Analysis completed successfully")
             
         except Exception as e:
-            logger.error(f"Error handling analysis success: {e}")
-            self._handle_analysis_error(f"Error processing results: {str(e)}")
+            logger.error(f"Error in success UI handler: {e}")
 
-    def _handle_analysis_error(self, error_message: str):
-        """Handle analysis error."""
+    def _handle_error_ui(self, error_message: str):
+        """Handle analysis error UI updates - called from main thread."""
         try:
-            # Cancel watchdog since we're handling the error
-            self._cancel_watchdog()
-            
             # Hide progress dialog
             if self.progress_dialog:
                 try:
@@ -1025,126 +1003,9 @@ class SingleFilePage(ctk.CTkFrame):
             except:
                 pass
 
-    def force_cleanup(self):
-        """Force cleanup of any stuck state - emergency method"""
-        logger.warning("Force cleanup called")
-        try:
-            # Clear analyzing flag
-            self.is_analyzing = False
-            
-            # Clear processing state in main window
-            if hasattr(self, 'main_window') and self.main_window:
-                try:
-                    self.main_window.unregister_processing("single_file")
-                    # Also clear the processing_pages set directly if needed
-                    if hasattr(self.main_window, 'processing_pages'):
-                        self.main_window.processing_pages.discard("single_file")
-                        # If no more processing pages, re-enable all navigation
-                        if not self.main_window.processing_pages:
-                            for button in self.main_window.nav_buttons.values():
-                                button.configure(state="normal")
-                except Exception as e:
-                    logger.error(f"Failed to clear main window processing state: {e}")
-            
-            # Force enable all controls
-            self._set_controls_state("normal")
-            
-            # Clear any progress dialog
-            if hasattr(self, 'progress_dialog') and self.progress_dialog:
-                try:
-                    self.progress_dialog.hide()
-                    self.progress_dialog = None
-                except:
-                    pass
-            
-            # Clear any watchdog timer
-            if hasattr(self, 'watchdog_timer') and self.watchdog_timer:
-                try:
-                    self.after_cancel(self.watchdog_timer)
-                    self.watchdog_timer = None
-                except:
-                    pass
-            
-            # Force focus back to the main window to ensure it's responsive
-            try:
-                self.focus_set()
-                if self.main_window:
-                    self.main_window.focus_force()
-            except:
-                pass
-            
-            logger.info("Force cleanup completed - UI should be responsive now")
-            
-        except Exception as e:
-            logger.error(f"Critical error in force cleanup: {e}")
 
-    def add_emergency_button(self):
-        """Add an emergency reset button for debugging UI freeze issues"""
-        try:
-            emergency_button = ctk.CTkButton(
-                self.controls_container,
-                text="Emergency Reset",
-                command=self.force_cleanup,
-                width=120,
-                height=40,
-                fg_color="orange",
-                hover_color="darkorange"
-            )
-            emergency_button.pack(side='left', padx=(0, 10), pady=10)
-            logger.info("Emergency reset button added")
-        except Exception as e:
-            logger.error(f"Failed to add emergency button: {e}")
 
-    def create_diagnostic_window(self):
-        """Create a diagnostic window to show current UI state"""
-        try:
-            diag_window = ctk.CTkToplevel(self)
-            diag_window.title("UI Diagnostic")
-            diag_window.geometry("400x300")
-            
-            # State information
-            state_text = ctk.CTkTextbox(diag_window, height=250)
-            state_text.pack(fill='both', expand=True, padx=10, pady=10)
-            
-            # Get current state
-            state_info = []
-            state_info.append(f"is_analyzing: {getattr(self, 'is_analyzing', 'Unknown')}")
-            state_info.append(f"current_file: {getattr(self, 'current_file', 'None')}")
-            state_info.append(f"current_result: {getattr(self, 'current_result', 'None')}")
-            
-            if hasattr(self, 'main_window') and self.main_window:
-                state_info.append(f"processing_pages: {getattr(self.main_window, 'processing_pages', 'Unknown')}")
-                # Get full processing status if method exists
-                if hasattr(self.main_window, 'get_processing_status'):
-                    try:
-                        status = self.main_window.get_processing_status()
-                        state_info.append(f"main_window status: {status}")
-                    except Exception as e:
-                        state_info.append(f"main_window status error: {e}")
-                
-            # Button states
-            try:
-                state_info.append(f"analyze_button state: {self.analyze_button.cget('state')}")
-                state_info.append(f"export_button state: {self.export_button.cget('state')}")
-                state_info.append(f"browse_button state: {self.browse_button.cget('state')}")
-                state_info.append(f"clear_button state: {self.clear_button.cget('state')}")
-                if hasattr(self, 'emergency_button'):
-                    state_info.append(f"emergency_button state: {self.emergency_button.cget('state')}")
-            except Exception as e:
-                state_info.append(f"Button state error: {e}")
-            
-            state_text.insert('1.0', '\n'.join(state_info))
-            
-            # Add force cleanup button
-            cleanup_btn = ctk.CTkButton(
-                diag_window,
-                text="Force Cleanup Now",
-                command=lambda: [self.force_cleanup(), diag_window.destroy()]
-            )
-            cleanup_btn.pack(pady=10)
-            
-        except Exception as e:
-            logger.error(f"Failed to create diagnostic window: {e}")
+
 
     def _set_controls_state(self, state: str):
         """Set state of control buttons.

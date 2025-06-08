@@ -924,7 +924,7 @@ class SettingsDialog(tk.Toplevel):
 
     def _test_db_connection(self):
         """Test database connection."""
-        self.db_test_label.config(text="Testing...", foreground='orange')
+        self.db_test_label.configure(text="Testing...", foreground='orange')
         self.update()
 
         try:
@@ -935,13 +935,13 @@ class SettingsDialog(tk.Toplevel):
             db.init_db()
             db.close()
 
-            self.db_test_label.config(text="✓ Connection successful", foreground='green')
+            self.db_test_label.configure(text="✓ Connection successful", foreground='green')
         except Exception as e:
-            self.db_test_label.config(text=f"✗ Failed: {str(e)[:50]}...", foreground='red')
+            self.db_test_label.configure(text=f"✗ Failed: {str(e)[:50]}...", foreground='red')
 
     def _test_api_connection(self):
         """Test API connection."""
-        self.api_test_label.config(text="Testing...", foreground='orange')
+        self.api_test_label.configure(text="Testing...", foreground='orange')
         self.update()
 
         try:
@@ -955,12 +955,12 @@ class SettingsDialog(tk.Toplevel):
             )
 
             if response.ok:
-                self.api_test_label.config(text="✓ Connection successful", foreground='green')
+                self.api_test_label.configure(text="✓ Connection successful", foreground='green')
             else:
-                self.api_test_label.config(text=f"✗ Failed: {response.status_code}", foreground='red')
+                self.api_test_label.configure(text=f"✗ Failed: {response.status_code}", foreground='red')
 
         except Exception as e:
-            self.api_test_label.config(text=f"✗ Failed: {str(e)[:50]}...", foreground='red')
+            self.api_test_label.configure(text=f"✗ Failed: {str(e)[:50]}...", foreground='red')
 
     def _export_config(self):
         """Export configuration to file."""

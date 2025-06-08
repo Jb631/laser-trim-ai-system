@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from laser_trim_analyzer.core.config import Config
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.settings_manager import settings_manager, SettingsDialog
 
 

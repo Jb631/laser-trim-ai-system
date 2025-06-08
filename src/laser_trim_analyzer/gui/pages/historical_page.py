@@ -25,7 +25,7 @@ from matplotlib.figure import Figure
 
 from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, AnalysisStatus
 from laser_trim_analyzer.database.manager import DatabaseManager
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support

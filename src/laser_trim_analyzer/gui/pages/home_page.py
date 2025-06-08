@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 import threading
 import time
 
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
