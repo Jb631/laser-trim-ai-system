@@ -95,7 +95,7 @@ class FileDropZone(ttk.Frame):
             self._setup_drag_drop()
         else:
             # Update UI to indicate drag and drop is not available
-            self.primary_label.config(text='Click browse to select files')
+            self.primary_label.configure(text='Click browse to select files')
             self.secondary_label.pack_forget()
             if not HAS_DND:
                 print("Note: Drag and drop not available - tkinterdnd2 not installed")
@@ -205,7 +205,7 @@ class FileDropZone(ttk.Frame):
         except Exception as e:
             print(f"Could not enable drag and drop: {e}")
             # Update UI to indicate drag and drop is not available
-            self.primary_label.config(text='Click browse to select files')
+            self.primary_label.configure(text='Click browse to select files')
             self.secondary_label.pack_forget()
 
     def _on_drag_enter(self, event):
@@ -275,8 +275,8 @@ class FileDropZone(ttk.Frame):
         """Process dropped files that may include folders asynchronously."""
         # Update UI to scanning state
         self._update_appearance('hover')
-        self.primary_label.config(text='Processing dropped items...')
-        self.secondary_label.config(text='Please wait while we scan folders')
+        self.primary_label.configure(text='Processing dropped items...')
+        self.secondary_label.configure(text='Please wait while we scan folders')
         self.browse_button.configure(state='disabled')
         
         def process_files():
@@ -328,7 +328,7 @@ class FileDropZone(ttk.Frame):
                                 # Capture the current count value
                                 current_count = total_checked
                                 self.after(0, lambda count=current_count: 
-                                         self.secondary_label.config(text=f'Scanned {count} files...'))
+                                         self.secondary_label.configure(text=f'Scanned {count} files...'))
                 
                 # Call completion handler on main thread
                 self.after(0, self._handle_async_drop_complete, valid_files, None)
@@ -348,26 +348,26 @@ class FileDropZone(ttk.Frame):
         
         if error:
             self._update_appearance('reject')
-            self.primary_label.config(text='Error processing dropped items')
-            self.secondary_label.config(text=f'Error: {error}')
+            self.primary_label.configure(text='Error processing dropped items')
+            self.secondary_label.configure(text=f'Error: {error}')
             self.after(2000, lambda: self._reset_ui_text())
         elif valid_files:
             self._update_appearance('accept')
-            self.primary_label.config(text=f'Found {len(valid_files)} files!')
-            self.secondary_label.config(text='Files ready for processing')
+            self.primary_label.configure(text=f'Found {len(valid_files)} files!')
+            self.secondary_label.configure(text='Files ready for processing')
             self._process_dropped_files(valid_files)
             self.after(2000, lambda: self._reset_ui_text())
         else:
             self._update_appearance('reject')
-            self.primary_label.config(text='No valid files found')
-            self.secondary_label.config(text='Try dropping files with supported extensions')
+            self.primary_label.configure(text='No valid files found')
+            self.secondary_label.configure(text='Try dropping files with supported extensions')
             self.after(2000, lambda: self._reset_ui_text())
 
     def _reset_ui_text(self):
         """Reset UI text to default state."""
         self._update_appearance('normal')
-        self.primary_label.config(text='Drag and drop files here')
-        self.secondary_label.config(text='or click browse to select files')
+        self.primary_label.configure(text='Drag and drop files here')
+        self.secondary_label.configure(text='or click browse to select files')
 
     def _validate_files_sync(self, files: List[Path]) -> List[Path]:
         """Validate and filter dropped files synchronously with security checks."""
@@ -446,8 +446,8 @@ class FileDropZone(ttk.Frame):
     def _find_files_in_folder_async(self, folder: Path, callback):
         """Asynchronously find valid files in a folder."""
         self._update_appearance('hover')
-        self.primary_label.config(text='Scanning folder...')
-        self.secondary_label.config(text='Please wait while we discover files')
+        self.primary_label.configure(text='Scanning folder...')
+        self.secondary_label.configure(text='Please wait while we discover files')
         self.browse_button.configure(state='disabled')
         
         def discover_files():
@@ -467,7 +467,7 @@ class FileDropZone(ttk.Frame):
                         # Capture the current count value
                         current_count = total_checked
                         self.after(0, lambda count=current_count: 
-                                 self.secondary_label.config(text=f'Scanned {count} files...'))
+                                 self.secondary_label.configure(text=f'Scanned {count} files...'))
                 
                 # Call callback on main thread with results
                 self.after(0, callback, valid_files, None)
@@ -517,12 +517,12 @@ class FileDropZone(ttk.Frame):
                         self._update_appearance('normal')
                         
                         if error:
-                            self.primary_label.config(text='Error scanning folder')
-                            self.secondary_label.config(text=f'Error: {error}')
+                            self.primary_label.configure(text='Error scanning folder')
+                            self.secondary_label.configure(text=f'Error: {error}')
                             messagebox.showerror("Folder Scan Error", f"Could not scan folder:\n{error}")
                         elif valid_files:
-                            self.primary_label.config(text='Drag and drop files here')
-                            self.secondary_label.config(text='or click browse to select files')
+                            self.primary_label.configure(text='Drag and drop files here')
+                            self.secondary_label.configure(text='or click browse to select files')
                             self._process_dropped_files(valid_files)
                             messagebox.showinfo(
                                 "Folder Scan Complete", 
@@ -530,8 +530,8 @@ class FileDropZone(ttk.Frame):
                                 f"in {folder_path.name}"
                             )
                         else:
-                            self.primary_label.config(text='No files found')
-                            self.secondary_label.config(text='Try selecting a different folder')
+                            self.primary_label.configure(text='No files found')
+                            self.secondary_label.configure(text='Try selecting a different folder')
                             messagebox.showwarning(
                                 "No Files Found",
                                 f"No {', '.join(self.accept_extensions)} files found in the selected folder."
@@ -668,8 +668,8 @@ class FileDropZone(ttk.Frame):
             self.browse_button.configure(state='disabled')  # Disable browse during processing
             self._update_appearance('processing')
             # Update text to show processing
-            self.primary_label.config(text='Processing files...')
-            self.secondary_label.config(text='Analysis in progress')
+            self.primary_label.configure(text='Processing files...')
+            self.secondary_label.configure(text='Analysis in progress')
         else:
             self.set_enabled(state == 'normal')
 

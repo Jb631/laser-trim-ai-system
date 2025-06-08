@@ -266,13 +266,13 @@ class AlertBanner(ttk.Frame):
         """Add smooth hover effects to action buttons."""
         def on_enter(e):
             try:
-                button.config(bg='#f8f9fa', relief='raised')
+                button.configure(bg='#f8f9fa', relief='raised')
             except:
                 pass
 
         def on_leave(e):
             try:
-                button.config(bg='white', relief='flat')
+                button.configure(bg='white', relief='flat')
             except:
                 pass
 
@@ -283,14 +283,14 @@ class AlertBanner(ttk.Frame):
         """Add smooth hover effects to dismiss button."""
         def on_enter(e):
             try:
-                self.dismiss_btn.config(font=('Segoe UI', 16, 'bold'), 
+                self.dismiss_btn.configure(font=('Segoe UI', 16, 'bold'), 
                                        bg=self.current_style['hover_bg'])
             except:
                 pass
 
         def on_leave(e):
             try:
-                self.dismiss_btn.config(font=('Segoe UI', 14, 'bold'),
+                self.dismiss_btn.configure(font=('Segoe UI', 14, 'bold'),
                                        bg=self.current_style['bg'])
             except:
                 pass
@@ -302,14 +302,14 @@ class AlertBanner(ttk.Frame):
         """Add subtle hover effect to entire banner."""
         def on_enter(e):
             try:
-                self.inner_frame.config(bg=self.current_style['hover_bg'])
+                self.inner_frame.configure(bg=self.current_style['hover_bg'])
                 self._update_bg_recursive(self.inner_frame, self.current_style['hover_bg'])
             except:
                 pass
 
         def on_leave(e):
             try:
-                self.inner_frame.config(bg=self.current_style['bg'])
+                self.inner_frame.configure(bg=self.current_style['bg'])
                 self._update_bg_recursive(self.inner_frame, self.current_style['bg'])
             except:
                 pass
@@ -321,7 +321,7 @@ class AlertBanner(ttk.Frame):
         """Recursively update background color with error handling."""
         try:
             if widget.winfo_exists():
-                widget.config(bg=bg_color)
+                widget.configure(bg=bg_color)
                 
                 for child in widget.winfo_children():
                     if isinstance(child, (tk.Frame, tk.Label)) and \
@@ -404,7 +404,7 @@ class AlertBanner(ttk.Frame):
         # Provide immediate visual feedback
         try:
             if hasattr(self, 'dismiss_btn'):
-                self.dismiss_btn.config(font=('Segoe UI', 12, 'bold'))
+                self.dismiss_btn.configure(font=('Segoe UI', 12, 'bold'))
                 
             # Schedule actual dismissal slightly delayed for visual feedback
             self.after(50, self.dismiss)

@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from laser_trim_analyzer.core.models import AnalysisResult
 from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer, DriftDetector
 from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
@@ -1694,7 +1694,7 @@ Performance Metrics:
 {json.dumps(report.get('performance_metrics', {}), indent=2)}
 """
             overview_text.insert('1.0', overview_content)
-            overview_text.config(state='disabled')
+            overview_text.configure(state='disabled')
 
             # Feature importance tab
             if 'feature_importance' in report:

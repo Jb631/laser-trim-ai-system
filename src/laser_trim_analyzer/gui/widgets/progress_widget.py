@@ -328,7 +328,7 @@ class ProgressWidget(ttk.Frame):
         self.progress_bar['value'] = self.progress
 
         if self.show_percentage:
-            self.percentage_label.config(text=f"{int(self.progress)}%")
+            self.percentage_label.configure(text=f"{int(self.progress)}%")
 
         # Change color based on progress
         if self.progress >= 100:
@@ -374,24 +374,24 @@ class ProgressWidget(ttk.Frame):
                     step_widget.circle,
                     fill=self.colors['success']
                 )
-                step_widget.status_label.config(text="✓")
+                step_widget.status_label.configure(text="✓")
             elif i == current_step:
                 # Current step
                 step_widget.canvas.itemconfig(
                     step_widget.circle,
                     fill=self.colors['progress']
                 )
-                step_widget.status_label.config(text="●")
+                step_widget.status_label.configure(text="●")
             else:
                 # Pending step
                 step_widget.canvas.itemconfig(
                     step_widget.circle,
                     fill=self.colors['background']
                 )
-                step_widget.status_label.config(text="")
+                step_widget.status_label.configure(text="")
 
         # Update percentage
-        self.percentage_label.config(text=f"{int(self.progress)}%")
+        self.percentage_label.configure(text=f"{int(self.progress)}%")
 
     def _update_time_estimate(self):
         """Update time remaining estimate."""
@@ -418,7 +418,7 @@ class ProgressWidget(ttk.Frame):
             time_text = f"{hours}h {minutes}m remaining"
 
         if hasattr(self, 'time_label'):
-            self.time_label.config(text=time_text)
+            self.time_label.configure(text=time_text)
 
     def set_indeterminate(self, start: bool = True):
         """Set progress to indeterminate mode."""
@@ -429,7 +429,7 @@ class ProgressWidget(ttk.Frame):
                 self.progress_bar.configure(mode='indeterminate')
                 self.progress_bar.start(10)
                 if self.show_percentage:
-                    self.percentage_label.config(text="")
+                    self.percentage_label.configure(text="")
             else:
                 self.progress_bar.stop()
                 self.progress_bar.configure(mode='determinate')
@@ -437,12 +437,12 @@ class ProgressWidget(ttk.Frame):
     def set_status(self, status: str):
         """Update status text."""
         if hasattr(self, 'status_label'):
-            self.status_label.config(text=status)
+            self.status_label.configure(text=status)
 
     def set_label(self, text: str):
         """Update main label text."""
         if hasattr(self, 'label'):
-            self.label.config(text=text)
+            self.label.configure(text=text)
 
     def pause(self):
         """Pause progress tracking."""
@@ -472,7 +472,7 @@ class ProgressWidget(ttk.Frame):
         self.set_status("Ready")
 
         if hasattr(self, 'time_label'):
-            self.time_label.config(text="")
+            self.time_label.configure(text="")
 
     def complete(self, message: str = "Complete"):
         """Mark progress as complete."""
@@ -482,7 +482,7 @@ class ProgressWidget(ttk.Frame):
         if hasattr(self, 'time_label'):
             if self.start_time:
                 elapsed = datetime.now() - self.start_time - self.total_pause_duration
-                self.time_label.config(text=f"Completed in {elapsed.seconds}s")
+                self.time_label.configure(text=f"Completed in {elapsed.seconds}s")
 
 
 # Example usage

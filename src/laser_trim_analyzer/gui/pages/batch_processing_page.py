@@ -30,13 +30,8 @@ from laser_trim_analyzer.utils.file_utils import ensure_directory
 # Set up logging before using it
 logger = logging.getLogger(__name__)
 
-try:
-    from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
-    USING_CTK_BASE = True
-except ImportError as e:
-    logger.warning(f"Could not import CTK BasePage: {e}")
-    from laser_trim_analyzer.gui.pages.base_page import BasePage
-    USING_CTK_BASE = False
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+USING_CTK_BASE = True
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 try:
     from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard

@@ -14,7 +14,7 @@ import json
 from typing import Optional, Dict, List, Any
 
 from laser_trim_analyzer.core.models import AnalysisResult
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 # Removed alert_banner import to prevent glitching issues
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider

@@ -24,7 +24,7 @@ from matplotlib.figure import Figure
 # Import SQLAlchemy func for database queries
 from sqlalchemy import func
 
-from laser_trim_analyzer.gui.pages.base_page import BasePage
+from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card import MetricCard

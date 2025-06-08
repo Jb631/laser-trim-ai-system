@@ -232,11 +232,11 @@ class MetricCard(ttk.Frame):
         else:
             formatted_value = str(self.value)
 
-        self.value_label.config(text=formatted_value)
+        self.value_label.configure(text=formatted_value)
 
         # Update color based on thresholds
         color = self._get_value_color()
-        self.value_label.config(foreground=color)
+        self.value_label.configure(foreground=color)
 
         # Update sparkline
         if self.show_sparkline and self.historical_values:
@@ -281,27 +281,27 @@ class MetricCard(ttk.Frame):
             new_numeric = float(new_value)
         except (ValueError, TypeError):
             # For non-numeric values, don't show trend
-            self.trend_label.config(text="", foreground=self.colors['neutral'])
+            self.trend_label.configure(text="", foreground=self.colors['neutral'])
             return
             
         if old_numeric == new_numeric:
-            self.trend_label.config(text="→", foreground=self.colors['neutral'])
+            self.trend_label.configure(text="→", foreground=self.colors['neutral'])
         elif new_numeric > old_numeric:
             # Check if increase is good or bad
             if self.thresholds.get('good', 0) > self.thresholds.get('critical', 0):
                 # Higher is better
-                self.trend_label.config(text="↑", foreground=self.colors['good'])
+                self.trend_label.configure(text="↑", foreground=self.colors['good'])
             else:
                 # Lower is better
-                self.trend_label.config(text="↑", foreground=self.colors['critical'])
+                self.trend_label.configure(text="↑", foreground=self.colors['critical'])
         else:
             # Check if decrease is good or bad
             if self.thresholds.get('good', 0) > self.thresholds.get('critical', 0):
                 # Higher is better
-                self.trend_label.config(text="↓", foreground=self.colors['critical'])
+                self.trend_label.configure(text="↓", foreground=self.colors['critical'])
             else:
                 # Lower is better
-                self.trend_label.config(text="↓", foreground=self.colors['good'])
+                self.trend_label.configure(text="↓", foreground=self.colors['good'])
 
     def _update_sparkline(self):
         """Update sparkline with current data."""

@@ -13,14 +13,14 @@ from tkinter import messagebox
 # Import pages with better error handling
 try:
     from laser_trim_analyzer.gui.pages import (
-        HomePage, AnalysisPage, HistoricalPage, ModelSummaryPage,
+        HomePage, HistoricalPage, ModelSummaryPage,
         MLToolsPage, AIInsightsPage, SettingsPage,
         SingleFilePage, BatchProcessingPage, MultiTrackPage
     )
 except ImportError as e:
     logging.error(f"Error importing pages: {e}", exc_info=True)
     # Try individual imports as fallback
-    from laser_trim_analyzer.gui.pages import HomePage, AnalysisPage, HistoricalPage, ModelSummaryPage
+    from laser_trim_analyzer.gui.pages import HomePage, HistoricalPage, ModelSummaryPage
     from laser_trim_analyzer.gui.pages import MLToolsPage, AIInsightsPage, SettingsPage
     try:
         from laser_trim_analyzer.gui.pages import SingleFilePage
@@ -75,6 +75,8 @@ class CTkMainWindow(ctk.CTk):
         
         # Bind window close event
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+
     
     def _setup_window(self):
         """Configure main window"""
@@ -166,32 +168,17 @@ class CTkMainWindow(ctk.CTk):
         """Create sidebar navigation"""
         nav_buttons = [
             ("home", "🏠 Home", 1),
-            ("analysis", "📊 Analysis", 2),
-            ("single_file", "📄 Single File", 3),
-            ("batch", "📦 Batch Processing", 4),
-            ("multi_track", "🎯 Multi-Track", 5),
-            ("model_summary", "📈 Model Summary", 6),
-            ("historical", "📜 Historical", 7),
-            ("ml_tools", "🤖 ML Tools", 8),
-            ("ai_insights", "💡 AI Insights", 9),
-            ("settings", "⚙️ Settings", 11),
+            ("single_file", "📄 Single File", 2),
+            ("batch", "📦 Batch Processing", 3),
+            ("multi_track", "🎯 Multi-Track", 4),
+            ("model_summary", "📈 Model Summary", 5),
+            ("historical", "📜 Historical", 6),
+            ("ml_tools", "🤖 ML Tools", 7),
+            ("ai_insights", "💡 AI Insights", 8),
+            ("settings", "⚙️ Settings", 10),
         ]
         
         self.nav_buttons = {}
-        
-        # Add emergency reset button at the bottom
-        self.reset_button = ctk.CTkButton(
-            self.sidebar_frame,
-            text="🔄 Reset if Frozen",
-            command=self._emergency_reset,
-            width=140,
-            height=30,
-            font=ctk.CTkFont(size=12),
-            fg_color="#8B0000",  # Dark red
-            hover_color="#B22222"  # Lighter red on hover
-        )
-        # Place it at the bottom with some padding
-        self.reset_button.grid(row=20, column=0, padx=20, pady=(10, 20), sticky="s")
         
         for page_name, label, row in nav_buttons:
             button = ctk.CTkButton(
@@ -218,7 +205,6 @@ class CTkMainWindow(ctk.CTk):
         """Create all page instances"""
         page_classes = {
             "home": HomePage,
-            "analysis": AnalysisPage,
             "single_file": SingleFilePage,
             "batch": BatchProcessingPage,
             "multi_track": MultiTrackPage,
@@ -392,13 +378,13 @@ class CTkMainWindow(ctk.CTk):
         if has_data:
             self._show_page("home")
         else:
-            self._show_page("analysis")
+            self._show_page("single_file")
             # Show welcome message after delay
             self.after(1000, self._show_welcome_message)
     
     def _show_welcome_message(self):
         """Show welcome message for new users"""
-        if self.current_page == "analysis":
+        if self.current_page == "single_file":
             # Custom CTk message box
             dialog = ctk.CTkToplevel(self)
             dialog.title("Welcome to Laser Trim Analyzer")
@@ -417,10 +403,11 @@ class CTkMainWindow(ctk.CTk):
                 dialog,
                 text="Welcome to the Laser Trim Analyzer!\n\n"
                      "To get started:\n"
-                     "1. Click 'Browse Files' to select Excel files\n"
-                     "2. Or drag and drop files onto the interface\n"
-                     "3. Process files to build your analysis history\n"
-                     "4. Explore ML tools and historical reports\n\n"
+                     "• Single File Page: Analyze individual files\n"
+                     "• Batch Processing: Analyze multiple files\n"
+                     "• Browse or drag and drop Excel files\n"
+                     "• Build your analysis history\n"
+                     "• Explore ML tools and historical reports\n\n"
                      "Need help? Check the documentation.",
                 font=ctk.CTkFont(size=14),
                 justify="left"
