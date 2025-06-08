@@ -3706,6 +3706,16 @@ Performance Metrics:
                 # Update ML engine's tracking
                 self._update_ml_engine_tracking(model_name, model)
                 
+                # Update ML manager's model status
+                if self.ml_manager and hasattr(self.ml_manager, '_models_status'):
+                    self.ml_manager._models_status[model_name].update({
+                        'status': 'Ready',
+                        'trained': True,
+                        'last_training': datetime.now(),
+                        'performance': getattr(model, 'performance_metrics', {})
+                    })
+                    self.logger.info(f"Updated ML manager status for {model_name}")
+                
                 # Save model state if supported
                 try:
                     if hasattr(self.ml_engine, 'save_model'):
