@@ -159,10 +159,13 @@ class MLPredictor:
             model_dir = self.config.ml.model_path
             model_dir.mkdir(parents=True, exist_ok=True)
             
-            self.logger.debug(
-                "Created model directory",
-                context={'model_dir': str(model_dir)} if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "Created model directory",
+                    context={'model_dir': str(model_dir)}
+                )
+            else:
+                self.logger.debug(f"Created model directory: {model_dir}")
 
             # Initialize implementation predictor
             self._impl_predictor = None
@@ -215,10 +218,13 @@ class MLPredictor:
         from laser_trim_analyzer.ml.models import ThresholdOptimizer, FailurePredictor, DriftDetector
         
         try:
-            self.logger.debug(
-                "Starting model registration",
-                context={'ml_engine_id': id(self.ml_engine)} if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.debug(
+                    "Starting model registration",
+                    context={'ml_engine_id': id(self.ml_engine)}
+                )
+            else:
+                self.logger.debug("Starting model registration")
             
             # Ensure models dictionary exists
             if not hasattr(self.ml_engine, 'models'):
@@ -289,15 +295,18 @@ class MLPredictor:
             failure_predictor.prediction_count = 0
             
             self.ml_engine.models['failure_predictor'] = failure_predictor
-            self.logger.info(
-                "Registered model: failure_predictor",
-                context={
-                    'model_type': 'failure_predictor',
-                    'version': '1.0.0',
-                    'features': failure_config.features,
-                    'hyperparameters': failure_config.hyperparameters
-                } if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    "Registered model: failure_predictor",
+                    context={
+                        'model_type': 'failure_predictor',
+                        'version': '1.0.0',
+                        'features': failure_config.features,
+                        'hyperparameters': failure_config.hyperparameters
+                    }
+                )
+            else:
+                self.logger.info("Registered model: failure_predictor")
             
             # Create and register threshold optimizer
             threshold_optimizer = ThresholdOptimizer(threshold_config, self.logger)
@@ -310,15 +319,18 @@ class MLPredictor:
             threshold_optimizer.prediction_count = 0
             
             self.ml_engine.models['threshold_optimizer'] = threshold_optimizer
-            self.logger.info(
-                "Registered model: threshold_optimizer",
-                context={
-                    'model_type': 'threshold_optimizer',
-                    'version': '1.0.0',
-                    'features': threshold_config.features,
-                    'hyperparameters': threshold_config.hyperparameters
-                } if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    "Registered model: threshold_optimizer",
+                    context={
+                        'model_type': 'threshold_optimizer',
+                        'version': '1.0.0',
+                        'features': threshold_config.features,
+                        'hyperparameters': threshold_config.hyperparameters
+                    }
+                )
+            else:
+                self.logger.info("Registered model: threshold_optimizer")
             
             # Create and register drift detector
             drift_detector = DriftDetector(drift_config, self.logger)
@@ -331,15 +343,18 @@ class MLPredictor:
             drift_detector.prediction_count = 0
             
             self.ml_engine.models['drift_detector'] = drift_detector
-            self.logger.info(
-                "Registered model: drift_detector",
-                context={
-                    'model_type': 'drift_detector',
-                    'version': '1.0.0',
-                    'features': drift_config.features,
-                    'hyperparameters': drift_config.hyperparameters
-                } if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    "Registered model: drift_detector",
+                    context={
+                        'model_type': 'drift_detector',
+                        'version': '1.0.0',
+                        'features': drift_config.features,
+                        'hyperparameters': drift_config.hyperparameters
+                    }
+                )
+            else:
+                self.logger.info("Registered model: drift_detector")
 
             # Store configs if supported
             if not hasattr(self.ml_engine, 'model_configs'):
@@ -349,13 +364,16 @@ class MLPredictor:
             self.ml_engine.model_configs['threshold_optimizer'] = threshold_config
             self.ml_engine.model_configs['drift_detector'] = drift_config
             
-            self.logger.info(
-                f"Successfully registered {len(self.ml_engine.models)} models",
-                context={
-                    'models_registered': list(self.ml_engine.models.keys()),
-                    'total_models': len(self.ml_engine.models)
-                } if HAS_SECURE_LOGGING else {}
-            )
+            if HAS_SECURE_LOGGING:
+                self.logger.info(
+                    f"Successfully registered {len(self.ml_engine.models)} models",
+                    context={
+                        'models_registered': list(self.ml_engine.models.keys()),
+                        'total_models': len(self.ml_engine.models)
+                    }
+                )
+            else:
+                self.logger.info(f"Successfully registered {len(self.ml_engine.models)} models")
             
         except Exception as e:
             if HAS_SECURE_LOGGING:

@@ -58,6 +58,7 @@ class SingleFilePage(ctk.CTkFrame):
         self.analysis_thread: Optional[threading.Thread] = None
         self.is_analyzing = False
         self.progress_dialog = None
+        self.watchdog_timer = None
         
         # Create the page content (now we need to call this explicitly)
         self._create_page()
@@ -311,7 +312,14 @@ class SingleFilePage(ctk.CTkFrame):
             height=40,
             state="disabled"
         )
+        # Apply stable hover effect separately to prevent glitching
+        self.export_button._hover_color = None  # Disable default hover
         self.export_button.pack(side='left', padx=(0, 10), pady=10)
+        
+        # Bind additional click event as fallback
+        self.export_button.bind("<Button-1>", lambda e: self._handle_export_click())
+        # Also bind ButtonRelease for better compatibility
+        self.export_button.bind("<ButtonRelease-1>", lambda e: self._handle_export_click())
         
         self.clear_button = ctk.CTkButton(
             self.controls_container,
@@ -405,6 +413,9 @@ class SingleFilePage(ctk.CTkFrame):
         if not self.current_file:
             messagebox.showerror("Error", "No file selected")
             return
+        
+        # Disable validate button to prevent rapid clicks
+        self.validate_button.configure(state="disabled")
         
         self._update_validation_status("Validating...", "orange")
         
@@ -503,6 +514,9 @@ class SingleFilePage(ctk.CTkFrame):
                 # Show errors
                 error_msg = "Validation failed:\n" + "\n".join(validation_result['errors'])
                 messagebox.showerror("Validation Failed", error_msg)
+            
+            # Re-enable validate button after validation completes
+            self.validate_button.configure(state="normal")
                 
         except Exception as e:
             logger.error(f"Error handling validation result: {e}")
@@ -511,7 +525,69 @@ class SingleFilePage(ctk.CTkFrame):
     def _handle_validation_error(self, error_message):
         """Handle validation error on main thread."""
         self._update_validation_status("Validation Error", "red")
+        
+        # Re-enable validate button on error
+        self.validate_button.configure(state="normal")
+        
         messagebox.showerror("Validation Error", f"Pre-validation failed:\n{error_message}")
+    
+    def _setup_analysis_watchdog(self):
+        """Set up a watchdog timer to prevent indefinite freezing."""
+        # Cancel any existing watchdog
+        if self.watchdog_timer:
+            self.after_cancel(self.watchdog_timer)
+        
+        # Set up new watchdog (5 minutes timeout)
+        def watchdog_timeout():
+            if self.is_analyzing:
+                logger.error("Analysis watchdog timeout - forcefully cleaning up")
+                # Force cleanup
+                self.is_analyzing = False
+                
+                # Try to unregister processing
+                try:
+                    if self.main_window:
+                        self.main_window.unregister_processing("single_file")
+                except Exception as e:
+                    logger.error(f"Watchdog failed to unregister: {e}")
+                
+                # Try to re-enable controls
+                try:
+                    self._set_controls_state("normal")
+                    if self.current_file:
+                        self.analyze_button.configure(state="normal")
+                except Exception as e:
+                    logger.error(f"Watchdog failed to enable controls: {e}")
+                
+                # Hide progress dialog
+                try:
+                    if self.progress_dialog:
+                        self.progress_dialog.hide()
+                        self.progress_dialog = None
+                except Exception as e:
+                    logger.error(f"Watchdog failed to hide dialog: {e}")
+                
+                # Show timeout message
+                try:
+                    messagebox.showerror("Analysis Timeout", 
+                                       "Analysis timed out after 5 minutes.\n"
+                                       "The application has been reset to a usable state.")
+                except:
+                    pass
+        
+        # Schedule watchdog for 5 minutes
+        self.watchdog_timer = self.after(300000, watchdog_timeout)  # 300000ms = 5 minutes
+        logger.info("Analysis watchdog timer set for 5 minutes")
+    
+    def _cancel_watchdog(self):
+        """Cancel the watchdog timer."""
+        if self.watchdog_timer:
+            try:
+                self.after_cancel(self.watchdog_timer)
+                self.watchdog_timer = None
+                logger.debug("Cancelled analysis watchdog timer")
+            except Exception as e:
+                logger.error(f"Failed to cancel watchdog: {e}")
 
     def _update_validation_status(self, status: str, color: str):
         """Update validation status indicator."""
@@ -539,12 +615,29 @@ class SingleFilePage(ctk.CTkFrame):
             messagebox.showwarning("Warning", "Analysis already in progress")
             return
         
+        # Disable analyze button immediately to prevent rapid clicks
+        self.analyze_button.configure(state="disabled")
+        
         try:
             # Reset previous results
             self._clear_results()
             
-            # Disable controls
+            # Disable all controls
             self._set_controls_state("disabled")
+            
+            # Flag that we're starting analysis BEFORE registering
+            self.is_analyzing = True
+            
+            # Register with main window that we're processing
+            processing_registered = False
+            try:
+                if self.main_window:
+                    self.main_window.register_processing("single_file")
+                    processing_registered = True
+                    logger.info("Registered processing state")
+            except Exception as e:
+                logger.error(f"Failed to register processing: {e}")
+                # Continue anyway but note the failure
             
             # Show progress dialog
             self.progress_dialog = ProgressDialog(
@@ -555,19 +648,39 @@ class SingleFilePage(ctk.CTkFrame):
             self.progress_dialog.show()
             
             # Start analysis in thread
-            self.is_analyzing = True
             self.analysis_thread = threading.Thread(
                 target=self._run_analysis,
                 daemon=True
             )
             self.analysis_thread.start()
             
+            # Set up a watchdog timer (5 minutes timeout)
+            self._setup_analysis_watchdog()
+            
             logger.info(f"Started analysis of: {self.current_file}")
             
         except Exception as e:
             logger.error(f"Error starting analysis: {e}")
             messagebox.showerror("Error", f"Failed to start analysis: {str(e)}")
-            self._set_controls_state("normal")
+            
+            # Reset state
+            self.is_analyzing = False
+            
+            # Always try to re-enable controls
+            try:
+                self._set_controls_state("normal")
+                # Ensure analyze button is re-enabled
+                if self.current_file:
+                    self.analyze_button.configure(state="normal")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to re-enable controls: {cleanup_error}")
+            
+            # Unregister processing state if we registered it
+            if self.main_window and processing_registered:
+                try:
+                    self.main_window.unregister_processing("single_file")
+                except Exception as unreg_error:
+                    logger.error(f"Failed to unregister processing: {unreg_error}")
 
     def _run_analysis(self):
         """Run analysis in background thread."""
@@ -580,10 +693,12 @@ class SingleFilePage(ctk.CTkFrame):
                 output_dir = base_dir / "single_analysis" / datetime.now().strftime("%Y%m%d_%H%M%S")
                 ensure_directory(output_dir)
             
-            # Progress callback
+            # Progress callback with bounds checking
             def progress_callback(message: str, progress: float):
                 if self.progress_dialog:
-                    self.after(0, lambda m=message, p=progress: self.progress_dialog.update_progress(m, p))
+                    # Ensure progress is within bounds
+                    safe_progress = max(0.0, min(1.0, progress))
+                    self.after(0, lambda m=message, p=safe_progress: self.progress_dialog.update_progress(m, p))
             
             # Run analysis with asyncio in a more robust way
             try:
@@ -670,16 +785,64 @@ class SingleFilePage(ctk.CTkFrame):
         
         finally:
             self.is_analyzing = False
+            
+            # Cancel watchdog timer
+            self._cancel_watchdog()
+            
+            # CRITICAL: Always unregister processing state and re-enable controls
+            # Do this synchronously to ensure it happens even if UI is unresponsive
+            try:
+                if self.main_window:
+                    self.main_window.unregister_processing("single_file")
+                    logger.info("Unregistered processing state in finally block")
+            except Exception as e:
+                logger.error(f"Failed to unregister processing in finally: {e}")
+            
+            # Execute UI cleanup immediately, don't schedule it
+            try:
+                self._set_controls_state("normal")
+                # Ensure analyze button is re-enabled based on file selection
+                if self.current_file:
+                    self.analyze_button.configure(state="normal")
+                logger.info("UI cleanup completed in finally block")
+            except Exception as e:
+                logger.error(f"Failed to cleanup UI in finally: {e}")
+                # Last resort - try to at least enable the analyze button
+                try:
+                    self.analyze_button.configure(state="normal")
+                except:
+                    pass
+            
+            # Also schedule it as backup in case we're in wrong thread
+            def cleanup_ui_backup():
+                try:
+                    self._set_controls_state("normal")
+                    if self.current_file:
+                        self.analyze_button.configure(state="normal")
+                except:
+                    pass
+            
+            try:
+                self.after(0, cleanup_ui_backup)
+            except:
+                pass
 
     def _handle_analysis_success(self, result: AnalysisResult, output_dir: Optional[Path]):
         """Handle successful analysis completion."""
         try:
             self.current_result = result
             
+            # Cancel watchdog since we completed successfully
+            self._cancel_watchdog()
+            
             # Hide progress dialog
             if self.progress_dialog:
-                self.progress_dialog.hide()
-                self.progress_dialog = None
+                try:
+                    self.progress_dialog.hide()
+                except Exception as e:
+                    logger.error(f"Failed to hide progress dialog: {e}")
+                finally:
+                    self.progress_dialog = None
             
             # Update validation status based on result
             if hasattr(result, 'overall_validation_status'):
@@ -705,10 +868,36 @@ class SingleFilePage(ctk.CTkFrame):
                 # Continue with other operations even if display fails
             
             # Enable export button
-            self.export_button.configure(state="normal")
+            try:
+                self.export_button.configure(state="normal")
+                logger.info("Export button enabled after successful analysis")
+                
+                # Debug: Check button state after enabling
+                button_state = self.export_button.cget("state")
+                logger.info(f"Export button state after enabling: {button_state}")
+            except Exception as e:
+                logger.error(f"Failed to enable export button: {e}")
             
-            # Re-enable controls
-            self._set_controls_state("normal")
+            # CRITICAL: Always re-enable controls and unregister processing
+            # Do this even if previous steps failed
+            try:
+                self._set_controls_state("normal")
+            except Exception as e:
+                logger.error(f"Failed to re-enable controls in success handler: {e}")
+                # Try direct button enable as fallback
+                try:
+                    if self.current_file:
+                        self.analyze_button.configure(state="normal")
+                except:
+                    pass
+            
+            # Unregister processing state - MUST happen
+            try:
+                if self.main_window:
+                    self.main_window.unregister_processing("single_file")
+                    logger.info("Unregistered processing in success handler")
+            except Exception as e:
+                logger.error(f"Failed to unregister processing in success handler: {e}")
             
             # Show success notification using non-blocking approach
             success_msg = f"Analysis completed successfully!\n\n"
@@ -748,44 +937,196 @@ class SingleFilePage(ctk.CTkFrame):
     def _handle_analysis_error(self, error_message: str):
         """Handle analysis error."""
         try:
+            # Cancel watchdog since we're handling the error
+            self._cancel_watchdog()
+            
             # Hide progress dialog
             if self.progress_dialog:
-                self.progress_dialog.hide()
-                self.progress_dialog = None
+                try:
+                    self.progress_dialog.hide()
+                except Exception as e:
+                    logger.error(f"Failed to hide progress dialog in error handler: {e}")
+                finally:
+                    self.progress_dialog = None
             
             # Update validation status
-            self._update_validation_status("Analysis Failed", "red")
+            try:
+                self._update_validation_status("Analysis Failed", "red")
+            except Exception as e:
+                logger.error(f"Failed to update validation status in error handler: {e}")
+            
+            # CRITICAL: Always re-enable controls and unregister processing
+            # These MUST happen even if other operations fail
             
             # Re-enable controls
-            self._set_controls_state("normal")
+            try:
+                self._set_controls_state("normal")
+            except Exception as e:
+                logger.error(f"Failed to re-enable controls in error handler: {e}")
+                # Try direct button enable as fallback
+                try:
+                    if self.current_file:
+                        self.analyze_button.configure(state="normal")
+                    self.browse_button.configure(state="normal")
+                    self.clear_button.configure(state="normal")
+                except Exception as fallback_error:
+                    logger.error(f"Failed fallback control enable: {fallback_error}")
             
-            # Show error message
-            messagebox.showerror("Analysis Failed", error_message)
+            # Unregister processing state - MUST happen
+            try:
+                if self.main_window:
+                    self.main_window.unregister_processing("single_file")
+                    logger.info("Unregistered processing in error handler")
+            except Exception as e:
+                logger.error(f"Failed to unregister processing in error handler: {e}")
+            
+            # Show error message (non-critical)
+            try:
+                messagebox.showerror("Analysis Failed", error_message)
+            except Exception as e:
+                logger.error(f"Failed to show error messagebox: {e}")
             
             logger.error(f"Analysis failed: {error_message}")
             
         except Exception as e:
-            logger.error(f"Error handling analysis error: {e}")
+            logger.error(f"Critical error in error handler: {e}")
+            # Last resort - try to at least unregister and enable buttons
+            try:
+                if self.main_window:
+                    self.main_window.unregister_processing("single_file")
+            except:
+                pass
+            try:
+                self.analyze_button.configure(state="normal")
+            except:
+                pass
 
-    def _set_controls_state(self, state: str):
-        """Set state of control buttons."""
+    def force_cleanup(self):
+        """Force cleanup of any stuck state - emergency method"""
+        logger.warning("Force cleanup called")
         try:
-            self.analyze_button.configure(state=state)
+            # Clear analyzing flag
+            self.is_analyzing = False
+            
+            # Clear processing state in main window
+            if hasattr(self, 'main_window') and self.main_window:
+                try:
+                    self.main_window.unregister_processing("single_file")
+                except:
+                    pass
+            
+            # Force enable all controls
+            self._set_controls_state("normal")
+            
+            # Clear any watchdog timer
+            if hasattr(self, 'watchdog_timer') and self.watchdog_timer:
+                try:
+                    self.after_cancel(self.watchdog_timer)
+                    self.watchdog_timer = None
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"Error in force cleanup: {e}")
+    
+    def _set_controls_state(self, state: str):
+        """Set state of control buttons.
+        
+        Args:
+            state: Either "normal" or "disabled"
+        """
+        try:
+            # For normal state, check if we have a file selected
             if state == "normal":
-                self.validate_button.configure(state="normal" if self.current_file else "disabled")
+                # Analyze button should be enabled only if a file is selected
+                analyze_state = "normal" if self.current_file else "disabled"
+                self.analyze_button.configure(state=analyze_state)
+                
+                # Validate button should be enabled only if a file is selected
+                validate_state = "normal" if self.current_file else "disabled"
+                self.validate_button.configure(state=validate_state)
+                
+                # Browse button should always be enabled in normal state
+                self.browse_button.configure(state="normal")
+                
+                # Clear button should always be enabled in normal state
+                self.clear_button.configure(state="normal")
+                
+                # Export button state depends on whether we have results
+                export_state = "normal" if self.current_result else "disabled"
+                self.export_button.configure(state=export_state)
             else:
+                # Disabled state - disable all controls
+                self.analyze_button.configure(state=state)
                 self.validate_button.configure(state=state)
+                self.browse_button.configure(state=state)
+                self.clear_button.configure(state=state)
+                self.export_button.configure(state=state)
+                
+            logger.debug(f"Controls state set to: {state}")
+            
         except Exception as e:
             logger.error(f"Error setting controls state: {e}")
+            # Try to at least enable the analyze button if we have a file
+            try:
+                if state == "normal" and self.current_file:
+                    self.analyze_button.configure(state="normal")
+            except:
+                pass
+
+    def _handle_export_click(self):
+        """Handle export button click as fallback."""
+        logger.info("Export button clicked via fallback handler")
+        # Force check if we should process the export
+        try:
+            button_state = str(self.export_button.cget("state"))
+            logger.info(f"Fallback handler - Button state: {button_state}")
+            logger.info(f"Fallback handler - Has result: {self.current_result is not None}")
+            
+            # Process export if we have results, regardless of button state
+            # This helps work around any CTkButton state issues
+            if self.current_result:
+                logger.info("Fallback handler - Processing export despite button state")
+                self._export_results()
+            else:
+                logger.warning("Export button clicked but no results available")
+                messagebox.showwarning("No Results", "No analysis results to export. Please analyze a file first.")
+        except Exception as e:
+            logger.error(f"Error in fallback export handler: {e}")
 
     def _export_results(self):
         """Export analysis results."""
+        logger.info("Export button clicked from main handler")
+        
+        # Pre-check pandas availability
+        try:
+            import pandas as pd
+            logger.info("Pandas import test successful")
+        except ImportError as e:
+            logger.error(f"Pandas not available: {e}")
+            messagebox.showerror("Missing Dependency", 
+                               "The pandas library is required for export functionality.\n"
+                               "Please install it using: pip install pandas openpyxl")
+            return
+        
+        # Check if button is actually enabled
+        try:
+            button_state = self.export_button.cget("state")
+            logger.info(f"Export button state: {button_state}")
+        except Exception as e:
+            logger.error(f"Could not get button state: {e}")
+        
         if not self.current_result:
+            logger.warning("No current_result available for export")
             messagebox.showerror("Error", "No results to export")
             return
         
+        logger.info(f"Current result type: {type(self.current_result)}")
+        logger.info(f"Current result has tracks: {hasattr(self.current_result, 'tracks')}")
+        
         try:
             # Ask for export location
+            logger.info("Opening file save dialog")
             file_path = filedialog.asksaveasfilename(
                 title="Export Analysis Results",
                 defaultextension=".xlsx",
@@ -797,35 +1138,51 @@ class SingleFilePage(ctk.CTkFrame):
             )
             
             if file_path:
+                logger.info(f"User selected export path: {file_path}")
                 try:
                     # Export based on file extension
                     if file_path.endswith('.xlsx'):
+                        logger.info("Exporting to Excel format")
                         self._export_excel(Path(file_path))
                     elif file_path.endswith('.csv'):
+                        logger.info("Exporting to CSV format")
                         self._export_csv(Path(file_path))
                     else:
+                        logger.error(f"Unsupported file format: {file_path}")
                         messagebox.showerror("Error", "Unsupported file format")
                         return
                     
                     messagebox.showinfo("Export Complete", f"Results exported to:\n{file_path}")
-                    logger.info(f"Results exported to: {file_path}")
+                    logger.info(f"Results exported successfully to: {file_path}")
                     
                 except Exception as e:
-                    logger.error(f"Export failed: {e}")
+                    logger.error(f"Export failed: {e}", exc_info=True)
                     messagebox.showerror("Export Failed", f"Failed to export results:\n{str(e)}")
+            else:
+                logger.info("User cancelled export dialog")
                     
         except Exception as e:
-            logger.error(f"Error in export dialog: {e}")
+            logger.error(f"Error in export dialog: {e}", exc_info=True)
             messagebox.showerror("Error", f"Export dialog failed: {str(e)}")
 
     def _export_excel(self, file_path: Path):
         """Export results to Excel format."""
-        import pandas as pd
+        logger.info(f"Starting Excel export to: {file_path}")
+        
+        try:
+            import pandas as pd
+            logger.info("Pandas imported successfully")
+        except ImportError as e:
+            logger.error(f"Failed to import pandas: {e}")
+            raise
         
         result = self.current_result
+        logger.info(f"Result object: {result}")
+        logger.info(f"Result metadata: {getattr(result, 'metadata', 'No metadata')}")
         
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            try:
+        try:
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                logger.info("ExcelWriter created successfully")
                 # Get values safely with error handling
                 file_name = getattr(result.metadata, 'file_name', 
                                    getattr(result.metadata, 'filename', 'Unknown'))
@@ -884,41 +1241,48 @@ class SingleFilePage(ctk.CTkFrame):
                         track_count
                     ]
                 }
-            except Exception as e:
-                # Fallback if there's an error
-                logger.error(f"Error preparing export data: {e}")
-                summary_data = {
-                    'Metric': ['Error'],
-                    'Value': [f"Error preparing data: {str(e)}"]
-                }
-            
-            summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
-            # Track details sheet
-            if hasattr(result, 'tracks') and result.tracks:
-                track_details = []
-                for track_id, track in result.tracks.items():
-                    track_details.append({
-                        'Track_ID': track_id,
-                        'Sigma_Gradient': getattr(track.sigma_analysis, 'sigma_gradient', None) if track.sigma_analysis else None,
-                        'Sigma_Threshold': getattr(track.sigma_analysis, 'sigma_threshold', None) if track.sigma_analysis else None,
-                        'Sigma_Pass': getattr(track.sigma_analysis, 'sigma_pass', None) if track.sigma_analysis else None,
-                        'Linearity_Spec': getattr(track.linearity_analysis, 'linearity_spec', None) if track.linearity_analysis else None,
-                        'Linearity_Pass': getattr(track.linearity_analysis, 'linearity_pass', None) if track.linearity_analysis else None,
-                        'Overall_Status': getattr(track.overall_status, 'value', str(track.overall_status)),
-                        'Risk_Category': getattr(track.risk_category, 'value', str(track.risk_category)) if hasattr(track, 'risk_category') else 'Unknown'
-                    })
                 
-                if track_details:
-                    tracks_df = pd.DataFrame(track_details)
-                    tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # Track details sheet
+                if hasattr(result, 'tracks') and result.tracks:
+                    track_details = []
+                    for track_id, track in result.tracks.items():
+                        track_details.append({
+                            'Track_ID': track_id,
+                            'Sigma_Gradient': getattr(track.sigma_analysis, 'sigma_gradient', None) if track.sigma_analysis else None,
+                            'Sigma_Threshold': getattr(track.sigma_analysis, 'sigma_threshold', None) if track.sigma_analysis else None,
+                            'Sigma_Pass': getattr(track.sigma_analysis, 'sigma_pass', None) if track.sigma_analysis else None,
+                            'Linearity_Spec': getattr(track.linearity_analysis, 'linearity_spec', None) if track.linearity_analysis else None,
+                            'Linearity_Pass': getattr(track.linearity_analysis, 'linearity_pass', None) if track.linearity_analysis else None,
+                            'Overall_Status': getattr(track.overall_status, 'value', str(track.overall_status)),
+                            'Risk_Category': getattr(track.risk_category, 'value', str(track.risk_category)) if hasattr(track, 'risk_category') else 'Unknown'
+                        })
+                    
+                    if track_details:
+                        tracks_df = pd.DataFrame(track_details)
+                        tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+                        
+                logger.info("Excel export completed successfully")
+        except Exception as e:
+            logger.error(f"Error during Excel export: {e}", exc_info=True)
+            raise
 
     def _export_csv(self, file_path: Path):
         """Export results to CSV format."""
-        import pandas as pd
+        logger.info(f"Starting CSV export to: {file_path}")
+        
+        try:
+            import pandas as pd
+            logger.info("Pandas imported successfully for CSV export")
+        except ImportError as e:
+            logger.error(f"Failed to import pandas for CSV: {e}")
+            raise
         
         result = self.current_result
+        logger.info(f"CSV export - Result object: {result}")
+        logger.info(f"CSV export - Has tracks: {hasattr(result, 'tracks') and result.tracks}")
         
         # Create comprehensive export data
         export_data = []
@@ -982,6 +1346,7 @@ class SingleFilePage(ctk.CTkFrame):
         # Convert to DataFrame and save
         df = pd.DataFrame(export_data)
         df.to_csv(file_path, index=False)
+        logger.info(f"CSV export completed successfully - {len(export_data)} rows exported")
 
     def _clear_results(self):
         """Clear analysis results."""
@@ -1013,6 +1378,20 @@ class SingleFilePage(ctk.CTkFrame):
         """Called when page is hidden."""
         self.is_visible = False
         
+        # If we're still registered as processing, unregister
+        if self.main_window and self.is_analyzing:
+            try:
+                self.main_window.unregister_processing("single_file")
+                logger.warning("Unregistered processing state on page hide")
+            except Exception as e:
+                logger.error(f"Failed to unregister on hide: {e}")
+            
+            # Also try to re-enable controls
+            try:
+                self._set_controls_state("normal")
+            except:
+                pass
+        
     def refresh(self):
         """Refresh page content."""
         pass
@@ -1024,6 +1403,11 @@ class SingleFilePage(ctk.CTkFrame):
     def request_stop_processing(self):
         """Request that any ongoing processing be stopped."""
         self._stop_requested = True
+        
+        # If we're analyzing, ensure we clean up properly
+        if self.is_analyzing:
+            logger.info("Stop requested during single file analysis")
+            # The analysis thread will handle the cleanup in its finally block
         
     def reset_stop_request(self):
         """Reset the stop processing flag."""

@@ -26,6 +26,10 @@ from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, Vali
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.file_utils import ensure_directory
+
+# Set up logging before using it
+logger = logging.getLogger(__name__)
+
 try:
     from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
     USING_CTK_BASE = True
@@ -75,8 +79,6 @@ try:
 except ImportError:
     HAS_RESOURCE_MANAGER = False
     ResourceStatus = None
-    
-logger = logging.getLogger(__name__)
 
 
 class BatchProcessingPage(BasePage):
@@ -94,6 +96,10 @@ class BatchProcessingPage(BasePage):
                 return
         except Exception as e:
             self._show_configuration_error(str(e))
+            messagebox.showerror(
+                "Configuration Error",
+                f"Failed to load application configuration:\n\n{str(e)}\n\nPlease check your config files."
+            )
             return
             
         # Initialize database manager (use main window's db_manager if available)
@@ -113,11 +119,21 @@ class BatchProcessingPage(BasePage):
                     import traceback
                     logger.error(f"Database initialization traceback:\n{traceback.format_exc()}")
                     self._db_manager = None
+                    messagebox.showwarning(
+                        "Database Warning",
+                        f"Failed to initialize database connection:\n\n{str(e)}\n\n"
+                        "Processing will continue without database features."
+                    )
         
         try:
             self.processor = LaserTrimProcessor(self.analyzer_config, db_manager=self._db_manager)
         except Exception as e:
             self._show_processor_error(str(e))
+            messagebox.showerror(
+                "Processor Initialization Error",
+                f"Failed to initialize the analysis processor:\n\n{str(e)}\n\n"
+                "Please check your installation and configuration."
+            )
             return
         
         # Initialize state
@@ -129,10 +145,6 @@ class BatchProcessingPage(BasePage):
         
         # Validate required directories exist
         self._ensure_required_directories()
-        
-        # Check if this is first run
-        if self.analyzer_config.first_run:
-            self.after(500, self._show_first_run_dialog)
         
         # Processing control
         self._stop_event = threading.Event()
@@ -148,6 +160,7 @@ class BatchProcessingPage(BasePage):
                 logger.info("Resource management initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize resource management: {e}")
+                # Don't show error dialog for optional resource management feature
         
         logger.info(f"Batch processing page initialized (CTK widgets: Base={USING_CTK_BASE}, Metric={USING_CTK_METRIC}, BatchResults={USING_CTK_BATCH_RESULTS}, Progress={USING_CTK_PROGRESS})")
 
@@ -219,7 +232,8 @@ class BatchProcessingPage(BasePage):
             if not hasattr(self.analyzer_config, 'processing'):
                 return False
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Configuration validation error: {e}")
             return False
     
     def _show_configuration_error(self, error_msg: str = None):
@@ -266,87 +280,12 @@ class BatchProcessingPage(BasePage):
             logger.info(f"Ensured directories exist at: {data_dir}")
         except Exception as e:
             logger.warning(f"Could not create directories: {e}")
+            messagebox.showwarning(
+                "Directory Creation Warning",
+                f"Could not create output directories:\n\n{str(e)}\n\n"
+                "You may need to manually select output locations."
+            )
     
-    def _show_first_run_dialog(self):
-        """Show first run dialog for batch processing."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Welcome to Batch Processing")
-        dialog.geometry("600x400")
-        dialog.transient(self)
-        
-        # Center the dialog
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - 600) // 2
-        y = (dialog.winfo_screenheight() - 400) // 2
-        dialog.geometry(f"600x400+{x}+{y}")
-        
-        # Content
-        content_frame = ctk.CTkFrame(dialog)
-        content_frame.pack(fill='both', expand=True, padx=20, pady=20)
-        
-        title_label = ctk.CTkLabel(
-            content_frame,
-            text="Batch Processing Guide",
-            font=ctk.CTkFont(size=20, weight="bold")
-        )
-        title_label.pack(pady=(0, 20))
-        
-        guide_text = """Welcome to Batch Processing!
-
-This tool allows you to analyze multiple Excel files at once.
-
-Key Features:
-• Process entire folders or selected files
-• Automatic validation of input files
-• Progress tracking and cancellation
-• Export results to Excel/CSV
-• Database integration for historical tracking
-
-Getting Started:
-1. Click 'Select Files' or 'Select Folder'
-2. Optionally run 'Validate Batch'
-3. Click 'Start Processing'
-4. Export results when complete"""
-        
-        guide_label = ctk.CTkLabel(
-            content_frame,
-            text=guide_text,
-            font=ctk.CTkFont(size=12),
-            justify="left"
-        )
-        guide_label.pack(pady=10)
-        
-        # Don't show again checkbox
-        self.dont_show_var = ctk.BooleanVar(value=False)
-        dont_show_check = ctk.CTkCheckBox(
-            content_frame,
-            text="Don't show this again",
-            variable=self.dont_show_var
-        )
-        dont_show_check.pack(pady=10)
-        
-        # OK button
-        ok_button = ctk.CTkButton(
-            content_frame,
-            text="OK",
-            command=lambda: self._close_first_run_dialog(dialog),
-            width=100
-        )
-        ok_button.pack(pady=10)
-        
-    def _close_first_run_dialog(self, dialog):
-        """Close first run dialog and update config if needed."""
-        if self.dont_show_var.get():
-            # Update config to not show again
-            if hasattr(self.analyzer_config, 'first_run'):
-                self.analyzer_config.first_run = False
-                # Save config if possible
-                try:
-                    from laser_trim_analyzer.core.config import save_config
-                    save_config(self.analyzer_config)
-                except:
-                    pass
-        dialog.destroy()
 
     def _create_file_selection(self):
         """Create file selection section."""
@@ -743,8 +682,8 @@ Getting Started:
             if HAS_SECURITY:
                 try:
                     security_validator = get_security_validator()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to get security validator: {e}")
             
             for file_path in file_paths:
                 path_obj = Path(file_path)
@@ -769,6 +708,11 @@ Getting Started:
                         logger.warning(f"Security validation error for {path_obj}: {e}")
                         # Add file anyway if security check fails
                         validated_files.append(path_obj)
+                        messagebox.showwarning(
+                            "Security Validation Warning",
+                            f"Security check failed for {path_obj.name}:\n{str(e)}\n\n"
+                            "File will be added anyway. Proceed with caution."
+                        )
                 else:
                     validated_files.append(path_obj)
             
@@ -927,7 +871,12 @@ Getting Started:
                 
             except Exception as e:
                 logger.error(f"Batch validation failed: {e}")
-                self.after(0, self._handle_batch_validation_error, str(e))
+                error_msg = str(e)
+                if "No module named" in error_msg:
+                    error_msg = f"Missing dependency for validation: {error_msg}\nPlease ensure all required packages are installed."
+                elif "Config object has no attribute" in error_msg:
+                    error_msg = f"Configuration error: {error_msg}\nPlease check your configuration settings."
+                self.after(0, self._handle_batch_validation_error, error_msg)
         
         thread = threading.Thread(target=validate, daemon=True)
         thread.start()
@@ -1049,6 +998,9 @@ Getting Started:
         
         # Clear previous results
         self._clear_results()
+        
+        # Reset error tracking
+        self._file_error_count = 0
         
         # Disable controls
         self._set_controls_state("disabled")
@@ -1264,16 +1216,22 @@ Getting Started:
                 
         except ValidationError as e:
             logger.error(f"Batch validation error: {e}")
-            self.after(0, self._handle_batch_error, f"Batch validation failed: {str(e)}")
+            error_msg = f"Batch validation failed:\n\n{str(e)}\n\nPlease check that all selected files are valid Excel files."
+            self.after(0, self._handle_batch_error, error_msg)
             
         except ProcessingError as e:
             logger.error(f"Batch processing error: {e}")
-            self.after(0, self._handle_batch_error, f"Batch processing failed: {str(e)}")
+            # Error message is already formatted by the ProcessingError handler above
+            self.after(0, self._handle_batch_error, str(e))
             
         except Exception as e:
             logger.error(f"Unexpected batch error: {e}")
             logger.error(traceback.format_exc())
-            self.after(0, self._handle_batch_error, f"Unexpected error: {str(e)}")
+            error_msg = f"An unexpected error occurred during batch processing:\n\n{str(e)}\n\n"
+            error_msg += "Please check the log files for more details."
+            if "MemoryError" in str(type(e).__name__):
+                error_msg = f"Out of memory error:\n\n{str(e)}\n\nTry processing fewer files at once or disable plot generation."
+            self.after(0, self._handle_batch_error, error_msg)
         
         finally:
             self.is_processing = False
@@ -1353,6 +1311,7 @@ Getting Started:
                     except Exception as e:
                         logger.error(f"File processing failed for {file_path}: {e}")
                         failed_files.append((str(file_path), str(e)))
+                        # Don't show individual errors during batch - they'll be summarized at the end
                     
                     # Update progress
                     progress = (processed_files / total_files) * 100
@@ -1367,7 +1326,7 @@ Getting Started:
             if self.resource_manager:
                 # Check if we should pause for resources
                 if self.resource_manager.should_pause_processing():
-                    self.logger.info("Pausing for resource recovery...")
+                    logger.info("Pausing for resource recovery...")
                     
                     # Update UI to show pause
                     if progress_callback:
@@ -1378,14 +1337,14 @@ Getting Started:
                     
                     # Wait for resources
                     if not self.resource_manager.wait_for_resources(timeout=30):
-                        self.logger.warning("Resource recovery timeout, continuing anyway")
+                        logger.warning("Resource recovery timeout, continuing anyway")
                 
                 # Adaptive chunk size for next iteration
                 if chunk_end < total_files:
                     chunk_size = self.resource_manager.get_adaptive_batch_size(
                         total_files, chunk_end
                     )
-                    self.logger.debug(f"Next chunk size: {chunk_size}")
+                    logger.debug(f"Next chunk size: {chunk_size}")
             
             # Force cleanup
             import gc
@@ -1396,6 +1355,20 @@ Getting Started:
         
         if failed_files:
             logger.warning(f"Processing completed with {len(failed_files)} failures")
+            # Show summary of all failures at the end
+            if len(failed_files) > 0:
+                failure_summary = "The following files failed to process:\n\n"
+                for file_path, error in failed_files[:10]:  # Show first 10 errors
+                    file_name = Path(file_path).name
+                    failure_summary += f"• {file_name}: {error}\n"
+                
+                if len(failed_files) > 10:
+                    failure_summary += f"\n... and {len(failed_files) - 10} more files"
+                
+                self.after(0, lambda: messagebox.showwarning(
+                    "Processing Failures",
+                    failure_summary + "\n\nCheck the log files for complete details."
+                ))
             
         return results
     
@@ -1432,6 +1405,29 @@ Getting Started:
             
         except Exception as e:
             logger.error(f"Error processing {file_path}: {e}")
+            # Show error dialog for individual file failures
+            error_msg = f"Failed to process {file_path.name}:\n\n{str(e)}"
+            if "Permission denied" in str(e):
+                error_msg += "\n\nPlease ensure the file is not open in another program."
+            elif "No such file" in str(e):
+                error_msg += "\n\nThe file may have been moved or deleted."
+            elif "Invalid file format" in str(e):
+                error_msg += "\n\nPlease ensure this is a valid Excel file."
+            
+            # Only show error dialog for first few failures to avoid dialog spam
+            if not hasattr(self, '_file_error_count'):
+                self._file_error_count = 0
+            
+            self._file_error_count += 1
+            if self._file_error_count <= 3:  # Only show first 3 file errors
+                self.after(0, lambda: messagebox.showerror("File Processing Error", error_msg))
+            elif self._file_error_count == 4:
+                self.after(0, lambda: messagebox.showwarning(
+                    "Multiple File Errors",
+                    "Multiple files have failed to process.\n\n"
+                    "Further individual error dialogs will be suppressed.\n"
+                    "Check the final summary for all errors."
+                ))
             return None
 
     def _handle_batch_cancelled(self, partial_results: Dict[str, AnalysisResult]):
@@ -1522,6 +1518,11 @@ Getting Started:
                 logger.error(f"Batch database save failed: {e}")
                 # Fall back to individual saves
                 logger.info("Falling back to individual saves")
+                self.after(0, lambda: messagebox.showwarning(
+                    "Database Save Warning",
+                    f"Batch database save failed:\n{str(e)}\n\n"
+                    "Attempting to save files individually..."
+                ))
                 for file_path, result in results.items():
                     try:
                         # Individual save logic
@@ -1530,6 +1531,7 @@ Getting Started:
                     except Exception as e:
                         logger.error(f"Database save failed for {Path(file_path).name}: {e}")
                         failed_count += 1
+                        # Don't show individual save errors - they'll be summarized
         else:
             # Individual saves if batch save not available
             for file_path, result in results.items():
@@ -1544,6 +1546,7 @@ Getting Started:
                 except Exception as e:
                     logger.error(f"Database save failed for {Path(file_path).name}: {e}")
                     failed_count += 1
+                    # Don't show individual save errors - they'll be summarized
         
         logger.info(f"Database save complete: {saved_count} saved, {failed_count} failed")
         
@@ -1598,7 +1601,8 @@ Getting Started:
             try:
                 self.progress_dialog.hide()
             except Exception as e:
-                self.logger.error(f"Error hiding progress dialog: {e}")
+                logger.error(f"Error hiding progress dialog: {e}")
+                # Don't show error dialog for non-critical UI cleanup
             finally:
                 self.progress_dialog = None
         
@@ -1724,7 +1728,7 @@ Getting Started:
         )
         
         if reply:
-            self.logger.info("User requested to stop batch processing")
+            logger.info("User requested to stop batch processing")
             
             # Set stop flags
             self._stop_event.set()
@@ -1794,7 +1798,14 @@ Getting Started:
                 
             except Exception as e:
                 logger.error(f"Batch export failed: {e}")
-                messagebox.showerror("Export Failed", f"Failed to export batch results:\n{str(e)}")
+                error_msg = f"Failed to export batch results:\n\n{str(e)}"
+                if "Permission denied" in str(e):
+                    error_msg += "\n\nPlease ensure the output file is not open in another program."
+                elif "No space left" in str(e):
+                    error_msg += "\n\nInsufficient disk space. Please free up some space and try again."
+                elif "Invalid file path" in str(e):
+                    error_msg += "\n\nThe selected file path is invalid. Please choose a different location."
+                messagebox.showerror("Export Failed", error_msg)
 
     def _export_batch_excel(self, file_path: Path):
         """Export batch results to Excel format."""
@@ -1876,6 +1887,12 @@ Getting Started:
                         'Serial': 'Error',
                         'Error': str(e)
                     })
+                    # Show warning about specific file
+                    self.after(0, lambda fn=file_name, err=str(e): messagebox.showwarning(
+                        "Export Data Warning",
+                        f"Could not export complete data for {fn}:\n{err}\n\n"
+                        "Partial data will be included in the export."
+                    ))
                 
                 # Individual track data
                 for track_id, track in result.tracks.items():

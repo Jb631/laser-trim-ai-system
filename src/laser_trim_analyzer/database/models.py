@@ -54,6 +54,8 @@ class AlertType(PyEnum):
     DRIFT_DETECTED = "Manufacturing Drift"
     THRESHOLD_EXCEEDED = "Threshold Exceeded"
     MAINTENANCE_REQUIRED = "Maintenance Required"
+    SIGMA_FAIL = "Sigma Validation Failed"
+    PROCESS_ERROR = "Process Error"
 
 
 class AnalysisResult(Base):
