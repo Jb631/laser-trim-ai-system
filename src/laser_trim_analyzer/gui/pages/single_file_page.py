@@ -23,12 +23,11 @@ from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, Vali
 from laser_trim_analyzer.core.exceptions import ProcessingError, ValidationError
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.gui.widgets.analysis_display import AnalysisDisplayWidget
-from laser_trim_analyzer.gui.widgets.progress_widgets import ProgressDialog
+from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import ProgressDialog
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 # from laser_trim_analyzer.gui.pages.base_page import BasePage  # Commented out to avoid widget mismatch
-from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
 from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
 
 logger = logging.getLogger(__name__)
@@ -998,8 +997,19 @@ class SingleFilePage(ctk.CTkFrame):
                 except:
                     pass
             
+            # Emit analysis complete event
+            if hasattr(self.main_window, 'emit_event'):
+                event_data = {
+                    'page': 'single_file',
+                    'model': result.metadata.model if result is not None and result.metadata else 'Unknown',
+                    'serial': result.metadata.serial if result is not None and result.metadata else 'Unknown',
+                    'status': result.overall_status.value if result is not None else 'Unknown'
+                }
+                self.main_window.emit_event('analysis_complete', event_data)
+                logger.info("Emitted analysis_complete event")
+            
             # Show success notification
-            if result:
+            if result is not None:
                 success_msg = f"Analysis completed successfully!\n\n"
                 success_msg += f"Status: {result.overall_status.value}\n"
                 

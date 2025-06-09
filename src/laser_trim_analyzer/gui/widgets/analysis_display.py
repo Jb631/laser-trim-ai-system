@@ -14,7 +14,7 @@ import tkinter as tk
 from pathlib import Path
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, ValidationStatus
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 
 logger = logging.getLogger(__name__)
 

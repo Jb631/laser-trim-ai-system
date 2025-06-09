@@ -191,12 +191,16 @@ class HomePage(BasePage):
 
     def refresh(self):
         """Refresh dashboard data from database."""
+        self.logger.info("Home page refresh called")
+        
         if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
+            self.logger.warning("No database manager available for refresh")
             # Update UI with empty data
             self._update_ui({}, [], [])
             return
 
         # Run database queries in background thread
+        self.logger.info("Starting background refresh thread")
         threading.Thread(target=self._refresh_data_background, daemon=True).start()
 
     def _refresh_data_background(self):
@@ -369,6 +373,9 @@ class HomePage(BasePage):
     def _get_recent_activity(self) -> List[Dict[str, Any]]:
         """Get recent activity from database."""
         try:
+            # Log database status
+            self.logger.info(f"Getting recent activity - DB manager available: {self.main_window.db_manager is not None}")
+            
             # Get recent analyses from last 7 days to ensure we have some data
             results = self.main_window.db_manager.get_historical_data(
                 days_back=7,  # Look back 7 days instead of just 1
@@ -376,7 +383,7 @@ class HomePage(BasePage):
                 include_tracks=False
             )
             
-            self.logger.debug(f"Found {len(results)} recent activities")
+            self.logger.info(f"Found {len(results)} recent activities from database")
 
             activities = []
             for result in results:
@@ -417,6 +424,8 @@ class HomePage(BasePage):
     def _update_ui(self, stats: Dict[str, Any], trend_data: List[Dict[str, Any]],
                    activities: List[Dict[str, Any]]):
         """Update UI with refreshed data."""
+        self.logger.info(f"_update_ui called with {len(activities)} activities")
+        
         # Check if we have any data at all
         has_data = stats.get('units_tested', 0) > 0 or len(activities) > 0
         
@@ -504,7 +513,23 @@ class HomePage(BasePage):
 
     def on_show(self):
         """Called when page is shown."""
+        self.logger.info("Home page on_show called")
+        # Subscribe to analysis complete events
+        if hasattr(self.main_window, 'subscribe_to_event'):
+            self.main_window.subscribe_to_event('analysis_complete', self._on_analysis_complete)
         # Refresh data when page is shown
+        self.refresh()
+    
+    def on_hide(self):
+        """Called when page is hidden."""
+        # Unsubscribe from events
+        if hasattr(self.main_window, 'unsubscribe_from_event'):
+            self.main_window.unsubscribe_from_event('analysis_complete', self._on_analysis_complete)
+    
+    def _on_analysis_complete(self, data):
+        """Handle analysis complete event."""
+        self.logger.info("Received analysis complete event, refreshing home page")
+        # Refresh the page to show new activity
         self.refresh()
     
     def _update_statistics_with_timeout(self):

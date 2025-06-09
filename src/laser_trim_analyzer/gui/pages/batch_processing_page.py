@@ -31,30 +31,16 @@ from laser_trim_analyzer.utils.file_utils import ensure_directory
 logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
-USING_CTK_BASE = True
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
-try:
-    from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-    USING_CTK_METRIC = True
-except ImportError as e:
-    logger.warning(f"Could not import CTK MetricCard: {e}")
-    from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-    USING_CTK_METRIC = False
-from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
-try:
-    from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
-    USING_CTK_BATCH_RESULTS = True
-except ImportError as e:
-    logger.warning(f"Could not import CTK BatchResultsWidget: {e}")
-    from laser_trim_analyzer.gui.widgets.batch_results_widget import BatchResultsWidget
-    USING_CTK_BATCH_RESULTS = False
-try:
-    from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import BatchProgressDialog
-    USING_CTK_PROGRESS = True
-except ImportError as e:
-    logger.warning(f"Could not import CTK BatchProgressDialog: {e}")
-    from laser_trim_analyzer.gui.widgets.progress_widgets import BatchProgressDialog
-    USING_CTK_PROGRESS = False
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
+from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
+from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import BatchProgressDialog
+
+# Widget implementation flags
+USING_CTK_BASE = True
+USING_CTK_METRIC = True
+USING_CTK_BATCH_RESULTS = True
+USING_CTK_PROGRESS = True
 
 # Import security validator
 try:
@@ -1287,7 +1273,7 @@ class BatchProcessingPage(BasePage):
                     
                     try:
                         result = future.result()
-                        if result:
+                        if result is not None:
                             results[str(file_path)] = result
                         else:
                             failed_files.append((str(file_path), "Processing returned None"))
@@ -1481,7 +1467,7 @@ class BatchProcessingPage(BasePage):
                     logger.info(f"Validating {len(result_list)} results before batch save...")
                     valid_results = []
                     for i, result in enumerate(result_list):
-                        if result and result.metadata and result.metadata.model and result.metadata.serial:
+                        if result is not None and result.metadata and result.metadata.model and result.metadata.serial:
                             valid_results.append(result)
                         else:
                             logger.warning(f"Skipping invalid result at index {i}: missing required data")
@@ -1637,6 +1623,16 @@ class BatchProcessingPage(BasePage):
             success_msg += f"\nOutputs saved to: {output_dir}"
         
         messagebox.showinfo("Batch Processing Complete", success_msg)
+        
+        # Refresh home page recent activity
+        try:
+            if hasattr(self.main_window, 'pages') and 'home' in self.main_window.pages:
+                home_page = self.main_window.pages['home']
+                if hasattr(home_page, 'refresh'):
+                    home_page.refresh()
+                    logger.info("Refreshed home page after batch processing")
+        except Exception as e:
+            logger.debug(f"Failed to refresh home page: {e}")
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
     
