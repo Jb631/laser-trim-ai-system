@@ -4,7 +4,7 @@ Modern dark-themed professional GUI
 """
 
 import customtkinter as ctk
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List, Callable
 import logging
 from pathlib import Path
 import sys
@@ -146,6 +146,9 @@ class CTkMainWindow(ctk.CTk):
         self.current_page = None
         self.pages: Dict[str, Any] = {}
         self.processing_pages: set = set()  # Track pages that are currently processing
+        
+        # Event system for inter-page communication
+        self.event_listeners: Dict[str, List[Callable]] = {}
         
         # Load saved window state
         try:
@@ -782,3 +785,27 @@ class CTkMainWindow(ctk.CTk):
         
         # Destroy window
         self.destroy()
+    
+    def subscribe_to_event(self, event_name: str, callback: Callable):
+        """Subscribe to an event."""
+        if event_name not in self.event_listeners:
+            self.event_listeners[event_name] = []
+        self.event_listeners[event_name].append(callback)
+    
+    def unsubscribe_from_event(self, event_name: str, callback: Callable):
+        """Unsubscribe from an event."""
+        if event_name in self.event_listeners:
+            try:
+                self.event_listeners[event_name].remove(callback)
+            except ValueError:
+                pass
+    
+    def emit_event(self, event_name: str, data: Any = None):
+        """Emit an event to all listeners."""
+        if event_name in self.event_listeners:
+            for callback in self.event_listeners[event_name]:
+                try:
+                    # Call in main thread
+                    self.after(0, lambda cb=callback, d=data: cb(d))
+                except Exception as e:
+                    self.logger.error(f"Error in event callback for {event_name}: {e}")

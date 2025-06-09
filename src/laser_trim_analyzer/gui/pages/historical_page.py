@@ -38,7 +38,8 @@ class HistoricalPage(BasePage):
     """Advanced historical data analysis page with analytics features."""
 
     def __init__(self, parent, main_window):
-        self.current_data = None
+        self.current_data = None  # This will store raw database results
+        self.current_data_df = None  # This will store DataFrame version
         self.analytics_results = {}
         self.trend_analysis_data = {}
         self.correlation_matrix = None
@@ -699,7 +700,7 @@ class HistoricalPage(BasePage):
             
             # Store as DataFrame for chart methods
             import pandas as pd
-            self.current_data = pd.DataFrame(chart_data)
+            self.current_data_df = pd.DataFrame(chart_data)
             
             # Update individual charts
             self._update_trend_chart()
@@ -711,11 +712,11 @@ class HistoricalPage(BasePage):
 
     def _update_trend_chart(self):
         """Update pass rate trend chart."""
-        if self.current_data is None or len(self.current_data) == 0 or not hasattr(self, 'trend_chart') or self.trend_chart is None:
+        if self.current_data_df is None or self.current_data_df.empty or not hasattr(self, 'trend_chart') or self.trend_chart is None:
             return
 
         # Group by date and calculate pass rate
-        df = self.current_data.copy()
+        df = self.current_data_df.copy()
         # Use file_date if available, otherwise date
         df['date'] = pd.to_datetime(df['file_date'].fillna(df['date'])).dt.date
 
@@ -750,12 +751,13 @@ class HistoricalPage(BasePage):
 
     def _update_distribution_chart(self):
         """Update sigma gradient distribution chart."""
-        if (self.current_data is None or 'sigma_gradient' not in self.current_data.columns or 
+        if (self.current_data_df is None or self.current_data_df.empty or 
+            'sigma_gradient' not in self.current_data_df.columns or 
             not hasattr(self, 'dist_chart') or self.dist_chart is None):
             return
 
         # Get sigma values
-        sigma_values = self.current_data['sigma_gradient'].dropna()
+        sigma_values = self.current_data_df['sigma_gradient'].dropna()
 
         if len(sigma_values) == 0:
             return
@@ -772,12 +774,12 @@ class HistoricalPage(BasePage):
 
     def _update_comparison_chart(self):
         """Update model comparison chart."""
-        if (self.current_data is None or len(self.current_data) == 0 or 
+        if (self.current_data_df is None or self.current_data_df.empty or 
             not hasattr(self, 'comp_chart') or self.comp_chart is None):
             return
 
         # Calculate pass rate by model
-        model_stats = self.current_data.groupby('model').agg({
+        model_stats = self.current_data_df.groupby('model').agg({
             'status': [
                 lambda x: (x == 'Pass').mean() * 100,
                 'count'
@@ -841,7 +843,7 @@ class HistoricalPage(BasePage):
 
     def _export_results(self):
         """Export current results to file."""
-        if self.current_data is None or len(self.current_data) == 0:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "No data to export")
             return
 
@@ -860,26 +862,29 @@ class HistoricalPage(BasePage):
             return
 
         try:
+            # Use DataFrame version if available, otherwise convert
+            export_df = self.current_data_df if self.current_data_df is not None else pd.DataFrame(self.current_data)
+            
             if filename.endswith('.xlsx'):
                 # Export to Excel with formatting
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                    self.current_data.to_excel(writer, sheet_name='Historical Data', index=False)
+                    export_df.to_excel(writer, sheet_name='Historical Data', index=False)
 
                     # Add summary sheet
                     summary = pd.DataFrame({
                         'Metric': ['Total Records', 'Pass Rate', 'Average Sigma', 'Date Range'],
                         'Value': [
-                            len(self.current_data),
-                            f"{(self.current_data['status'] == 'Pass').mean() * 100:.2f}%",
-                            f"{self.current_data['sigma_gradient'].mean():.6f}",
-                            f"{self.current_data['timestamp'].min()} to {self.current_data['timestamp'].max()}"
+                            len(export_df),
+                            f"{(export_df['status'] == 'Pass').mean() * 100:.2f}%" if 'status' in export_df.columns else "N/A",
+                            f"{export_df['sigma_gradient'].mean():.6f}" if 'sigma_gradient' in export_df.columns else "N/A",
+                            f"{export_df['timestamp'].min()} to {export_df['timestamp'].max()}" if 'timestamp' in export_df.columns else "N/A"
                         ]
                     })
                     summary.to_excel(writer, sheet_name='Summary', index=False)
 
             else:
                 # Export to CSV
-                self.current_data.to_csv(filename, index=False)
+                export_df.to_csv(filename, index=False)
 
             messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}")
 
@@ -971,7 +976,7 @@ Metrics:
 
     def export_results(self):
         """Export historical data to Excel."""
-        if self.current_data is None or len(self.current_data) == 0:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("Export", "No data available to export")
             return
             
@@ -986,8 +991,12 @@ Metrics:
             if not filename:
                 return
                 
-            # Export to Excel
-            self.current_data.to_excel(filename, index=False)
+            # Export to Excel - use DataFrame version
+            if self.current_data_df is not None:
+                self.current_data_df.to_excel(filename, index=False)
+            else:
+                # Fallback: convert list to DataFrame
+                pd.DataFrame(self.current_data).to_excel(filename, index=False)
             messagebox.showinfo("Export", f"Data exported successfully to:\n{filename}")
             self.logger.info(f"Exported historical data to {filename}")
             
@@ -1126,7 +1135,7 @@ Metrics:
 
     def _run_trend_analysis(self):
         """Run comprehensive trend analysis."""
-        if not self.current_data:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
             return
             
@@ -1253,7 +1262,7 @@ Metrics:
 
     def _run_correlation_analysis(self):
         """Run correlation analysis between parameters."""
-        if not self.current_data:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
             return
             
@@ -1283,7 +1292,7 @@ Metrics:
 
     def _generate_statistical_summary(self):
         """Generate comprehensive statistical summary."""
-        if not self.current_data:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
             return
             
@@ -1454,7 +1463,7 @@ Metrics:
 
     def _run_predictive_analysis(self):
         """Run predictive analysis to forecast future performance."""
-        if not self.current_data:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
             return
             
@@ -1540,7 +1549,7 @@ Metrics:
 
     def _detect_anomalies(self):
         """Detect anomalies in the historical data."""
-        if not self.current_data:
+        if self.current_data is None or (isinstance(self.current_data, list) and len(self.current_data) == 0):
             messagebox.showwarning("No Data", "Please run a query first to load data for analysis")
             return
             

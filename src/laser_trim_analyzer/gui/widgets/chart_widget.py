@@ -361,7 +361,11 @@ class ChartWidget(ctk.CTkFrame):
                 if isinstance(matrix, str):
                     # Try to parse if it's stored as string
                     import json
-                    matrix = json.loads(matrix)
+                    try:
+                        matrix = json.loads(matrix)
+                    except (json.JSONDecodeError, ValueError):
+                        # If parsing fails, create empty matrix
+                        matrix = [[]]
                 
                 # Create heatmap
                 im = ax.imshow(matrix, cmap='RdYlGn', aspect='auto')

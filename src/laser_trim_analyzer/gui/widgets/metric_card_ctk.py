@@ -14,9 +14,14 @@ class SparkLine(ctk.CTkCanvas):
     """Simple sparkline chart for metric visualization."""
 
     def __init__(self, parent, width=80, height=30, **kwargs):
-        # Set background to match dark theme
-        kwargs['bg'] = '#212121'  # Dark background
+        # Set background to match theme
         kwargs['highlightthickness'] = 0
+        # Get theme-appropriate background
+        current_theme = ctk.get_appearance_mode()
+        if current_theme == "Dark":
+            kwargs['bg'] = '#2b2b2b'  # Dark theme background
+        else:
+            kwargs['bg'] = '#dbdbdb'  # Light theme background
         super().__init__(parent, width=width, height=height, **kwargs)
         self.data_points = []
         self.line_color = '#3498db'
@@ -116,7 +121,11 @@ class MetricCard(ctk.CTkFrame):
         self.color_scheme = color_scheme
         self.historical_values = []
 
-        # Colors
+        # Colors - adjust for theme
+        # Get current theme to adjust text colors
+        current_theme = ctk.get_appearance_mode()
+        is_dark = current_theme == "Dark"
+        
         self.colors = {
             'good': '#27ae60',
             'warning': '#f39c12',
@@ -126,8 +135,8 @@ class MetricCard(ctk.CTkFrame):
             'danger': '#e74c3c',
             'info': '#3498db',
             'bg_light': '#ecf0f1',
-            'text_dark': '#2c3e50',
-            'text_light': '#7f8c8d'
+            'text_dark': '#ffffff' if is_dark else '#2c3e50',
+            'text_light': '#b0b0b0' if is_dark else '#7f8c8d'
         }
 
         self._setup_ui()
@@ -135,8 +144,8 @@ class MetricCard(ctk.CTkFrame):
 
     def _setup_ui(self):
         """Set up the card UI."""
-        # Configure the frame
-        self.configure(corner_radius=10)
+        # Configure the frame - ensure no white background
+        self.configure(corner_radius=10, fg_color=("gray90", "gray20"))
 
         # Use self as the main container instead of creating nested frame
         main_frame = self
@@ -322,4 +331,20 @@ class MetricCard(ctk.CTkFrame):
     def set_color_scheme(self, color_scheme: str):
         """Set the color scheme for the card."""
         self.color_scheme = color_scheme
+        self._update_display()
+    
+    def update_theme_colors(self):
+        """Update colors based on current theme."""
+        current_theme = ctk.get_appearance_mode()
+        is_dark = current_theme == "Dark"
+        
+        self.colors['text_dark'] = '#ffffff' if is_dark else '#2c3e50'
+        self.colors['text_light'] = '#b0b0b0' if is_dark else '#7f8c8d'
+        
+        # Update sparkline background if it exists
+        if hasattr(self, 'sparkline'):
+            bg_color = '#2b2b2b' if is_dark else '#dbdbdb'
+            self.sparkline.configure(bg=bg_color)
+        
+        # Update displayed colors
         self._update_display()

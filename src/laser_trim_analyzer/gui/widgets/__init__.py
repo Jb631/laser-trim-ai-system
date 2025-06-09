@@ -2,9 +2,8 @@
 
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
-from laser_trim_analyzer.gui.widgets.progress_widget import ProgressWidget
 from laser_trim_analyzer.gui.widgets.status_bar import StatusBar
-from laser_trim_analyzer.gui.widgets.metric_card import MetricCard
+from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWidget
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
@@ -18,9 +17,9 @@ from laser_trim_analyzer.gui.widgets.animated_widgets import (
     AnimatedNotification,
     AccessibilityHelper
 )
-from laser_trim_analyzer.gui.widgets.batch_results_widget import BatchResultsWidget
+from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
 from laser_trim_analyzer.gui.widgets.track_viewer import IndividualTrackViewer
-from laser_trim_analyzer.gui.widgets.progress_widgets import (
+from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import (
     ProgressDialog,
     BatchProgressDialog,
     SimpleProgressBar,
@@ -67,7 +66,6 @@ def add_mousewheel_support(widget, canvas=None):
 __all__ = [
     "StatCard",
     "FileDropZone",
-    "ProgressWidget",
     "StatusBar",
     "MetricCard",
     "FileAnalysisWidget",

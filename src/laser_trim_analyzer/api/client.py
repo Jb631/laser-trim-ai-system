@@ -831,11 +831,15 @@ class OllamaClient(BaseAIClient):
 
             for line in response.iter_lines():
                 if line:
-                    data = json.loads(line)
-                    if "response" in data:
-                        text = data["response"]
-                        full_response += text
-                        yield text
+                    try:
+                        data = json.loads(line)
+                        if "response" in data:
+                            text = data["response"]
+                            full_response += text
+                            yield text
+                    except json.JSONDecodeError:
+                        # Skip malformed JSON lines
+                        continue
 
             # Estimate tokens
             tokens_in = self.count_tokens(prompt.system + prompt.user)

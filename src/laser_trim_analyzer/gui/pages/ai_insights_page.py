@@ -27,8 +27,12 @@ class AIInsightsPage(BasePage):
     def __init__(self, parent, main_window):
         self.ai_client = None
         self.chat_history = []
+        self.chat_sessions = []  # Store all chat sessions
+        self.current_session_id = None
         self.current_analysis = None
         super().__init__(parent, main_window)
+        # Load chat history
+        self._load_chat_sessions()
         # Initialize AI client in background to prevent blocking
         thread = threading.Thread(target=self._initialize_ai_client, daemon=True)
         thread.start()
@@ -129,12 +133,41 @@ class AIInsightsPage(BasePage):
         self.chat_frame = ctk.CTkFrame(self.main_container)
         self.chat_frame.pack(fill='both', expand=True, pady=(0, 20))
 
+        # Chat header with label and controls
+        chat_header_frame = ctk.CTkFrame(self.chat_frame)
+        chat_header_frame.pack(fill='x', padx=15, pady=(15, 10))
+
         self.chat_label = ctk.CTkLabel(
-            self.chat_frame,
+            chat_header_frame,
             text="QA Assistant Chat:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.chat_label.pack(anchor='w', padx=15, pady=(15, 10))
+        self.chat_label.pack(side='left')
+
+        # Chat history controls
+        history_frame = ctk.CTkFrame(chat_header_frame)
+        history_frame.pack(side='right')
+
+        self.chat_history_combo = ctk.CTkComboBox(
+            history_frame,
+            values=["New Chat"],
+            command=self._select_chat_session,
+            width=200,
+            height=30
+        )
+        self.chat_history_combo.pack(side='left', padx=(0, 10))
+        self.chat_history_combo.set("New Chat")
+
+        self.clear_history_btn = ctk.CTkButton(
+            history_frame,
+            text="Clear History",
+            command=self._clear_chat_history,
+            width=100,
+            height=30,
+            fg_color="red",
+            hover_color="darkred"
+        )
+        self.clear_history_btn.pack(side='left')
 
         # Chat container
         self.chat_container = ctk.CTkFrame(self.chat_frame)
@@ -496,6 +529,14 @@ class AIInsightsPage(BasePage):
             self.chat_display.see('end')
             self.chat_display.configure(state="disabled")
             
+            # Save to chat history
+            self.chat_history.append({
+                'sender': sender,
+                'message': message,
+                'is_user': is_user,
+                'timestamp': timestamp
+            })
+            
         except Exception as e:
             print(f"Error adding chat message: {e}")
 
@@ -821,3 +862,144 @@ class AIInsightsPage(BasePage):
             
         except Exception as e:
             self.logger.error(f"Error showing notification: {e}")
+    
+    def _load_chat_sessions(self):
+        """Load chat sessions from storage."""
+        try:
+            # Load from settings file
+            if hasattr(self.main_window, 'settings_manager') and self.main_window.settings_manager:
+                sessions = self.main_window.settings_manager.get_setting('ai_chat_sessions', [])
+                self.chat_sessions = sessions
+                
+                # Update combo box values if it exists
+                if hasattr(self, 'chat_history_combo'):
+                    session_names = ["New Chat"]
+                    for session in sessions:
+                        preview = session.get('preview', 'Chat')
+                        timestamp = session.get('timestamp', '')
+                        name = f"{preview[:30]}... ({timestamp})" if len(preview) > 30 else f"{preview} ({timestamp})"
+                        session_names.append(name)
+                    self.chat_history_combo.configure(values=session_names)
+        except Exception as e:
+            self.logger.error(f"Error loading chat sessions: {e}")
+            self.chat_sessions = []
+    
+    def _save_chat_session(self):
+        """Save current chat session."""
+        try:
+            if not self.chat_history:
+                return
+                
+            # Create session data
+            session = {
+                'id': datetime.now().timestamp(),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'preview': self.chat_history[0]['message'] if self.chat_history else 'Empty chat',
+                'messages': self.chat_history,
+                'message_count': len(self.chat_history)
+            }
+            
+            # Add to sessions list
+            self.chat_sessions.append(session)
+            
+            # Limit to last 20 sessions
+            if len(self.chat_sessions) > 20:
+                self.chat_sessions = self.chat_sessions[-20:]
+            
+            # Save to settings
+            if hasattr(self.main_window, 'settings_manager') and self.main_window.settings_manager:
+                self.main_window.settings_manager.set_setting('ai_chat_sessions', self.chat_sessions)
+                self.main_window.settings_manager.save_settings()
+            
+            # Reload sessions in combo box
+            self._load_chat_sessions()
+            
+        except Exception as e:
+            self.logger.error(f"Error saving chat session: {e}")
+    
+    def _select_chat_session(self, value: str):
+        """Load selected chat session."""
+        try:
+            if value == "New Chat":
+                # Save current session if it has messages
+                if self.chat_history:
+                    self._save_chat_session()
+                
+                # Clear current chat
+                self.chat_history = []
+                self.current_session_id = None
+                self.chat_display.configure(state="normal")
+                self.chat_display.delete('1.0', 'end')
+                self.chat_display.configure(state="disabled")
+                
+                # Show welcome message
+                if self.ai_client:
+                    self._add_chat_message("AI Assistant", "Hello! I'm your QA assistant. How can I help you today?", is_user=False)
+            else:
+                # Find and load the selected session
+                session_index = self.chat_history_combo.cget('values').index(value) - 1  # -1 for "New Chat"
+                if 0 <= session_index < len(self.chat_sessions):
+                    session = self.chat_sessions[session_index]
+                    self.current_session_id = session['id']
+                    self.chat_history = session['messages']
+                    
+                    # Display the chat history
+                    self.chat_display.configure(state="normal")
+                    self.chat_display.delete('1.0', 'end')
+                    
+                    for msg in self.chat_history:
+                        sender = msg['sender']
+                        message = msg['message']
+                        is_user = msg.get('is_user', sender == "You")
+                        
+                        # Style based on sender
+                        if is_user:
+                            self.chat_display.insert('end', f"You: {message}\n\n", "user")
+                        else:
+                            self.chat_display.insert('end', f"{sender}: {message}\n\n", "assistant")
+                    
+                    self.chat_display.configure(state="disabled")
+                    self.chat_display.see('end')
+                    
+        except Exception as e:
+            self.logger.error(f"Error selecting chat session: {e}")
+    
+    def _clear_chat_history(self):
+        """Clear all chat history with confirmation."""
+        try:
+            # Confirm with user
+            result = messagebox.askyesno(
+                "Clear Chat History", 
+                "Are you sure you want to clear all chat history?\nThis action cannot be undone."
+            )
+            
+            if result:
+                # Clear sessions
+                self.chat_sessions = []
+                self.chat_history = []
+                self.current_session_id = None
+                
+                # Save empty sessions
+                if hasattr(self.main_window, 'settings_manager') and self.main_window.settings_manager:
+                    self.main_window.settings_manager.set_setting('ai_chat_sessions', [])
+                    self.main_window.settings_manager.save_settings()
+                
+                # Reset UI
+                self.chat_history_combo.configure(values=["New Chat"])
+                self.chat_history_combo.set("New Chat")
+                
+                # Clear chat display
+                self.chat_display.configure(state="normal")
+                self.chat_display.delete('1.0', 'end')
+                
+                # Show welcome message
+                if self.ai_client:
+                    self._add_chat_message("AI Assistant", "Chat history cleared. How can I help you today?", is_user=False)
+                    
+                self.chat_display.configure(state="disabled")
+                
+                self.show_notification("Chat history cleared successfully", "success")
+                
+        except Exception as e:
+            self.logger.error(f"Error clearing chat history: {e}")
+            messagebox.showerror("Error", f"Failed to clear chat history: {str(e)}")

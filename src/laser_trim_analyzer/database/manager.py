@@ -706,7 +706,7 @@ class DatabaseManager:
                         max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
                         worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
                         worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and track_data.zone_analysis.worst_zone_position) else None,
-                        zone_details=track_data.zone_analysis.zone_results if track_data.zone_analysis else None,
+                        zone_details=track_data.zone_analysis.zone_results if (track_data.zone_analysis and track_data.zone_analysis.zone_results) else None,
                         failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
                         risk_category=risk_category,
                         gradient_margin=track_data.sigma_analysis.gradient_margin if hasattr(track_data.sigma_analysis, 'gradient_margin') else None,
@@ -1382,7 +1382,7 @@ class DatabaseManager:
                 max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
                 worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
                 worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and track_data.zone_analysis.worst_zone_position) else None,
-                zone_details=track_data.zone_analysis.zone_results if track_data.zone_analysis else None,
+                zone_details=track_data.zone_analysis.zone_results if (track_data.zone_analysis and track_data.zone_analysis.zone_results) else None,
                 failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
                 risk_category=risk_category,
                 gradient_margin=track_data.sigma_analysis.gradient_margin if hasattr(track_data.sigma_analysis, 'gradient_margin') else None,
@@ -1671,7 +1671,7 @@ class DatabaseManager:
         Raises:
             Any exception that occurs
         """
-        self.logger.info(f"DEBUG: save_analysis_result called for {analysis_data.metadata.filename if analysis_data and analysis_data.metadata else 'unknown'}")
+        self.logger.info(f"DEBUG: save_analysis_result called for {analysis_data.metadata.filename if analysis_data is not None and analysis_data.metadata else 'unknown'}")
         
         # First check if tables exist
         try:

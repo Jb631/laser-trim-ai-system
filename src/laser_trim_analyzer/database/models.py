@@ -14,11 +14,92 @@ from enum import Enum as PyEnum
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean,
     DateTime, Text, ForeignKey, Index, UniqueConstraint,
-    Enum, JSON, CheckConstraint, event
+    Enum, JSON, CheckConstraint, event, TypeDecorator
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, Session, validates
 from sqlalchemy.sql import func
+import json as json_lib
+
+
+class SafeJSON(TypeDecorator):
+    """A JSON type that safely handles empty strings and None values."""
+    
+    impl = JSON
+    cache_ok = True
+    
+    def __init__(self, none_as=None):
+        """Initialize with default value for None."""
+        super().__init__()
+        self.none_as = none_as if none_as is not None else []
+    
+    def process_bind_param(self, value, dialect):
+        """Process value before saving to database."""
+        if value is None or (isinstance(value, list) and len(value) == 0):
+            return None
+        # Ensure we're saving valid JSON
+        try:
+            # Test serialization
+            json_lib.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            # Log error and return None to avoid corruption
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Cannot serialize value to JSON: {type(value)}, returning None")
+            return None
+    
+    def process_result_value(self, value, dialect):
+        """Process value when loading from database with robust error handling."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Handle various edge cases
+        if value is None:
+            return self.none_as
+            
+        if isinstance(value, str):
+            # Handle empty strings and common empty JSON representations
+            if value in ('', '[]', '{}', 'null', 'NULL', 'None'):
+                return self.none_as
+                
+            # Try to parse JSON
+            try:
+                # Strip whitespace
+                value = value.strip()
+                if not value:
+                    return self.none_as
+                    
+                parsed = json_lib.loads(value)
+                
+                # Ensure it's the expected type
+                if self.none_as == [] and not isinstance(parsed, list):
+                    logger.warning(f"Expected list but got {type(parsed)}, converting to list")
+                    if isinstance(parsed, dict):
+                        return [parsed]  # Wrap dict in list
+                    else:
+                        return self.none_as
+                        
+                return parsed
+                
+            except json_lib.JSONDecodeError as e:
+                logger.error(f"JSON parse error: {e}, value: {value[:100]}...")
+                return self.none_as
+            except ValueError as e:
+                logger.error(f"Value error parsing JSON: {e}, value: {value[:100]}...")
+                return self.none_as
+            except Exception as e:
+                logger.error(f"Unexpected error parsing JSON: {e}, value type: {type(value)}")
+                return self.none_as
+                
+        # If already parsed (list, dict, etc.), return as is
+        if isinstance(value, (list, dict)):
+            return value
+            
+        # Unknown type, log and return default
+        logger.warning(f"Unexpected type for JSON field: {type(value)}, returning default")
+        return self.none_as
+
 
 # Create base class for all models
 Base = declarative_base()
@@ -223,7 +304,7 @@ class TrackResult(Base):
     # Zone analysis
     worst_zone = Column(Integer)
     worst_zone_position = Column(Float)
-    zone_details = Column(JSON)  # Detailed zone-by-zone results
+    zone_details = Column(SafeJSON)  # Detailed zone-by-zone results
 
     # Risk assessment
     failure_probability = Column(Float)
