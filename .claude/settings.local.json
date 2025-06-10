@@ -43,7 +43,8 @@
       "Bash(pytest:*)",
       "Bash(true)",
       "Bash(mv:*)",
-      "Bash(/mnt/d/UserFolders/Desktop/laser_trim_analyzer_v2/.venv/Scripts/python.exe run_dev.py --help 2 >& 1)"
+      "Bash(/mnt/d/UserFolders/Desktop/laser_trim_analyzer_v2/.venv/Scripts/python.exe run_dev.py --help 2 >& 1)",
+      "Bash(PYTHONPATH=/mnt/d/UserFolders/Desktop/laser_trim_analyzer_v2/src python3 test_plot_generation.py 2 >& 1)"
     ],
     "deny": []
   }

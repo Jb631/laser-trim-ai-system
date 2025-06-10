@@ -8,6 +8,7 @@ from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWid
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
 from laser_trim_analyzer.gui.widgets.analysis_display import AnalysisDisplayWidget
+from laser_trim_analyzer.gui.widgets.plot_viewer import PlotViewerWidget
 from laser_trim_analyzer.gui.widgets.animated_widgets import (
     AnimatedProgressBar,
     FadeInFrame,
@@ -73,6 +74,7 @@ __all__ = [
     "AlertBanner",
     "AlertStack",
     "AnalysisDisplayWidget",
+    "PlotViewerWidget",
     "AnimatedProgressBar",
     "FadeInFrame",
     "SlideInFrame",

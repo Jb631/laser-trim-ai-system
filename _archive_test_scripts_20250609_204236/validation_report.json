@@ -1,0 +1,183 @@
+{
+  "core": {
+    "processor.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "models.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "config.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "constants.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "exceptions.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "interfaces.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "implementations.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "strategies.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "utils.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "large_scale_processor.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "plot_generation": {
+      "valid": true,
+      "message": "Plot generation code found"
+    },
+    "ml_integration": {
+      "valid": true,
+      "message": "ML integration found"
+    }
+  },
+  "gui": {
+    "main_window.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "ctk_main_window.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "single_file_page.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "batch_processing_page.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "ml_tools_page.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "ai_insights_page.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "plot_viewer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "analysis_display.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "track_viewer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "plot_viewer_complete": {
+      "valid": true,
+      "message": "All required methods found"
+    },
+    "plot_viewer_integrated": {
+      "valid": true,
+      "message": "Plot viewer properly integrated"
+    }
+  },
+  "utils": {
+    "plotting_utils.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "excel_utils.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "report_generator.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "validators.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "file_utils.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "comprehensive_excel_export": {
+      "valid": true,
+      "message": "Comprehensive Excel export with ML data found"
+    }
+  },
+  "analysis": {
+    "base.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "sigma_analyzer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "linearity_analyzer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "resistance_analyzer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "consistency_analyzer.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "analytics_engine.py": {
+      "valid": true,
+      "message": "OK"
+    }
+  },
+  "ml": {
+    "ml_manager.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "models.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "predictors.py": {
+      "valid": true,
+      "message": "OK"
+    },
+    "engine.py": {
+      "valid": true,
+      "message": "OK"
+    }
+  },
+  "overall": true,
+  "config": {
+    "default.yaml": {
+      "valid": true,
+      "message": "Valid YAML, plots=enabled, ml=enabled"
+    },
+    "production.yaml": {
+      "valid": true,
+      "message": "Valid YAML, plots=enabled, ml=enabled"
+    },
+    "development.yaml": {
+      "valid": true,
+      "message": "Valid YAML, plots=enabled, ml=enabled"
+    }
+  }
+}

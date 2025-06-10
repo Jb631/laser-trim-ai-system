@@ -180,7 +180,7 @@ class LaserTrimProcessor:
 
         # Cache for performance with size limit
         self._file_cache = {}
-        self._cache_enabled = getattr(config.processing, 'cache_enabled', False)
+        self._cache_enabled = getattr(config.processing, 'cache_enabled', True)
         self._max_cache_size = 100  # Limit cache size to prevent memory issues
 
     def _initialize_ml_predictor(self):
@@ -688,6 +688,12 @@ class LaserTrimProcessor:
             track_id=track_id,
             status=track_status,
             travel_length=travel_length,
+            # Add position and error data for plotting
+            position_data=analysis_data.get('positions', []),
+            error_data=analysis_data.get('errors', []),
+            # Add untrimmed data if available
+            untrimmed_positions=analysis_data.get('untrimmed_data', {}).get('positions', []),
+            untrimmed_errors=analysis_data.get('untrimmed_data', {}).get('errors', []),
             unit_properties=unit_props,
             sigma_analysis=sigma_analysis,
             linearity_analysis=linearity_analysis,
@@ -1225,9 +1231,13 @@ class LaserTrimProcessor:
 
     async def _generate_outputs(self, result: AnalysisResult, output_dir: Path, file_path: Path):
         """Generate output files and plots."""
+        self.logger.info(f"Generating outputs to {output_dir}, plots enabled: {self.config.processing.generate_plots}")
+        
         # Generate plots if enabled
         if self.config.processing.generate_plots:
             await self._generate_plots(result, output_dir)
+        else:
+            self.logger.info("Plot generation is disabled in config")
         
         # Generate summary report
         await self._generate_summary_report(result, output_dir, file_path)
@@ -1285,10 +1295,12 @@ class LaserTrimProcessor:
             output_dir: Path
     ) -> None:
         """Generate analysis plots."""
+        self.logger.info(f"Starting plot generation for {len(result.tracks)} tracks to {output_dir}")
         loop = asyncio.get_event_loop()
         
         for track_id, track_data in result.tracks.items():
             try:
+                self.logger.info(f"Generating plot for track {track_id}")
                 # Run blocking plot creation in thread pool
                 plot_path = await loop.run_in_executor(
                     None,
@@ -1299,6 +1311,7 @@ class LaserTrimProcessor:
                     self.config.processing.plot_dpi
                 )
                 track_data.plot_path = plot_path
+                self.logger.info(f"Plot saved to {plot_path}")
             except Exception as e:
                 self.logger.error(f"Plot generation failed for {track_id}: {e}")
 

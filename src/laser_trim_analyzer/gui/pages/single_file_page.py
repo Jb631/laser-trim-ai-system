@@ -204,7 +204,8 @@ class SingleFilePage(ctk.CTkFrame):
         self.generate_plots_check = ctk.CTkCheckBox(
             self.options_container,
             text="Generate Plots",
-            variable=self.generate_plots_var
+            variable=self.generate_plots_var,
+            command=self._on_generate_plots_toggled
         )
         self.generate_plots_check.pack(side='left', padx=(10, 20), pady=10)
         
@@ -223,6 +224,26 @@ class SingleFilePage(ctk.CTkFrame):
             variable=self.comprehensive_validation_var
         )
         self.comprehensive_validation_check.pack(side='left', padx=(0, 20), pady=10)
+        
+        # Output location info frame
+        self.output_info_frame = ctk.CTkFrame(self.options_frame, fg_color="transparent")
+        self.output_info_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        # Calculate output directory
+        base_dir = getattr(self.analyzer_config, 'data_directory', Path.home() / "LaserTrimData")
+        self.output_base_dir = base_dir / "Production" / "single_analysis"
+        
+        self.output_location_label = ctk.CTkLabel(
+            self.output_info_frame,
+            text=f"📁 Plots will be saved to: {self.output_base_dir}",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60"
+        )
+        self.output_location_label.pack(side='left', padx=(10, 10))
+        
+        # Initially hide if plots not selected
+        if not self.generate_plots_var.get():
+            self.output_info_frame.pack_forget()
 
     def _create_prevalidation_section(self):
         """Create pre-validation results section (matching batch processing theme)."""
@@ -997,16 +1018,24 @@ class SingleFilePage(ctk.CTkFrame):
                 except:
                     pass
             
-            # Emit analysis complete event
-            if hasattr(self.main_window, 'emit_event'):
-                event_data = {
-                    'page': 'single_file',
-                    'model': result.metadata.model if result is not None and result.metadata else 'Unknown',
-                    'serial': result.metadata.serial if result is not None and result.metadata else 'Unknown',
-                    'status': result.overall_status.value if result is not None else 'Unknown'
-                }
-                self.main_window.emit_event('analysis_complete', event_data)
-                logger.info("Emitted analysis_complete event")
+            # Emit analysis complete event with safety checks and delay
+            def emit_completion_event():
+                try:
+                    if hasattr(self.main_window, 'emit_event') and result is not None:
+                        event_data = {
+                            'page': 'single_file',
+                            'model': result.metadata.model if hasattr(result, 'metadata') and result.metadata else 'Unknown',
+                            'serial': result.metadata.serial if hasattr(result, 'metadata') and result.metadata else 'Unknown',
+                            'status': result.overall_status.value if hasattr(result, 'overall_status') and result.overall_status else 'Unknown',
+                            'result': result  # Include result for immediate display
+                        }
+                        self.main_window.emit_event('analysis_complete', event_data)
+                        logger.info("Emitted analysis_complete event")
+                except Exception as e:
+                    logger.error(f"Failed to emit analysis complete event: {e}")
+            
+            # Emit event after a short delay to ensure database operations are complete
+            self.after(300, emit_completion_event)
             
             # Show success notification
             if result is not None:
@@ -1020,12 +1049,18 @@ class SingleFilePage(ctk.CTkFrame):
                 
                 if output_dir:
                     success_msg += f"\n\nOutputs saved to: {output_dir}"
+                    # Store output directory for later use
+                    self._last_output_dir = output_dir
                 
                 # Show success message
                 try:
                     messagebox.showinfo("Analysis Complete", success_msg)
                 except Exception as e:
                     logger.error(f"Failed to show success message: {e}")
+                    
+                # If plots were generated, add button to open output folder
+                if output_dir and output_dir.exists():
+                    self._add_open_folder_button(output_dir)
             
             logger.info("Analysis completed successfully")
             
@@ -1248,101 +1283,17 @@ class SingleFilePage(ctk.CTkFrame):
         logger.info(f"Starting Excel export to: {file_path}")
         
         try:
-            import pandas as pd
-            logger.info("Pandas imported successfully")
-        except ImportError as e:
-            logger.error(f"Failed to import pandas: {e}")
-            raise
-        
-        result = self.current_result
-        logger.info(f"Result object: {result}")
-        logger.info(f"Result metadata: {getattr(result, 'metadata', 'No metadata')}")
-        
-        try:
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                logger.info("ExcelWriter created successfully")
-                # Get values safely with error handling
-                file_name = getattr(result.metadata, 'file_name', 
-                                   getattr(result.metadata, 'filename', 'Unknown'))
-                model = getattr(result.metadata, 'model', 'Unknown')
-                serial = getattr(result.metadata, 'serial', 'Unknown')
-                
-                # Handle system_type safely
-                system_type = 'Unknown'
-                if hasattr(result.metadata, 'system_type'):
-                    system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
-                elif hasattr(result.metadata, 'system'):
-                    system_type = getattr(result.metadata.system, 'value', str(result.metadata.system))
-                
-                # Handle analysis_date safely
-                analysis_date = 'Unknown'
-                if hasattr(result.metadata, 'analysis_date'):
-                    if hasattr(result.metadata.analysis_date, 'strftime'):
-                        analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        analysis_date = str(result.metadata.analysis_date)
-                elif hasattr(result.metadata, 'file_date'):
-                    if hasattr(result.metadata.file_date, 'strftime'):
-                        analysis_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        analysis_date = str(result.metadata.file_date)
-                
-                # Handle overall_status safely
-                overall_status = 'Unknown'
-                if hasattr(result, 'overall_status'):
-                    overall_status = getattr(result.overall_status, 'value', str(result.overall_status))
-                
-                # Handle validation_status safely
-                validation_status = 'N/A'
-                if hasattr(result, 'overall_validation_status'):
-                    validation_status = getattr(result.overall_validation_status, 'value', 
-                                              str(result.overall_validation_status))
-                
-                # Get track count safely
-                track_count = 0
-                if hasattr(result, 'tracks'):
-                    track_count = len(result.tracks)
-                
-                # Summary sheet
-                summary_data = {
-                    'Metric': ['File', 'Model', 'Serial', 'System Type', 'Analysis Date', 'Overall Status', 
-                              'Validation Status', 'Processing Time (s)', 'Track Count'],
-                    'Value': [
-                        file_name,
-                        model,
-                        serial,
-                        system_type,
-                        analysis_date,
-                        overall_status,
-                        validation_status,
-                        f"{getattr(result, 'processing_time', 0):.2f}",
-                        track_count
-                    ]
-                }
-                
-                summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # Track details sheet
-                if hasattr(result, 'tracks') and result.tracks:
-                    track_details = []
-                    for track_id, track in result.tracks.items():
-                        track_details.append({
-                            'Track_ID': track_id,
-                            'Sigma_Gradient': getattr(track.sigma_analysis, 'sigma_gradient', None) if track.sigma_analysis else None,
-                            'Sigma_Threshold': getattr(track.sigma_analysis, 'sigma_threshold', None) if track.sigma_analysis else None,
-                            'Sigma_Pass': getattr(track.sigma_analysis, 'sigma_pass', None) if track.sigma_analysis else None,
-                            'Linearity_Spec': getattr(track.linearity_analysis, 'linearity_spec', None) if track.linearity_analysis else None,
-                            'Linearity_Pass': getattr(track.linearity_analysis, 'linearity_pass', None) if track.linearity_analysis else None,
-                            'Overall_Status': getattr(track.status, 'value', str(track.status)) if hasattr(track, 'status') else 'Unknown',
-                            'Risk_Category': getattr(track.risk_category, 'value', str(track.risk_category)) if hasattr(track, 'risk_category') else 'Unknown'
-                        })
-                    
-                    if track_details:
-                        tracks_df = pd.DataFrame(track_details)
-                        tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
-                        
-                logger.info("Excel export completed successfully")
+            # Use the comprehensive report generator for complete data export
+            from laser_trim_analyzer.utils.report_generator import ReportGenerator
+            
+            report_gen = ReportGenerator()
+            report_gen.generate_comprehensive_excel_report(
+                results=[self.current_result],
+                output_path=file_path,
+                include_raw_data=True  # Include raw data for single file export
+            )
+            
+            logger.info("Excel export completed successfully")
         except Exception as e:
             logger.error(f"Error during Excel export: {e}", exc_info=True)
             raise
@@ -1565,3 +1516,51 @@ class SingleFilePage(ctk.CTkFrame):
             messagebox.showerror("Reset Error", 
                                f"Reset encountered an error: {str(e)}\n"
                                "You may need to restart the application.")
+    
+    def _on_generate_plots_toggled(self):
+        """Handle generate plots checkbox toggle."""
+        if self.generate_plots_var.get():
+            # Show output location info
+            self.output_info_frame.pack(fill='x', padx=15, pady=(0, 10))
+            logger.info("Plot generation enabled")
+        else:
+            # Hide output location info
+            self.output_info_frame.pack_forget()
+            logger.info("Plot generation disabled")
+    
+    def _add_open_folder_button(self, output_dir: Path):
+        """Add button to open output folder after analysis."""
+        # Create a frame for the button if it doesn't exist
+        if not hasattr(self, 'folder_button_frame'):
+            self.folder_button_frame = ctk.CTkFrame(self.controls_container, fg_color="transparent")
+            self.folder_button_frame.pack(side='left', padx=(10, 0))
+        
+        # Remove any existing button
+        for widget in self.folder_button_frame.winfo_children():
+            widget.destroy()
+        
+        # Add open folder button
+        self.open_folder_button = ctk.CTkButton(
+            self.folder_button_frame,
+            text="📁 Open Output Folder",
+            command=lambda: self._open_folder(output_dir),
+            width=150,
+            height=40
+        )
+        self.open_folder_button.pack(side='left')
+    
+    def _open_folder(self, folder_path: Path):
+        """Open folder in system file explorer."""
+        import subprocess
+        import platform
+        
+        try:
+            if platform.system() == 'Windows':
+                subprocess.run(['explorer', str(folder_path)])
+            elif platform.system() == 'Darwin':  # macOS
+                subprocess.run(['open', str(folder_path)])
+            else:  # Linux
+                subprocess.run(['xdg-open', str(folder_path)])
+        except Exception as e:
+            logger.error(f"Failed to open folder: {e}")
+            messagebox.showerror("Error", f"Could not open folder: {e}")

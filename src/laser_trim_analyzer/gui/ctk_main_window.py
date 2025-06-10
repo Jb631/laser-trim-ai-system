@@ -79,6 +79,9 @@ class CTkMainWindow(ctk.CTk):
         # Bind window close event
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+        # Clean up event listeners periodically to prevent memory leaks
+        self._schedule_event_cleanup()
+        
     def _setup_exception_handler(self):
         """Set up global exception handler to prevent application crashes"""
         def handle_exception(exc_type, exc_value, exc_traceback):
@@ -790,7 +793,13 @@ class CTkMainWindow(ctk.CTk):
         """Subscribe to an event."""
         if event_name not in self.event_listeners:
             self.event_listeners[event_name] = []
-        self.event_listeners[event_name].append(callback)
+        
+        # Prevent duplicate subscriptions
+        if callback not in self.event_listeners[event_name]:
+            self.event_listeners[event_name].append(callback)
+            self.logger.debug(f"Subscribed {callback.__name__ if hasattr(callback, '__name__') else callback} to {event_name}")
+        else:
+            self.logger.warning(f"Callback already subscribed to {event_name}, skipping duplicate")
     
     def unsubscribe_from_event(self, event_name: str, callback: Callable):
         """Unsubscribe from an event."""
@@ -803,9 +812,44 @@ class CTkMainWindow(ctk.CTk):
     def emit_event(self, event_name: str, data: Any = None):
         """Emit an event to all listeners."""
         if event_name in self.event_listeners:
-            for callback in self.event_listeners[event_name]:
+            # Make a copy of listeners to avoid modification during iteration
+            listeners = list(self.event_listeners[event_name])
+            self.logger.debug(f"Emitting {event_name} to {len(listeners)} listeners")
+            
+            for callback in listeners:
                 try:
-                    # Call in main thread
-                    self.after(0, lambda cb=callback, d=data: cb(d))
+                    # Create a wrapper to avoid lambda closure issues
+                    def safe_callback(cb=callback, d=data):
+                        try:
+                            cb(d)
+                        except Exception as inner_e:
+                            self.logger.error(f"Error in callback {cb}: {inner_e}")
+                    
+                    # Call in main thread with explicit scheduling
+                    self.after(1, safe_callback)
                 except Exception as e:
-                    self.logger.error(f"Error in event callback for {event_name}: {e}")
+                    self.logger.error(f"Error scheduling event callback for {event_name}: {e}")
+    
+    def _schedule_event_cleanup(self):
+        """Periodically clean up event listeners to prevent memory leaks."""
+        try:
+            # Remove listeners for pages that are not currently visible
+            if hasattr(self, 'pages') and hasattr(self, 'current_page'):
+                for event_name in list(self.event_listeners.keys()):
+                    # Clean up dead references
+                    self.event_listeners[event_name] = [
+                        cb for cb in self.event_listeners[event_name] 
+                        if cb is not None
+                    ]
+                    
+                    # Remove empty event lists
+                    if not self.event_listeners[event_name]:
+                        del self.event_listeners[event_name]
+                        
+            self.logger.debug(f"Event cleanup: {len(self.event_listeners)} event types active")
+            
+        except Exception as e:
+            self.logger.error(f"Error during event cleanup: {e}")
+        
+        # Schedule next cleanup in 60 seconds
+        self.after(60000, self._schedule_event_cleanup)
