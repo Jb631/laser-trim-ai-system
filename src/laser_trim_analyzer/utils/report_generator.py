@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import json
+import pandas as pd
 
 from laser_trim_analyzer.core.models import AnalysisResult
 
@@ -394,4 +395,280 @@ class ReportGenerator:
             
         except Exception as e:
             self.logger.error(f"Failed to generate summary report: {e}")
-            raise 
+            raise
+    
+    def generate_comprehensive_excel_report(
+        self,
+        results: List[AnalysisResult],
+        output_path: Path,
+        include_raw_data: bool = False
+    ) -> None:
+        """
+        Generate comprehensive Excel report with all analysis data including ML predictions.
+        
+        Args:
+            results: List of analysis results
+            output_path: Path to save Excel file
+            include_raw_data: Whether to include raw position/error data
+        """
+        try:
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # 1. Summary Sheet
+                summary_data = []
+                for result in results:
+                    primary_track = result.primary_track
+                    
+                    # Basic info
+                    row = {
+                        'Filename': result.metadata.filename,
+                        'Model': result.metadata.model,
+                        'Serial': result.metadata.serial,
+                        'System Type': result.metadata.system_type.value,
+                        'Overall Status': result.overall_status.value,
+                        'Processing Time (s)': result.processing_time,
+                        'Analysis Date': result.metadata.test_date.isoformat() if result.metadata.test_date else None,
+                    }
+                    
+                    # Validation info
+                    if hasattr(result, 'overall_validation_status'):
+                        row['Validation Status'] = getattr(result.overall_validation_status, 'value', str(result.overall_validation_status))
+                    if hasattr(result, 'validation_grade'):
+                        row['Validation Grade'] = result.validation_grade
+                    
+                    # Sigma analysis
+                    row.update({
+                        'Sigma Gradient': primary_track.sigma_analysis.sigma_gradient,
+                        'Sigma Threshold': primary_track.sigma_analysis.sigma_threshold,
+                        'Sigma Pass': primary_track.sigma_analysis.sigma_pass,
+                    })
+                    
+                    # Linearity analysis
+                    row.update({
+                        'Linearity Spec': primary_track.linearity_analysis.linearity_spec,
+                        'Linearity Pass': primary_track.linearity_analysis.linearity_pass,
+                        'Linearity Fail Points': primary_track.linearity_analysis.linearity_fail_points,
+                        'Optimal Offset': primary_track.linearity_analysis.optimal_offset,
+                        'Final Linearity Error': primary_track.linearity_analysis.final_linearity_error_shifted,
+                    })
+                    
+                    # ML Failure Prediction
+                    if primary_track.failure_prediction:
+                        row.update({
+                            'Risk Category': primary_track.failure_prediction.risk_category.value,
+                            'Failure Probability': primary_track.failure_prediction.failure_probability,
+                            'Gradient Margin': primary_track.failure_prediction.gradient_margin,
+                            'Failure Contributing Factors': ', '.join(primary_track.failure_prediction.contributing_factors),
+                        })
+                    else:
+                        row.update({
+                            'Risk Category': None,
+                            'Failure Probability': None,
+                            'Gradient Margin': None,
+                            'Failure Contributing Factors': None,
+                        })
+                    
+                    # Advanced analytics (if available)
+                    if hasattr(primary_track, 'resistance_analysis') and primary_track.resistance_analysis:
+                        row.update({
+                            'Min Resistance': primary_track.resistance_analysis.min_resistance,
+                            'Max Resistance': primary_track.resistance_analysis.max_resistance,
+                            'Resistance Range': primary_track.resistance_analysis.resistance_range,
+                            'Normalized Range': primary_track.resistance_analysis.normalized_range,
+                        })
+                    
+                    if hasattr(primary_track, 'consistency_metrics') and primary_track.consistency_metrics:
+                        row.update({
+                            'Trim Effectiveness': primary_track.consistency_metrics.trim_effectiveness,
+                            'Trim Effectiveness Grade': primary_track.consistency_metrics.trim_effectiveness_grade,
+                            'Noise Level': primary_track.consistency_metrics.noise_level,
+                            'Dynamic Range': primary_track.consistency_metrics.dynamic_range,
+                        })
+                    
+                    summary_data.append(row)
+                
+                # Write summary sheet
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # 2. Detailed Analysis Sheet (one row per track)
+                detailed_data = []
+                for result in results:
+                    for track_id, track_data in result.tracks.items():
+                        row = {
+                            'Filename': result.metadata.filename,
+                            'Model': result.metadata.model,
+                            'Serial': result.metadata.serial,
+                            'Track ID': track_id,
+                            'Track Status': track_data.status.value,
+                        }
+                        
+                        # All track-specific data
+                        row.update({
+                            'Sigma Gradient': track_data.sigma_analysis.sigma_gradient,
+                            'Sigma Threshold': track_data.sigma_analysis.sigma_threshold,
+                            'Sigma Pass': track_data.sigma_analysis.sigma_pass,
+                            'Linearity Spec': track_data.linearity_analysis.linearity_spec,
+                            'Linearity Pass': track_data.linearity_analysis.linearity_pass,
+                            'Linearity Fail Points': track_data.linearity_analysis.linearity_fail_points,
+                            'Data Points': len(track_data.position_data),
+                            'Untrimmed Points': len(track_data.untrimmed_positions) if track_data.untrimmed_positions else 0,
+                        })
+                        
+                        # ML predictions
+                        if track_data.failure_prediction:
+                            row.update({
+                                'Risk Category': track_data.failure_prediction.risk_category.value,
+                                'Failure Probability': track_data.failure_prediction.failure_probability,
+                                'Gradient Margin': track_data.failure_prediction.gradient_margin,
+                                'Contributing Factors': ', '.join(track_data.failure_prediction.contributing_factors),
+                            })
+                        
+                        detailed_data.append(row)
+                
+                detailed_df = pd.DataFrame(detailed_data)
+                detailed_df.to_excel(writer, sheet_name='Detailed Analysis', index=False)
+                
+                # 3. Model Performance Sheet
+                model_stats = {}
+                for result in results:
+                    model = result.metadata.model
+                    if model not in model_stats:
+                        model_stats[model] = {
+                            'Total Files': 0,
+                            'Passed': 0,
+                            'Failed': 0,
+                            'Warnings': 0,
+                            'Low Risk': 0,
+                            'Medium Risk': 0,
+                            'High Risk': 0,
+                            'Avg Sigma Gradient': [],
+                            'Avg Failure Probability': [],
+                        }
+                    
+                    model_stats[model]['Total Files'] += 1
+                    
+                    if result.overall_status.value == "PASS":
+                        model_stats[model]['Passed'] += 1
+                    elif result.overall_status.value == "FAIL":
+                        model_stats[model]['Failed'] += 1
+                    else:
+                        model_stats[model]['Warnings'] += 1
+                    
+                    primary_track = result.primary_track
+                    model_stats[model]['Avg Sigma Gradient'].append(primary_track.sigma_analysis.sigma_gradient)
+                    
+                    if primary_track.failure_prediction:
+                        risk = primary_track.failure_prediction.risk_category.value
+                        model_stats[model][f'{risk} Risk'] += 1
+                        model_stats[model]['Avg Failure Probability'].append(
+                            primary_track.failure_prediction.failure_probability
+                        )
+                
+                # Calculate averages
+                model_performance = []
+                for model, stats in model_stats.items():
+                    row = {
+                        'Model': model,
+                        'Total Files': stats['Total Files'],
+                        'Passed': stats['Passed'],
+                        'Failed': stats['Failed'],
+                        'Warnings': stats['Warnings'],
+                        'Pass Rate (%)': (stats['Passed'] / stats['Total Files'] * 100) if stats['Total Files'] > 0 else 0,
+                        'Low Risk': stats['Low Risk'],
+                        'Medium Risk': stats['Medium Risk'],
+                        'High Risk': stats['High Risk'],
+                        'Avg Sigma Gradient': sum(stats['Avg Sigma Gradient']) / len(stats['Avg Sigma Gradient']) if stats['Avg Sigma Gradient'] else None,
+                        'Avg Failure Probability': sum(stats['Avg Failure Probability']) / len(stats['Avg Failure Probability']) if stats['Avg Failure Probability'] else None,
+                    }
+                    model_performance.append(row)
+                
+                model_df = pd.DataFrame(model_performance)
+                model_df.to_excel(writer, sheet_name='Model Performance', index=False)
+                
+                # 4. Raw Data Sheets (optional)
+                if include_raw_data and len(results) <= 10:  # Limit to 10 files for raw data
+                    for i, result in enumerate(results[:10]):
+                        sheet_name = f'Raw_{i+1}_{result.metadata.model}_{result.metadata.serial}'[:31]
+                        
+                        raw_data = []
+                        for track_id, track_data in result.tracks.items():
+                            for j, (pos, err) in enumerate(zip(track_data.position_data, track_data.error_data)):
+                                raw_data.append({
+                                    'Track': track_id,
+                                    'Index': j,
+                                    'Position': pos,
+                                    'Error': err,
+                                    'Type': 'Trimmed'
+                                })
+                            
+                            if track_data.untrimmed_positions:
+                                for j, (pos, err) in enumerate(zip(track_data.untrimmed_positions, track_data.untrimmed_errors)):
+                                    raw_data.append({
+                                        'Track': track_id,
+                                        'Index': j,
+                                        'Position': pos,
+                                        'Error': err,
+                                        'Type': 'Untrimmed'
+                                    })
+                        
+                        if raw_data:
+                            raw_df = pd.DataFrame(raw_data)
+                            raw_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+                # Format the Excel file
+                self._format_excel_file(writer)
+                
+            self.logger.info(f"Comprehensive Excel report generated: {output_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate Excel report: {e}")
+            raise
+    
+    def _format_excel_file(self, writer):
+        """Apply formatting to the Excel file."""
+        try:
+            workbook = writer.book
+            
+            # Define formats
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#4472C4',
+                'font_color': 'white',
+                'align': 'center',
+                'valign': 'vcenter',
+                'border': 1
+            })
+            
+            pass_format = workbook.add_format({
+                'font_color': '#008000',
+                'bold': True
+            })
+            
+            fail_format = workbook.add_format({
+                'font_color': '#FF0000',
+                'bold': True
+            })
+            
+            percent_format = workbook.add_format({
+                'num_format': '0.0%'
+            })
+            
+            # Apply formatting to each sheet
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                
+                # Auto-fit columns (approximate)
+                for i, col in enumerate(worksheet.columns):
+                    max_length = 0
+                    column = col[0].column_letter
+                    for cell in col:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column].width = adjusted_width
+                    
+        except Exception as e:
+            self.logger.warning(f"Failed to apply Excel formatting: {e}") 

@@ -10,7 +10,7 @@ database:
 
 processing:
   max_workers: 8  # Increased for better performance
-  generate_plots: false  # Disable plot generation for speed
+  generate_plots: true  # Enable plot generation
   plot_dpi: 150
   cache_enabled: true
   cache_ttl: 7200  # Increased cache time for production

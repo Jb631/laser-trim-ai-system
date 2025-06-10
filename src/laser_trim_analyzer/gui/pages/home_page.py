@@ -13,6 +13,7 @@ import time
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.core.models import AnalysisStatus
 
 
 class HomePage(BasePage):
@@ -33,6 +34,7 @@ class HomePage(BasePage):
         self.stat_cards = {}
         self.activity_list = None
         self.trend_chart = None
+        self.is_visible = False  # Track visibility state
 
         super().__init__(parent, main_window)
 
@@ -267,20 +269,25 @@ class HomePage(BasePage):
             high_risk_count = 0
 
             for result in results:
-                if result.tracks:
-                    # Get primary track - tracks is a list from DB, not a dict
-                    primary_track = result.tracks[0] if result.tracks else None
-                    
-                    if primary_track:
-                        # Get sigma gradient directly from track
-                        if hasattr(primary_track, 'sigma_gradient') and primary_track.sigma_gradient is not None:
-                            sigma_values.append(primary_track.sigma_gradient)
-                    
-                        # Count high risk units
-                        if (hasattr(primary_track, 'risk_category') and 
-                            primary_track.risk_category and 
-                            primary_track.risk_category.value == "High"):
-                            high_risk_count += 1
+                try:
+                    if result.tracks and len(result.tracks) > 0:
+                        # Get primary track - tracks is a list from DB, not a dict
+                        primary_track = result.tracks[0]
+                        
+                        if primary_track:
+                            # Get sigma gradient directly from track
+                            if hasattr(primary_track, 'sigma_gradient') and primary_track.sigma_gradient is not None:
+                                sigma_values.append(primary_track.sigma_gradient)
+                        
+                            # Count high risk units
+                            if (hasattr(primary_track, 'risk_category') and 
+                                primary_track.risk_category and 
+                                hasattr(primary_track.risk_category, 'value') and
+                                primary_track.risk_category.value == "High"):
+                                high_risk_count += 1
+                except (IndexError, AttributeError) as e:
+                    self.logger.warning(f"Error accessing track data: {e}")
+                    continue
 
             avg_sigma = sum(sigma_values) / len(sigma_values) if sigma_values else 0.0
 
@@ -376,16 +383,32 @@ class HomePage(BasePage):
             # Log database status
             self.logger.info(f"Getting recent activity - DB manager available: {self.main_window.db_manager is not None}")
             
-            # Get recent analyses from last 7 days to ensure we have some data
+            if not self.main_window.db_manager:
+                self.logger.warning("No database manager available")
+                return []
+            
+            # Get recent analyses from last 24 hours primarily, then expand if needed
+            now = datetime.now()
+            activities = []
+            
+            # First try to get today's activities
             results = self.main_window.db_manager.get_historical_data(
-                days_back=7,  # Look back 7 days instead of just 1
-                limit=20,
+                start_date=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                limit=50,
                 include_tracks=False
             )
             
+            # If no activities today, get from last 7 days
+            if not results:
+                self.logger.info("No activities today, checking last 7 days")
+                results = self.main_window.db_manager.get_historical_data(
+                    days_back=7,
+                    limit=20,
+                    include_tracks=False
+                )
+            
             self.logger.info(f"Found {len(results)} recent activities from database")
 
-            activities = []
             for result in results:
                 # Determine status tag - handle both enum and string values
                 try:
@@ -407,14 +430,37 @@ class HomePage(BasePage):
                 model = result.model if hasattr(result, 'model') else 'Unknown'
                 serial = result.serial if hasattr(result, 'serial') else 'Unknown'
                 
+                # Format timestamp with date info for clarity
+                if hasattr(result, 'timestamp') and result.timestamp:
+                    timestamp = result.timestamp
+                    # If today, show just time
+                    if timestamp.date() == now.date():
+                        time_str = timestamp.strftime('%H:%M:%S')
+                    # If yesterday
+                    elif timestamp.date() == (now - timedelta(days=1)).date():
+                        time_str = f"Yesterday {timestamp.strftime('%H:%M')}"
+                    # Otherwise show date
+                    else:
+                        time_str = timestamp.strftime('%m/%d %H:%M')
+                else:
+                    time_str = 'Unknown'
+                
+                # Determine action based on context or always use 'Analysis Complete' for now
+                # In future, could track different types of activities
+                action = 'Analysis Complete'
+                
                 activities.append({
-                    'time': result.timestamp.strftime('%H:%M:%S') if hasattr(result, 'timestamp') and result.timestamp else 'Unknown',
-                    'action': 'Analysis Complete',
+                    'time': time_str,
+                    'action': action,
                     'details': f"{model} - {serial}",
                     'status': status,
-                    'tag': tag
+                    'tag': tag,
+                    'timestamp': result.timestamp if hasattr(result, 'timestamp') else None
                 })
-
+            
+            # Sort by timestamp (newest first)
+            activities.sort(key=lambda x: x.get('timestamp') or datetime.min, reverse=True)
+            
             return activities
 
         except Exception as e:
@@ -449,14 +495,18 @@ class HomePage(BasePage):
                 self.activity_list.delete('1.0', 'end')
                 
                 if activities:
-                    for activity in activities[-10:]:  # Show last 10 activities
-                        timestamp = activity.get('time', activity.get('timestamp', 'Unknown time'))
+                    # Show most recent 10 activities (already sorted newest first)
+                    for activity in activities[:10]:
+                        timestamp = activity.get('time', 'Unknown time')
                         action = activity.get('action', 'Unknown action')
                         details = activity.get('details', '')
+                        status = activity.get('status', 'Unknown')
                         
                         activity_text = f"[{timestamp}] {action}"
                         if details:
                             activity_text += f": {details}"
+                        if status and status != 'Unknown':
+                            activity_text += f" ({status})"
                         activity_text += "\n"
                         
                         self.activity_list.insert('end', activity_text)
@@ -490,7 +540,8 @@ class HomePage(BasePage):
     def _start_auto_refresh(self):
         """Start automatic refresh timer."""
         # Refresh every 30 seconds when visible
-        if self.is_visible:
+        if hasattr(self, 'is_visible') and self.is_visible:
+            self.logger.debug("Auto-refresh triggered")
             self.refresh()
         self.after(30000, self._start_auto_refresh)  # 30 seconds
 
@@ -514,23 +565,119 @@ class HomePage(BasePage):
     def on_show(self):
         """Called when page is shown."""
         self.logger.info("Home page on_show called")
-        # Subscribe to analysis complete events
+        # Subscribe to analysis complete events (avoid duplicates)
         if hasattr(self.main_window, 'subscribe_to_event'):
-            self.main_window.subscribe_to_event('analysis_complete', self._on_analysis_complete)
+            # Store reference to bound method to ensure proper cleanup
+            if not hasattr(self, '_analysis_complete_handler'):
+                self._analysis_complete_handler = self._on_analysis_complete
+            self.main_window.subscribe_to_event('analysis_complete', self._analysis_complete_handler)
+            self.logger.info("Subscribed to analysis_complete event")
+        # Mark page as visible
+        self.is_visible = True
         # Refresh data when page is shown
         self.refresh()
     
     def on_hide(self):
         """Called when page is hidden."""
-        # Unsubscribe from events
-        if hasattr(self.main_window, 'unsubscribe_from_event'):
-            self.main_window.unsubscribe_from_event('analysis_complete', self._on_analysis_complete)
+        # Mark page as not visible
+        self.is_visible = False
+        # Unsubscribe from events using the same reference
+        if hasattr(self.main_window, 'unsubscribe_from_event') and hasattr(self, '_analysis_complete_handler'):
+            self.main_window.unsubscribe_from_event('analysis_complete', self._analysis_complete_handler)
+            self.logger.info("Unsubscribed from analysis_complete event")
     
     def _on_analysis_complete(self, data):
         """Handle analysis complete event."""
-        self.logger.info("Received analysis complete event, refreshing home page")
-        # Refresh the page to show new activity
-        self.refresh()
+        try:
+            self.logger.info(f"Received analysis complete event: {data.get('type', 'unknown')}")
+            
+            # Only process if page is visible
+            if not self.is_visible:
+                self.logger.debug("Ignoring event - page not visible")
+                return
+            
+            # Force immediate UI update with temporary message
+            self._show_immediate_feedback(data)
+            
+            # Schedule database refresh - reduced delay since batch processing now delays the event
+            self.after(500, self.refresh)  # 0.5 second delay to ensure DB is updated
+        except Exception as e:
+            self.logger.error(f"Error handling analysis complete event: {e}")
+    
+    def _show_immediate_feedback(self, data):
+        """Show immediate feedback in the UI while waiting for database refresh."""
+        # Update stat cards if we have results data
+        if data.get('type') == 'batch_complete' and data.get('results'):
+            try:
+                results = data.get('results', {})
+                # Calculate immediate stats from results
+                total_count = len(results)
+                passed_count = sum(1 for r in results.values() 
+                                 if r and hasattr(r, 'overall_status') and 
+                                 r.overall_status == AnalysisStatus.PASS)
+                pass_rate = (passed_count / total_count * 100) if total_count > 0 else 0
+                
+                # Update stat cards immediately
+                if 'units_tested' in self.stat_cards:
+                    # Just show the batch count for now, full refresh will update totals
+                    self.stat_cards['units_tested'].update_value(str(total_count))
+                if 'pass_rate' in self.stat_cards and total_count > 0:
+                    # Update pass rate
+                    self.stat_cards['pass_rate'].update_value(f"{pass_rate:.1f}%")
+            except Exception as e:
+                self.logger.debug(f"Could not update stats immediately: {e}")
+        elif data.get('result'):
+            # Handle single file result
+            try:
+                result = data.get('result')
+                if result and hasattr(result, 'overall_status'):
+                    # Update units tested by incrementing
+                    if 'units_tested' in self.stat_cards:
+                        self.stat_cards['units_tested'].update_value("1")
+                    # Update pass rate if passed
+                    if result.overall_status == AnalysisStatus.PASS and 'pass_rate' in self.stat_cards:
+                        self.stat_cards['pass_rate'].update_value("100.0%")
+            except Exception as e:
+                self.logger.debug(f"Could not update stats for single file: {e}")
+        
+        # Show immediate feedback in activity list
+        if hasattr(self, 'activity_list') and self.activity_list:
+            try:
+                self.activity_list.configure(state="normal")
+                
+                # Add temporary message based on event type
+                now = datetime.now().strftime('%H:%M:%S')
+                
+                if data.get('type') == 'batch_complete':
+                    # Handle batch processing completion
+                    successful_count = data.get('successful_count', 0)
+                    total_count = data.get('total_count', 0)
+                    temp_message = f"[{now}] Batch processing complete: {successful_count}/{total_count} files processed\n"
+                else:
+                    # Handle single file analysis
+                    model = data.get('model', 'Unknown')
+                    serial = data.get('serial', 'Unknown')
+                    status = data.get('status', 'Unknown')
+                    temp_message = f"[{now}] Analysis complete: {model} - {serial} ({status})\n"
+                
+                current_content = self.activity_list.get('1.0', 'end').strip()
+                
+                # Add new message to top
+                self.activity_list.delete('1.0', 'end')
+                self.activity_list.insert('1.0', temp_message)
+                
+                # Keep only the most recent messages
+                if current_content and current_content != "No recent activity today":
+                    lines = current_content.split('\n')
+                    # Keep up to 9 previous entries (10 total with new one)
+                    for line in lines[:9]:
+                        if line.strip():
+                            self.activity_list.insert('end', line + '\n')
+                
+                self.activity_list.configure(state="disabled")
+                self.activity_list.see('1.0')  # Scroll to top
+            except Exception as e:
+                self.logger.error(f"Error showing temporary activity: {e}")
     
     def _update_statistics_with_timeout(self):
         """Update statistics with timeout to prevent hanging."""

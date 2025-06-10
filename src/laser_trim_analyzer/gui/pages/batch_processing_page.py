@@ -8,6 +8,7 @@ validation, progress tracking, and responsive design.
 import asyncio
 import gc
 import logging
+import os
 import threading
 import time
 import traceback
@@ -26,6 +27,7 @@ from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, Vali
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.file_utils import ensure_directory
+from laser_trim_analyzer.utils.report_generator import ReportGenerator
 
 # Set up logging before using it
 logger = logging.getLogger(__name__)
@@ -142,6 +144,9 @@ class BatchProcessingPage(BasePage):
             except Exception as e:
                 logger.warning(f"Failed to initialize resource management: {e}")
                 # Don't show error dialog for optional resource management feature
+        
+        # Initialize report generator
+        self.report_generator = ReportGenerator()
         
         logger.info(f"Batch processing page initialized (CTK widgets: Base={USING_CTK_BASE}, Metric={USING_CTK_METRIC}, BatchResults={USING_CTK_BATCH_RESULTS}, Progress={USING_CTK_PROGRESS})")
 
@@ -549,14 +554,62 @@ class BatchProcessingPage(BasePage):
         self.batch_results_widget = BatchResultsWidget(self.results_frame)
         self.batch_results_widget.pack(fill='both', expand=True, padx=15, pady=(0, 10))
         
-        # Export button
-        self.export_button = ctk.CTkButton(
-            self.results_frame,
-            text="Export Results",
-            command=self._export_batch_results,
+        # Export controls frame
+        export_controls_frame = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        export_controls_frame.pack(pady=(0, 15))
+        
+        # Export options frame
+        export_options_frame = ctk.CTkFrame(export_controls_frame, fg_color="transparent")
+        export_options_frame.pack(side='left', padx=(0, 20))
+        
+        # Include raw data checkbox
+        self.include_raw_data_var = ctk.BooleanVar(value=False)
+        self.include_raw_data_check = ctk.CTkCheckBox(
+            export_options_frame,
+            text="Include Raw Data (up to 10 files)",
+            variable=self.include_raw_data_var
+        )
+        self.include_raw_data_check.pack(side='left', padx=5)
+        
+        # Export buttons frame
+        export_buttons_frame = ctk.CTkFrame(export_controls_frame, fg_color="transparent")
+        export_buttons_frame.pack(side='left')
+        
+        # Export Excel button
+        self.export_excel_button = ctk.CTkButton(
+            export_buttons_frame,
+            text="Export to Excel",
+            command=lambda: self._export_batch_results('excel'),
             state="disabled"
         )
-        self.export_button.pack(pady=(0, 15))
+        self.export_excel_button.pack(side='left', padx=5)
+        
+        # Export HTML button
+        self.export_html_button = ctk.CTkButton(
+            export_buttons_frame,
+            text="Export to HTML",
+            command=lambda: self._export_batch_results('html'),
+            state="disabled"
+        )
+        self.export_html_button.pack(side='left', padx=5)
+        
+        # Export CSV button (legacy)
+        self.export_csv_button = ctk.CTkButton(
+            export_buttons_frame,
+            text="Export to CSV",
+            command=lambda: self._export_batch_results('csv'),
+            state="disabled"
+        )
+        self.export_csv_button.pack(side='left', padx=5)
+        
+        # Output folder button
+        self.output_folder_button = ctk.CTkButton(
+            export_buttons_frame,
+            text="Open Output Folder",
+            command=self._open_output_folder,
+            state="disabled"
+        )
+        self.output_folder_button.pack(side='left', padx=5)
 
     def _setup_responsive_layout(self):
         """Setup initial responsive layout."""
@@ -1420,7 +1473,9 @@ class BatchProcessingPage(BasePage):
         # Display partial results if any
         if partial_results:
             self.batch_results_widget.display_results(partial_results)
-            self.export_button.configure(state="normal")
+            self.export_excel_button.configure(state="normal")
+            self.export_html_button.configure(state="normal")
+            self.export_csv_button.configure(state="normal")
         
         # Show cancellation message
         processed_count = len(partial_results)
@@ -1603,8 +1658,15 @@ class BatchProcessingPage(BasePage):
         # Display results
         self.batch_results_widget.display_results(results)
         
-        # Enable export button
-        self.export_button.configure(state="normal")
+        # Enable export buttons
+        self.export_excel_button.configure(state="normal")
+        self.export_html_button.configure(state="normal")
+        self.export_csv_button.configure(state="normal")
+        
+        # Enable output folder button and store the output directory
+        if output_dir:
+            self.last_output_dir = output_dir
+            self.output_folder_button.configure(state="normal")
         
         # Re-enable controls
         self._set_controls_state("normal")
@@ -1624,15 +1686,33 @@ class BatchProcessingPage(BasePage):
         
         messagebox.showinfo("Batch Processing Complete", success_msg)
         
-        # Refresh home page recent activity
-        try:
-            if hasattr(self.main_window, 'pages') and 'home' in self.main_window.pages:
-                home_page = self.main_window.pages['home']
-                if hasattr(home_page, 'refresh'):
-                    home_page.refresh()
-                    logger.info("Refreshed home page after batch processing")
-        except Exception as e:
-            logger.debug(f"Failed to refresh home page: {e}")
+        # Emit batch complete event for home page with a delay to ensure DB operations are complete
+        def emit_completion_event():
+            if hasattr(self.main_window, 'emit_event'):
+                event_data = {
+                    'page': 'batch_processing',
+                    'type': 'batch_complete',
+                    'successful_count': successful_count,
+                    'failed_count': failed_count,
+                    'total_count': len(self.selected_files),
+                    'status': 'Complete',
+                    'results': results  # Include results for immediate display
+                }
+                self.main_window.emit_event('analysis_complete', event_data)
+                logger.info("Emitted batch analysis_complete event")
+            
+            # Also refresh home page directly as backup
+            try:
+                if hasattr(self.main_window, 'pages') and 'home' in self.main_window.pages:
+                    home_page = self.main_window.pages['home']
+                    if hasattr(home_page, 'refresh'):
+                        home_page.refresh()
+                        logger.info("Refreshed home page after batch processing")
+            except Exception as e:
+                logger.debug(f"Failed to refresh home page: {e}")
+        
+        # Emit event after a short delay to ensure database operations are complete
+        self.after(500, emit_completion_event)
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
     
@@ -1746,35 +1826,56 @@ class BatchProcessingPage(BasePage):
             self.select_folder_button.configure(state="normal")
             self.validate_batch_button.configure(state="normal" if has_files else "disabled")
 
-    def _export_batch_results(self):
-        """Export batch processing results."""
+    def _export_batch_results(self, format_type: str = 'excel'):
+        """Export batch processing results in specified format."""
         if not self.batch_results:
             messagebox.showerror("Error", "No results to export")
             return
         
+        # Set file extension and types based on format
+        if format_type == 'excel':
+            default_ext = ".xlsx"
+            file_types = [("Excel files", "*.xlsx"), ("All files", "*.*")]
+        elif format_type == 'html':
+            default_ext = ".html"
+            file_types = [("HTML files", "*.html"), ("All files", "*.*")]
+        elif format_type == 'csv':
+            default_ext = ".csv"
+            file_types = [("CSV files", "*.csv"), ("All files", "*.*")]
+        else:
+            messagebox.showerror("Error", f"Unsupported format: {format_type}")
+            return
+        
         # Ask for export location
         file_path = filedialog.asksaveasfilename(
-            title="Export Batch Results",
-            defaultextension=".xlsx",
-            filetypes=[
-                ("Excel files", "*.xlsx"),
-                ("CSV files", "*.csv"),
-                ("All files", "*.*")
-            ]
+            title=f"Export Batch Results as {format_type.upper()}",
+            defaultextension=default_ext,
+            filetypes=file_types
         )
         
         if file_path:
             try:
-                if file_path.endswith('.xlsx'):
-                    self._export_batch_excel(Path(file_path))
-                elif file_path.endswith('.csv'):
-                    self._export_batch_csv(Path(file_path))
-                else:
-                    messagebox.showerror("Error", "Unsupported file format")
-                    return
+                path_obj = Path(file_path)
+                
+                if format_type == 'excel':
+                    self._export_batch_excel(path_obj)
+                elif format_type == 'html':
+                    self._export_batch_html(path_obj)
+                elif format_type == 'csv':
+                    self._export_batch_csv(path_obj)
                 
                 messagebox.showinfo("Export Complete", f"Batch results exported to:\n{file_path}")
-                logger.info(f"Batch results exported to: {file_path}")
+                logger.info(f"Batch results exported to: {file_path} (format: {format_type})")
+                
+                # Also generate a summary JSON report alongside
+                if format_type in ['excel', 'html']:
+                    summary_path = path_obj.with_suffix('.summary.json')
+                    try:
+                        results_list = list(self.batch_results.values())
+                        self.report_generator.generate_summary_report(results_list, summary_path)
+                        logger.info(f"Summary report generated: {summary_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to generate summary report: {e}")
                 
             except Exception as e:
                 logger.error(f"Batch export failed: {e}")
@@ -1788,7 +1889,49 @@ class BatchProcessingPage(BasePage):
                 messagebox.showerror("Export Failed", error_msg)
 
     def _export_batch_excel(self, file_path: Path):
-        """Export batch results to Excel format."""
+        """Export batch results to Excel format using comprehensive report generator."""
+        try:
+            # Convert batch_results dict to list of AnalysisResult objects
+            results_list = list(self.batch_results.values())
+            
+            # Get the include raw data option
+            include_raw_data = self.include_raw_data_var.get()
+            
+            # Use the comprehensive report generator
+            self.report_generator.generate_comprehensive_excel_report(
+                results=results_list,
+                output_path=file_path,
+                include_raw_data=include_raw_data
+            )
+            
+            logger.info(f"Batch results exported using comprehensive report generator to: {file_path} (raw data: {include_raw_data})")
+            
+        except Exception as e:
+            # If comprehensive report fails, fall back to legacy export method
+            logger.warning(f"Comprehensive report generation failed, using legacy export: {e}")
+            self._export_batch_excel_legacy(file_path)
+    
+    def _export_batch_html(self, file_path: Path):
+        """Export batch results to HTML format."""
+        try:
+            # Convert batch_results dict to list of AnalysisResult objects
+            results_list = list(self.batch_results.values())
+            
+            # Generate HTML report
+            self.report_generator.generate_html_report(
+                results=results_list,
+                output_path=file_path,
+                title=f"Batch Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            
+            logger.info(f"Batch results exported to HTML: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"HTML export failed: {e}")
+            raise
+    
+    def _export_batch_excel_legacy(self, file_path: Path):
+        """Legacy export method for batch results to Excel format."""
         import pandas as pd
         
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -1871,9 +2014,41 @@ class BatchProcessingPage(BasePage):
                         'Pass_Count': pass_count,
                         'Fail_Count': fail_count
                     })
+                    
+                    # Individual track data - moved inside try block for safety
+                    if hasattr(result, 'tracks') and result.tracks:
+                        # Handle both dict and list formats
+                        if isinstance(result.tracks, dict):
+                            tracks_items = result.tracks.items()
+                        else:
+                            # For list format, create enumerated items
+                            tracks_items = enumerate(result.tracks)
+                        
+                        for track_id, track in tracks_items:
+                            try:
+                                track_row = {
+                                    'File': file_name,
+                                    'Model': model,
+                                    'Serial': serial,
+                                    'Track_ID': str(track_id),
+                                    'Track_Status': getattr(track.overall_status, 'value', 'Unknown') if hasattr(track, 'overall_status') else getattr(track.status, 'value', 'Unknown') if hasattr(track, 'status') else 'Unknown',
+                                    'Sigma_Gradient': track.sigma_analysis.sigma_gradient if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
+                                    'Sigma_Threshold': track.sigma_analysis.sigma_threshold if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
+                                    'Sigma_Pass': track.sigma_analysis.sigma_pass if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
+                                    'Linearity_Spec': track.linearity_analysis.linearity_spec if hasattr(track, 'linearity_analysis') and track.linearity_analysis else None,
+                                    'Linearity_Pass': track.linearity_analysis.linearity_pass if hasattr(track, 'linearity_analysis') and track.linearity_analysis else None,
+                                    'Risk_Category': track.risk_category.value if hasattr(track, 'risk_category') else 'Unknown'
+                                }
+                                all_track_data.append(track_row)
+                            except Exception as track_error:
+                                logger.error(f"Error processing track {track_id} for {file_name}: {track_error}")
+                                # Continue with next track
+                                
                 except Exception as e:
                     # Log error and continue with next result
                     logger.error(f"Error processing result for export: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     # Add minimal data for this file
                     summary_data.append({
                         'File': file_name,
@@ -1887,33 +2062,82 @@ class BatchProcessingPage(BasePage):
                         f"Could not export complete data for {fn}:\n{err}\n\n"
                         "Partial data will be included in the export."
                     ))
-                
-                # Individual track data
-                for track_id, track in result.tracks.items():
-                    track_row = {
-                        'File': file_name,
-                        'Model': result.metadata.model,
-                        'Serial': result.metadata.serial,
-                        'Track_ID': track_id,
-                        'Track_Status': track.overall_status.value,
-                        'Sigma_Gradient': track.sigma_analysis.sigma_gradient if track.sigma_analysis else None,
-                        'Sigma_Threshold': track.sigma_analysis.sigma_threshold if track.sigma_analysis else None,
-                        'Sigma_Pass': track.sigma_analysis.sigma_pass if track.sigma_analysis else None,
-                        'Linearity_Spec': track.linearity_analysis.linearity_spec if track.linearity_analysis else None,
-                        'Linearity_Pass': track.linearity_analysis.linearity_pass if track.linearity_analysis else None,
-                        'Risk_Category': track.risk_category.value if hasattr(track, 'risk_category') else 'Unknown'
-                    }
-                    all_track_data.append(track_row)
+            
+            # Ensure we have at least some data to write
+            if not summary_data:
+                # Create a minimal summary if no data was processed successfully
+                summary_data.append({
+                    'File': 'No data available',
+                    'Model': 'N/A',
+                    'Serial': 'N/A',
+                    'Status': 'Export failed - no processable data'
+                })
             
             # Write summary sheet
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Batch Summary', index=False)
             
-            # Write track details sheet
-            tracks_df = pd.DataFrame(all_track_data)
-            tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+            # Write track details sheet only if we have data
+            if all_track_data:
+                tracks_df = pd.DataFrame(all_track_data)
+                tracks_df.to_excel(writer, sheet_name='Track Details', index=False)
+            
+            # Calculate statistics with error handling
+            total_tracks = 0
+            tracks_passed = 0
+            tracks_failed = 0
+            files_validated = 0
+            files_warning = 0
+            files_failed_validation = 0
+            
+            for result in self.batch_results.values():
+                try:
+                    # Count tracks safely
+                    if hasattr(result, 'tracks'):
+                        if isinstance(result.tracks, dict):
+                            total_tracks += len(result.tracks)
+                            for track in result.tracks.values():
+                                if hasattr(track, 'overall_status'):
+                                    if getattr(track.overall_status, 'value', '') == 'Pass':
+                                        tracks_passed += 1
+                                    else:
+                                        tracks_failed += 1
+                                elif hasattr(track, 'status'):
+                                    if getattr(track.status, 'value', '') == 'Pass':
+                                        tracks_passed += 1
+                                    else:
+                                        tracks_failed += 1
+                        elif isinstance(result.tracks, list):
+                            total_tracks += len(result.tracks)
+                            for track in result.tracks:
+                                if hasattr(track, 'overall_status'):
+                                    if getattr(track.overall_status, 'value', '') == 'Pass':
+                                        tracks_passed += 1
+                                    else:
+                                        tracks_failed += 1
+                                elif hasattr(track, 'status'):
+                                    if getattr(track.status, 'value', '') == 'Pass':
+                                        tracks_passed += 1
+                                    else:
+                                        tracks_failed += 1
+                    
+                    # Count validation status safely
+                    if hasattr(result, 'overall_validation_status'):
+                        val_status = getattr(result.overall_validation_status, 'value', '')
+                        if val_status == 'VALIDATED':
+                            files_validated += 1
+                        elif val_status == 'WARNING':
+                            files_warning += 1
+                        elif val_status == 'FAILED':
+                            files_failed_validation += 1
+                            
+                except Exception as stat_error:
+                    logger.error(f"Error calculating statistics: {stat_error}")
             
             # Statistics sheet
+            pass_rate = f"{(tracks_passed / total_tracks * 100):.1f}%" if total_tracks > 0 else "0%"
+            success_rate = f"{(len(self.batch_results) / len(self.selected_files) * 100):.1f}%" if len(self.selected_files) > 0 else "0%"
+            
             stats_data = {
                 'Metric': [
                     'Total Files Processed',
@@ -1930,19 +2154,24 @@ class BatchProcessingPage(BasePage):
                 'Value': [
                     len(self.batch_results),
                     len(self.selected_files),
-                    f"{len(self.batch_results)/len(self.selected_files)*100:.1f}%",
-                    sum(len(r.tracks) for r in self.batch_results.values()),
-                    sum(sum(1 for t in r.tracks.values() if t.overall_status.value == 'Pass') for r in self.batch_results.values()),
-                    sum(sum(1 for t in r.tracks.values() if t.overall_status.value != 'Pass') for r in self.batch_results.values()),
-                    f"{sum(sum(1 for t in r.tracks.values() if t.overall_status.value == 'Pass') for r in self.batch_results.values()) / sum(len(r.tracks) for r in self.batch_results.values()) * 100:.1f}%" if sum(len(r.tracks) for r in self.batch_results.values()) > 0 else "0%",
-                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'VALIDATED'),
-                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'WARNING'),
-                    sum(1 for r in self.batch_results.values() if hasattr(r, 'overall_validation_status') and r.overall_validation_status.value == 'FAILED')
+                    success_rate,
+                    total_tracks,
+                    tracks_passed,
+                    tracks_failed,
+                    pass_rate,
+                    files_validated,
+                    files_warning,
+                    files_failed_validation
                 ]
             }
             
             stats_df = pd.DataFrame(stats_data)
             stats_df.to_excel(writer, sheet_name='Statistics', index=False)
+            
+            # Ensure at least one sheet is visible by accessing the workbook
+            # This is important to prevent the "at least one sheet must be visible" error
+            if hasattr(writer, 'book'):
+                writer.book.active = 0  # Make the first sheet (Batch Summary) active
 
     def _export_batch_csv(self, file_path: Path):
         """Export batch results to CSV format."""
@@ -1954,47 +2183,118 @@ class BatchProcessingPage(BasePage):
         for file_path_str, result in self.batch_results.items():
             file_name = Path(file_path_str).name
             
-            for track_id, track in result.tracks.items():
-                row = {
+            try:
+                # Get metadata safely
+                model = getattr(result.metadata, 'model', 'Unknown') if hasattr(result, 'metadata') else 'Unknown'
+                serial = getattr(result.metadata, 'serial', 'Unknown') if hasattr(result, 'metadata') else 'Unknown'
+                
+                # Handle system_type safely
+                system_type = 'Unknown'
+                if hasattr(result, 'metadata') and hasattr(result.metadata, 'system_type'):
+                    system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
+                
+                # Handle analysis_date safely
+                analysis_date = 'Unknown'
+                if hasattr(result, 'metadata') and hasattr(result.metadata, 'analysis_date'):
+                    if hasattr(result.metadata.analysis_date, 'strftime'):
+                        analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        analysis_date = str(result.metadata.analysis_date)
+                
+                # Handle overall_status safely
+                overall_status = getattr(result.overall_status, 'value', 'Unknown') if hasattr(result, 'overall_status') else 'Unknown'
+                processing_time = f"{getattr(result, 'processing_time', 0):.2f}"
+                validation_status = getattr(result.overall_validation_status, 'value', 'N/A') if hasattr(result, 'overall_validation_status') else 'N/A'
+                
+                # Process tracks
+                if hasattr(result, 'tracks') and result.tracks:
+                    # Handle both dict and list formats
+                    if isinstance(result.tracks, dict):
+                        tracks_items = result.tracks.items()
+                    else:
+                        tracks_items = enumerate(result.tracks)
+                    
+                    for track_id, track in tracks_items:
+                        try:
+                            row = {
+                                'File': file_name,
+                                'Model': model,
+                                'Serial': serial,
+                                'System_Type': system_type,
+                                'Analysis_Date': analysis_date,
+                                'Track_ID': str(track_id),
+                                'Overall_Status': overall_status,
+                                'Track_Status': getattr(track.overall_status, 'value', 'Unknown') if hasattr(track, 'overall_status') else getattr(track.status, 'value', 'Unknown') if hasattr(track, 'status') else 'Unknown',
+                                'Processing_Time': processing_time,
+                                'Validation_Status': validation_status
+                            }
+                            
+                            # Add detailed analysis data
+                            if hasattr(track, 'sigma_analysis') and track.sigma_analysis:
+                                row.update({
+                                    'Sigma_Gradient': getattr(track.sigma_analysis, 'sigma_gradient', None),
+                                    'Sigma_Threshold': getattr(track.sigma_analysis, 'sigma_threshold', None),
+                                    'Sigma_Pass': getattr(track.sigma_analysis, 'sigma_pass', None),
+                                    'Sigma_Improvement': getattr(track.sigma_analysis, 'improvement_percent', None)
+                                })
+                            
+                            if hasattr(track, 'linearity_analysis') and track.linearity_analysis:
+                                row.update({
+                                    'Linearity_Spec': getattr(track.linearity_analysis, 'linearity_spec', None),
+                                    'Linearity_Pass': getattr(track.linearity_analysis, 'linearity_pass', None),
+                                    'Linearity_Error': getattr(track.linearity_analysis, 'linearity_error', None)
+                                })
+                            
+                            if hasattr(track, 'resistance_analysis') and track.resistance_analysis:
+                                row.update({
+                                    'Resistance_Before': getattr(track.resistance_analysis, 'resistance_before', None),
+                                    'Resistance_After': getattr(track.resistance_analysis, 'resistance_after', None),
+                                    'Resistance_Change_Percent': getattr(track.resistance_analysis, 'resistance_change_percent', None)
+                                })
+                            
+                            if hasattr(track, 'risk_category'):
+                                row['Risk_Category'] = getattr(track.risk_category, 'value', 'Unknown')
+                            
+                            export_data.append(row)
+                            
+                        except Exception as track_error:
+                            logger.error(f"Error processing track {track_id} for CSV export: {track_error}")
+                            # Add minimal row for this track
+                            export_data.append({
+                                'File': file_name,
+                                'Model': model,
+                                'Serial': serial,
+                                'Track_ID': str(track_id),
+                                'Error': str(track_error)
+                            })
+                else:
+                    # No tracks - add a summary row
+                    export_data.append({
+                        'File': file_name,
+                        'Model': model,
+                        'Serial': serial,
+                        'System_Type': system_type,
+                        'Analysis_Date': analysis_date,
+                        'Overall_Status': overall_status,
+                        'Processing_Time': processing_time,
+                        'Validation_Status': validation_status,
+                        'Track_Count': 0
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Error processing result for CSV export: {e}")
+                # Add error row
+                export_data.append({
                     'File': file_name,
-                    'Model': result.metadata.model,
-                    'Serial': result.metadata.serial,
-                    'System_Type': result.metadata.system_type.value,
-                    'Analysis_Date': result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    'Track_ID': track_id,
-                    'Overall_Status': result.overall_status.value,
-                    'Track_Status': track.overall_status.value,
-                    'Processing_Time': f"{result.processing_time:.2f}",
-                    'Validation_Status': result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A'
-                }
-                
-                # Add detailed analysis data
-                if track.sigma_analysis:
-                    row.update({
-                        'Sigma_Gradient': track.sigma_analysis.sigma_gradient,
-                        'Sigma_Threshold': track.sigma_analysis.sigma_threshold,
-                        'Sigma_Pass': track.sigma_analysis.sigma_pass,
-                        'Sigma_Improvement': track.sigma_analysis.improvement_percent if hasattr(track.sigma_analysis, 'improvement_percent') else None
-                    })
-                
-                if track.linearity_analysis:
-                    row.update({
-                        'Linearity_Spec': track.linearity_analysis.linearity_spec,
-                        'Linearity_Pass': track.linearity_analysis.linearity_pass,
-                        'Linearity_Error': track.linearity_analysis.linearity_error if hasattr(track.linearity_analysis, 'linearity_error') else None
-                    })
-                
-                if track.resistance_analysis:
-                    row.update({
-                        'Resistance_Before': track.resistance_analysis.resistance_before if hasattr(track.resistance_analysis, 'resistance_before') else None,
-                        'Resistance_After': track.resistance_analysis.resistance_after if hasattr(track.resistance_analysis, 'resistance_after') else None,
-                        'Resistance_Change_Percent': track.resistance_analysis.resistance_change_percent if hasattr(track.resistance_analysis, 'resistance_change_percent') else None
-                    })
-                
-                if hasattr(track, 'risk_category'):
-                    row['Risk_Category'] = track.risk_category.value
-                
-                export_data.append(row)
+                    'Error': str(e)
+                })
+        
+        # Ensure we have at least one row
+        if not export_data:
+            export_data.append({
+                'File': 'No data available',
+                'Status': 'Export failed - no processable data'
+            })
         
         # Convert to DataFrame and save
         df = pd.DataFrame(export_data)
@@ -2004,8 +2304,54 @@ class BatchProcessingPage(BasePage):
         """Clear batch processing results."""
         self.batch_results = {}
         self.batch_results_widget.clear()
-        self.export_button.configure(state="disabled")
+        self.export_excel_button.configure(state="disabled")
+        self.export_html_button.configure(state="disabled")
+        self.export_csv_button.configure(state="disabled")
+        self.output_folder_button.configure(state="disabled")
         logger.info("Batch results cleared")
+    
+    def _open_output_folder(self):
+        """Open the output folder containing batch results."""
+        if hasattr(self, 'last_output_dir') and self.last_output_dir:
+            try:
+                # Platform-specific folder opening
+                import platform
+                import subprocess
+                
+                system = platform.system()
+                if system == "Windows":
+                    os.startfile(str(self.last_output_dir))
+                elif system == "Darwin":  # macOS
+                    subprocess.run(["open", str(self.last_output_dir)])
+                else:  # Linux and others
+                    subprocess.run(["xdg-open", str(self.last_output_dir)])
+                    
+                logger.info(f"Opened output folder: {self.last_output_dir}")
+            except Exception as e:
+                logger.error(f"Failed to open output folder: {e}")
+                messagebox.showerror("Error", f"Failed to open output folder:\n{str(e)}")
+        else:
+            # Fallback to data directory
+            try:
+                data_dir = Path(self.analyzer_config.data_directory)
+                batch_dir = data_dir / "batch_processing"
+                
+                if batch_dir.exists():
+                    import platform
+                    import subprocess
+                    
+                    system = platform.system()
+                    if system == "Windows":
+                        os.startfile(str(batch_dir))
+                    elif system == "Darwin":  # macOS
+                        subprocess.run(["open", str(batch_dir)])
+                    else:  # Linux and others
+                        subprocess.run(["xdg-open", str(batch_dir)])
+                else:
+                    messagebox.showinfo("Info", "No batch processing results found yet.")
+            except Exception as e:
+                logger.error(f"Failed to open batch folder: {e}")
+                messagebox.showerror("Error", f"Failed to open batch folder:\n{str(e)}")
     
     def cleanup(self):
         """Cleanup resources when page is destroyed."""

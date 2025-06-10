@@ -334,16 +334,16 @@ class MLConfig(BaseSettings):
 
 class APIConfig(BaseSettings):
     """API configuration for AI services."""
-    enabled: bool = Field(default=False, description="Enable AI API integration - disabled by default for security")
+    enabled: bool = Field(default=True, description="Enable AI API integration")
     base_url: str = Field(default="http://localhost:8000", description="API base URL")
     api_key: Optional[str] = Field(default=None, description="API authentication key")
     timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
     max_retries: int = Field(default=3, ge=0, description="Maximum retry attempts")
 
-    # AI features - disabled by default for production
-    enable_anomaly_detection: bool = Field(default=False)
-    enable_quality_predictions: bool = Field(default=False)
-    enable_maintenance_suggestions: bool = Field(default=False)
+    # AI features - enabled by default
+    enable_anomaly_detection: bool = Field(default=True)
+    enable_quality_predictions: bool = Field(default=True)
+    enable_maintenance_suggestions: bool = Field(default=True)
 
 
 class GUIConfig(BaseSettings):

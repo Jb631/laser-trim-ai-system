@@ -15,6 +15,7 @@ from pathlib import Path
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, ValidationStatus
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
+from laser_trim_analyzer.gui.widgets.plot_viewer import PlotViewerWidget
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +200,23 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             height=250,
             width=400
         )
+        
+        # Plot viewer frame
+        self.plot_frame = ctk.CTkFrame(self)
+        
+        self.plot_label = ctk.CTkLabel(
+            self.plot_frame,
+            text="Analysis Plot",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        
+        # Plot viewer widget
+        self.plot_viewer = PlotViewerWidget(self.plot_frame)
+        self.plot_viewer.configure(height=600)
 
     def _setup_layout(self):
         """Setup widget layout."""
-        self.grid_rowconfigure([1, 2, 3, 4, 5], weight=1)
+        self.grid_rowconfigure([1, 2, 3, 4, 5, 6], weight=1)
         self.grid_columnconfigure(0, weight=1)
         
         # Header
@@ -263,6 +277,14 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         
         self.validation_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
         self.validation_text.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        
+        # Plot viewer
+        self.plot_frame.grid(row=5, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.plot_frame.grid_rowconfigure(1, weight=1)
+        self.plot_frame.grid_columnconfigure(0, weight=1)
+        
+        self.plot_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+        self.plot_viewer.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
     def display_result(self, result: AnalysisResult):
         """Display analysis result."""
@@ -284,6 +306,9 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         
         # Update validation details
         self._update_validation_details(result)
+        
+        # Update plot display
+        self._update_plot_display(result)
         
         logger.info(f"Displayed analysis result for: {file_name}")
 
@@ -432,6 +457,9 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
                 self._display_track_details(selected_track, track_data)
             else:
                 self._clear_track_details()
+                
+            # Update plot display for the selected track
+            self._update_plot_display(self.current_result)
 
     def _display_track_details(self, track_id: str, track_data):
         """Display details for selected track."""
@@ -560,3 +588,50 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         # Clear validation text
         self.validation_text.delete("1.0", ctk.END)
         self.validation_text.insert("1.0", "No validation details available.")
+        
+        # Clear plot viewer
+        self.plot_viewer.clear()
+        
+    def _update_plot_display(self, result: AnalysisResult):
+        """Update plot display with current track's plot if available."""
+        try:
+            # Clear previous plot
+            self.plot_viewer.clear()
+            
+            # Check if we have tracks and a selected track
+            if hasattr(result, 'tracks') and result.tracks:
+                selected_track = self.track_var.get()
+                
+                # Find the selected track data
+                track_data = None
+                if isinstance(result.tracks, dict):
+                    track_data = result.tracks.get(selected_track)
+                elif isinstance(result.tracks, list) and selected_track.startswith("Track "):
+                    # Extract index from "Track X" format
+                    try:
+                        track_index = int(selected_track.split()[1]) - 1
+                        if 0 <= track_index < len(result.tracks):
+                            track_data = result.tracks[track_index]
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Load plot if available
+                if track_data and hasattr(track_data, 'plot_path') and track_data.plot_path:
+                    plot_path = Path(track_data.plot_path)
+                    if plot_path.exists():
+                        self.plot_viewer.load_plot(plot_path)
+                        logger.info(f"Loaded plot for {selected_track}: {plot_path}")
+                    else:
+                        logger.warning(f"Plot file not found: {plot_path}")
+                        self.plot_viewer._show_error(f"Plot file not found for {selected_track}")
+                else:
+                    # No plot available for this track
+                    logger.debug(f"No plot path available for {selected_track}")
+                    self.plot_viewer._show_error(f"No plot available for {selected_track}")
+            else:
+                logger.debug("No tracks available for plot display")
+                self.plot_viewer._show_error("No analysis tracks available")
+                
+        except Exception as e:
+            logger.error(f"Error updating plot display: {e}")
+            self.plot_viewer._show_error(f"Error loading plot: {str(e)}")
