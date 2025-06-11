@@ -32,7 +32,6 @@ from laser_trim_analyzer.utils.report_generator import ReportGenerator
 # Set up logging before using it
 logger = logging.getLogger(__name__)
 
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
@@ -64,12 +63,20 @@ except ImportError:
     ResourceStatus = None
 
 
-class BatchProcessingPage(BasePage):
+class BatchProcessingPage(ctk.CTkFrame):
     """Batch processing page with comprehensive validation and responsive design."""
 
-    def __init__(self, parent, main_window):
+    def __init__(self, parent, main_window, **kwargs):
         """Initialize batch processing page with configuration validation."""
-        super().__init__(parent, main_window)
+        # Initialize as CTkFrame to avoid widget hierarchy issues
+        super().__init__(parent, **kwargs)
+        self.main_window = main_window
+        
+        # Add missing BasePage functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        self.logger = logging.getLogger(self.__class__.__name__)
         
         # Get configuration with validation
         try:
@@ -125,6 +132,7 @@ class BatchProcessingPage(BasePage):
         self.processing_thread: Optional[threading.Thread] = None
         self.is_processing = False
         self.validation_results: Dict[str, bool] = {}
+        self.last_output_dir: Optional[Path] = None
         
         # Validate required directories exist
         self._ensure_required_directories()
@@ -149,6 +157,13 @@ class BatchProcessingPage(BasePage):
         self.report_generator = ReportGenerator()
         
         logger.info(f"Batch processing page initialized (CTK widgets: Base={USING_CTK_BASE}, Metric={USING_CTK_METRIC}, BatchResults={USING_CTK_BATCH_RESULTS}, Progress={USING_CTK_PROGRESS})")
+        
+        # Initialize the page
+        try:
+            self._create_page()
+        except Exception as e:
+            self.logger.error(f"Error creating page: {e}", exc_info=True)
+            self._create_error_page(str(e))
 
     def _create_page(self):
         """Create UI widgets with responsive design."""
@@ -1082,6 +1097,8 @@ class BatchProcessingPage(BasePage):
                 base_dir = self.analyzer_config.data_directory if hasattr(self.analyzer_config, 'data_directory') else Path.home() / "LaserTrimResults"
                 output_dir = base_dir / "batch_processing" / datetime.now().strftime("%Y%m%d_%H%M%S")
                 ensure_directory(output_dir)
+                # Store output dir immediately in case of cancellation
+                self.last_output_dir = output_dir
             
             # Throttled progress callback to prevent UI flooding
             def progress_callback(message: str, progress: float):
@@ -1476,6 +1493,10 @@ class BatchProcessingPage(BasePage):
             self.export_excel_button.configure(state="normal")
             self.export_html_button.configure(state="normal")
             self.export_csv_button.configure(state="normal")
+            
+            # Enable output folder button if we have an output directory
+            if hasattr(self, 'last_output_dir') and self.last_output_dir:
+                self.output_folder_button.configure(state="normal")
         
         # Show cancellation message
         processed_count = len(partial_results)
@@ -1658,6 +1679,9 @@ class BatchProcessingPage(BasePage):
         # Display results
         self.batch_results_widget.display_results(results)
         
+        # Re-enable controls first (this won't affect export buttons anymore)
+        self._set_controls_state("normal")
+        
         # Enable export buttons
         self.export_excel_button.configure(state="normal")
         self.export_html_button.configure(state="normal")
@@ -1667,9 +1691,6 @@ class BatchProcessingPage(BasePage):
         if output_dir:
             self.last_output_dir = output_dir
             self.output_folder_button.configure(state="normal")
-        
-        # Re-enable controls
-        self._set_controls_state("normal")
         
         # Show completion message
         success_msg = f"Batch processing completed!\n\n"
@@ -1825,6 +1846,9 @@ class BatchProcessingPage(BasePage):
             self.select_files_button.configure(state="normal")
             self.select_folder_button.configure(state="normal")
             self.validate_batch_button.configure(state="normal" if has_files else "disabled")
+            
+            # Don't override the export buttons and output folder button states
+            # They are managed separately based on whether results exist
 
     def _export_batch_results(self, format_type: str = 'excel'):
         """Export batch processing results in specified format."""
@@ -2308,6 +2332,7 @@ class BatchProcessingPage(BasePage):
         self.export_html_button.configure(state="disabled")
         self.export_csv_button.configure(state="disabled")
         self.output_folder_button.configure(state="disabled")
+        self.last_output_dir = None
         logger.info("Batch results cleared")
     
     def _open_output_folder(self):
@@ -2363,5 +2388,49 @@ class BatchProcessingPage(BasePage):
         if self.resource_manager:
             # Remove our callback (would need to track it properly in production)
             pass
+            
+    def show(self):
+        """Show the page using grid layout."""
+        self.grid(row=0, column=0, sticky="nsew")
+        self.is_visible = True
         
-        super().cleanup() 
+        # Refresh if needed
+        if self.needs_refresh:
+            self.refresh()
+            self.needs_refresh = False
+            
+        self.on_show()
+        
+    def hide(self):
+        """Hide the page."""
+        self.grid_remove()
+        self.is_visible = False
+        
+    def refresh(self):
+        """Refresh page content."""
+        pass
+        
+    def on_show(self):
+        """Called when page is shown."""
+        pass
+        
+    def _create_error_page(self, error_msg: str):
+        """Create an error display page."""
+        error_frame = ctk.CTkFrame(self)
+        error_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        error_label = ctk.CTkLabel(
+            error_frame,
+            text=f"Error initializing {self.__class__.__name__}",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="red"
+        )
+        error_label.pack(pady=(20, 10))
+        
+        detail_label = ctk.CTkLabel(
+            error_frame,
+            text=error_msg,
+            font=ctk.CTkFont(size=14),
+            wraplength=600
+        )
+        detail_label.pack(pady=10) 

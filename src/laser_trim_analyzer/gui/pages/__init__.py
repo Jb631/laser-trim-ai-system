@@ -65,6 +65,12 @@ except ImportError as e:
     print(f"Warning: Could not import MultiTrackPage: {e}")
     MultiTrackPage = None
 
+try:
+    from laser_trim_analyzer.gui.pages.final_test_comparison_page import FinalTestComparisonPage
+except ImportError as e:
+    print(f"Warning: Could not import FinalTestComparisonPage: {e}")
+    FinalTestComparisonPage = None
+
 __all__ = [
     'BasePage',
     'HomePage',
@@ -76,5 +82,6 @@ __all__ = [
     'SingleFilePage',
     'BatchProcessingPage',
     'MultiTrackPage',
+    'FinalTestComparisonPage',
     # 'MLModelInfoAnalyzers',
 ]

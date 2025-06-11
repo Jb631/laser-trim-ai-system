@@ -24,7 +24,6 @@ from matplotlib.figure import Figure
 # Import SQLAlchemy func for database queries
 from sqlalchemy import func
 
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
@@ -35,14 +34,30 @@ from laser_trim_analyzer.analysis.consistency_analyzer import ConsistencyAnalyze
 # Get logger
 logger = logging.getLogger(__name__)
 
-class MultiTrackPage(BasePage):
+class MultiTrackPage(ctk.CTkFrame):
     """Multi-track analysis and comparison page."""
 
-    def __init__(self, parent, main_window):
+    def __init__(self, parent, main_window, **kwargs):
+        # Initialize as CTkFrame to avoid widget hierarchy issues
+        super().__init__(parent, **kwargs)
+        self.main_window = main_window
+        
+        # Add missing BasePage functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
         self.current_unit_data = None
         self.comparison_data = None
         self.consistency_analyzer = ConsistencyAnalyzer()
-        super().__init__(parent, main_window)
+        
+        # Initialize the page
+        try:
+            self._create_page()
+        except Exception as e:
+            self.logger.error(f"Error creating page: {e}", exc_info=True)
+            self._create_error_page(str(e))
 
     def _create_page(self):
         """Create multi-track page content with consistent theme (matching batch processing)."""
@@ -2061,4 +2076,46 @@ Quality Assessment:
         except Exception as e:
             self.logger.error(f"Error updating individual track viewer: {e}")
             import traceback
-            self.logger.error(traceback.format_exc()) 
+            self.logger.error(traceback.format_exc())
+            
+    def show(self):
+        """Show the page using grid layout."""
+        self.grid(row=0, column=0, sticky="nsew")
+        self.is_visible = True
+        
+        # Refresh if needed
+        if self.needs_refresh:
+            self.refresh()
+            self.needs_refresh = False
+            
+        self.on_show()
+        
+    def hide(self):
+        """Hide the page."""
+        self.grid_remove()
+        self.is_visible = False
+        
+    def refresh(self):
+        """Refresh page content."""
+        pass
+        
+    def _create_error_page(self, error_msg: str):
+        """Create an error display page."""
+        error_frame = ctk.CTkFrame(self)
+        error_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        error_label = ctk.CTkLabel(
+            error_frame,
+            text=f"Error initializing {self.__class__.__name__}",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="red"
+        )
+        error_label.pack(pady=(20, 10))
+        
+        detail_label = ctk.CTkLabel(
+            error_frame,
+            text=error_msg,
+            font=ctk.CTkFont(size=14),
+            wraplength=600
+        )
+        detail_label.pack(pady=10) 

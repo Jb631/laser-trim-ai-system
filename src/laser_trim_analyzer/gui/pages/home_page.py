@@ -35,8 +35,17 @@ class HomePage(BasePage):
         self.activity_list = None
         self.trend_chart = None
         self.is_visible = False  # Track visibility state
+        self._last_refresh_time = None  # Track last refresh time
+        self._pending_refresh = False  # Track if refresh is needed
 
         super().__init__(parent, main_window)
+
+        # Subscribe to analysis complete events during initialization
+        # This ensures we catch events even when page is not visible
+        if hasattr(self.main_window, 'subscribe_to_event'):
+            self._analysis_complete_handler = self._on_analysis_complete
+            self.main_window.subscribe_to_event('analysis_complete', self._analysis_complete_handler)
+            self.logger.info("Subscribed to analysis_complete event during initialization")
 
         # Start background refresh
         self._start_auto_refresh()
@@ -194,6 +203,9 @@ class HomePage(BasePage):
     def refresh(self):
         """Refresh dashboard data from database."""
         self.logger.info("Home page refresh called")
+        
+        # Track last refresh time
+        self._last_refresh_time = time.time()
         
         if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
             self.logger.warning("No database manager available for refresh")
@@ -565,42 +577,41 @@ class HomePage(BasePage):
     def on_show(self):
         """Called when page is shown."""
         self.logger.info("Home page on_show called")
-        # Subscribe to analysis complete events (avoid duplicates)
-        if hasattr(self.main_window, 'subscribe_to_event'):
-            # Store reference to bound method to ensure proper cleanup
-            if not hasattr(self, '_analysis_complete_handler'):
-                self._analysis_complete_handler = self._on_analysis_complete
-            self.main_window.subscribe_to_event('analysis_complete', self._analysis_complete_handler)
-            self.logger.info("Subscribed to analysis_complete event")
         # Mark page as visible
         self.is_visible = True
-        # Refresh data when page is shown
-        self.refresh()
+        
+        # Check if we need to refresh due to missed updates
+        current_time = time.time()
+        if self._pending_refresh or (self._last_refresh_time and current_time - self._last_refresh_time > 5):
+            self.logger.info("Refreshing home page data on show (pending updates or stale data)")
+            self._pending_refresh = False
+            self.refresh()
+        else:
+            # Always refresh when shown to ensure latest data
+            self.refresh()
     
     def on_hide(self):
         """Called when page is hidden."""
         # Mark page as not visible
         self.is_visible = False
-        # Unsubscribe from events using the same reference
-        if hasattr(self.main_window, 'unsubscribe_from_event') and hasattr(self, '_analysis_complete_handler'):
-            self.main_window.unsubscribe_from_event('analysis_complete', self._analysis_complete_handler)
-            self.logger.info("Unsubscribed from analysis_complete event")
+        # Note: We keep the event subscription active to catch events while hidden
     
     def _on_analysis_complete(self, data):
         """Handle analysis complete event."""
         try:
             self.logger.info(f"Received analysis complete event: {data.get('type', 'unknown')}")
             
-            # Only process if page is visible
-            if not self.is_visible:
-                self.logger.debug("Ignoring event - page not visible")
-                return
-            
-            # Force immediate UI update with temporary message
-            self._show_immediate_feedback(data)
-            
-            # Schedule database refresh - reduced delay since batch processing now delays the event
-            self.after(500, self.refresh)  # 0.5 second delay to ensure DB is updated
+            # If page is visible, update immediately
+            if self.is_visible:
+                # Force immediate UI update with temporary message
+                self._show_immediate_feedback(data)
+                
+                # Schedule database refresh - reduced delay since batch processing now delays the event
+                self.after(500, self.refresh)  # 0.5 second delay to ensure DB is updated
+            else:
+                # Page is not visible, mark that we need to refresh when shown
+                self.logger.info("Page not visible - marking refresh as pending")
+                self._pending_refresh = True
         except Exception as e:
             self.logger.error(f"Error handling analysis complete event: {e}")
     
@@ -713,3 +724,13 @@ class HomePage(BasePage):
             # Use cached data if available
             if hasattr(self, '_cached_stats'):
                 self._display_statistics(self._cached_stats)
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        # Unsubscribe from events
+        if hasattr(self.main_window, 'unsubscribe_from_event') and hasattr(self, '_analysis_complete_handler'):
+            self.main_window.unsubscribe_from_event('analysis_complete', self._analysis_complete_handler)
+            self.logger.info("Unsubscribed from analysis_complete event during cleanup")
+        
+        # Stop any background threads if needed
+        super().cleanup() if hasattr(super(), 'cleanup') else None
