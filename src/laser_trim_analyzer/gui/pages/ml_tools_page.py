@@ -3727,7 +3727,7 @@ Performance Metrics:
                 # Update ML engine's tracking
                 self._update_ml_engine_tracking(model_name, model)
                 
-                # Update ML manager's model status
+                # Update ML manager's model status 
                 if self.ml_manager and hasattr(self.ml_manager, '_models_status'):
                     self.ml_manager._models_status[model_name].update({
                         'status': 'Ready',
@@ -3736,14 +3736,27 @@ Performance Metrics:
                         'performance': getattr(model, 'performance_metrics', {})
                     })
                     self.logger.info(f"Updated ML manager status for {model_name}")
+                    
+                    # Also update the ML manager's model path tracking
+                    from pathlib import Path
+                    models_dir = Path.home() / '.laser_trim_analyzer' / 'models'
+                    model_path = models_dir / f"{model_name}.joblib"
+                    self.ml_manager._models_status[model_name]['model_path'] = str(model_path)
                 
-                # Save model state if supported
+                # Save model state using model's save method
                 try:
-                    if hasattr(self.ml_engine, 'save_model'):
-                        self.ml_engine.save_model(model_name)
-                        self.logger.info(f"Saved trained model {model_name}")
+                    # Get the model path from ML manager (same path as expected for loading)
+                    from pathlib import Path
+                    models_dir = Path.home() / '.laser_trim_analyzer' / 'models'
+                    models_dir.mkdir(parents=True, exist_ok=True)
+                    model_path = models_dir / f"{model_name}.joblib"
+                    
+                    # Save using the model's save method
+                    if hasattr(model, 'save'):
+                        model.save(str(model_path))
+                        self.logger.info(f"Saved trained model {model_name} to {model_path}")
                     else:
-                        self.logger.info(f"Model saving not supported, keeping in memory: {model_name}")
+                        self.logger.warning(f"Model {model_name} does not have save method, keeping in memory only")
                 except Exception as e:
                     self.logger.warning(f"Could not save model {model_name}: {e}")
 
