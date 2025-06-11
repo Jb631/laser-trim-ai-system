@@ -15,7 +15,8 @@ try:
     from laser_trim_analyzer.gui.pages import (
         HomePage, HistoricalPage, ModelSummaryPage,
         MLToolsPage, AIInsightsPage, SettingsPage,
-        SingleFilePage, BatchProcessingPage, MultiTrackPage
+        SingleFilePage, BatchProcessingPage, MultiTrackPage,
+        FinalTestComparisonPage
     )
 except ImportError as e:
     logging.error(f"Error importing pages: {e}", exc_info=True)
@@ -37,6 +38,11 @@ except ImportError as e:
     except ImportError:
         logging.warning("Could not import MultiTrackPage")
         MultiTrackPage = None
+    try:
+        from laser_trim_analyzer.gui.pages import FinalTestComparisonPage
+    except ImportError:
+        logging.warning("Could not import FinalTestComparisonPage")
+        FinalTestComparisonPage = None
 
 # Import managers
 from laser_trim_analyzer.database.manager import DatabaseManager
@@ -226,11 +232,12 @@ class CTkMainWindow(ctk.CTk):
             ("single_file", "📄 Single File", 2),
             ("batch", "📦 Batch Processing", 3),
             ("multi_track", "🎯 Multi-Track", 4),
-            ("model_summary", "📈 Model Summary", 5),
-            ("historical", "📜 Historical", 6),
-            ("ml_tools", "🤖 ML Tools", 7),
-            ("ai_insights", "💡 AI Insights", 8),
-            ("settings", "⚙️ Settings", 10),
+            ("final_test", "🔬 Final Test Compare", 5),
+            ("model_summary", "📈 Model Summary", 6),
+            ("historical", "📜 Historical", 7),
+            ("ml_tools", "🤖 ML Tools", 8),
+            ("ai_insights", "💡 AI Insights", 9),
+            ("settings", "⚙️ Settings", 11),
         ]
         
         self.nav_buttons = {}
@@ -263,6 +270,7 @@ class CTkMainWindow(ctk.CTk):
             "single_file": SingleFilePage,
             "batch": BatchProcessingPage,
             "multi_track": MultiTrackPage,
+            "final_test": FinalTestComparisonPage,
             "model_summary": ModelSummaryPage,
             "historical": HistoricalPage,
             "ml_tools": MLToolsPage,
