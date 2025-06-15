@@ -22,8 +22,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from laser_trim_analyzer.core.models import AnalysisResult
 from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer, DriftDetector
-from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+# from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient  # Not used
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 
@@ -73,10 +73,20 @@ if not HAS_ML:
     logger.warning(f"ML features not available. HAS_ML_ENGINE={HAS_ML_ENGINE}, HAS_ML_MANAGER={HAS_ML_MANAGER}")
 
 
-class MLToolsPage(BasePage):
+class MLToolsPage(ctk.CTkFrame):
     """Advanced machine learning tools page with model comparison and optimization."""
 
     def __init__(self, parent, main_window):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add BasePage-like functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        
+        # ML-specific attributes
         self.ml_engine = None
         self.ml_manager = None
         self.current_model_stats = {}
@@ -84,10 +94,12 @@ class MLToolsPage(BasePage):
         self.optimization_recommendations = []
         self._status_poll_job = None  # For status polling
         
-        # Set up logger before calling parent __init__
-        self.logger = logging.getLogger(__name__)
+        # Thread safety
+        self._training_lock = threading.Lock()
+        self._status_lock = threading.Lock()
         
-        super().__init__(parent, main_window)
+        # Create the page
+        self._create_page()
         self._initialize_ml_engine()
         self._start_status_polling()
 
@@ -97,42 +109,53 @@ class MLToolsPage(BasePage):
         
     def _poll_status(self):
         """Poll ML engine status and update UI."""
+        # Check if we should stop polling
+        if self._stop_requested or not self.is_visible:
+            self._status_poll_job = None
+            return
+            
         try:
-            if self.ml_manager:
-                # Get current status from ML manager
-                status = self.ml_manager.get_status()
-                
-                # Update main status indicator
-                error_msg = None
-                if status.get('missing_dependencies'):
-                    deps = status['missing_dependencies']
-                    cmd = status.get('install_command', '')
-                    error_msg = f"Missing: {', '.join(deps)}. Install: {cmd}"
-                elif status.get('error'):
-                    error_msg = status['error']
+            with self._status_lock:
+                if self.ml_manager:
+                    # Get current status from ML manager
+                    status = self.ml_manager.get_status()
                     
-                self._update_ml_status(status['status'], status['color'], error_msg)
-                
-                # Update model status cards with real data
-                self._update_model_status()
-                
-                # Update performance metrics periodically
-                self._update_performance_metrics()
-                
-                # Update performance chart if we have data
-                self._update_performance_chart()
-                
-                # Check if ML engine is now available
-                if self.ml_engine is None and status['engine_ready']:
-                    self.ml_engine = self.ml_manager.ml_engine
-                    self.logger.info("ML engine now available")
-                
+                    # Update main status indicator
+                    error_msg = None
+                    if status.get('missing_dependencies'):
+                        deps = status['missing_dependencies']
+                        cmd = status.get('install_command', '')
+                        error_msg = f"Missing: {', '.join(deps)}. Install: {cmd}"
+                    elif status.get('error'):
+                        error_msg = status['error']
+                        
+                    self._update_ml_status(status['status'], status['color'], error_msg)
+                    
+                    # Update model status cards with real data
+                    self._update_model_status()
+                    
+                    # Update performance metrics periodically
+                    self._update_performance_metrics()
+                    
+                    # Update performance chart if we have data
+                    self._update_performance_chart()
+                    
+                    # Check if ML engine is now available
+                    if self.ml_engine is None and status.get('engine_ready'):
+                        self.ml_engine = self.ml_manager.ml_engine
+                        self.logger.info("ML engine now available")
+                        
         except Exception as e:
             self.logger.error(f"Error during status polling: {e}")
-            self._update_ml_status("Error", "red", str(e))
+            # Only update status if widget still exists
+            try:
+                self._update_ml_status("Error", "red", str(e))
+            except:
+                pass
         finally:
-            # Schedule next poll in 5 seconds for faster updates
-            self._status_poll_job = self.after(5000, self._poll_status)
+            # Schedule next poll only if not stopped
+            if not self._stop_requested and self.is_visible:
+                self._status_poll_job = self.after(5000, self._poll_status)
             
     def _stop_status_polling(self):
         """Stop status polling."""
@@ -149,10 +172,10 @@ class MLToolsPage(BasePage):
         # Create enhanced sections
         self._create_header()
         self._create_model_status_section()
+        self._create_training_section()  # Moved training under model status
         self._create_model_comparison_section()
         self._create_threshold_optimization_section()
         self._create_advanced_analytics_section()
-        self._create_training_section()
         self._create_performance_section()
         self._create_optimization_recommendations_section()
 
@@ -1159,17 +1182,21 @@ class MLToolsPage(BasePage):
             self.ml_manager = get_ml_manager()
             
             # Check if ML manager has an engine
-            if hasattr(self.ml_manager, 'ml_engine'):
+            if hasattr(self.ml_manager, 'ml_engine') and self.ml_manager.ml_engine is not None:
                 self.ml_engine = self.ml_manager.ml_engine
                 self.logger.info("ML engine obtained from manager")
             else:
                 # Try to create ML engine directly as fallback
                 self.logger.info("ML manager has no engine, attempting direct creation")
-                from laser_trim_analyzer.ml.engine import MLEngine
-                self.ml_engine = MLEngine()
-                # Store it in the manager if possible
-                if hasattr(self.ml_manager, 'ml_engine'):
+                try:
+                    from laser_trim_analyzer.ml.engine import MLEngine
+                    self.ml_engine = MLEngine()
+                    # Store it in the manager
                     self.ml_manager.ml_engine = self.ml_engine
+                    self.logger.info("Created and stored ML engine in manager")
+                except Exception as engine_error:
+                    self.logger.error(f"Failed to create ML engine: {engine_error}")
+                    self.ml_engine = None
             
             # The ML manager initializes asynchronously, so we'll rely on status polling
             # to update the UI once initialization is complete
@@ -3476,8 +3503,26 @@ Performance Metrics:
             
     def destroy(self):
         """Clean up resources when page is destroyed."""
+        self._stop_requested = True
         self._stop_status_polling()
         super().destroy()
+    
+    def on_show(self):
+        """Called when page is shown."""
+        self.is_visible = True
+        self._stop_requested = False
+        # Restart polling if it was stopped
+        if self._status_poll_job is None:
+            self._start_status_polling()
+    
+    def on_hide(self):
+        """Called when page is hidden."""
+        self.is_visible = False
+    
+    @property
+    def db_manager(self):
+        """Get database manager from main window."""
+        return self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None
 
     def _start_training(self):
         """Start model training with improved workflow."""
@@ -3560,14 +3605,24 @@ Performance Metrics:
 
             # Clear log
             self.training_log.delete('1.0', 'end')
+            
+            # Show progress dialog for training
+            from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import ProgressDialog
+            self.training_progress_dialog = ProgressDialog(
+                self,
+                title="Training ML Models",
+                message="Initializing training..."
+            )
+            self.training_progress_dialog.show()
 
-            # Start training in background with error handling
+            # Start training in background with error handling and thread safety
             def training_wrapper():
-                try:
-                    self._run_training_workflow(model_type, days)
-                except Exception as e:
-                    self.logger.error(f"Training workflow failed: {e}")
-                    self.after(0, lambda: self._handle_training_error(e))
+                with self._training_lock:
+                    try:
+                        self._run_training_workflow(model_type, days)
+                    except Exception as e:
+                        self.logger.error(f"Training workflow failed: {e}")
+                        self.after(0, lambda: self._handle_training_error(e))
 
             thread = threading.Thread(target=training_wrapper, daemon=True)
             thread.start()
@@ -3611,15 +3666,31 @@ Performance Metrics:
             self.after(0, lambda: self._log_training("=== Starting ML Training Workflow ==="))
             self.after(0, lambda: self._log_training(f"Training {model_type} model(s) with {days} days of data"))
             self.after(0, lambda: self._log_training(f"Available models: {list(self.ml_engine.models.keys())}"))
+            
+            # Update progress dialog
+            if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                self.after(0, lambda: self.training_progress_dialog.update_progress(
+                    "Fetching training data...", 0.1
+                ))
 
             # Get training data from database
             training_data = self._get_training_data(days)
             if not training_data:
                 self.after(0, lambda: self._log_training("❌ No training data available"))
+                # Hide progress dialog
+                if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                    self.after(0, lambda: self.training_progress_dialog.hide())
+                    self.training_progress_dialog = None
                 self.after(0, lambda: messagebox.showwarning("No Data", f"No training data found for training"))
                 return
 
             self.after(0, lambda: self._log_training(f"✓ Retrieved {len(training_data)} training samples"))
+            
+            # Update progress dialog
+            if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                self.after(0, lambda: self.training_progress_dialog.update_progress(
+                    f"Processing {len(training_data)} samples...", 0.2
+                ))
 
             # Determine which models to train
             models_to_train = []
@@ -3652,6 +3723,14 @@ Performance Metrics:
                 self.after(0, lambda p=progress: self.training_progress.set(p))
                 self.after(0, lambda m=model_name: self._log_training(f"\n--- Training {m} ({current_model}/{total_models}) ---"))
                 self.after(0, lambda m=model_name: self.training_status_label.configure(text=f"Training {m}..."))
+                
+                # Update progress dialog
+                if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                    self.after(0, lambda m=model_name, c=current_model, t=total_models: 
+                        self.training_progress_dialog.update_progress(
+                            f"Training {m} ({c}/{t})...", 
+                            0.2 + (0.7 * (c-1) / t)
+                        ))
 
                 # Train the model
                 success = self._train_individual_model(model_name, training_data)
@@ -3668,6 +3747,14 @@ Performance Metrics:
                 # Update progress
                 progress = current_model / total_models
                 self.after(0, lambda p=progress: self.training_progress.set(p))
+                
+                # Update progress dialog
+                if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                    self.after(0, lambda c=current_model, t=total_models: 
+                        self.training_progress_dialog.update_progress(
+                            f"Model {c}/{t} completed", 
+                            0.2 + (0.7 * c / t)
+                        ))
 
             # Complete training
             if successful_trainings > 0:
@@ -3694,6 +3781,14 @@ Performance Metrics:
             self.after(0, lambda: self.training_status_label.configure(text="Training failed"))
             raise  # Re-raise to be caught by the wrapper
         finally:
+            # Hide progress dialog
+            if hasattr(self, 'training_progress_dialog') and self.training_progress_dialog:
+                self.after(0, lambda: self.training_progress_dialog.update_progress(
+                    "Training complete!", 1.0
+                ) if self.training_progress_dialog else None)
+                self.after(500, lambda: self.training_progress_dialog.hide() if self.training_progress_dialog else None)
+                self.after(600, lambda: setattr(self, 'training_progress_dialog', None))
+            
             # Always re-enable the training button
             self.after(0, lambda: self.train_button.configure(state='normal', text='Start Training'))
 

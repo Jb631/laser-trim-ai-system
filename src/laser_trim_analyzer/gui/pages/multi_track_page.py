@@ -27,7 +27,7 @@ from sqlalchemy import func
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 from laser_trim_analyzer.gui.widgets.track_viewer import IndividualTrackViewer
 from laser_trim_analyzer.analysis.consistency_analyzer import ConsistencyAnalyzer
 
@@ -58,6 +58,11 @@ class MultiTrackPage(ctk.CTkFrame):
         except Exception as e:
             self.logger.error(f"Error creating page: {e}", exc_info=True)
             self._create_error_page(str(e))
+
+    @property
+    def db_manager(self):
+        """Get database manager from main window."""
+        return getattr(self.main_window, 'db_manager', None)
 
     def _create_page(self):
         """Create multi-track page content with consistent theme (matching batch processing)."""
@@ -261,8 +266,6 @@ class MultiTrackPage(ctk.CTkFrame):
 
         # Create actual chart widgets instead of placeholders
         try:
-            from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-            
             # Summary chart for overview metrics
             self.summary_chart = ChartWidget(
                 self.comparison_tabview.tab("Summary"),
@@ -393,7 +396,7 @@ class MultiTrackPage(ctk.CTkFrame):
 
         self.actions_label = ctk.CTkLabel(
             self.actions_frame,
-            text="Export & Actions:",
+            text="Actions:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
@@ -402,39 +405,55 @@ class MultiTrackPage(ctk.CTkFrame):
         self.actions_container = ctk.CTkFrame(self.actions_frame, fg_color="transparent")
         self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Action buttons
-        button_frame = ctk.CTkFrame(self.actions_container, fg_color="transparent")
-        button_frame.pack(fill='x', padx=10, pady=(10, 10))
+        # File analysis buttons
+        self.select_track_button = ctk.CTkButton(
+            self.actions_container,
+            text="📄 Select Track File",
+            command=self._select_track_file,
+            width=140,
+            height=40
+        )
+        self.select_track_button.pack(side='left', padx=(10, 10), pady=10)
 
-        self.export_report_btn = ctk.CTkButton(
-            button_frame,
-            text="📊 Export Comparison Report",
+        self.analyze_folder_button = ctk.CTkButton(
+            self.actions_container,
+            text="📁 Analyze Folder",
+            command=self._analyze_folder,
+            width=140,
+            height=40
+        )
+        self.analyze_folder_button.pack(side='left', padx=(0, 10), pady=10)
+
+        # Database buttons
+        self.load_from_db_button = ctk.CTkButton(
+            self.actions_container,
+            text="🗄️ Load from Database",
+            command=self._select_unit_from_database,
+            width=160,
+            height=40
+        )
+        self.load_from_db_button.pack(side='left', padx=(0, 10), pady=10)
+
+        # Export buttons
+        self.export_report_button = ctk.CTkButton(
+            self.actions_container,
+            text="📊 Export Report",
             command=self._export_comparison_report,
-            width=200,
+            width=140,
             height=40
         )
-        self.export_report_btn.pack(side='left', padx=(10, 10), pady=10)
+        self.export_report_button.pack(side='left', padx=(0, 10), pady=10)
 
-        self.generate_pdf_btn = ctk.CTkButton(
-            button_frame,
-            text="📄 Generate PDF Report",
-            command=self._generate_pdf_report,
-            width=180,
-            height=40
-        )
-        self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
-
-        self.view_tracks_btn = ctk.CTkButton(
-            button_frame,
-            text="👁️ View Individual Tracks",
+        self.view_tracks_button = ctk.CTkButton(
+            self.actions_container,
+            text="🔍 View Individual Tracks",
             command=self._view_individual_tracks,
             width=180,
-            height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color="green",
-            hover_color="darkgreen"
+            height=40
         )
-        self.view_tracks_btn.pack(side='left', padx=(0, 10), pady=10)
+        self.view_tracks_button.pack(side='left', padx=(0, 10), pady=10)
+
+        # Duplicate widgets removed - buttons already defined above
 
     def _select_track_file(self):
         """Select a single track file to analyze."""
@@ -468,83 +487,57 @@ class MultiTrackPage(ctk.CTkFrame):
             daemon=True
         ).start()
 
-    def _analyze_folder_tracks(self, folder_path: Path):
-        """Analyze all track files in a folder and group by units."""
-        self.unit_info_label.configure(text=f"Analyzing folder: {folder_path.name}...")
-        self.update()
-        
-        # Run analysis in background thread
-        threading.Thread(
-            target=self._run_folder_analysis,
-            args=(folder_path,),
-            daemon=True
-        ).start()
-
     def _run_file_analysis(self, file_path: Path):
-        """Run analysis for a single track file and find related tracks."""
+        """Run analysis on a single track file in background thread."""
         try:
-            self.after(0, lambda: self.unit_info_label.configure(text=f"Analyzing {file_path.name}..."))
-            
-            # Extract unit information from filename
-            filename = file_path.stem
-            parts = filename.split('_')
-            
-            if len(parts) < 2:
+            # Parse filename to extract model and serial
+            file_parts = file_path.stem.split('_')
+            if len(file_parts) < 2:
                 self.after(0, lambda: messagebox.showerror(
-                    "Invalid File", 
-                    "Filename must contain model and serial (e.g., 8340_12345_TA.xlsx)"
+                    "Error", "Invalid filename format. Expected: Model_Serial_Track.xlsx"
                 ))
                 return
             
-            model = parts[0]
-            serial = parts[1]
+            model = file_parts[0]
+            serial = file_parts[1]
             
-            # Extract track ID if present
-            current_track_id = None
-            for part in parts:
-                if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
-                    current_track_id = part
-                    break
-            
-            # Search for related track files in the same directory
-            folder_path = file_path.parent
-            excel_files = list(folder_path.glob("*.xlsx")) + list(folder_path.glob("*.xls"))
-            
-            # Find files with same model/serial
+            # Look for related track files
+            parent_dir = file_path.parent
             related_files = []
-            for excel_file in excel_files:
-                file_parts = excel_file.stem.split('_')
-                if len(file_parts) >= 2 and file_parts[0] == model and file_parts[1] == serial:
-                    # Check if it has a track identifier
-                    has_track_id = any(len(part) == 2 and part[0] == 'T' and part[1].isalpha() 
-                                     for part in file_parts)
-                    if has_track_id:
-                        related_files.append(excel_file)
             
-            if len(related_files) < 2:
-                # Single track file - still analyze but note it's not multi-track
-                self.after(0, lambda: messagebox.showinfo(
-                    "Single Track", 
-                    f"Only one track file found for {model}/{serial}.\n"
-                    "Analyzing as single track. Use 'From Database' to find historical tracks."
-                ))
+            # Search for files with same model and serial
+            for f in parent_dir.glob(f"{model}_{serial}_*.xlsx"):
+                if f != file_path:
+                    related_files.append(f)
+            
+            # Add the current file
+            related_files.insert(0, file_path)
+            
+            # Create unit data structure
+            if len(related_files) == 1:
+                # Single track file
+                track_id = "TA"  # Default to TA if no track identifier found
+                if len(file_parts) > 2:
+                    for part in file_parts[2:]:
+                        if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
+                            track_id = part
+                            break
                 
-                # Create single track unit data
                 self.current_unit_data = {
                     'model': model,
                     'serial': serial,
                     'total_files': 1,
                     'track_count': 1,
-                    'overall_status': 'UNKNOWN',
+                    'overall_status': 'SINGLE_TRACK',
                     'files': [{
                         'filename': file_path.name,
-                        'file_path': str(file_path),
-                        'status': 'PENDING',
+                        'status': 'FOUND',
                         'track_count': 1,
-                        'tracks': {current_track_id or 'T1': {
-                            'track_id': current_track_id or 'T1',
-                            'status': 'PENDING',
-                            'file_path': str(file_path)
+                        'tracks': {track_id: {
+                            'track_id': track_id,
+                            'file_path': str(file_path),
+                            'filename': file_path.name,
+                            'status': 'FOUND'
                         }}
                     }],
                     'sigma_cv': 0,
@@ -555,7 +548,7 @@ class MultiTrackPage(ctk.CTkFrame):
                 self.after(0, self._update_multi_track_display)
                 return
             
-            # Multiple track files found
+            # Multiple track files found - create multi-track analysis
             track_data = []
             for track_file in related_files:
                 file_parts = track_file.stem.split('_')
@@ -590,15 +583,15 @@ class MultiTrackPage(ctk.CTkFrame):
                     'track_count': len(related_files),
                     'tracks': tracks_dict
                 }],
-                'sigma_cv': 0,  # Will be calculated if analysis is run
-                'linearity_cv': 0,  # Will be calculated if analysis is run
+                'sigma_cv': 0,
+                'linearity_cv': 0,
                 'consistency': 'PENDING_ANALYSIS'
             }
             
             # Update UI
             self.after(0, self._update_multi_track_display)
             
-            # Show confirmation dialog
+            # Show confirmation
             track_list = ', '.join([track['track_id'] for track in track_data])
             self.after(0, lambda: messagebox.showinfo(
                 "Multi-Track Unit Found",
@@ -612,22 +605,66 @@ class MultiTrackPage(ctk.CTkFrame):
                 "Error", f"File analysis failed:\n{str(e)}"
             ))
 
+    def _analyze_folder_tracks(self, folder_path: Path):
+        """Analyze all track files in a folder and group by units."""
+        self.unit_info_label.configure(text=f"Analyzing folder: {folder_path.name}...")
+        self.update()
+        
+        # Show progress dialog
+        from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import ProgressDialog
+        self.progress_dialog = ProgressDialog(
+            self,
+            title="Analyzing Folder",
+            message="Scanning for track files..."
+        )
+        self.progress_dialog.show()
+        
+        # Run analysis in background thread
+        threading.Thread(
+            target=self._run_folder_analysis,
+            args=(folder_path,),
+            daemon=True
+        ).start()
+
     def _run_folder_analysis(self, folder_path: Path):
         """Run folder analysis to find and group multi-track units."""
         try:
+            # Update progress
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.after(0, lambda: self.progress_dialog.update_progress(
+                    "Finding Excel files...", 0.1
+                ))
+            
             # Find all Excel files in folder
             excel_files = list(folder_path.glob("*.xlsx")) + list(folder_path.glob("*.xls"))
             
             if not excel_files:
+                # Hide progress dialog
+                if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                    self.after(0, lambda: self.progress_dialog.hide())
+                    self.progress_dialog = None
+                
                 self.after(0, lambda: messagebox.showwarning(
                     "No Files", "No Excel files found in selected folder"
                 ))
                 return
             
+            # Update progress
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.after(0, lambda: self.progress_dialog.update_progress(
+                    f"Analyzing {len(excel_files)} files...", 0.3
+                ))
+            
             # Group files by unit (model_serial)
             unit_groups = {}
             
-            for file_path in excel_files:
+            for idx, file_path in enumerate(excel_files):
+                # Update progress for each file
+                progress = 0.3 + (0.5 * idx / len(excel_files))
+                if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                    self.after(0, lambda p=progress, f=file_path: self.progress_dialog.update_progress(
+                        f"Processing: {f.name}", p
+                    ))
                 filename = file_path.stem
                 parts = filename.split('_')
                 
@@ -652,6 +689,11 @@ class MultiTrackPage(ctk.CTkFrame):
             multi_track_units = {k: v for k, v in unit_groups.items() if len(v) > 1}
             
             if not multi_track_units:
+                # Hide progress dialog
+                if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                    self.after(0, lambda: self.progress_dialog.hide())
+                    self.progress_dialog = None
+                    
                 self.after(0, lambda: messagebox.showinfo(
                     "No Multi-Track Units", 
                     "No multi-track units found in folder.\n"
@@ -659,11 +701,28 @@ class MultiTrackPage(ctk.CTkFrame):
                 ))
                 return
             
+            # Update progress
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.after(0, lambda: self.progress_dialog.update_progress(
+                    "Analysis complete!", 1.0
+                ))
+            
             # Show selection dialog
             self.after(0, lambda: self._show_unit_selection_dialog(multi_track_units))
+            
+            # Hide progress dialog after a short delay
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.after(500, lambda: self.progress_dialog.hide() if self.progress_dialog else None)
+                self.after(600, lambda: setattr(self, 'progress_dialog', None))
 
         except Exception as e:
             self.logger.error(f"Folder analysis failed: {e}")
+            
+            # Hide progress dialog on error
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.after(0, lambda: self.progress_dialog.hide())
+                self.progress_dialog = None
+                
             self.after(0, lambda: messagebox.showerror(
                 "Error", f"Folder analysis failed:\n{str(e)}"
             ))

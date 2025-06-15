@@ -5,7 +5,7 @@ Handles batch analysis of multiple Excel files with comprehensive
 validation, progress tracking, and responsive design.
 """
 
-import asyncio
+# import asyncio  # Not used, commented out
 import gc
 import logging
 import os
@@ -15,7 +15,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Tuple, Any, Callable, Union
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -32,10 +32,10 @@ from laser_trim_analyzer.utils.report_generator import ReportGenerator
 # Set up logging before using it
 logger = logging.getLogger(__name__)
 
-from laser_trim_analyzer.gui.widgets.file_drop_zone import FileDropZone
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.batch_results_widget_ctk import BatchResultsWidget
 from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import BatchProgressDialog
+from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
 
 # Widget implementation flags
 USING_CTK_BASE = True
@@ -60,7 +60,9 @@ try:
     HAS_RESOURCE_MANAGER = True
 except ImportError:
     HAS_RESOURCE_MANAGER = False
-    ResourceStatus = None
+    # Create a placeholder type for type annotations
+    from typing import Any
+    ResourceStatus = Any
 
 
 class BatchProcessingPage(ctk.CTkFrame):
@@ -77,6 +79,13 @@ class BatchProcessingPage(ctk.CTkFrame):
         self.needs_refresh = True
         self._stop_requested = False
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add missing methods that are called
+        self.is_stop_requested = lambda: self._stop_requested
+        self.request_stop_processing = lambda: setattr(self, '_stop_requested', True)
+        
+        # Initialize responsive layout attributes
+        self.current_size_class = 'large'  # Default size class
         
         # Get configuration with validation
         try:
@@ -137,9 +146,10 @@ class BatchProcessingPage(ctk.CTkFrame):
         # Validate required directories exist
         self._ensure_required_directories()
         
-        # Processing control
+        # Processing control with thread safety
         self._stop_event = threading.Event()
         self._processing_cancelled = False
+        self._state_lock = threading.Lock()  # Lock for thread-safe state access
         
         # Initialize resource management
         self.resource_manager = None
@@ -192,6 +202,9 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         # Setup initial layout
         self._setup_responsive_layout()
+        
+        # Apply hover fixes after page creation
+        self.after(100, self._apply_hover_fixes)
 
     def _create_header(self):
         """Create header section."""
@@ -224,6 +237,19 @@ class BatchProcessingPage(ctk.CTkFrame):
         )
         self.batch_indicator.pack(side='right', padx=10, pady=10)
 
+    def _apply_hover_fixes(self):
+        """Apply hover fixes to prevent glitching and shifting."""
+        try:
+            # Fix hover glitches on all widgets
+            fix_hover_glitches(self)
+            
+            # Stabilize layout to prevent shifting
+            stabilize_layout(self.main_container)
+            
+            logger.debug("Hover fixes applied successfully")
+        except Exception as e:
+            logger.warning(f"Failed to apply hover fixes: {e}")
+    
     def _validate_configuration(self) -> bool:
         """Validate that the configuration is properly set up."""
         try:
@@ -299,6 +325,15 @@ class BatchProcessingPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.file_selection_label.pack(anchor='w', padx=15, pady=(15, 5))
+        
+        # File selection instruction label
+        instruction_label = ctk.CTkLabel(
+            self.file_selection_frame,
+            text="Use the buttons below to select Excel files for batch processing",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        instruction_label.pack(pady=(5, 10), padx=15)
         
         # File list display
         self.file_list_frame = ctk.CTkFrame(self.file_selection_frame, fg_color="transparent")
@@ -632,7 +667,8 @@ class BatchProcessingPage(ctk.CTkFrame):
         
     def _handle_responsive_layout(self, size_class: str):
         """Handle responsive layout changes."""
-        super()._handle_responsive_layout(size_class)
+        # CTkFrame doesn't have _handle_responsive_layout, so don't call super
+        # super()._handle_responsive_layout(size_class)
         self._arrange_responsive_elements()
         
     def _arrange_responsive_elements(self):
@@ -671,13 +707,20 @@ class BatchProcessingPage(ctk.CTkFrame):
         for card in self.validation_cards:
             card.grid_forget()
             
-        columns = self.get_responsive_columns(len(self.validation_cards))
+        # Simple responsive logic for validation cards
+        num_cards = len(self.validation_cards)
+        if num_cards <= 2:
+            columns = 1
+        elif num_cards <= 4:
+            columns = 2
+        else:
+            columns = 3
         
         for i, card in enumerate(self.validation_cards):
             row = i // columns
             col = i % columns
-            padding = self.get_responsive_padding()
-            card.grid(row=row, column=col, sticky='ew', **padding)
+            # Simple padding instead of responsive padding
+            card.grid(row=row, column=col, sticky='ew', padx=5, pady=5)
             
         # Configure column weights
         for i in range(columns):
@@ -865,6 +908,14 @@ class BatchProcessingPage(ctk.CTkFrame):
         self._update_file_display()
         self._update_batch_status("No Files Selected", "gray")
         self.batch_validation_frame.grid_remove()
+        
+        # Clear the drop zone if it exists
+        if hasattr(self, 'drop_zone'):
+            try:
+                self.drop_zone.clear_files()
+            except Exception as e:
+                logger.debug(f"Could not clear drop zone: {e}")
+        
         # Use _set_controls_state to properly disable all buttons when no files
         self._set_controls_state("normal")  # This will disable start button due to no files
 
@@ -873,7 +924,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         self.file_list_label.configure(text=f"Selected Files ({len(self.selected_files)}):")
         
         self.file_listbox.configure(state="normal")
-        self.file_listbox.delete("1.0", ctk.END)
+        self.file_listbox.delete("1.0", tk.END)
         
         for i, file_path in enumerate(self.selected_files, 1):
             validation_status = ""
@@ -881,7 +932,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                 status = "✓" if self.validation_results[str(file_path)] else "✗"
                 validation_status = f" [{status}]"
             
-            self.file_listbox.insert(ctk.END, f"{i:3d}. {file_path.name}{validation_status}\n")
+            self.file_listbox.insert(tk.END, f"{i:3d}. {file_path.name}{validation_status}\n")
         
         self.file_listbox.configure(state="disabled")
         
@@ -1005,9 +1056,10 @@ class BatchProcessingPage(ctk.CTkFrame):
             messagebox.showerror("Error", "No files selected")
             return
         
-        if self.is_processing:
-            messagebox.showwarning("Warning", "Processing already in progress")
-            return
+        with self._state_lock:
+            if self.is_processing:
+                messagebox.showwarning("Warning", "Processing already in progress")
+                return
         
         # Check if validation was run
         if not self.validation_results:
@@ -1062,8 +1114,9 @@ class BatchProcessingPage(ctk.CTkFrame):
         )
         self.progress_dialog.show()
         
-        # Start processing in thread
-        self.is_processing = True
+        # Start processing in thread (thread-safe)
+        with self._state_lock:
+            self.is_processing = True
         self.processing_thread = threading.Thread(
             target=self._run_batch_processing,
             args=(processable_files,),
@@ -1079,10 +1132,11 @@ class BatchProcessingPage(ctk.CTkFrame):
         import time
         
         try:
-            # Reset stop flags
+            # Reset stop flags (thread-safe)
             self._stop_event.clear()
-            self._processing_cancelled = False
-            self.reset_stop_request()
+            with self._state_lock:
+                self._processing_cancelled = False
+            self._stop_requested = False  # Reset stop flag directly
             
             # Performance tracking
             start_time = time.time()
@@ -1186,11 +1240,16 @@ class BatchProcessingPage(ctk.CTkFrame):
                     
                     # Update UI if plots were disabled
                     if not optimized_params.get('generate_plots') and self.generate_plots_var.get():
-                        self.after(0, lambda: messagebox.showinfo(
+                        # Ask user if they want to keep plots enabled despite resource concerns
+                        response = messagebox.askyesno(
                             "Resource Optimization",
-                            "Plot generation has been disabled to conserve memory for this large batch."
-                        ))
-                        self.generate_plots_var.set(False)
+                            "Plot generation uses significant memory for large batches.\n\n"
+                            "Recommended: Disable plots to conserve memory.\n\n"
+                            "Do you want to disable plot generation for this batch?"
+                        )
+                        if response:  # User agreed to disable
+                            self.generate_plots_var.set(False)
+                        # Otherwise keep plots enabled per user preference
                     
                     # Show resource warnings if any
                     if optimized_params.get('resource_warnings'):
@@ -1275,7 +1334,8 @@ class BatchProcessingPage(ctk.CTkFrame):
             self.after(0, self._handle_batch_error, error_msg)
         
         finally:
-            self.is_processing = False
+            with self._state_lock:
+                self.is_processing = False
             # Final cleanup
             import gc
             gc.collect()
@@ -1737,7 +1797,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
     
-    def _on_resource_update(self, status: ResourceStatus):
+    def _on_resource_update(self, status: Any):
         """Handle resource status updates."""
         if not self.resource_status_label:
             return
@@ -1745,7 +1805,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         # Update UI on main thread
         self.after(0, self._update_resource_display, status)
     
-    def _update_resource_display(self, status: ResourceStatus):
+    def _update_resource_display(self, status: Any):
         """Update resource monitoring display."""
         if not hasattr(self, 'memory_progress'):
             return
@@ -1811,9 +1871,10 @@ class BatchProcessingPage(ctk.CTkFrame):
         if reply:
             logger.info("User requested to stop batch processing")
             
-            # Set stop flags
+            # Set stop flags (thread-safe)
             self._stop_event.set()
-            self._processing_cancelled = True
+            with self._state_lock:
+                self._processing_cancelled = True
             self.request_stop_processing()
             
             # Update UI immediately
@@ -1826,8 +1887,10 @@ class BatchProcessingPage(ctk.CTkFrame):
             # The processing thread will handle the actual stopping
             
     def _is_processing_cancelled(self) -> bool:
-        """Check if processing has been cancelled."""
-        return self._processing_cancelled or self._stop_event.is_set() or self.is_stop_requested()
+        """Check if processing has been cancelled (thread-safe)."""
+        with self._state_lock:
+            cancelled = self._processing_cancelled
+        return cancelled or self._stop_event.is_set() or self.is_stop_requested()
 
     def _set_controls_state(self, state: str):
         """Set state of control buttons."""
@@ -1855,6 +1918,9 @@ class BatchProcessingPage(ctk.CTkFrame):
         if not self.batch_results:
             messagebox.showerror("Error", "No results to export")
             return
+        
+        # Log the number of results to help debug
+        logger.info(f"Exporting {len(self.batch_results)} batch results as {format_type}")
         
         # Set file extension and types based on format
         if format_type == 'excel':
@@ -1917,6 +1983,12 @@ class BatchProcessingPage(ctk.CTkFrame):
         try:
             # Convert batch_results dict to list of AnalysisResult objects
             results_list = list(self.batch_results.values())
+            
+            # Validate we have actual results
+            if not results_list:
+                raise ValueError("No results found in batch_results")
+            
+            logger.info(f"Exporting {len(results_list)} results to Excel")
             
             # Get the include raw data option
             include_raw_data = self.include_raw_data_var.get()

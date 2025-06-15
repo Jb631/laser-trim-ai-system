@@ -6,6 +6,13 @@ from laser_trim_analyzer.gui.widgets.status_bar import StatusBar
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.widgets.file_analysis_widget import FileAnalysisWidget
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets.chart_placeholder import (
+    ChartPlaceholder,
+    create_chart_placeholder,
+    create_loading_placeholder,
+    create_error_placeholder,
+    create_action_placeholder
+)
 from laser_trim_analyzer.gui.widgets.alert_banner import AlertBanner, AlertStack
 from laser_trim_analyzer.gui.widgets.analysis_display import AnalysisDisplayWidget
 from laser_trim_analyzer.gui.widgets.plot_viewer import PlotViewerWidget
@@ -71,6 +78,11 @@ __all__ = [
     "MetricCard",
     "FileAnalysisWidget",
     "ChartWidget",
+    "ChartPlaceholder",
+    "create_chart_placeholder",
+    "create_loading_placeholder",
+    "create_error_placeholder",
+    "create_action_placeholder",
     "AlertBanner",
     "AlertStack",
     "AnalysisDisplayWidget",

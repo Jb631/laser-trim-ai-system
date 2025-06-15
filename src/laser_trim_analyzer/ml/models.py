@@ -20,7 +20,8 @@ from scipy import stats
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 
-from laser_trim_analyzer.ml.engine import BaseMLModel, ModelConfig
+from laser_trim_analyzer.ml.base_model import BaseMLModel
+from laser_trim_analyzer.ml.engine import ModelConfig
 from laser_trim_analyzer.utils.logging_utils import log_exception
 
 

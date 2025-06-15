@@ -22,6 +22,7 @@ from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabil
 from laser_trim_analyzer.core.models import ValidationResult, TrackData
 from laser_trim_analyzer.database.models import AnalysisResult
 from laser_trim_analyzer.utils.plotting_utils import save_plot
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 
 
 class FinalTestComparisonPage(ctk.CTkFrame):
@@ -35,32 +36,33 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     - Overlay charts with export/print capabilities
     """
     
-    def __init__(self, parent, main_window: Any, **kwargs):
+    def __init__(self, parent, main_window, **kwargs):
         """Initialize final test comparison page."""
-        # Initialize as CTkFrame to avoid widget hierarchy issues
+        # Initialize parent class (CTkFrame)
         super().__init__(parent, **kwargs)
         self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
         
-        # Add missing BasePage functionality
+        # Add BasePage-like functionality
         self.is_visible = False
         self.needs_refresh = True
         self._stop_requested = False
-        self.logger = logging.getLogger(self.__class__.__name__)
         
+        # Page-specific attributes
         self.selected_unit = None
         self.final_test_data = None
         self.comparison_results = None
         self.current_plot = None
         self.canvas = None
         
-        # Initialize the page
-        try:
-            self._create_page()
-            # Apply hover fixes after page creation
-            self.after(100, self._apply_hover_fixes)
-        except Exception as e:
-            self.logger.error(f"Error creating page: {e}", exc_info=True)
-            self._create_error_page(str(e))
+        # Thread safety
+        self._comparison_lock = threading.Lock()
+        
+        # Create the page
+        self._create_page()
+        
+        # Apply hover fixes after page creation
+        self.after(100, self._apply_hover_fixes)
         
     def _create_page(self):
         """Create page content."""
@@ -387,7 +389,7 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                     AnalysisResult.model_number
                 ).filter(
                     AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < date.replace(day=date.day+1) if date.day < 31 else date
+                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1))
                 ).distinct().order_by(AnalysisResult.model_number).all()
                 
                 models = [r.model_number for r in results if r.model_number]
@@ -430,7 +432,7 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                     AnalysisResult.timestamp
                 ).filter(
                     AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < date.replace(day=date.day+1) if date.day < 31 else date,
+                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1)),
                     AnalysisResult.model_number == model
                 ).order_by(AnalysisResult.timestamp.desc()).all()
                 
@@ -477,7 +479,7 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             with self.main_window.db_manager.get_session() as session:
                 result = session.query(AnalysisResult).filter(
                     AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < date.replace(day=date.day+1) if date.day < 31 else date,
+                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1)),
                     AnalysisResult.model_number == model,
                     AnalysisResult.serial_number == serial
                 ).order_by(AnalysisResult.timestamp.desc()).first()
@@ -524,8 +526,12 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     def _load_final_test_file(self, file_path: str):
         """Load and validate final test Excel file."""
         try:
-            # Read Excel file
-            df = pd.read_excel(file_path, sheet_name="Sheet1")
+            # Read Excel file - try default sheet first, then first sheet
+            try:
+                df = pd.read_excel(file_path, sheet_name="Sheet1")
+            except ValueError:
+                # Sheet1 doesn't exist, use first sheet
+                df = pd.read_excel(file_path, sheet_name=0)
             
             # Validate required columns
             required_columns = {
@@ -568,10 +574,17 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             # Remove any rows with NaN values
             self.final_test_data = self.final_test_data.dropna()
             
+            # Check if we have data after cleaning
+            if self.final_test_data.empty:
+                self.show_error("No valid data found after removing empty rows.")
+                self.final_test_data = None
+                return
+            
             # Update file info
             self.file_path_var.set(os.path.basename(file_path))
             info_text = f"Loaded {len(self.final_test_data)} data points\n"
-            info_text += f"Position range: {self.final_test_data['position'].min():.2f} to {self.final_test_data['position'].max():.2f}"
+            if len(self.final_test_data) > 0:
+                info_text += f"Position range: {self.final_test_data['position'].min():.2f} to {self.final_test_data['position'].max():.2f}"
             self.file_info_label.configure(text=info_text)
             
             # Enable compare button
@@ -606,11 +619,19 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     def _comparison_worker(self):
         """Worker thread for running comparison."""
         try:
+            # Thread-safe access to data
+            with self._comparison_lock:
+                selected_unit = self.selected_unit
+                final_test_data = self.final_test_data
+            
+            if not selected_unit or final_test_data is None:
+                raise ValueError("Missing data for comparison")
+            
             # Get laser trim data
-            trim_data = self._extract_trim_data()
+            trim_data = self._extract_trim_data_safe(selected_unit)
             
             # Perform comparison
-            comparison_results = self._compare_linearity(trim_data, self.final_test_data)
+            comparison_results = self._compare_linearity(trim_data, final_test_data)
             
             # Update UI in main thread
             self.after(0, self._display_comparison_results, comparison_results)
@@ -618,11 +639,15 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         except Exception as e:
             self.after(0, self._comparison_error, str(e))
             
-    def _extract_trim_data(self) -> pd.DataFrame:
-        """Extract linearity data from laser trim results."""
-        # Parse the validation results
+    def _extract_trim_data_safe(self, selected_unit) -> pd.DataFrame:
+        """Extract linearity data from laser trim results (thread-safe)."""
+        # Parse the validation results with error handling
         import json
-        validation_data = json.loads(self.selected_unit.validation_results)
+        try:
+            validation_data = json.loads(selected_unit.validation_results)
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            self.logger.error(f"Error parsing validation results: {e}")
+            raise ValueError("Invalid validation data format")
         
         # Extract track data
         tracks = []
@@ -737,9 +762,13 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     def _create_comparison_chart(self, results: Dict[str, Any]):
         """Create comparison overlay chart."""
         try:
-            # Clear previous chart
+            # Clear previous chart and figure
             if self.canvas:
                 self.canvas.get_tk_widget().destroy()
+                self.canvas = None
+            if self.current_plot:
+                plt.close(self.current_plot)
+                self.current_plot = None
                 
             # Create figure with subplots
             fig = Figure(figsize=(12, 8), dpi=100)
@@ -824,11 +853,20 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
                 self.current_plot.savefig(tmp_file.name, dpi=300, bbox_inches='tight')
                 
-                # Use system print dialog
-                if os.name == 'nt':  # Windows
-                    os.startfile(tmp_file.name, 'print')
-                else:  # macOS and Linux
-                    os.system(f'lpr {tmp_file.name}')
+                # Use system print dialog with better error handling
+                try:
+                    if os.name == 'nt':  # Windows
+                        os.startfile(tmp_file.name, 'print')
+                    else:  # macOS and Linux
+                        # Check if lpr is available
+                        if os.system('which lpr > /dev/null 2>&1') == 0:
+                            os.system(f'lpr {tmp_file.name}')
+                        else:
+                            self.show_error("Print command (lpr) not found. Please install CUPS printing system.")
+                            return
+                finally:
+                    # Clean up temp file after a delay
+                    self.after(5000, lambda: os.unlink(tmp_file.name) if os.path.exists(tmp_file.name) else None)
                     
                 self.show_success("Chart sent to printer")
                 
@@ -850,7 +888,8 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             self.refresh()
             self.needs_refresh = False
             
-        self.on_show()
+        if hasattr(self, 'on_show'):
+            self.on_show()
         
     def hide(self):
         """Hide the page."""

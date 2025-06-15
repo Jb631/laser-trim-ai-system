@@ -45,7 +45,12 @@
       "Bash(mv:*)",
       "Bash(/mnt/d/UserFolders/Desktop/laser_trim_analyzer_v2/.venv/Scripts/python.exe run_dev.py --help 2 >& 1)",
       "Bash(PYTHONPATH=/mnt/d/UserFolders/Desktop/laser_trim_analyzer_v2/src python3 test_plot_generation.py 2 >& 1)",
-      "Bash(.venv/Scripts/python.exe run_dev.py:*)"
+      "Bash(.venv/Scripts/python.exe run_dev.py:*)",
+      "Bash(if [ -d \"venv\" ])",
+      "Bash(then source venv/bin/activate)",
+      "Bash(else echo \"No venv found\")",
+      "Bash(fi)",
+      "Bash(cp:*)"
     ],
     "deny": []
   }

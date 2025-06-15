@@ -232,8 +232,9 @@ def validate_excel_file(
         f"File: {file_path.name}"
     )
     
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(f"Validation metadata: {json.dumps(result.metadata, indent=2, default=str)}")
+    # Disable verbose metadata logging for performance
+    # if logger.isEnabledFor(logging.DEBUG):
+    #     logger.debug(f"Validation metadata: {json.dumps(result.metadata, indent=2, default=str)}")
 
     return result
 

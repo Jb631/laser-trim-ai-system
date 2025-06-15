@@ -673,6 +673,7 @@ class LargeScaleProcessor:
         def monitor_memory():
             MAX_ITERATIONS = 10000  # Safety limit to prevent infinite loop
             iteration_count = 0
+            last_gc_time = time.time()
             
             while self._is_processing and iteration_count < MAX_ITERATIONS:
                 iteration_count += 1
@@ -724,6 +725,12 @@ class LargeScaleProcessor:
                     else:
                         self._memory_pressure = False
                     
+                    # More aggressive GC if memory pressure
+                    current_time = time.time()
+                    if self._memory_pressure and current_time - last_gc_time > 10:
+                        gc.collect(2)  # Full collection
+                        last_gc_time = current_time
+                    
                     time.sleep(5)  # Check every 5 seconds
                     
                 except AttributeError:
@@ -736,12 +743,17 @@ class LargeScaleProcessor:
         
         self._memory_monitor = threading.Thread(target=monitor_memory, daemon=True)
         self._memory_monitor.start()
+        self.logger.info("Memory monitoring thread started")
 
     def _stop_memory_monitoring(self):
-        """Stop memory monitoring."""
+        """Stop memory monitoring and cleanup."""
         if self._memory_monitor and self._memory_monitor.is_alive():
             # Thread will stop when _is_processing becomes False
             self._memory_monitor.join(timeout=1.0)
+            
+        # Force final garbage collection
+        gc.collect(2)
+        self.logger.info("Memory monitoring thread stopped")
 
     def _update_performance_stats(self):
         """Update performance statistics."""

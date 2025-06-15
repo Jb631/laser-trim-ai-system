@@ -8,13 +8,15 @@ import customtkinter as ctk
 from tkinter import messagebox
 from pathlib import Path
 from typing import Dict, Any, Optional
+import logging
+import threading
 
 from laser_trim_analyzer.core.config import Config
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.settings_manager import settings_manager, SettingsDialog
 
 
-class SettingsPage(BasePage):
+class SettingsPage(ctk.CTkFrame):
     """
     Settings page for the main application.
 
@@ -30,10 +32,23 @@ class SettingsPage(BasePage):
             parent: Parent widget
             main_window: Reference to main application window
         """
-        # Store config before calling super().__init__
+        super().__init__(parent)
+        self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add BasePage-like functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        
+        # Store config reference
         self.config = main_window.config if hasattr(main_window, 'config') else main_window
         
-        super().__init__(parent, main_window)
+        # Thread safety
+        self._settings_lock = threading.Lock()
+        
+        # Create the page
+        self._create_page()
 
     def _create_page(self):
         """Create settings page content (matching batch processing theme)."""
@@ -440,7 +455,34 @@ class SettingsPage(BasePage):
     def show(self):
         """Show the settings page."""
         self.pack(fill='both', expand=True)
+        self.on_show()
 
     def hide(self):
         """Hide the settings page."""
+        self.on_hide()
         self.pack_forget()
+    
+    def on_show(self):
+        """Called when page is shown."""
+        self.is_visible = True
+        if self.needs_refresh:
+            self._load_current_settings()
+            self.needs_refresh = False
+    
+    def on_hide(self):
+        """Called when page is hidden."""
+        self.is_visible = False
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        try:
+            # Stop any running operations
+            self._stop_requested = True
+            
+            # Save any pending changes
+            with self._settings_lock:
+                self._save_config()
+            
+            self.logger.debug("Settings page cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")

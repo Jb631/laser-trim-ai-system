@@ -12,7 +12,6 @@ import time
 
 from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.core.models import AnalysisStatus
 
 
@@ -37,6 +36,15 @@ class HomePage(BasePage):
         self.is_visible = False  # Track visibility state
         self._last_refresh_time = None  # Track last refresh time
         self._pending_refresh = False  # Track if refresh is needed
+        
+        # Performance cache to reduce database queries
+        self._cache_timeout = 15  # Cache data for 15 seconds
+        self._cache = {
+            'today_stats': None,
+            'trend_data': None,
+            'recent_activity': None,
+            'last_update': 0
+        }
 
         super().__init__(parent, main_window)
 
@@ -218,8 +226,31 @@ class HomePage(BasePage):
         threading.Thread(target=self._refresh_data_background, daemon=True).start()
 
     def _refresh_data_background(self):
-        """Background thread to refresh data."""
+        """Background thread to refresh data with caching."""
         try:
+            current_time = time.time()
+            
+            # Check if cache is still valid (but always refresh if pending)
+            cache_valid = (current_time - self._cache['last_update']) < self._cache_timeout
+            if cache_valid and not self._pending_refresh:
+                # Use cached data
+                self.logger.info("Using cached data for performance")
+                try:
+                    if self.winfo_exists():
+                        self.after(0, self._update_ui, 
+                                 self._cache['today_stats'] or {},
+                                 self._cache['trend_data'] or [],
+                                 self._cache['recent_activity'] or [])
+                except Exception:
+                    pass  # Widget was destroyed
+                return
+            elif self._pending_refresh:
+                self.logger.info("Cache bypass: pending refresh requested")
+                self._pending_refresh = False
+            
+            # Cache expired, fetch fresh data
+            self.logger.info("Cache expired, fetching fresh data")
+            
             # Get today's stats
             today_stats = self._get_today_stats()
 
@@ -228,9 +259,21 @@ class HomePage(BasePage):
 
             # Get recent activity
             recent_activity = self._get_recent_activity()
+            
+            # Update cache
+            self._cache.update({
+                'today_stats': today_stats,
+                'trend_data': trend_data,
+                'recent_activity': recent_activity,
+                'last_update': current_time
+            })
 
-            # Update UI in main thread
-            self.after(0, self._update_ui, today_stats, trend_data, recent_activity)
+            # Update UI in main thread safely
+            try:
+                if self.winfo_exists():
+                    self.after(0, self._update_ui, today_stats, trend_data, recent_activity)
+            except Exception:
+                pass  # Widget was destroyed
 
         except Exception as e:
             self.logger.error(f"Error refreshing dashboard: {e}")
@@ -267,7 +310,18 @@ class HomePage(BasePage):
 
             # Calculate basic metrics
             total_units = len(results)
-            passed_units = sum(1 for r in results if r.overall_status.value == "Pass")
+            passed_units = 0
+            for r in results:
+                try:
+                    # Handle both enum and string status values
+                    if hasattr(r.overall_status, 'value'):
+                        status = r.overall_status.value
+                    else:
+                        status = str(r.overall_status)
+                    if status == "Pass":
+                        passed_units += 1
+                except Exception:
+                    continue
             pass_rate = (passed_units / total_units * 100) if total_units > 0 else 0
 
             # Calculate validation metrics
@@ -342,46 +396,56 @@ class HomePage(BasePage):
             }
 
     def _get_trend_data(self) -> List[Dict[str, Any]]:
-        """Get 7-day trend data."""
+        """Get 7-day trend data with single optimized query."""
         try:
-            trend_data = []
-
-            for i in range(7):
-                date = datetime.now() - timedelta(days=i)
-                date_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
-                date_end = date_start + timedelta(days=1)
-
-                # Get data for this day
-                results = self.main_window.db_manager.get_historical_data(
-                    start_date=date_start,
-                    end_date=date_end
-                )
-
-                # Calculate pass rate
-                total = len(results)
+            # Get all data for last 7 days in single query
+            week_start = datetime.now() - timedelta(days=7)
+            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            all_results = self.main_window.db_manager.get_historical_data(
+                start_date=week_start,
+                include_tracks=False  # Don't need track data for trend
+            )
+            
+            # Group by date
+            daily_data = {}
+            for result in all_results:
+                date_key = result.timestamp.date()
+                if date_key not in daily_data:
+                    daily_data[date_key] = {'total': 0, 'passed': 0}
+                
+                daily_data[date_key]['total'] += 1
+                
                 # Handle both enum and string status values
-                passed = 0
-                for r in results:
-                    try:
-                        # Try to access as enum with value attribute
-                        if hasattr(r.overall_status, 'value'):
-                            status = r.overall_status.value
-                        else:
-                            status = str(r.overall_status)
-                        if status == 'Pass':
-                            passed += 1
-                    except Exception:
-                        continue
-                pass_rate = (passed / total * 100) if total > 0 else None
-
-                if pass_rate is not None:
+                try:
+                    if hasattr(result.overall_status, 'value'):
+                        status = result.overall_status.value
+                    else:
+                        status = str(result.overall_status)
+                    if status == 'Pass':
+                        daily_data[date_key]['passed'] += 1
+                except Exception:
+                    continue
+            
+            # Build trend data for last 7 days
+            trend_data = []
+            for i in range(6, -1, -1):  # 6 days ago to today
+                date = datetime.now() - timedelta(days=i)
+                date_key = date.date()
+                
+                if date_key in daily_data:
+                    data = daily_data[date_key]
+                    pass_rate = (data['passed'] / data['total'] * 100) if data['total'] > 0 else 0
                     trend_data.append({
                         'date': date.strftime('%m/%d'),
                         'pass_rate': pass_rate
                     })
-
-            # Reverse to show oldest to newest
-            trend_data.reverse()
+                else:
+                    # No data for this day
+                    trend_data.append({
+                        'date': date.strftime('%m/%d'),
+                        'pass_rate': 0
+                    })
 
             return trend_data
 
@@ -551,7 +615,7 @@ class HomePage(BasePage):
 
     def _start_auto_refresh(self):
         """Start automatic refresh timer."""
-        # Refresh every 30 seconds when visible
+        # Refresh every 30 seconds when visible for more responsive updates
         if hasattr(self, 'is_visible') and self.is_visible:
             self.logger.debug("Auto-refresh triggered")
             self.refresh()
@@ -559,20 +623,32 @@ class HomePage(BasePage):
 
     def _quick_new_analysis(self):
         """Quick action to start new analysis."""
-        self.main_window._show_page('single_file')
-        # Trigger file browser
-        if 'single_file' in self.main_window.pages and hasattr(self.main_window.pages['single_file'], '_browse_file'):
-            # Call the browse method after a short delay to ensure page is fully loaded
-            self.after(100, self.main_window.pages['single_file']._browse_file)
+        try:
+            if hasattr(self.main_window, '_show_page'):
+                self.main_window._show_page('single_file')
+                # Trigger file browser
+                if 'single_file' in self.main_window.pages and hasattr(self.main_window.pages['single_file'], '_browse_file'):
+                    # Call the browse method after a short delay to ensure page is fully loaded
+                    self.after(100, self.main_window.pages['single_file']._browse_file)
+        except Exception as e:
+            self.logger.error(f"Error navigating to single file page: {e}")
 
     def _view_reports(self):
         """Quick action to view reports."""
-        self.main_window._show_page('historical')
+        try:
+            if hasattr(self.main_window, '_show_page'):
+                self.main_window._show_page('historical')
+        except Exception as e:
+            self.logger.error(f"Error navigating to historical page: {e}")
 
     def _show_high_risk_details(self):
         """Show details of high risk units."""
-        # Navigate to historical page with high risk filter applied
-        self.main_window._show_page('historical', risk_category='High')
+        try:
+            # Navigate to historical page with high risk filter applied
+            if hasattr(self.main_window, '_show_page'):
+                self.main_window._show_page('historical', risk_category='High')
+        except Exception as e:
+            self.logger.error(f"Error navigating to historical page with filter: {e}")
 
     def on_show(self):
         """Called when page is shown."""
@@ -601,19 +677,28 @@ class HomePage(BasePage):
         try:
             self.logger.info(f"Received analysis complete event: {data.get('type', 'unknown')}")
             
+            # Clear cache to force fresh data on next refresh
+            self._cache['last_update'] = 0
+            self.logger.info("Cache cleared to force fresh data after analysis")
+            
             # If page is visible, update immediately
             if self.is_visible:
                 # Force immediate UI update with temporary message
                 self._show_immediate_feedback(data)
                 
-                # Schedule database refresh - reduced delay since batch processing now delays the event
-                self.after(500, self.refresh)  # 0.5 second delay to ensure DB is updated
+                # Schedule database refresh with forced cache refresh
+                self.after(500, self._force_refresh)  # 0.5 second delay to ensure DB is updated
             else:
                 # Page is not visible, mark that we need to refresh when shown
                 self.logger.info("Page not visible - marking refresh as pending")
                 self._pending_refresh = True
         except Exception as e:
             self.logger.error(f"Error handling analysis complete event: {e}")
+    
+    def _force_refresh(self):
+        """Force a complete refresh, ignoring cache."""
+        self._cache['last_update'] = 0  # Clear cache
+        self.refresh()
     
     def _show_immediate_feedback(self, data):
         """Show immediate feedback in the UI while waiting for database refresh."""
@@ -642,14 +727,23 @@ class HomePage(BasePage):
             try:
                 result = data.get('result')
                 if result and hasattr(result, 'overall_status'):
-                    # Update units tested by incrementing
-                    if 'units_tested' in self.stat_cards:
-                        self.stat_cards['units_tested'].update_value("1")
-                    # Update pass rate if passed
-                    if result.overall_status == AnalysisStatus.PASS and 'pass_rate' in self.stat_cards:
-                        self.stat_cards['pass_rate'].update_value("100.0%")
+                    # Show immediate feedback for single file
+                    self.logger.info(f"Single file analysis complete: {getattr(result, 'model', 'Unknown')}")
+                    # Don't update stat cards here - let the full refresh handle it
             except Exception as e:
-                self.logger.debug(f"Could not update stats for single file: {e}")
+                self.logger.debug(f"Could not process single file result: {e}")
+        
+        # Extract better data from the analysis complete event
+        try:
+            if 'model' not in data and hasattr(data.get('result', None), 'model'):
+                data['model'] = data['result'].model
+            if 'serial' not in data and hasattr(data.get('result', None), 'serial'):
+                data['serial'] = data['result'].serial
+            if 'status' not in data and hasattr(data.get('result', None), 'overall_status'):
+                status = data['result'].overall_status
+                data['status'] = status.value if hasattr(status, 'value') else str(status)
+        except Exception as e:
+            self.logger.debug(f"Could not extract additional data: {e}")
         
         # Show immediate feedback in activity list
         if hasattr(self, 'activity_list') and self.activity_list:
@@ -699,8 +793,8 @@ class HomePage(BasePage):
         
         def fetch_stats():
             try:
-                if self.db_manager:
-                    stats = self.db_manager.get_statistics()
+                if hasattr(self.main_window, 'db_manager') and self.main_window.db_manager:
+                    stats = self.main_window.db_manager.get_statistics()
                     result_queue.put(('success', stats))
                 else:
                     result_queue.put(('error', 'No database connection'))

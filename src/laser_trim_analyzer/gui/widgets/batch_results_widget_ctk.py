@@ -70,6 +70,17 @@ class BatchResultsWidget(ctk.CTkFrame):
         # Clear existing results
         self.clear()
         
+        # Handle empty results
+        if not results:
+            empty_label = ctk.CTkLabel(
+                self.results_frame,
+                text="No results to display",
+                font=ctk.CTkFont(size=14),
+                text_color="gray"
+            )
+            empty_label.grid(row=0, column=0, columnspan=7, pady=50)
+            return
+        
         # Add results
         for row, (file_path, result) in enumerate(results.items()):
             self._add_result_row(row, file_path, result)
@@ -142,37 +153,83 @@ class BatchResultsWidget(ctk.CTkFrame):
                         
         # Create row widgets with fixed widths matching headers
         headers = ['File', 'Model', 'Serial', 'Status', 'Validation', 'Tracks', 'Pass/Fail']
+        
+        # Format values with null/error handling
+        try:
+            file_display = file_name[:35] + "..." if file_name and len(file_name) > 35 else (file_name or "Unknown")
+        except:
+            file_display = "Unknown"
+            
         values = [
-            file_name[:35] + "..." if len(file_name) > 35 else file_name,
-            model,
-            serial,
-            status,
-            validation,
-            str(track_count),
-            f"{pass_count}/{fail_count}"
+            file_display,
+            str(model) if model else "--",
+            str(serial) if serial else "--",
+            str(status) if status else "--",
+            str(validation) if validation else "--",
+            str(track_count) if track_count is not None else "0",
+            f"{pass_count}/{fail_count}" if pass_count is not None and fail_count is not None else "--/--"
         ]
         
+        # Create row frame for alternating colors
+        row_frame = ctk.CTkFrame(
+            self.results_frame,
+            fg_color=("gray90", "gray20") if row % 2 == 0 else ("gray95", "gray25"),
+            corner_radius=0
+        )
+        row_frame.grid(row=row, column=0, columnspan=len(headers), sticky='ew', padx=0, pady=1)
+        
+        # Configure grid weights for row frame
+        for i, header in enumerate(headers):
+            row_frame.columnconfigure(i, weight=0, minsize=self.column_widths[header])
+        
         widgets = []
-        for header, value in zip(headers, values):
+        for col, (header, value) in enumerate(zip(headers, values)):
+            # Create label with proper text truncation and tooltip
             label = ctk.CTkLabel(
-                self.results_frame, 
+                row_frame, 
                 text=value,
                 width=self.column_widths[header],
-                anchor='w'
+                anchor='w',
+                font=ctk.CTkFont(size=12),
+                fg_color="transparent"
             )
+            
+            # Add tooltip for long text
+            if header == 'File' and file_name and len(file_name) > 35:
+                # Store full path for potential tooltip implementation
+                label._full_text = file_name
+                
             # Apply color to status and validation columns
             if header == 'Status':
                 label.configure(text_color=status_color)
             elif header == 'Validation':
                 label.configure(text_color=validation_color)
+                
+            label.grid(row=0, column=col, padx=5, pady=4, sticky='w')
             widgets.append(label)
         
-        # Add widgets to grid
-        for col, widget in enumerate(widgets):
-            widget.grid(row=row, column=col, padx=5, pady=2, sticky='w')
+        # Add hover effect to row
+        def on_enter(event):
+            row_frame.configure(fg_color=("gray85", "gray15"))
+            
+        def on_leave(event):
+            row_frame.configure(
+                fg_color=("gray90", "gray20") if row % 2 == 0 else ("gray95", "gray25")
+            )
+            
+        row_frame.bind("<Enter>", on_enter)
+        row_frame.bind("<Leave>", on_leave)
+        
+        # Make row clickable for potential future functionality
+        row_frame.bind("<Button-1>", lambda e: self._on_row_click(file_path, result))
             
     def clear(self):
         """Clear all results."""
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         self.results = {}
+    
+    def _on_row_click(self, file_path: str, result: AnalysisResult):
+        """Handle row click event (for future functionality)."""
+        # This could be extended to show detailed view, export individual result, etc.
+        self.logger.debug(f"Row clicked: {file_path}")

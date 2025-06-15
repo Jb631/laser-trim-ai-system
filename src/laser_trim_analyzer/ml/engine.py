@@ -35,6 +35,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 import joblib
 
 from laser_trim_analyzer.utils.logging_utils import setup_logger, log_exception
+from laser_trim_analyzer.ml.base_model import BaseMLModel
 
 
 class ModelConfig:
@@ -87,64 +88,7 @@ class ModelConfig:
             json.dump(self.to_dict(), f, indent=2)
 
 
-class BaseMLModel(ABC):
-    """Abstract base class for all ML models in the system."""
-
-    def __init__(self, config: ModelConfig, logger: Optional[logging.Logger] = None):
-        """Initialize base ML model."""
-        self.config = config
-        self.logger = logger or logging.getLogger(__name__)
-        self.model = None
-        self.is_trained = False
-        self.training_metadata = {}
-        self.performance_metrics = {}
-
-    @abstractmethod
-    def train(self, X: pd.DataFrame, y: pd.Series) -> Dict[str, Any]:
-        """Train the model. Must be implemented by subclasses."""
-        pass
-
-    @abstractmethod
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions. Must be implemented by subclasses."""
-        pass
-
-    @abstractmethod
-    def evaluate(self, X: pd.DataFrame, y: pd.Series) -> Dict[str, float]:
-        """Evaluate model performance. Must be implemented by subclasses."""
-        pass
-
-    def get_feature_importance(self) -> Optional[pd.DataFrame]:
-        """Get feature importance if available."""
-        if hasattr(self.model, 'feature_importances_'):
-            return pd.DataFrame({
-                'feature': self.config.features,
-                'importance': self.model.feature_importances_
-            }).sort_values('importance', ascending=False)
-        return None
-
-    def save(self, filepath: str) -> None:
-        """Save model and metadata."""
-        model_data = {
-            'model': self.model,
-            'config': self.config.to_dict(),
-            'is_trained': self.is_trained,
-            'training_metadata': self.training_metadata,
-            'performance_metrics': self.performance_metrics
-        }
-        joblib.dump(model_data, filepath)
-        self.logger.info(f"Model saved to {filepath}")
-
-    def load(self, filepath: str) -> None:
-        """Load model and metadata."""
-        model_data = joblib.load(filepath)
-        self.model = model_data['model']
-        self.config = ModelConfig(model_data['config'])
-        self.is_trained = model_data['is_trained']
-        self.training_metadata = model_data['training_metadata']
-        self.performance_metrics = model_data['performance_metrics']
-        self.logger.info(f"Model loaded from {filepath}")
-
+# BaseMLModel class moved to base_model.py to avoid circular imports
 
 class FeatureEngineering:
     """Centralized feature engineering for potentiometer QA data."""

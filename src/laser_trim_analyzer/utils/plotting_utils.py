@@ -326,6 +326,8 @@ def create_histogram(
         return output_path
     else:
         plt.show()
+        # Always close the figure after showing to prevent memory leak
+        plt.close(fig)
         return None
 
 
@@ -390,6 +392,8 @@ def create_trend_chart(
         return output_path
     else:
         plt.show()
+        # Always close the figure after showing to prevent memory leak
+        plt.close(fig)
         return None
 
 
@@ -477,6 +481,8 @@ def create_comparison_plot(
         return output_path
     else:
         plt.show()
+        # Always close the figure after showing to prevent memory leak
+        plt.close(fig)
         return None
 
 

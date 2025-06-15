@@ -47,7 +47,7 @@ try:
     from laser_trim_analyzer.core.secure_logging import (
         get_logger, LogLevel, logged_function
     )
-    secure_logger = get_logger(__name__, log_level=LogLevel.DEBUG)
+    secure_logger = get_logger(__name__, log_level=LogLevel.INFO)
     logger = logging.getLogger(__name__)
 except ImportError:
     # Fallback to standard logging

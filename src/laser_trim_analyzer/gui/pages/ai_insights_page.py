@@ -14,25 +14,46 @@ import json
 from typing import Optional, Dict, List, Any
 
 from laser_trim_analyzer.core.models import AnalysisResult
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
+import logging
+import os
+import sys
 # Removed alert_banner import to prevent glitching issues
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider
-from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 
 
-class AIInsightsPage(BasePage):
+class AIInsightsPage(ctk.CTkFrame):
     """AI-powered insights and analysis page."""
 
     def __init__(self, parent, main_window):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add BasePage-like functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        
+        # Page-specific attributes
         self.ai_client = None
         self.chat_history = []
         self.chat_sessions = []  # Store all chat sessions
         self.current_session_id = None
         self.current_analysis = None
-        super().__init__(parent, main_window)
+        
+        # Thread safety
+        self._ai_lock = threading.Lock()
+        self._notification_timer = None
+        
+        # Create the page
+        self._create_page()
+        
         # Load chat history
         self._load_chat_sessions()
+        
         # Initialize AI client in background to prevent blocking
         thread = threading.Thread(target=self._initialize_ai_client, daemon=True)
         thread.start()
@@ -277,15 +298,28 @@ class AIInsightsPage(BasePage):
         self.report_status.pack(padx=10, pady=(0, 10))
 
     def _initialize_ai_client(self):
-        """Initialize AI client if configured."""
+        """Initialize AI client if configured with timeout to prevent freezing."""
+        import time
+        
         try:
+            start_time = time.time()
+            timeout_duration = 10  # 10 second timeout
+            
             # Check if API is configured
             if not hasattr(self.main_window, 'config') or not hasattr(self.main_window.config, 'api'):
                 self.logger.info("API configuration not available")
+                if self.winfo_exists():
+                    self.after(500, lambda: self.show_notification(
+                        'AI configuration not found. AI features disabled.', 'info'
+                    ))
                 return
                 
             if not self.main_window.config.api.enabled:
                 self.logger.info("API is disabled in configuration")
+                if self.winfo_exists():
+                    self.after(500, lambda: self.show_notification(
+                        'AI is disabled in configuration.', 'info'
+                    ))
                 return
 
             # Determine provider
@@ -300,25 +334,39 @@ class AIInsightsPage(BasePage):
             else:
                 provider = AIProvider.OLLAMA
 
+            # Quick connection test with timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout_duration - 2:  # If already took too long, skip
+                raise TimeoutError("Initialization taking too long")
+
             self.ai_client = QAAIAnalyzer(
                 provider=provider,
                 api_key=api_key,
                 cache_ttl_hours=24,
-                max_retries=getattr(self.main_window.config.api, 'max_retries', 3)
+                max_retries=1,  # Reduced retries for faster failure
+                timeout=5  # 5 second timeout per request
             )
 
             # Show success notification
             self.logger.info(f'Connected to {provider.value} AI service')
-            self.after(500, lambda: self.show_notification(
-                f'Connected to {provider.value} AI service', 'success'
-            ))
+            if self.winfo_exists():
+                self.after(500, lambda: self.show_notification(
+                    f'Connected to {provider.value} AI service', 'success'
+                ))
 
+        except TimeoutError:
+            self.logger.warning("AI client initialization timed out - disabling AI features")
+            if self.winfo_exists():
+                self.after(500, lambda: self.show_notification(
+                    'AI connection timed out. AI features disabled.', 'warning'
+                ))
         except Exception as e:
             self.logger.error(f"Failed to initialize AI client: {e}")
             # Show error notification
-            self.after(500, lambda: self.show_notification(
-                f'AI is not configured. AI features will be unavailable.', 'warning'
-            ))
+            if self.winfo_exists():
+                self.after(500, lambda: self.show_notification(
+                    'AI connection failed. AI features unavailable.', 'warning'
+                ))
 
     def _generate_insights(self):
         """Generate AI insights based on selected type."""
@@ -835,6 +883,11 @@ class AIInsightsPage(BasePage):
             
     def on_hide(self):
         """Called when page is hidden."""
+        # Cancel any pending timers
+        if self._notification_timer:
+            self.after_cancel(self._notification_timer)
+            self._notification_timer = None
+        
         # Hide any visible alerts
         if hasattr(self, 'alert_frame'):
             self.alert_frame.pack_forget()
@@ -857,8 +910,12 @@ class AIInsightsPage(BasePage):
             self.alert_message.configure(text=message, text_color=color['fg'])
             self.alert_frame.pack(fill='x', pady=(0, 10))
             
+            # Cancel previous notification timer if exists
+            if self._notification_timer:
+                self.after_cancel(self._notification_timer)
+            
             # Auto-hide after 5 seconds
-            self.after(5000, lambda: self.alert_frame.pack_forget())
+            self._notification_timer = self.after(5000, lambda: self.alert_frame.pack_forget())
             
         except Exception as e:
             self.logger.error(f"Error showing notification: {e}")
@@ -937,9 +994,16 @@ class AIInsightsPage(BasePage):
                     self._add_chat_message("AI Assistant", "Hello! I'm your QA assistant. How can I help you today?", is_user=False)
             else:
                 # Find and load the selected session
-                session_index = self.chat_history_combo.cget('values').index(value) - 1  # -1 for "New Chat"
-                if 0 <= session_index < len(self.chat_sessions):
-                    session = self.chat_sessions[session_index]
+                try:
+                    session_index = self.chat_history_combo.cget('values').index(value) - 1  # -1 for "New Chat"
+                    if 0 <= session_index < len(self.chat_sessions):
+                        session = self.chat_sessions[session_index]
+                    else:
+                        self.logger.warning(f"Invalid session index: {session_index}")
+                        return
+                except ValueError:
+                    self.logger.warning(f"Session not found: {value}")
+                    return
                     self.current_session_id = session['id']
                     self.chat_history = session['messages']
                     
@@ -1003,3 +1067,44 @@ class AIInsightsPage(BasePage):
         except Exception as e:
             self.logger.error(f"Error clearing chat history: {e}")
             messagebox.showerror("Error", f"Failed to clear chat history: {str(e)}")
+    
+    def _apply_hover_fixes(self):
+        """Apply hover fixes to prevent UI glitching."""
+        try:
+            # Import hover fix utilities
+            from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
+            
+            # Fix hover glitches on all widgets
+            fix_hover_glitches(self)
+            
+            # Stabilize layout to prevent shifting
+            stabilize_layout(self.main_container)
+            
+            self.logger.debug("Hover fixes applied successfully")
+        except ImportError:
+            self.logger.warning("Hover fix utilities not available")
+        except Exception as e:
+            self.logger.warning(f"Failed to apply hover fixes: {e}")
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        try:
+            # Cancel any pending timers
+            if self._notification_timer:
+                self.after_cancel(self._notification_timer)
+                self._notification_timer = None
+            
+            # Stop any running threads
+            self._stop_requested = True
+            
+            # Clean up AI client
+            if hasattr(self, 'ai_client') and self.ai_client:
+                self.ai_client = None
+            
+            # Clear data
+            self.chat_history = []
+            self.current_analysis = None
+            
+            self.logger.debug("AI Insights page cleanup completed")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")

@@ -29,6 +29,7 @@ from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 # from laser_trim_analyzer.gui.pages.base_page import BasePage  # Commented out to avoid widget mismatch
 from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
+from laser_trim_analyzer.gui.settings_manager import settings_manager
 
 logger = logging.getLogger(__name__)
 
@@ -409,8 +410,12 @@ class SingleFilePage(ctk.CTkFrame):
     def _browse_file(self):
         """Browse for Excel file."""
         try:
+            # Get last used directory from settings
+            last_dir = settings_manager.get("file_dialog.last_directory", str(Path.home()))
+            
             file_path = filedialog.askopenfilename(
                 title="Select Excel file",
+                initialdir=last_dir,
                 filetypes=[
                     ("Excel files", "*.xlsx *.xls"),
                     ("All files", "*.*")
@@ -419,6 +424,9 @@ class SingleFilePage(ctk.CTkFrame):
             
             if file_path:
                 self.current_file = Path(file_path)
+                
+                # Save directory for next time
+                settings_manager.set("file_dialog.last_directory", str(self.current_file.parent))
                 
                 # Update file entry
                 self.file_entry.configure(state="normal")
@@ -562,7 +570,18 @@ class SingleFilePage(ctk.CTkFrame):
         # Re-enable validate button on error
         self.validate_button.configure(state="normal")
         
-        messagebox.showerror("Validation Error", f"Pre-validation failed:\n{error_message}")
+        # Make error message more user-friendly
+        user_message = error_message
+        if "not found" in error_message.lower():
+            user_message = "The file could not be found. It may have been moved or deleted."
+        elif "permission" in error_message.lower():
+            user_message = "Cannot access the file. Please check that it's not open in another program."
+        elif "format" in error_message.lower():
+            user_message = "The file format is not supported. Please select an Excel file (.xlsx or .xls)."
+        elif "corrupt" in error_message.lower():
+            user_message = "The file appears to be corrupted and cannot be read."
+        
+        messagebox.showerror("Validation Error", f"Pre-validation failed:\n\n{user_message}")
     
     def _setup_analysis_watchdog(self):
         """Set up a watchdog timer to prevent indefinite freezing."""
@@ -573,8 +592,8 @@ class SingleFilePage(ctk.CTkFrame):
         # Show emergency button when watchdog is active
         try:
             self.emergency_button.pack(side='right', padx=(10, 10), pady=10)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to show emergency button: {e}")
         
         # Set up new watchdog (5 minutes timeout)
         def watchdog_timeout():
@@ -610,16 +629,16 @@ class SingleFilePage(ctk.CTkFrame):
                 # Hide emergency button
                 try:
                     self.emergency_button.pack_forget()
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to hide emergency button: {e}")
                 
                 # Show timeout message
                 try:
                     messagebox.showerror("Analysis Timeout", 
                                        "Analysis timed out after 5 minutes.\n"
                                        "The application has been reset to a usable state.")
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to show timeout message: {e}")
         
         # Schedule watchdog for 5 minutes
         self.watchdog_timer = self.after(300000, watchdog_timeout)  # 300000ms = 5 minutes
@@ -748,12 +767,14 @@ class SingleFilePage(ctk.CTkFrame):
             # Progress callback with bounds checking and thread safety
             def progress_callback(message: str, progress: float):
                 try:
-                    if self.progress_dialog and not self.is_analyzing == False:
+                    if self.progress_dialog and self.is_analyzing:
                         # Ensure progress is within bounds
                         safe_progress = max(0.0, min(1.0, progress))
                         # Use a more thread-safe approach
-                        if hasattr(self, 'winfo_exists') and self.winfo_exists():
+                        try:
                             self.after_idle(lambda: update_progress_safe(message, safe_progress))
+                        except Exception:
+                            pass  # Widget was destroyed
                 except Exception as e:
                     logger.debug(f"Progress callback error: {e}")
             
@@ -849,12 +870,30 @@ class SingleFilePage(ctk.CTkFrame):
                 
         except ValidationError as e:
             logger.error(f"Validation error during analysis: {e}")
-            self._analysis_error = f"Validation failed: {str(e)}"
+            # Make error message more user-friendly
+            error_msg = str(e)
+            if "missing required columns" in error_msg.lower():
+                self._analysis_error = "The selected file is missing required data columns. Please ensure the file contains laser trim data."
+            elif "invalid data format" in error_msg.lower():
+                self._analysis_error = "The file format is not recognized. Please select a valid laser trim Excel file."
+            elif "no data found" in error_msg.lower():
+                self._analysis_error = "No laser trim data was found in the file. Please check the file contents."
+            else:
+                self._analysis_error = f"Data validation failed: {error_msg}"
             self._analysis_success = False
             
         except ProcessingError as e:
             logger.error(f"Processing error during analysis: {e}")
-            self._analysis_error = f"Processing failed: {str(e)}"
+            # Make error message more user-friendly
+            error_msg = str(e)
+            if "memory" in error_msg.lower():
+                self._analysis_error = "Not enough memory to process this file. Try closing other applications or processing a smaller file."
+            elif "timeout" in error_msg.lower():
+                self._analysis_error = "Processing took too long and was cancelled. The file may be too large or complex."
+            elif "calculation" in error_msg.lower():
+                self._analysis_error = "An error occurred during calculations. The data may contain invalid values."
+            else:
+                self._analysis_error = f"Processing failed: {error_msg}"
             self._analysis_success = False
             
         except Exception as e:
@@ -909,8 +948,8 @@ class SingleFilePage(ctk.CTkFrame):
                             self.analyze_button.configure(state="normal")
                         self.browse_button.configure(state="normal")
                         self.clear_button.configure(state="normal")
-                    except:
-                        pass
+                    except Exception as button_error:
+                        logger.critical(f"Failed to enable buttons in last resort: {button_error}")
             
             # Use after() with a small delay instead of after_idle() for better reliability
             # from background threads
@@ -939,8 +978,8 @@ class SingleFilePage(ctk.CTkFrame):
                         if self.current_file:
                             self.analyze_button.configure(state="normal")
                         logger.warning("Forced synchronous UI update from thread")
-                    except:
-                        pass
+                    except Exception as sync_error:
+                        logger.critical(f"Complete UI failure, manual intervention needed: {sync_error}")
 
     def _handle_success_ui(self):
         """Handle successful analysis UI updates - called from main thread."""
@@ -1034,8 +1073,8 @@ class SingleFilePage(ctk.CTkFrame):
                 except Exception as e:
                     logger.error(f"Failed to emit analysis complete event: {e}")
             
-            # Emit event after a short delay to ensure database operations are complete
-            self.after(300, emit_completion_event)
+            # Emit event after a shorter delay to ensure database operations are complete
+            self.after(200, emit_completion_event)
             
             # Show success notification
             if result is not None:
@@ -1240,8 +1279,13 @@ class SingleFilePage(ctk.CTkFrame):
         try:
             # Ask for export location
             logger.info("Opening file save dialog")
+            # Get last used directory
+            last_dir = settings_manager.get("file_dialog.last_export_directory", 
+                                          settings_manager.get("file_dialog.last_directory", str(Path.home())))
+            
             file_path = filedialog.asksaveasfilename(
                 title="Export Analysis Results",
+                initialdir=last_dir,
                 defaultextension=".xlsx",
                 filetypes=[
                     ("Excel files", "*.xlsx"),
@@ -1252,6 +1296,11 @@ class SingleFilePage(ctk.CTkFrame):
             
             if file_path:
                 logger.info(f"User selected export path: {file_path}")
+                
+                # Save export directory for next time
+                export_path = Path(file_path)
+                settings_manager.set("file_dialog.last_export_directory", str(export_path.parent))
+                
                 try:
                     # Export based on file extension
                     if file_path.endswith('.xlsx'):
@@ -1392,6 +1441,11 @@ class SingleFilePage(ctk.CTkFrame):
             if not self.current_file:
                 self.prevalidation_frame.pack_forget()
                 self._update_validation_status("Not Started", "gray")
+                # Disable analyze button when no file
+                self.analyze_button.configure(state="disabled")
+            else:
+                # Enable analyze button if file is selected
+                self.analyze_button.configure(state="normal")
             
             logger.info("Results cleared")
             
