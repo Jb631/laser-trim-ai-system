@@ -1364,8 +1364,7 @@ class LaserTrimProcessor:
 
         try:
             # Get predictions for primary track
-            flat_data = result.to_flat_dict()
-            predictions = await self.ml_predictor.predict(flat_data)
+            predictions = await self.ml_predictor.predict(result)
 
             # Add predictions to result metadata
             if predictions:

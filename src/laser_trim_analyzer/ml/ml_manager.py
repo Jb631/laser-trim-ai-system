@@ -354,7 +354,7 @@ class MLEngineManager:
                     if not self._validate_model_file(model_path):
                         raise ValueError("Model file validation failed")
                     
-                    model.load(str(model_path))
+                    model.load(model_path)
                     is_trained = True
                     self.logger.info(f"Loaded trained model from {model_path}")
                     
@@ -395,7 +395,7 @@ class MLEngineManager:
                 'trained': is_trained,
                 'description': model_info['description'],
                 'last_training': datetime.now() if is_trained else None,
-                'performance': model.performance_metrics if is_trained else {},
+                'performance': getattr(model, 'performance_metrics', {}) if is_trained else {},
                 'load_error': load_error,
                 'model_path': str(model_path)
             }
@@ -435,11 +435,49 @@ class MLEngineManager:
         }
         return targets.get(model_name, 'target')
     
+    def save_model(self, model_name: str) -> bool:
+        """Save a trained model to disk."""
+        try:
+            if model_name not in self.ml_engine.models:
+                self.logger.error(f"Model {model_name} not found in ML engine")
+                return False
+                
+            model = self.ml_engine.models[model_name]
+            model_path = self._get_model_path(model_name)
+            
+            # Always save as .pkl for consistency
+            model_path = model_path.parent / f"{model_name}.pkl"
+            
+            # Save the model
+            if hasattr(model, 'save'):
+                model.save(str(model_path))
+                self.logger.info(f"Saved model {model_name} using model.save()")
+            else:
+                # Fallback to pickle
+                import pickle
+                with open(model_path, 'wb') as f:
+                    pickle.dump(model, f)
+                self.logger.info(f"Saved model {model_name} using pickle")
+                
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save model {model_name}: {e}")
+            return False
+    
     def _get_model_path(self, model_name: str) -> Path:
         """Get the path where a model should be saved/loaded."""
         models_dir = Path.home() / '.laser_trim_analyzer' / 'models'
         models_dir.mkdir(parents=True, exist_ok=True)
-        return models_dir / f"{model_name}.joblib"
+        # Check for both .pkl and .joblib extensions
+        pkl_path = models_dir / f"{model_name}.pkl"
+        joblib_path = models_dir / f"{model_name}.joblib"
+        
+        # Prefer .pkl if it exists, otherwise use .joblib for backward compatibility
+        if pkl_path.exists():
+            return pkl_path
+        else:
+            return joblib_path
     
     def get_status(self) -> Dict[str, Any]:
         """Get current ML engine status."""

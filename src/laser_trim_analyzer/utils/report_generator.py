@@ -412,14 +412,25 @@ class ReportGenerator:
             include_raw_data: Whether to include raw position/error data
         """
         try:
+            # Check if we have any results
+            if not results:
+                # Create an empty report with a message
+                empty_df = pd.DataFrame([{"Message": "No analysis results to report"}])
+                with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                    empty_df.to_excel(writer, sheet_name='No Results', index=False)
+                self.logger.warning("No results to export, created empty report")
+                return
+                
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                # 1. Summary Sheet
+                # 1. Summary Sheet - Always create this first to ensure at least one sheet exists
                 summary_data = []
-                for result in results:
-                    primary_track = result.primary_track
-                    
-                    # Basic info
-                    row = {
+                
+                try:
+                    for result in results:
+                        primary_track = result.primary_track
+                        
+                        # Basic info
+                        row = {
                         'Filename': result.metadata.filename,
                         'Model': result.metadata.model,
                         'Serial': result.metadata.serial,
@@ -484,17 +495,25 @@ class ReportGenerator:
                             'Dynamic Range': primary_track.consistency_metrics.dynamic_range,
                         })
                     
-                    summary_data.append(row)
+                        summary_data.append(row)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error building summary data: {e}")
+                    # summary_data may be partially populated or empty
                 
-                # Write summary sheet
+                # Write summary sheet - always write this to ensure at least one sheet exists
                 summary_df = pd.DataFrame(summary_data)
+                if summary_df.empty:
+                    # Add at least one row to avoid empty sheet
+                    summary_df = pd.DataFrame([{"Message": "No data available"}])
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
                 
                 # 2. Detailed Analysis Sheet (one row per track)
-                detailed_data = []
-                for result in results:
-                    for track_id, track_data in result.tracks.items():
-                        row = {
+                try:
+                    detailed_data = []
+                    for result in results:
+                        for track_id, track_data in result.tracks.items():
+                            row = {
                             'Filename': result.metadata.filename,
                             'Model': result.metadata.model,
                             'Serial': result.metadata.serial,
@@ -523,9 +542,16 @@ class ReportGenerator:
                                 'Contributing Factors': ', '.join(track_data.failure_prediction.contributing_factors),
                             })
                         
-                        detailed_data.append(row)
+                            detailed_data.append(row)
+                            
+                except Exception as e:
+                    self.logger.warning(f"Error building detailed data: {e}")
+                    # Continue with partial data
                 
                 detailed_df = pd.DataFrame(detailed_data)
+                if detailed_df.empty:
+                    # Add at least one row to avoid empty sheet
+                    detailed_df = pd.DataFrame([{"Message": "No detailed data available"}])
                 detailed_df.to_excel(writer, sheet_name='Detailed Analysis', index=False)
                 
                 # 3. Model Performance Sheet
@@ -616,7 +642,11 @@ class ReportGenerator:
                             raw_df.to_excel(writer, sheet_name=sheet_name, index=False)
                 
                 # Format the Excel file
-                self._format_excel_file(writer)
+                try:
+                    self._format_excel_file(writer)
+                except Exception as e:
+                    self.logger.warning(f"Could not format Excel file: {e}")
+                    # Continue - formatting is optional
                 
             self.logger.info(f"Comprehensive Excel report generated: {output_path}")
             
@@ -627,48 +657,28 @@ class ReportGenerator:
     def _format_excel_file(self, writer):
         """Apply formatting to the Excel file."""
         try:
-            workbook = writer.book
-            
-            # Define formats
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#4472C4',
-                'font_color': 'white',
-                'align': 'center',
-                'valign': 'vcenter',
-                'border': 1
-            })
-            
-            pass_format = workbook.add_format({
-                'font_color': '#008000',
-                'bold': True
-            })
-            
-            fail_format = workbook.add_format({
-                'font_color': '#FF0000',
-                'bold': True
-            })
-            
-            percent_format = workbook.add_format({
-                'num_format': '0.0%'
-            })
-            
-            # Apply formatting to each sheet
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                
-                # Auto-fit columns (approximate)
-                for i, col in enumerate(worksheet.columns):
-                    max_length = 0
-                    column = col[0].column_letter
-                    for cell in col:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column].width = adjusted_width
+            # For openpyxl writer, apply basic column width adjustments only
+            # This prevents Excel corruption issues
+            if hasattr(writer, 'sheets'):
+                for sheet_name in writer.sheets:
+                    worksheet = writer.sheets[sheet_name]
+                    
+                    # Auto-fit columns (approximate) - safe operation
+                    for column_cells in worksheet.columns:
+                        max_length = 0
+                        column_letter = column_cells[0].column_letter if column_cells else 'A'
+                        
+                        for cell in column_cells:
+                            try:
+                                if cell.value and len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        
+                        # Set column width with reasonable limits
+                        adjusted_width = max(8, min(max_length + 2, 50))
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
                     
         except Exception as e:
-            self.logger.warning(f"Failed to apply Excel formatting: {e}") 
+            # Don't fail the export due to formatting issues
+            self.logger.warning(f"Could not apply Excel formatting: {e}") 

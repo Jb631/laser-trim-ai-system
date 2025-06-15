@@ -20,7 +20,7 @@ import logging
 from laser_trim_analyzer.gui.widgets.animated_widgets import AnimatedButton
 from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabilize_layout
 from laser_trim_analyzer.core.models import ValidationResult, TrackData
-from laser_trim_analyzer.database.models import AnalysisResult
+from laser_trim_analyzer.database.models import AnalysisResult as DBAnalysisResult
 from laser_trim_analyzer.utils.plotting_utils import save_plot
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 
@@ -80,15 +80,21 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     def _apply_hover_fixes(self):
         """Apply hover fixes to prevent glitching and shifting."""
         try:
+            # Check if widget is ready
+            if not self.winfo_exists():
+                return
+                
             # Fix hover glitches on all widgets
             fix_hover_glitches(self)
             
-            # Stabilize layout to prevent shifting
-            stabilize_layout(self.main_container)
+            # Stabilize layout to prevent shifting if container exists
+            if hasattr(self, 'main_container') and self.main_container.winfo_exists():
+                stabilize_layout(self.main_container)
             
             self.logger.debug("Hover fixes applied successfully")
         except Exception as e:
-            self.logger.warning(f"Failed to apply hover fixes: {e}")
+            # Only log debug level since this is not critical
+            self.logger.debug(f"Could not apply hover fixes: {e}")
     
     def _create_header(self):
         """Create header section."""
@@ -127,22 +133,7 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         self.selection_frame = ctk.CTkFrame(self.unit_frame)
         self.selection_frame.pack(fill='x', padx=20, pady=(0, 15))
         
-        # Date selection
-        date_frame = ctk.CTkFrame(self.selection_frame)
-        date_frame.pack(fill='x', pady=5)
-        
-        ctk.CTkLabel(date_frame, text="Trim Date:").pack(side='left', padx=(0, 10))
-        self.date_var = ctk.StringVar()
-        self.date_dropdown = ctk.CTkComboBox(
-            date_frame,
-            variable=self.date_var,
-            values=[],
-            command=self._on_date_selected,
-            width=200
-        )
-        self.date_dropdown.pack(side='left', padx=(0, 20))
-        
-        # Model selection
+        # Model selection (FIRST)
         model_frame = ctk.CTkFrame(self.selection_frame)
         model_frame.pack(fill='x', pady=5)
         
@@ -153,12 +144,11 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             variable=self.model_var,
             values=[],
             command=self._on_model_selected,
-            width=200,
-            state="disabled"
+            width=200
         )
         self.model_dropdown.pack(side='left', padx=(0, 20))
         
-        # Serial selection
+        # Serial selection (SECOND)
         serial_frame = ctk.CTkFrame(self.selection_frame)
         serial_frame.pack(fill='x', pady=5)
         
@@ -173,6 +163,22 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             state="disabled"
         )
         self.serial_dropdown.pack(side='left', padx=(0, 20))
+        
+        # Date selection (THIRD)
+        date_frame = ctk.CTkFrame(self.selection_frame)
+        date_frame.pack(fill='x', pady=5)
+        
+        ctk.CTkLabel(date_frame, text="Trim Date:").pack(side='left', padx=(0, 10))
+        self.date_var = ctk.StringVar()
+        self.date_dropdown = ctk.CTkComboBox(
+            date_frame,
+            variable=self.date_var,
+            values=[],
+            command=self._on_date_selected,
+            width=200,
+            state="disabled"
+        )
+        self.date_dropdown.pack(side='left', padx=(0, 20))
         
         # Load unit button
         self.load_unit_button = AnimatedButton(
@@ -327,125 +333,67 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         
     def on_show(self):
         """Called when page is shown."""
-        # Refresh available dates
-        self._refresh_dates()
+        # Refresh available models
+        self._refresh_models()
         
-    def _refresh_dates(self):
-        """Refresh available dates from database."""
+    def _refresh_models(self):
+        """Refresh available models from database."""
         if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
             return
             
         try:
-            # Get unique dates from database
+            # Get unique models from database
             with self.main_window.db_manager.get_session() as session:
                 results = session.query(
-                    AnalysisResult.timestamp
-                ).distinct().order_by(AnalysisResult.timestamp.desc()).all()
+                    DBAnalysisResult.model
+                ).distinct().order_by(DBAnalysisResult.model).all()
                 
-                # Format dates for display
-                dates = []
-                for result in results:
-                    if result.timestamp:
-                        date_str = result.timestamp.strftime("%Y-%m-%d")
-                        if date_str not in dates:
-                            dates.append(date_str)
-                
-                # Update dropdown
-                self.date_dropdown.configure(values=dates)
-                if dates:
-                    self.date_dropdown.set("Select a date...")
-                else:
-                    self.date_dropdown.set("No data available")
-                    
-        except Exception as e:
-            self.logger.error(f"Error refreshing dates: {e}")
-            
-    def _on_date_selected(self, selected_date: str):
-        """Handle date selection."""
-        if selected_date == "Select a date..." or selected_date == "No data available":
-            return
-            
-        # Enable model dropdown and refresh models for selected date
-        self.model_dropdown.configure(state="normal")
-        self._refresh_models_for_date(selected_date)
-        
-        # Reset downstream selections
-        self.serial_dropdown.configure(state="disabled", values=[])
-        self.serial_dropdown.set("")
-        self.load_unit_button.configure(state="disabled")
-        
-    def _refresh_models_for_date(self, date_str: str):
-        """Refresh available models for selected date."""
-        if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
-            return
-            
-        try:
-            # Parse date
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            
-            # Get unique models for this date
-            with self.main_window.db_manager.get_session() as session:
-                results = session.query(
-                    AnalysisResult.model_number
-                ).filter(
-                    AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1))
-                ).distinct().order_by(AnalysisResult.model_number).all()
-                
-                models = [r.model_number for r in results if r.model_number]
+                models = [r.model for r in results if r.model]
                 
                 # Update dropdown
                 self.model_dropdown.configure(values=models)
                 if models:
                     self.model_dropdown.set("Select a model...")
+                    self.model_dropdown.configure(state="normal")  # Enable dropdown
                 else:
-                    self.model_dropdown.set("No models found")
+                    self.model_dropdown.set("No models available")
                     
         except Exception as e:
             self.logger.error(f"Error refreshing models: {e}")
             
     def _on_model_selected(self, selected_model: str):
         """Handle model selection."""
-        if selected_model == "Select a model..." or selected_model == "No models found":
+        if selected_model == "Select a model..." or selected_model == "No models available":
             return
             
-        # Enable serial dropdown and refresh serials
+        # Enable serial dropdown and refresh serials for selected model
         self.serial_dropdown.configure(state="normal")
-        self._refresh_serials_for_model(self.date_var.get(), selected_model)
+        self._refresh_serials_for_model(selected_model)
         
         # Reset downstream selections
+        self.date_dropdown.configure(state="disabled", values=[])
+        self.date_dropdown.set("")
         self.load_unit_button.configure(state="disabled")
         
-    def _refresh_serials_for_model(self, date_str: str, model: str):
-        """Refresh available serials for selected date and model."""
+    def _refresh_serials_for_model(self, model: str):
+        """Refresh available serials for selected model."""
         if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
             return
             
         try:
-            # Parse date
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            
-            # Get unique serials for this date and model
+            # Get unique serials for this model
             with self.main_window.db_manager.get_session() as session:
                 results = session.query(
-                    AnalysisResult.serial_number,
-                    AnalysisResult.timestamp
+                    DBAnalysisResult.serial
                 ).filter(
-                    AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1)),
-                    AnalysisResult.model_number == model
-                ).order_by(AnalysisResult.timestamp.desc()).all()
+                    DBAnalysisResult.model == model
+                ).distinct().order_by(DBAnalysisResult.serial_number).all()
                 
-                # Format serials with time for display
-                serial_options = []
-                for serial, timestamp in results:
-                    if serial and timestamp:
-                        time_str = timestamp.strftime("%H:%M:%S")
-                        serial_options.append(f"{serial} ({time_str})")
+                serials = [r.serial_number for r in results if r.serial_number]
                 
                 # Update dropdown
-                self.serial_dropdown.configure(values=serial_options)
-                if serial_options:
+                self.serial_dropdown.configure(values=serials)
+                if serials:
                     self.serial_dropdown.set("Select a serial...")
                 else:
                     self.serial_dropdown.set("No serials found")
@@ -456,6 +404,50 @@ class FinalTestComparisonPage(ctk.CTkFrame):
     def _on_serial_selected(self, selected_serial: str):
         """Handle serial selection."""
         if selected_serial == "Select a serial..." or selected_serial == "No serials found":
+            return
+            
+        # Enable date dropdown and refresh dates for selected model and serial
+        self.date_dropdown.configure(state="normal")
+        self._refresh_dates_for_serial(self.model_var.get(), selected_serial)
+        
+        # Reset downstream selections
+        self.load_unit_button.configure(state="disabled")
+        
+    def _refresh_dates_for_serial(self, model: str, serial: str):
+        """Refresh available dates for selected model and serial."""
+        if not hasattr(self.main_window, 'db_manager') or not self.main_window.db_manager:
+            return
+            
+        try:
+            # Get unique dates for this model and serial
+            with self.main_window.db_manager.get_session() as session:
+                results = session.query(
+                    DBAnalysisResult.timestamp
+                ).filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.serial == serial
+                ).order_by(DBAnalysisResult.timestamp.desc()).all()
+                
+                # Format dates with time for display
+                date_options = []
+                for result in results:
+                    if result.timestamp:
+                        date_str = result.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                        date_options.append(date_str)
+                
+                # Update dropdown
+                self.date_dropdown.configure(values=date_options)
+                if date_options:
+                    self.date_dropdown.set("Select a date...")
+                else:
+                    self.date_dropdown.set("No dates found")
+                    
+        except Exception as e:
+            self.logger.error(f"Error refreshing dates: {e}")
+            
+    def _on_date_selected(self, selected_date: str):
+        """Handle date selection."""
+        if selected_date == "Select a date..." or selected_date == "No dates found":
             return
             
         # Enable load button
@@ -477,12 +469,12 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             
             # Load unit from database
             with self.main_window.db_manager.get_session() as session:
-                result = session.query(AnalysisResult).filter(
-                    AnalysisResult.timestamp >= date,
-                    AnalysisResult.timestamp < (date + pd.Timedelta(days=1)),
-                    AnalysisResult.model_number == model,
-                    AnalysisResult.serial_number == serial
-                ).order_by(AnalysisResult.timestamp.desc()).first()
+                result = session.query(DBAnalysisResult).filter(
+                    DBAnalysisResult.timestamp >= date,
+                    DBAnalysisResult.timestamp < datetime.combine(date, datetime.max.time()),
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.serial == serial
+                ).order_by(DBAnalysisResult.timestamp.desc()).first()
                 
                 if result:
                     self.selected_unit = result
@@ -641,34 +633,67 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             
     def _extract_trim_data_safe(self, selected_unit) -> pd.DataFrame:
         """Extract linearity data from laser trim results (thread-safe)."""
-        # Parse the validation results with error handling
         import json
+        
         try:
-            validation_data = json.loads(selected_unit.validation_results)
-        except (json.JSONDecodeError, TypeError, AttributeError) as e:
-            self.logger.error(f"Error parsing validation results: {e}")
-            raise ValueError("Invalid validation data format")
-        
-        # Extract track data
-        tracks = []
-        for track_name, track_data in validation_data.items():
-            if track_name.startswith("Track") and isinstance(track_data, dict):
-                if 'measured_values' in track_data and 'theoretical_values' in track_data:
-                    track_df = pd.DataFrame({
-                        'position': track_data.get('positions', list(range(len(track_data['measured_values'])))),
-                        'measured': track_data['measured_values'],
-                        'theoretical': track_data['theoretical_values']
-                    })
-                    tracks.append(track_df)
-        
-        # Combine tracks (for now, use first track if multiple)
-        if tracks:
-            trim_df = tracks[0]
-            # Calculate error
-            trim_df['error'] = trim_df['measured'] - trim_df['theoretical']
-            return trim_df
-        else:
-            raise ValueError("No track data found in laser trim results")
+            # First try to get analysis data from the analysis_data field
+            if hasattr(selected_unit, 'analysis_data') and selected_unit.analysis_data:
+                analysis_data = json.loads(selected_unit.analysis_data)
+                
+                # Extract primary track data
+                if 'tracks' in analysis_data:
+                    # Get the first track (primary track)
+                    track_key = next(iter(analysis_data['tracks']))
+                    track_data = analysis_data['tracks'][track_key]
+                    
+                    # Extract position and error data
+                    if 'position_data' in track_data and 'error_data' in track_data:
+                        positions = track_data['position_data']
+                        errors = track_data['error_data']
+                        
+                        # Calculate measured values (assuming linear theoretical)
+                        # For a potentiometer, theoretical is typically linear from 0 to max
+                        max_pos = max(positions) if positions else 1
+                        theoretical = [pos / max_pos for pos in positions]
+                        measured = [theoretical[i] + errors[i] for i in range(len(positions))]
+                        
+                        trim_df = pd.DataFrame({
+                            'position': positions,
+                            'measured': measured,
+                            'theoretical': theoretical,
+                            'error': errors
+                        })
+                        return trim_df
+                        
+            # Fallback: try validation_results field
+            if hasattr(selected_unit, 'validation_results') and selected_unit.validation_results:
+                validation_data = json.loads(selected_unit.validation_results)
+                
+                # Look for track data in various formats
+                for key, value in validation_data.items():
+                    if isinstance(value, dict):
+                        if all(k in value for k in ['positions', 'errors']):
+                            positions = value['positions']
+                            errors = value['errors']
+                            
+                            # Calculate measured/theoretical
+                            max_pos = max(positions) if positions else 1
+                            theoretical = [pos / max_pos for pos in positions]
+                            measured = [theoretical[i] + errors[i] for i in range(len(positions))]
+                            
+                            trim_df = pd.DataFrame({
+                                'position': positions,
+                                'measured': measured,
+                                'theoretical': theoretical,
+                                'error': errors
+                            })
+                            return trim_df
+                            
+            raise ValueError("Could not extract trim data from database result")
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting trim data: {e}")
+            raise ValueError(f"Failed to extract trim data: {str(e)}")
             
     def _compare_linearity(self, trim_data: pd.DataFrame, test_data: pd.DataFrame) -> Dict[str, Any]:
         """Compare linearity between trim and test data."""
@@ -771,34 +796,77 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                 self.current_plot = None
                 
             # Create figure with subplots
-            fig = Figure(figsize=(12, 8), dpi=100)
+            fig = Figure(figsize=(14, 10), dpi=100)
             
-            # Linearity comparison plot
-            ax1 = fig.add_subplot(2, 1, 1)
-            ax1.plot(results['position'], results['trim_measured'], 'b-', label='Laser Trim', linewidth=2)
-            ax1.plot(results['position'], results['test_measured'], 'r--', label='Final Test', linewidth=2)
-            ax1.set_xlabel('Position')
-            ax1.set_ylabel('Measured Voltage (V)')
+            # Create 2x2 subplot layout
+            # Top left: Linearity comparison
+            ax1 = fig.add_subplot(2, 2, 1)
+            ax1.plot(results['position'], results['trim_measured'], 'b-', label='Laser Trim', linewidth=2, alpha=0.8)
+            ax1.plot(results['position'], results['test_measured'], 'r--', label='Final Test', linewidth=2, alpha=0.8)
+            ax1.set_xlabel('Position (%)')
+            ax1.set_ylabel('Output Voltage (V)')
             ax1.set_title('Linearity Comparison: Laser Trim vs Final Test')
-            ax1.legend()
+            ax1.legend(loc='upper left')
             ax1.grid(True, alpha=0.3)
             
-            # Error comparison plot
-            ax2 = fig.add_subplot(2, 1, 2)
-            ax2.plot(results['position'], results['trim_error'], 'b-', label='Laser Trim Error', linewidth=2)
-            ax2.plot(results['position'], results['test_error'], 'r--', label='Final Test Error', linewidth=2)
+            # Top right: Error comparison
+            ax2 = fig.add_subplot(2, 2, 2)
+            ax2.plot(results['position'], results['trim_error'], 'b-', label='Laser Trim Error', linewidth=2, alpha=0.8)
+            ax2.plot(results['position'], results['test_error'], 'r--', label='Final Test Error', linewidth=2, alpha=0.8)
             ax2.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-            ax2.set_xlabel('Position')
-            ax2.set_ylabel('Error (V)')
+            
+            # Add tolerance bands if available
+            if 'tolerance' in results:
+                tol = results['tolerance']
+                ax2.axhline(y=tol, color='g', linestyle=':', alpha=0.5, label=f'±{tol}V Tolerance')
+                ax2.axhline(y=-tol, color='g', linestyle=':', alpha=0.5)
+            
+            ax2.set_xlabel('Position (%)')
+            ax2.set_ylabel('Linearity Error (V)')
             ax2.set_title('Linearity Error Comparison')
-            ax2.legend()
+            ax2.legend(loc='upper right')
             ax2.grid(True, alpha=0.3)
             
-            # Add statistics text
+            # Bottom left: Difference plot
+            ax3 = fig.add_subplot(2, 2, 3)
+            error_diff = results['error_diff']
+            ax3.plot(results['position'], error_diff, 'g-', linewidth=2, label='Error Difference')
+            ax3.fill_between(results['position'], 0, error_diff, alpha=0.3, color='green')
+            ax3.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+            ax3.set_xlabel('Position (%)')
+            ax3.set_ylabel('Error Difference (V)')
+            ax3.set_title('Final Test - Laser Trim Error Difference')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            # Bottom right: Statistics summary
+            ax4 = fig.add_subplot(2, 2, 4)
+            ax4.axis('off')
+            
             stats = results['stats']
-            stats_text = f"Mean Diff: {stats['mean_measured_diff']:.6f}V, "
-            stats_text += f"Max Diff: {stats['max_measured_diff']:.6f}V"
-            fig.text(0.5, 0.02, stats_text, ha='center', fontsize=10)
+            stats_text = "Comparison Statistics:\n\n"
+            stats_text += f"Measurement Differences:\n"
+            stats_text += f"  Mean: {stats['mean_measured_diff']:.6f} V\n"
+            stats_text += f"  Std Dev: {stats['std_measured_diff']:.6f} V\n"
+            stats_text += f"  Maximum: {stats['max_measured_diff']:.6f} V\n\n"
+            stats_text += f"Error Differences:\n"
+            stats_text += f"  Mean: {stats['mean_error_diff']:.6f} V\n"
+            stats_text += f"  Std Dev: {stats['std_error_diff']:.6f} V\n"
+            stats_text += f"  Maximum: {stats['max_error_diff']:.6f} V\n\n"
+            
+            # Add pass/fail assessment
+            max_error_limit = 0.01  # 10mV typical limit
+            if abs(stats['max_error_diff']) < max_error_limit:
+                stats_text += f"✓ PASS: Error difference within {max_error_limit*1000:.0f}mV limit"
+                color = 'green'
+            else:
+                stats_text += f"✗ FAIL: Error difference exceeds {max_error_limit*1000:.0f}mV limit"
+                color = 'red'
+            
+            ax4.text(0.1, 0.9, stats_text, transform=ax4.transAxes, fontsize=11,
+                    verticalalignment='top', fontfamily='monospace')
+            ax4.text(0.1, 0.15, stats_text.split('\n')[-1], transform=ax4.transAxes, 
+                    fontsize=12, fontweight='bold', color=color)
             
             fig.tight_layout()
             
@@ -876,7 +944,12 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             
     def refresh(self):
         """Refresh page data."""
-        self._refresh_dates()
+        # Refresh dates based on current selection
+        if hasattr(self, 'model_var') and hasattr(self, 'serial_var'):
+            model = self.model_var.get()
+            serial = self.serial_var.get()
+            if model and serial:
+                self._refresh_dates_for_serial(model, serial)
         
     def show(self):
         """Show the page using grid layout."""

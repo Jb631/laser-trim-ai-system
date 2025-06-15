@@ -240,15 +240,21 @@ class BatchProcessingPage(ctk.CTkFrame):
     def _apply_hover_fixes(self):
         """Apply hover fixes to prevent glitching and shifting."""
         try:
+            # Check if widget is ready
+            if not self.winfo_exists():
+                return
+                
             # Fix hover glitches on all widgets
             fix_hover_glitches(self)
             
-            # Stabilize layout to prevent shifting
-            stabilize_layout(self.main_container)
+            # Stabilize layout to prevent shifting if container exists
+            if hasattr(self, 'main_container') and self.main_container.winfo_exists():
+                stabilize_layout(self.main_container)
             
             logger.debug("Hover fixes applied successfully")
         except Exception as e:
-            logger.warning(f"Failed to apply hover fixes: {e}")
+            # Only log debug level since this is not critical
+            logger.debug(f"Could not apply hover fixes: {e}")
     
     def _validate_configuration(self) -> bool:
         """Validate that the configuration is properly set up."""

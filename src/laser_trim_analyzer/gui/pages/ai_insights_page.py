@@ -873,7 +873,8 @@ class AIInsightsPage(ctk.CTkFrame):
                     
             self.logger.debug("Hover fixes applied successfully to AI Insights page")
         except Exception as e:
-            self.logger.warning(f"Failed to apply hover fixes: {e}")
+            # Only log debug level since this is not critical
+            self.logger.debug(f"Could not apply hover fixes: {e}")
     
     def on_show(self):
         """Called when page is shown."""

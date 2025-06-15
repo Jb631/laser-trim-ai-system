@@ -291,12 +291,14 @@ class HomePage(BasePage):
             }
 
         try:
-            # Get today's data
-            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Get today's data - use UTC naive datetime to match database timestamps
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            self.logger.info(f"Querying for today's data starting from UTC: {today_start}")
             results = self.main_window.db_manager.get_historical_data(
                 start_date=today_start,
                 include_tracks=True
             )
+            self.logger.info(f"Found {len(results)} results for today")
 
             if not results:
                 return {
@@ -398,8 +400,8 @@ class HomePage(BasePage):
     def _get_trend_data(self) -> List[Dict[str, Any]]:
         """Get 7-day trend data with single optimized query."""
         try:
-            # Get all data for last 7 days in single query
-            week_start = datetime.now() - timedelta(days=7)
+            # Get all data for last 7 days in single query - use UTC naive datetime
+            week_start = datetime.utcnow() - timedelta(days=7)
             week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
             
             all_results = self.main_window.db_manager.get_historical_data(
@@ -467,9 +469,10 @@ class HomePage(BasePage):
             now = datetime.now()
             activities = []
             
-            # First try to get today's activities
+            # First try to get today's activities - use UTC naive datetime
+            today_start_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             results = self.main_window.db_manager.get_historical_data(
-                start_date=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                start_date=today_start_utc,
                 limit=50,
                 include_tracks=False
             )
@@ -506,18 +509,26 @@ class HomePage(BasePage):
                 model = result.model if hasattr(result, 'model') else 'Unknown'
                 serial = result.serial if hasattr(result, 'serial') else 'Unknown'
                 
-                # Format timestamp with date info for clarity
+                # Format timestamp with date info for clarity - convert from UTC to local
                 if hasattr(result, 'timestamp') and result.timestamp:
-                    timestamp = result.timestamp
+                    # Assume database timestamp is in UTC (naive), convert to local time for display
+                    from datetime import timezone
+                    import pytz
+                    
+                    # Make the naive UTC timestamp aware
+                    timestamp_utc = pytz.UTC.localize(result.timestamp)
+                    # Convert to local timezone
+                    timestamp_local = timestamp_utc.astimezone()
+                    
                     # If today, show just time
-                    if timestamp.date() == now.date():
-                        time_str = timestamp.strftime('%H:%M:%S')
+                    if timestamp_local.date() == now.date():
+                        time_str = timestamp_local.strftime('%H:%M:%S')
                     # If yesterday
-                    elif timestamp.date() == (now - timedelta(days=1)).date():
-                        time_str = f"Yesterday {timestamp.strftime('%H:%M')}"
+                    elif timestamp_local.date() == (now - timedelta(days=1)).date():
+                        time_str = f"Yesterday {timestamp_local.strftime('%H:%M')}"
                     # Otherwise show date
                     else:
-                        time_str = timestamp.strftime('%m/%d %H:%M')
+                        time_str = timestamp_local.strftime('%m/%d %H:%M')
                 else:
                     time_str = 'Unknown'
                 
