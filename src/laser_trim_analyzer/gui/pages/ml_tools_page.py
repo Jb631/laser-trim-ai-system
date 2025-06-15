@@ -20,15 +20,28 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from laser_trim_analyzer.core.models import AnalysisResult
-from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer, DriftDetector
-# from laser_trim_analyzer.api.client import QAAIAnalyzer as AIServiceClient  # Not used
-# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
-from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-
 # Get logger first
 logger = logging.getLogger(__name__)
+
+try:
+    from laser_trim_analyzer.core.models import AnalysisResult
+except ImportError:
+    logger.warning("Could not import AnalysisResult")
+    AnalysisResult = None
+
+try:
+    from laser_trim_analyzer.ml.models import FailurePredictor, ThresholdOptimizer, DriftDetector
+except ImportError:
+    logger.warning("Could not import ML models")
+    FailurePredictor = None
+    ThresholdOptimizer = None
+    DriftDetector = None
+
+try:
+    from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+except ImportError:
+    logger.warning("Could not import ChartWidget")
+    ChartWidget = None
 
 # Import the actual ML components with error handling
 try:
@@ -57,20 +70,76 @@ except Exception as e:
     HAS_ML_MANAGER = False
     get_ml_manager = None
 
-# Import model info analyzers
-from laser_trim_analyzer.gui.pages.ml_model_info_analyzers import (
-    analyze_model_info,
-    compare_model_performance_info,
-    compare_feature_importance_info,
-    analyze_resource_usage_info,
-    analyze_prediction_quality_info
-)
+# Import model info analyzers with error handling
+try:
+    from laser_trim_analyzer.gui.pages.ml_model_info_analyzers import (
+        analyze_model_info,
+        compare_model_performance_info,
+        compare_feature_importance_info,
+        analyze_resource_usage_info,
+        analyze_prediction_quality_info
+    )
+    HAS_MODEL_ANALYZERS = True
+except ImportError as e:
+    logger.warning(f"Could not import model info analyzers: {e}")
+    HAS_MODEL_ANALYZERS = False
+    # Define dummy functions
+    def analyze_model_info(*args, **kwargs):
+        return {"error": "Model analyzers not available"}
+    def compare_model_performance_info(*args, **kwargs):
+        return {"error": "Model analyzers not available"}
+    def compare_feature_importance_info(*args, **kwargs):
+        return {"error": "Model analyzers not available"}
+    def analyze_resource_usage_info(*args, **kwargs):
+        return {"error": "Model analyzers not available"}
+    def analyze_prediction_quality_info(*args, **kwargs):
+        return {"error": "Model analyzers not available"}
 
 # Set overall ML availability based on component imports
 HAS_ML = HAS_ML_ENGINE and HAS_ML_MANAGER
 
 if not HAS_ML:
     logger.warning(f"ML features not available. HAS_ML_ENGINE={HAS_ML_ENGINE}, HAS_ML_MANAGER={HAS_ML_MANAGER}")
+
+
+class MetricCard(ctk.CTkFrame):
+    """Simple metric card widget for displaying metrics"""
+    
+    def __init__(self, parent, title="", value="--", color_scheme="info", **kwargs):
+        super().__init__(parent, **kwargs)
+        
+        # Configure frame
+        self.configure(corner_radius=10, border_width=2)
+        
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self,
+            text=title,
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.title_label.pack(pady=(10, 5), padx=10)
+        
+        # Value
+        self.value_label = ctk.CTkLabel(
+            self,
+            text=str(value),
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        self.value_label.pack(pady=(5, 10), padx=10)
+        
+        # Set color based on scheme
+        colors = {
+            "info": ("gray70", "gray30"),
+            "success": ("green", "green"),
+            "warning": ("orange", "orange"),
+            "error": ("red", "red")
+        }
+        border_color = colors.get(color_scheme, colors["info"])
+        self.configure(border_color=border_color)
+    
+    def update_value(self, value):
+        """Update the displayed value"""
+        self.value_label.configure(text=str(value))
 
 
 class MLToolsPage(ctk.CTkFrame):
@@ -80,6 +149,11 @@ class MLToolsPage(ctk.CTkFrame):
         super().__init__(parent)
         self.main_window = main_window
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        self.logger.info("MLToolsPage __init__ started")
+        
+        # Configure the frame to fill available space
+        self.configure(fg_color=("gray95", "gray10"))  # Light/dark theme colors
         
         # Add BasePage-like functionality
         self.is_visible = False
@@ -99,9 +173,37 @@ class MLToolsPage(ctk.CTkFrame):
         self._status_lock = threading.Lock()
         
         # Create the page
-        self._create_page()
-        self._initialize_ml_engine()
-        self._start_status_polling()
+        try:
+            self.logger.info("Starting _create_page() method")
+            self._create_page()
+            self.logger.info("Successfully completed _create_page() method")
+        except Exception as e:
+            self.logger.error(f"Error creating ML Tools page: {e}", exc_info=True)
+            # Create error display that's more visible
+            error_frame = ctk.CTkFrame(self, fg_color="red")
+            error_frame.pack(fill='both', expand=True, padx=20, pady=20)
+            
+            error_title = ctk.CTkLabel(
+                error_frame, 
+                text="ML Tools Page Error", 
+                font=ctk.CTkFont(size=24, weight="bold"),
+                text_color="white"
+            )
+            error_title.pack(pady=10)
+            
+            error_label = ctk.CTkLabel(
+                error_frame, 
+                text=f"Failed to create page: {str(e)}", 
+                text_color="white",
+                wraplength=600
+            )
+            error_label.pack(pady=10)
+        
+        # Temporarily disable ML initialization to isolate the issue
+        # self._initialize_ml_engine()
+        # self._start_status_polling()
+        
+        self.logger.info("MLToolsPage __init__ completed successfully")
 
     def _start_status_polling(self):
         """Start periodic status polling to keep UI updated."""
@@ -165,19 +267,87 @@ class MLToolsPage(ctk.CTkFrame):
 
     def _create_page(self):
         """Create enhanced ML tools page content with advanced features."""
+        self.logger.info("Creating ML Tools page content")
+        
+        # Configure grid weight for proper expansion
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Create a simple display first to ensure something shows
+        main_label = ctk.CTkLabel(self, text="ML Tools Page", font=ctk.CTkFont(size=28, weight="bold"))
+        main_label.pack(pady=20)
+        
         # Main scrollable container
         self.main_container = ctk.CTkScrollableFrame(self)
-        self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        self.main_container.pack(fill='both', expand=True, padx=20, pady=10)
         
-        # Create enhanced sections
-        self._create_header()
-        self._create_model_status_section()
-        self._create_training_section()  # Moved training under model status
-        self._create_model_comparison_section()
-        self._create_threshold_optimization_section()
-        self._create_advanced_analytics_section()
-        self._create_performance_section()
-        self._create_optimization_recommendations_section()
+        # ML Status Notice
+        if not HAS_ML:
+            notice_frame = ctk.CTkFrame(self.main_container)
+            notice_frame.pack(fill='x', pady=20, padx=20)
+            
+            notice_label = ctk.CTkLabel(
+                notice_frame,
+                text="⚠️ ML Features Not Available",
+                font=ctk.CTkFont(size=20, weight="bold"),
+                text_color="orange"
+            )
+            notice_label.pack(pady=10)
+            
+            details_label = ctk.CTkLabel(
+                notice_frame,
+                text="ML components could not be loaded. This may be due to missing dependencies.\nSome features may be limited.",
+                font=ctk.CTkFont(size=14),
+                wraplength=600
+            )
+            details_label.pack(pady=10)
+        
+        # Create enhanced sections with better error handling
+        self._create_sections_safely()
+            
+        try:
+            self._create_advanced_analytics_section()
+        except Exception as e:
+            self.logger.error(f"Error creating advanced analytics section: {e}")
+            
+        try:
+            self._create_performance_section()
+        except Exception as e:
+            self.logger.error(f"Error creating performance section: {e}")
+            
+        try:
+            self._create_optimization_recommendations_section()
+        except Exception as e:
+            self.logger.error(f"Error creating optimization recommendations section: {e}")
+        
+        self.logger.info("ML Tools page content created successfully")
+    
+    def _create_sections_safely(self):
+        """Create page sections with proper error handling"""
+        sections = [
+            ("header", self._create_header),
+            ("model status", self._create_model_status_section),
+            ("training", self._create_training_section),
+            ("model comparison", self._create_model_comparison_section),
+            ("threshold optimization", self._create_threshold_optimization_section),
+        ]
+        
+        for section_name, create_func in sections:
+            try:
+                create_func()
+            except Exception as e:
+                self.logger.error(f"Error creating {section_name} section: {e}", exc_info=True)
+                # Add error message to UI
+                error_frame = ctk.CTkFrame(self.main_container)
+                error_frame.pack(fill='x', pady=5, padx=20)
+                
+                error_label = ctk.CTkLabel(
+                    error_frame,
+                    text=f"Error loading {section_name} section: {str(e)}",
+                    text_color="red",
+                    font=ctk.CTkFont(size=12)
+                )
+                error_label.pack(pady=5)
 
     def _create_header(self):
         """Create enhanced header section."""
@@ -1270,22 +1440,21 @@ class MLToolsPage(ctk.CTkFrame):
         try:
             # Create a default model config
             from laser_trim_analyzer.ml.engine import ModelConfig
-            config = ModelConfig(
-                model_type=model_name,
-                version='1.0.0',
-                hyperparameters={
+            config = ModelConfig({
+                'model_type': model_name,
+                'version': '1.0.0',
+                'hyperparameters': {
                     'n_estimators': 100,
                     'max_depth': 10,
                     'min_samples_split': 5,
                     'min_samples_leaf': 2
                 },
-                training_params={
+                'training_params': {
                     'test_size': 0.2,
                     'random_state': 42,
                     'cv_folds': 5
-                },
-                feature_settings={}
-            )
+                }
+            })
             
             if model_name == 'threshold_optimizer':
                 from laser_trim_analyzer.ml.models import ThresholdOptimizer
@@ -3434,6 +3603,93 @@ Performance Metrics:
             self.memory_usage_card.update_value("Error")
             self.prediction_speed_card.update_value("Error")
             
+    def _update_prediction_quality_display(self):
+        """Update prediction quality display with analysis results."""
+        try:
+            self.quality_analysis_frame.configure(state='normal')
+            self.quality_analysis_frame.delete('1.0', ctk.END)
+            
+            quality_data = self.model_comparison_data.get('prediction_quality', {})
+            
+            if not quality_data:
+                # Show placeholder when no data
+                content = "PREDICTION QUALITY ANALYSIS\n"
+                content += "=" * 50 + "\n\n"
+                content += "No prediction quality data available.\n\n"
+                content += "This section will show:\n"
+                content += "• Model accuracy distribution\n"
+                content += "• Confidence analysis\n"
+                content += "• Error patterns\n"
+                content += "• Reliability scores\n\n"
+                content += "Run model comparison to see analysis."
+                
+                self.quality_analysis_frame.insert('1.0', content)
+                self.quality_analysis_frame.configure(state='disabled')
+                return
+                
+            # Generate quality analysis report
+            content = "PREDICTION QUALITY ANALYSIS\n"
+            content += "=" * 50 + "\n\n"
+            
+            # Accuracy distribution
+            acc_dist = quality_data.get('accuracy_distribution', {})
+            if acc_dist:
+                content += "ACCURACY DISTRIBUTION:\n"
+                content += f"  Mean Accuracy: {acc_dist.get('mean', 0):.2%}\n"
+                content += f"  Std Deviation: {acc_dist.get('std', 0):.2%}\n"
+                content += f"  Min Accuracy: {acc_dist.get('min', 0):.2%}\n"
+                content += f"  Max Accuracy: {acc_dist.get('max', 0):.2%}\n"
+                content += f"  Range: {acc_dist.get('range', 0):.2%}\n\n"
+            
+            # Reliability scores by model
+            reliability = quality_data.get('reliability_scores', {})
+            if reliability:
+                content += "MODEL RELIABILITY SCORES:\n"
+                for model_name, scores in reliability.items():
+                    content += f"\n{model_name.replace('_', ' ').title()}:\n"
+                    content += f"  Accuracy: {scores.get('accuracy', 0):.2%}\n"
+                    content += f"  Consistency: {scores.get('consistency', 0):.2%}\n"
+                    content += f"  Robustness: {scores.get('robustness', 0):.2%}\n"
+                    
+                    # Quality assessment
+                    accuracy = scores.get('accuracy', 0)
+                    if accuracy >= 0.95:
+                        quality_level = "Excellent"
+                    elif accuracy >= 0.85:
+                        quality_level = "Good"
+                    elif accuracy >= 0.70:
+                        quality_level = "Fair"
+                    else:
+                        quality_level = "Needs Improvement"
+                    content += f"  Quality Level: {quality_level}\n"
+            
+            # Add recommendations based on quality analysis
+            content += "\nQUALITY INSIGHTS:\n"
+            if acc_dist.get('std', 0) > 0.1:
+                content += "• High variance in model accuracy - consider standardization\n"
+            if acc_dist.get('mean', 0) < 0.8:
+                content += "• Overall accuracy below target - consider retraining\n"
+            if any(scores.get('consistency', 1) < 0.8 for scores in reliability.values()):
+                content += "• Some models show inconsistent performance\n"
+            
+            # If all models performing well
+            if acc_dist.get('mean', 0) > 0.9 and acc_dist.get('std', 0) < 0.05:
+                content += "• All models showing excellent and consistent performance\n"
+            
+            self.quality_analysis_frame.insert('1.0', content)
+            self.quality_analysis_frame.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error updating prediction quality display: {e}")
+            # Show error message
+            try:
+                self.quality_analysis_frame.configure(state='normal')
+                self.quality_analysis_frame.delete('1.0', ctk.END)
+                self.quality_analysis_frame.insert('1.0', f"Error displaying quality analysis:\n{str(e)}")
+                self.quality_analysis_frame.configure(state='disabled')
+            except:
+                pass
+            
     def _apply_optimization_recommendation(self, recommendation: Dict[str, Any]) -> Dict[str, Any]:
         """Apply a specific optimization recommendation."""
         result = {
@@ -3511,6 +3767,15 @@ Performance Metrics:
         """Called when page is shown."""
         self.is_visible = True
         self._stop_requested = False
+        
+        # Start ML engine initialization if needed
+        if not self.ml_manager:
+            self._initialize_ml_engine()
+        
+        # Update displays if ML manager is available
+        if self.ml_manager:
+            self._update_model_status()
+        
         # Restart polling if it was stopped
         if self._status_poll_job is None:
             self._start_status_polling()
@@ -3844,14 +4109,25 @@ Performance Metrics:
                     from pathlib import Path
                     models_dir = Path.home() / '.laser_trim_analyzer' / 'models'
                     models_dir.mkdir(parents=True, exist_ok=True)
-                    model_path = models_dir / f"{model_name}.joblib"
+                    model_path = models_dir / f"{model_name}.pkl"
                     
-                    # Save using the model's save method
-                    if hasattr(model, 'save'):
+                    # Log model info for debugging
+                    self.logger.info(f"Model type: {type(model)}, has save: {hasattr(model, 'save')}")
+                    
+                    # Try to save using the ML manager if available
+                    if self.ml_manager and hasattr(self.ml_manager, 'save_model'):
+                        self.ml_manager.save_model(model_name)
+                        self.logger.info(f"Saved model {model_name} via ML manager")
+                    elif hasattr(model, 'save'):
+                        # Save using the model's save method
                         model.save(str(model_path))
                         self.logger.info(f"Saved trained model {model_name} to {model_path}")
                     else:
-                        self.logger.warning(f"Model {model_name} does not have save method, keeping in memory only")
+                        # Fallback: Save using pickle directly
+                        import pickle
+                        with open(model_path, 'wb') as f:
+                            pickle.dump(model, f)
+                        self.logger.info(f"Saved model {model_name} using pickle fallback")
                 except Exception as e:
                     self.logger.warning(f"Could not save model {model_name}: {e}")
 
@@ -3948,17 +4224,73 @@ Performance Metrics:
 
     # Mock data methods removed - using real data from models
     
-    def on_show(self):
-        """Called when page is shown."""
-        # Start ML engine initialization if needed
-        if not self.ml_manager:
-            self._initialize_ml_engine()
-        
-        # Update displays if ML manager is available
-        if self.ml_manager:
-            self._update_model_status()
+    # Removed duplicate on_show and on_hide methods - using the ones defined earlier
     
-    def on_hide(self):
-        """Called when page is hidden."""
-        # Stop status polling when page is hidden
+    def _refresh_models(self):
+        """Refresh model status from ML manager."""
+        try:
+            if not self.ml_manager:
+                self.logger.warning("ML manager not initialized")
+                return
+            
+            # Get current model status
+            models_info = self.ml_manager.get_all_models_info()
+            
+            # Update status cards
+            for model_key, card_widgets in self.model_status_cards.items():
+                if model_key in models_info:
+                    model_info = models_info[model_key]
+                    is_trained = model_info.get('trained', False)
+                    status_text = model_info.get('status', 'Not Registered')
+                    
+                    # Update status indicator color
+                    color = "green" if is_trained else "gray"
+                    if 'error' in model_info:
+                        color = "red"
+                    elif status_text == 'Training':
+                        color = "orange"
+                    
+                    card_widgets['indicator'].configure(text_color=color)
+                    card_widgets['status_text'].configure(text=status_text)
+                else:
+                    # Model not found
+                    card_widgets['indicator'].configure(text_color="gray")
+                    card_widgets['status_text'].configure(text="Not Registered")
+            
+            # Update performance metrics if available
+            self._update_performance_metrics()
+            
+        except Exception as e:
+            self.logger.error(f"Error refreshing models: {e}")
+    
+    def show(self):
+        """Override show method to refresh models when page is shown."""
+        self.logger.info("ML Tools page show() called")
+        self.grid(row=0, column=0, sticky="nsew")
+        self.is_visible = True
+        if hasattr(self, 'on_show'):
+            self.on_show()
+        # Only start these if ML is available
+        if HAS_ML:
+            self._refresh_models()
+            self._start_status_polling()
+        self.logger.info("ML Tools page show() completed")
+    
+    def hide(self):
+        """Hide the page"""
+        self.logger.info("ML Tools page hide() called")
+        self.grid_remove()
+        self.is_visible = False
         self._stop_status_polling()
+        if hasattr(self, 'on_hide'):
+            self.on_hide()
+    
+    def on_show(self):
+        """Called when page is shown"""
+        self.is_visible = True
+        self.needs_refresh = False
+        
+    def on_hide(self):
+        """Called when page is hidden"""
+        self.is_visible = False
+        self._stop_requested = False

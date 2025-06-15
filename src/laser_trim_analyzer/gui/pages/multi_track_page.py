@@ -951,12 +951,42 @@ class MultiTrackPage(ctk.CTkFrame):
                     
         elif 'files' in self.current_unit_data:
             # Database format (tracks are within files)
+            track_summary = {}  # Aggregate by track ID
+            
             for file_info in self.current_unit_data['files']:
                 for track_id, track_data in file_info['tracks'].items():
-                    # Use file+track as unique key for comparison
-                    display_id = f"{file_info['filename'].split('_')[0]}_{track_id}"
-                    self.comparison_data['sigma_comparison']['values'][display_id] = track_data.get('sigma_gradient', 0)
-                    self.comparison_data['linearity_comparison']['values'][display_id] = track_data.get('linearity_error', 0)
+                    if track_id not in track_summary:
+                        track_summary[track_id] = {
+                            'sigma_values': [],
+                            'linearity_values': [],
+                            'count': 0
+                        }
+                    
+                    # Collect values for averaging
+                    sigma = track_data.get('sigma_gradient')
+                    linearity = track_data.get('linearity_error')
+                    
+                    if sigma is not None:
+                        track_summary[track_id]['sigma_values'].append(sigma)
+                    if linearity is not None:
+                        track_summary[track_id]['linearity_values'].append(linearity)
+                    track_summary[track_id]['count'] += 1
+            
+            # Calculate averages for each track
+            for track_id, summary in track_summary.items():
+                # Average sigma gradient
+                if summary['sigma_values']:
+                    avg_sigma = np.mean(summary['sigma_values'])
+                    self.comparison_data['sigma_comparison']['values'][track_id] = avg_sigma
+                else:
+                    self.comparison_data['sigma_comparison']['values'][track_id] = 0
+                    
+                # Average linearity error
+                if summary['linearity_values']:
+                    avg_linearity = np.mean(summary['linearity_values'])
+                    self.comparison_data['linearity_comparison']['values'][track_id] = avg_linearity
+                else:
+                    self.comparison_data['linearity_comparison']['values'][track_id] = 0
     
     def _update_comparison_charts(self):
         """Update comparison charts with track data."""
@@ -965,34 +995,104 @@ class MultiTrackPage(ctk.CTkFrame):
 
         comparison = self.comparison_data
 
+        # Update summary chart
+        if hasattr(self, 'summary_chart') and self.summary_chart:
+            self._update_summary_chart()
+
         # Sigma comparison chart
         if 'sigma_comparison' in comparison and comparison['sigma_comparison']:
             sigma_data = comparison['sigma_comparison']['values']
             
-            self.sigma_comparison_chart.clear_chart()
-            self.sigma_comparison_chart.plot_bar(
-                categories=list(sigma_data.keys()),
-                values=list(sigma_data.values()),
-                colors=['primary'] * len(sigma_data),
-                xlabel="Track ID",
-                ylabel="Sigma Gradient"
-            )
+            if hasattr(self, 'sigma_comparison_chart') and self.sigma_comparison_chart:
+                self.sigma_comparison_chart.clear_chart()
+                self.sigma_comparison_chart.plot_bar(
+                    categories=list(sigma_data.keys()),
+                    values=list(sigma_data.values()),
+                    colors=['primary'] * len(sigma_data),
+                    xlabel="Track ID",
+                    ylabel="Sigma Gradient"
+                )
 
         # Linearity comparison chart
         if 'linearity_comparison' in comparison and comparison['linearity_comparison']:
             linearity_data = comparison['linearity_comparison']['values']
             
-            self.linearity_comparison_chart.clear_chart()
-            self.linearity_comparison_chart.plot_bar(
-                categories=list(linearity_data.keys()),
-                values=list(linearity_data.values()),
-                colors=['warning'] * len(linearity_data),
-                xlabel="Track ID",
-                ylabel="Linearity Error"
-            )
+            if hasattr(self, 'linearity_comparison_chart') and self.linearity_comparison_chart:
+                self.linearity_comparison_chart.clear_chart()
+                self.linearity_comparison_chart.plot_bar(
+                    categories=list(linearity_data.keys()),
+                    values=list(linearity_data.values()),
+                    colors=['warning'] * len(linearity_data),
+                    xlabel="Track ID",
+                    ylabel="Linearity Error"
+                )
 
         # Error profile comparison (if position data available)
         self._update_error_profiles()
+
+    def _update_summary_chart(self):
+        """Update the summary chart with track comparison data."""
+        if not self.comparison_data or not self.current_unit_data:
+            return
+            
+        try:
+            # Prepare summary data
+            track_ids = []
+            pass_counts = []
+            fail_counts = []
+            warning_counts = []
+            
+            if 'files' in self.current_unit_data:
+                # Database format - aggregate by track ID
+                track_summary = {}
+                
+                for file_info in self.current_unit_data['files']:
+                    for track_id, track_data in file_info['tracks'].items():
+                        if track_id not in track_summary:
+                            track_summary[track_id] = {'PASS': 0, 'FAIL': 0, 'WARNING': 0}
+                        
+                        status = track_data.get('status', 'UNKNOWN')
+                        if status in track_summary[track_id]:
+                            track_summary[track_id][status] += 1
+                
+                # Convert to lists for plotting
+                for track_id in sorted(track_summary.keys()):
+                    track_ids.append(track_id)
+                    pass_counts.append(track_summary[track_id]['PASS'])
+                    fail_counts.append(track_summary[track_id]['FAIL'])
+                    warning_counts.append(track_summary[track_id]['WARNING'])
+            
+            # Create bar chart
+            if track_ids:
+                self.summary_chart.clear_chart()
+                
+                # Use matplotlib directly for stacked bar chart
+                ax = self.summary_chart.figure.add_subplot(111)
+                
+                # Create the stacked bar chart
+                x = range(len(track_ids))
+                width = 0.6
+                
+                # Stack the bars
+                ax.bar(x, pass_counts, width, label='Pass', color='green')
+                ax.bar(x, warning_counts, width, bottom=pass_counts, label='Warning', color='orange')
+                ax.bar(x, fail_counts, width, bottom=[p+w for p,w in zip(pass_counts, warning_counts)], label='Fail', color='red')
+                
+                # Set labels and title
+                ax.set_xlabel("Track ID")
+                ax.set_ylabel("File Count")
+                ax.set_title("Track Status Summary")
+                ax.set_xticks(x)
+                ax.set_xticklabels(track_ids)
+                ax.legend()
+                
+                # Apply theme
+                self.summary_chart._apply_theme_to_axes(ax)
+                self.summary_chart.figure.tight_layout()
+                self.summary_chart.canvas.draw()
+                
+        except Exception as e:
+            self.logger.error(f"Error updating summary chart: {e}")
 
     def _update_error_profiles(self):
         """Update error profile comparison chart."""

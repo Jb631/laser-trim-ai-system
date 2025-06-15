@@ -92,23 +92,58 @@ class ChartWidget(ctk.CTkFrame):
         
     def _apply_theme_to_axes(self, ax):
         """Apply theme colors to matplotlib axes."""
-        # Use white background for charts regardless of theme for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
+        # Get current theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        
+        # Set background based on theme
+        if is_dark:
+            ax.set_facecolor(theme_colors["bg"]["secondary"])  # Dark background
+            text_color = theme_colors["fg"]["primary"]  # White text
+            grid_color = theme_colors["border"]["primary"]  # Subtle grid
+        else:
+            ax.set_facecolor(theme_colors["bg"]["primary"])  # White background
+            text_color = theme_colors["fg"]["primary"]  # Black text
+            grid_color = theme_colors["border"]["primary"]  # Light gray grid
+            
+        # Apply text colors
+        ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
-            spine.set_color('#cccccc')
-        ax.xaxis.label.set_color('black')
-        ax.yaxis.label.set_color('black')
+            spine.set_color(grid_color)
+        ax.xaxis.label.set_color(text_color)
+        ax.yaxis.label.set_color(text_color)
         if hasattr(ax, 'title'):
-            ax.title.set_color('black')
+            ax.title.set_color(text_color)
+            
+        # Set grid style
+        ax.grid(True, alpha=0.3, color=grid_color)
+        
+    def _update_figure_theme(self):
+        """Update figure background based on current theme."""
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        
+        if is_dark:
+            self.figure.patch.set_facecolor(theme_colors["bg"]["primary"])
+        else:
+            self.figure.patch.set_facecolor(theme_colors["bg"]["secondary"])
+            
+    def _get_or_create_axes(self):
+        """Get existing axes or create new one with theme applied."""
+        if not self.figure.axes:
+            ax = self.figure.add_subplot(111)
+            self._apply_theme_to_axes(ax)
+        else:
+            ax = self.figure.axes[0]
+        return ax
 
     def _setup_ui(self):
         """Set up the chart widget UI."""
         # Create matplotlib figure with theme-aware colors
         self.figure = Figure(figsize=self.figsize, dpi=100)
         
-        # Use white background for charts for better visibility
-        self.figure.patch.set_facecolor('white')
+        # Apply theme-aware background
+        self._update_figure_theme()
 
         # Create canvas
         self.canvas = FigureCanvasTkAgg(self.figure, self)
@@ -194,13 +229,14 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         
-        # Use white background for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
-        for spine in ax.spines.values():
-            spine.set_color('#cccccc')
-        ax.xaxis.label.set_color('black')
-        ax.yaxis.label.set_color('black')
+        # Apply theme to axes
+        self._apply_theme_to_axes(ax)
+        
+        # Get theme colors for use in this method
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
         
         if 'trim_date' in data.columns and 'sigma_gradient' in data.columns:
             # Sort by date
@@ -236,8 +272,8 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', rotation=45)
                 
         if self.title:
-            ax.set_title(self.title, color='black')
-        ax.grid(True, alpha=0.3, color='#cccccc')
+            ax.set_title(self.title, color=text_color)
+        ax.grid(True, alpha=0.3, color=grid_color)
         
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -256,10 +292,19 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         
         # Use white background for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
+        # Apply theme background
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        ax.set_facecolor(theme_colors["bg"]["secondary" if is_dark else "primary"])
+        # Apply theme colors to text and spines
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
+        ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
-            spine.set_color('#cccccc')
+            spine.set_color(grid_color)
         
         if 'month_year' in data.columns and 'track_status' in data.columns:
             categories = [str(m) for m in data['month_year']]
@@ -291,8 +336,8 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', rotation=45)
                 
         if self.title:
-            ax.set_title(self.title, color='black')
-        ax.grid(True, alpha=0.3, axis='y', color='#cccccc')
+            ax.set_title(self.title, color=text_color)
+        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
         
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -311,12 +356,14 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         
         # Use white background for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
-        for spine in ax.spines.values():
-            spine.set_color('#cccccc')
-        ax.xaxis.label.set_color('black')
-        ax.yaxis.label.set_color('black')
+        # Apply theme to axes
+        self._apply_theme_to_axes(ax)
+        
+        # Get theme colors for use in this method
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
         
         if 'x' in data.columns and 'y' in data.columns:
             x_data = data['x']
@@ -332,11 +379,11 @@ class ChartWidget(ctk.CTkFrame):
                 if not np.isnan(correlation):
                     ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
                            transform=ax.transAxes, fontsize=10,
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor=theme_colors["bg"]["primary"], alpha=0.8))
                 
         if self.title:
-            ax.set_title(self.title, color='black')
-        ax.grid(True, alpha=0.3, color='#cccccc')
+            ax.set_title(self.title, color=text_color)
+        ax.grid(True, alpha=0.3, color=grid_color)
         
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -355,10 +402,19 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         
         # Use white background for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
+        # Apply theme background
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        ax.set_facecolor(theme_colors["bg"]["secondary" if is_dark else "primary"])
+        # Apply theme colors to text and spines
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
+        ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
-            spine.set_color('#cccccc')
+            spine.set_color(grid_color)
         
         if 'sigma_gradient' in data.columns:
             sigma_data = data['sigma_gradient'].dropna()
@@ -381,8 +437,8 @@ class ChartWidget(ctk.CTkFrame):
                 ax.legend()
                 
         if self.title:
-            ax.set_title(self.title, color='black')
-        ax.grid(True, alpha=0.3, axis='y', color='#cccccc')
+            ax.set_title(self.title, color=text_color)
+        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
         
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -401,10 +457,19 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         
         # Use white background for better visibility
-        ax.set_facecolor('white')
-        ax.tick_params(colors='black', labelcolor='black')
+        # Apply theme background
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        ax.set_facecolor(theme_colors["bg"]["secondary" if is_dark else "primary"])
+        # Apply theme colors to text and spines
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
+        ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
-            spine.set_color('#cccccc')
+            spine.set_color(grid_color)
         
         # Check for required columns
         if 'x_values' in data.columns and 'y_values' in data.columns and 'values' in data.columns:
@@ -472,7 +537,7 @@ class ChartWidget(ctk.CTkFrame):
                    ha='center', va='center', transform=ax.transAxes)
         
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
             
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
         
@@ -494,7 +559,9 @@ class ChartWidget(ctk.CTkFrame):
                   color: Optional[str] = None, marker: Optional[str] = None,
                   xlabel: str = "", ylabel: str = "", **kwargs):
         """Plot line chart."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
+        self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Use QA color if specified
         if color and color in self.qa_colors:
@@ -504,20 +571,25 @@ class ChartWidget(ctk.CTkFrame):
         line = ax.plot(x_data, y_data, label=label, color=color,
                        marker=marker, **kwargs)[0]
 
+        # Get theme colors for labels
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+
         # Set labels
         if xlabel:
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Show legend if labels exist
         if label:
             ax.legend()
 
         # Grid
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, color=grid_color)
 
         # Refresh canvas with idle callback to prevent threading issues
         self.canvas.draw_idle()
@@ -528,8 +600,9 @@ class ChartWidget(ctk.CTkFrame):
                  colors: Optional[List[str]] = None, xlabel: str = "",
                  ylabel: str = "", **kwargs):
         """Plot bar chart."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
         self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Map QA colors
         if colors:
@@ -551,15 +624,20 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Rotate x labels if many categories
         if len(categories) > 10:
             plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
         # Grid
-        ax.grid(True, alpha=0.3, axis='y')
+        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
 
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -579,8 +657,9 @@ class ChartWidget(ctk.CTkFrame):
                      labels: Optional[List[str]] = None, xlabel: str = "",
                      ylabel: str = "", alpha: float = 0.6, **kwargs):
         """Plot scatter chart."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
         self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Default size
         if sizes is None:
@@ -609,11 +688,16 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Grid
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, color=grid_color)
 
         # Refresh canvas with idle callback to prevent threading issues
         self.canvas.draw_idle()
@@ -624,8 +708,9 @@ class ChartWidget(ctk.CTkFrame):
                        color: Optional[str] = None, xlabel: str = "",
                        ylabel: str = "Frequency", **kwargs):
         """Plot histogram."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
         self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Use QA color if specified
         if color and color in self.qa_colors:
@@ -650,14 +735,19 @@ class ChartWidget(ctk.CTkFrame):
         if xlabel:
             ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Legend
         ax.legend()
 
         # Grid
-        ax.grid(True, alpha=0.3, axis='y')
+        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
 
         # Refresh canvas with idle callback to prevent threading issues
         self.canvas.draw_idle()
@@ -667,7 +757,9 @@ class ChartWidget(ctk.CTkFrame):
     def plot_box(self, data: List[List[float]], labels: List[str] = None,
                  xlabel: str = "", ylabel: str = "", **kwargs):
         """Plot box plot."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
+        self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Create box plot
         bp = ax.boxplot(data, labels=labels, patch_artist=True, **kwargs)
@@ -685,11 +777,16 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Grid
-        ax.grid(True, alpha=0.3, axis='y')
+        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
 
         # Refresh canvas with idle callback to prevent threading issues
         self.canvas.draw_idle()
@@ -700,7 +797,9 @@ class ChartWidget(ctk.CTkFrame):
                      ylabels: List[str], cmap: str = 'RdYlGn',
                      xlabel: str = "", ylabel: str = "", **kwargs):
         """Plot heatmap."""
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
+        self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Create heatmap
         im = ax.imshow(data, cmap=cmap, aspect='auto', **kwargs)
@@ -720,8 +819,11 @@ class ChartWidget(ctk.CTkFrame):
         # Add text annotations
         for i in range(len(ylabels)):
             for j in range(len(xlabels)):
-                text = ax.text(j, i, f'{data[i, j]:.2f}',
-                               ha='center', va='center', color='black',
+                value = data[i, j]
+                # Choose text color based on background
+                text_color = 'black' if 0.3 < value < 0.7 else 'white'
+                text = ax.text(j, i, f'{value:.2f}',
+                               ha='center', va='center', color=text_color,
                                fontsize=9)
 
         # Set labels
@@ -729,8 +831,13 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
+        
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Use tight_layout with padding to prevent label cutoff
         try:
@@ -754,7 +861,9 @@ class ChartWidget(ctk.CTkFrame):
             data_dict: Dictionary with series names as keys and
                       {'x': x_data, 'y': y_data, 'color': color} as values
         """
-        ax = self.figure.add_subplot(111) if not self.figure.axes else self.figure.axes[0]
+        ax = self._get_or_create_axes()
+        self._apply_theme_to_axes(ax)
+        self._has_data = True  # Mark that we have data
 
         # Plot each series
         for series_name, series_data in data_dict.items():
@@ -773,14 +882,20 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xlabel(xlabel)
         if ylabel:
             ax.set_ylabel(ylabel)
+        
+        # Get theme colors
+        theme_colors = ThemeHelper.get_theme_colors()
+        text_color = theme_colors["fg"]["primary"]
+        grid_color = theme_colors["border"]["primary"]
+        
         if self.title:
-            ax.set_title(self.title)
+            ax.set_title(self.title, color=text_color)
 
         # Legend
         ax.legend()
 
         # Grid
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, color=grid_color)
 
         # Refresh canvas with idle callback to prevent threading issues
         self.canvas.draw_idle()
@@ -818,26 +933,33 @@ class ChartWidget(ctk.CTkFrame):
         self._has_data = False
         self.figure.clear()
         # Reset figure background color
-        self.figure.patch.set_facecolor('white')
+        # Update figure theme
+        self._update_figure_theme()
         
         # Add empty axes to show clean background
         ax = self.figure.add_subplot(111)
-        ax.set_facecolor('white')
+        # Apply theme background
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        ax.set_facecolor(theme_colors["bg"]["secondary" if is_dark else "primary"])
         
         # Create centered text with icon
-        text_parts = ['📊']  # Chart icon
+        text_parts = ['[Chart]']  # Chart icon placeholder (emoji not supported in Arial)
         text_parts.append('')
         text_parts.append(message)
         if instruction:
             text_parts.append('')
             text_parts.append(instruction)
             
+        # Use theme-aware text color
+        text_color = theme_colors["fg"]["tertiary"]
+        
         ax.text(0.5, 0.5, '\n'.join(text_parts), 
                 horizontalalignment='center',
                 verticalalignment='center',
                 transform=ax.transAxes,
                 fontsize=14,
-                color='gray',
+                color=text_color,
                 alpha=0.8,
                 linespacing=2)
         
@@ -850,8 +972,15 @@ class ChartWidget(ctk.CTkFrame):
     
     def refresh_theme(self):
         """Refresh chart colors when theme changes."""
-        colors = ThemeHelper.get_theme_colors()
-        self.figure.patch.set_facecolor(colors['bg']['secondary'])
+        # Update figure background
+        self._update_figure_theme()
+        
+        # If we have data, redraw the chart with new theme
+        if self._has_data and hasattr(self, '_last_data') and self._last_data is not None:
+            self.update_chart_data(self._last_data)
+        else:
+            # Otherwise refresh placeholder
+            self.show_placeholder(self._placeholder_message, self._placeholder_instruction)
         
         # Update all axes if they exist
         for ax in self.figure.axes:

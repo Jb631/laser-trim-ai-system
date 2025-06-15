@@ -853,17 +853,29 @@ class SettingsDialog(ctk.CTkToplevel):
             
             # Analysis
             sigma_val = self.sigma_threshold.get().strip()
-            if sigma_val:
-                self.settings_manager.set("analysis.sigma_threshold", float(sigma_val))
+            if sigma_val and sigma_val.lower() != 'none':
+                try:
+                    self.settings_manager.set("analysis.sigma_threshold", float(sigma_val))
+                except ValueError:
+                    self.settings_manager.set("analysis.sigma_threshold", None)
             else:
                 self.settings_manager.set("analysis.sigma_threshold", None)
                 
             linearity_val = self.linearity_threshold.get().strip()
-            if linearity_val:
-                self.settings_manager.set("analysis.linearity_threshold", float(linearity_val))
+            if linearity_val and linearity_val.lower() != 'none':
+                try:
+                    self.settings_manager.set("analysis.linearity_threshold", float(linearity_val))
+                except ValueError:
+                    self.settings_manager.set("analysis.linearity_threshold", None)
             else:
                 self.settings_manager.set("analysis.linearity_threshold", None)
-            self.settings_manager.set("analysis.confidence_threshold", self.confidence_threshold.get())
+            
+            # Confidence threshold is from a slider, should always be a float
+            confidence_val = self.confidence_threshold.get()
+            if isinstance(confidence_val, (int, float)):
+                self.settings_manager.set("analysis.confidence_threshold", float(confidence_val))
+            else:
+                self.settings_manager.set("analysis.confidence_threshold", 0.95)
             self.settings_manager.set("analysis.batch_size_limit", int(self.batch_size_limit.get()))
             
             # Apply theme immediately

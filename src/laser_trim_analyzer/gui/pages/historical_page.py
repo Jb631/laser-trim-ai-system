@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import logging
 import threading
+import traceback
 
 # Get logger first
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class HistoricalPage(ctk.CTkFrame):
         # Initialize data storage
         self.current_data = None  # This will store raw database results
         self.current_data_df = None  # This will store DataFrame version
+        self._analytics_data = []  # This will store prepared analytics data
         self.analytics_results = {}
         self.trend_analysis_data = {}
         self.correlation_matrix = None
@@ -761,9 +763,22 @@ class HistoricalPage(ctk.CTkFrame):
                     # Determine text color
                     text_color = None
                     if col_name == 'Status':
-                        text_color = "green" if value == "Pass" else "red" if value == "Fail" else "orange"
+                        # Use theme-aware colors
+                        if value == "Pass":
+                            text_color = ("#27ae60", "#2ecc71")  # Green for pass
+                        elif value == "Fail":
+                            text_color = ("#e74c3c", "#c0392b")  # Red for fail
+                        else:
+                            text_color = ("#f39c12", "#d68910")  # Orange for warning
                     elif col_name == 'Risk':
-                        text_color = "green" if value == "Low" else "orange" if value == "Medium" else "red" if value == "High" else "gray"
+                        if value == "Low":
+                            text_color = ("#27ae60", "#2ecc71")  # Green for low risk
+                        elif value == "Medium":
+                            text_color = ("#f39c12", "#d68910")  # Orange for medium
+                        elif value == "High":
+                            text_color = ("#e74c3c", "#c0392b")  # Red for high
+                        else:
+                            text_color = ("#95a5a6", "#7f8c8d")  # Gray for unknown
                     
                     label = ctk.CTkLabel(
                         row_frame,
@@ -799,11 +814,13 @@ class HistoricalPage(ctk.CTkFrame):
             # Store current data for potential export
             self.current_data = results
             
-            # CRITICAL FIX: Update charts when data is loaded
+            # CRITICAL FIX: Update charts and analytics when data is loaded
             try:
                 self._update_charts(results)
+                # Also update analytics dashboard
+                self._prepare_and_update_analytics(results)
             except Exception as e:
-                logger.error(f"Error updating charts: {e}")
+                logger.error(f"Error updating charts and analytics: {e}")
             
             logger.info(f"Displayed {len(results)} query results")
             
@@ -829,11 +846,21 @@ class HistoricalPage(ctk.CTkFrame):
                     'sigma_gradient': None
                 }
                 
-                # Extract sigma gradient from first track if available
+                # Extract track data for analytics
                 if result.tracks and len(result.tracks) > 0:
                     track = result.tracks[0]
                     if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
                         record['sigma_gradient'] = track.sigma_gradient
+                    if hasattr(track, 'final_linearity_error_shifted'):
+                        record['linearity_error'] = track.final_linearity_error_shifted
+                    elif hasattr(track, 'final_linearity_error_raw'):
+                        record['linearity_error'] = track.final_linearity_error_raw
+                    if hasattr(track, 'risk_category') and track.risk_category:
+                        record['risk_category'] = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                
+                # Add overall status in correct format
+                record['overall_status'] = 'PASS' if record['status'].upper() == 'PASS' else 'FAIL'
+                record['timestamp'] = record['date'] or record['file_date'] or datetime.now()
                 
                 chart_data.append(record)
             
@@ -848,6 +875,75 @@ class HistoricalPage(ctk.CTkFrame):
             
         except Exception as e:
             logger.error(f"Error preparing chart data: {e}")
+
+    def _prepare_and_update_analytics(self, results):
+        """Prepare data and update analytics dashboard."""
+        if not results:
+            self._update_dashboard_metrics([])
+            return
+            
+        try:
+            # Convert results to list of dictionaries for analytics
+            analytics_data = []
+            for result in results:
+                # Base record
+                record = {
+                    'id': getattr(result, 'id', None),
+                    'filename': getattr(result, 'filename', 'Unknown'),
+                    'timestamp': getattr(result, 'timestamp', datetime.now()),
+                    'file_date': getattr(result, 'file_date', None),
+                    'model': getattr(result, 'model', 'Unknown'),
+                    'serial': getattr(result, 'serial', 'Unknown'),
+                    'overall_status': 'PASS' if result.overall_status.value.upper() == 'PASS' else 'FAIL',
+                    'processing_time': getattr(result, 'processing_time', 0)
+                }
+                
+                # Extract track data for detailed analytics
+                if result.tracks and len(result.tracks) > 0:
+                    # Average values across all tracks
+                    sigma_values = []
+                    linearity_errors = []
+                    risk_categories = []
+                    
+                    for track in result.tracks:
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            sigma_values.append(track.sigma_gradient)
+                        
+                        if hasattr(track, 'final_linearity_error_shifted') and track.final_linearity_error_shifted is not None:
+                            linearity_errors.append(abs(track.final_linearity_error_shifted))
+                        elif hasattr(track, 'final_linearity_error_raw') and track.final_linearity_error_raw is not None:
+                            linearity_errors.append(abs(track.final_linearity_error_raw))
+                        
+                        if hasattr(track, 'risk_category') and track.risk_category:
+                            risk_cat = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                            risk_categories.append(risk_cat)
+                    
+                    # Add averaged values
+                    if sigma_values:
+                        record['sigma_gradient'] = np.mean(sigma_values)
+                    if linearity_errors:
+                        record['linearity_error'] = np.mean(linearity_errors)
+                    if risk_categories:
+                        # Take the worst risk category
+                        if 'High' in risk_categories:
+                            record['risk_category'] = 'High'
+                        elif 'Medium' in risk_categories:
+                            record['risk_category'] = 'Medium'
+                        else:
+                            record['risk_category'] = 'Low'
+                
+                analytics_data.append(record)
+            
+            # Store analytics data for other features
+            self._analytics_data = analytics_data
+            
+            # Update dashboard metrics with prepared data
+            self._update_dashboard_metrics(analytics_data)
+            
+        except Exception as e:
+            logger.error(f"Error preparing analytics data: {e}")
+            logger.error(traceback.format_exc())
+            self._update_dashboard_metrics([])
 
     def _update_trend_chart(self):
         """Update pass rate trend chart."""
@@ -867,26 +963,16 @@ class HistoricalPage(ctk.CTkFrame):
         # Sort by date
         daily_stats = daily_stats.sort_values('date')
 
-        # Clear and plot
-        self.trend_chart.clear_chart()
-
+        # Update chart with data
         if len(daily_stats) > 1:
-            self.trend_chart.plot_line(
-                x_data=daily_stats['date'].tolist(),
-                y_data=daily_stats['pass_rate'].tolist(),
-                label="Pass Rate",
-                color='primary',
-                marker='o',
-                xlabel="Date",
-                ylabel="Pass Rate (%)"
-            )
-
-            # Add average line
-            avg_pass_rate = daily_stats['pass_rate'].mean()
-            self.trend_chart.add_threshold_lines(
-                {'Average': avg_pass_rate},
-                orientation='horizontal'
-            )
+            # Prepare data in format expected by update_chart_data
+            chart_data = pd.DataFrame({
+                'trim_date': daily_stats['date'],
+                'sigma_gradient': daily_stats['pass_rate']  # Using sigma_gradient column for pass rate data
+            })
+            self.trend_chart.update_chart_data(chart_data)
+        else:
+            self.trend_chart.update_chart_data(pd.DataFrame())
 
     def _update_distribution_chart(self):
         """Update sigma gradient distribution chart."""
@@ -901,15 +987,12 @@ class HistoricalPage(ctk.CTkFrame):
         if len(sigma_values) == 0:
             return
 
-        # Clear and plot
-        self.dist_chart.clear_chart()
-        self.dist_chart.plot_histogram(
-            data=sigma_values.tolist(),
-            bins=30,
-            color='primary',
-            xlabel="Sigma Gradient",
-            ylabel="Frequency"
-        )
+        # Update chart with data
+        # For histogram, we need sigma_gradient data
+        chart_data = pd.DataFrame({
+            'sigma_gradient': sigma_values
+        })
+        self.dist_chart.update_chart_data(chart_data)
 
     def _update_comparison_chart(self):
         """Update model comparison chart."""
@@ -946,15 +1029,13 @@ class HistoricalPage(ctk.CTkFrame):
             else:
                 colors.append('fail')
 
-        # Clear and plot
-        self.comp_chart.clear_chart()
-        self.comp_chart.plot_bar(
-            categories=model_stats['model'].tolist(),
-            values=model_stats['pass_rate'].tolist(),
-            colors=colors,
-            xlabel="Model",
-            ylabel="Pass Rate (%)"
-        )
+        # Update chart with data
+        # For bar chart, we need month_year and track_status columns
+        chart_data = pd.DataFrame({
+            'month_year': model_stats['model'],  # Using month_year column for categories
+            'track_status': model_stats['pass_rate']  # Using track_status column for values
+        })
+        self.comp_chart.update_chart_data(chart_data)
 
     def _get_days_back(self) -> Optional[int]:
         """Convert date range selection to days."""
@@ -1197,14 +1278,17 @@ Metrics:
         """Update analytics status indicator."""
         self.analytics_status_label.configure(text=f"Analytics Status: {status}")
         
-        color_map = {
-            "green": "#00ff00",
-            "orange": "#ffa500",
-            "red": "#ff0000",
-            "gray": "#808080"
+        # Use theme-aware colors
+        theme_colors = {
+            "green": ("#27ae60", "#2ecc71"),  # Success green
+            "orange": ("#f39c12", "#d68910"),  # Warning orange
+            "red": ("#e74c3c", "#c0392b"),    # Error red
+            "gray": ("#95a5a6", "#7f8c8d")     # Neutral gray
         }
         
-        self.analytics_indicator.configure(text_color=color_map.get(color, "#808080"))
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        theme_color = theme_colors.get(color, theme_colors["gray"])
+        self.analytics_indicator.configure(text_color=theme_color[1 if is_dark else 0])
 
     def _update_dashboard_metrics(self, data: List[Dict[str, Any]]):
         """Update analytics dashboard with current data metrics."""
@@ -1319,8 +1403,28 @@ Metrics:
                 else:
                     self.quality_score_card.set_color_scheme('danger')
             
+            # Anomaly detection (simple outlier detection)
+            anomaly_count = 0
+            if 'sigma_gradient' in df.columns:
+                # Use z-score method for anomaly detection
+                z_scores = np.abs((df['sigma_gradient'] - df['sigma_gradient'].mean()) / df['sigma_gradient'].std())
+                anomaly_count = len(df[z_scores > 3])  # Points beyond 3 standard deviations
+            
+            self.anomaly_count_card.update_value(str(anomaly_count))
+            if anomaly_count == 0:
+                self.anomaly_count_card.set_color_scheme('success')
+            elif anomaly_count <= 5:
+                self.anomaly_count_card.set_color_scheme('warning')
+            else:
+                self.anomaly_count_card.set_color_scheme('danger')
+            
+            # Prediction accuracy (placeholder - will be updated when predictions are run)
+            self.prediction_accuracy_card.update_value("N/A")
+            self.prediction_accuracy_card.set_color_scheme('neutral')
+            
         except Exception as e:
             logger.error(f"Error updating dashboard metrics: {e}")
+            logger.error(traceback.format_exc())
 
     def _run_trend_analysis(self):
         """Run comprehensive trend analysis."""
@@ -1333,7 +1437,13 @@ Metrics:
         
         def analyze():
             try:
-                trend_data = self._calculate_trend_analysis(self.current_data)
+                # Use the analytics data that has the proper structure
+                if hasattr(self, '_analytics_data') and self._analytics_data:
+                    trend_data = self._calculate_trend_analysis(self._analytics_data)
+                else:
+                    # Fallback to preparing data if not available
+                    self._prepare_and_update_analytics(self.current_data)
+                    trend_data = self._calculate_trend_analysis(self._analytics_data)
                 self.trend_analysis_data = trend_data
                 
                 # Update UI
@@ -1484,7 +1594,13 @@ Metrics:
         
         def analyze():
             try:
-                correlation_data = self._calculate_correlation_matrix(self.current_data)
+                # Use the analytics data that has the proper structure
+                if hasattr(self, '_analytics_data') and self._analytics_data:
+                    correlation_data = self._calculate_correlation_matrix(self._analytics_data)
+                else:
+                    # Fallback to preparing data if not available
+                    self._prepare_and_update_analytics(self.current_data)
+                    correlation_data = self._calculate_correlation_matrix(self._analytics_data)
                 self.correlation_matrix = correlation_data
                 
                 # Update UI
@@ -1685,7 +1801,13 @@ Metrics:
         
         def analyze():
             try:
-                prediction_data = self._build_predictive_models(self.current_data)
+                # Use the analytics data that has the proper structure
+                if hasattr(self, '_analytics_data') and self._analytics_data:
+                    prediction_data = self._build_predictive_models(self._analytics_data)
+                else:
+                    # Fallback to preparing data if not available
+                    self._prepare_and_update_analytics(self.current_data)
+                    prediction_data = self._build_predictive_models(self._analytics_data)
                 
                 # Update UI
                 self.after(0, lambda: self._display_predictive_analysis(prediction_data))
@@ -1972,3 +2094,180 @@ Metrics:
     def db_manager(self):
         """Get database manager from main window."""
         return self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None
+    
+    def _analyze_pass_rate_trends(self) -> Dict[str, Any]:
+        """Analyze pass rate trends over time."""
+        try:
+            if self.current_data is None or len(self.current_data) == 0:
+                return {}
+            
+            # Convert to dataframe for analysis
+            df = self.current_data.copy()
+            
+            # Group by month and calculate pass rates
+            df['month'] = pd.to_datetime(df['timestamp']).dt.to_period('M')
+            monthly_pass_rates = df.groupby('month').apply(
+                lambda x: (x['overall_status'] == 'PASS').mean() * 100
+            )
+            
+            # Calculate trend
+            if len(monthly_pass_rates) > 1:
+                x = np.arange(len(monthly_pass_rates))
+                y = monthly_pass_rates.values
+                slope, intercept = np.polyfit(x, y, 1)
+                trend = 'improving' if slope > 0 else 'declining' if slope < 0 else 'stable'
+            else:
+                trend = 'insufficient_data'
+                slope = 0
+            
+            return {
+                'monthly_pass_rates': monthly_pass_rates.to_dict(),
+                'trend': trend,
+                'slope': slope,
+                'current_pass_rate': (df['overall_status'] == 'PASS').mean() * 100
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing pass rate trends: {e}")
+            return {}
+    
+    def _update_trend_analysis_chart(self, trend_data: Dict[str, Any]):
+        """Update the trend analysis chart."""
+        try:
+            self.trend_chart.clear_chart()
+            
+            if not trend_data or 'monthly_pass_rates' not in trend_data:
+                return
+            
+            # Get data
+            monthly_rates = trend_data['monthly_pass_rates']
+            if not monthly_rates:
+                return
+            
+            # Create chart
+            ax = self.trend_chart.figure.add_subplot(111)
+            
+            # Convert period to string for x-axis
+            x_labels = [str(period) for period in monthly_rates.keys()]
+            y_values = list(monthly_rates.values())
+            
+            # Plot bars
+            bars = ax.bar(range(len(x_labels)), y_values)
+            
+            # Color bars based on pass rate
+            for bar, rate in zip(bars, y_values):
+                if rate >= 95:
+                    bar.set_color('green')
+                elif rate >= 90:
+                    bar.set_color('orange')
+                else:
+                    bar.set_color('red')
+            
+            # Add trend line
+            if len(x_labels) > 1:
+                x = np.arange(len(x_labels))
+                slope = trend_data.get('slope', 0)
+                intercept = np.mean(y_values) - slope * np.mean(x)
+                trend_line = slope * x + intercept
+                ax.plot(x, trend_line, 'b--', linewidth=2, label=f"Trend: {trend_data.get('trend', 'unknown')}")
+                ax.legend()
+            
+            # Labels and formatting
+            ax.set_xlabel('Month')
+            ax.set_ylabel('Pass Rate (%)')
+            ax.set_title('Pass Rate Trend Analysis')
+            ax.set_xticks(range(len(x_labels)))
+            ax.set_xticklabels(x_labels, rotation=45)
+            ax.set_ylim(0, 105)
+            
+            # Add grid
+            ax.grid(True, alpha=0.3, axis='y')
+            
+            self.trend_chart.figure.tight_layout()
+            self.trend_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating trend analysis chart: {e}")
+    
+    def _update_correlation_heatmap(self, correlation_data: pd.DataFrame):
+        """Update the correlation heatmap."""
+        try:
+            self.correlation_chart.clear_chart()
+            
+            if correlation_data is None or correlation_data.empty:
+                return
+            
+            # Create heatmap
+            ax = self.correlation_chart.figure.add_subplot(111)
+            
+            # Create correlation matrix
+            numeric_cols = ['sigma_gradient', 'linearity_error', 'resistance_change_percent', 
+                          'failure_probability', 'processing_time']
+            
+            # Filter columns that exist
+            available_cols = [col for col in numeric_cols if col in correlation_data.columns]
+            if len(available_cols) < 2:
+                ax.text(0.5, 0.5, 'Insufficient data for correlation analysis', 
+                       ha='center', va='center', transform=ax.transAxes)
+                self.correlation_chart.canvas.draw()
+                return
+            
+            corr_matrix = correlation_data[available_cols].corr()
+            
+            # Create heatmap manually
+            im = ax.imshow(corr_matrix.values, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
+            
+            # Set ticks
+            ax.set_xticks(np.arange(len(available_cols)))
+            ax.set_yticks(np.arange(len(available_cols)))
+            ax.set_xticklabels(available_cols, rotation=45, ha='right')
+            ax.set_yticklabels(available_cols)
+            
+            # Add colorbar
+            cbar = self.correlation_chart.figure.colorbar(im, ax=ax)
+            cbar.set_label('Correlation Coefficient')
+            
+            # Add values
+            for i in range(len(available_cols)):
+                for j in range(len(available_cols)):
+                    text = ax.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}',
+                                 ha='center', va='center', color='black' if abs(corr_matrix.iloc[i, j]) < 0.5 else 'white')
+            
+            ax.set_title('Feature Correlation Heatmap')
+            self.correlation_chart.figure.tight_layout()
+            self.correlation_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating correlation heatmap: {e}")
+    
+    def _update_prediction_chart(self, prediction_data: Dict[str, Any]):
+        """Update the predictive analysis chart."""
+        try:
+            self.prediction_chart.clear_chart()
+            
+            if not prediction_data:
+                return
+            
+            # Create chart
+            ax = self.prediction_chart.figure.add_subplot(111)
+            
+            # Simple example: show risk distribution
+            risk_categories = prediction_data.get('risk_distribution', {})
+            if risk_categories:
+                categories = list(risk_categories.keys())
+                values = list(risk_categories.values())
+                
+                # Create pie chart
+                colors = {'Low': 'green', 'Medium': 'orange', 'High': 'red'}
+                chart_colors = [colors.get(cat, 'gray') for cat in categories]
+                
+                ax.pie(values, labels=categories, colors=chart_colors, autopct='%1.1f%%')
+                ax.set_title('Risk Distribution Prediction')
+            else:
+                ax.text(0.5, 0.5, 'No prediction data available', 
+                       ha='center', va='center', transform=ax.transAxes)
+            
+            self.prediction_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating prediction chart: {e}")

@@ -4,6 +4,10 @@ Plotting utilities for laser trim analysis visualization.
 Creates professional QA plots with consistent styling and formatting.
 """
 
+# Set matplotlib to use non-interactive backend to avoid thread warnings
+import matplotlib
+matplotlib.use('Agg')
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.figure import Figure
@@ -29,20 +33,82 @@ except OSError:
     
 sns.set_palette("husl")
 
-# QA color scheme
+# QA color scheme - theme-aware colors
+# These match the colors used in ChartWidget for consistency
 QA_COLORS = {
-    'pass': '#2ecc71',  # Green
-    'fail': '#e74c3c',  # Red
-    'warning': '#f39c12',  # Orange
-    'info': '#3498db',  # Blue
-    'untrimmed': '#3498db',  # Blue
-    'trimmed': '#2ecc71',  # Green
-    'filtered': '#9b59b6',  # Purple
-    'spec_limit': '#e74c3c',  # Red
-    'threshold': '#f39c12',  # Orange
-    'grid': '#bdc3c7',  # Light gray
-    'text': '#2c3e50'  # Dark gray
+    'pass': '#27ae60',      # Success green (matches ChartWidget)
+    'fail': '#e74c3c',      # Error red (matches ChartWidget)
+    'warning': '#f39c12',   # Warning orange (matches ChartWidget)
+    'info': '#3498db',      # Primary blue (matches ChartWidget)
+    'untrimmed': '#3498db', # Primary blue
+    'trimmed': '#27ae60',   # Success green
+    'filtered': '#9b59b6',  # Secondary purple (matches ChartWidget)
+    'spec_limit': '#e74c3c',# Error red
+    'threshold': '#f39c12', # Warning orange
+    'grid': '#95a5a6',      # Neutral gray (matches ChartWidget)
+    'text': '#2c3e50',      # Dark text
+    'background': '#ffffff', # White background
+    'secondary_bg': '#f8f9fa' # Light gray background
 }
+
+# Dark theme colors
+QA_COLORS_DARK = {
+    'pass': '#2ecc71',      # Brighter green for dark theme
+    'fail': '#c0392b',      # Darker red for dark theme
+    'warning': '#d68910',   # Darker orange for dark theme
+    'info': '#2980b9',      # Darker blue for dark theme
+    'untrimmed': '#2980b9', # Darker blue
+    'trimmed': '#2ecc71',   # Brighter green
+    'filtered': '#8e44ad',  # Darker purple
+    'spec_limit': '#c0392b',# Darker red
+    'threshold': '#d68910', # Darker orange
+    'grid': '#7f8c8d',      # Darker gray for visibility
+    'text': '#ecf0f1',      # Light text for dark background
+    'background': '#2b2b2b', # Dark background
+    'secondary_bg': '#1e1e1e' # Darker background
+}
+
+
+def get_theme_colors(is_dark: bool = False) -> Dict[str, str]:
+    """
+    Get color scheme based on theme.
+    
+    Args:
+        is_dark: Whether to use dark theme colors
+        
+    Returns:
+        Dictionary of color mappings
+    """
+    return QA_COLORS_DARK if is_dark else QA_COLORS
+
+
+def apply_theme_to_axes(ax, is_dark: bool = False):
+    """
+    Apply theme colors to matplotlib axes.
+    
+    Args:
+        ax: Matplotlib axes
+        is_dark: Whether to use dark theme
+    """
+    colors = get_theme_colors(is_dark)
+    
+    # Set background color
+    ax.set_facecolor(colors['secondary_bg'])
+    
+    # Set spine colors
+    for spine in ax.spines.values():
+        spine.set_color(colors['grid'])
+    
+    # Set tick colors
+    ax.tick_params(colors=colors['text'], labelcolor=colors['text'])
+    
+    # Set label colors
+    ax.xaxis.label.set_color(colors['text'])
+    ax.yaxis.label.set_color(colors['text'])
+    ax.title.set_color(colors['text'])
+    
+    # Set grid
+    ax.grid(True, alpha=0.3, color=colors['grid'])
 
 
 def create_analysis_plot(
@@ -72,7 +138,7 @@ def create_analysis_plot(
         Path to saved plot file
     """
     # Create figure with subplots
-    fig = plt.figure(figsize=figsize, dpi=dpi)
+    fig = plt.figure(figsize=figsize, dpi=dpi, facecolor='white')
     fig.suptitle(f'Laser Trim Analysis - {filename_prefix}', fontsize=16, fontweight='bold')
 
     # Create grid spec for custom layout

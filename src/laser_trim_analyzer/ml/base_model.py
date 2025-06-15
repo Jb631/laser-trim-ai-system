@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 import pandas as pd
 import logging
 from datetime import datetime
+import pickle
+from pathlib import Path
 
 
 class BaseMLModel(ABC):
@@ -46,3 +48,61 @@ class BaseMLModel(ABC):
             'training_date': self.training_date,
             **self.metadata
         }
+    
+    def save(self, filepath: Path) -> bool:
+        """Save the trained model to disk."""
+        try:
+            if not self.is_trained:
+                self.logger.warning("Attempting to save untrained model")
+                return False
+                
+            # Create directory if it doesn't exist
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Save model state
+            model_data = {
+                'model': self.model,
+                'metadata': self.get_metadata(),
+                'training_date': self.training_date,
+                'is_trained': self.is_trained
+            }
+            
+            # Save scaler if exists
+            if hasattr(self, 'scaler'):
+                model_data['scaler'] = self.scaler
+                
+            with open(filepath, 'wb') as f:
+                pickle.dump(model_data, f)
+                
+            self.logger.info(f"Model saved to {filepath}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save model: {e}")
+            return False
+    
+    def load(self, filepath: Path) -> bool:
+        """Load a trained model from disk."""
+        try:
+            if not filepath.exists():
+                self.logger.error(f"Model file not found: {filepath}")
+                return False
+                
+            with open(filepath, 'rb') as f:
+                model_data = pickle.load(f)
+                
+            self.model = model_data['model']
+            self.metadata = model_data.get('metadata', {})
+            self.training_date = model_data.get('training_date')
+            self.is_trained = model_data.get('is_trained', True)
+            
+            # Load scaler if exists
+            if 'scaler' in model_data:
+                self.scaler = model_data['scaler']
+                
+            self.logger.info(f"Model loaded from {filepath}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load model: {e}")
+            return False

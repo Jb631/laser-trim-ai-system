@@ -893,8 +893,8 @@ class DatabaseManager:
 
                 # Date filtering
                 if days_back:
-                    # Use local time instead of UTC for consistency
-                    cutoff_date = datetime.now() - timedelta(days=days_back)
+                    # Use UTC to match database timestamps
+                    cutoff_date = datetime.utcnow() - timedelta(days=days_back)
                     query = query.filter(DBAnalysisResult.timestamp >= cutoff_date)
                 elif start_date:
                     query = query.filter(DBAnalysisResult.timestamp >= start_date)

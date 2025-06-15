@@ -170,7 +170,7 @@ class AnalysisResult(Base):
     processing_time = Column(Float)  # seconds
 
     # Analysis metadata
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)  # Always store in UTC
     output_dir = Column(Text)
     software_version = Column(String(20))
     operator = Column(String(100))
