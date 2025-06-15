@@ -233,9 +233,18 @@ class IndividualTrackViewer(ctk.CTkFrame):
     def _on_track_selected(self, track_name: str):
         """Handle track selection."""
         if track_name in self.tracks_data:
+            # Store selection for state persistence
             self.selected_track = track_name
             self.current_track_data = self.tracks_data[track_name]
             self._update_display()
+            
+            # Log selection for debugging
+            logger.debug(f"Track '{track_name}' selected")
+        elif track_name == "No tracks available":
+            # Clear selection when no tracks
+            self.selected_track = None
+            self.current_track_data = None
+            self._clear_display()
             
     def _update_display(self):
         """Update all displays with current track data."""
@@ -303,6 +312,12 @@ class IndividualTrackViewer(ctk.CTkFrame):
         """Update error profile plot."""
         self.profile_ax.clear()
         
+        # Set white background for better visibility
+        self.profile_ax.set_facecolor('white')
+        self.profile_ax.tick_params(colors='black', labelcolor='black')
+        for spine in self.profile_ax.spines.values():
+            spine.set_color('#cccccc')
+        
         if track_data and 'error_profile' in track_data:
             profile = track_data['error_profile']
             positions = profile.get('positions', [])
@@ -317,15 +332,22 @@ class IndividualTrackViewer(ctk.CTkFrame):
                     self.profile_ax.axhline(y=spec, color='r', linestyle='--', label=f'Spec: ±{spec}%')
                     self.profile_ax.axhline(y=-spec, color='r', linestyle='--')
                 
-                self.profile_ax.set_xlabel('Position (%)')
-                self.profile_ax.set_ylabel('Error (%)')
-                self.profile_ax.set_title(f'Error Profile - {self.selected_track}')
-                self.profile_ax.grid(True, alpha=0.3)
+                self.profile_ax.set_xlabel('Position (%)', color='black')
+                self.profile_ax.set_ylabel('Error (%)', color='black')
+                self.profile_ax.set_title(f'Error Profile - {self.selected_track}', color='black')
+                self.profile_ax.grid(True, alpha=0.3, color='#cccccc')
                 self.profile_ax.legend()
             else:
                 self._show_no_data_message(self.profile_ax, "No error profile data available")
         else:
             self._show_no_data_message(self.profile_ax, "Select a track to view error profile")
+        
+        # Use tight_layout to prevent label cutoff
+        try:
+            self.profile_fig.tight_layout(pad=1.5)
+        except Exception:
+            # Fallback if tight_layout fails
+            self.profile_fig.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
             
         self.profile_canvas.draw()
         
@@ -431,6 +453,11 @@ class IndividualTrackViewer(ctk.CTkFrame):
             
     def _show_no_data_message(self, ax, message):
         """Show no data message on plot."""
+        # Set white background even for empty state
+        ax.set_facecolor('white')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
+            
         ax.text(0.5, 0.5, message, 
                 horizontalalignment='center',
                 verticalalignment='center',

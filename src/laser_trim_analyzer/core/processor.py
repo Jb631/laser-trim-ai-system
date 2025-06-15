@@ -543,10 +543,33 @@ class LaserTrimProcessor:
             if self._cache_enabled and file_hash:
                 try:
                     # Manage cache size
-                    if len(self._file_cache) >= self._max_cache_size:
+                    # Manage cache size based on memory usage, not just count
+                    import sys
+                    
+                    # Estimate size of result object (rough estimate)
+                    result_size = sys.getsizeof(result) * 10  # Multiply by 10 for nested objects
+                    
+                    # Check total cache size
+                    max_cache_bytes = 200 * 1024 * 1024  # 200 MB max cache
+                    
+                    # Remove entries until we have space or reach min size
+                    while len(self._file_cache) >= self._max_cache_size:
                         # Remove oldest entry
                         oldest_key = next(iter(self._file_cache))
                         del self._file_cache[oldest_key]
+                    
+                    # Also check memory pressure
+                    try:
+                        import psutil
+                        process = psutil.Process()
+                        if process.memory_percent() > 60:  # If using more than 60% memory
+                            # Reduce cache size aggressively
+                            while len(self._file_cache) > 10 and process.memory_percent() > 60:
+                                oldest_key = next(iter(self._file_cache))
+                                del self._file_cache[oldest_key]
+                                gc.collect()
+                    except:
+                        pass
                     
                     self._file_cache[file_hash] = result
                 except Exception as e:
@@ -995,13 +1018,32 @@ class LaserTrimProcessor:
                 self.logger.warning(f"Error during garbage collection: {e}")
         
         # Close matplotlib figures to prevent memory leaks
-        matplotlib_interval = getattr(self.config.processing, 'matplotlib_cleanup_interval', 25)
-        if processed_count % matplotlib_interval == 0:
+        # Close after EVERY file to prevent memory accumulation
+        try:
+            plt.close('all')  # Close all matplotlib figures
+            # Also clear the figure registry to ensure complete cleanup
+            import matplotlib._pylab_helpers
+            matplotlib._pylab_helpers.Gcf.destroy_all()
+        except Exception as e:
+            self.logger.warning(f"Error closing matplotlib figures: {e}")
+        
+        # Force garbage collection every 10 files or when memory usage is high
+        if processed_count % 10 == 0:
+            gc.collect()
+            # Check memory usage
             try:
-                plt.close('all')  # Close all matplotlib figures
-                self.logger.debug("Closed all matplotlib figures to free memory")
-            except Exception as e:
-                self.logger.warning(f"Error closing matplotlib figures: {e}")
+                import psutil
+                process = psutil.Process()
+                memory_percent = process.memory_percent()
+                if memory_percent > 70:  # If using more than 70% of system memory
+                    self.logger.warning(f"High memory usage detected: {memory_percent:.1f}%")
+                    gc.collect(2)  # Full collection
+                    # Clear caches if memory is critical
+                    if memory_percent > 80 and hasattr(self, '_file_cache'):
+                        self.logger.warning("Critical memory usage - clearing file cache")
+                        self._file_cache.clear()
+            except:
+                pass
         
         # Clear file cache periodically for very large batches
         if hasattr(self, '_file_cache'):

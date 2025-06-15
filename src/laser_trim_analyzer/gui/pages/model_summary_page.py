@@ -14,30 +14,47 @@ import pandas as pd
 import numpy as np
 import threading
 import os
+import logging
+import traceback
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.dates import DateFormatter
-import seaborn as sns
+# import seaborn as sns  # Not used
 
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
 
-class ModelSummaryPage(BasePage):
+class ModelSummaryPage(ctk.CTkFrame):
     """Model summary and analysis page."""
 
     def __init__(self, parent, main_window):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add BasePage-like functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        
+        # Page-specific attributes
         self.selected_model = None
         self.model_data = None
         self.current_stats = {}
-        super().__init__(parent, main_window)
+        
+        # Thread safety
+        self._query_lock = threading.Lock()
+        
+        # Create the page
+        self._create_page()
 
     def _create_page(self):
         """Create model summary page content with consistent theme (matching batch processing)."""
@@ -344,7 +361,11 @@ class ModelSummaryPage(BasePage):
                     DBAnalysisResult.model != ''
                 ).order_by(DBAnalysisResult.model).all()
                 
-                models = [row[0] for row in results if row[0]]
+                # Fix tuple index out of range error by safely extracting model values
+                models = []
+                for row in results:
+                    if row and len(row) > 0 and row[0]:
+                        models.append(row[0])
 
             # Fix: Use configure() instead of ['values'] for CTk widgets
             self.model_combo.configure(values=models)
@@ -356,6 +377,7 @@ class ModelSummaryPage(BasePage):
 
         except Exception as e:
             self.logger.error(f"Failed to load models: {e}")
+            self.logger.error(f"Model loading traceback:\n{traceback.format_exc()}")
             messagebox.showerror("Error", f"Failed to load models:\n{str(e)}")
 
     def _on_model_selected(self, event=None):
@@ -383,42 +405,43 @@ class ModelSummaryPage(BasePage):
 
     def _load_model_data(self, model: str):
         """Load comprehensive data for the selected model."""
-        try:
-            if not self.db_manager:
-                raise ValueError("Database not connected")
+        with self._query_lock:
+            try:
+                if not self.db_manager:
+                    raise ValueError("Database not connected")
 
-            # Get all historical data for this model
-            historical_data = self.db_manager.get_historical_data(
-                model=model,
-                include_tracks=True,
-                limit=None  # Get all data
-            )
+                # Get all historical data for this model
+                historical_data = self.db_manager.get_historical_data(
+                    model=model,
+                    include_tracks=True,
+                    limit=None  # Get all data
+                )
 
-            if not historical_data:
-                self.after(0, lambda: self.model_info_label.configure(
-                    text=f"No data found for model: {model}"
-                ))
-                return
+                if not historical_data:
+                    self.after(0, lambda: self.model_info_label.configure(
+                        text=f"No data found for model: {model}"
+                    ))
+                    return
 
-            # Convert to pandas DataFrame for analysis
-            data_rows = []
-            for analysis in historical_data:
-                for track in analysis.tracks:
-                    # Use the dates from the database that were extracted from filename in the core processor
-                    # The core processor now properly extracts dates from filenames during initial processing
-                    trim_date = safe_datetime_convert(analysis.file_date)
-                    timestamp = safe_datetime_convert(analysis.timestamp)
-                    
-                    # Ensure we have valid datetime objects (fallback to current time if needed)
-                    if not trim_date:
-                        trim_date = datetime.now()
-                        self.logger.warning(f"Could not parse file_date for {analysis.filename}, using current time")
-                    
-                    if not timestamp:
-                        timestamp = trim_date  # Use trim_date as fallback
-                        self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
-                    
-                    row = {
+                # Convert to pandas DataFrame for analysis
+                data_rows = []
+                for analysis in historical_data:
+                    for track in analysis.tracks:
+                        # Use the dates from the database that were extracted from filename in the core processor
+                        # The core processor now properly extracts dates from filenames during initial processing
+                        trim_date = safe_datetime_convert(analysis.file_date)
+                        timestamp = safe_datetime_convert(analysis.timestamp)
+                        
+                        # Ensure we have valid datetime objects (fallback to current time if needed)
+                        if not trim_date:
+                            trim_date = datetime.now()
+                            self.logger.warning(f"Could not parse file_date for {analysis.filename}, using current time")
+                        
+                        if not timestamp:
+                            timestamp = trim_date  # Use trim_date as fallback
+                            self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
+                        
+                        row = {
                         'analysis_id': analysis.id,
                         'filename': analysis.filename,
                         'trim_date': trim_date,
@@ -447,33 +470,37 @@ class ModelSummaryPage(BasePage):
                         'optimal_offset': track.optimal_offset,
                         'max_deviation': track.max_deviation,
                         'processing_time': analysis.processing_time
-                    }
-                    data_rows.append(row)
+                        }
+                        data_rows.append(row)
 
-            self.model_data = pd.DataFrame(data_rows)
-            
-            # Log data summary with detailed date information for debugging
-            self.logger.info(f"Loaded {len(self.model_data)} data rows for model {model}")
-            if len(self.model_data) > 0:
-                self.logger.info(f"Date range: {self.model_data['trim_date'].min()} to {self.model_data['trim_date'].max()}")
-                self.logger.info(f"Columns: {list(self.model_data.columns)}")
+                self.model_data = pd.DataFrame(data_rows)
                 
-                # Add specific debugging for model 8340-1
-                if model == "8340-1":
-                    self.logger.info(f"=== DEBUG INFO FOR MODEL 8340-1 ===")
-                    sample_dates = self.model_data[['filename', 'trim_date', 'timestamp']].head(10)
-                    for idx, row in sample_dates.iterrows():
-                        self.logger.info(f"File: {row['filename']}, Trim Date: {row['trim_date']}, Timestamp: {row['timestamp']}")
-                    self.logger.info(f"=== END DEBUG INFO ===")
-            
-            # Update UI in main thread
-            self.after(0, self._update_model_display)
+                # Log data summary with detailed date information for debugging
+                self.logger.info(f"Loaded {len(self.model_data)} data rows for model {model}")
+                if len(self.model_data) > 0:
+                    self.logger.info(f"Date range: {self.model_data['trim_date'].min()} to {self.model_data['trim_date'].max()}")
+                    self.logger.info(f"Columns: {list(self.model_data.columns)}")
+                    
+                    # Add specific debugging for model 8340-1
+                    if model == "8340-1":
+                        self.logger.info(f"=== DEBUG INFO FOR MODEL 8340-1 ===")
+                        sample_dates = self.model_data[['filename', 'trim_date', 'timestamp']].head(10)
+                        for idx, row in sample_dates.iterrows():
+                            self.logger.info(f"File: {row['filename']}, Trim Date: {row['trim_date']}, Timestamp: {row['timestamp']}")
+                        self.logger.info(f"=== END DEBUG INFO ===")
+                
+                    # Update UI on main thread safely
+                    if self.winfo_exists():
+                        self.after(0, self._update_model_display)
 
-        except Exception as e:
-            self.logger.error(f"Failed to load model data: {e}")
-            self.after(0, lambda: messagebox.showerror(
-                "Error", f"Failed to load model data:\n{str(e)}"
-            ))
+            except Exception as e:
+                self.logger.error(f"Failed to load model data: {e}")
+                self.logger.error(f"Traceback:\n{traceback.format_exc()}")
+                # Show error safely
+                if self.winfo_exists():
+                    self.after(0, lambda: messagebox.showerror(
+                        "Error", f"Failed to load model data:\n{str(e)}"
+                    ))
 
     def _update_model_display(self):
         """Update all UI elements with model data."""
@@ -768,6 +795,16 @@ class ModelSummaryPage(BasePage):
                 return
 
             # Create comprehensive Excel export
+            try:
+                import openpyxl
+            except ImportError:
+                messagebox.showerror(
+                    "Missing Dependency",
+                    "The openpyxl library is required for Excel export.\n"
+                    "Please install it using: pip install openpyxl"
+                )
+                return
+                
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 # Raw data
                 self.model_data.to_excel(writer, sheet_name='Raw Data', index=False)
@@ -991,6 +1028,11 @@ class ModelSummaryPage(BasePage):
         }
         
         return stats
+    
+    @property
+    def db_manager(self):
+        """Get database manager from main window."""
+        return self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None
 
     def on_show(self):
         """Called when page is shown."""

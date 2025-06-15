@@ -7,6 +7,7 @@ Progress dialogs and widgets for batch processing.
 import customtkinter as ctk
 from typing import Optional
 import logging
+import threading
 
 
 class ProgressDialog:
@@ -80,6 +81,36 @@ class ProgressDialog:
                 self.dialog.update()
         except Exception as e:
             self.logger.debug(f"Error updating message: {e}")
+    
+    def update_progress(self, message: str, progress: float):
+        """Update the progress bar and message (thread-safe)."""
+        # Check if we're in the main thread
+        if threading.current_thread() is not threading.main_thread():
+            # Schedule update in main thread
+            try:
+                self.parent.after(0, lambda: self.update_progress(message, progress))
+                return
+            except Exception:
+                # Parent might not have after method, continue anyway
+                pass
+        
+        try:
+            if self.dialog and self.dialog.winfo_exists():
+                # Update message
+                if self.status_label:
+                    self.status_label.configure(text=message)
+                
+                # Update progress bar
+                if self.progress_bar:
+                    # Stop indeterminate mode if running
+                    self.progress_bar.stop()
+                    # Set determinate progress (0.0 to 1.0)
+                    self.progress_bar.set(progress)
+                
+                # Force update
+                self.dialog.update()
+        except Exception as e:
+            self.logger.debug(f"Error updating progress: {e}")
             
     def hide(self):
         """Hide and destroy the progress dialog."""

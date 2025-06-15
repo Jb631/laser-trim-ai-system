@@ -24,7 +24,10 @@ from typing import (
 from datetime import datetime
 import pandas as pd
 import matplotlib.dates as mdates
+import logging
 from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+
+logger = logging.getLogger(__name__)
 
 
 class ChartWidget(ctk.CTkFrame):
@@ -59,6 +62,9 @@ class ChartWidget(ctk.CTkFrame):
         self.title = title
         self.figsize = figsize
         self.data = {}
+        self._has_data = False
+        self._placeholder_message = "No data to display"
+        self._placeholder_instruction = "Complete an analysis or select data to view chart"
 
         # Apply matplotlib style safely
         available_styles = plt.style.available
@@ -80,6 +86,9 @@ class ChartWidget(ctk.CTkFrame):
         }
 
         self._setup_ui()
+        
+        # Show initial placeholder
+        self.show_placeholder()
         
     def _apply_theme_to_axes(self, ax):
         """Apply theme colors to matplotlib axes."""
@@ -144,12 +153,13 @@ class ChartWidget(ctk.CTkFrame):
         self._last_data = data.copy() if data is not None and len(data) > 0 else None
         
         if data is None or len(data) == 0:
-            self.clear_chart()
+            self.show_placeholder("No data available", "Load or analyze data to display chart")
             return
             
-        try:
-            self.clear_chart()
+        self._has_data = True
             
+        try:
+            # Don't call clear_chart here since each plot method clears the figure
             if self.chart_type == 'line':
                 self._plot_line_from_data(data)
             elif self.chart_type == 'bar':
@@ -165,23 +175,32 @@ class ChartWidget(ctk.CTkFrame):
                 self._plot_line_from_data(data)
                 
         except Exception as e:
-            import traceback
-            print(f"Error updating chart: {e}")
-            print(traceback.format_exc())
+            logger.error(f"Error updating chart: {e}", exc_info=True)
             self.clear_chart()
+            # Show error message on the chart
+            ax = self.figure.gca()
+            ax.text(0.5, 0.5, f'Error displaying chart:\n{str(e)}', 
+                    horizontalalignment='center',
+                    verticalalignment='center',
+                    transform=ax.transAxes,
+                    fontsize=12,
+                    color='red',
+                    wrap=True)
+            self.canvas.draw_idle()
             
     def _plot_line_from_data(self, data: pd.DataFrame):
         """Plot line chart from DataFrame."""
+        # Clear the figure first to prevent overlapping plots
+        self.figure.clear()
         ax = self.figure.add_subplot(111)
         
-        # Apply theme colors to axes
-        colors = ThemeHelper.get_theme_colors()
-        ax.set_facecolor(colors['bg']['secondary'])
-        ax.tick_params(colors=colors['fg']['secondary'])
+        # Use white background for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
         for spine in ax.spines.values():
-            spine.set_color(colors['border']['primary'])
-        ax.xaxis.label.set_color(colors['fg']['primary'])
-        ax.yaxis.label.set_color(colors['fg']['primary'])
+            spine.set_color('#cccccc')
+        ax.xaxis.label.set_color('black')
+        ax.yaxis.label.set_color('black')
         
         if 'trim_date' in data.columns and 'sigma_gradient' in data.columns:
             # Sort by date
@@ -217,14 +236,30 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', rotation=45)
                 
         if self.title:
-            ax.set_title(self.title, color=colors['fg']['primary'])
-        ax.grid(True, alpha=0.3, color=colors['border']['secondary'])
-        self.figure.tight_layout()
+            ax.set_title(self.title, color='black')
+        ax.grid(True, alpha=0.3, color='#cccccc')
+        
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
+        
         self.canvas.draw()
         
     def _plot_bar_from_data(self, data: pd.DataFrame):
         """Plot bar chart from DataFrame."""
+        # Clear the figure first to prevent overlapping plots
+        self.figure.clear()
         ax = self.figure.add_subplot(111)
+        
+        # Use white background for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
         
         if 'month_year' in data.columns and 'track_status' in data.columns:
             categories = [str(m) for m in data['month_year']]
@@ -256,14 +291,32 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', rotation=45)
                 
         if self.title:
-            ax.set_title(self.title)
-        ax.grid(True, alpha=0.3, axis='y')
-        self.figure.tight_layout()
+            ax.set_title(self.title, color='black')
+        ax.grid(True, alpha=0.3, axis='y', color='#cccccc')
+        
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
+        
         self.canvas.draw()
         
     def _plot_scatter_from_data(self, data: pd.DataFrame):
         """Plot scatter chart from DataFrame."""
+        # Clear the figure first to prevent overlapping plots
+        self.figure.clear()
         ax = self.figure.add_subplot(111)
+        
+        # Use white background for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
+        ax.xaxis.label.set_color('black')
+        ax.yaxis.label.set_color('black')
         
         if 'x' in data.columns and 'y' in data.columns:
             x_data = data['x']
@@ -282,14 +335,30 @@ class ChartWidget(ctk.CTkFrame):
                            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
                 
         if self.title:
-            ax.set_title(self.title, color=colors['fg']['primary'])
-        ax.grid(True, alpha=0.3, color=colors['border']['secondary'])
-        self.figure.tight_layout()
+            ax.set_title(self.title, color='black')
+        ax.grid(True, alpha=0.3, color='#cccccc')
+        
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
+        
         self.canvas.draw()
         
     def _plot_histogram_from_data(self, data: pd.DataFrame):
         """Plot histogram from DataFrame."""
+        # Clear the figure first to prevent overlapping plots
+        self.figure.clear()
         ax = self.figure.add_subplot(111)
+        
+        # Use white background for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
         
         if 'sigma_gradient' in data.columns:
             sigma_data = data['sigma_gradient'].dropna()
@@ -312,14 +381,30 @@ class ChartWidget(ctk.CTkFrame):
                 ax.legend()
                 
         if self.title:
-            ax.set_title(self.title)
-        ax.grid(True, alpha=0.3, axis='y')
-        self.figure.tight_layout()
+            ax.set_title(self.title, color='black')
+        ax.grid(True, alpha=0.3, axis='y', color='#cccccc')
+        
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
+        
         self.canvas.draw()
         
     def _plot_heatmap_from_data(self, data: pd.DataFrame):
         """Plot heatmap from DataFrame."""
+        # Clear the figure first to prevent overlapping plots
+        self.figure.clear()
         ax = self.figure.add_subplot(111)
+        
+        # Use white background for better visibility
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black', labelcolor='black')
+        for spine in ax.spines.values():
+            spine.set_color('#cccccc')
         
         # Check for required columns
         if 'x_values' in data.columns and 'y_values' in data.columns and 'values' in data.columns:
@@ -390,7 +475,15 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_title(self.title)
             
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-        self.figure.tight_layout()
+        
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.15)
+        
         self.canvas.draw()
 
     def clear(self):
@@ -426,8 +519,8 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3)
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return line
 
@@ -468,11 +561,16 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3, axis='y')
 
-        # Tight layout
-        self.figure.tight_layout()
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return bars
 
@@ -517,8 +615,8 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3)
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return scatter
 
@@ -561,8 +659,8 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3, axis='y')
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return n, bins, patches
 
@@ -593,8 +691,8 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3, axis='y')
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return bp
 
@@ -634,11 +732,16 @@ class ChartWidget(ctk.CTkFrame):
         if self.title:
             ax.set_title(self.title)
 
-        # Tight layout
-        self.figure.tight_layout()
+        # Use tight_layout with padding to prevent label cutoff
+        try:
+            self.figure.tight_layout(pad=1.5)
+        except Exception as e:
+            logger.debug(f"tight_layout warning: {e}")
+            # Fallback to subplots_adjust if tight_layout fails
+            self.figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.1)
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
         return im
 
@@ -679,8 +782,8 @@ class ChartWidget(ctk.CTkFrame):
         # Grid
         ax.grid(True, alpha=0.3)
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
     def add_threshold_lines(self, thresholds: Dict[str, float],
                             orientation: str = 'horizontal'):
@@ -703,12 +806,46 @@ class ChartWidget(ctk.CTkFrame):
         # Update legend
         ax.legend()
 
-        # Refresh canvas
-        self.canvas.draw()
+        # Refresh canvas with idle callback to prevent threading issues
+        self.canvas.draw_idle()
 
     def clear_chart(self):
         """Clear the current chart."""
+        self.show_placeholder(self._placeholder_message, self._placeholder_instruction)
+        
+    def show_placeholder(self, message: str = "No data to display", instruction: str = ""):
+        """Show a placeholder with custom message."""
+        self._has_data = False
         self.figure.clear()
+        # Reset figure background color
+        self.figure.patch.set_facecolor('white')
+        
+        # Add empty axes to show clean background
+        ax = self.figure.add_subplot(111)
+        ax.set_facecolor('white')
+        
+        # Create centered text with icon
+        text_parts = ['📊']  # Chart icon
+        text_parts.append('')
+        text_parts.append(message)
+        if instruction:
+            text_parts.append('')
+            text_parts.append(instruction)
+            
+        ax.text(0.5, 0.5, '\n'.join(text_parts), 
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=ax.transAxes,
+                fontsize=14,
+                color='gray',
+                alpha=0.8,
+                linespacing=2)
+        
+        # Remove axes spines and ticks for cleaner look
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
         self.canvas.draw()
     
     def refresh_theme(self):

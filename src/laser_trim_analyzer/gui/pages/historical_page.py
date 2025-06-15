@@ -14,10 +14,27 @@ import pandas as pd
 import numpy as np
 import logging
 import threading
-import seaborn as sns
-from scipy import stats
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
+
+# Get logger first
+logger = logging.getLogger(__name__)
+
+# Optional analytics libraries
+try:
+    from scipy import stats
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    logger.warning("scipy not available - some analytics features will be disabled")
+
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
+    logger.warning("sklearn not available - ML features will be disabled")
+
+# import seaborn as sns  # Not used, removed
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -25,26 +42,38 @@ from matplotlib.figure import Figure
 
 from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, AnalysisStatus
 from laser_trim_analyzer.database.manager import DatabaseManager
-from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage
+# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-from laser_trim_analyzer.gui.widgets import add_mousewheel_support
+# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
-# Get logger
-logger = logging.getLogger(__name__)
-
-class HistoricalPage(BasePage):
+class HistoricalPage(ctk.CTkFrame):
     """Advanced historical data analysis page with analytics features."""
 
     def __init__(self, parent, main_window):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Add BasePage-like functionality
+        self.is_visible = False
+        self.needs_refresh = True
+        self._stop_requested = False
+        
+        # Initialize data storage
         self.current_data = None  # This will store raw database results
         self.current_data_df = None  # This will store DataFrame version
         self.analytics_results = {}
         self.trend_analysis_data = {}
         self.correlation_matrix = None
         self._pending_filters = {}  # Store filters to apply after UI is created
-        super().__init__(parent, main_window)
+        
+        # Thread safety
+        self._analytics_lock = threading.Lock()
+        
+        # Create the page
+        self._create_page()
 
     def _create_page(self):
         """Create enhanced historical page content with advanced analytics."""
@@ -451,14 +480,59 @@ class HistoricalPage(BasePage):
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
-
-        # Results display
-        self.results_display = ctk.CTkTextbox(
-            self.results_frame,
-            height=200,
-            state="disabled"
+        
+        # Results summary
+        self.summary_frame = ctk.CTkFrame(self.results_frame)
+        self.summary_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        self.summary_label = ctk.CTkLabel(
+            self.summary_frame,
+            text="No results to display",
+            font=ctk.CTkFont(size=12)
         )
-        self.results_display.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.summary_label.pack(padx=10, pady=5)
+
+        # Results table using scrollable frame with grid layout
+        self.table_container = ctk.CTkFrame(self.results_frame)
+        self.table_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        
+        # Table header
+        self.table_header_frame = ctk.CTkFrame(self.table_container)
+        self.table_header_frame.pack(fill='x', padx=0, pady=(0, 1))
+        
+        # Define column widths
+        self.column_widths = {
+            'Date': 100,
+            'Model': 80,
+            'Serial': 120,
+            'Status': 80,
+            'Sigma': 100,
+            'Linearity': 100,
+            'Risk': 80
+        }
+        
+        # Create header labels
+        for i, (col, width) in enumerate(self.column_widths.items()):
+            header_label = ctk.CTkLabel(
+                self.table_header_frame,
+                text=col,
+                width=width,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                anchor='w'
+            )
+            header_label.grid(row=0, column=i, padx=5, pady=5, sticky='w')
+            self.table_header_frame.columnconfigure(i, weight=0, minsize=width)
+        
+        # Scrollable results area
+        self.results_scroll_frame = ctk.CTkScrollableFrame(
+            self.table_container,
+            height=300
+        )
+        self.results_scroll_frame.pack(fill='both', expand=True, padx=0, pady=0)
+        
+        # Configure grid columns for results
+        for i, width in enumerate(self.column_widths.values()):
+            self.results_scroll_frame.columnconfigure(i, weight=0, minsize=width)
 
     def _create_charts_section_ctk(self):
         """Create charts section (matching batch processing theme)."""
@@ -583,17 +657,31 @@ class HistoricalPage(BasePage):
             limit_str = self.limit_var.get()
             limit = None if limit_str == "All" else int(limit_str)
 
-            # Query database using the correct parameters
-            results = self.db_manager.get_historical_data(
-                model=model,
-                serial=serial,
-                start_date=start_date,
-                end_date=end_date,
-                status=status,
-                risk_category=risk,
-                limit=limit,
-                include_tracks=True
-            )
+            # Query database with available parameters
+            # Note: risk_category might not be supported by all database versions
+            query_params = {
+                'model': model,
+                'serial': serial,
+                'start_date': start_date,
+                'end_date': end_date,
+                'limit': limit
+            }
+            
+            # Add optional parameters if they're supported
+            if status:
+                query_params['status'] = status
+            
+            # Try with risk_category if available
+            try:
+                results = self.db_manager.get_historical_data(
+                    **query_params,
+                    risk_category=risk,
+                    include_tracks=True
+                )
+            except TypeError:
+                # Fallback without risk_category if not supported
+                logger.warning("risk_category parameter not supported, querying without it")
+                results = self.db_manager.get_historical_data(**query_params)
 
             # Update UI in main thread
             self.after(0, self._display_results, results)
@@ -604,55 +692,109 @@ class HistoricalPage(BasePage):
             self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
 
     def _display_results(self, results):
-        """Display query results in the CTk textbox."""
+        """Display query results in the table format."""
         try:
             # Clear existing results
-            self.results_display.configure(state="normal")
-            self.results_display.delete('1.0', 'end')
+            for widget in self.results_scroll_frame.winfo_children():
+                widget.destroy()
             
             if not results:
-                self.results_display.insert('1.0', "No data found matching the criteria")
-                self.results_display.configure(state="disabled")
+                self.summary_label.configure(text="No data found matching the criteria")
+                # Show empty state in table
+                empty_label = ctk.CTkLabel(
+                    self.results_scroll_frame,
+                    text="No results to display",
+                    font=ctk.CTkFont(size=14),
+                    text_color="gray"
+                )
+                empty_label.grid(row=0, column=0, columnspan=len(self.column_widths), pady=50)
                 return
                 
-            # Display summary
+            # Update summary
             total_count = len(results)
             pass_count = sum(1 for r in results if r.overall_status.value == "Pass")
             fail_count = total_count - pass_count
             pass_rate = (pass_count / total_count * 100) if total_count > 0 else 0
             
-            summary = f"Query Results Summary:\n"
-            summary += f"Total Records: {total_count}\n"
-            summary += f"Pass: {pass_count} ({pass_rate:.1f}%)\n"
-            summary += f"Fail: {fail_count} ({100-pass_rate:.1f}%)\n\n"
+            summary_text = f"Total: {total_count} | Pass: {pass_count} ({pass_rate:.1f}%) | Fail: {fail_count} ({100-pass_rate:.1f}%)"
+            self.summary_label.configure(text=summary_text)
             
-            # Display detailed results
-            summary += "Detailed Results:\n"
-            summary += "-" * 80 + "\n"
-            summary += f"{'Date':<12} {'Model':<8} {'Serial':<12} {'Status':<8} {'Sigma':<10} {'Pass':<6}\n"
-            summary += "-" * 80 + "\n"
-            
-            for result in results:
+            # Display results in table
+            for row_idx, result in enumerate(results):
+                # Extract data for each column
                 date_str = result.timestamp.strftime('%Y-%m-%d') if hasattr(result, 'timestamp') else 'Unknown'
-                model = getattr(result, 'model', 'Unknown')[:8]
-                serial = getattr(result, 'serial', 'Unknown')[:12]
-                status = result.overall_status.value[:8]
+                model = str(getattr(result, 'model', 'Unknown'))[:8]
+                serial = str(getattr(result, 'serial', 'Unknown'))[:12]
+                status = result.overall_status.value if hasattr(result, 'overall_status') else 'Unknown'
                 
-                # Get sigma and pass info from first track
-                sigma = "N/A"
-                sigma_pass = "N/A"
+                # Get metrics from first track
+                sigma = "--"
+                linearity = "--"
+                risk = "--"
+                
                 if result.tracks and len(result.tracks) > 0:
                     track = result.tracks[0]
                     if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
                         sigma = f"{track.sigma_gradient:.4f}"
-                    if hasattr(track, 'sigma_pass'):
-                        sigma_pass = "✓" if track.sigma_pass else "✗"
+                    if hasattr(track, 'linearity_error') and track.linearity_error is not None:
+                        linearity = f"{track.linearity_error:.3f}%"
+                    if hasattr(track, 'risk_category'):
+                        risk = getattr(track.risk_category, 'value', str(track.risk_category))
                 
-                line = f"{date_str:<12} {model:<8} {serial:<12} {status:<8} {sigma:<10} {sigma_pass:<6}\n"
-                summary += line
+                # Create row frame for alternating colors
+                row_frame = ctk.CTkFrame(
+                    self.results_scroll_frame,
+                    fg_color=("gray90", "gray20") if row_idx % 2 == 0 else ("gray95", "gray25"),
+                    corner_radius=0
+                )
+                row_frame.grid(row=row_idx, column=0, columnspan=len(self.column_widths), sticky='ew', pady=1)
+                
+                # Configure grid for row frame
+                for i, width in enumerate(self.column_widths.values()):
+                    row_frame.columnconfigure(i, weight=0, minsize=width)
+                
+                # Create cells
+                values = [date_str, model, serial, status, sigma, linearity, risk]
+                colors = ['Status', 'Risk']  # Columns that need color coding
+                
+                for col_idx, (col_name, value) in enumerate(zip(self.column_widths.keys(), values)):
+                    # Determine text color
+                    text_color = None
+                    if col_name == 'Status':
+                        text_color = "green" if value == "Pass" else "red" if value == "Fail" else "orange"
+                    elif col_name == 'Risk':
+                        text_color = "green" if value == "Low" else "orange" if value == "Medium" else "red" if value == "High" else "gray"
+                    
+                    label = ctk.CTkLabel(
+                        row_frame,
+                        text=value,
+                        width=list(self.column_widths.values())[col_idx],
+                        anchor='w',
+                        font=ctk.CTkFont(size=11),
+                        text_color=text_color,
+                        fg_color="transparent"
+                    )
+                    label.grid(row=0, column=col_idx, padx=5, pady=4, sticky='w')
+                
+                # Add hover effect
+                def on_enter(event, frame=row_frame, idx=row_idx):
+                    frame.configure(fg_color=("gray85", "gray15"))
+                    
+                def on_leave(event, frame=row_frame, idx=row_idx):
+                    frame.configure(
+                        fg_color=("gray90", "gray20") if idx % 2 == 0 else ("gray95", "gray25")
+                    )
+                    
+                row_frame.bind("<Enter>", on_enter)
+                row_frame.bind("<Leave>", on_leave)
+                
+                # Make row clickable
+                row_frame.bind("<Button-1>", lambda e, r=result: self._on_result_click(r))
             
-            self.results_display.insert('1.0', summary)
-            self.results_display.configure(state="disabled")
+            # Clear old data to free memory
+            if self.current_data_df is not None:
+                del self.current_data_df
+                self.current_data_df = None
             
             # Store current data for potential export
             self.current_data = results
@@ -667,10 +809,7 @@ class HistoricalPage(BasePage):
             
         except Exception as e:
             logger.error(f"Error displaying results: {e}")
-            self.results_display.configure(state="normal")
-            self.results_display.delete('1.0', 'end')
-            self.results_display.insert('1.0', f"Error displaying results: {str(e)}")
-            self.results_display.configure(state="disabled")
+            self.summary_label.configure(text=f"Error displaying results: {str(e)}")
 
     def _update_charts(self, results):
         """Update all charts with query results."""
@@ -860,15 +999,49 @@ class HistoricalPage(BasePage):
 
         if not filename:
             return
-
-        try:
-            # Use DataFrame version if available, otherwise convert
-            export_df = self.current_data_df if self.current_data_df is not None else pd.DataFrame(self.current_data)
+        
+        # Show progress dialog for large exports
+        export_df = self.current_data_df if self.current_data_df is not None else pd.DataFrame(self.current_data)
+        if len(export_df) > 1000:  # Show progress for large datasets
+            from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import ProgressDialog
+            progress_dialog = ProgressDialog(
+                self,
+                title="Exporting Data",
+                message=f"Preparing to export {len(export_df)} records..."
+            )
+            progress_dialog.show()
             
+            # Run export in thread
+            def export_thread():
+                try:
+                    self._perform_export(filename, export_df, progress_dialog)
+                except Exception as e:
+                    self.after(0, lambda: progress_dialog.hide() if progress_dialog else None)
+                    self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}"))
+                    
+            threading.Thread(target=export_thread, daemon=True).start()
+        else:
+            # Small dataset, export directly
+            self._perform_export(filename, export_df, None)
+
+    def _perform_export(self, filename: str, export_df: pd.DataFrame, progress_dialog=None):
+        """Perform the actual export with optional progress updates."""
+        try:
             if filename.endswith('.xlsx'):
                 # Export to Excel with formatting
+                if progress_dialog:
+                    self.after(0, lambda: progress_dialog.update_progress(
+                        "Writing Excel file...", 0.3
+                    ))
+                    
                 with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                    # Write main data
                     export_df.to_excel(writer, sheet_name='Historical Data', index=False)
+                    
+                    if progress_dialog:
+                        self.after(0, lambda: progress_dialog.update_progress(
+                            "Creating summary sheet...", 0.7
+                        ))
 
                     # Add summary sheet
                     summary = pd.DataFrame({
@@ -884,12 +1057,24 @@ class HistoricalPage(BasePage):
 
             else:
                 # Export to CSV
+                if progress_dialog:
+                    self.after(0, lambda: progress_dialog.update_progress(
+                        "Writing CSV file...", 0.5
+                    ))
                 export_df.to_csv(filename, index=False)
+            
+            if progress_dialog:
+                self.after(0, lambda: progress_dialog.update_progress(
+                    "Export complete!", 1.0
+                ))
+                self.after(500, lambda: progress_dialog.hide() if progress_dialog else None)
 
-            messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}")
+            self.after(0, lambda: messagebox.showinfo("Export Complete", f"Data exported to:\n{filename}"))
 
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
+            if progress_dialog:
+                self.after(0, lambda: progress_dialog.hide())
+            raise
 
     def _sort_column(self, col):
         """Sort treeview by column."""
@@ -1002,7 +1187,11 @@ Metrics:
             
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}")
-            self.logger.error(f"Export failed: {e}")
+    
+    def _on_result_click(self, result):
+        """Handle click on a result row."""
+        # Could be extended to show detailed view, navigate to file, etc.
+        logger.debug(f"Result clicked: {getattr(result, 'model', 'Unknown')} - {getattr(result, 'serial', 'Unknown')}")
 
     def _update_analytics_status(self, status: str, color: str):
         """Update analytics status indicator."""
@@ -1229,8 +1418,32 @@ Metrics:
             x_numeric = (clean_df[time_col] - clean_df[time_col].min()).dt.total_seconds()
             y = clean_df[parameter]
             
-            # Linear regression
-            slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, y)
+            # Linear regression if scipy is available
+            if HAS_SCIPY:
+                slope, intercept, r_value, p_value, std_err = stats.linregress(x_numeric, y)
+            else:
+                # Simple linear regression without scipy
+                n = len(x_numeric)
+                if n > 1:
+                    x_mean = x_numeric.mean()
+                    y_mean = y.mean()
+                    
+                    numerator = ((x_numeric - x_mean) * (y - y_mean)).sum()
+                    denominator = ((x_numeric - x_mean) ** 2).sum()
+                    
+                    slope = numerator / denominator if denominator != 0 else 0
+                    intercept = y_mean - slope * x_mean
+                    
+                    # Calculate R-squared
+                    y_pred = slope * x_numeric + intercept
+                    ss_res = ((y - y_pred) ** 2).sum()
+                    ss_tot = ((y - y_mean) ** 2).sum()
+                    r_value = np.sqrt(1 - (ss_res / ss_tot)) if ss_tot != 0 else 0
+                    
+                    p_value = 0.05  # Placeholder
+                    std_err = 0.1  # Placeholder
+                else:
+                    slope, intercept, r_value, p_value, std_err = 0, 0, 0, 1, 0
             
             analysis['slope'] = slope
             analysis['r_squared'] = r_value ** 2
@@ -1492,6 +1705,9 @@ Metrics:
 
     def _build_predictive_models(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Build simple predictive models from historical data."""
+        if not HAS_SKLEARN:
+            return {'error': 'Machine learning libraries not available. Install scikit-learn for predictive features.'}
+        
         try:
             from sklearn.ensemble import RandomForestRegressor
             from sklearn.model_selection import train_test_split
@@ -1749,5 +1965,10 @@ Metrics:
             # Run query automatically with the applied filter
             self._run_query()
         
-        # Call parent on_show
-        super().on_show()
+        # Mark as visible
+        self.is_visible = True
+    
+    @property
+    def db_manager(self):
+        """Get database manager from main window."""
+        return self.main_window.db_manager if hasattr(self.main_window, 'db_manager') else None

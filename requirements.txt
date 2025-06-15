@@ -35,6 +35,10 @@ httpx>=0.25.0
 requests>=2.31.0
 tenacity>=8.2.0
 
+# AI/LLM Support (optional)
+anthropic>=0.8.0  # For Claude AI support
+openai>=1.0.0  # For GPT support
+
 # Utilities
 pyyaml>=6.0
 rich>=13.0.0

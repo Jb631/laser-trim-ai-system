@@ -7,7 +7,7 @@ This widget provides an integrated plot viewer with zoom, pan, and export capabi
 import customtkinter as ctk
 from pathlib import Path
 from typing import Optional, Tuple
-from PIL import Image, ImageTk
+from PIL import Image
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class PlotViewerWidget(ctk.CTkFrame):
         self.current_image_path: Optional[Path] = None
         self.original_image: Optional[Image.Image] = None
         self.displayed_image: Optional[Image.Image] = None
-        self.photo_image: Optional[ImageTk.PhotoImage] = None
+        self.ctk_image: Optional[ctk.CTkImage] = None
         self.zoom_level: float = 1.0
         self.min_zoom: float = 0.1
         self.max_zoom: float = 5.0
@@ -107,7 +107,7 @@ class PlotViewerWidget(ctk.CTkFrame):
         # Image label
         self.image_label = ctk.CTkLabel(
             self.image_container,
-            text="No plot loaded",
+            text="📊\n\nNo plot loaded\n\nComplete an analysis to generate plots",
             font=ctk.CTkFont(size=14),
             text_color="gray"
         )
@@ -187,11 +187,15 @@ class PlotViewerWidget(ctk.CTkFrame):
                 Image.Resampling.LANCZOS
             )
             
-            # Convert to PhotoImage
-            self.photo_image = ImageTk.PhotoImage(self.displayed_image)
+            # Convert to CTkImage for proper scaling support
+            self.ctk_image = ctk.CTkImage(
+                light_image=self.displayed_image,
+                dark_image=self.displayed_image,
+                size=(new_width, new_height)
+            )
             
-            # Update label
-            self.image_label.configure(image=self.photo_image, text="")
+            # Update label with CTkImage
+            self.image_label.configure(image=self.ctk_image, text="")
             
             # Update zoom label
             zoom_percent = int(self.zoom_level * 100)
@@ -280,7 +284,7 @@ class PlotViewerWidget(ctk.CTkFrame):
         """Show an error message in the viewer."""
         self.image_label.configure(
             image="",
-            text=f"Error: {message}",
+            text=f"❌\n\nError loading plot\n\n{message}",
             text_color="red"
         )
         self.status_label.configure(text="Error")
@@ -290,12 +294,12 @@ class PlotViewerWidget(ctk.CTkFrame):
         self.current_image_path = None
         self.original_image = None
         self.displayed_image = None
-        self.photo_image = None
+        self.ctk_image = None
         self.zoom_level = 1.0
         
         self.image_label.configure(
             image="",
-            text="No plot loaded",
+            text="📊\n\nNo plot loaded\n\nComplete an analysis to generate plots",
             text_color="gray"
         )
         self.zoom_label.configure(text="100%")
