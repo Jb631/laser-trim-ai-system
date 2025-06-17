@@ -177,55 +177,198 @@ def _plot_error_vs_position(ax: plt.Axes, track_data: TrackData):
 
     positions = np.array(track_data.position_data)
     errors = np.array(track_data.error_data)
+    
+    # Apply optimal offset to trimmed data for display
+    offset = track_data.linearity_analysis.optimal_offset
+    errors_shifted = errors + offset
 
-    # Plot untrimmed data if available
+    # Plot untrimmed data if available (no offset applied)
     if track_data.untrimmed_positions and track_data.untrimmed_errors:
         untrimmed_pos = np.array(track_data.untrimmed_positions)
         untrimmed_err = np.array(track_data.untrimmed_errors)
         ax.plot(untrimmed_pos, untrimmed_err, 'b--', linewidth=1.5, label='Untrimmed Data',
                 color=QA_COLORS['untrimmed'], alpha=0.6)
     
-    # Plot trimmed/final data
-    ax.plot(positions, errors, 'g-', linewidth=2, label='Trimmed Data',
+    # Plot trimmed/final data with offset applied
+    ax.plot(positions, errors_shifted, 'g-', linewidth=2, label='Trimmed Data (Offset Applied)',
             color=QA_COLORS['trimmed'])
 
-    # Add spec limits if available
-    spec = track_data.linearity_analysis.linearity_spec
-    if spec > 0:
-        ax.axhline(y=spec, color=QA_COLORS['spec_limit'], linestyle='--',
-                   linewidth=2, label=f'Spec Limit (±{spec:.3f})')
-        ax.axhline(y=-spec, color=QA_COLORS['spec_limit'], linestyle='--',
-                   linewidth=2)
-
-        # Fill spec limit area
-        ax.fill_between(positions, -spec, spec, alpha=0.1,
+    # Add spec limits if available - use actual varying limits from data
+    if hasattr(track_data, 'upper_limits') and hasattr(track_data, 'lower_limits'):
+        upper_limits = track_data.upper_limits
+        lower_limits = track_data.lower_limits
+        
+        if upper_limits and lower_limits and len(upper_limits) == len(positions):
+            # Debug log to verify alignment
+            logger.debug(f"Plotting limits - positions: {len(positions)}, upper: {len(upper_limits)}, lower: {len(lower_limits)}")
+            logger.debug(f"First few position/limit pairs: {[(positions[i], upper_limits[i], lower_limits[i]) for i in range(min(3, len(positions)))]}")
+            
+            # Plot varying spec limits
+            ax.plot(positions, upper_limits, 'r--', linewidth=2, 
+                   label='Upper Spec Limit', color=QA_COLORS['spec_limit'])
+            ax.plot(positions, lower_limits, 'r--', linewidth=2,
+                   label='Lower Spec Limit', color=QA_COLORS['spec_limit'])
+            
+            # Fill spec limit area
+            ax.fill_between(positions, lower_limits, upper_limits, alpha=0.1,
                         color=QA_COLORS['spec_limit'])
 
     # Add zero line
     ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+    
+    # Auto-scale y-axis to show all data with maximum zoom
+    if len(errors) > 0:
+        # Get all data points that need to be visible (use shifted errors for trimmed data)
+        all_data = list(errors_shifted)
+        if hasattr(track_data, 'untrimmed_errors') and track_data.untrimmed_errors:
+            all_data.extend(track_data.untrimmed_errors)
+        
+        # Get the actual min and max to ensure all points are visible
+        data_min = np.nanmin(all_data)
+        data_max = np.nanmax(all_data)
+        
+        # Also consider spec limits if available
+        if hasattr(track_data, 'upper_limits') and hasattr(track_data, 'lower_limits'):
+            if track_data.upper_limits and track_data.lower_limits:
+                # Get valid spec limits
+                valid_upper = [u for u in track_data.upper_limits if u is not None and not np.isnan(u)]
+                valid_lower = [l for l in track_data.lower_limits if l is not None and not np.isnan(l)]
+                
+                if valid_upper and valid_lower:
+                    spec_max = max(valid_upper)
+                    spec_min = min(valid_lower)
+                    
+                    # Include spec limits in the range
+                    data_min = min(data_min, spec_min)
+                    data_max = max(data_max, spec_max)
+        
+        # Calculate the data range
+        data_range = data_max - data_min
+        
+        # Add minimal padding (5%) to ensure points aren't cut off at edges
+        # Use a minimum padding to handle cases where range is very small
+        if data_range > 0:
+            padding = data_range * 0.05  # 5% padding
+        else:
+            # If all data points are the same value
+            padding = abs(data_max) * 0.1 if data_max != 0 else 0.1
+        
+        y_min = data_min - padding
+        y_max = data_max + padding
+        
+        ax.set_ylim(y_min, y_max)
+        
+        # Log scaling info for debugging
+        logger.info(f"Plot scaling: data range [{data_min:.6f}, {data_max:.6f}], "
+                    f"plot limits [{y_min:.6f}, {y_max:.6f}]")
 
-    # Highlight fail points if any
-    if track_data.linearity_analysis.linearity_fail_points > 0:
-        # Find points outside spec
-        fail_mask = np.abs(errors) > spec
-        if np.any(fail_mask):
-            ax.scatter(positions[fail_mask], errors[fail_mask],
-                       color=QA_COLORS['fail'], s=100, marker='x',
-                       linewidth=3, label='Fail Points', zorder=5)
+    # Always check and highlight fail points (even if count is 0, we want to verify)
+    if hasattr(track_data, 'upper_limits') and hasattr(track_data, 'lower_limits'):
+        # Find points outside their specific limits
+        upper_limits = track_data.upper_limits
+        lower_limits = track_data.lower_limits
+        
+        if upper_limits and lower_limits and len(upper_limits) == len(positions):
+            # Find points outside their specific limits (using already shifted errors)
+            fail_mask = np.zeros(len(errors_shifted), dtype=bool)
+            fail_count = 0
+            for i in range(len(errors_shifted)):
+                if (i < len(upper_limits) and i < len(lower_limits) and 
+                    upper_limits[i] is not None and lower_limits[i] is not None and
+                    not np.isnan(upper_limits[i]) and not np.isnan(lower_limits[i]) and
+                    not np.isnan(errors_shifted[i])):
+                    # Only check points where limits are defined
+                    if errors_shifted[i] > upper_limits[i] or errors_shifted[i] < lower_limits[i]:
+                        fail_mask[i] = True
+                        fail_count += 1
+            
+            if np.any(fail_mask):
+                ax.scatter(positions[fail_mask], errors_shifted[fail_mask],
+                           color=QA_COLORS['fail'], s=100, marker='x',
+                           linewidth=3, label=f'Fail Points ({fail_count})', zorder=5)
+            
+            # Add text annotation if there are failures
+            if fail_count > 0:
+                ax.text(0.02, 0.98, f'FAIL: {fail_count} points out of spec (0 allowed)', 
+                       transform=ax.transAxes, fontsize=12, color=QA_COLORS['fail'],
+                       fontweight='bold', verticalalignment='top',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=QA_COLORS['fail']))
 
     # Labels and formatting
     ax.set_xlabel('Position', fontsize=12)
-    ax.set_ylabel('Error', fontsize=12)
+    ax.set_ylabel('Error (Volts)', fontsize=12)
     ax.set_title('Error vs Position Analysis', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best')
+    
+    # Add more tick marks for better readability
+    # X-axis: Use ~10-15 ticks
+    if len(positions) > 0:
+        x_min, x_max = ax.get_xlim()
+        x_range = x_max - x_min
+        # Calculate nice tick spacing
+        if x_range > 0:
+            # Aim for about 10-15 ticks
+            raw_spacing = x_range / 12
+            # Round to a nice number (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, etc.)
+            magnitude = 10 ** np.floor(np.log10(raw_spacing))
+            normalized = raw_spacing / magnitude
+            if normalized <= 1:
+                nice_spacing = 1 * magnitude
+            elif normalized <= 2:
+                nice_spacing = 2 * magnitude
+            elif normalized <= 5:
+                nice_spacing = 5 * magnitude
+            else:
+                nice_spacing = 10 * magnitude
+            
+            x_ticks = np.arange(np.floor(x_min / nice_spacing) * nice_spacing,
+                               np.ceil(x_max / nice_spacing) * nice_spacing + nice_spacing,
+                               nice_spacing)
+            ax.set_xticks(x_ticks)
+    
+    # Y-axis: Use ~10-15 ticks with appropriate precision
+    y_min, y_max = ax.get_ylim()
+    y_range = y_max - y_min
+    if y_range > 0:
+        # Similar calculation for y-axis
+        raw_spacing = y_range / 12
+        magnitude = 10 ** np.floor(np.log10(raw_spacing))
+        normalized = raw_spacing / magnitude
+        if normalized <= 1:
+            nice_spacing = 1 * magnitude
+        elif normalized <= 2:
+            nice_spacing = 2 * magnitude
+        elif normalized <= 5:
+            nice_spacing = 5 * magnitude
+        else:
+            nice_spacing = 10 * magnitude
+        
+        y_ticks = np.arange(np.floor(y_min / nice_spacing) * nice_spacing,
+                           np.ceil(y_max / nice_spacing) * nice_spacing + nice_spacing,
+                           nice_spacing)
+        ax.set_yticks(y_ticks)
+        
+        # Format y-axis labels based on scale
+        if abs(y_max - y_min) < 0.01:  # Very small range, use more decimals
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.6f}'))
+        elif abs(y_max - y_min) < 0.1:
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.4f}'))
+        elif abs(y_max - y_min) < 1:
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.3f}'))
+        else:
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.2f}'))
+    
+    # Add minor ticks for even more detail
+    ax.minorticks_on()
+    ax.grid(True, which='major', alpha=0.3)
+    ax.grid(True, which='minor', alpha=0.1, linestyle=':')
+    
+    ax.legend(loc='best', fontsize=9)
 
-    # Add optimal offset line if available
+    # Add optimal offset info to title if offset is non-zero
     if track_data.linearity_analysis.optimal_offset != 0:
         offset = track_data.linearity_analysis.optimal_offset
-        ax.axhline(y=offset, color=QA_COLORS['info'], linestyle=':',
-                   linewidth=1.5, alpha=0.7,
-                   label=f'Optimal Offset: {offset:.4f}')
+        current_title = ax.get_title()
+        ax.set_title(f'{current_title} (Offset: {offset:.6f} V)', fontsize=14, fontweight='bold')
 
 
 def _plot_error_histogram(ax: plt.Axes, track_data: TrackData):
@@ -266,7 +409,7 @@ def _plot_metrics_summary(ax: plt.Axes, track_data: TrackData):
         f"Sigma Pass: {'✓' if track_data.sigma_analysis.sigma_pass else '✗'}",
         f"",
         f"Linearity Pass: {'✓' if track_data.linearity_analysis.linearity_pass else '✗'}",
-        f"Fail Points: {track_data.linearity_analysis.linearity_fail_points}",
+        f"Fail Points: {track_data.linearity_analysis.linearity_fail_points} (0 allowed)",
         f"",
         f"Risk Category: {track_data.failure_prediction.risk_category.value if track_data.failure_prediction else 'N/A'}",
         f"Failure Prob: {track_data.failure_prediction.failure_probability:.1%}" if track_data.failure_prediction else ""

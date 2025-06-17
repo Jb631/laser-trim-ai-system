@@ -324,17 +324,30 @@ class BaseAnalyzer(ABC):
         Returns:
             Linearity specification value
         """
-        # Remove None values and calculate
-        valid_upper = [u for u in upper_limits if u is not None]
-        valid_lower = [l for l in lower_limits if l is not None]
+        self.logger.debug(f"calculate_linearity_spec called with {len(upper_limits)} upper limits, {len(lower_limits)} lower limits")
+        
+        # Remove None values and NaN values
+        valid_upper = [u for u in upper_limits if u is not None and not np.isnan(u)]
+        valid_lower = [l for l in lower_limits if l is not None and not np.isnan(l)]
+        
+        self.logger.debug(f"After filtering: {len(valid_upper)} valid upper, {len(valid_lower)} valid lower")
 
         if valid_upper and valid_lower:
             # Average half-width of the tolerance band
             avg_upper = np.mean(valid_upper)
             avg_lower = np.mean(valid_lower)
-            return (avg_upper - avg_lower) / 2
+            spec = (avg_upper - avg_lower) / 2
+            
+            self.logger.debug(f"avg_upper: {avg_upper}, avg_lower: {avg_lower}, spec: {spec}")
+            
+            # Ensure we don't return NaN
+            if not np.isnan(spec) and spec > 0:
+                return float(spec)
+            else:
+                self.logger.warning(f"Invalid spec calculated: {spec}")
 
-        # Fallback: if no valid limits, return a default
+        # Fallback: if no valid limits or calculation resulted in NaN, return a default
+        self.logger.warning("Using default linearity spec 0.01")
         return 0.01  # 1% default
 
     def log_analysis_summary(self, analysis_type: str,

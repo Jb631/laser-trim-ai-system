@@ -283,7 +283,7 @@ class PlotViewerWidget(ctk.CTkFrame):
     def _show_error(self, message: str):
         """Show an error message in the viewer."""
         self.image_label.configure(
-            image="",
+            image=None,
             text=f"❌\n\nError loading plot\n\n{message}",
             text_color="red"
         )
@@ -298,7 +298,7 @@ class PlotViewerWidget(ctk.CTkFrame):
         self.zoom_level = 1.0
         
         self.image_label.configure(
-            image="",
+            image=None,
             text="📊\n\nNo plot loaded\n\nComplete an analysis to generate plots",
             text_color="gray"
         )

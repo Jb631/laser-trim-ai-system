@@ -79,37 +79,62 @@ class LinearityAnalyzer(BaseAnalyzer):
             self.logger.debug(f"Calculated linearity_spec: {linearity_spec}")
         else:
             self.logger.debug(f"Using provided linearity_spec: {linearity_spec}")
+        
+        # Ensure linearity_spec is valid
+        if linearity_spec is None or np.isnan(linearity_spec) or linearity_spec <= 0:
+            self.logger.warning(f"Invalid linearity_spec {linearity_spec}, using default 0.01")
+            linearity_spec = 0.01
 
         # Calculate optimal offset
         optimal_offset = self._calculate_optimal_offset(
             errors, upper_limits, lower_limits
         )
+        
+        # Ensure optimal_offset is valid
+        if optimal_offset is None or np.isnan(optimal_offset):
+            self.logger.warning(f"Invalid optimal_offset {optimal_offset}, using 0.0")
+            optimal_offset = 0.0
+            
         self.logger.debug(f"Calculated optimal offset: {optimal_offset}")
 
         # Apply offset
         shifted_errors = [e + optimal_offset for e in errors]
 
         # Calculate raw and shifted errors
-        final_error_raw = max(abs(e) for e in errors)
-        final_error_shifted = max(abs(e) for e in shifted_errors)
+        final_error_raw = max(abs(e) for e in errors) if errors else 0.0
+        final_error_shifted = max(abs(e) for e in shifted_errors) if shifted_errors else 0.0
+        
+        # Ensure values are not NaN
+        if np.isnan(final_error_raw):
+            final_error_raw = 999.999
+        if np.isnan(final_error_shifted):
+            final_error_shifted = 999.999
 
         # Count fail points and check linearity
         fail_points = self._count_fail_points(
             shifted_errors, upper_limits, lower_limits
         )
         
-        # For laser trimming, allow some tolerance in fail points
-        # A small number of outliers is acceptable if overall spec is met
+        # For laser trimming, determine pass/fail based on actual data limits
         total_points = len(errors)
         fail_percentage = (fail_points / total_points * 100) if total_points > 0 else 0
         
-        # Linearity passes if:
-        # 1. Overall error meets specification, AND
-        # 2. Less than 10% of points fail (or absolute fail count < 5)
-        spec_met = (linearity_spec is None or final_error_shifted <= linearity_spec * 1.1)  # Allow 10% spec margin
-        fail_tolerance_met = (fail_points <= max(2, total_points * 0.05))  # Max 5% fail points, minimum 2
+        # Linearity passes ONLY if ALL points are within their specific limits after offset
+        # NO points are allowed to fail
+        max_allowed_failures = 0
         
-        linearity_pass = spec_met and fail_tolerance_met
+        linearity_pass = fail_points == 0
+        
+        # Log detailed pass/fail information
+        self.logger.info(f"Linearity check: {fail_points} out of {total_points} points failed "
+                        f"({fail_percentage:.1f}%), max allowed: {max_allowed_failures} (ZERO tolerance)")
+        
+        # Also check if we have valid limits data
+        if not upper_limits or not lower_limits:
+            self.logger.warning("No spec limits found in data, linearity check may be unreliable")
+            # If no limits, fall back to spec-based check if available
+            if linearity_spec is not None:
+                linearity_pass = final_error_shifted <= linearity_spec
 
         self.logger.debug(f"Linearity analysis results: raw_error={final_error_raw:.4f}, shifted_error={final_error_shifted:.4f}, fail_points={fail_points}, pass={linearity_pass}")
 
@@ -155,20 +180,33 @@ class LinearityAnalyzer(BaseAnalyzer):
         Returns:
             Optimal offset value
         """
+        
         # Method 1: Median difference from band center
         if upper_limits and lower_limits:
+            self.logger.debug(f"Calculating optimal offset with {len(errors)} errors, "
+                            f"{len(upper_limits)} upper limits, {len(lower_limits)} lower limits")
+            
             valid_indices = []
             differences = []
 
             for i in range(len(errors)):
                 if (i < len(upper_limits) and i < len(lower_limits) and
-                        upper_limits[i] is not None and lower_limits[i] is not None):
+                        upper_limits[i] is not None and lower_limits[i] is not None and
+                        not np.isnan(upper_limits[i]) and not np.isnan(lower_limits[i]) and
+                        not np.isnan(errors[i])):
                     valid_indices.append(i)
                     midpoint = (upper_limits[i] + lower_limits[i]) / 2
                     differences.append(midpoint - errors[i])
 
             if differences:
                 median_offset = np.median(differences)
+                self.logger.info(f"Found {len(differences)} valid points for offset calculation out of {len(errors)} total points")
+                self.logger.info(f"Median offset calculated: {median_offset:.6f}")
+                self.logger.debug(f"Differences range: [{min(differences):.6f}, {max(differences):.6f}]")
+                
+                # Also calculate simple centering offset for comparison
+                simple_center_offset = -np.mean(errors)
+                self.logger.info(f"Simple centering offset (mean of errors): {simple_center_offset:.6f}")
 
                 # Method 2: Optimization to minimize violations
                 def violation_count(offset):
@@ -185,27 +223,61 @@ class LinearityAnalyzer(BaseAnalyzer):
                 try:
                     # Search around median offset
                     search_range = max(abs(d) for d in differences) if differences else 1.0
+                    
+                    # Ensure search_range is finite and reasonable
+                    if not np.isfinite(search_range) or search_range <= 0:
+                        search_range = 1.0
+                    
+                    # Ensure median_offset is finite
+                    if not np.isfinite(median_offset):
+                        self.logger.warning("Median offset is not finite, using 0.0")
+                        return 0.0
+                    
+                    lower_bound = median_offset - search_range
+                    upper_bound = median_offset + search_range
+                    
+                    # Ensure bounds are finite
+                    if not (np.isfinite(lower_bound) and np.isfinite(upper_bound)):
+                        self.logger.warning(f"Invalid bounds for optimization: [{lower_bound}, {upper_bound}]")
+                        return float(median_offset) if np.isfinite(median_offset) else 0.0
+                    
                     result = optimize.minimize_scalar(
                         violation_count,
-                        bounds=(median_offset - search_range,
-                                median_offset + search_range),
+                        bounds=(lower_bound, upper_bound),
                         method='bounded'
                     )
 
                     optimal_offset = result.x
+                    
+                    # Log optimization result
+                    violations_at_optimal = violation_count(optimal_offset)
+                    violations_at_median = violation_count(median_offset)
+                    self.logger.info(f"Optimization result: offset={optimal_offset:.6f}, violations={violations_at_optimal}")
+                    self.logger.info(f"Median comparison: offset={median_offset:.6f}, violations={violations_at_median}")
 
                     # Verify this is better than median
-                    if violation_count(optimal_offset) >= violation_count(median_offset):
+                    if violations_at_optimal >= violations_at_median:
                         optimal_offset = median_offset
+                        self.logger.info("Using median offset as it has fewer or equal violations")
 
                 except Exception as e:
                     self.logger.warning(f"Optimization failed, using median: {e}")
                     optimal_offset = median_offset
 
+                self.logger.info(f"Final optimal offset selected: {optimal_offset:.6f}")
                 return float(optimal_offset)
+            else:
+                self.logger.warning("No valid points found with both errors and limits for offset calculation")
+                # Fallback to centering errors around zero
+                return float(-np.mean(errors)) if errors else 0.0
 
         # Fallback: Center errors around zero
-        return float(-np.mean(errors))
+        self.logger.debug("No limits available, centering errors around zero")
+        if errors and len(errors) > 0:
+            mean_error = np.mean(errors)
+            if np.isfinite(mean_error):
+                return float(-mean_error)
+        return 0.0
 
     def _count_fail_points(self, errors: List[float],
                            upper_limits: List[float],
@@ -226,7 +298,9 @@ class LinearityAnalyzer(BaseAnalyzer):
         for i in range(len(errors)):
             # Check if limits exist for this point
             if (i < len(upper_limits) and i < len(lower_limits) and
-                    upper_limits[i] is not None and lower_limits[i] is not None):
+                    upper_limits[i] is not None and lower_limits[i] is not None and
+                    not np.isnan(upper_limits[i]) and not np.isnan(lower_limits[i]) and
+                    not np.isnan(errors[i])):
 
                 # Check if error is within limits
                 if errors[i] > upper_limits[i] or errors[i] < lower_limits[i]:

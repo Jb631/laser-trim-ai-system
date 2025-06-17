@@ -336,6 +336,10 @@ class TrackData(BaseAnalysisModel):
     position_data: Optional[List[float]] = Field(None, description="Position measurements")
     error_data: Optional[List[float]] = Field(None, description="Error measurements")
     
+    # Spec limits
+    upper_limits: Optional[List[float]] = Field(None, description="Upper specification limits")
+    lower_limits: Optional[List[float]] = Field(None, description="Lower specification limits")
+    
     # Store untrimmed data separately for plotting comparison
     untrimmed_positions: Optional[List[float]] = Field(None, description="Untrimmed position measurements")
     untrimmed_errors: Optional[List[float]] = Field(None, description="Untrimmed error measurements")

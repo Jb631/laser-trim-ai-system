@@ -25,9 +25,11 @@ from laser_trim_analyzer.core.config import get_config
 from laser_trim_analyzer.core.exceptions import ProcessingError, ValidationError
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, ValidationStatus
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
+from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 from laser_trim_analyzer.utils.report_generator import ReportGenerator
+from laser_trim_analyzer.utils.batch_logging import setup_batch_logging, BatchProcessingLogger
 
 # Set up logging before using it
 logger = logging.getLogger(__name__)
@@ -86,6 +88,9 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         # Initialize responsive layout attributes
         self.current_size_class = 'large'  # Default size class
+        
+        # Initialize batch logger (will be created when batch starts)
+        self.batch_logger: Optional[BatchProcessingLogger] = None
         
         # Get configuration with validation
         try:
@@ -1162,7 +1167,7 @@ class BatchProcessingPage(ctk.CTkFrame):
             
             # Throttled progress callback to prevent UI flooding
             def progress_callback(message: str, progress: float):
-                nonlocal last_progress_update
+                nonlocal last_progress_update, processed_count
                 
                 # Check for cancellation
                 if self._is_processing_cancelled():
@@ -1170,15 +1175,34 @@ class BatchProcessingPage(ctk.CTkFrame):
                     
                 current_time = time.time()
                 
-                # Only update progress every 250ms to prevent UI flooding
-                if current_time - last_progress_update >= 0.25:
+                # Adaptive throttling based on batch size
+                # For large batches, update less frequently
+                if len(file_paths) > 1000:
+                    update_interval = 2.0  # Update every 2 seconds for very large batches
+                elif len(file_paths) > 500:
+                    update_interval = 1.0  # Update every second for large batches
+                elif len(file_paths) > 100:
+                    update_interval = 0.5  # Update every 0.5s for medium batches
+                else:
+                    update_interval = 0.25  # Default for small batches
+                
+                # Only update progress at intervals or every N files
+                update_every_n_files = max(10, len(file_paths) // 100)  # Update at most 100 times
+                should_update = (current_time - last_progress_update >= update_interval) or \
+                               (processed_count % update_every_n_files == 0)
+                
+                if should_update:
                     last_progress_update = current_time
                     if self.progress_dialog:
                         self.after(0, lambda m=message, p=progress: self.progress_dialog.update_progress(m, p))
-                        
-                    # Force GUI update and yield CPU time
-                    self.after(0, self.update)
-                    time.sleep(0.001)  # Tiny sleep to yield CPU
+                    
+                    # Don't force GUI updates for every file - let the main loop handle it
+                    if processed_count % 50 == 0:  # Only force update every 50 files
+                        self.after(0, self.update)
+                    
+                    # Yield CPU time less frequently for large batches
+                    if processed_count % 100 == 0:
+                        time.sleep(0.001)
                     
                 return True  # Continue processing
             
@@ -1196,8 +1220,21 @@ class BatchProcessingPage(ctk.CTkFrame):
                 if not progress_callback(message, progress):
                     return False
                 
-                # Memory management every 50 files or 30 seconds
-                if (processed_count % 50 == 0 and processed_count > 0) or (current_time - last_gc_time > 30):
+                # Adaptive memory management based on batch size
+                # Clean up more frequently for large batches
+                if len(file_paths) > 1000:
+                    cleanup_interval = 25  # Every 25 files for very large batches
+                    gc_time_interval = 20  # Every 20 seconds
+                elif len(file_paths) > 500:
+                    cleanup_interval = 35  # Every 35 files for large batches
+                    gc_time_interval = 25  # Every 25 seconds
+                else:
+                    cleanup_interval = 50  # Default
+                    gc_time_interval = 30  # Default
+                
+                # Memory management at adaptive intervals
+                if (processed_count % cleanup_interval == 0 and processed_count > 0) or \
+                   (current_time - last_gc_time > gc_time_interval):
                     logger.debug(f"Performing memory cleanup at file {processed_count}")
                     
                     # Force garbage collection
@@ -1208,10 +1245,33 @@ class BatchProcessingPage(ctk.CTkFrame):
                     import matplotlib.pyplot as plt
                     plt.close('all')  # Close all matplotlib figures
                     
-                    # Yield more CPU time during cleanup
-                    time.sleep(0.01)
+                    # Clear processor cache if it's getting too large
+                    if hasattr(self.processor, '_file_cache') and len(self.processor._file_cache) > 50:
+                        # Keep only the most recent 25 entries
+                        cache_keys = list(self.processor._file_cache.keys())
+                        for key in cache_keys[:-25]:
+                            del self.processor._file_cache[key]
+                    
+                    # Only yield CPU time during cleanup for very large batches
+                    if len(file_paths) > 500:
+                        time.sleep(0.005)  # Shorter sleep
                     
                 return True
+            
+            # Initialize batch logger
+            batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir = output_dir / "batch_logs" if output_dir else Path.home() / ".laser_trim_analyzer" / "batch_logs"
+            self.batch_logger = setup_batch_logging(batch_id, log_dir, enable_performance=True)
+            
+            # Log batch start
+            batch_config = {
+                'generate_plots': self.generate_plots_var.get(),
+                'save_to_db': self.save_to_db_var.get(),
+                'output_directory': str(output_dir) if output_dir else 'None',
+                'file_count': len(file_paths),
+                'concurrent_workers': 4
+            }
+            self.batch_logger.log_batch_start(len(file_paths), batch_config)
             
             # Run batch processing with optimizations
             try:
@@ -1267,23 +1327,71 @@ class BatchProcessingPage(ctk.CTkFrame):
                         ))
                 
                 logger.info(f"Processing {file_count} files with {max_workers} workers (optimized)")
+                if self.batch_logger:
+                    self.batch_logger.main_logger.info(f"Processing {file_count} files with {max_workers} workers (optimized)")
+                
+                # Get disable plots threshold from config
+                disable_plots_threshold = getattr(self.analyzer_config.processing, 'disable_plots_threshold', 200)
                 
                 # Disable plots for very large batches to save memory
-                if file_count > 200 and self.generate_plots_var.get():
-                    self.after(0, lambda: messagebox.askyesno(
-                        "Large Batch Detected",
-                        f"Processing {file_count} files with plots enabled may cause performance issues.\n\n"
-                        "Disable plots for better performance?"
-                    ))
-                    # Note: In a real implementation, you'd wait for the user response
+                if file_count > disable_plots_threshold and self.generate_plots_var.get():
+                    # Create a thread-safe variable to store response
+                    user_response = {'value': None}
+                    
+                    def ask_user():
+                        response = messagebox.askyesno(
+                            "Large Batch Detected",
+                            f"Processing {file_count} files with plots enabled may cause performance issues.\n\n"
+                            f"Plots are automatically disabled for batches over {disable_plots_threshold} files.\n\n"
+                            "Do you want to disable plots for better performance?"
+                        )
+                        user_response['value'] = response
+                    
+                    # Ask user on main thread
+                    self.after(0, ask_user)
+                    
+                    # Wait for response (with timeout)
+                    timeout = 10  # seconds
+                    start_time = time.time()
+                    while user_response['value'] is None and time.time() - start_time < timeout:
+                        time.sleep(0.1)
+                    
+                    # If user agreed or timeout, disable plots
+                    if user_response['value'] is None or user_response['value']:
+                        self.generate_plots_var.set(False)
+                        logger.info(f"Disabled plot generation for large batch ({file_count} files)")
                 
-                # Process with memory-efficient batching
-                results = self._process_with_memory_management(
-                    file_paths=file_paths,
-                    output_dir=output_dir,
-                    progress_callback=enhanced_progress_callback,
-                    max_workers=max_workers
-                )
+                # Check if we should use turbo mode for very large batches
+                turbo_threshold = getattr(self.analyzer_config.processing, 'turbo_mode_threshold', 1000)
+                
+                if file_count >= turbo_threshold:
+                    logger.info(f"Using TURBO MODE for {file_count} files (threshold: {turbo_threshold})")
+                    
+                    # Notify user about turbo mode
+                    self.after(0, lambda: messagebox.showinfo(
+                        "Turbo Mode Activated",
+                        f"Processing {file_count} files in TURBO MODE!\n\n"
+                        "• Maximum performance optimizations enabled\n"
+                        "• Plots automatically disabled\n"
+                        "• Minimal validation mode\n"
+                        "• True parallel processing\n\n"
+                        "This will significantly reduce processing time."
+                    ))
+                    
+                    # Use LargeScaleProcessor with turbo mode
+                    results = self._process_with_turbo_mode(
+                        file_paths=file_paths,
+                        output_dir=output_dir,
+                        progress_callback=enhanced_progress_callback
+                    )
+                else:
+                    # Standard processing with memory management
+                    results = self._process_with_memory_management(
+                        file_paths=file_paths,
+                        output_dir=output_dir,
+                        progress_callback=enhanced_progress_callback,
+                        max_workers=max_workers
+                    )
                 
             except Exception as process_error:
                 # Provide detailed error messages for common issues
@@ -1342,6 +1450,15 @@ class BatchProcessingPage(ctk.CTkFrame):
         finally:
             with self._state_lock:
                 self.is_processing = False
+            
+            # Finalize batch logging if available
+            if self.batch_logger:
+                try:
+                    summary = self.batch_logger.finalize_batch()
+                    logger.info(f"Batch processing summary saved to: {self.batch_logger.log_dir}")
+                except Exception as e:
+                    logger.error(f"Failed to finalize batch logger: {e}")
+            
             # Final cleanup
             import gc
             gc.collect()
@@ -1367,14 +1484,30 @@ class BatchProcessingPage(ctk.CTkFrame):
             # Use adaptive chunk size based on resources
             chunk_size = self.resource_manager.get_adaptive_batch_size(total_files, 0)
         else:
-            # Fallback to simple adaptive sizing
-            chunk_size = min(50, max(10, total_files // 10))
+            # Fallback to intelligent adaptive sizing based on batch size
+            if total_files > 2000:
+                chunk_size = 100  # Larger chunks for very large batches
+            elif total_files > 1000:
+                chunk_size = 75   # Medium-large chunks
+            elif total_files > 500:
+                chunk_size = 50   # Standard chunks for large batches
+            elif total_files > 100:
+                chunk_size = 25   # Smaller chunks for medium batches
+            else:
+                chunk_size = 10   # Small chunks for small batches
+        
+        # Ensure chunk_size is never 0 to prevent infinite loop
+        chunk_size = max(1, chunk_size)
+        
+        # Log chunk strategy
+        logger.info(f"Processing {total_files} files in chunks of {chunk_size}")
         
         for chunk_start in range(0, total_files, chunk_size):
             # Check for cancellation at start of each chunk
             if self._is_processing_cancelled():
                 logger.info(f"Processing cancelled after {processed_files}/{total_files} files")
-                break
+                # Important: Return accumulated results even on cancellation
+                return results
                 
             chunk_end = min(chunk_start + chunk_size, total_files)
             chunk_files = file_paths[chunk_start:chunk_end]
@@ -1382,7 +1515,8 @@ class BatchProcessingPage(ctk.CTkFrame):
             logger.debug(f"Processing chunk {chunk_start}-{chunk_end} ({len(chunk_files)} files)")
             
             # Process chunk with ThreadPoolExecutor
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            try:
                 # Submit all files in chunk
                 future_to_file = {}
                 
@@ -1395,38 +1529,90 @@ class BatchProcessingPage(ctk.CTkFrame):
                     future_to_file[future] = file_path
                 
                 # Collect results as they complete
-                for future in concurrent.futures.as_completed(future_to_file, timeout=300):  # 5 min timeout per file
-                    if self._is_processing_cancelled():
-                        logger.info("Cancellation requested, stopping file processing")
-                        # Cancel remaining futures
-                        for remaining_future in future_to_file:
-                            if not remaining_future.done():
-                                remaining_future.cancel()
-                        break
+                try:
+                    for future in concurrent.futures.as_completed(future_to_file, timeout=300):  # 5 min timeout per file
+                        if self._is_processing_cancelled():
+                            logger.info("Cancellation requested, stopping file processing")
+                            # Cancel remaining futures
+                            for remaining_future in future_to_file:
+                                if not remaining_future.done():
+                                    remaining_future.cancel()
+                            break
                         
                     file_path = future_to_file[future]
+                    
+                    # Check if this future was cancelled
+                    if future.cancelled():
+                        logger.debug(f"Skipping cancelled future for {file_path}")
+                        continue
+                    
                     processed_files += 1
+                    
+                    # Log file start if batch logger available
+                    file_start_time = time.time() if self.batch_logger else None
                     
                     try:
                         result = future.result()
                         if result is not None:
                             results[str(file_path)] = result
+                            # Log successful completion
+                            if self.batch_logger and file_start_time:
+                                self.batch_logger.log_file_complete(file_path, file_start_time, result)
+                            
+                            # Update UI with partial results adaptively
+                            # Update less frequently for large batches
+                            if total_files > 1000:
+                                update_interval = 50  # Update every 50 files for very large batches
+                            elif total_files > 500:
+                                update_interval = 25  # Update every 25 files for large batches
+                            else:
+                                update_interval = 10  # Default for smaller batches
+                            
+                            if len(results) % update_interval == 0:
+                                # Update results widget on main thread
+                                partial_results = results.copy()
+                                self.after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
                         else:
                             failed_files.append((str(file_path), "Processing returned None"))
+                            # Log failure
+                            if self.batch_logger and file_start_time:
+                                self.batch_logger.log_file_complete(
+                                    file_path, file_start_time, 
+                                    error=Exception("Processing returned None")
+                                )
                             
                     except Exception as e:
                         logger.error(f"File processing failed for {file_path}: {e}")
                         failed_files.append((str(file_path), str(e)))
+                        # Log error to batch logger
+                        if self.batch_logger:
+                            self.batch_logger.log_file_complete(file_path, file_start_time or time.time(), error=e)
                         # Don't show individual errors during batch - they'll be summarized at the end
                     
                     # Update progress
                     progress = (processed_files / total_files) * 100
                     message = f"Processing {file_path.name} ({processed_files}/{total_files})"
                     
+                    # Log batch progress periodically
+                    if self.batch_logger and processed_files % 10 == 0:
+                        self.batch_logger.log_batch_progress()
+                    
                     # Call progress callback and check if we should continue
                     if not progress_callback(message, progress):
                         logger.info("Progress callback signaled to stop processing")
                         break
+                        
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"Timeout processing files in chunk {chunk_start}-{chunk_end}")
+                    # Continue with next chunk
+                except Exception as e:
+                    logger.error(f"Error collecting results: {e}")
+                    # Continue processing if possible
+            finally:
+                # Ensure executor is properly shut down
+                executor.shutdown(wait=False)  # Don't wait if cancelled
+                if self._is_processing_cancelled():
+                    logger.info("Executor shut down due to cancellation")
             
             # Memory cleanup after each chunk
             if self.resource_manager:
@@ -1441,20 +1627,49 @@ class BatchProcessingPage(ctk.CTkFrame):
                             (processed_files / total_files) * 100
                         )
                     
-                    # Wait for resources
-                    if not self.resource_manager.wait_for_resources(timeout=30):
+                    # Wait for resources with cancellation check
+                    # Use a shorter timeout and check for cancellation
+                    wait_start = time.time()
+                    max_wait = 5.0  # Maximum 5 seconds wait
+                    
+                    while time.time() - wait_start < max_wait:
+                        # Check if cancelled
+                        if self._is_processing_cancelled():
+                            logger.info("Cancellation detected during resource wait")
+                            break
+                            
+                        # Check resources
+                        status = self.resource_manager.get_current_status()
+                        if not status.memory_critical and status.available_memory_mb > self.resource_manager.MIN_FREE_MEMORY_MB:
+                            logger.info("Resources available, resuming processing")
+                            break
+                            
+                        # Force cleanup
+                        self.resource_manager.force_cleanup()
+                        
+                        # Short sleep to avoid blocking
+                        time.sleep(0.1)
+                    
+                    if time.time() - wait_start >= max_wait:
                         logger.warning("Resource recovery timeout, continuing anyway")
                 
                 # Adaptive chunk size for next iteration
                 if chunk_end < total_files:
-                    chunk_size = self.resource_manager.get_adaptive_batch_size(
+                    next_chunk_size = self.resource_manager.get_adaptive_batch_size(
                         total_files, chunk_end
                     )
-                    logger.debug(f"Next chunk size: {chunk_size}")
+                    # Ensure chunk size is never 0
+                    next_chunk_size = max(1, next_chunk_size)
+                    logger.debug(f"Next chunk size: {next_chunk_size}")
+                    # Note: We don't update chunk_size here as it's used in the range() iterator
             
             # Force cleanup
             import gc
             gc.collect()
+            
+            # Log memory cleanup if batch logger available
+            if self.batch_logger:
+                self.batch_logger.log_memory_cleanup(force_gc=True)
             
             # Small delay to prevent CPU overload
             time.sleep(0.01)
@@ -1477,6 +1692,65 @@ class BatchProcessingPage(ctk.CTkFrame):
                 ))
             
         return results
+    
+    def _process_with_turbo_mode(
+        self,
+        file_paths: List[Path],
+        output_dir: Optional[Path],
+        progress_callback: Callable[[str, float], None]
+    ) -> Dict[str, AnalysisResult]:
+        """Process files using turbo mode with LargeScaleProcessor."""
+        logger.info(f"Initializing TURBO MODE processing for {len(file_paths)} files")
+        
+        # Create large scale processor
+        large_scale_processor = LargeScaleProcessor(
+            config=self.analyzer_config,
+            db_manager=self._db_manager if self.save_to_db_var.get() else None,
+            logger=logger
+        )
+        
+        # Convert async progress callback to sync
+        def turbo_progress_callback(message: str, progress: float, stats: Dict):
+            """Progress callback for turbo mode."""
+            # Check for cancellation
+            if self._is_processing_cancelled():
+                large_scale_processor.stop_processing()
+                return
+            
+            # Update stats
+            self.stats = stats
+            
+            # Call original callback
+            progress_callback(message, progress)
+        
+        try:
+            # Process using asyncio run (since we're in a thread)
+            import asyncio
+            
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # Run the async processing
+                results = loop.run_until_complete(
+                    large_scale_processor.process_large_directory(
+                        directory=file_paths[0].parent,  # Use parent directory
+                        output_dir=output_dir,
+                        progress_callback=turbo_progress_callback,
+                        file_filter=lambda p: p in file_paths  # Only process selected files
+                    )
+                )
+                
+                logger.info(f"TURBO MODE completed: {len(results)} files processed")
+                return results
+                
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logger.error(f"Turbo mode processing failed: {e}")
+            raise ProcessingError(f"Turbo mode failed: {e}")
     
     def _process_single_file_safe(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
         """Safely process a single file with error handling."""
@@ -1890,6 +2164,9 @@ class BatchProcessingPage(ctk.CTkFrame):
             # Update status
             self._update_batch_status("Stopping Processing...", "orange")
             
+            # Force UI update to ensure buttons are disabled
+            self.update_idletasks()
+            
             # The processing thread will handle the actual stopping
             
     def _is_processing_cancelled(self) -> bool:
@@ -1999,12 +2276,28 @@ class BatchProcessingPage(ctk.CTkFrame):
             # Get the include raw data option
             include_raw_data = self.include_raw_data_var.get()
             
-            # Use the comprehensive report generator
-            self.report_generator.generate_comprehensive_excel_report(
-                results=results_list,
-                output_path=file_path,
-                include_raw_data=include_raw_data
-            )
+            # Use the enhanced Excel exporter for comprehensive data export
+            try:
+                from laser_trim_analyzer.utils.enhanced_excel_export import EnhancedExcelExporter
+                enhanced_exporter = EnhancedExcelExporter()
+                
+                # Use batch export method
+                enhanced_exporter.export_batch_comprehensive(
+                    results=results_list,
+                    output_path=file_path,
+                    include_individual_details=include_raw_data,
+                    max_individual_sheets=10 if include_raw_data else 0
+                )
+                
+                logger.info("Used enhanced Excel exporter for comprehensive data export")
+            except ImportError:
+                # Fallback to standard report generator
+                logger.warning("Enhanced Excel exporter not available, using standard export")
+                self.report_generator.generate_comprehensive_excel_report(
+                    results=results_list,
+                    output_path=file_path,
+                    include_raw_data=include_raw_data
+                )
             
             logger.info(f"Batch results exported using comprehensive report generator to: {file_path} (raw data: {include_raw_data})")
             

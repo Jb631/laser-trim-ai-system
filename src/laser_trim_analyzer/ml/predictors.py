@@ -357,15 +357,40 @@ class MLPredictor:
         Returns:
             Dictionary with predictions for all tracks
         """
+        # Handle case where analysis_result might be a dict instead of object
+        if isinstance(analysis_result, dict):
+            # Convert dict to object-like access
+            metadata = analysis_result.get('metadata', {})
+            tracks = analysis_result.get('tracks', {})
+        else:
+            # Normal object access
+            metadata = getattr(analysis_result, 'metadata', None)
+            tracks = getattr(analysis_result, 'tracks', {})
+        
+        # Ensure we have valid metadata
+        if not metadata:
+            self.logger.warning("No metadata available for ML prediction")
+            return {}
+        
+        # Get attributes from metadata safely
+        if isinstance(metadata, dict):
+            model = metadata.get('model', 'Unknown')
+            serial = metadata.get('serial', 'Unknown')
+            file_date = metadata.get('file_date', 'Unknown')
+        else:
+            model = getattr(metadata, 'model', 'Unknown')
+            serial = getattr(metadata, 'serial', 'Unknown') 
+            file_date = getattr(metadata, 'file_date', 'Unknown')
+        
         if HAS_SECURE_LOGGING and hasattr(self.logger, 'start_performance_tracking'):
             self.logger.start_performance_tracking('ml_prediction')
             self.logger.debug(
                 "Starting ML prediction",
                 context={
-                    'model': analysis_result.metadata.model,
-                    'serial': analysis_result.metadata.serial,
-                    'track_count': len(analysis_result.tracks),
-                    'file_date': str(analysis_result.metadata.file_date)
+                    'model': model,
+                    'serial': serial,
+                    'track_count': len(tracks),
+                    'file_date': str(file_date)
                 }
             )
         
@@ -376,7 +401,7 @@ class MLPredictor:
                 
                 # Validate model and serial
                 model_result = validator.validate_input(
-                    analysis_result.metadata.model,
+                    model,
                     'model_number'
                 )
                 if not model_result.is_safe:
@@ -390,7 +415,7 @@ class MLPredictor:
                     return {}
                     
                 serial_result = validator.validate_input(
-                    analysis_result.metadata.serial,
+                    serial,
                     'serial_number'
                 )
                 if not serial_result.is_safe:
@@ -418,22 +443,30 @@ class MLPredictor:
         predictions = {}
 
         # Process each track
-        for track_id, track_data in analysis_result.tracks.items():
+        for track_id, track_data in tracks.items():
             try:
+                # Handle track_data as either dict or object
+                if isinstance(track_data, dict):
+                    sigma_gradient = track_data.get('sigma_analysis', {}).get('sigma_gradient', 0)
+                    linearity_pass = track_data.get('linearity_analysis', {}).get('linearity_pass', False)
+                else:
+                    sigma_gradient = getattr(track_data.sigma_analysis, 'sigma_gradient', 0) if hasattr(track_data, 'sigma_analysis') else 0
+                    linearity_pass = getattr(track_data.linearity_analysis, 'linearity_pass', False) if hasattr(track_data, 'linearity_analysis') else False
+                
                 if HAS_SECURE_LOGGING:
                     self.logger.trace(
                         f"Predicting for track {track_id}",
                         context={
                             'track_id': track_id,
-                            'sigma_gradient': track_data.sigma_analysis.sigma_gradient,
-                            'linearity_pass': track_data.linearity_analysis.linearity_pass
+                            'sigma_gradient': sigma_gradient,
+                            'linearity_pass': linearity_pass
                         }
                     )
                 
                 track_predictions = await self._predict_for_track(
                     track_data,
-                    analysis_result.metadata.model,
-                    analysis_result.metadata.serial,
+                    model,
+                    serial,
                     track_id
                 )
                 predictions[track_id] = track_predictions
@@ -442,7 +475,7 @@ class MLPredictor:
                 if HAS_SECURE_LOGGING:
                     self.logger.error(
                         f"Prediction failed for track {track_id}: {e}",
-                        context={'track_id': track_id, 'model': analysis_result.metadata.model}
+                        context={'track_id': track_id, 'model': model}
                     )
                 else:
                     self.logger.error(f"Prediction failed for track {track_id}: {e}")

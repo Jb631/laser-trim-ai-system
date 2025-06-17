@@ -16,6 +16,26 @@ processing:
   cache_ttl: 3600
   file_extensions: [".xlsx", ".xls"]
   skip_patterns: ["~$*", ".*", "_backup_*", "*_test_*", "*_sample_*"]
+  
+  # Large-scale processing optimizations
+  max_batch_size: 1000
+  memory_limit_mb: 2048  # 2GB default
+  max_concurrent_files: 50
+  
+  # Performance settings
+  high_performance_mode: false
+  disable_plots_threshold: 200  # Disable plots for batches larger than this
+  enable_streaming_processing: false
+  
+  # Memory management
+  gc_interval: 50  # Garbage collect every N files
+  clear_cache_interval: 100  # Clear cache every N files
+  max_cache_entries: 50  # Maximum number of cached results
+  
+  # Database optimizations
+  enable_bulk_insert: true
+  database_batch_size: 100  # Commit every N records
+  batch_commit_interval: 50  # Commit every N files
 
 analysis:
   sigma_scaling_factor: 24.0

@@ -91,6 +91,15 @@ class SigmaAnalyzer(BaseAnalyzer):
             upper_limits, lower_limits, errors
         )
 
+        # Validate linearity_spec before calculating threshold
+        if linearity_spec is None or np.isnan(linearity_spec) or linearity_spec <= 0:
+            self.logger.warning(f"Invalid linearity_spec {linearity_spec}, using default 0.01")
+            linearity_spec = 0.01
+        
+        # Log the inputs for threshold calculation
+        self.logger.debug(f"Threshold calculation inputs - model: {model}, linearity_spec: {linearity_spec}, "
+                         f"travel_length: {travel_length}, unit_length: {unit_length}")
+        
         # Calculate threshold
         sigma_threshold = self._calculate_threshold(
             model, linearity_spec, travel_length, unit_length
@@ -193,23 +202,30 @@ class SigmaAnalyzer(BaseAnalyzer):
         Returns:
             Linearity specification value
         """
-        # Filter out None values
-        valid_upper = [u for u in upper_limits if u is not None]
-        valid_lower = [l for l in lower_limits if l is not None]
-
+        # Debug logging to understand the data
+        valid_upper = [u for u in upper_limits if u is not None and not np.isnan(u)]
+        valid_lower = [l for l in lower_limits if l is not None and not np.isnan(l)]
+        
+        self.logger.debug(f"Sigma analyzer - Valid upper limits: {len(valid_upper)}, Valid lower limits: {len(valid_lower)}")
+        
         if valid_upper and valid_lower:
-            # Calculate average half-width of tolerance band
-            avg_upper = np.mean(valid_upper)
-            avg_lower = np.mean(valid_lower)
-            linearity_spec = (avg_upper - avg_lower) / 2
-        else:
-            # Fallback: use maximum absolute error
-            linearity_spec = max(abs(e) for e in errors) if errors else 0.01
-            self.logger.warning(
-                f"No valid limits found, using max error for linearity spec: {linearity_spec:.4f}"
-            )
-
-        return float(linearity_spec)
+            # Log the actual values to debug
+            self.logger.debug(f"First few upper limits: {valid_upper[:5]}")
+            self.logger.debug(f"First few lower limits: {valid_lower[:5]}")
+            self.logger.debug(f"First few errors: {errors[:5] if errors else []}")
+            
+            # Check the scale of the data
+            max_upper = max(valid_upper)
+            min_lower = min(valid_lower)
+            error_range = max(abs(e) for e in errors) if errors else 0
+            
+            self.logger.debug(f"Upper limit max: {max_upper:.6f}, Lower limit min: {min_lower:.6f}")
+            self.logger.debug(f"Error range: {error_range:.6f}")
+        
+        # Use the base class method which has NaN handling
+        spec = self.calculate_linearity_spec(upper_limits, lower_limits)
+        self.logger.debug(f"Calculated linearity spec: {spec}")
+        return spec
 
     def _calculate_threshold(self, model: str, linearity_spec: float,
                              travel_length: float, unit_length: Optional[float]) -> float:
@@ -247,10 +263,21 @@ class SigmaAnalyzer(BaseAnalyzer):
 
             # Use unit length if available, otherwise travel length
             effective_length = unit_length if unit_length and unit_length > 0 else travel_length
+            
+            self.logger.debug(f"Effective length for threshold calculation: {effective_length}, "
+                            f"scaling_factor: {scaling_factor}")
 
             if effective_length and effective_length > 0:
                 # More stringent calculation
-                threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)  # Reduced by 50%
+                # Ensure we don't divide a very small spec by a large length
+                if linearity_spec < 0.001 and effective_length > 1:
+                    self.logger.warning(f"Very small linearity spec ({linearity_spec:.6f}) with large length ({effective_length:.2f})")
+                    # Use a more reasonable calculation for this edge case
+                    threshold = linearity_spec * scaling_factor * 0.1
+                    self.logger.info(f"Using alternative calculation for edge case: {linearity_spec} * {scaling_factor} * 0.1 = {threshold}")
+                else:
+                    threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)  # Reduced by 50%
+                    self.logger.debug(f"Calculated threshold using formula: ({linearity_spec} / {effective_length}) * ({scaling_factor} * 0.5) = {threshold}")
             else:
                 # Fallback calculation - also more stringent
                 threshold = scaling_factor * 0.01  # Reduced from 0.02
@@ -274,6 +301,11 @@ class SigmaAnalyzer(BaseAnalyzer):
             )
             threshold = max_threshold
 
+        # Final validation to ensure threshold is valid
+        if not np.isfinite(threshold) or threshold <= 0:
+            self.logger.warning(f"Invalid threshold calculated: {threshold}, using default 0.1")
+            threshold = 0.1
+            
         return float(threshold)
 
     def _get_scaling_factor(self, model: str) -> float:
