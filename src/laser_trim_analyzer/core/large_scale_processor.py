@@ -110,6 +110,13 @@ class LargeScaleProcessor:
             )
         else:
             self.logger = logger or logging.getLogger(__name__)
+            # Log initialization without context parameter for standard logger
+            self.logger.info(
+                f"LargeScaleProcessor initialized - "
+                f"chunk_size: {config.processing.chunk_size}, "
+                f"max_concurrent: {config.processing.max_concurrent_files}, "
+                f"memory_limit: {getattr(config.processing, 'memory_limit_mb', 2000)}MB"
+            )
         
         # Create base processor
         self.processor = LaserTrimProcessor(config, db_manager, logger=logger)
@@ -1003,8 +1010,12 @@ class LargeScaleProcessor:
         
         # Disable all non-essential features
         self.config.processing.generate_plots = False
-        self.config.processing.save_reports = False
-        self.config.processing.detailed_validation = False
+        
+        # Only set attributes that exist in the config
+        if hasattr(self.config.processing, 'save_reports'):
+            self.config.processing.save_reports = False
+        if hasattr(self.config.processing, 'detailed_validation'):
+            self.config.processing.detailed_validation = False
         
         # Increase batch sizes for better throughput
         self.config.processing.chunk_size = min(200, self.config.processing.chunk_size * 2)

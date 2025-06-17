@@ -135,14 +135,21 @@ class MLPredictor:
         """Helper method to log with context support."""
         if hasattr(self.logger, level) and callable(getattr(self.logger, level)):
             log_method = getattr(self.logger, level)
-            # Check if logger supports context parameter
-            if context and hasattr(log_method, '__code__') and 'context' in log_method.__code__.co_varnames:
-                log_method(message, context=context, **kwargs)
+            
+            # Check if this is a secure logger by looking for the module
+            if HAS_SECURE_LOGGING and hasattr(self.logger, '__module__') and 'secure_logging' in str(self.logger.__module__):
+                # This is a secure logger, use context parameter
+                if context:
+                    log_method(message, context=context, **kwargs)
+                else:
+                    log_method(message, **kwargs)
             else:
-                # Fall back to standard logging with context info in message
+                # This is a standard logger, append context to message
                 if context:
                     context_str = ', '.join(f'{k}={v}' for k, v in context.items())
                     message = f"{message} [{context_str}]"
+                # Remove any 'context' from kwargs to avoid the error
+                kwargs.pop('context', None)
                 log_method(message, **kwargs)
 
     @logged_function(log_inputs=True, log_outputs=True, log_performance=True)
