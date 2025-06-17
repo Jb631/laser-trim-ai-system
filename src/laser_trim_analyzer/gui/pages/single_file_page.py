@@ -1332,17 +1332,34 @@ class SingleFilePage(ctk.CTkFrame):
         logger.info(f"Starting Excel export to: {file_path}")
         
         try:
-            # Use the comprehensive report generator for complete data export
-            from laser_trim_analyzer.utils.report_generator import ReportGenerator
-            
-            report_gen = ReportGenerator()
-            report_gen.generate_comprehensive_excel_report(
-                results=[self.current_result],
-                output_path=file_path,
-                include_raw_data=True  # Include raw data for single file export
-            )
-            
-            logger.info("Excel export completed successfully")
+            # Use the enhanced Excel exporter for comprehensive data export
+            try:
+                from laser_trim_analyzer.utils.enhanced_excel_export import EnhancedExcelExporter
+                
+                enhanced_exporter = EnhancedExcelExporter()
+                enhanced_exporter.export_single_file_comprehensive(
+                    result=self.current_result,
+                    output_path=file_path,
+                    include_raw_data=True,  # Include raw data for single file export
+                    include_plots=True      # Include plot references
+                )
+                
+                logger.info("Excel export completed successfully using enhanced exporter")
+                
+            except ImportError:
+                # Fallback to standard report generator
+                logger.warning("Enhanced Excel exporter not available, using standard export")
+                from laser_trim_analyzer.utils.report_generator import ReportGenerator
+                
+                report_gen = ReportGenerator()
+                report_gen.generate_comprehensive_excel_report(
+                    results=[self.current_result],
+                    output_path=file_path,
+                    include_raw_data=True  # Include raw data for single file export
+                )
+                
+                logger.info("Excel export completed successfully using standard exporter")
+                
         except Exception as e:
             logger.error(f"Error during Excel export: {e}", exc_info=True)
             raise

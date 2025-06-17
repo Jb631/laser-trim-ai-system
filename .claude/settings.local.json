@@ -50,7 +50,8 @@
       "Bash(then source venv/bin/activate)",
       "Bash(else echo \"No venv found\")",
       "Bash(fi)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(.venv/Scripts/python:*)"
     ],
     "deny": []
   }

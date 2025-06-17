@@ -1253,9 +1253,14 @@ class DatabaseManager:
         saved_ids = []
         failed_saves = []
         
-        # Use a single transaction for all saves
+        # Use a single transaction for all saves with bulk operations
         try:
             with self.get_session() as session:
+                # Prepare bulk data
+                analyses_to_insert = []
+                tracks_to_insert = []
+                analysis_objects = []
+                
                 for i, analysis in enumerate(analyses):
                     try:
                         # Log each analysis being processed
@@ -1273,15 +1278,33 @@ class DatabaseManager:
                             saved_ids.append(existing_id)
                             continue
                         
-                        # Create database record (reuse logic from save_analysis)
-                        analysis_id = self._create_analysis_record(analysis, session)
-                        saved_ids.append(analysis_id)
+                        # Create database record but don't add to session yet
+                        db_analysis = self._prepare_analysis_record(analysis)
+                        analyses_to_insert.append(db_analysis)
+                        analysis_objects.append((i, analysis))
                         
                     except Exception as e:
-                        self.logger.error(f"Failed to save analysis {i+1} ({analysis.metadata.filename}): {str(e)}")
+                        self.logger.error(f"Failed to prepare analysis {i+1} ({analysis.metadata.filename}): {str(e)}")
                         failed_saves.append((i, analysis.metadata.filename, str(e)))
-                        # Continue with other saves instead of failing entire batch
                         saved_ids.append(None)  # Placeholder for failed save
+                
+                # Bulk insert all analyses at once
+                if analyses_to_insert:
+                    session.bulk_save_objects(analyses_to_insert, return_defaults=True)
+                    session.flush()  # Ensure IDs are generated
+                    
+                    # Now prepare tracks with analysis IDs
+                    for db_analysis, (orig_idx, orig_analysis) in zip(analyses_to_insert, analysis_objects):
+                        saved_ids.insert(orig_idx, db_analysis.id)
+                        
+                        # Add tracks for this analysis
+                        for track_id, track_data in orig_analysis.tracks.items():
+                            db_track = self._prepare_track_record(track_data, db_analysis.id, track_id)
+                            tracks_to_insert.append(db_track)
+                    
+                    # Bulk insert all tracks
+                    if tracks_to_insert:
+                        session.bulk_save_objects(tracks_to_insert)
                 
                 # Commit all at once
                 session.commit()
@@ -1298,6 +1321,114 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Batch save failed: {e}")
             raise DatabaseError(f"Batch save failed: {str(e)}") from e
+    
+    def _prepare_analysis_record(
+        self, 
+        analysis_data: PydanticAnalysisResult
+    ) -> DBAnalysisResult:
+        """Prepare analysis record without adding to session (for bulk operations)."""
+        self.logger.debug(f"Preparing analysis record for {analysis_data.metadata.filename}")
+        
+        # Convert Pydantic SystemType to DB SystemType
+        system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
+
+        # Convert Pydantic AnalysisStatus to DB StatusType
+        status_map = {
+            AnalysisStatus.PASS: DBStatusType.PASS,
+            AnalysisStatus.FAIL: DBStatusType.FAIL,
+            AnalysisStatus.WARNING: DBStatusType.WARNING,
+            AnalysisStatus.ERROR: DBStatusType.ERROR,
+            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
+        }
+        overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
+
+        # Create main analysis record
+        analysis = DBAnalysisResult(
+            filename=analysis_data.metadata.filename,
+            file_path=str(analysis_data.metadata.file_path) if analysis_data.metadata.file_path else None,
+            file_date=analysis_data.metadata.file_date,
+            file_hash=None,  # Can be calculated if needed
+            model=analysis_data.metadata.model.strip(),
+            serial=analysis_data.metadata.serial.strip(),
+            system=system_type,
+            has_multi_tracks=analysis_data.metadata.has_multi_tracks,
+            overall_status=overall_status,
+            processing_time=analysis_data.processing_time,
+            output_dir=None,  # Set if available
+            software_version="2.0.0",  # Set from config
+            operator=None,  # Set if available
+            sigma_scaling_factor=None,  # Set from first track if available
+            filter_cutoff_frequency=None  # Set from config if available
+        )
+        
+        return analysis
+    
+    def _prepare_track_record(
+        self,
+        track_data: TrackData,
+        analysis_id: int,
+        track_id: str
+    ) -> DBTrackResult:
+        """Prepare track record for bulk insert."""
+        # Convert track status
+        status_map = {
+            AnalysisStatus.PASS: DBStatusType.PASS,
+            AnalysisStatus.FAIL: DBStatusType.FAIL,
+            AnalysisStatus.WARNING: DBStatusType.WARNING,
+            AnalysisStatus.ERROR: DBStatusType.ERROR,
+            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
+        }
+        track_status = status_map.get(track_data.status, DBStatusType.ERROR)
+        
+        # Convert risk category
+        risk_category = None
+        if track_data.failure_prediction and track_data.failure_prediction.risk_category:
+            risk_map = {
+                RiskCategory.HIGH: "high",
+                RiskCategory.MEDIUM: "medium", 
+                RiskCategory.LOW: "low"
+            }
+            risk_category = risk_map.get(track_data.failure_prediction.risk_category)
+        
+        # Create track record
+        track = DBTrackResult(
+            analysis_id=analysis_id,
+            track_id=track_id,
+            status=track_status,
+            sigma_gradient=track_data.sigma_analysis.sigma_gradient if track_data.sigma_analysis else None,
+            sigma_threshold=track_data.sigma_analysis.sigma_threshold if track_data.sigma_analysis else None,
+            sigma_pass=track_data.sigma_analysis.passes_lm_spec if track_data.sigma_analysis else None,
+            linearity_spec=track_data.linearity_analysis.linearity_spec if track_data.linearity_analysis else None,
+            linearity_error=track_data.linearity_analysis.final_linearity_error if track_data.linearity_analysis else None,
+            linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted if track_data.linearity_analysis else None,
+            optimal_offset=track_data.linearity_analysis.optimal_offset if track_data.linearity_analysis else None,
+            linearity_pass=track_data.linearity_analysis.passes if track_data.linearity_analysis else None,
+            trimmed_resistance=track_data.unit_properties.trimmed_resistance if track_data.unit_properties else None,
+            untrimmed_resistance=track_data.unit_properties.untrimmed_resistance if track_data.unit_properties else None,
+            trim_percentage=track_data.resistance_analysis.trim_percentage if track_data.resistance_analysis else None,
+            abs_value_change=track_data.resistance_analysis.abs_value_change if track_data.resistance_analysis else None,
+            relative_change=track_data.resistance_analysis.relative_change if track_data.resistance_analysis else None,
+            max_deviation=track_data.linearity_analysis.max_deviation if track_data.linearity_analysis else None,
+            max_deviation_position=track_data.linearity_analysis.max_deviation_position if track_data.linearity_analysis else None,
+            deviation_uniformity=None,  # Calculate if needed
+            trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
+            untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
+            trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
+            max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
+            worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
+            worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and track_data.zone_analysis.worst_zone_position) else None,
+            zone_details=track_data.zone_analysis.zone_results if (track_data.zone_analysis and track_data.zone_analysis.zone_results) else None,
+            failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
+            risk_category=risk_category,
+            gradient_margin=track_data.sigma_analysis.gradient_margin if hasattr(track_data.sigma_analysis, 'gradient_margin') else None,
+            range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
+            minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
+            minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
+            margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
+            plot_path=str(track_data.plot_path) if track_data.plot_path else None
+        )
+        
+        return track
     
     def _create_analysis_record(
         self, 

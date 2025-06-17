@@ -68,10 +68,13 @@ SYSTEM_A_COLUMNS = {
 }
 
 SYSTEM_B_COLUMNS = {
-    "position": 4,      # Column E (CORRECTED: was incorrectly 8/Column I)
-    "error": 3,         # Column D
-    "upper_limit": 5,   # Column F
-    "lower_limit": 6    # Column G
+    "measured_volts": 0,  # Column A - measured voltage
+    "index": 1,          # Column B - index
+    "theory_volts": 2,   # Column C - theoretical voltage
+    "error": 3,          # Column D - error
+    "position": 4,       # Column E - position
+    "upper_limit": 5,    # Column F - upper limit
+    "lower_limit": 6     # Column G - lower limit
 }
 
 # Cell references for unit properties

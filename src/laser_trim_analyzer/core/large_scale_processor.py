@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
+from laser_trim_analyzer.core.fast_processor import FastProcessor, process_files_turbo
 from laser_trim_analyzer.core.models import AnalysisResult
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.core.error_handlers import (
@@ -112,6 +113,11 @@ class LargeScaleProcessor:
         
         # Create base processor
         self.processor = LaserTrimProcessor(config, db_manager, logger=logger)
+        
+        # Fast processor for turbo mode
+        self.fast_processor = None
+        self.turbo_mode = False
+        self.turbo_threshold = getattr(config.processing, 'turbo_mode_threshold', 1000)
         
         # Performance tracking
         self.stats = {
@@ -260,8 +266,12 @@ class LargeScaleProcessor:
                         context={'warning': warning} if HAS_SECURE_LOGGING else None
                     )
         
-        # Check if we should enable high-performance mode
-        if len(files) >= self.config.processing.disable_plots_large_batch:
+        # Check if we should enable high-performance mode or turbo mode
+        if len(files) >= self.turbo_threshold:
+            self.logger.info(f"Very large batch detected ({len(files)} files), enabling TURBO MODE")
+            self._enable_turbo_mode()
+            return await self._process_file_batch_turbo(files, output_dir, progress_callback)
+        elif len(files) >= self.config.processing.disable_plots_large_batch:
             self.logger.info(f"Large batch detected ({len(files)} files), enabling optimizations")
             self._enable_high_performance_mode()
         
@@ -982,6 +992,84 @@ class LargeScaleProcessor:
                     }
                 )
 
+    def _enable_turbo_mode(self):
+        """Enable turbo mode for maximum performance."""
+        self.turbo_mode = True
+        self.logger.info("TURBO MODE ENABLED - Maximum performance optimizations active")
+        
+        # Initialize fast processor if not already done
+        if not self.fast_processor:
+            self.fast_processor = FastProcessor(self.config, turbo_mode=True)
+        
+        # Disable all non-essential features
+        self.config.processing.generate_plots = False
+        self.config.processing.save_reports = False
+        self.config.processing.detailed_validation = False
+        
+        # Increase batch sizes for better throughput
+        self.config.processing.chunk_size = min(200, self.config.processing.chunk_size * 2)
+        self.config.processing.max_concurrent_files = min(100, self.config.processing.max_concurrent_files * 2)
+        
+        self.logger.info(f"Turbo mode settings: chunk_size={self.config.processing.chunk_size}, "
+                        f"concurrent={self.config.processing.max_concurrent_files}")
+    
+    async def _process_file_batch_turbo(
+        self,
+        files: List[Path],
+        output_dir: Optional[Path],
+        progress_callback: Optional[Callable[[str, float, Dict], None]] = None
+    ) -> Dict[str, AnalysisResult]:
+        """Process files using turbo mode with FastProcessor."""
+        self.logger.info(f"Starting TURBO mode processing of {len(files)} files")
+        
+        # Update stats
+        self.stats['total_files'] = len(files)
+        self.stats['start_time'] = time.time()
+        self.stats['turbo_mode'] = True
+        
+        # Convert async progress callback to sync for FastProcessor
+        def sync_progress_callback(message: str, progress: float):
+            if progress_callback:
+                self.stats['processed_files'] = int(progress * len(files))
+                self._update_performance_stats()
+                progress_callback(message, progress, self.stats.copy())
+        
+        try:
+            # Use FastProcessor for turbo processing
+            results_list = self.fast_processor.process_batch_fast(
+                files, 
+                output_dir, 
+                sync_progress_callback
+            )
+            
+            # Convert list to dict keyed by file path
+            results = {str(r.metadata.file_path): r for r in results_list if r}
+            
+            # Update final stats
+            self.stats['processed_files'] = len(results)
+            self.stats['failed_files'] = len(files) - len(results)
+            self._update_performance_stats()
+            
+            # Save to database if enabled (batch operation)
+            if self.db_manager and results:
+                self.logger.info("Saving results to database...")
+                await self._batch_commit_results(results)
+            
+            # Log completion
+            total_time = time.time() - self.stats['start_time']
+            rate = len(results) / total_time if total_time > 0 else 0
+            self.logger.info(f"TURBO processing complete: {len(results)} files in {total_time:.1f}s "
+                           f"({rate:.1f} files/sec)")
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Turbo processing failed: {e}")
+            # Fall back to regular processing
+            self.logger.info("Falling back to standard processing mode")
+            self.turbo_mode = False
+            return await self._process_file_batch(files, output_dir, progress_callback)
+    
     def stop_processing(self):
         """Stop processing gracefully."""
         self.logger.info("Stopping large-scale processing...")

@@ -82,3 +82,11 @@
 Before starting any session, review the CHANGELOG.md to understand recent changes and current state.
 
 Remember: Always think through the full implementation before starting any fix.
+
+### Session Start Checklist
+**EVERY session MUST begin with these steps:**
+1. Read CHANGELOG.md to understand recent changes and current state
+2. Use TodoWrite to plan the session tasks
+3. Fix existing code - do NOT create new test files
+4. Use parallel tool operations when possible
+5. Document ALL changes in CHANGELOG.md immediately after implementation

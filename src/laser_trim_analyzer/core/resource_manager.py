@@ -422,7 +422,8 @@ class ResourceManager:
         
         # Never exceed remaining files
         remaining = total_files - current_index
-        return min(batch_size, remaining)
+        # Ensure we never return 0 to prevent infinite loops
+        return max(1, min(batch_size, remaining))
     
     def should_pause_processing(self) -> bool:
         """
@@ -445,21 +446,27 @@ class ResourceManager:
         
         return False
     
-    def wait_for_resources(self, timeout: float = 30.0) -> bool:
+    def wait_for_resources(self, timeout: float = 30.0, check_cancelled=None) -> bool:
         """
         Wait for resources to become available.
         
         Args:
             timeout: Maximum time to wait in seconds
+            check_cancelled: Optional callable to check if operation was cancelled
             
         Returns:
-            True if resources became available, False if timeout
+            True if resources became available, False if timeout or cancelled
         """
         start_time = time.time()
         
         self.logger.info("Waiting for resources to become available...")
         
         while time.time() - start_time < timeout:
+            # Check if cancelled
+            if check_cancelled and check_cancelled():
+                self.logger.info("Resource wait cancelled")
+                return False
+                
             status = self.get_current_status()
             
             if not status.memory_critical and status.available_memory_mb > self.MIN_FREE_MEMORY_MB:
@@ -468,7 +475,15 @@ class ResourceManager:
             
             # Force cleanup while waiting
             self.force_cleanup()
-            time.sleep(2)
+            
+            # Use shorter sleep intervals for better responsiveness
+            sleep_time = 0.1
+            sleep_count = 0
+            while sleep_count < 20 and time.time() - start_time < timeout:  # 20 * 0.1 = 2 seconds total
+                if check_cancelled and check_cancelled():
+                    return False
+                time.sleep(sleep_time)
+                sleep_count += 1
         
         self.logger.warning("Timeout waiting for resources")
         return False

@@ -542,33 +542,39 @@ class LaserTrimProcessor:
             # Step 9: Cache result if enabled
             if self._cache_enabled and file_hash:
                 try:
-                    # Manage cache size
-                    # Manage cache size based on memory usage, not just count
-                    import sys
+                    # Get max cache entries from config
+                    max_cache_entries = getattr(self.config.processing, 'max_cache_entries', 50)
                     
-                    # Estimate size of result object (rough estimate)
-                    result_size = sys.getsizeof(result) * 10  # Multiply by 10 for nested objects
+                    # Check cache size limit
+                    if len(self._file_cache) >= max_cache_entries:
+                        # Remove oldest entries (FIFO) - remove 20% to avoid frequent cleanup
+                        entries_to_remove = max(1, max_cache_entries // 5)
+                        keys_to_remove = list(self._file_cache.keys())[:entries_to_remove]
+                        for key in keys_to_remove:
+                            del self._file_cache[key]
+                        self.logger.debug(f"Removed {entries_to_remove} oldest cache entries")
                     
-                    # Check total cache size
-                    max_cache_bytes = 200 * 1024 * 1024  # 200 MB max cache
-                    
-                    # Remove entries until we have space or reach min size
-                    while len(self._file_cache) >= self._max_cache_size:
-                        # Remove oldest entry
-                        oldest_key = next(iter(self._file_cache))
-                        del self._file_cache[oldest_key]
-                    
-                    # Also check memory pressure
+                    # Also check memory pressure for large batches
                     try:
                         import psutil
                         process = psutil.Process()
-                        if process.memory_percent() > 60:  # If using more than 60% memory
-                            # Reduce cache size aggressively
-                            while len(self._file_cache) > 10 and process.memory_percent() > 60:
-                                oldest_key = next(iter(self._file_cache))
-                                del self._file_cache[oldest_key]
+                        memory_percent = process.memory_percent()
+                        
+                        # More aggressive cache management for high memory usage
+                        if memory_percent > 70:  # High memory usage
+                            # Keep only most recent 10 entries
+                            if len(self._file_cache) > 10:
+                                keys_to_keep = list(self._file_cache.keys())[-10:]
+                                self._file_cache = {k: self._file_cache[k] for k in keys_to_keep}
                                 gc.collect()
+                                self.logger.info(f"Reduced cache to 10 entries due to high memory usage ({memory_percent:.1f}%)")
+                        elif memory_percent > 50 and len(self._file_cache) > 25:
+                            # Moderate memory usage - keep 25 entries
+                            keys_to_keep = list(self._file_cache.keys())[-25:]
+                            self._file_cache = {k: self._file_cache[k] for k in keys_to_keep}
+                            self.logger.debug(f"Reduced cache to 25 entries due to moderate memory usage ({memory_percent:.1f}%)")
                     except:
+                        # If psutil not available, just use entry count limit
                         pass
                     
                     self._file_cache[file_hash] = result
@@ -714,6 +720,9 @@ class LaserTrimProcessor:
             # Add position and error data for plotting
             position_data=analysis_data.get('positions', []),
             error_data=analysis_data.get('errors', []),
+            # Add spec limits for plotting
+            upper_limits=analysis_data.get('upper_limits', []),
+            lower_limits=analysis_data.get('lower_limits', []),
             # Add untrimmed data if available
             untrimmed_positions=analysis_data.get('untrimmed_data', {}).get('positions', []),
             untrimmed_errors=analysis_data.get('untrimmed_data', {}).get('errors', []),
@@ -1259,6 +1268,17 @@ class LaserTrimProcessor:
 
         # Use trimmed data as primary if available, otherwise untrimmed
         data_source = trimmed_data if trimmed_data and trimmed_data.get('positions') else untrimmed_data
+        
+        # Debug logging for data extraction
+        self.logger.debug(f"Data source: {'trimmed' if data_source == trimmed_data else 'untrimmed'}")
+        self.logger.debug(f"Positions count: {len(data_source.get('positions', []))}")
+        self.logger.debug(f"Errors count: {len(data_source.get('errors', []))}")
+        self.logger.debug(f"Upper limits count: {len(data_source.get('upper_limits', []))}")
+        self.logger.debug(f"Lower limits count: {len(data_source.get('lower_limits', []))}")
+        
+        # If trimmed data extraction failed but we have untrimmed data, log this
+        if trimmed_data and not trimmed_data.get('positions') and untrimmed_data.get('positions'):
+            self.logger.warning("Trimmed data extraction failed, using untrimmed data for analysis")
 
         return {
             'sheets': sheets,
@@ -1832,6 +1852,35 @@ class LaserTrimProcessor:
             position_series = pd.to_numeric(df.iloc[:, columns['position']], errors='coerce')
             error_series = pd.to_numeric(df.iloc[:, columns['error']], errors='coerce')
             
+            # Debug: Log first few rows to see alignment
+            self.logger.debug(f"First 5 rows of data from {sheet_name}:")
+            for i in range(min(5, len(df))):
+                self.logger.debug(f"Row {i}: pos={position_series.iloc[i] if i < len(position_series) else 'N/A'}, "
+                                f"err={error_series.iloc[i] if i < len(error_series) else 'N/A'}")
+            
+            # Check if error data is incomplete (all zeros or missing)
+            error_values = error_series.dropna()
+            if error_values.empty or (error_values == 0).all():
+                self.logger.warning("Error data is incomplete (all zeros or missing), attempting to calculate from voltages")
+                
+                # Try to calculate error from measured and theory volts
+                if 'measured_volts' in columns and 'theory_volts' in columns:
+                    measured_series = pd.to_numeric(df.iloc[:, columns['measured_volts']], errors='coerce')
+                    theory_series = pd.to_numeric(df.iloc[:, columns['theory_volts']], errors='coerce')
+                    
+                    # Calculate error as simple difference: measured - theory
+                    error_series = (measured_series - theory_series).replace([np.inf, -np.inf], np.nan)
+                    
+                    # Log some statistics about the calculated errors
+                    error_valid = error_series.dropna()
+                    if len(error_valid) > 0:
+                        self.logger.info(f"Calculated error statistics: min={error_valid.min():.3f}, max={error_valid.max():.3f}, "
+                                       f"mean={error_valid.mean():.3f}, std={error_valid.std():.3f}, count={len(error_valid)}")
+                    
+                    self.logger.info("Successfully calculated error values (voltage difference) from measured and theory voltages")
+                else:
+                    self.logger.error("Cannot calculate error: measured_volts and theory_volts columns not found")
+            
             # Extract upper and lower limits if available
             upper_limits = []
             lower_limits = []
@@ -1839,29 +1888,77 @@ class LaserTrimProcessor:
                 self.logger.debug(f"Attempting to extract limits from columns {columns['upper_limit']} and {columns['lower_limit']}")
                 upper_series = pd.to_numeric(df.iloc[:, columns['upper_limit']], errors='coerce')
                 lower_series = pd.to_numeric(df.iloc[:, columns['lower_limit']], errors='coerce')
-                upper_limits = upper_series.dropna().tolist()
-                lower_limits = lower_series.dropna().tolist()
-                self.logger.debug(f"Extracted limits - Upper: {len(upper_limits)} values, Lower: {len(lower_limits)} values")
-                if upper_limits and lower_limits:
-                    self.logger.debug(f"Sample upper limits: {upper_limits[:5]}")
-                    self.logger.debug(f"Sample lower limits: {lower_limits[:5]}")
+                
+                # Keep the series as pandas Series for now to maintain position alignment
+                upper_limits = upper_series
+                lower_limits = lower_series
+                
+                # Log information about the limits
+                upper_valid = upper_series.dropna()
+                lower_valid = lower_series.dropna()
+                self.logger.debug(f"Extracted limits - Upper: {len(upper_valid)} valid values, Lower: {len(lower_valid)} valid values")
+                if len(upper_valid) > 0 and len(lower_valid) > 0:
+                    self.logger.debug(f"Upper limits range: {upper_valid.min():.3f} to {upper_valid.max():.3f}")
+                    self.logger.debug(f"Lower limits range: {lower_valid.min():.3f} to {lower_valid.max():.3f}")
+                    
+                    # Also check if errors and limits are in similar scale
+                    # Get error_valid from the current error_series
+                    error_valid_check = error_series.dropna()
+                    if len(error_valid_check) > 0:
+                        error_scale = error_valid_check.abs().max()
+                        limit_scale = max(upper_valid.max(), abs(lower_valid.min()))
+                        self.logger.debug(f"Scale comparison - Errors: {error_scale:.6f}, Limits: {limit_scale:.6f}")
+                        
+                        # If they're very different scales, log a warning
+                        if error_scale > 0 and limit_scale > 0:
+                            ratio = max(error_scale / limit_scale, limit_scale / error_scale)
+                            if ratio > 100:
+                                self.logger.warning(f"Large scale difference between errors and limits (ratio: {ratio:.1f})")
+                                self.logger.warning("This might indicate a unit mismatch or data extraction issue")
             else:
                 self.logger.warning(f"Limit columns not found in system {system} columns: {columns}")
             
-            # Drop NaN values
-            positions = position_series.dropna().tolist()
-            errors = error_series.dropna().tolist()
-
-            # Ensure same length
-            min_len = min(len(positions), len(errors))
-            positions = positions[:min_len]
-            errors = errors[:min_len]
+            # Find rows where BOTH position and error are valid (not NaN)
+            # This handles blank rows in the data
+            valid_mask = position_series.notna() & error_series.notna()
+            valid_indices = valid_mask[valid_mask].index
             
-            # Ensure limits have same length
-            if upper_limits:
-                upper_limits = upper_limits[:min_len]
-            if lower_limits:
-                lower_limits = lower_limits[:min_len]
+            self.logger.debug(f"Total rows: {len(position_series)}, Valid rows (non-blank): {len(valid_indices)}")
+            
+            # Show which Excel rows are being used (add 2 for header row and 0-based indexing)
+            if len(valid_indices) > 0:
+                excel_rows = [idx + 2 for idx in valid_indices[:10]]  # First 10 for logging
+                self.logger.debug(f"Using Excel rows: {excel_rows}... (showing first 10)")
+            
+            # Extract only valid data using the same indices for all columns
+            positions = position_series.loc[valid_indices].tolist()
+            errors = error_series.loc[valid_indices].tolist()
+            
+            # Handle limits - extract from the SAME valid indices to maintain alignment
+            if isinstance(upper_limits, pd.Series) and isinstance(lower_limits, pd.Series):
+                # Extract limits at the same indices as valid positions/errors
+                upper_limits = upper_limits.loc[valid_indices].tolist()
+                lower_limits = lower_limits.loc[valid_indices].tolist()
+                
+                self.logger.debug(f"Extracted data lengths - pos: {len(positions)}, err: {len(errors)}, "
+                                f"upper: {len(upper_limits)}, lower: {len(lower_limits)}")
+                
+                # Debug: Log alignment of positions, errors, and limits
+                self.logger.debug("Data alignment check (first 5 points):")
+                for i in range(min(5, len(positions))):
+                    self.logger.debug(f"Point {i}: pos={positions[i]:.3f}, err={errors[i]:.6f}, "
+                                    f"upper={upper_limits[i] if i < len(upper_limits) else 'N/A'}, "
+                                    f"lower={lower_limits[i] if i < len(lower_limits) else 'N/A'}")
+                
+                # Check if all data has same length (it should after using same indices)
+                if len(upper_limits) != len(positions):
+                    self.logger.warning(f"Upper limits length mismatch: {len(upper_limits)} vs {len(positions)}")
+                if len(lower_limits) != len(positions):
+                    self.logger.warning(f"Lower limits length mismatch: {len(lower_limits)} vs {len(positions)}")
+            else:
+                # No limits available - use empty lists
+                upper_limits = []
+                lower_limits = []
 
             # Calculate travel length
             travel_length = max(positions) - min(positions) if positions else 0
@@ -1874,7 +1971,9 @@ class LaserTrimProcessor:
                 'travel_length': travel_length
             }
             
-            self.logger.debug(f"Final extracted data: {len(positions)} positions, {len(errors)} errors, {len(upper_limits)} upper limits, {len(lower_limits)} lower limits")
+            self.logger.debug(f"Final extracted data: {len(positions)} positions, {len(errors)} errors, "
+                            f"{len(upper_limits) if upper_limits else 0} upper limits, "
+                            f"{len(lower_limits) if lower_limits else 0} lower limits")
             
             return result
 
@@ -1942,12 +2041,27 @@ class LaserTrimProcessor:
             model: str
     ) -> SigmaAnalysis:
         """Perform sigma gradient analysis."""
+        # Debug logging for limit data
+        upper_limits = data.get('upper_limits', [])
+        lower_limits = data.get('lower_limits', [])
+        
+        # Count valid limits
+        valid_upper = [u for u in upper_limits if u is not None and not np.isnan(u)]
+        valid_lower = [l for l in lower_limits if l is not None and not np.isnan(l)]
+        
+        self.logger.debug(f"Sigma analysis - Upper limits: {len(upper_limits)} total, {len(valid_upper)} valid")
+        self.logger.debug(f"Sigma analysis - Lower limits: {len(lower_limits)} total, {len(valid_lower)} valid")
+        if valid_upper:
+            self.logger.debug(f"Upper limit range: {min(valid_upper):.3f} to {max(valid_upper):.3f}")
+        if valid_lower:
+            self.logger.debug(f"Lower limit range: {min(valid_lower):.3f} to {max(valid_lower):.3f}")
+        
         # Prepare data dictionary for analyzer
         analysis_data = {
             'positions': data.get('positions', []),
             'errors': data.get('errors', []),
-            'upper_limits': data.get('upper_limits', []),
-            'lower_limits': data.get('lower_limits', []),
+            'upper_limits': upper_limits,
+            'lower_limits': lower_limits,
             'model': model,
             'unit_length': unit_props.unit_length,
             'travel_length': data.get('travel_length', 0)

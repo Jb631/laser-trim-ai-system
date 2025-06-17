@@ -467,6 +467,15 @@ def find_data_columns(
         columns = SYSTEM_A_COLUMNS.copy()
     else:
         columns = SYSTEM_B_COLUMNS.copy()
+    
+    # Debug log the column mapping and first row of data
+    logger.debug(f"Using System {system} column mapping: {columns}")
+    if len(df) > 0 and columns:
+        logger.debug("First row of data by column:")
+        for name, col_idx in columns.items():
+            if col_idx < len(df.columns):
+                value = df.iloc[0, col_idx]
+                logger.debug(f"  {name} (col {col_idx}): {value}")
 
     # Validate columns exist
     max_col = max(columns.values())

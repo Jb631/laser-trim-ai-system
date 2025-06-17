@@ -12,6 +12,7 @@ import json
 import pandas as pd
 
 from laser_trim_analyzer.core.models import AnalysisResult
+from laser_trim_analyzer.utils.enhanced_excel_export import EnhancedExcelExporter
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class ReportGenerator:
     def __init__(self):
         """Initialize report generator."""
         self.logger = logger
+        self.enhanced_exporter = EnhancedExcelExporter()
 
     def generate_html_report(
         self,
@@ -406,11 +408,41 @@ class ReportGenerator:
         """
         Generate comprehensive Excel report with all analysis data including ML predictions.
         
+        This method now delegates to the EnhancedExcelExporter which provides
+        much more comprehensive data export including all computed fields,
+        validation details, zone analysis, and proper formatting.
+        
         Args:
             results: List of analysis results
             output_path: Path to save Excel file
             include_raw_data: Whether to include raw position/error data
         """
+        try:
+            # Use enhanced exporter for comprehensive data export
+            if len(results) == 1:
+                # Single file export
+                self.enhanced_exporter.export_single_file_comprehensive(
+                    results[0],
+                    output_path,
+                    include_raw_data=include_raw_data,
+                    include_plots=True
+                )
+            else:
+                # Batch export
+                self.enhanced_exporter.export_batch_comprehensive(
+                    results,
+                    output_path,
+                    include_individual_details=include_raw_data,
+                    max_individual_sheets=50
+                )
+            
+            self.logger.info(f"Enhanced Excel report generated: {output_path}")
+            return
+            
+        except ImportError:
+            # Fallback to original implementation if enhanced exporter not available
+            self.logger.warning("Enhanced Excel exporter not available, using standard export")
+            
         try:
             # Check if we have any results
             if not results:
