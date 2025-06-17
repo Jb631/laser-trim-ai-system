@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Logger context parameter error in turbo mode**
+  - Root cause: MLPredictor's `_log_with_context` method was not correctly detecting standard Python loggers
+  - The method checked for 'context' in co_varnames which doesn't work for Python's logger methods
+  - Fixed by checking if the logger module contains 'secure_logging' to identify secure loggers
+  - For standard loggers, context information is now appended to the message and 'context' is removed from kwargs
+  - This fixes the "Logger._log() got an unexpected keyword argument 'context'" error when using turbo mode
+
+- **Turbo mode configuration field error**
+  - Root cause: `_enable_turbo_mode` was trying to set config fields that don't exist in ProcessingConfig
+  - Fixed by checking if fields exist before setting them using hasattr()
+  - This fixes the "ProcessingConfig object has no field 'save_reports'" error
+
 ### Known Issues
 - ML Tools page requires proper ML model initialization
 - Some ML features are optional and may not initialize without proper setup
