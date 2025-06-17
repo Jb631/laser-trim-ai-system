@@ -93,30 +93,28 @@ class LargeScaleProcessor:
                 enable_performance_tracking=True,
                 enable_input_sanitization=True
             )
-            self.logger.info(
-                "LargeScaleProcessor initialized with secure logging",
-                context={
-                    'config': {
-                        'chunk_size': config.processing.chunk_size,
-                        'max_concurrent_files': config.processing.max_concurrent_files,
-                        'memory_limit_mb': getattr(config.processing, 'memory_limit_mb', 2000),
-                        'gc_interval': config.processing.gc_interval,
-                        'debug_mode': config.debug
-                    },
-                    'database_enabled': db_manager is not None,
-                    'resource_manager': HAS_RESOURCE_MANAGER,
-                    'memory_safety': HAS_MEMORY_SAFETY
-                }
-            )
+            self._use_secure_logging = True
         else:
             self.logger = logger or logging.getLogger(__name__)
-            # Log initialization without context parameter for standard logger
-            self.logger.info(
-                f"LargeScaleProcessor initialized - "
-                f"chunk_size: {config.processing.chunk_size}, "
-                f"max_concurrent: {config.processing.max_concurrent_files}, "
-                f"memory_limit: {getattr(config.processing, 'memory_limit_mb', 2000)}MB"
-            )
+            self._use_secure_logging = False
+            
+        # Log initialization using helper method
+        self._log_with_context('info',
+            "LargeScaleProcessor initialized",
+            context={
+                'config': {
+                    'chunk_size': config.processing.chunk_size,
+                    'max_concurrent_files': config.processing.max_concurrent_files,
+                    'memory_limit_mb': getattr(config.processing, 'memory_limit_mb', 2000),
+                    'gc_interval': config.processing.gc_interval,
+                    'debug_mode': config.debug
+                },
+                'database_enabled': db_manager is not None,
+                'resource_manager': HAS_RESOURCE_MANAGER,
+                'memory_safety': HAS_MEMORY_SAFETY,
+                'secure_logging': self._use_secure_logging
+            }
+        )
         
         # Create base processor
         self.processor = LaserTrimProcessor(config, db_manager, logger=logger)
@@ -157,6 +155,24 @@ class LargeScaleProcessor:
             self.resource_manager = None
             self.resource_optimizer = None
 
+    def _log_with_context(self, level: str, message: str, context: Optional[Dict] = None, **kwargs):
+        """Helper method to log with context support for both secure and standard loggers."""
+        if hasattr(self.logger, level):
+            log_method = getattr(self.logger, level)
+            
+            # Check if this is a secure logger using the instance flag
+            if self._use_secure_logging:
+                if context:
+                    log_method(message, context=context, **kwargs)
+                else:
+                    log_method(message, **kwargs)
+            else:
+                # Standard logger - append context to message if provided
+                if context:
+                    context_str = ', '.join(f'{k}={v}' for k, v in context.items())
+                    message = f"{message} [{context_str}]"
+                log_method(message, **kwargs)
+
     async def process_large_directory(
         self,
         directory: Path,
@@ -184,27 +200,27 @@ class LargeScaleProcessor:
         
         start_time = time.time()
         
-        self.logger.info(
+        self._log_with_context('info', 
             f"Starting large-scale processing of directory: {directory}",
             context={
                 'directory': str(directory),
                 'output_dir': str(output_dir) if output_dir else None,
                 'resume_from': resume_from,
                 'has_file_filter': file_filter is not None
-            } if HAS_SECURE_LOGGING else None
+            }
         )
         
         # Discover files
         files = await self._discover_files(directory, file_filter)
         discovery_time = time.time() - start_time
         
-        self.logger.info(
+        self._log_with_context('info',
             f"Discovered {len(files)} files for processing",
             context={
                 'total_files': len(files),
                 'discovery_time_seconds': discovery_time,
                 'files_per_second': len(files) / discovery_time if discovery_time > 0 else 0
-            } if HAS_SECURE_LOGGING else None
+            }
         )
         
         if not files:
@@ -218,13 +234,10 @@ class LargeScaleProcessor:
         
         # Check resources and optimize parameters
         if self.resource_manager:
-            self.logger.debug(
-                "Checking resource feasibility for batch",
-                context={
+            self._log_with_context('debug', "Checking resource feasibility for batch", context={
                     'batch_size': len(files),
                     'plots_enabled': self.config.processing.generate_plots
-                } if HAS_SECURE_LOGGING else None
-            )
+                })
             
             # Check if batch is feasible
             is_feasible, recommendations = self.resource_manager.check_batch_feasibility(
@@ -232,15 +245,12 @@ class LargeScaleProcessor:
                 enable_plots=self.config.processing.generate_plots
             )
             
-            self.logger.info(
-                f"Resource feasibility check complete: {'feasible' if is_feasible else 'not feasible'}",
-                context={
+            self._log_with_context('info', f"Resource feasibility check complete: {'feasible' if is_feasible else 'not feasible'}", context={
                     'is_feasible': is_feasible,
                     'recommendations': recommendations,
                     'current_memory_mb': psutil.Process().memory_info().rss / (1024 * 1024),
                     'available_memory_mb': psutil.virtual_memory().available / (1024 * 1024)
-                } if HAS_SECURE_LOGGING else None
-            )
+                })
             
             if not is_feasible:
                 error_handler.handle_error(
@@ -261,16 +271,16 @@ class LargeScaleProcessor:
             # Apply recommendations
             if recommendations.get('disable_plots'):
                 self.config.processing.generate_plots = False
-                self.logger.info(
+                self._log_with_context('info',
                     "Disabling plots due to resource constraints",
-                    context={'recommendations': recommendations} if HAS_SECURE_LOGGING else None
+                    context={'recommendations': recommendations}
                 )
             
             if recommendations.get('warnings'):
                 for warning in recommendations['warnings']:
-                    self.logger.warning(
+                    self._log_with_context('warning',
                         f"Resource warning: {warning}",
-                        context={'warning': warning} if HAS_SECURE_LOGGING else None
+                        context={'warning': warning}
                     )
         
         # Check if we should enable high-performance mode or turbo mode
@@ -294,15 +304,12 @@ class LargeScaleProcessor:
         valid_extensions = set(self.config.processing.file_extensions)
         skip_patterns = self.config.processing.skip_patterns
         
-        self.logger.info(
-            "Scanning directory for files...",
-            context={
+        self._log_with_context('info', "Scanning directory for files...", context={
                 'directory': str(directory),
                 'valid_extensions': list(valid_extensions),
                 'skip_patterns': skip_patterns,
                 'has_file_filter': file_filter is not None
-            } if HAS_SECURE_LOGGING else None
-        )
+            })
         
         scan_start = time.time()
         skipped_count = 0
@@ -337,21 +344,20 @@ class LargeScaleProcessor:
             # Check skip patterns
             if should_skip_file(file_path):
                 skipped_count += 1
-                self.logger.debug(f"Skipping file due to pattern: {file_path.name}")
+                self._log_with_context('debug', f"Skipping file due to pattern: {file_path.name}")
                 continue
                 
             # Check file size
             try:
                 file_size_mb = file_path.stat().st_size / (1024 * 1024)
                 if file_size_mb > self.config.processing.max_file_size_mb:
-                    self.logger.warning(
-                        f"Skipping large file: {file_path.name} ({file_size_mb:.1f} MB)",
+                    self._log_with_context('warning',
+                        f"Skipping large file: {file_path.name} ({file_size_mb:.1f} MB)", 
                         context={
                             'file_path': str(file_path),
                             'file_size_mb': file_size_mb,
                             'max_size_mb': self.config.processing.max_file_size_mb
-                        } if HAS_SECURE_LOGGING else None
-                    )
+                        })
                     skipped_count += 1
                     continue
             except Exception:
@@ -367,7 +373,7 @@ class LargeScaleProcessor:
             if (self.config.processing.skip_duplicate_files and 
                 self.db_manager and 
                 await self._is_file_already_processed(file_path)):
-                self.logger.debug(f"Skipping already processed file: {file_path.name}")
+                self._log_with_context('debug', f"Skipping already processed file: {file_path.name}")
                 skipped_count += 1
                 continue
             
@@ -378,15 +384,14 @@ class LargeScaleProcessor:
         
         # Log discovery completion
         scan_time = time.time() - scan_start
-        self.logger.info(
-            f"File discovery complete: found {len(files)} valid files",
+        self._log_with_context('info',
+            f"File discovery complete: found {len(files)} valid files", 
             context={
                 'files_found': len(files),
                 'files_skipped': skipped_count,
                 'scan_time_seconds': scan_time,
                 'files_per_second': len(files) / scan_time if scan_time > 0 else 0
-            } if HAS_SECURE_LOGGING else None
-        )
+            })
         
         return files
 
@@ -443,23 +448,20 @@ class LargeScaleProcessor:
             
             for i in range(0, len(files), chunk_size):
                 if self._should_stop:
-                    self.logger.info("Processing stopped by user request")
+                    self._log_with_context('info', "Processing stopped by user request")
                     break
                 
                 chunk_number = (i // chunk_size) + 1
                 total_chunks = (len(files) + chunk_size - 1) // chunk_size
                 
                 # Log chunk start
-                self.logger.debug(
-                    f"Processing chunk {chunk_number}/{total_chunks}",
-                    context={
+                self._log_with_context('debug', f"Processing chunk {chunk_number}/{total_chunks}", context={
                         'chunk_number': chunk_number,
                         'total_chunks': total_chunks,
                         'chunk_start_index': i,
                         'chunk_size': min(chunk_size, len(files) - i),
                         'memory_usage_mb': psutil.Process().memory_info().rss / (1024 * 1024)
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
                 
                 chunk_start_time = time.time()
                 chunk_files = files[i:i + chunk_size]
@@ -477,9 +479,7 @@ class LargeScaleProcessor:
                 self.stats['failed_files'] = len(failed_files)
                 
                 # Log chunk completion
-                self.logger.info(
-                    f"Completed chunk {chunk_number}/{total_chunks}",
-                    context={
+                self._log_with_context('info', f"Completed chunk {chunk_number}/{total_chunks}", context={
                         'chunk_number': chunk_number,
                         'successful': len(chunk_results),
                         'failed': len(chunk_failed),
@@ -487,8 +487,7 @@ class LargeScaleProcessor:
                         'files_per_second': len(chunk_files) / chunk_processing_time if chunk_processing_time > 0 else 0,
                         'cumulative_success': len(results),
                         'cumulative_failed': len(failed_files)
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
                 
                 # Batch commit to database
                 if (self.db_manager and 
@@ -600,22 +599,19 @@ class LargeScaleProcessor:
         if self.resource_manager:
             status = self.resource_manager.get_current_status()
             if status.memory_warning or status.memory_critical:
-                self.logger.info(
-                    f"Memory pressure detected: {status.memory_percent:.1f}% used",
-                    context={
+                self._log_with_context('info', f"Memory pressure detected: {status.memory_percent:.1f}% used", context={
                         'memory_percent': status.memory_percent,
                         'memory_warning': status.memory_warning,
                         'memory_critical': status.memory_critical,
                         'current_memory_mb': before_memory
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
                 self.resource_manager.force_cleanup()
                 
                 # Check if we should pause
                 if self.resource_manager.should_pause_processing():
-                    self.logger.warning(
+                    self._log_with_context('warning',
                         "Pausing processing due to memory pressure",
-                        context={'memory_status': status.__dict__} if HAS_SECURE_LOGGING else None
+                        context={'memory_status': status.__dict__}
                     )
                     if not self.resource_manager.wait_for_resources(timeout=30):
                         self.logger.error("Failed to recover resources, continuing anyway")
@@ -624,14 +620,11 @@ class LargeScaleProcessor:
         if (processed_count % self.config.processing.gc_interval == 0 or
             current_time - self._last_gc_time > 30):  # Force GC every 30 seconds
             
-            self.logger.debug(
-                f"Performing garbage collection at file {processed_count}",
-                context={
+            self._log_with_context('debug', f"Performing garbage collection at file {processed_count}", context={
                     'processed_count': processed_count,
                     'time_since_last_gc': current_time - self._last_gc_time,
                     'memory_before_mb': before_memory
-                } if HAS_SECURE_LOGGING else None
-            )
+                })
             
             gc_start = time.time()
             collected = gc.collect()
@@ -640,15 +633,12 @@ class LargeScaleProcessor:
             after_memory = psutil.Process().memory_info().rss / (1024 * 1024)
             memory_freed = before_memory - after_memory
             
-            self.logger.debug(
-                f"Garbage collection complete",
-                context={
+            self._log_with_context('debug', f"Garbage collection complete", context={
                     'objects_collected': collected,
                     'gc_time_seconds': gc_time,
                     'memory_freed_mb': memory_freed,
                     'memory_after_mb': after_memory
-                } if HAS_SECURE_LOGGING else None
-            )
+                })
             
             self._last_gc_time = current_time
         
@@ -658,14 +648,11 @@ class LargeScaleProcessor:
             
             cache_size = len(self.processor._file_cache)
             if cache_size > 0:
-                self.logger.info(
-                    f"Clearing processor cache ({cache_size} entries)",
-                    context={
+                self._log_with_context('info', f"Clearing processor cache ({cache_size} entries)", context={
                         'cache_size': cache_size,
                         'processed_count': processed_count,
                         'memory_before_clear': psutil.Process().memory_info().rss / (1024 * 1024)
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
                 self.processor._file_cache.clear()
                 self._last_cache_clear = processed_count
 
@@ -712,23 +699,20 @@ class LargeScaleProcessor:
                         memory_info = validator.check_memory_usage()
                         
                         if memory_info['percent'] > 90:
-                            self.logger.critical(f"System memory critical: {memory_info['percent']:.1f}%")
+                            self._log_with_context('critical', f"System memory critical: {memory_info['percent']:.1f}%")
                             validator.emergency_cleanup()
                             self._is_processing = False
                             break
                     
                     # Log high memory usage
                     if memory_mb > memory_limit * 0.8:
-                        self.logger.warning(
-                            f"High memory usage: {memory_mb:.1f} MB",
-                            context={
+                        self._log_with_context('warning', f"High memory usage: {memory_mb:.1f} MB", context={
                                 'current_memory_mb': memory_mb,
                                 'memory_limit_mb': memory_limit,
                                 'memory_percent': (memory_mb / memory_limit) * 100,
                                 'system_memory_percent': psutil.virtual_memory().percent,
                                 'files_processed': self.stats.get('processed_files', 0)
-                            } if HAS_SECURE_LOGGING else None
-                        )
+                            })
                         
                         # If we have resource manager, use it for better handling
                         if self.resource_manager:
@@ -805,13 +789,10 @@ class LargeScaleProcessor:
         commit_start_time = time.time()
         
         # Log batch commit start
-        self.logger.debug(
-            "Starting database batch commit",
-            context={
+        self._log_with_context('debug', "Starting database batch commit", context={
                 'batch_size': len(results),
                 'has_batch_save': hasattr(self.db_manager, 'save_analysis_batch')
-            } if HAS_SECURE_LOGGING else None
-        )
+            })
         
         try:
             # Convert to batch format for database
@@ -821,13 +802,10 @@ class LargeScaleProcessor:
             
             # Use batch save if available
             if hasattr(self.db_manager, 'save_analysis_batch'):
-                self.logger.info(
-                    f"Committing {len(batch_data)} results to database using batch save",
-                    context={
+                self._log_with_context('info', f"Committing {len(batch_data)} results to database using batch save", context={
                         'batch_size': len(batch_data),
                         'memory_usage_mb': psutil.Process().memory_info().rss / (1024 * 1024)
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
                 
                 save_start = time.time()
                 analysis_ids = self.db_manager.save_analysis_batch(batch_data)
@@ -837,14 +815,11 @@ class LargeScaleProcessor:
                 for result, db_id in zip(batch_data, analysis_ids):
                     result.db_id = db_id
                     
-                self.logger.info(
-                    f"Successfully committed {len(analysis_ids)} results to database",
-                    context={
+                self._log_with_context('info', f"Successfully committed {len(analysis_ids)} results to database", context={
                         'saved_count': len(analysis_ids),
                         'save_time_seconds': save_time,
                         'saves_per_second': len(analysis_ids) / save_time if save_time > 0 else 0
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
             else:
                 # Fall back to individual saves
                 self.logger.info(
@@ -871,33 +846,24 @@ class LargeScaleProcessor:
                             
                         # Log progress for large batches
                         if idx > 0 and idx % 100 == 0:
-                            self.logger.debug(
-                                f"Individual save progress: {idx}/{len(batch_data)}",
-                                context={
+                            self._log_with_context('debug', f"Individual save progress: {idx}/{len(batch_data)}", context={
                                     'progress': idx,
                                     'total': len(batch_data),
                                     'saved': saved_count,
                                     'duplicates': duplicate_count
-                                } if HAS_SECURE_LOGGING else None
-                            )
+                                })
                     except Exception as e:
-                        self.logger.error(
-                            f"Failed to save result: {e}",
-                            context={
+                        self._log_with_context('error', f"Failed to save result: {e}", context={
                                 'result_index': idx,
                                 'model': result.metadata.model,
                                 'serial': result.metadata.serial
-                            } if HAS_SECURE_LOGGING else None
-                        )
+                            })
                 
-                self.logger.info(
-                    f"Individually saved {saved_count} results to database",
-                    context={
+                self._log_with_context('info', f"Individually saved {saved_count} results to database", context={
                         'saved_count': saved_count,
                         'duplicate_count': duplicate_count,
                         'total_time_seconds': time.time() - commit_start_time
-                    } if HAS_SECURE_LOGGING else None
-                )
+                    })
             
         except Exception as e:
             self.logger.error(
@@ -952,8 +918,8 @@ class LargeScaleProcessor:
         self.logger.info("="*60)
         
         # Log detailed statistics with secure logging
-        if HAS_SECURE_LOGGING:
-            self.logger.info(
+        if self._use_secure_logging:
+            self._log_with_context('info',
                 "Batch processing summary",
                 context={
                     'total_files': total_processed,
@@ -990,7 +956,7 @@ class LargeScaleProcessor:
             
             # Log failed files summary if any
             if failed_files:
-                self.logger.warning(
+                self._log_with_context('warning',
                     f"Failed to process {len(failed_files)} files",
                     context={
                         'failed_count': len(failed_files),
