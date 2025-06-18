@@ -58,9 +58,10 @@ logger = logging.getLogger(__name__)
 class FastExcelReader:
     """Optimized Excel reader with caching and minimal overhead."""
     
-    def __init__(self):
+    def __init__(self, turbo_mode: bool = False):
         self._cache = {}
         self._max_cache_size = 50
+        self.turbo_mode = turbo_mode
         
     @lru_cache(maxsize=128)
     def detect_system_cached(self, file_path: str) -> SystemType:
@@ -163,6 +164,21 @@ class FastExcelReader:
         metadata['serial'] = parts[1] if len(parts) > 1 else "Unknown"
         metadata['timestamp'] = extract_datetime_from_filename(file_path.stem) or datetime.now()
         
+        # Check for multi-track based on system type and sheets
+        if file_data['system_type'] == SystemType.SYSTEM_B:
+            # System B multi-track detection
+            if 'TA' in parts or 'TB' in parts:
+                metadata['has_multi_tracks'] = True
+                metadata['track_identifier'] = 'TA' if 'TA' in parts else 'TB'
+            else:
+                metadata['has_multi_tracks'] = False
+                metadata['track_identifier'] = None
+        else:
+            # System A multi-track detection based on sheet names
+            track_sheets = [s for s in file_data['sheets'] if 'TRK' in s]
+            metadata['has_multi_tracks'] = len(track_sheets) > 1
+            metadata['track_identifier'] = None
+        
         return metadata
     
     def clear_cache(self):
@@ -177,7 +193,7 @@ class FastProcessor:
     def __init__(self, config: Config, turbo_mode: bool = False):
         self.config = config
         self.turbo_mode = turbo_mode
-        self.reader = FastExcelReader()
+        self.reader = FastExcelReader(turbo_mode=turbo_mode)
         
         # Initialize analyzers once
         self.sigma_analyzer = SigmaAnalyzer(config, logger)
@@ -186,7 +202,8 @@ class FastProcessor:
         
         # Performance settings
         self.max_workers = mp.cpu_count() if turbo_mode else max(mp.cpu_count() // 2, 1)
-        self.chunk_size = 50  # Files per chunk
+        # Adaptive chunk sizing - will be set based on total files in process_batch
+        self.chunk_size = 20  # Default chunk size
         self.enable_plots = False if turbo_mode else config.processing.generate_plots
         
         logger.info(f"FastProcessor initialized - Turbo: {turbo_mode}, Workers: {self.max_workers}, Plots: {self.enable_plots}")
@@ -205,8 +222,21 @@ class FastProcessor:
         memory_available = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
         logger.info(f"Available memory: {memory_available:.1f}GB")
         
-        if memory_available < 2 and total_files > 100:
-            logger.warning("Low memory detected - enabling aggressive memory management")
+        # Adaptive chunk sizing based on total files and available memory
+        if self.turbo_mode and total_files > 200:
+            # For large batches in turbo mode, use larger chunks
+            if memory_available >= 4:
+                self.chunk_size = 200  # Aggressive for high memory systems
+            elif memory_available >= 2:
+                self.chunk_size = 100  # Moderate for medium memory
+            else:
+                self.chunk_size = 50   # Conservative for low memory
+            logger.info(f"Turbo mode with {total_files} files: using chunk size {self.chunk_size}")
+        elif memory_available < 2 and total_files > 100:
+            logger.warning("Low memory detected - using conservative chunk size")
+            self.chunk_size = 20
+        else:
+            # Default chunk size for smaller batches
             self.chunk_size = 20
         
         results = []
@@ -219,20 +249,36 @@ class FastProcessor:
         for chunk_idx, chunk in enumerate(chunks):
             chunk_start = time.time()
             
-            # Update progress
+            # Update progress at start of chunk with accurate file count
             if progress_callback:
-                progress = (chunk_idx * self.chunk_size) / total_files
-                progress_callback(f"Processing chunk {chunk_idx + 1}/{len(chunks)}", progress)
+                progress = processed / total_files
+                files_in_chunk = len(chunk)
+                start_file = processed + 1
+                end_file = min(processed + files_in_chunk, total_files)
+                # Check if callback returns False to indicate stop
+                continue_processing = progress_callback(f"Processing files {start_file}-{end_file} of {total_files}", progress)
+                if continue_processing is False:
+                    logger.info("Processing stopped by user request")
+                    break
             
             # Process chunk in parallel
             chunk_results = self._process_chunk_parallel(chunk, output_dir)
             results.extend(chunk_results)
             
-            processed += len(chunk)
+            # Update processed count with actual results
+            processed += len(chunk_results)
             chunk_time = time.time() - chunk_start
-            rate = len(chunk) / chunk_time if chunk_time > 0 else 0
+            rate = len(chunk_results) / chunk_time if chunk_time > 0 else 0
             
-            logger.info(f"Chunk {chunk_idx + 1} completed: {len(chunk)} files in {chunk_time:.1f}s ({rate:.1f} files/sec)")
+            # Update progress after chunk with accurate count
+            if progress_callback:
+                progress = processed / total_files
+                continue_processing = progress_callback(f"Completed {processed} of {total_files} files", progress)
+                if continue_processing is False:
+                    logger.info("Processing stopped after chunk completion")
+                    break
+            
+            logger.info(f"Chunk {chunk_idx + 1} completed: {len(chunk_results)} files in {chunk_time:.1f}s ({rate:.1f} files/sec)")
             
             # Memory management between chunks
             if chunk_idx % 5 == 0:
@@ -280,18 +326,23 @@ class FastProcessor:
     def _process_file_worker(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
         """Worker function to process a single file."""
         try:
+            # In extreme turbo mode, use minimal processing
+            if self.turbo_mode and hasattr(self, '_process_file_minimal'):
+                return self._process_file_minimal(file_path)
+            
             # Read file data once
             file_data = self.reader.read_file_once(file_path)
             
             # Create metadata
             metadata = FileMetadata(
                 filename=file_data['metadata']['filename'],
-                file_path=file_data['metadata']['file_path'],
+                file_path=Path(file_data['metadata']['file_path']),  # Convert string to Path
                 model=file_data['metadata']['model'],
                 serial=file_data['metadata']['serial'],
-                timestamp=file_data['metadata']['timestamp'],
-                system_type=file_data['system_type'],
-                file_size_mb=file_data['metadata']['file_size_mb']
+                file_date=file_data['metadata']['timestamp'],  # Changed from timestamp to file_date
+                system=file_data['system_type'],  # Changed from system_type to system
+                has_multi_tracks=file_data['metadata'].get('has_multi_tracks', False),
+                track_identifier=file_data['metadata'].get('track_identifier', None)
             )
             
             # Process tracks
@@ -380,32 +431,63 @@ class FastProcessor:
         """Process a single track with optimized data extraction."""
         try:
             # Extract data from cached sheets
-            trim_data = self._extract_trim_data_fast(sheets, file_data, metadata.system_type)
+            trim_data = self._extract_trim_data_fast(sheets, file_data, metadata.system)
             
             if not trim_data or not trim_data.get('positions'):
                 return None
             
             # Extract unit properties
-            unit_props = self._extract_unit_properties_fast(sheets, file_data, metadata.system_type)
+            unit_props = self._extract_unit_properties_fast(sheets, file_data, metadata.system)
             
             # Run analyses in turbo mode (skip some validations)
             sigma_result = self._analyze_sigma_fast(trim_data, unit_props, metadata.model)
-            linearity_result = self._analyze_linearity_fast(trim_data) if not self.turbo_mode else None
-            resistance_result = self._analyze_resistance_fast(unit_props) if not self.turbo_mode else None
+            # Always perform all analyses for complete functionality
+            linearity_result = self._analyze_linearity_fast(trim_data)
+            resistance_result = self._analyze_resistance_fast(unit_props)
+            
+            # Add ALL required analyses - nothing is optional!
+            zone_result = self._analyze_zones_fast(trim_data)
+            dynamic_range_result = self._analyze_dynamic_range_fast(trim_data)
+            trim_effectiveness_result = self._calculate_trim_effectiveness_fast(
+                sigma_result, linearity_result, resistance_result
+            )
+            failure_prediction_result = self._calculate_failure_prediction_fast(
+                sigma_result, linearity_result, unit_props
+            )
+            
+            # Determine status and reason
+            status = AnalysisStatus.PASS
+            status_reason = "All tests passed"
+            
+            if linearity_result and not linearity_result.linearity_pass:
+                status = AnalysisStatus.FAIL
+                status_reason = f"Linearity failed: {linearity_result.linearity_fail_points} points out of spec"
+            elif sigma_result and not sigma_result.sigma_pass:
+                status = AnalysisStatus.FAIL
+                status_reason = f"Sigma gradient ({sigma_result.sigma_gradient:.4f}) exceeds threshold ({sigma_result.sigma_threshold:.4f})"
+            elif sigma_result and hasattr(sigma_result, 'gradient_margin') and sigma_result.gradient_margin < 0.2 * sigma_result.sigma_threshold:
+                status = AnalysisStatus.WARNING
+                margin_percent = (sigma_result.gradient_margin / sigma_result.sigma_threshold) * 100
+                status_reason = f"Sigma margin tight: only {margin_percent:.1f}% margin to threshold"
             
             # Create track data
             track_data = TrackData(
                 track_id=track_id,
-                positions=trim_data['positions'],
-                errors=trim_data['errors'],
-                upper_limits=trim_data.get('upper_limits', []),
-                lower_limits=trim_data.get('lower_limits', []),
-                travel_length=trim_data.get('travel_length', 0),
+                position_data=list(trim_data['positions']),  # Convert numpy array to list
+                error_data=list(trim_data['errors']),  # Convert numpy array to list
+                upper_limits=list(trim_data.get('upper_limits', [])) if len(trim_data.get('upper_limits', [])) > 0 else None,
+                lower_limits=list(trim_data.get('lower_limits', [])) if len(trim_data.get('lower_limits', [])) > 0 else None,
+                travel_length=float(trim_data.get('travel_length', 1.0)),  # Ensure float
                 unit_properties=unit_props,
                 sigma_analysis=sigma_result,
                 linearity_analysis=linearity_result,
                 resistance_analysis=resistance_result,
-                status=AnalysisStatus.PASS if sigma_result and sigma_result.sigma_pass else AnalysisStatus.FAIL
+                zone_analysis=zone_result,
+                dynamic_range_analysis=dynamic_range_result,
+                trim_effectiveness=trim_effectiveness_result,
+                failure_prediction=failure_prediction_result,
+                status=status,
+                status_reason=status_reason
             )
             
             return track_data
@@ -466,6 +548,7 @@ class FastProcessor:
         
         # Quick extraction without multiple file reads
         try:
+            # Extract from untrimmed sheet
             if 'untrimmed' in sheets and sheets['untrimmed'] in file_data['data']:
                 df = file_data['data'][sheets['untrimmed']]
                 # Direct cell access is faster than extract_cell_value
@@ -476,8 +559,27 @@ class FastProcessor:
                     # B10 = row 9, col 1  
                     if len(df) > 9 and len(df.columns) > 1:
                         props.untrimmed_resistance = float(df.iloc[9, 1]) if pd.notna(df.iloc[9, 1]) else None
-        except:
-            pass
+                else:  # System B
+                    # K1 = row 0, col 10 for unit length
+                    if len(df) > 0 and len(df.columns) > 10:
+                        props.unit_length = float(df.iloc[0, 10]) if pd.notna(df.iloc[0, 10]) else None
+                    # R1 = row 0, col 17 for untrimmed resistance
+                    if len(df) > 0 and len(df.columns) > 17:
+                        props.untrimmed_resistance = float(df.iloc[0, 17]) if pd.notna(df.iloc[0, 17]) else None
+            
+            # Extract from trimmed sheet
+            if 'trimmed' in sheets and sheets['trimmed'] in file_data['data']:
+                df = file_data['data'][sheets['trimmed']]
+                if system_type == SystemType.SYSTEM_A:
+                    # B10 = row 9, col 1 for trimmed resistance
+                    if len(df) > 9 and len(df.columns) > 1:
+                        props.trimmed_resistance = float(df.iloc[9, 1]) if pd.notna(df.iloc[9, 1]) else None
+                else:  # System B
+                    # R1 = row 0, col 17 for trimmed resistance
+                    if len(df) > 0 and len(df.columns) > 17:
+                        props.trimmed_resistance = float(df.iloc[0, 17]) if pd.notna(df.iloc[0, 17]) else None
+        except Exception as e:
+            logger.debug(f"Error extracting unit properties: {e}")
         
         return props
     
@@ -507,16 +609,15 @@ class FastProcessor:
             # Simple threshold
             sigma_threshold = 0.3 if "PRECISION" in model.upper() else 0.5
             
+            # Calculate gradient margin
+            gradient_margin = sigma_threshold - sigma_gradient
+            
             return SigmaAnalysis(
                 sigma_gradient=sigma_gradient,
                 sigma_threshold=sigma_threshold,
                 sigma_pass=sigma_gradient <= sigma_threshold,
-                sigma_values=[],  # Skip detailed values in turbo mode
-                position_values=[],
-                trend_line_slope=m,
-                trend_line_intercept=c,
-                r_squared=0.0,  # Skip in turbo mode
-                data_points_used=len(positions)
+                gradient_margin=gradient_margin,
+                scaling_factor=24.0  # Default scaling factor
             )
             
         except Exception as e:
@@ -525,8 +626,6 @@ class FastProcessor:
     
     def _analyze_linearity_fast(self, trim_data: Dict[str, Any]) -> Optional[LinearityAnalysis]:
         """Fast linearity analysis."""
-        if self.turbo_mode:
-            return None
         
         try:
             # Simplified linearity check
@@ -537,9 +636,14 @@ class FastProcessor:
             if len(upper_limits) != len(errors) or len(lower_limits) != len(errors):
                 # No limits, assume pass
                 return LinearityAnalysis(
-                    linearity_error=0.0,
-                    linearity_threshold=1.0,
-                    linearity_pass=True
+                    linearity_spec=1.0,
+                    optimal_offset=0.0,
+                    final_linearity_error_raw=0.0,
+                    final_linearity_error_shifted=0.0,
+                    linearity_pass=True,
+                    linearity_fail_points=0,
+                    max_deviation=0.0,  # Add missing field
+                    max_deviation_position=None  # Add missing field
                 )
             
             # Check if errors are within limits
@@ -550,38 +654,60 @@ class FastProcessor:
             lower_violations = np.maximum(0, lower_limits - errors)
             max_violation = max(np.max(upper_violations), np.max(lower_violations))
             
+            # Find position of max deviation for completeness
+            max_deviation_idx = np.argmax(np.maximum(upper_violations, lower_violations))
+            positions = np.array(trim_data.get('positions', []))
+            max_deviation_position = positions[max_deviation_idx] if len(positions) > max_deviation_idx else None
+            
             return LinearityAnalysis(
-                linearity_error=max_violation,
-                linearity_threshold=0.1,  # 10% threshold
-                linearity_pass=within_limits
+                linearity_spec=0.1,  # 10% spec
+                optimal_offset=0.0,  # No offset in fast mode
+                final_linearity_error_raw=max_violation,
+                final_linearity_error_shifted=max_violation,  # Same as raw in fast mode
+                linearity_pass=within_limits,
+                linearity_fail_points=0,  # Not calculated in fast mode
+                max_deviation=max_violation,  # Add missing field
+                max_deviation_position=max_deviation_position  # Add missing field
             )
             
         except Exception as e:
             logger.error(f"Fast linearity analysis error: {e}")
             return None
     
-    def _analyze_resistance_fast(self, unit_props: UnitProperties) -> Optional[ResistanceAnalysis]:
+    def _analyze_resistance_fast(self, unit_props: UnitProperties) -> ResistanceAnalysis:
         """Fast resistance analysis."""
-        if self.turbo_mode:
-            return None
         
         try:
             if unit_props.untrimmed_resistance and unit_props.trimmed_resistance:
                 change_percent = ((unit_props.trimmed_resistance - unit_props.untrimmed_resistance) / 
                                 unit_props.untrimmed_resistance * 100)
                 
+                resistance_change = unit_props.trimmed_resistance - unit_props.untrimmed_resistance
+                
                 return ResistanceAnalysis(
                     untrimmed_resistance=unit_props.untrimmed_resistance,
                     trimmed_resistance=unit_props.trimmed_resistance,
-                    resistance_change_percent=change_percent,
-                    trim_effectiveness=abs(change_percent) > 0.1  # Trim had effect
+                    resistance_change=resistance_change,
+                    resistance_change_percent=change_percent
                 )
-            
-            return None
+            else:
+                # Return ResistanceAnalysis with None values instead of returning None
+                return ResistanceAnalysis(
+                    untrimmed_resistance=unit_props.untrimmed_resistance,
+                    trimmed_resistance=unit_props.trimmed_resistance,
+                    resistance_change=None,
+                    resistance_change_percent=None
+                )
             
         except Exception as e:
             logger.error(f"Fast resistance analysis error: {e}")
-            return None
+            # Return ResistanceAnalysis with None values on error
+            return ResistanceAnalysis(
+                untrimmed_resistance=None,
+                trimmed_resistance=None,
+                resistance_change=None,
+                resistance_change_percent=None
+            )
     
     def _determine_overall_status(self, tracks: Dict[str, TrackData]) -> AnalysisStatus:
         """Quickly determine overall status."""
@@ -612,6 +738,212 @@ class FastProcessor:
             primary_track.plot_path = plot_path
         except Exception as e:
             logger.error(f"Plot generation error: {e}")
+    
+    def _get_default_linearity(self) -> LinearityAnalysis:
+        """Get default linearity analysis for turbo mode."""
+        return LinearityAnalysis(
+            linearity_spec=1.0,
+            optimal_offset=0.0,
+            final_linearity_error_raw=0.0,
+            final_linearity_error_shifted=0.0,
+            linearity_pass=True,  # Assume pass in turbo mode
+            linearity_fail_points=0
+        )
+    
+    def _get_default_resistance(self) -> ResistanceAnalysis:
+        """Get default resistance analysis for turbo mode."""
+        return ResistanceAnalysis(
+            untrimmed_resistance=None,
+            trimmed_resistance=None,
+            resistance_change=None,
+            resistance_change_percent=None
+        )
+    
+    def _analyze_zones_fast(self, trim_data: Dict[str, Any]) -> Optional[ZoneAnalysis]:
+        """Fast zone analysis for consistency."""
+        try:
+            positions = np.array(trim_data.get('positions', []))
+            errors = np.array(trim_data.get('errors', []))
+            
+            if len(positions) < 10 or len(errors) < 10:
+                return None
+            
+            # Divide into 3 zones
+            n_zones = 3
+            zone_size = len(positions) // n_zones
+            
+            zones = []
+            rms_errors = []
+            for i in range(n_zones):
+                start_idx = i * zone_size
+                end_idx = (i + 1) * zone_size if i < n_zones - 1 else len(positions)
+                
+                zone_errors = errors[start_idx:end_idx]
+                zone_rms = np.sqrt(np.mean(np.square(zone_errors))) if len(zone_errors) > 0 else 0
+                rms_errors.append(zone_rms)
+                
+                zones.append({
+                    'zone_id': f"Zone_{i+1}",
+                    'start_position': float(positions[start_idx]),
+                    'end_position': float(positions[end_idx-1]),
+                    'rms_error': float(zone_rms),
+                    'point_count': len(zone_errors)
+                })
+            
+            # Calculate zone consistency
+            min_rms = min(rms_errors) if rms_errors else 1.0
+            max_rms = max(rms_errors) if rms_errors else 1.0
+            zone_consistency = max_rms / min_rms if min_rms > 0 else 1.0
+            
+            return ZoneAnalysis(
+                zones=zones,
+                zone_consistency=float(zone_consistency)
+            )
+            
+        except Exception as e:
+            logger.error(f"Zone analysis error: {e}")
+            return None
+    
+    def _analyze_dynamic_range_fast(self, trim_data: Dict[str, Any]) -> Optional[DynamicRangeAnalysis]:
+        """Fast dynamic range analysis."""
+        try:
+            positions = np.array(trim_data.get('positions', []))
+            errors = np.array(trim_data.get('errors', []))
+            
+            if len(positions) == 0 or len(errors) == 0:
+                return None
+            
+            position_range = float(np.max(positions) - np.min(positions))
+            error_range = float(np.max(errors) - np.min(errors))
+            
+            # Calculate signal to noise ratio
+            error_std = np.std(errors)
+            snr = abs(np.mean(errors)) / error_std if error_std > 0 else 0.0
+            
+            return DynamicRangeAnalysis(
+                position_range=position_range,
+                error_range=error_range,
+                signal_to_noise_ratio=float(snr)
+            )
+            
+        except Exception as e:
+            logger.error(f"Dynamic range analysis error: {e}")
+            return None
+    
+    def _calculate_trim_effectiveness_fast(
+        self,
+        sigma_analysis: Optional[SigmaAnalysis],
+        linearity_analysis: Optional[LinearityAnalysis],
+        resistance_analysis: Optional[ResistanceAnalysis]
+    ) -> TrimEffectiveness:
+        """Fast calculation of trim effectiveness."""
+        try:
+            # Simple effectiveness calculation
+            sigma_improvement = 0.0
+            if sigma_analysis and sigma_analysis.sigma_pass:
+                # Improvement based on how far below threshold we are
+                sigma_improvement = max(0, (1 - sigma_analysis.sigma_ratio) * 100)
+            
+            linearity_improvement = 0.0
+            if linearity_analysis and linearity_analysis.linearity_pass:
+                # Improvement based on final error vs spec
+                if linearity_analysis.linearity_spec > 0:
+                    linearity_improvement = max(0, (1 - linearity_analysis.final_linearity_error_shifted / linearity_analysis.linearity_spec) * 100)
+            
+            resistance_stability = 100.0
+            if resistance_analysis and resistance_analysis.resistance_change_percent is not None:
+                # Stability as inverse of change
+                resistance_stability = max(0, 100.0 - abs(resistance_analysis.resistance_change_percent))
+            
+            # Overall effectiveness
+            overall_effectiveness = (sigma_improvement + linearity_improvement) / 2.0
+            
+            return TrimEffectiveness(
+                improvement_percent=overall_effectiveness,
+                sigma_improvement=sigma_improvement,
+                linearity_improvement=linearity_improvement,
+                resistance_stability=resistance_stability
+            )
+            
+        except Exception as e:
+            logger.error(f"Trim effectiveness calculation error: {e}")
+            # Return default values
+            return TrimEffectiveness(
+                improvement_percent=0.0,
+                sigma_improvement=0.0,
+                linearity_improvement=0.0,
+                resistance_stability=100.0
+            )
+    
+    def _calculate_failure_prediction_fast(
+        self,
+        sigma_analysis: Optional[SigmaAnalysis],
+        linearity_analysis: Optional[LinearityAnalysis],
+        unit_props: UnitProperties
+    ) -> FailurePrediction:
+        """Fast failure prediction without ML."""
+        try:
+            # Simple failure probability calculation
+            sigma_factor = 0.0
+            if sigma_analysis:
+                sigma_factor = min(sigma_analysis.sigma_ratio, 1.0)
+            
+            linearity_factor = 0.0
+            if linearity_analysis and linearity_analysis.linearity_spec > 0:
+                linearity_factor = min(
+                    linearity_analysis.final_linearity_error_shifted / linearity_analysis.linearity_spec,
+                    1.0
+                )
+            
+            resistance_factor = 0.0
+            if unit_props.resistance_change_percent is not None:
+                # Only significant if change > 5%
+                resistance_factor = min(abs(unit_props.resistance_change_percent) / 10.0, 1.0)
+            
+            # Weighted combination
+            failure_probability = (
+                0.4 * sigma_factor +
+                0.4 * linearity_factor +
+                0.2 * resistance_factor
+            )
+            
+            # Scale down for passing units
+            if sigma_analysis and linearity_analysis:
+                if sigma_analysis.sigma_pass and linearity_analysis.linearity_pass:
+                    failure_probability *= 0.5
+            
+            failure_probability = min(max(failure_probability, 0), 1)
+            
+            # Determine risk category
+            if failure_probability > 0.8:
+                risk_category = RiskCategory.HIGH
+            elif failure_probability > 0.5:
+                risk_category = RiskCategory.MEDIUM
+            else:
+                risk_category = RiskCategory.LOW
+            
+            gradient_margin = sigma_analysis.gradient_margin if sigma_analysis else 0.0
+            
+            return FailurePrediction(
+                failure_probability=failure_probability,
+                risk_category=risk_category,
+                gradient_margin=gradient_margin,
+                contributing_factors={
+                    'sigma': sigma_factor,
+                    'linearity': linearity_factor,
+                    'resistance': resistance_factor
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Failure prediction error: {e}")
+            # Return default low risk prediction
+            return FailurePrediction(
+                failure_probability=0.1,
+                risk_category=RiskCategory.LOW,
+                gradient_margin=0.0,
+                contributing_factors={}
+            )
     
     def _cleanup_memory(self):
         """Aggressive memory cleanup."""

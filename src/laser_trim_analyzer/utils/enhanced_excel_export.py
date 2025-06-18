@@ -178,7 +178,7 @@ class EnhancedExcelExporter:
             ("File Size (MB)", f"{getattr(result.metadata, 'file_size_mb', 'N/A'):.2f}" if hasattr(result.metadata, 'file_size_mb') else 'N/A'),
             ("Model", result.metadata.model),
             ("Serial", result.metadata.serial),
-            ("System Type", result.metadata.system_type.value),
+            ("System Type", result.metadata.system.value),
             ("Test Date", result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S') if hasattr(result.metadata, 'test_date') and result.metadata.test_date else 'N/A'),
             ("Analysis Date", result.metadata.timestamp.strftime('%Y-%m-%d %H:%M:%S')),
             ("Has Multiple Tracks", "Yes" if getattr(result.metadata, 'has_multi_tracks', False) else "No"),
@@ -590,7 +590,7 @@ class EnhancedExcelExporter:
             ("File Size (MB)", f"{getattr(result.metadata, 'file_size_mb', 'N/A'):.2f}" if hasattr(result.metadata, 'file_size_mb') else 'N/A'),
             ("Model", result.metadata.model),
             ("Serial", result.metadata.serial),
-            ("System Type", result.metadata.system_type.value),
+            ("System Type", result.metadata.system.value),
             ("Test Date", result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S') if hasattr(result.metadata, 'test_date') and result.metadata.test_date else 'N/A'),
             ("File Modified Date", result.metadata.timestamp.strftime('%Y-%m-%d %H:%M:%S')),
             ("Analysis Date", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
@@ -731,7 +731,7 @@ class EnhancedExcelExporter:
             ws.cell(row=row, column=1, value=result.metadata.filename)
             ws.cell(row=row, column=2, value=result.metadata.model)
             ws.cell(row=row, column=3, value=result.metadata.serial)
-            ws.cell(row=row, column=4, value=result.metadata.system_type.value)
+            ws.cell(row=row, column=4, value=result.metadata.system.value)
             ws.cell(row=row, column=5, value=result.overall_status.value)
             self._apply_status_formatting(ws.cell(row=row, column=5), result.overall_status.value)
             ws.cell(row=row, column=6, value=result.processing_time)
@@ -741,20 +741,20 @@ class EnhancedExcelExporter:
             primary_track = result.primary_track
             if primary_track:
                 ws.cell(row=row, column=8, value=primary_track.track_id)
-                ws.cell(row=row, column=9, value=primary_track.data_points)
+                ws.cell(row=row, column=9, value=len(primary_track.position_data) if primary_track.position_data else 0)
                 
                 # Sigma analysis
                 if primary_track.sigma_analysis:
                     ws.cell(row=row, column=10, value=primary_track.sigma_analysis.sigma_gradient)
                     ws.cell(row=row, column=11, value=primary_track.sigma_analysis.sigma_threshold)
-                    ws.cell(row=row, column=12, value="PASS" if primary_track.sigma_analysis.passed else "FAIL")
+                    ws.cell(row=row, column=12, value="PASS" if primary_track.sigma_analysis.sigma_pass else "FAIL")
                     ws.cell(row=row, column=13, value=getattr(primary_track.sigma_analysis, 'sigma_ratio', 'N/A'))
                 
                 # Linearity analysis
                 if primary_track.linearity_analysis:
                     ws.cell(row=row, column=14, value=primary_track.linearity_analysis.linearity_spec)
-                    ws.cell(row=row, column=15, value="PASS" if primary_track.linearity_analysis.passed else "FAIL")
-                    ws.cell(row=row, column=16, value=primary_track.linearity_analysis.fail_points)
+                    ws.cell(row=row, column=15, value="PASS" if primary_track.linearity_analysis.linearity_pass else "FAIL")
+                    ws.cell(row=row, column=16, value=primary_track.linearity_analysis.linearity_fail_points)
                     ws.cell(row=row, column=17, value=primary_track.linearity_analysis.optimal_offset)
                     ws.cell(row=row, column=18, value=primary_track.linearity_analysis.final_linearity_error_shifted)
                     ws.cell(row=row, column=19, value=getattr(primary_track.linearity_analysis, 'max_deviation', 'N/A'))
@@ -762,21 +762,21 @@ class EnhancedExcelExporter:
                 # Unit properties
                 if primary_track.unit_properties:
                     ws.cell(row=row, column=20, value=primary_track.unit_properties.unit_length)
-                    ws.cell(row=row, column=21, value=primary_track.unit_properties.resistance_range)
-                    ws.cell(row=row, column=22, value=f"{primary_track.unit_properties.normalized_range:.2f}%")
+                    ws.cell(row=row, column=21, value=primary_track.unit_properties.resistance_change if primary_track.unit_properties else None)
+                    ws.cell(row=row, column=22, value=f"{primary_track.unit_properties.resistance_change_percent:.2f}%" if primary_track.unit_properties and primary_track.unit_properties.resistance_change_percent else "N/A")
             
-            # ML predictions
-            if hasattr(result, 'ml_prediction') and result.ml_prediction:
-                ws.cell(row=row, column=23, value=result.ml_prediction.risk_category)
-                ws.cell(row=row, column=24, value=f"{result.ml_prediction.failure_probability:.2%}")
-                ws.cell(row=row, column=25, value=result.ml_prediction.gradient_margin)
+            # ML predictions (from primary track)
+            if primary_track and primary_track.failure_prediction:
+                ws.cell(row=row, column=23, value=primary_track.failure_prediction.risk_category.value if primary_track.failure_prediction.risk_category else 'N/A')
+                ws.cell(row=row, column=24, value=f"{primary_track.failure_prediction.failure_probability:.2%}" if primary_track.failure_prediction.failure_probability else 'N/A')
+                ws.cell(row=row, column=25, value=primary_track.sigma_analysis.gradient_margin if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'gradient_margin') else 'N/A')
             
             # Validation
-            ws.cell(row=row, column=26, value=getattr(result, 'overall_validation_status', 'N/A'))
-            ws.cell(row=row, column=27, value=getattr(result, 'validation_grade', 'N/A'))
+            ws.cell(row=row, column=26, value=result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A')
+            ws.cell(row=row, column=27, value=result.validation_grade if hasattr(result, 'validation_grade') else 'N/A')
             
-            # Error message
-            ws.cell(row=row, column=28, value=result.error_message or "")
+            # Processing errors/issues
+            ws.cell(row=row, column=28, value="; ".join(result.processing_errors) if hasattr(result, 'processing_errors') and result.processing_errors else "")
             
             row += 1
         
@@ -809,11 +809,11 @@ class EnhancedExcelExporter:
                     sigma_gradients.append(result.primary_track.sigma_analysis.sigma_gradient)
                 if result.primary_track.linearity_analysis:
                     linearity_specs.append(result.primary_track.linearity_analysis.linearity_spec)
-                if result.primary_track.unit_properties:
-                    resistance_ranges.append(result.primary_track.unit_properties.resistance_range)
+                if result.primary_track.unit_properties and result.primary_track.unit_properties.resistance_change_percent:
+                    resistance_ranges.append(result.primary_track.unit_properties.resistance_change_percent)
             
-            if hasattr(result, 'ml_prediction') and result.ml_prediction:
-                failure_probs.append(result.ml_prediction.failure_probability)
+            if result.primary_track and result.primary_track.failure_prediction and result.primary_track.failure_prediction.failure_probability:
+                failure_probs.append(result.primary_track.failure_prediction.failure_probability)
         
         # Calculate statistics
         row = 1

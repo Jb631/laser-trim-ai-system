@@ -51,7 +51,8 @@
       "Bash(else echo \"No venv found\")",
       "Bash(fi)",
       "Bash(cp:*)",
-      "Bash(.venv/Scripts/python:*)"
+      "Bash(.venv/Scripts/python:*)",
+      "Bash(tree:*)"
     ],
     "deny": []
   }

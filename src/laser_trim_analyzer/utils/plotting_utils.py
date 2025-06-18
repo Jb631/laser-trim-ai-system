@@ -452,18 +452,26 @@ def _plot_status_indicator(ax: plt.Axes, track_data: TrackData):
         description = "WARNING"
 
     # Draw status circle
-    circle = plt.Circle((0.5, 0.6), 0.3, color=color, alpha=0.8)
+    circle = plt.Circle((0.5, 0.7), 0.25, color=color, alpha=0.8)
     ax.add_patch(circle)
 
     # Add status text
-    ax.text(0.5, 0.6, symbol, ha='center', va='center',
-            fontsize=50, color='white', fontweight='bold')
-    ax.text(0.5, 0.25, description, ha='center', va='center',
-            fontsize=18, color=color, fontweight='bold')
+    ax.text(0.5, 0.7, symbol, ha='center', va='center',
+            fontsize=40, color='white', fontweight='bold')
+    ax.text(0.5, 0.45, description, ha='center', va='center',
+            fontsize=16, color=color, fontweight='bold')
+    
+    # Add status reason if available
+    if hasattr(track_data, 'status_reason') and track_data.status_reason and status != "Pass":
+        # Wrap long text
+        import textwrap
+        wrapped_text = textwrap.fill(track_data.status_reason, width=30)
+        ax.text(0.5, 0.25, wrapped_text, ha='center', va='center',
+                fontsize=9, color=color, style='italic', wrap=True)
     
     # Add small explanation text
-    ax.text(0.5, 0.1, 'Overall Status', ha='center', va='center',
-            fontsize=10, color='gray', style='italic')
+    ax.text(0.5, 0.05, 'Overall Status', ha='center', va='center',
+            fontsize=9, color='gray', style='italic')
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)

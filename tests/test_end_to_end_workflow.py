@@ -132,16 +132,14 @@ class TestPageIntegration:
         assert hasattr(BasePage, 'cleanup')
         
     def test_ml_components(self):
-        """Test ML components are available."""
-        try:
-            from laser_trim_analyzer.ml.predictors import QualityPredictor
-            from laser_trim_analyzer.ml.ml_manager import MLManager
-            
-            # ML components available
-            assert True
-        except ImportError:
-            # ML components optional
-            assert True
+        """Test ML components are available (required)."""
+        # ML components are required, not optional
+        from laser_trim_analyzer.ml.predictors import QualityPredictor
+        from laser_trim_analyzer.ml.ml_manager import MLManager
+        
+        # Verify imports succeeded
+        assert QualityPredictor is not None
+        assert MLManager is not None
 
 
 class TestErrorHandling:

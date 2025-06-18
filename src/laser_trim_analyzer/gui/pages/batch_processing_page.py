@@ -964,9 +964,13 @@ class BatchProcessingPage(ctk.CTkFrame):
             try:
                 from laser_trim_analyzer.utils.validators import BatchValidator
                 
+                # For validation, allow much larger batches than processing
+                # Validation is just checking files, not processing them
+                validation_max_size = max(10000, len(self.selected_files))
+                
                 validation_result = BatchValidator.validate_batch(
                     file_paths=self.selected_files,
-                    max_batch_size=self.analyzer_config.processing.max_batch_size
+                    max_batch_size=validation_max_size
                 )
                 
                 # Store individual file validation results
@@ -1361,24 +1365,18 @@ class BatchProcessingPage(ctk.CTkFrame):
                         self.generate_plots_var.set(False)
                         logger.info(f"Disabled plot generation for large batch ({file_count} files)")
                 
-                # Check if we should use turbo mode for very large batches
-                turbo_threshold = getattr(self.analyzer_config.processing, 'turbo_mode_threshold', 1000)
+                # Check if we should use turbo mode for batches >= 100 files
+                turbo_threshold = getattr(self.analyzer_config.processing, 'turbo_mode_threshold', 100)
                 
                 if file_count >= turbo_threshold:
                     logger.info(f"Using TURBO MODE for {file_count} files (threshold: {turbo_threshold})")
                     
-                    # Notify user about turbo mode
-                    self.after(0, lambda: messagebox.showinfo(
-                        "Turbo Mode Activated",
-                        f"Processing {file_count} files in TURBO MODE!\n\n"
-                        "• Maximum performance optimizations enabled\n"
-                        "• Plots automatically disabled\n"
-                        "• Minimal validation mode\n"
-                        "• True parallel processing\n\n"
-                        "This will significantly reduce processing time."
-                    ))
+                    # Disable plots for turbo mode
+                    if self.generate_plots_var.get():
+                        self.generate_plots_var.set(False)
+                        logger.info("Plots automatically disabled for turbo mode")
                     
-                    # Use LargeScaleProcessor with turbo mode
+                    # Use FastProcessor with turbo mode directly
                     results = self._process_with_turbo_mode(
                         file_paths=file_paths,
                         output_dir=output_dir,
@@ -1539,68 +1537,69 @@ class BatchProcessingPage(ctk.CTkFrame):
                                     remaining_future.cancel()
                             break
                         
-                    file_path = future_to_file[future]
-                    
-                    # Check if this future was cancelled
-                    if future.cancelled():
-                        logger.debug(f"Skipping cancelled future for {file_path}")
-                        continue
-                    
-                    processed_files += 1
-                    
-                    # Log file start if batch logger available
-                    file_start_time = time.time() if self.batch_logger else None
-                    
-                    try:
-                        result = future.result()
-                        if result is not None:
-                            results[str(file_path)] = result
-                            # Log successful completion
-                            if self.batch_logger and file_start_time:
-                                self.batch_logger.log_file_complete(file_path, file_start_time, result)
-                            
-                            # Update UI with partial results adaptively
-                            # Update less frequently for large batches
-                            if total_files > 1000:
-                                update_interval = 50  # Update every 50 files for very large batches
-                            elif total_files > 500:
-                                update_interval = 25  # Update every 25 files for large batches
+                        file_path = future_to_file[future]
+                        
+                        # Check if this future was cancelled
+                        if future.cancelled():
+                            logger.debug(f"Skipping cancelled future for {file_path}")
+                            continue
+                        
+                        processed_files += 1
+                        
+                        # Log file start if batch logger available
+                        file_start_time = time.time() if self.batch_logger else None
+                        
+                        try:
+                            result = future.result()
+                            if result is not None:
+                                results[str(file_path)] = result
+                                # Log successful completion
+                                if self.batch_logger and file_start_time:
+                                    self.batch_logger.log_file_complete(file_path, file_start_time, result)
+                                
+                                # Update UI with partial results adaptively
+                                # Update less frequently for large batches
+                                if total_files > 1000:
+                                    update_interval = 50  # Update every 50 files for very large batches
+                                elif total_files > 500:
+                                    update_interval = 25  # Update every 25 files for large batches
+                                else:
+                                    update_interval = 10  # Default for smaller batches
+                                
+                                if len(results) % update_interval == 0:
+                                    # Update results widget on main thread
+                                    partial_results = results.copy()
+                                    self.after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
                             else:
-                                update_interval = 10  # Default for smaller batches
-                            
-                            if len(results) % update_interval == 0:
-                                # Update results widget on main thread
-                                partial_results = results.copy()
-                                self.after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
-                        else:
-                            failed_files.append((str(file_path), "Processing returned None"))
-                            # Log failure
-                            if self.batch_logger and file_start_time:
-                                self.batch_logger.log_file_complete(
-                                    file_path, file_start_time, 
-                                    error=Exception("Processing returned None")
-                                )
-                            
-                    except Exception as e:
-                        logger.error(f"File processing failed for {file_path}: {e}")
-                        failed_files.append((str(file_path), str(e)))
-                        # Log error to batch logger
-                        if self.batch_logger:
-                            self.batch_logger.log_file_complete(file_path, file_start_time or time.time(), error=e)
-                        # Don't show individual errors during batch - they'll be summarized at the end
-                    
-                    # Update progress
-                    progress = (processed_files / total_files) * 100
-                    message = f"Processing {file_path.name} ({processed_files}/{total_files})"
-                    
-                    # Log batch progress periodically
-                    if self.batch_logger and processed_files % 10 == 0:
-                        self.batch_logger.log_batch_progress()
-                    
-                    # Call progress callback and check if we should continue
-                    if not progress_callback(message, progress):
-                        logger.info("Progress callback signaled to stop processing")
-                        break
+                                failed_files.append((str(file_path), "Processing returned None"))
+                                # Log failure
+                                if self.batch_logger and file_start_time:
+                                    self.batch_logger.log_file_complete(
+                                        file_path, file_start_time, 
+                                        error=Exception("Processing returned None")
+                                    )
+                                
+                        except Exception as e:
+                            logger.error(f"File processing failed for {file_path}: {e}")
+                            failed_files.append((str(file_path), str(e)))
+                            # Log error to batch logger
+                            if self.batch_logger:
+                                self.batch_logger.log_file_complete(file_path, file_start_time or time.time(), error=e)
+                            # Don't show individual errors during batch - they'll be summarized at the end
+                        
+                        # Update progress
+                        progress_fraction = processed_files / total_files
+                        progress_percent = progress_fraction * 100
+                        message = f"Processing {file_path.name} ({processed_files}/{total_files})"
+                        
+                        # Log batch progress periodically
+                        if self.batch_logger and processed_files % 10 == 0:
+                            self.batch_logger.log_batch_progress()
+                        
+                        # Call progress callback with fraction (0-1) not percentage
+                        if not progress_callback(message, progress_fraction):
+                            logger.info("Progress callback signaled to stop processing")
+                            break
                         
                 except concurrent.futures.TimeoutError:
                     logger.error(f"Timeout processing files in chunk {chunk_start}-{chunk_end}")
@@ -1699,54 +1698,74 @@ class BatchProcessingPage(ctk.CTkFrame):
         output_dir: Optional[Path],
         progress_callback: Callable[[str, float], None]
     ) -> Dict[str, AnalysisResult]:
-        """Process files using turbo mode with LargeScaleProcessor."""
+        """Process files using turbo mode with FastProcessor directly."""
         logger.info(f"Initializing TURBO MODE processing for {len(file_paths)} files")
         
-        # Create large scale processor
-        large_scale_processor = LargeScaleProcessor(
-            config=self.analyzer_config,
-            db_manager=self._db_manager if self.save_to_db_var.get() else None,
-            logger=logger
-        )
+        # Import FastProcessor directly
+        from laser_trim_analyzer.core.fast_processor import FastProcessor
         
-        # Convert async progress callback to sync
-        def turbo_progress_callback(message: str, progress: float, stats: Dict):
+        # Create fast processor with turbo mode enabled
+        fast_processor = FastProcessor(self.analyzer_config, turbo_mode=True)
+        
+        # Track stats for UI updates
+        self.stats = {
+            'total_files': len(file_paths),
+            'processed_files': 0,
+            'failed_files': 0,
+            'start_time': time.time()
+        }
+        
+        # Create progress callback wrapper that checks for cancellation
+        def turbo_progress_callback(message: str, progress: float):
             """Progress callback for turbo mode."""
             # Check for cancellation
             if self._is_processing_cancelled():
-                large_scale_processor.stop_processing()
-                return
+                logger.info("Turbo mode processing cancelled by user")
+                return False  # Signal to stop processing
             
-            # Update stats
-            self.stats = stats
+            # Update stats based on progress
+            self.stats['processed_files'] = int(progress * len(file_paths))
             
-            # Call original callback
+            # Call the original progress callback
             progress_callback(message, progress)
+            
+            return True  # Continue processing
         
         try:
-            # Process using asyncio run (since we're in a thread)
-            import asyncio
+            # Process files directly with FastProcessor (no async needed)
+            results_list = fast_processor.process_batch_fast(
+                file_paths,
+                output_dir,
+                turbo_progress_callback
+            )
             
-            # Create new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            logger.info(f"TURBO MODE completed: {len(results_list)} files processed")
             
-            try:
-                # Run the async processing
-                results = loop.run_until_complete(
-                    large_scale_processor.process_large_directory(
-                        directory=file_paths[0].parent,  # Use parent directory
-                        output_dir=output_dir,
-                        progress_callback=turbo_progress_callback,
-                        file_filter=lambda p: p in file_paths  # Only process selected files
-                    )
-                )
-                
-                logger.info(f"TURBO MODE completed: {len(results)} files processed")
-                return results
-                
-            finally:
-                loop.close()
+            # Convert list to dict keyed by file path
+            results = {}
+            for result in results_list:
+                if result and hasattr(result, 'metadata') and hasattr(result.metadata, 'file_path'):
+                    results[str(result.metadata.file_path)] = result
+            
+            # Save to database if enabled
+            if self.save_to_db_var.get() and self._db_manager and results:
+                try:
+                    # Save in batches
+                    batch_size = 100
+                    all_results = list(results.values())
+                    for i in range(0, len(all_results), batch_size):
+                        batch = all_results[i:i + batch_size]
+                        if hasattr(self._db_manager, 'save_analysis_batch'):
+                            self._db_manager.save_analysis_batch(batch)
+                        else:
+                            # Fallback to individual saves
+                            for result in batch:
+                                self._db_manager.save_analysis_result(result)
+                    logger.info(f"Saved {len(results)} results to database")
+                except Exception as e:
+                    logger.error(f"Failed to save turbo mode results to database: {e}")
+            
+            return results
                 
         except Exception as e:
             logger.error(f"Turbo mode processing failed: {e}")

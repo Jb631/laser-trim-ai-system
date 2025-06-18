@@ -376,7 +376,7 @@ class MLPredictor:
         
         # Ensure we have valid metadata
         if not metadata:
-            self.logger.warning("No metadata available for ML prediction")
+            self.logger.debug("No metadata available for ML prediction - skipping")
             return {}
         
         # Get attributes from metadata safely

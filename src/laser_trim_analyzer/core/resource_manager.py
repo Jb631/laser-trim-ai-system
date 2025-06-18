@@ -349,6 +349,11 @@ class ResourceManager:
         else:
             actual_concurrent = min(concurrent_files, status.max_concurrent_files)
         
+        # For turbo mode with large batches, we use a more reasonable concurrent limit
+        if file_count >= 100:  # Turbo mode threshold
+            # Limit concurrent files for turbo mode to be more conservative
+            actual_concurrent = min(actual_concurrent, 20)
+        
         # Calculate total memory needed
         peak_memory_needed = actual_concurrent * memory_per_file
         

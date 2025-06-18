@@ -912,7 +912,7 @@ class BatchValidator:
     @staticmethod
     def validate_batch(
             file_paths: List[Path],
-            max_batch_size: int = 1000
+            max_batch_size: int = 10000
     ) -> ValidationResult:
         """
         Validate a batch of files.

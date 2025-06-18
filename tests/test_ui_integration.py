@@ -67,7 +67,11 @@ class TestUIIntegration:
         mock_window = Mock()
         mock_window.config = test_config
         mock_window.db_manager = None
-        mock_window.ml_predictor = None
+        # ML is required - create a mock ML predictor
+        mock_ml_predictor = Mock()
+        mock_ml_predictor.predict = Mock(return_value=0.1)  # Low failure risk
+        mock_ml_predictor.is_initialized = True
+        mock_window.ml_predictor = mock_ml_predictor
         mock_window.logger = Mock()
         return mock_window
 

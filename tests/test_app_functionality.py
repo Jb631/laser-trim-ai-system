@@ -153,7 +153,9 @@ def test_gui_creation():
         from laser_trim_analyzer.gui.ctk_main_window import CTkMainWindow, HAS_DND
         from laser_trim_analyzer.core.config import get_config
         
-        print(f"ℹ Drag-and-drop support (tkinterdnd2): {'Available' if HAS_DND else 'Not available'}")
+        # Drag-and-drop is required
+        assert HAS_DND, "Drag-and-drop support (tkinterdnd2) is required but not available. Install with: pip install tkinterdnd2"
+        print("✓ Drag-and-drop support (tkinterdnd2): Available")
         
         # Try to create window
         config = get_config()

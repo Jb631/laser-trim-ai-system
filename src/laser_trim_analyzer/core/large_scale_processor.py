@@ -171,6 +171,8 @@ class LargeScaleProcessor:
                 if context:
                     context_str = ', '.join(f'{k}={v}' for k, v in context.items())
                     message = f"{message} [{context_str}]"
+                # Remove 'context' from kwargs if it exists for standard loggers
+                kwargs.pop('context', None)
                 log_method(message, **kwargs)
 
     async def process_large_directory(
@@ -253,9 +255,14 @@ class LargeScaleProcessor:
                 })
             
             if not is_feasible:
-                error_handler.handle_error(
-                    error=MemoryError("Insufficient resources for batch"),
-                    category=ErrorCategory.RESOURCE,
+                # For turbo mode, we can still try with reduced concurrent files
+                if len(files) >= 100:  # Turbo mode
+                    self.logger.warning("Batch not feasible with current settings, adjusting for turbo mode")
+                    # Continue with reduced settings
+                else:
+                    error_handler.handle_error(
+                        error=MemoryError("Insufficient resources for batch"),
+                        category=ErrorCategory.RESOURCE,
                     severity=ErrorSeverity.ERROR,
                     code=ErrorCode.INSUFFICIENT_MEMORY,
                     user_message="Insufficient system resources for this batch size.",
@@ -410,7 +417,7 @@ class LargeScaleProcessor:
         if HAS_SECURE_LOGGING and isinstance(self.logger, SecureLogger):
             self.logger.start_performance_tracking('batch_processing')
         
-        self.logger.info(
+        self._log_with_context('info',
             "Starting batch processing",
             context={
                 'total_files': len(files),
@@ -420,7 +427,7 @@ class LargeScaleProcessor:
                     'max_concurrent': self.config.processing.max_concurrent_files,
                     'gc_interval': self.config.processing.gc_interval
                 }
-            } if HAS_SECURE_LOGGING else None
+            }
         )
         
         results = {}
@@ -556,7 +563,7 @@ class LargeScaleProcessor:
                     return result
                     
                 except Exception as e:
-                    self.logger.error(
+                    self._log_with_context('error',
                         f"Failed to process {file_path.name}: {e}",
                         context={
                             'file_path': str(file_path),
@@ -564,8 +571,7 @@ class LargeScaleProcessor:
                             'error_type': type(e).__name__,
                             'file_index': file_idx,
                             'chunk_index': chunk_start_idx + file_idx
-                        } if HAS_SECURE_LOGGING else None,
-                        error=e if HAS_SECURE_LOGGING else None
+                        }
                     )
                     failed_files.append((str(file_path), str(e)))
                     return None
@@ -866,13 +872,12 @@ class LargeScaleProcessor:
                     })
             
         except Exception as e:
-            self.logger.error(
+            self._log_with_context('error', 
                 f"Database batch commit failed: {e}",
                 context={
                     'error_type': type(e).__name__,
                     'batch_size': len(results)
-                } if HAS_SECURE_LOGGING else None,
-                error=e if HAS_SECURE_LOGGING else None
+                }
             )
 
     def _filter_resume_files(self, files: List[Path], resume_from: str) -> List[Path]:
@@ -1006,10 +1011,31 @@ class LargeScaleProcessor:
         
         # Convert async progress callback to sync for FastProcessor
         def sync_progress_callback(message: str, progress: float):
+            # Check if we should stop
+            if self._should_stop:
+                logger.info("Turbo mode processing stopped by user request")
+                return False  # Signal FastProcessor to stop
+                
             if progress_callback:
-                self.stats['processed_files'] = int(progress * len(files))
+                # Extract actual file count from message if available
+                import re
+                # Look for patterns like "Processing files 1-50 of 100" or "Completed 50 of 100 files"
+                processing_match = re.search(r'Processing files (\d+)-(\d+) of \d+ files', message)
+                completed_match = re.search(r'Completed (\d+) of \d+ files', message)
+                
+                if completed_match:
+                    self.stats['processed_files'] = int(completed_match.group(1))
+                elif processing_match:
+                    # Use the end of the range as current progress
+                    self.stats['processed_files'] = int(processing_match.group(2))
+                else:
+                    # Fallback to percentage calculation
+                    self.stats['processed_files'] = int(progress * len(files))
+                    
                 self._update_performance_stats()
                 progress_callback(message, progress, self.stats.copy())
+            
+            return True  # Continue processing
         
         try:
             # Use FastProcessor for turbo processing
@@ -1029,8 +1055,12 @@ class LargeScaleProcessor:
             
             # Save to database if enabled (batch operation)
             if self.db_manager and results:
-                self.logger.info("Saving results to database...")
-                await self._batch_commit_results(results)
+                try:
+                    self.logger.info("Saving results to database...")
+                    await self._batch_commit_results(results)
+                except Exception as e:
+                    self.logger.error(f"Failed to save results to database: {e}")
+                    # Continue anyway - we have the results in memory
             
             # Log completion
             total_time = time.time() - self.stats['start_time']

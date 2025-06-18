@@ -52,10 +52,11 @@
 
 ### Specific Project Context
 
-- **ML Components**: ML features are optional. Always handle cases where ML is not available.
+- **ML Components**: ML features are REQUIRED and must work completely. They are NOT optional.
 - **GUI Framework**: Using customtkinter (ctk) for the UI
 - **Database**: SQLAlchemy-based with SQLite backend
 - **Dependencies**: All defined in pyproject.toml, installed via `pip install -e .`
+- **Drag and Drop**: Uses tkinterdnd2 and is a required feature, not optional
 
 ### Commands to Remember
 
@@ -64,11 +65,19 @@
 - **Run Tests**: `pytest tests/`
 - **Check Linting**: `ruff check .` (if available)
 
+### Known Issues Tracking
+
+**IMPORTANT**: Known issues must be tracked in both CLAUDE.md and CHANGELOG.md. When fixing issues:
+1. Remove them from the Known Issues section in CLAUDE.md
+2. Document the fix in CHANGELOG.md with root cause analysis
+3. Update the Known Issues section in CHANGELOG.md
+
 ### Current Known Issues
 
-- ML Tools page requires MetricCard widget (now implemented)
-- Some ML features are optional and may not initialize without proper setup
-- Drag-and-drop functionality depends on tkinterdnd2
+None - All previously known issues have been fixed:
+- ✓ ML features now required and properly error if dependencies missing
+- ✓ Drag-and-drop now required and properly errors if tkinterdnd2 missing
+- ✓ MetricCard widget has been implemented
 
 ### Change Tracking
 
@@ -86,7 +95,9 @@ Remember: Always think through the full implementation before starting any fix.
 ### Session Start Checklist
 **EVERY session MUST begin with these steps:**
 1. Read CHANGELOG.md to understand recent changes and current state
-2. Use TodoWrite to plan the session tasks
-3. Fix existing code - do NOT create new test files
-4. Use parallel tool operations when possible
-5. Document ALL changes in CHANGELOG.md immediately after implementation
+2. Check the Known Issues sections in both CLAUDE.md and CHANGELOG.md
+3. Use TodoWrite to plan the session tasks
+4. Fix existing code - do NOT create new test files
+5. Use parallel tool operations when possible
+6. Document ALL changes in CHANGELOG.md immediately after implementation
+7. Update Known Issues sections as issues are discovered or fixed

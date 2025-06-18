@@ -297,17 +297,20 @@ class TestIntegrationIssues:
         page = HistoricalPage(mock_parent, mock_main_window)
         assert page is not None
         
-    def test_missing_ml_models_handling(self):
-        """Test pages handle missing ML models."""
+    def test_ml_models_required(self):
+        """Test that ML models are required (not optional)."""
         from laser_trim_analyzer.gui.pages.ml_tools_page import MLToolsPage
         
         mock_parent = Mock()
         mock_main_window = Mock()
         
-        # Mock missing ML models
-        with patch('laser_trim_analyzer.ml.predictors.QualityPredictor', side_effect=ImportError):
-            page = MLToolsPage(mock_parent, mock_main_window)
-            assert page is not None
+        # ML models are required - verify import works
+        from laser_trim_analyzer.ml.predictors import QualityPredictor
+        assert QualityPredictor is not None
+        
+        # Page should create successfully with ML available
+        page = MLToolsPage(mock_parent, mock_main_window)
+        assert page is not None
 
 
 if __name__ == "__main__":

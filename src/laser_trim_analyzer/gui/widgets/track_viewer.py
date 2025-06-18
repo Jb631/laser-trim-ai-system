@@ -5,6 +5,7 @@ Provides detailed view of individual tracks within multi-track units
 with real-time data visualization and interaction.
 """
 
+import tkinter as tk
 import customtkinter as ctk
 from typing import Optional, Dict, Any, List
 import logging
@@ -182,6 +183,28 @@ class IndividualTrackViewer(ctk.CTkFrame):
         """Create error profile visualization tab."""
         profile_frame = self.track_tabview.tab("Error Profile")
         
+        # Control frame for scaling
+        control_frame = ctk.CTkFrame(profile_frame)
+        control_frame.pack(fill='x', padx=5, pady=(5, 0))
+        
+        # Y-axis scaling controls
+        scale_label = ctk.CTkLabel(control_frame, text="Y-Axis Scale:")
+        scale_label.pack(side='left', padx=(10, 5))
+        
+        self.profile_scale_var = tk.DoubleVar(value=1.5)  # Default 1.5x spec limits
+        self.profile_scale_slider = ctk.CTkSlider(
+            control_frame,
+            from_=0.5,
+            to=3.0,
+            variable=self.profile_scale_var,
+            command=self._on_profile_scale_changed,
+            width=150
+        )
+        self.profile_scale_slider.pack(side='left', padx=5)
+        
+        self.profile_scale_label = ctk.CTkLabel(control_frame, text="1.5x")
+        self.profile_scale_label.pack(side='left', padx=(0, 10))
+        
         # Create matplotlib figure
         self.profile_fig = Figure(figsize=(8, 5), dpi=100)
         self.profile_ax = self.profile_fig.add_subplot(111)
@@ -327,18 +350,42 @@ class IndividualTrackViewer(ctk.CTkFrame):
                 self.profile_ax.plot(positions, errors, 'b-', linewidth=2, label='Error')
                 
                 # Add spec lines if available
+                spec_limit = profile.get('spec_limit', 5.0)  # Default spec
                 if 'spec_limit' in profile:
-                    spec = profile['spec_limit']
-                    self.profile_ax.axhline(y=spec, color='r', linestyle='--', label=f'Spec: ±{spec}%')
-                    self.profile_ax.axhline(y=-spec, color='r', linestyle='--')
+                    spec_limit = profile['spec_limit']
+                elif 'linearity_spec' in track_data:
+                    spec_limit = track_data.get('linearity_spec', 5.0)
+                    
+                self.profile_ax.axhline(y=spec_limit, color='r', linestyle='--', label=f'Spec: ±{spec_limit}%')
+                self.profile_ax.axhline(y=-spec_limit, color='r', linestyle='--')
+                
+                # Add zero line
+                self.profile_ax.axhline(y=0, color='black', linestyle='-', linewidth=1, alpha=0.5)
                 
                 self.profile_ax.set_xlabel('Position (%)', color='black')
                 self.profile_ax.set_ylabel('Error (%)', color='black')
                 self.profile_ax.set_title(f'Error Profile - {self.selected_track}', color='black')
                 self.profile_ax.grid(True, alpha=0.3, color='#cccccc')
-                self.profile_ax.legend()
+                
+                # Auto-scale with proper limits
+                self.profile_ax.relim()
+                self.profile_ax.autoscale_view(scalex=True, scaley=True)
+                
+                # Set x-axis limits to 0-100%
+                self.profile_ax.set_xlim(0, 100)
+                
+                # Set y-axis limits based on scale factor
+                scale_factor = self.profile_scale_var.get() if hasattr(self, 'profile_scale_var') else 1.5
+                y_limit = spec_limit * scale_factor
+                self.profile_ax.set_ylim(-y_limit, y_limit)
+                
+                self.profile_ax.legend(loc='best', framealpha=0.9)
             else:
-                self._show_no_data_message(self.profile_ax, "No error profile data available")
+                # Check if this is database data
+                if profile and profile.get('note') == 'Raw data not available from database':
+                    self._show_no_data_message(self.profile_ax, "Error profile data not available from database\n\nDatabase only stores calculated metrics.\nLoad files directly to see error profiles.")
+                else:
+                    self._show_no_data_message(self.profile_ax, "No error profile data available")
         else:
             self._show_no_data_message(self.profile_ax, "Select a track to view error profile")
         
@@ -375,7 +422,12 @@ class IndividualTrackViewer(ctk.CTkFrame):
         
         for name, value, fmt in metrics:
             if value is not None:
-                stats_text += f"{name:.<25} {value:{fmt}}\n"
+                try:
+                    formatted_value = format(value, fmt)
+                    stats_text += f"{name:.<25} {formatted_value}\n"
+                except (ValueError, TypeError) as e:
+                    # Fallback for format errors
+                    stats_text += f"{name:.<25} {str(value)}\n"
             else:
                 stats_text += f"{name:.<25} N/A\n"
                 
@@ -451,6 +503,14 @@ class IndividualTrackViewer(ctk.CTkFrame):
         except:
             return str(timestamp)
             
+    def _on_profile_scale_changed(self, value):
+        """Handle profile scale slider change."""
+        scale_value = self.profile_scale_var.get()
+        self.profile_scale_label.configure(text=f"{scale_value:.1f}x")
+        # Update the plot with new scaling
+        if self.current_track_data:
+            self._update_error_profile_plot(self.current_track_data)
+    
     def _show_no_data_message(self, ax, message):
         """Show no data message on plot."""
         # Set white background even for empty state
@@ -463,6 +523,7 @@ class IndividualTrackViewer(ctk.CTkFrame):
                 verticalalignment='center',
                 transform=ax.transAxes,
                 fontsize=12,
-                color='gray')
+                color='gray',
+                multialignment='center')
         ax.set_xticks([])
         ax.set_yticks([])
