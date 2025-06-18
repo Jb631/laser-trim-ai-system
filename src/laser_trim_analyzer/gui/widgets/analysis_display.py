@@ -68,6 +68,15 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             color_scheme="neutral"
         )
         
+        # Status reason label (for warnings/failures)
+        self.status_reason_label = ctk.CTkLabel(
+            self.status_frame,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color=("orange", "orange"),
+            wraplength=400
+        )
+        
         self.validation_status_card = MetricCard(
             self.status_frame,
             title="Validation Status",
@@ -237,6 +246,9 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.validation_grade_card.grid(row=1, column=2, sticky="ew", padx=5, pady=5)
         self.processing_time_card.grid(row=1, column=3, sticky="ew", padx=5, pady=5)
         
+        # Status reason label spans across columns
+        self.status_reason_label.grid(row=2, column=0, columnspan=4, sticky="ew", padx=15, pady=(0, 5))
+        
         # Metadata
         self.metadata_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         self.metadata_frame.grid_columnconfigure([0, 1, 2, 3], weight=1)
@@ -318,6 +330,30 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         status_value = getattr(result.overall_status, 'value', str(result.overall_status))
         status_color = self._get_status_color_scheme(result.overall_status)
         self.overall_status_card.update_value(status_value, status_color)
+        
+        # Status reason - collect reasons from all tracks
+        status_reasons = []
+        if hasattr(result, 'tracks') and result.tracks:
+            for track_id, track_data in result.tracks.items():
+                if hasattr(track_data, 'status_reason') and track_data.status_reason:
+                    # Only show reasons for warnings and failures
+                    if track_data.status in [AnalysisStatus.WARNING, AnalysisStatus.FAIL]:
+                        if len(result.tracks) > 1:
+                            status_reasons.append(f"Track {track_id}: {track_data.status_reason}")
+                        else:
+                            status_reasons.append(track_data.status_reason)
+        
+        # Update status reason label
+        if status_reasons:
+            reason_text = " | ".join(status_reasons)
+            self.status_reason_label.configure(text=reason_text)
+            # Set color based on overall status
+            if result.overall_status == AnalysisStatus.FAIL:
+                self.status_reason_label.configure(text_color=("red", "red"))
+            else:
+                self.status_reason_label.configure(text_color=("orange", "orange"))
+        else:
+            self.status_reason_label.configure(text="")
         
         # Validation status
         if hasattr(result, 'overall_validation_status') and result.overall_validation_status:

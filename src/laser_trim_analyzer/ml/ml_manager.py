@@ -63,25 +63,26 @@ class MLEngineManager:
         self.logger = logger or logging.getLogger(__name__)
         self._lock = threading.Lock()
         
-        # Check dependencies first
+        # Check dependencies and raise error if missing (ML is NOT optional)
         if not HAS_NUMPY_PANDAS:
+            error_msg = "NumPy and Pandas are required for ML features. Install with: pip install numpy pandas"
             self._status = "Missing Dependencies"
             self._status_color = "red"
-            self._initialization_error = "NumPy and Pandas are required for ML features"
+            self._initialization_error = error_msg
             self.ml_engine = None
             self._models_status = {}
-            self.logger.error("Cannot initialize ML engine: NumPy/Pandas not available")
-            return
+            self.logger.error(f"Cannot initialize ML engine: {error_msg}")
+            raise ImportError(error_msg)
             
         if not HAS_SKLEARN:
+            error_msg = "scikit-learn is required for ML features. Install with: pip install scikit-learn joblib"
             self._status = "Missing scikit-learn"
             self._status_color = "red"
-            self._initialization_error = "scikit-learn is required for ML features. Install with: pip install scikit-learn"
+            self._initialization_error = error_msg
             self.ml_engine = None
             self._models_status = {}
-            self.logger.error("Cannot initialize ML engine: scikit-learn not available")
-            self.logger.error("Install with: pip install scikit-learn joblib")
-            return
+            self.logger.error(f"Cannot initialize ML engine: {error_msg}")
+            raise ImportError(error_msg)
         
         # Engine state
         self.ml_engine = None

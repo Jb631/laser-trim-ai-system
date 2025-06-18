@@ -90,23 +90,36 @@ class FileDropZone(ttk.Frame):
 
         self._setup_ui(height)
         
-        # Only setup drag and drop if available and initialized
-        if HAS_DND and self._check_dnd_initialized():
-            self._setup_drag_drop()
+        # Setup drag and drop if available
+        if HAS_DND:
+            try:
+                self._setup_drag_drop()
+            except Exception as e:
+                # Fallback if drag and drop setup fails
+                self.logger = parent.logger if hasattr(parent, 'logger') else None
+                if self.logger:
+                    self.logger.warning(f"Drag and drop setup failed: {e}")
+                self.primary_label.configure(text='Click browse to select files')
+                self.secondary_label.pack_forget()
         else:
             # Update UI to indicate drag and drop is not available
+            error_msg = "Drag and drop requires tkinterdnd2. Install with: pip install tkinterdnd2"
             self.primary_label.configure(text='Click browse to select files')
             self.secondary_label.pack_forget()
-            if not HAS_DND:
-                print("Note: Drag and drop not available - tkinterdnd2 not installed")
+            # This is a required feature, not optional
+            raise ImportError(error_msg)
 
     def _check_dnd_initialized(self):
         """Check if drag and drop is properly initialized."""
         try:
-            # Try to check if tkdnd is available in the Tk instance
-            self.winfo_toplevel().tk.call('tk', 'windowingsystem')
+            # Check if we're using a TkinterDnD window
+            root = self.winfo_toplevel()
+            if hasattr(root, 'TkdndVersion'):
+                return True
+            # Try to initialize tkdnd
+            root.tk.call('package', 'require', 'tkdnd')
             return True
-        except:
+        except Exception as e:
             return False
 
     def _setup_ui(self, height: int):

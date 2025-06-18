@@ -71,20 +71,28 @@ class ConsistencyAnalyzer:
         resistance_values = []
         
         for track_id, track_data in tracks_data.items():
+            # Log the structure for debugging
+            self.logger.debug(f"Analyzing track {track_id}, data keys: {track_data.keys() if isinstance(track_data, dict) else 'not a dict'}")
+            
             # Extract sigma gradient
             sigma = self._extract_value(track_data, ['sigma_gradient', 'sigma_analysis.sigma_gradient'])
             if sigma is not None:
                 sigma_values.append(sigma)
+                self.logger.debug(f"Track {track_id} sigma: {sigma}")
                 
             # Extract linearity error
             linearity = self._extract_value(track_data, ['linearity_error', 'linearity_analysis.final_linearity_error_shifted'])
             if linearity is not None:
                 linearity_values.append(abs(linearity))
+                self.logger.debug(f"Track {track_id} linearity: {linearity}")
                 
             # Extract resistance change
             resistance = self._extract_value(track_data, ['resistance_change', 'resistance_change_percent', 'unit_properties.resistance_change_percent'])
             if resistance is not None:
                 resistance_values.append(abs(resistance))
+                self.logger.debug(f"Track {track_id} resistance: {resistance}")
+        
+        self.logger.info(f"Consistency analysis found: {len(sigma_values)} sigma, {len(linearity_values)} linearity, {len(resistance_values)} resistance values")
         
         # Calculate coefficients of variation
         sigma_cv = self._calculate_cv(sigma_values)

@@ -184,23 +184,17 @@ class LaserTrimProcessor:
         self._max_cache_size = 100  # Limit cache size to prevent memory issues
 
     def _initialize_ml_predictor(self):
-        """Initialize ML predictor with robust error handling."""
-        # Don't initialize ML if disabled
-        if not getattr(self.config.ml, 'enabled', False):
-            self.ml_predictor = None
-            self.logger.info("ML predictions disabled in configuration")
-            return
-
+        """Initialize ML predictor - ML is required, not optional."""
         # If ML predictor already provided, use it
         if self.ml_predictor is not None:
             self.logger.info("Using provided ML predictor")
             return
 
-        # Try to initialize ML predictor if available
+        # ML is required - check if available
         if not HAS_ML:
-            self.logger.warning("ML components not available - predictions disabled")
-            self.ml_predictor = None
-            return
+            error_msg = "ML components not available but are required. Install with: pip install scikit-learn joblib"
+            self.logger.error(error_msg)
+            raise ImportError(error_msg)
 
         try:
             self.logger.info("Initializing ML predictor...")
@@ -703,7 +697,7 @@ class LaserTrimProcessor:
         validation_recommendations.extend(industry_recommendations)
 
         # Determine track status
-        track_status = self._determine_track_status(sigma_analysis, linearity_analysis)
+        track_status, status_reason = self._determine_track_status(sigma_analysis, linearity_analysis)
         
         # Extract travel length from analysis data
         travel_length = analysis_data.get('travel_length', 0.0)
@@ -716,6 +710,7 @@ class LaserTrimProcessor:
         track_data = TrackData(
             track_id=track_id,
             status=track_status,
+            status_reason=status_reason,
             travel_length=travel_length,
             # Add position and error data for plotting
             position_data=analysis_data.get('positions', []),
@@ -1231,14 +1226,24 @@ class LaserTrimProcessor:
             for track_id in track_ids:
                 sheets = {}
                 for sheet in sheet_names:
-                    if track_id in sheet or (track_id == "TRK1" and ("1 0" in sheet or "1_0" in sheet or "SEC1" in sheet)):
+                    # More precise matching to avoid cross-track contamination
+                    if track_id in sheet:
+                        # Direct match - sheet contains the track ID
                         if " 0" in sheet or "_0" in sheet or sheet.endswith(" 0"):
                             sheets['untrimmed'] = sheet
                         elif "TRM" in sheet or "TRIM" in sheet.upper():
                             sheets['trimmed'] = sheet
+                    elif track_id == "TRK1" and "TRK2" not in sheet:
+                        # Special handling for TRK1 sheets that might not have "TRK1" explicitly
+                        # but we must ensure it's not a TRK2 sheet
+                        if ("1 0" in sheet or "1_0" in sheet) and "2" not in sheet.replace("SEC1", ""):
+                            sheets['untrimmed'] = sheet
+                        elif ("1 TRM" in sheet or "1_TRM" in sheet) and "2" not in sheet.replace("SEC1", ""):
+                            sheets['trimmed'] = sheet
                 
                 if sheets:
                     track_sheets[track_id] = sheets
+                    self.logger.debug(f"Track {track_id} sheets: {sheets}")
             
             return track_sheets
         else:
@@ -1918,21 +1923,45 @@ class LaserTrimProcessor:
             else:
                 self.logger.warning(f"Limit columns not found in system {system} columns: {columns}")
             
-            # Find rows where BOTH position and error are valid (not NaN)
-            # This handles blank rows in the data
-            valid_mask = position_series.notna() & error_series.notna()
-            valid_indices = valid_mask[valid_mask].index
+            # Find rows where position is valid (not NaN)
+            # We prioritize positions since they define the measurement points
+            position_valid_mask = position_series.notna()
+            position_valid_indices = position_valid_mask[position_valid_mask].index
             
-            self.logger.debug(f"Total rows: {len(position_series)}, Valid rows (non-blank): {len(valid_indices)}")
+            # Also check which rows have both position and error
+            both_valid_mask = position_series.notna() & error_series.notna()
+            both_valid_indices = both_valid_mask[both_valid_mask].index
+            
+            self.logger.info(f"Data extraction: Total rows: {len(position_series)}, "
+                           f"Rows with valid position: {len(position_valid_indices)}, "
+                           f"Rows with both position & error: {len(both_valid_indices)}")
+            
+            # Use rows with valid positions as our base
+            valid_indices = position_valid_indices
+            
+            # Warn if we're missing error data for some positions
+            if len(position_valid_indices) > len(both_valid_indices):
+                missing_count = len(position_valid_indices) - len(both_valid_indices)
+                self.logger.warning(f"Found {missing_count} positions without corresponding error values. "
+                                  "These will be included with interpolated or zero errors.")
             
             # Show which Excel rows are being used (add 2 for header row and 0-based indexing)
             if len(valid_indices) > 0:
                 excel_rows = [idx + 2 for idx in valid_indices[:10]]  # First 10 for logging
                 self.logger.debug(f"Using Excel rows: {excel_rows}... (showing first 10)")
             
-            # Extract only valid data using the same indices for all columns
+            # Extract positions using valid indices
             positions = position_series.loc[valid_indices].tolist()
-            errors = error_series.loc[valid_indices].tolist()
+            
+            # Extract errors, handling missing values
+            errors = []
+            for idx in valid_indices:
+                if idx in error_series.index and pd.notna(error_series.loc[idx]):
+                    errors.append(error_series.loc[idx])
+                else:
+                    # Missing error value - use 0 or interpolate
+                    errors.append(0.0)
+                    self.logger.debug(f"Missing error at index {idx} (row {idx+2}), using 0.0")
             
             # Handle limits - extract from the SAME valid indices to maintain alignment
             if isinstance(upper_limits, pd.Series) and isinstance(lower_limits, pd.Series):
@@ -1960,8 +1989,14 @@ class LaserTrimProcessor:
                 upper_limits = []
                 lower_limits = []
 
-            # Calculate travel length
-            travel_length = max(positions) - min(positions) if positions else 0
+            # Calculate travel length and position range
+            if positions:
+                travel_length = max(positions) - min(positions)
+                pos_min, pos_max = min(positions), max(positions)
+                self.logger.info(f"Position range: [{pos_min:.1f}, {pos_max:.1f}] mm, travel length: {travel_length:.1f} mm")
+            else:
+                travel_length = 0
+                self.logger.warning("No valid positions found!")
 
             result = {
                 'positions': positions,
@@ -1971,7 +2006,7 @@ class LaserTrimProcessor:
                 'travel_length': travel_length
             }
             
-            self.logger.debug(f"Final extracted data: {len(positions)} positions, {len(errors)} errors, "
+            self.logger.info(f"Final extracted data from {sheet_name}: {len(positions)} positions, {len(errors)} errors, "
                             f"{len(upper_limits) if upper_limits else 0} upper limits, "
                             f"{len(lower_limits) if lower_limits else 0} lower limits")
             
@@ -2442,14 +2477,36 @@ class LaserTrimProcessor:
             self,
             sigma_analysis: SigmaAnalysis,
             linearity_analysis: LinearityAnalysis
-    ) -> AnalysisStatus:
-        """Determine track status based on analyses."""
-        if not sigma_analysis.sigma_pass or not linearity_analysis.linearity_pass:
-            return AnalysisStatus.FAIL
-        elif sigma_analysis.gradient_margin < 0.1 * sigma_analysis.sigma_threshold:
-            return AnalysisStatus.WARNING
+    ) -> tuple[AnalysisStatus, str]:
+        """Determine track status based on analyses.
+        
+        Linearity is the PRIMARY goal of laser trimming.
+        - PASS: Linearity passes and sigma passes
+        - WARNING: Linearity passes but sigma fails or margin is tight
+        - FAIL: Linearity fails (primary requirement not met)
+        
+        Returns:
+            Tuple of (status, reason)
+        """
+        if not linearity_analysis.linearity_pass:
+            # Primary requirement not met
+            fail_count = getattr(linearity_analysis, 'fail_count', 0)
+            total_points = getattr(linearity_analysis, 'total_points', 0)
+            reason = f"Linearity failed: {fail_count} points out of spec (0 allowed)"
+            return AnalysisStatus.FAIL, reason
+        elif not sigma_analysis.sigma_pass:
+            # Linearity OK but sigma failed - functional but quality concern
+            reason = f"Sigma gradient ({sigma_analysis.sigma_gradient:.4f}) exceeds threshold ({sigma_analysis.sigma_threshold:.4f})"
+            return AnalysisStatus.WARNING, reason
+        elif sigma_analysis.gradient_margin < 0.2 * sigma_analysis.sigma_threshold:
+            # Both pass but sigma margin is tight (less than 20% margin)
+            margin_percent = (sigma_analysis.gradient_margin / sigma_analysis.sigma_threshold) * 100
+            reason = f"Sigma margin tight: only {margin_percent:.1f}% margin to threshold"
+            return AnalysisStatus.WARNING, reason
         else:
-            return AnalysisStatus.PASS
+            # Both linearity and sigma pass with good margin
+            reason = "All tests passed with good margins"
+            return AnalysisStatus.PASS, reason
 
     def _determine_overall_status(self, tracks: Dict[str, TrackData]) -> AnalysisStatus:
         """Determine overall file status from track statuses."""

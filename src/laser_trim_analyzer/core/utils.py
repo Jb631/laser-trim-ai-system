@@ -58,6 +58,13 @@ def setup_logging(output_dir: Path, level: int = logging.INFO) -> logging.Logger
     """
     logger = logging.getLogger('laser_trim_analyzer')
     logger.setLevel(level)
+    
+    # Prevent propagation to avoid duplicate messages
+    logger.propagate = False
+    
+    # Remove existing handlers to avoid duplicates
+    if logger.handlers:
+        logger.handlers.clear()
 
     # Console handler
     console_handler = logging.StreamHandler()

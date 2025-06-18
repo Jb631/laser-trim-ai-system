@@ -575,8 +575,11 @@ class TestIntegrationScenarios:
             str(config.ml.model_path)
         )
 
-        # ML Predictor
-        ml_predictor = None  # Would be initialized with trained models
+        # ML Predictor - ML is required
+        from laser_trim_analyzer.ml.predictors import MLPredictor
+        ml_predictor = MLPredictor(config)
+        # Initialize the predictor (required for production)
+        ml_predictor.initialize()
 
         # Processor
         from laser_trim_analyzer.core.processor import LaserTrimProcessor

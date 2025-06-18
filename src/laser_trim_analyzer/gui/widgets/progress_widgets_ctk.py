@@ -205,7 +205,16 @@ class BatchProgressDialog:
                     self.status_label.configure(text=message)
                     
                 # Update file counter
-                self.current_file = int(progress * self.total_files / 100)
+                # Progress can be either 0-1 or 0-100, handle both
+                if progress <= 1.0:
+                    # Progress is 0-1
+                    self.current_file = int(progress * self.total_files)
+                    progress_normalized = progress
+                else:
+                    # Progress is 0-100
+                    self.current_file = int(progress * self.total_files / 100)
+                    progress_normalized = progress / 100.0
+                    
                 if self.file_label:
                     self.file_label.configure(
                         text=f"Processing file {self.current_file} of {self.total_files}"
@@ -213,7 +222,7 @@ class BatchProgressDialog:
                     
                 # Update progress bar
                 if self.progress_bar:
-                    self.progress_bar.set(progress / 100.0)
+                    self.progress_bar.set(progress_normalized)
                     
                 # Force update
                 self.dialog.update()

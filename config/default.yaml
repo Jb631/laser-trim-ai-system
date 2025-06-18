@@ -20,7 +20,7 @@ processing:
   # Large-scale processing optimizations
   max_batch_size: 1000
   memory_limit_mb: 2048  # 2GB default
-  max_concurrent_files: 50
+  max_concurrent_files: 20  # Reduced for better memory management
   
   # Performance settings
   high_performance_mode: false

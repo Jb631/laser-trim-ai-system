@@ -240,110 +240,70 @@ class MultiTrackPage(ctk.CTkFrame):
         self.overview_cards['risk_level'].pack(side='left', fill='x', expand=True, padx=(5, 10), pady=10)
 
     def _create_comparison_section(self):
-        """Create track comparison charts section (matching batch processing theme)."""
+        """Create track linearity error overlay plot section."""
         self.comparison_frame = ctk.CTkFrame(self.main_container)
         self.comparison_frame.pack(fill='both', expand=True, pady=(0, 20))
 
         self.comparison_label = ctk.CTkLabel(
             self.comparison_frame,
-            text="Track Comparison:",
+            text="Track Linearity Error Overlay:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.comparison_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Comparison container with tabs
+        # Comparison container
         self.comparison_container = ctk.CTkFrame(self.comparison_frame, fg_color="transparent")
         self.comparison_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        # Comparison tabs
-        self.comparison_tabview = ctk.CTkTabview(self.comparison_container)
-        self.comparison_tabview.pack(fill='both', expand=True, padx=10, pady=10)
+        # Control frame for scaling and export
+        self.control_frame = ctk.CTkFrame(self.comparison_container)
+        self.control_frame.pack(fill='x', padx=5, pady=(0, 5))
+        
+        # Y-axis scaling controls
+        scale_label = ctk.CTkLabel(self.control_frame, text="Y-Axis Scale:")
+        scale_label.pack(side='left', padx=(10, 5))
+        
+        self.y_scale_var = tk.DoubleVar(value=1.5)  # Default 1.5x spec limits
+        self.y_scale_slider = ctk.CTkSlider(
+            self.control_frame,
+            from_=0.5,
+            to=3.0,
+            variable=self.y_scale_var,
+            command=self._on_scale_changed,
+            width=150
+        )
+        self.y_scale_slider.pack(side='left', padx=5)
+        
+        self.scale_value_label = ctk.CTkLabel(self.control_frame, text="1.5x")
+        self.scale_value_label.pack(side='left', padx=(0, 10))
+        
+        # Export button
+        self.export_chart_btn = ctk.CTkButton(
+            self.control_frame,
+            text="📊 Export Chart",
+            command=self._export_linearity_chart,
+            width=120,
+            height=32
+        )
+        self.export_chart_btn.pack(side='right', padx=10)
 
-        # Add tabs
-        self.comparison_tabview.add("Summary")
-        self.comparison_tabview.add("Detailed")
-        self.comparison_tabview.add("Charts")
-
-        # Create actual chart widgets instead of placeholders
-        try:
-            # Summary chart for overview metrics
-            self.summary_chart = ChartWidget(
-                self.comparison_tabview.tab("Summary"),
-                chart_type='bar',
-                title="Track Summary Comparison",
-                figsize=(10, 4)
-            )
-            self.summary_chart.pack(fill='both', expand=True)
-            
-            # Detailed comparison charts
-            detailed_frame = ctk.CTkFrame(self.comparison_tabview.tab("Detailed"), fg_color="transparent")
-            detailed_frame.pack(fill='both', expand=True, padx=5, pady=5)
-            
-            # Sigma comparison chart
-            self.sigma_comparison_chart = ChartWidget(
-                detailed_frame,
-                chart_type='bar',
-                title="Sigma Gradient Comparison",
-                figsize=(10, 3)
-            )
-            self.sigma_comparison_chart.pack(fill='x', padx=5, pady=(5, 2))
-            
-            # Linearity comparison chart
-            self.linearity_comparison_chart = ChartWidget(
-                detailed_frame,
-                chart_type='bar',
-                title="Linearity Error Comparison",
-                figsize=(10, 3)
-            )
-            self.linearity_comparison_chart.pack(fill='x', padx=5, pady=(2, 5))
-            
-            # Charts tab for profile comparisons
-            self.profile_comparison_chart = ChartWidget(
-                self.comparison_tabview.tab("Charts"),
-                chart_type='line',
-                title="Error Profile Comparison",
-                figsize=(10, 4)
-            )
-            self.profile_comparison_chart.pack(fill='both', expand=True)
-            
-            # Initialize comparison charts dictionary for easy access
-            self.comparison_charts = {
-                'summary': self.summary_chart,
-                'sigma': self.sigma_comparison_chart,
-                'linearity': self.linearity_comparison_chart,
-                'profile': self.profile_comparison_chart
-            }
-            
-        except ImportError as e:
-            logger.warning(f"Could not create chart widgets: {e}")
-            # Fallback to placeholder labels
-            self.summary_chart_label = ctk.CTkLabel(
-                self.comparison_tabview.tab("Summary"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.summary_chart_label.pack(expand=True)
-
-            self.detailed_chart_label = ctk.CTkLabel(
-                self.comparison_tabview.tab("Detailed"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.detailed_chart_label.pack(expand=True)
-
-            self.charts_chart_label = ctk.CTkLabel(
-                self.comparison_tabview.tab("Charts"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.charts_chart_label.pack(expand=True)
-            
-            # Set chart objects to None for safe access
-            self.comparison_charts = {}
-            self.summary_chart = None
-            self.sigma_comparison_chart = None
-            self.linearity_comparison_chart = None
-            self.profile_comparison_chart = None
+        # Create matplotlib figure for linearity overlay
+        self.linearity_fig = Figure(figsize=(12, 6), dpi=100)
+        self.linearity_ax = self.linearity_fig.add_subplot(111)
+        
+        # Create canvas
+        self.linearity_canvas = FigureCanvasTkAgg(self.linearity_fig, self.comparison_container)
+        self.linearity_canvas.get_tk_widget().pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Initialize the plot
+        self._initialize_linearity_plot()
+        
+        # Set comparison charts to None for compatibility
+        self.comparison_charts = {}
+        self.summary_chart = None
+        self.sigma_comparison_chart = None
+        self.linearity_comparison_chart = None
+        self.profile_comparison_chart = None
     
     def _create_individual_track_viewer(self):
         """Create individual track viewer section."""
@@ -396,7 +356,7 @@ class MultiTrackPage(ctk.CTkFrame):
 
         self.actions_label = ctk.CTkLabel(
             self.actions_frame,
-            text="Actions:",
+            text="Export Options:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.actions_label.pack(anchor='w', padx=15, pady=(15, 10))
@@ -405,55 +365,42 @@ class MultiTrackPage(ctk.CTkFrame):
         self.actions_container = ctk.CTkFrame(self.actions_frame, fg_color="transparent")
         self.actions_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # File analysis buttons
-        self.select_track_button = ctk.CTkButton(
-            self.actions_container,
-            text="📄 Select Track File",
-            command=self._select_track_file,
-            width=140,
-            height=40
-        )
-        self.select_track_button.pack(side='left', padx=(10, 10), pady=10)
+        # Export buttons only - no file selection buttons here
+        button_frame = ctk.CTkFrame(self.actions_container, fg_color="transparent")
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
 
-        self.analyze_folder_button = ctk.CTkButton(
-            self.actions_container,
-            text="📁 Analyze Folder",
-            command=self._analyze_folder,
-            width=140,
-            height=40
-        )
-        self.analyze_folder_button.pack(side='left', padx=(0, 10), pady=10)
-
-        # Database buttons
-        self.load_from_db_button = ctk.CTkButton(
-            self.actions_container,
-            text="🗄️ Load from Database",
-            command=self._select_unit_from_database,
-            width=160,
-            height=40
-        )
-        self.load_from_db_button.pack(side='left', padx=(0, 10), pady=10)
-
-        # Export buttons
-        self.export_report_button = ctk.CTkButton(
-            self.actions_container,
+        self.export_report_btn = ctk.CTkButton(
+            button_frame,
             text="📊 Export Report",
             command=self._export_comparison_report,
             width=140,
+            height=40,
+            state="disabled"
+        )
+        self.export_report_btn.pack(side='left', padx=(10, 10), pady=10)
+
+        self.generate_pdf_btn = ctk.CTkButton(
+            button_frame,
+            text="📄 Generate PDF",
+            command=self._generate_pdf_report,
+            width=140,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="green",
+            hover_color="darkgreen",
+            state="disabled"
+        )
+        self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
+        
+        # Add test data button for debugging
+        self.test_data_button = ctk.CTkButton(
+            button_frame,
+            text="🧪 Test Data",
+            command=self._load_test_data,
+            width=120,
             height=40
         )
-        self.export_report_button.pack(side='left', padx=(0, 10), pady=10)
-
-        self.view_tracks_button = ctk.CTkButton(
-            self.actions_container,
-            text="🔍 View Individual Tracks",
-            command=self._view_individual_tracks,
-            width=180,
-            height=40
-        )
-        self.view_tracks_button.pack(side='left', padx=(0, 10), pady=10)
-
-        # Duplicate widgets removed - buttons already defined above
+        self.test_data_button.pack(side='left', padx=(0, 10), pady=10)
 
     def _select_track_file(self):
         """Select a single track file to analyze."""
@@ -513,96 +460,229 @@ class MultiTrackPage(ctk.CTkFrame):
             # Add the current file
             related_files.insert(0, file_path)
             
-            # Create unit data structure
-            if len(related_files) == 1:
-                # Single track file
-                track_id = "TA"  # Default to TA if no track identifier found
-                if len(file_parts) > 2:
-                    for part in file_parts[2:]:
-                        if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
-                            track_id = part
-                            break
-                
-                self.current_unit_data = {
-                    'model': model,
-                    'serial': serial,
-                    'total_files': 1,
-                    'track_count': 1,
-                    'overall_status': 'SINGLE_TRACK',
-                    'files': [{
-                        'filename': file_path.name,
-                        'status': 'FOUND',
-                        'track_count': 1,
-                        'tracks': {track_id: {
-                            'track_id': track_id,
-                            'file_path': str(file_path),
-                            'filename': file_path.name,
-                            'status': 'FOUND'
-                        }}
-                    }],
-                    'sigma_cv': 0,
-                    'linearity_cv': 0,
-                    'consistency': 'SINGLE_TRACK'
-                }
-                
-                self.after(0, self._update_multi_track_display)
-                return
+            # Process the Excel files to extract actual data
+            from laser_trim_analyzer.core.processor import LaserTrimProcessor
+            from laser_trim_analyzer.core.config import Config
             
-            # Multiple track files found - create multi-track analysis
-            track_data = []
+            # Initialize processor with config
+            try:
+                # Get config from main window or create default
+                config = None
+                if hasattr(self.main_window, 'config') and self.main_window.config is not None:
+                    config = self.main_window.config
+                    # Verify it's an instance, not a class
+                    if isinstance(config, type):
+                        self.logger.warning("Config is a class, not an instance. Creating instance.")
+                        config = config()
+                else:
+                    config = Config()
+                
+                # Get database manager
+                db_manager = None
+                if hasattr(self.main_window, 'db_manager'):
+                    db_manager = self.main_window.db_manager
+                
+                # Try to get ML predictor from main window if available
+                ml_predictor = None
+                if hasattr(self.main_window, 'ml_manager') and self.main_window.ml_manager is not None:
+                    ml_predictor = self.main_window.ml_manager
+                elif hasattr(self.main_window, 'ml_predictor') and self.main_window.ml_predictor is not None:
+                    ml_predictor = self.main_window.ml_predictor
+                    
+                processor = LaserTrimProcessor(
+                    config=config,
+                    db_manager=db_manager,
+                    ml_predictor=ml_predictor,
+                    logger=self.logger
+                )
+            except Exception as e:
+                self.logger.warning(f"Could not initialize processor with full config: {e}")
+                # Create minimal processor with just config
+                config = Config()
+                processor = LaserTrimProcessor(config=config, logger=self.logger)
+            
+            # Process files and extract track data
+            tracks_data = {}
+            overall_status = 'PASS'
+            
             for track_file in related_files:
-                file_parts = track_file.stem.split('_')
-                track_id = None
-                for part in file_parts:
-                    if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
-                        track_id = part
-                        break
+                try:
+                    # Process the Excel file (use sync version)
+                    self.logger.info(f"Processing file: {track_file}")
+                    result = processor.process_file_sync(str(track_file))
+                    
+                    if result:
+                        self.logger.info(f"Result type: {type(result)}, has tracks: {hasattr(result, 'tracks')}")
+                        if hasattr(result, 'tracks'):
+                            self.logger.info(f"Number of tracks: {len(result.tracks)}")
+                        
+                        # Handle different result structures
+                        if hasattr(result, 'tracks') and result.tracks:
+                            # Process all tracks in the result
+                            self.logger.info(f"Processing {len(result.tracks)} tracks from {track_file}")
+                            for track_id, primary in result.tracks.items():
+                                self.logger.info(f"Processing track {track_id}")
+                                
+                                # Debug log to check what attributes primary has
+                                self.logger.debug(f"Primary object type: {type(primary)}")
+                                self.logger.debug(f"Primary has position_data: {hasattr(primary, 'position_data')}")
+                                self.logger.debug(f"Primary has error_data: {hasattr(primary, 'error_data')}")
+                                
+                                # Create comprehensive track data
+                                track_data = {
+                                'track_id': track_id,
+                                'position': track_id,
+                                'serial': serial,
+                                'timestamp': datetime.now().isoformat(),
+                                'overall_status': primary.status.value if hasattr(primary.status, 'value') else str(primary.status),
+                                'validation_status': 'Valid' if primary.linearity_analysis.linearity_pass and primary.sigma_analysis.sigma_pass else 'Invalid',
+                                
+                                # Sigma analysis
+                                'sigma_gradient': primary.sigma_analysis.sigma_gradient,
+                                'sigma_spec': primary.sigma_analysis.sigma_threshold,
+                                'sigma_margin': primary.sigma_analysis.gradient_margin,
+                                'sigma_pass': primary.sigma_analysis.sigma_pass,
+                                'sigma_analysis': {
+                                    'sigma_gradient': primary.sigma_analysis.sigma_gradient
+                                },
+                                
+                                # Linearity analysis
+                                'linearity_error': primary.linearity_analysis.final_linearity_error_shifted,
+                                'linearity_spec': primary.linearity_analysis.linearity_spec,
+                                'linearity_pass': primary.linearity_analysis.linearity_pass,
+                                'linearity_offset': primary.linearity_analysis.optimal_offset,
+                                'linearity_analysis': {
+                                    'final_linearity_error_shifted': primary.linearity_analysis.final_linearity_error_shifted,
+                                    'optimal_offset': primary.linearity_analysis.optimal_offset
+                                },
+                                
+                                # Unit properties
+                                'resistance_change': primary.unit_properties.resistance_change_percent,
+                                'resistance_change_percent': primary.unit_properties.resistance_change_percent,
+                                'unit_properties': {
+                                    'resistance_change_percent': primary.unit_properties.resistance_change_percent
+                                },
+                                
+                                # Position and error data for plotting
+                                'position_data': primary.position_data if hasattr(primary, 'position_data') and primary.position_data else [],
+                                'error_data': primary.error_data if hasattr(primary, 'error_data') and primary.error_data else [],
+                                # Include untrimmed data if available
+                                'untrimmed_positions': primary.untrimmed_positions if hasattr(primary, 'untrimmed_positions') else [],
+                                'untrimmed_errors': primary.untrimmed_errors if hasattr(primary, 'untrimmed_errors') else [],
+                                
+                                # Log data ranges for debugging
+                                'position_range': [min(primary.position_data), max(primary.position_data)] if hasattr(primary, 'position_data') and primary.position_data else [0, 0],
+                                'travel_length': primary.travel_length if hasattr(primary, 'travel_length') else 0,
+                                
+                                # Additional metrics
+                                'trim_stability': 0.95,  # Calculate if available
+                                'industry_grade': primary.industry_grade if hasattr(primary, 'industry_grade') else 'B',
+                                'file_path': str(track_file)
+                            }
+                            
+                                # Log the data we extracted
+                                pos_data = track_data.get('position_data', [])
+                                err_data = track_data.get('error_data', [])
+                                self.logger.info(f"Track {track_id} data extraction: {len(pos_data)} positions, {len(err_data)} errors")
+                                if pos_data:
+                                    self.logger.info(f"Track {track_id} position range: [{min(pos_data):.1f}, {max(pos_data):.1f}]")
+                                if err_data:
+                                    self.logger.info(f"Track {track_id} error range: [{min(err_data):.6f}, {max(err_data):.6f}]")
+                                self.logger.info(f"Track {track_id} linearity offset: {track_data.get('linearity_offset', 0)}")
+                            
+                                tracks_data[track_id] = track_data
+                                
+                                # Update overall status
+                                if primary.status.value != 'PASS':
+                                    overall_status = 'FAIL' if primary.status.value == 'FAIL' else 'WARNING'
+                        else:
+                            self.logger.warning(f"No tracks found in result for {track_file}")
+                    else:
+                        self.logger.warning(f"No result returned for {track_file}")
+                            
+                except Exception as e:
+                    self.logger.error(f"Error processing file {track_file}: {e}")
+                    # Add placeholder data for failed file
+                    track_id = self._extract_track_id(track_file)
+                    tracks_data[track_id] = {
+                        'track_id': track_id,
+                        'file_path': str(track_file),
+                        'filename': track_file.name,
+                        'status': 'ERROR',
+                        'error': str(e)
+                    }
+            
+            # Calculate CV metrics if multiple tracks
+            sigma_cv = 0
+            linearity_cv = 0
+            resistance_cv = 0
+            
+            if len(tracks_data) > 1:
+                sigma_values = [t.get('sigma_gradient', 0) for t in tracks_data.values() if 'sigma_gradient' in t]
+                linearity_values = [t.get('linearity_error', 0) for t in tracks_data.values() if 'linearity_error' in t]
+                resistance_values = [t.get('resistance_change_percent', 0) for t in tracks_data.values() if 'resistance_change_percent' in t]
                 
-                track_data.append({
-                    'track_id': track_id or f'T{len(track_data)+1}',
-                    'file_path': str(track_file),
-                    'filename': track_file.name,
-                    'status': 'FOUND'
-                })
+                if len(sigma_values) > 1:
+                    sigma_cv = (np.std(sigma_values) / np.mean(sigma_values)) * 100 if np.mean(sigma_values) != 0 else 0
+                if len(linearity_values) > 1:
+                    linearity_cv = (np.std(linearity_values) / np.mean(linearity_values)) * 100 if np.mean(linearity_values) != 0 else 0
+                if len(resistance_values) > 1:
+                    resistance_cv = (np.std(resistance_values) / np.mean(resistance_values)) * 100 if np.mean(resistance_values) != 0 else 0
             
-            # Sort tracks by track ID
-            track_data.sort(key=lambda x: x['track_id'])
-            
-            # Create multi-track unit data
-            tracks_dict = {track['track_id']: track for track in track_data}
-            
+            # Create unit data structure with actual data
             self.current_unit_data = {
                 'model': model,
                 'serial': serial,
                 'total_files': len(related_files),
-                'track_count': len(related_files),
-                'overall_status': 'FOUND',
+                'track_count': len(tracks_data),
+                'overall_status': overall_status,
                 'files': [{
-                    'filename': f"{model}_{serial}_MultiTrack.xlsx",
-                    'status': 'FOUND',
-                    'track_count': len(related_files),
-                    'tracks': tracks_dict
+                    'filename': f"{model}_{serial}_MultiTrack",
+                    'status': overall_status,
+                    'track_count': len(tracks_data),
+                    'tracks': tracks_data
                 }],
-                'sigma_cv': 0,
-                'linearity_cv': 0,
-                'consistency': 'PENDING_ANALYSIS'
+                'sigma_cv': sigma_cv,
+                'linearity_cv': linearity_cv,
+                'resistance_cv': resistance_cv,
+                'consistency': self._calculate_consistency_rating(sigma_cv, linearity_cv, resistance_cv)
             }
+            
             
             # Update UI
             self.after(0, self._update_multi_track_display)
             
+            # Log summary
+            self.logger.info(f"Analysis complete: {len(tracks_data)} tracks found in {len(related_files)} files")
+            self.logger.info(f"Tracks: {list(tracks_data.keys())}")
+            for tid, tdata in tracks_data.items():
+                pos_data = tdata.get('position_data', [])
+                if pos_data:
+                    self.logger.info(f"Track {tid}: {len(pos_data)} points, range [{min(pos_data):.1f}, {max(pos_data):.1f}], travel length: {tdata.get('travel_length', 'N/A')}")
+                else:
+                    self.logger.warning(f"Track {tid}: No position data available")
+            
             # Show confirmation
-            track_list = ', '.join([track['track_id'] for track in track_data])
-            self.after(0, lambda: messagebox.showinfo(
-                "Multi-Track Unit Found",
-                f"Found {len(related_files)} track files for {model}/{serial}:\n{track_list}\n\n"
-                "Track files have been grouped for comparison analysis."
-            ))
+            if len(tracks_data) > 0:
+                track_list = ', '.join([track_data['track_id'] for track_data in tracks_data.values()])
+                message = f"Found {len(tracks_data)} tracks in {len(related_files)} files for {model}/{serial}:\n{track_list}\n\n"
+                if len(tracks_data) == 1:
+                    message += "Note: Only one track found. This appears to be a single-track unit."
+                else:
+                    message += "Track files have been grouped for comparison analysis."
+                
+                self.after(0, lambda msg=message: messagebox.showinfo(
+                    "Analysis Complete",
+                    msg
+                ))
+            else:
+                self.logger.warning("No tracks found in analysis")
             
         except Exception as e:
-            self.logger.error(f"File analysis failed: {e}")
+            error_msg = str(e)
+            self.logger.error(f"File analysis failed: {error_msg}")
             self.after(0, lambda: messagebox.showerror(
-                "Error", f"File analysis failed:\n{str(e)}"
+                "Error", f"File analysis failed:\n{error_msg}"
             ))
 
     def _analyze_folder_tracks(self, folder_path: Path):
@@ -673,31 +753,27 @@ class MultiTrackPage(ctk.CTkFrame):
                     serial = parts[1]
                     unit_key = f"{model}_{serial}"
                     
-                    # Check if this is a track file (has TA, TB, etc.)
-                    track_id = None
-                    for part in parts:
-                        if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
-                            track_id = part
-                            break
-                    
-                    if track_id:
-                        if unit_key not in unit_groups:
-                            unit_groups[unit_key] = []
-                        unit_groups[unit_key].append(file_path)
+                    # Add all files to unit groups - don't require track ID in filename
+                    # Files might contain multiple tracks internally
+                    if unit_key not in unit_groups:
+                        unit_groups[unit_key] = []
+                    unit_groups[unit_key].append(file_path)
             
-            # Find units with multiple tracks
-            multi_track_units = {k: v for k, v in unit_groups.items() if len(v) > 1}
-            
-            if not multi_track_units:
+            # Include all units - even single files might contain multiple tracks
+            # But prioritize units with multiple files
+            if unit_groups:
+                # Show all units, not just ones with multiple files
+                multi_track_units = unit_groups
+            else:
                 # Hide progress dialog
                 if hasattr(self, 'progress_dialog') and self.progress_dialog:
                     self.after(0, lambda: self.progress_dialog.hide())
                     self.progress_dialog = None
                     
                 self.after(0, lambda: messagebox.showinfo(
-                    "No Multi-Track Units", 
-                    "No multi-track units found in folder.\n"
-                    "Looking for files with TA, TB, etc. identifiers."
+                    "No Units Found", 
+                    "No units found in folder.\n"
+                    "Expected filename format: Model_Serial_*.xlsx"
                 ))
                 return
             
@@ -723,8 +799,9 @@ class MultiTrackPage(ctk.CTkFrame):
                 self.after(0, lambda: self.progress_dialog.hide())
                 self.progress_dialog = None
                 
+            error_msg = str(e)
             self.after(0, lambda: messagebox.showerror(
-                "Error", f"Folder analysis failed:\n{str(e)}"
+                "Error", f"Folder analysis failed:\n{error_msg}"
             ))
 
     def _show_unit_selection_dialog(self, unit_groups: Dict[str, List[Path]]):
@@ -846,16 +923,31 @@ class MultiTrackPage(ctk.CTkFrame):
                 
                 sigma_cv = unit_data.get('sigma_cv', 0)
                 linearity_cv = unit_data.get('linearity_cv', 0)
+                resistance_cv = unit_data.get('resistance_cv', 0)
                 
-                self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}")
-                self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}")
+                self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}%")
+                self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}%")
+                self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.1f}%")
                 
                 # Set color schemes based on variation
                 sigma_color = 'success' if sigma_cv < 5 else 'warning' if sigma_cv < 10 else 'danger'
                 linearity_color = 'success' if linearity_cv < 10 else 'warning' if linearity_cv < 20 else 'danger'
+                resistance_color = 'success' if resistance_cv < 2 else 'warning' if resistance_cv < 5 else 'danger'
                 
                 self.overview_cards['sigma_cv'].set_color_scheme(sigma_color)
                 self.overview_cards['linearity_cv'].set_color_scheme(linearity_color)
+                self.overview_cards['resistance_cv'].set_color_scheme(resistance_color)
+                
+                # Calculate and update risk level
+                risk_score = 0
+                if sigma_cv > 10: risk_score += 1
+                if linearity_cv > 20: risk_score += 1
+                if resistance_cv > 5: risk_score += 1
+                
+                risk_level = 'Low' if risk_score == 0 else 'Medium' if risk_score == 1 else 'High'
+                risk_color = 'success' if risk_score == 0 else 'warning' if risk_score == 1 else 'danger'
+                self.overview_cards['risk_level'].update_value(risk_level)
+                self.overview_cards['risk_level'].set_color_scheme(risk_color)
                 
                 # Update validation grade if available
                 if 'validation_grade' in unit_data:
@@ -990,45 +1082,8 @@ class MultiTrackPage(ctk.CTkFrame):
     
     def _update_comparison_charts(self):
         """Update comparison charts with track data."""
-        if not self.comparison_data or not self.comparison_data.get('comparison_performed'):
-            return
-
-        comparison = self.comparison_data
-
-        # Update summary chart
-        if hasattr(self, 'summary_chart') and self.summary_chart:
-            self._update_summary_chart()
-
-        # Sigma comparison chart
-        if 'sigma_comparison' in comparison and comparison['sigma_comparison']:
-            sigma_data = comparison['sigma_comparison']['values']
-            
-            if hasattr(self, 'sigma_comparison_chart') and self.sigma_comparison_chart:
-                self.sigma_comparison_chart.clear_chart()
-                self.sigma_comparison_chart.plot_bar(
-                    categories=list(sigma_data.keys()),
-                    values=list(sigma_data.values()),
-                    colors=['primary'] * len(sigma_data),
-                    xlabel="Track ID",
-                    ylabel="Sigma Gradient"
-                )
-
-        # Linearity comparison chart
-        if 'linearity_comparison' in comparison and comparison['linearity_comparison']:
-            linearity_data = comparison['linearity_comparison']['values']
-            
-            if hasattr(self, 'linearity_comparison_chart') and self.linearity_comparison_chart:
-                self.linearity_comparison_chart.clear_chart()
-                self.linearity_comparison_chart.plot_bar(
-                    categories=list(linearity_data.keys()),
-                    values=list(linearity_data.values()),
-                    colors=['warning'] * len(linearity_data),
-                    xlabel="Track ID",
-                    ylabel="Linearity Error"
-                )
-
-        # Error profile comparison (if position data available)
-        self._update_error_profiles()
+        # Simply update the linearity overlay plot
+        self._update_linearity_overlay()
 
     def _update_summary_chart(self):
         """Update the summary chart with track comparison data."""
@@ -1096,30 +1151,64 @@ class MultiTrackPage(ctk.CTkFrame):
 
     def _update_error_profiles(self):
         """Update error profile comparison chart."""
-        if not self.current_unit_data or not self.current_unit_data.get('tracks'):
+        if not self.current_unit_data or not hasattr(self, 'profile_comparison_chart') or not self.profile_comparison_chart:
             return
 
-        self.profile_comparison_chart.clear_chart()
-        
-        # Plot error profiles for each track
-        colors = ['primary', 'success', 'warning', 'danger', 'info']
-        color_idx = 0
-        
-        for track_id, result in self.current_unit_data['tracks'].items():
-            primary_track = result.primary_track
-            if primary_track and primary_track.position_data and primary_track.error_data:
+        try:
+            self.profile_comparison_chart.clear_chart()
+            
+            # For now, create a placeholder chart showing track comparison metrics
+            track_ids = []
+            metrics_data = []
+            
+            # Extract track data based on format
+            if 'files' in self.current_unit_data:
+                # Database format
+                for file_info in self.current_unit_data['files']:
+                    for track_id, track_data in file_info['tracks'].items():
+                        if track_id not in track_ids:
+                            track_ids.append(track_id)
+                            metrics_data.append({
+                                'sigma': track_data.get('sigma_gradient', 0),
+                                'linearity': abs(track_data.get('linearity_error', 0)),
+                                'resistance': abs(track_data.get('resistance_change_percent', 0))
+                            })
+            elif 'tracks' in self.current_unit_data:
+                # Direct tracks format
+                for track_id, track_data in self.current_unit_data['tracks'].items():
+                    track_ids.append(track_id)
+                    metrics_data.append({
+                        'sigma': track_data.get('sigma_gradient', 0),
+                        'linearity': abs(track_data.get('linearity_error', 0)),
+                        'resistance': abs(track_data.get('resistance_change', 0))
+                    })
+            
+            if track_ids and metrics_data:
+                # Create a multi-metric comparison chart
+                ax = self.profile_comparison_chart.figure.add_subplot(111)
                 
-                color = colors[color_idx % len(colors)]
+                x = np.arange(len(track_ids))
+                width = 0.25
                 
-                self.profile_comparison_chart.plot_line(
-                    x_data=primary_track.position_data,
-                    y_data=primary_track.error_data,
-                    label=f"Track {track_id}",
-                    color=color,
-                    alpha=0.7
-                )
+                sigma_values = [m['sigma'] for m in metrics_data]
+                linearity_values = [m['linearity'] for m in metrics_data]
+                resistance_values = [m['resistance'] for m in metrics_data]
                 
-                color_idx += 1
+                ax.bar(x - width, sigma_values, width, label='Sigma Gradient', color='blue')
+                ax.bar(x, linearity_values, width, label='Linearity Error %', color='orange')
+                ax.bar(x + width, resistance_values, width, label='Resistance Change %', color='green')
+                
+                ax.set_xlabel('Track ID')
+                ax.set_ylabel('Value')
+                ax.set_title('Track Metrics Comparison')
+                ax.set_xticks(x)
+                ax.set_xticklabels(track_ids)
+                ax.legend()
+                
+                self.profile_comparison_chart.canvas.draw()
+                
+        except Exception as e:
+            self.logger.error(f"Error updating error profiles: {e}")
 
     def _update_consistency_analysis(self):
         """Update consistency analysis using the ConsistencyAnalyzer."""
@@ -1150,6 +1239,14 @@ class MultiTrackPage(ctk.CTkFrame):
                 self.consistency_display.configure(state='disabled')
                 return
                 
+            # Log tracks data structure for debugging
+            self.logger.info(f"Analyzing consistency for {len(tracks_data)} tracks")
+            for track_id, track_data in tracks_data.items():
+                if isinstance(track_data, dict):
+                    self.logger.debug(f"Track {track_id} keys: {list(track_data.keys())[:10]}")
+                    if 'sigma_analysis' in track_data:
+                        self.logger.debug(f"Track {track_id} sigma_analysis: {track_data['sigma_analysis']}")
+            
             # Perform consistency analysis
             consistency_metrics = self.consistency_analyzer.analyze_tracks(tracks_data)
             
@@ -1202,7 +1299,8 @@ class MultiTrackPage(ctk.CTkFrame):
 
         try:
             # Get save location
-            initial_filename = f"multitrack_report_{self.current_unit_data['unit_id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            unit_id = f"{self.current_unit_data.get('model', 'Unknown')}_{self.current_unit_data.get('serial', 'Unknown')}"
+            initial_filename = f"multitrack_report_{unit_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             
             filename = filedialog.asksaveasfilename(
                 title="Export Multi-Track Report",
@@ -1218,12 +1316,15 @@ class MultiTrackPage(ctk.CTkFrame):
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 # Unit summary
                 unit_summary = pd.DataFrame([{
-                    'Unit ID': self.current_unit_data['unit_id'],
-                    'Track Count': len(self.current_unit_data['tracks']),
-                    'Overall Status': self.current_unit_data['overall_status'].value,
-                    'Overall Validation Status': getattr(self.current_unit_data.get('tracks', {}).get(list(self.current_unit_data['tracks'].keys())[0]), 'overall_validation_status', 'Not Available'),
-                    'Validation Grade': getattr(self.current_unit_data.get('tracks', {}).get(list(self.current_unit_data['tracks'].keys())[0]), 'overall_validation_grade', 'N/A'),
-                    'Has Issues': self.current_unit_data.get('has_multi_track_issues', False),
+                    'Model': self.current_unit_data.get('model', 'Unknown'),
+                    'Serial': self.current_unit_data.get('serial', 'Unknown'),
+                    'Track Count': self.current_unit_data.get('track_count', 0),
+                    'File Count': self.current_unit_data.get('total_files', 0),
+                    'Overall Status': self.current_unit_data.get('overall_status', 'Unknown'),
+                    'Consistency': self.current_unit_data.get('consistency', 'Unknown'),
+                    'Sigma CV': f"{self.current_unit_data.get('sigma_cv', 0):.1f}%",
+                    'Linearity CV': f"{self.current_unit_data.get('linearity_cv', 0):.1f}%",
+                    'Resistance CV': f"{self.current_unit_data.get('resistance_cv', 0):.1f}%",
                     'Analysis Date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }])
                 unit_summary.to_excel(writer, sheet_name='Unit Summary', index=False)
@@ -1976,15 +2077,45 @@ Quality Assessment:
                 }
 
                 for track in analysis.tracks:
+                    # Get all track data including analysis details
                     track_info = {
                         'track_id': track.track_id,
                         'status': track.status.value,
+                        'overall_status': track.status.value,
                         'sigma_gradient': track.sigma_gradient,
                         'sigma_pass': track.sigma_pass,
+                        'sigma_spec': track.sigma_threshold,
+                        'sigma_margin': getattr(track, 'sigma_margin', None),
                         'linearity_error': track.final_linearity_error_shifted,
+                        'linearity_spec': track.linearity_spec,
                         'linearity_pass': track.linearity_pass,
+                        'resistance_change': track.resistance_change,
+                        'resistance_change_percent': track.resistance_change_percent,
                         'failure_probability': track.failure_probability,
-                        'risk_category': track.risk_category.value if track.risk_category else 'UNKNOWN'
+                        'risk_category': track.risk_category.value if track.risk_category else 'UNKNOWN',
+                        'validation_status': 'PASS' if track.sigma_pass and track.linearity_pass else 'FAIL',
+                        'position': track.track_id,  # For track viewer
+                        'serial': serial,  # For track viewer
+                        'timestamp': analysis.timestamp,
+                        # Add nested structure for consistency analyzer
+                        'sigma_analysis': {
+                            'sigma_gradient': track.sigma_gradient
+                        },
+                        'linearity_analysis': {
+                            'final_linearity_error_shifted': track.final_linearity_error_shifted
+                        },
+                        'unit_properties': {
+                            'resistance_change_percent': track.resistance_change_percent
+                        },
+                        # Database doesn't store raw position/error data
+                        'position_data': [],
+                        'error_data': [],
+                        'error_profile': {
+                            'positions': [],
+                            'errors': [],
+                            'spec_limit': track.linearity_spec,
+                            'note': 'Raw data not available from database'
+                        }
                     }
                     file_info['tracks'][track.track_id] = track_info
 
@@ -2005,25 +2136,34 @@ Quality Assessment:
             # Calculate consistency metrics
             all_sigma_gradients = []
             all_linearity_errors = []
+            all_resistance_changes = []
             
             for file_info in unit_summary['files']:
                 for track_info in file_info['tracks'].values():
                     if track_info['sigma_gradient'] is not None:
                         all_sigma_gradients.append(track_info['sigma_gradient'])
                     if track_info['linearity_error'] is not None:
-                        all_linearity_errors.append(track_info['linearity_error'])
+                        all_linearity_errors.append(abs(track_info['linearity_error']))
+                    if track_info.get('resistance_change_percent') is not None:
+                        all_resistance_changes.append(abs(track_info['resistance_change_percent']))
 
-            if all_sigma_gradients:
+            if all_sigma_gradients and len(all_sigma_gradients) > 1:
                 sigma_cv = (np.std(all_sigma_gradients) / np.mean(all_sigma_gradients)) * 100
                 unit_summary['sigma_cv'] = sigma_cv
             else:
                 unit_summary['sigma_cv'] = 0
 
-            if all_linearity_errors:
-                linearity_cv = (np.std(all_linearity_errors) / np.mean(all_linearity_errors)) * 100
+            if all_linearity_errors and len(all_linearity_errors) > 1:
+                linearity_cv = (np.std(all_linearity_errors) / abs(np.mean(all_linearity_errors))) * 100
                 unit_summary['linearity_cv'] = linearity_cv
             else:
                 unit_summary['linearity_cv'] = 0
+
+            if all_resistance_changes and len(all_resistance_changes) > 1:
+                resistance_cv = (np.std(all_resistance_changes) / abs(np.mean(all_resistance_changes))) * 100
+                unit_summary['resistance_cv'] = resistance_cv
+            else:
+                unit_summary['resistance_cv'] = 0
 
             # Determine consistency grade
             if unit_summary['sigma_cv'] < 5 and unit_summary['linearity_cv'] < 10:
@@ -2043,9 +2183,10 @@ Quality Assessment:
             self.logger.info(f"Loaded multi-track data from database: {model}/{serial} - {len(historical_data)} files")
 
         except Exception as e:
-            self.logger.error(f"Failed to load multi-track data from database: {e}")
+            error_msg = str(e)
+            self.logger.error(f"Failed to load multi-track data from database: {error_msg}")
             self.after(0, lambda: messagebox.showerror(
-                "Error", f"Failed to load data from database:\n{str(e)}"
+                "Error", f"Failed to load data from database:\n{error_msg}"
             ))
 
     def _select_unit_from_database(self):
@@ -2179,24 +2320,27 @@ Quality Assessment:
                 for file_data in self.current_unit_data.get('files', []):
                     file_tracks = file_data.get('tracks', {})
                     for track_id, track_data in file_tracks.items():
-                        # Format track data for viewer
+                        # Format track data for viewer with all required fields
                         formatted_track = {
                             'track_id': track_id,
                             'position': track_data.get('position', track_id),
                             'serial': self.current_unit_data.get('serial', 'Unknown'),
                             'timestamp': track_data.get('timestamp'),
-                            'overall_status': track_data.get('status', 'Unknown'),
-                            'validation_status': track_data.get('validation_status', 'Unknown'),
+                            'overall_status': track_data.get('status', track_data.get('overall_status', 'Unknown')),
+                            'validation_status': track_data.get('validation_status', 'Valid' if track_data.get('sigma_pass') and track_data.get('linearity_pass') else 'Invalid'),
                             'sigma_gradient': track_data.get('sigma_gradient'),
                             'sigma_spec': track_data.get('sigma_spec'),
                             'sigma_margin': track_data.get('sigma_margin'),
                             'linearity_error': track_data.get('linearity_error'),
                             'linearity_spec': track_data.get('linearity_spec'),
                             'resistance_change': track_data.get('resistance_change'),
-                            'trim_stability': track_data.get('trim_stability'),
+                            'resistance_change_percent': track_data.get('resistance_change_percent'),
+                            'trim_stability': track_data.get('trim_stability', 'N/A'),
                             'industry_grade': track_data.get('industry_grade', 'N/A'),
-                            'error_profile': track_data.get('error_profile', {}),
-                            'statistics': track_data.get('statistics', {}),
+                            'failure_probability': track_data.get('failure_probability', 0),
+                            'risk_category': track_data.get('risk_category', 'Unknown'),
+                            'error_profile': self._format_error_profile(track_data),
+                            'statistics': self._calculate_track_statistics(track_data),
                             'file_path': track_data.get('file_path')
                         }
                         tracks_data[track_id] = formatted_track
@@ -2220,8 +2364,8 @@ Quality Assessment:
                         'resistance_change': track_data.get('resistance_change'),
                         'trim_stability': track_data.get('trim_stability'),
                         'industry_grade': track_data.get('industry_grade', 'N/A'),
-                        'error_profile': track_data.get('error_profile', {}),
-                        'statistics': track_data.get('statistics', {})
+                        'error_profile': self._format_error_profile(track_data),
+                        'statistics': self._calculate_track_statistics(track_data)
                     }
                     tracks_data[track_id] = formatted_track
                     
@@ -2236,6 +2380,432 @@ Quality Assessment:
             self.logger.error(f"Error updating individual track viewer: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+    
+    def _initialize_linearity_plot(self):
+        """Initialize the linearity error overlay plot."""
+        self.linearity_ax.clear()
+        
+        # Set white background for better visibility
+        self.linearity_ax.set_facecolor('white')
+        self.linearity_ax.tick_params(colors='black', labelcolor='black')
+        for spine in self.linearity_ax.spines.values():
+            spine.set_color('#cccccc')
+        
+        # Set labels and title
+        self.linearity_ax.set_xlabel('Position (%)', fontsize=12, color='black')
+        self.linearity_ax.set_ylabel('Linearity Error (%)', fontsize=12, color='black')
+        self.linearity_ax.set_title('Track Linearity Error Overlay', fontsize=14, fontweight='bold', color='black')
+        
+        # Add grid
+        self.linearity_ax.grid(True, alpha=0.3, color='#cccccc')
+        
+        # Add a message if no data
+        self.linearity_ax.text(0.5, 0.5, 'No track data loaded', 
+                              transform=self.linearity_ax.transAxes,
+                              horizontalalignment='center',
+                              verticalalignment='center',
+                              fontsize=12, color='gray')
+        
+        self.linearity_fig.tight_layout()
+        self.linearity_canvas.draw()
+    
+    def _update_linearity_overlay(self):
+        """Update the linearity error overlay plot with track data."""
+        self.linearity_ax.clear()
+        
+        # Set white background
+        self.linearity_ax.set_facecolor('white')
+        self.linearity_ax.tick_params(colors='black', labelcolor='black')
+        for spine in self.linearity_ax.spines.values():
+            spine.set_color('#cccccc')
+        
+        if not self.current_unit_data:
+            self._initialize_linearity_plot()
+            return
+            
+        # Color palette for different tracks
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        track_count = 0
+        spec_limit = 5.0  # Default spec
+        tracks_plotted = {}  # Keep track of unique tracks
+        
+        # Collect unique tracks (avoid duplicates)
+        all_tracks = {}
+        
+        # Check different data formats
+        if 'tracks' in self.current_unit_data:
+            # Direct tracks format
+            all_tracks = self.current_unit_data['tracks']
+        elif 'files' in self.current_unit_data:
+            # Files format - collect unique tracks
+            for file_data in self.current_unit_data.get('files', []):
+                tracks = file_data.get('tracks', {})
+                for track_id, track_data in tracks.items():
+                    if track_id not in all_tracks:
+                        all_tracks[track_id] = track_data
+        
+        # Plot each unique track's error profile
+        for track_id, track_data in all_tracks.items():
+            if track_id in tracks_plotted:
+                continue  # Skip duplicates
+                
+            color = colors[track_count % len(colors)]
+            
+            # Get error profile data - only use real data, not synthetic
+            error_profile = track_data.get('error_profile', {})
+            
+            # Check if we have position_data and error_data
+            positions = []
+            errors = []
+            
+            # Use final trimmed data for multi-track comparison
+            if 'position_data' in track_data and 'error_data' in track_data:
+                positions = track_data.get('position_data', [])
+                errors = track_data.get('error_data', [])
+                if positions:
+                    self.logger.info(f"Track {track_id}: Using trimmed position_data ({len(positions)} points)")
+                    self.logger.info(f"Track {track_id}: Position range from trimmed: [{min(positions):.1f}, {max(positions):.1f}]")
+            
+            # Last resort: check error_profile (but don't filter synthetic data)
+            if not positions and error_profile and 'positions' in error_profile and 'errors' in error_profile:
+                positions = error_profile.get('positions', [])
+                errors = error_profile.get('errors', [])
+                self.logger.info(f"Track {track_id}: Using error_profile data ({len(positions)} points)")
+                if positions:
+                    self.logger.info(f"Track {track_id}: Position range from error_profile: [{min(positions):.1f}, {max(positions):.1f}]")
+            else:
+                self.logger.debug(f"Track {track_id}: No position/error data found")
+            
+            if positions and errors and len(positions) == len(errors) and len(positions) > 0:
+                pos_min, pos_max = min(positions), max(positions)
+                self.logger.info(f"Plotting track {track_id} with {len(positions)} points, position range: [{pos_min:.1f}, {pos_max:.1f}]")
+                
+                # Apply offset if available (to get shifted linearity error)
+                offset = track_data.get('linearity_offset', 0.0)
+                if offset != 0.0:
+                    self.logger.info(f"Track {track_id}: Applying offset {offset:.6f}")
+                    # Log some statistics before and after offset
+                    errors_min, errors_max = min(errors), max(errors)
+                    errors_mean = sum(errors) / len(errors)
+                    self.logger.info(f"Track {track_id}: Before offset - min={errors_min:.4f}, max={errors_max:.4f}, mean={errors_mean:.4f}")
+                    
+                    # Note: The analyzer ADDS the offset to errors, so we do the same here
+                    shifted_errors = [e + offset for e in errors]
+                    
+                    shifted_min, shifted_max = min(shifted_errors), max(shifted_errors)
+                    shifted_mean = sum(shifted_errors) / len(shifted_errors)
+                    self.logger.info(f"Track {track_id}: After offset - min={shifted_min:.4f}, max={shifted_max:.4f}, mean={shifted_mean:.4f}")
+                else:
+                    self.logger.warning(f"Track {track_id}: No offset available (offset=0.0)")
+                    shifted_errors = errors
+                
+                # Plot the error profile with shifted values
+                self.linearity_ax.plot(positions, shifted_errors, 
+                                     label=f'Track {track_id}', 
+                                     color=color, 
+                                     linewidth=2,
+                                     alpha=0.8)
+                tracks_plotted[track_id] = True
+                track_count += 1
+                
+                # Get spec limit from track data
+                if 'linearity_spec' in track_data:
+                    spec_limit = track_data['linearity_spec']
+                elif error_profile and 'spec_limit' in error_profile:
+                    spec_limit = error_profile['spec_limit']
+            else:
+                self.logger.warning(f"Track {track_id}: Cannot plot - positions:{len(positions) if positions else 0}, errors:{len(errors) if errors else 0}")
+        
+        # Add spec limit lines
+        if track_count > 0:
+            self.linearity_ax.axhline(y=spec_limit, color='red', linestyle='--', 
+                                    linewidth=2, alpha=0.7, label=f'Spec Limit: ±{spec_limit}%')
+            self.linearity_ax.axhline(y=-spec_limit, color='red', linestyle='--', 
+                                    linewidth=2, alpha=0.7)
+            
+            # Add zero line
+            self.linearity_ax.axhline(y=0, color='black', linestyle='-', 
+                                    linewidth=1, alpha=0.5)
+        
+        # Set labels and title
+        self.linearity_ax.set_xlabel('Position (mm)', fontsize=12, color='black')
+        self.linearity_ax.set_ylabel('Linearity Error (%)', fontsize=12, color='black')
+        self.linearity_ax.set_title(f'Track Linearity Error Overlay - {self.current_unit_data.get("model", "Unknown")} {self.current_unit_data.get("serial", "Unknown")}', 
+                                  fontsize=14, fontweight='bold', color='black')
+        
+        # Add grid
+        self.linearity_ax.grid(True, alpha=0.3, color='#cccccc')
+        
+        # Add legend if tracks were plotted
+        if track_count > 0:
+            self.linearity_ax.legend(loc='best', framealpha=0.9)
+        else:
+            # Check if this is database data
+            from_database = False
+            if all_tracks:
+                # Check if any track has the database note
+                for track_data in all_tracks.values():
+                    if isinstance(track_data.get('error_profile'), dict):
+                        if track_data['error_profile'].get('note') == 'Raw data not available from database':
+                            from_database = True
+                            break
+            
+            if from_database:
+                message = 'Error profile data not available from database\n\nDatabase only stores calculated metrics.\nLoad files directly to see error profiles.'
+            else:
+                message = 'No error profile data available'
+                
+            self.linearity_ax.text(0.5, 0.5, message, 
+                                  transform=self.linearity_ax.transAxes,
+                                  horizontalalignment='center',
+                                  verticalalignment='center',
+                                  fontsize=12, color='gray',
+                                  multialignment='center')
+        
+        # Set scaling based on slider value
+        if track_count > 0:
+            # Get scale factor (default to 1.5 if not initialized yet)
+            scale_factor = self.y_scale_var.get() if hasattr(self, 'y_scale_var') else 1.5
+            
+            # Set x-axis to 0-100%
+            self.linearity_ax.set_xlim(0, 100)
+            
+            # Set y-axis based on scale factor and spec limits
+            y_limit = spec_limit * scale_factor
+            self.linearity_ax.set_ylim(-y_limit, y_limit)
+            
+            self.logger.info(f"Chart scaled to ±{y_limit:.1f} (spec: {spec_limit}, scale: {scale_factor}x)")
+        
+        self.linearity_fig.tight_layout()
+        self.linearity_canvas.draw()
+    
+    def _on_scale_changed(self, value):
+        """Handle scale slider change."""
+        scale_value = self.y_scale_var.get()
+        self.scale_value_label.configure(text=f"{scale_value:.1f}x")
+        # Update the plot with new scaling
+        self._update_linearity_overlay()
+    
+    def _export_linearity_chart(self):
+        """Export the linearity overlay chart."""
+        if not self.current_unit_data:
+            messagebox.showwarning("No Data", "No data to export")
+            return
+            
+        # Get filename
+        default_filename = f"linearity_overlay_{self.current_unit_data.get('model', 'Unknown')}_{self.current_unit_data.get('serial', 'Unknown')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        
+        filename = filedialog.asksaveasfilename(
+            title="Export Linearity Overlay Chart",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG files", "*.png"),
+                ("PDF files", "*.pdf"),
+                ("SVG files", "*.svg"),
+                ("All files", "*.*")
+            ],
+            initialfile=default_filename
+        )
+        
+        if filename:
+            try:
+                # Save the figure
+                self.linearity_fig.savefig(filename, dpi=300, bbox_inches='tight')
+                messagebox.showinfo("Export Successful", f"Chart exported to {filename}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Failed to export chart: {str(e)}")
+    
+    def _extract_track_id(self, file_path: Path) -> str:
+        """Extract track ID from filename."""
+        file_parts = file_path.stem.split('_')
+        
+        # Look for track identifier like TA, TB, TC
+        for part in file_parts:
+            if len(part) == 2 and part[0] == 'T' and part[1].isalpha():
+                return part
+                
+        # Default to TA if no track identifier found
+        return 'TA'
+    
+    def _calculate_consistency_rating(self, sigma_cv: float, linearity_cv: float, resistance_cv: float) -> str:
+        """Calculate overall consistency rating based on CV values."""
+        if sigma_cv == 0 and linearity_cv == 0 and resistance_cv == 0:
+            return 'SINGLE_TRACK'
+            
+        # Use similar thresholds as ConsistencyAnalyzer
+        if sigma_cv > 15 or linearity_cv > 30 or resistance_cv > 10:
+            return 'POOR'
+        elif sigma_cv > 10 or linearity_cv > 20 or resistance_cv > 5:
+            return 'FAIR'
+        elif sigma_cv > 5 or linearity_cv > 10 or resistance_cv > 2:
+            return 'GOOD'
+        else:
+            return 'EXCELLENT'
+    
+    def _format_error_profile(self, track_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Format error profile data for track viewer."""
+        error_profile = track_data.get('error_profile', {})
+        
+        # If error_profile already has the correct structure, return it
+        if isinstance(error_profile, dict) and 'positions' in error_profile and 'errors' in error_profile:
+            return error_profile
+            
+        # Try to create error profile from other data
+        profile = {
+            'positions': [],
+            'errors': [],
+            'spec_limit': track_data.get('linearity_spec', 5.0)
+        }
+        
+        # Check if we have position and error data in other fields
+        if 'position_data' in track_data and 'error_data' in track_data:
+            profile['positions'] = track_data['position_data']
+            profile['errors'] = track_data['error_data']
+        elif 'measurements' in track_data:
+            # Extract from measurements if available
+            measurements = track_data['measurements']
+            if isinstance(measurements, list):
+                positions = []
+                errors = []
+                for m in measurements:
+                    if isinstance(m, dict):
+                        if 'position' in m:
+                            positions.append(m['position'])
+                        if 'error' in m:
+                            errors.append(m['error'])
+                if positions and errors and len(positions) == len(errors):
+                    profile['positions'] = positions
+                    profile['errors'] = errors
+        
+        # Don't generate synthetic data - only use real data
+            
+        return profile
+    
+    def _calculate_track_statistics(self, track_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate statistics for track data."""
+        stats = {
+            'mean_error': 0,
+            'std_error': 0,
+            'max_error': 0,
+            'min_error': 0,
+            'data_points': 0
+        }
+        
+        # Try to get error data from nested structure
+        if 'linearity_analysis' in track_data and isinstance(track_data['linearity_analysis'], dict):
+            lin_analysis = track_data['linearity_analysis']
+            if 'error_data' in lin_analysis and lin_analysis['error_data']:
+                errors = lin_analysis['error_data']
+                stats['mean_error'] = np.mean(errors)
+                stats['std_error'] = np.std(errors)
+                stats['max_error'] = np.max(errors)
+                stats['min_error'] = np.min(errors)
+                stats['data_points'] = len(errors)
+        
+        return stats
+    
+    def _load_test_data(self):
+        """Load test data for debugging."""
+        # Create sample multi-track data
+        test_data = {
+            'model': 'TEST_MODEL',
+            'serial': 'TEST_001',
+            'total_files': 3,
+            'track_count': 3,
+            'overall_status': 'PASS',
+            'consistency': 'GOOD',
+            'sigma_cv': 8.5,
+            'linearity_cv': 15.2,
+            'resistance_cv': 3.7,
+            'files': [
+                {
+                    'filename': 'test_file_1.xlsx',
+                    'status': 'PASS',
+                    'track_count': 3,
+                    'tracks': {
+                        'TA': {
+                            'track_id': 'TA',
+                            'status': 'PASS',
+                            'overall_status': 'PASS',
+                            'sigma_gradient': 0.00045,
+                            'sigma_spec': 0.0006,
+                            'sigma_margin': 0.25,
+                            'linearity_error': 0.25,
+                            'linearity_spec': 0.5,
+                            'resistance_change': 2.5,
+                            'resistance_change_percent': 2.5,
+                            'trim_stability': 0.95,
+                            'industry_grade': 'A',
+                            'sigma_pass': True,
+                            'linearity_pass': True,
+                            'validation_status': 'Valid',
+                            'timestamp': datetime.now().isoformat(),
+                            'position': 'A',
+                            'sigma_analysis': {'sigma_gradient': 0.00045},
+                            'linearity_analysis': {'final_linearity_error_shifted': 0.25},
+                            'unit_properties': {'resistance_change_percent': 2.5},
+                            # Add position and error data for plotting
+                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
+                            'error_data': [0.1 * (i % 10 - 5) + 0.05 * np.sin(i/10) for i in range(0, 101, 2)]
+                        },
+                        'TB': {
+                            'track_id': 'TB',
+                            'status': 'PASS',
+                            'overall_status': 'PASS',
+                            'sigma_gradient': 0.00048,
+                            'sigma_spec': 0.0006,
+                            'sigma_margin': 0.20,
+                            'linearity_error': 0.28,
+                            'linearity_spec': 0.5,
+                            'resistance_change': 2.8,
+                            'resistance_change_percent': 2.8,
+                            'trim_stability': 0.92,
+                            'industry_grade': 'B',
+                            'sigma_pass': True,
+                            'linearity_pass': True,
+                            'validation_status': 'Valid',
+                            'timestamp': datetime.now().isoformat(),
+                            'position': 'B',
+                            'sigma_analysis': {'sigma_gradient': 0.00048},
+                            'linearity_analysis': {'final_linearity_error_shifted': 0.28},
+                            'unit_properties': {'resistance_change_percent': 2.8},
+                            # Add position and error data for plotting
+                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
+                            'error_data': [0.15 * (i % 10 - 5) + 0.08 * np.sin(i/8) for i in range(0, 101, 2)]
+                        },
+                        'TC': {
+                            'track_id': 'TC',
+                            'status': 'WARNING',
+                            'overall_status': 'WARNING',
+                            'sigma_gradient': 0.00052,
+                            'sigma_spec': 0.0006,
+                            'sigma_margin': 0.13,
+                            'linearity_error': 0.35,
+                            'linearity_spec': 0.5,
+                            'resistance_change': 3.2,
+                            'resistance_change_percent': 3.2,
+                            'trim_stability': 0.88,
+                            'industry_grade': 'C',
+                            'sigma_pass': False,
+                            'linearity_pass': True,
+                            'validation_status': 'Warning',
+                            'timestamp': datetime.now().isoformat(),
+                            'position': 'C',
+                            'sigma_analysis': {'sigma_gradient': 0.00052},
+                            'linearity_analysis': {'final_linearity_error_shifted': 0.35},
+                            'unit_properties': {'resistance_change_percent': 3.2},
+                            # Add position and error data for plotting
+                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
+                            'error_data': [0.2 * (i % 10 - 5) + 0.1 * np.sin(i/6) for i in range(0, 101, 2)]
+                        }
+                    }
+                }
+            ]
+        }
+        
+        self.current_unit_data = test_data
+        self._update_multi_track_display()
+        self.logger.info("Test data loaded successfully")
             
     def show(self):
         """Show the page using grid layout."""
@@ -2277,4 +2847,47 @@ Quality Assessment:
             font=ctk.CTkFont(size=14),
             wraplength=600
         )
-        detail_label.pack(pady=10) 
+        detail_label.pack(pady=10)
+    
+    def _extract_track_id(self, file_path: Path) -> str:
+        """Extract track ID from filename."""
+        # Try to extract track ID from filename pattern Model_Serial_TrackID.xlsx
+        parts = file_path.stem.split('_')
+        if len(parts) >= 3:
+            # Last part might be track ID
+            potential_track = parts[-1]
+            if len(potential_track) == 2 and potential_track[0] == 'T' and potential_track[1].isalpha():
+                return potential_track
+        
+        # Fallback: use last two characters if they look like a track ID
+        stem = file_path.stem
+        if len(stem) >= 2:
+            last_two = stem[-2:]
+            if last_two[0] == 'T' and last_two[1].isalpha():
+                return last_two
+        
+        # Final fallback: generate from filename
+        return f"T{file_path.stem[-1].upper()}" if file_path.stem else "TX"
+    
+    def _calculate_consistency_rating(self, sigma_cv: float, linearity_cv: float, resistance_cv: float) -> str:
+        """Calculate overall consistency rating based on CV values."""
+        # Define thresholds
+        excellent_threshold = {'sigma': 5, 'linearity': 10, 'resistance': 2}
+        good_threshold = {'sigma': 10, 'linearity': 20, 'resistance': 5}
+        acceptable_threshold = {'sigma': 15, 'linearity': 30, 'resistance': 10}
+        
+        # Check each metric
+        if (sigma_cv <= excellent_threshold['sigma'] and 
+            linearity_cv <= excellent_threshold['linearity'] and 
+            resistance_cv <= excellent_threshold['resistance']):
+            return 'EXCELLENT'
+        elif (sigma_cv <= good_threshold['sigma'] and 
+              linearity_cv <= good_threshold['linearity'] and 
+              resistance_cv <= good_threshold['resistance']):
+            return 'GOOD'
+        elif (sigma_cv <= acceptable_threshold['sigma'] and 
+              linearity_cv <= acceptable_threshold['linearity'] and 
+              resistance_cv <= acceptable_threshold['resistance']):
+            return 'ACCEPTABLE'
+        else:
+            return 'POOR' 

@@ -330,6 +330,7 @@ class TrackData(BaseAnalysisModel):
     """Data for a single track analysis."""
     track_id: str = Field(..., description="Track identifier (e.g., TRK1, TRK2, default)")
     status: AnalysisStatus = Field(..., description="Track analysis status")
+    status_reason: str = Field(default="", description="Reason for the status (especially warnings)")
 
     # Core measurements
     travel_length: float = Field(..., gt=0, description="Total travel length")
