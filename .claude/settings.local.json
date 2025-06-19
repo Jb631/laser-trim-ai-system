@@ -52,7 +52,8 @@
       "Bash(fi)",
       "Bash(cp:*)",
       "Bash(.venv/Scripts/python:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(sqlite3:*)"
     ],
     "deny": []
   }

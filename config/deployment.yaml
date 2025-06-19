@@ -1,0 +1,161 @@
+# Deployment Configuration for Laser Trim Analyzer
+# This file supports both single-user and multi-user deployment modes
+
+app_name: "Laser Trim Analyzer"
+version: "2.0.0"
+debug: false
+
+# Deployment Mode Selection
+deployment_mode: "single_user"  # Options: "single_user" or "multi_user"
+
+# Database Configuration
+database:
+  # Single-User Mode (Local Database)
+  single_user:
+    # Local database path
+    path: "%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db"
+    
+    # Connection settings optimized for single user
+    connection_timeout: 10
+    enable_wal_mode: false  # Not needed for single user
+    
+  # Multi-User Mode (Network/Shared Database)
+  multi_user:
+    # Network database path or URL
+    # Examples:
+    # SQLite: "//server/share/laser_trim/database.db"
+    # PostgreSQL: "postgresql://user:password@server:5432/laser_trim"
+    # MySQL: "mysql://user:password@server:3306/laser_trim"
+    path: "//fileserver/QA_Data/LaserTrimAnalyzer/shared_database.db"
+    
+    # Connection settings for multi-user
+    connection_timeout: 30
+    max_retries: 5
+    retry_delay: 2
+    
+    # SQLite specific settings for shared mode
+    sqlite_timeout: 30  # Timeout for locked database
+    enable_wal_mode: true  # Write-Ahead Logging for better concurrency
+    
+    # User tracking
+    track_users: true
+    require_authentication: false  # Set to true for user login
+  
+  # Cache settings (applies to both modes)
+  enable_local_cache: true
+  cache_sync_interval: 300  # seconds (only used in multi-user mode)
+
+# Data Storage Paths
+paths:
+  # Single-User Mode Paths
+  single_user:
+    data_directory: "%LOCALAPPDATA%/LaserTrimAnalyzer/data"
+    reports_directory: "%USERPROFILE%/Documents/LaserTrimAnalyzer/reports"
+    models_directory: "%LOCALAPPDATA%/LaserTrimAnalyzer/models"
+    temp_directory: "%TEMP%/LaserTrimAnalyzer"
+    logs_directory: "%LOCALAPPDATA%/LaserTrimAnalyzer/logs"
+    
+  # Multi-User Mode Paths
+  multi_user:
+    data_directory: "//fileserver/QA_Data/LaserTrimAnalyzer/shared_data"
+    reports_directory: "//fileserver/QA_Data/LaserTrimAnalyzer/reports"
+    models_directory: "//fileserver/QA_Data/LaserTrimAnalyzer/ml_models"
+    temp_directory: "%TEMP%/LaserTrimAnalyzer"  # Keep temp local
+    logs_directory: "//fileserver/QA_Data/LaserTrimAnalyzer/logs"
+
+# Multi-User Specific Features
+multi_user:
+  # Concurrent access handling
+  enable_file_locking: true
+  max_concurrent_analyses: 10
+  
+  # Permissions (when authentication is enabled)
+  default_user_role: "analyst"  # analyst, reviewer, admin
+  
+  # Network performance
+  network_timeout: 60
+  enable_progress_updates: true
+  update_interval: 1.0  # seconds
+
+# Processing Configuration
+processing:
+  # Adjust based on deployment mode
+  max_workers: 4  # Will be reduced to 2 in multi-user mode
+  
+  # File handling
+  clean_temp_on_exit: true
+
+# Installation and Updates
+deployment:
+  # Installation paths
+  install_directory: "C:/Program Files/LaserTrimAnalyzer"
+  
+  # Auto-update settings
+  enable_auto_update: false  # Can be enabled per deployment
+  update_check_interval: 86400  # Daily
+  update_server: "//fileserver/QA_Data/LaserTrimAnalyzer/updates"
+  
+  # Logging
+  log_level: "INFO"
+  log_to_file: true
+  log_to_event_viewer: false  # Enable for enterprise deployments
+  max_log_size_mb: 100
+  log_retention_days: 30
+  
+  # Error reporting
+  enable_error_reporting: false
+  error_report_email: "qa-support@company.com"
+
+# IT Management (Multi-User Mode)
+it_management:
+  # Group Policy support
+  allow_group_policy_override: true
+  registry_key: "HKLM\\Software\\CompanyName\\LaserTrimAnalyzer"
+  
+  # Silent install options
+  silent_install_enabled: true
+  
+  # Backup settings (multi-user mode only)
+  enable_auto_backup: false
+  backup_interval_days: 7
+  backup_location: "//fileserver/QA_Data/LaserTrimAnalyzer/backups"
+  backup_retention_days: 90
+
+# Security Settings
+security:
+  # File access restrictions
+  restrict_file_access: false
+  allowed_file_paths:
+    - "//fileserver/QA_Data"
+    - "C:/LaserTrimData"
+    - "%USERPROFILE%/Documents/LaserTrim"
+    - "%USERPROFILE%/Desktop"
+    - "%USERPROFILE%/Downloads"
+  
+  # Network security
+  verify_ssl_certificates: true
+  use_windows_authentication: true
+  
+  # Data protection
+  encrypt_local_cache: false
+  secure_delete_temp_files: true
+
+# UI Configuration
+gui:
+  # Branding
+  show_company_logo: false
+  company_name: "Your Company Name"
+  company_logo_path: "assets/company_logo.png"
+  
+  # Feature visibility
+  show_advanced_features: true
+  show_ml_features: true
+  show_admin_tools: false  # Only for admin users
+  
+  # Default settings
+  default_theme: "professional"
+  start_maximized: false
+  remember_window_position: true
+  
+  # Mode switching
+  allow_mode_switching: true  # Allow users to switch between single/multi user

@@ -649,6 +649,9 @@ class FastProcessor:
             # Check if errors are within limits
             within_limits = np.all((errors <= upper_limits) & (errors >= lower_limits))
             
+            # Count actual failing points
+            fail_count = np.sum((errors > upper_limits) | (errors < lower_limits))
+            
             # Simple linearity error as max deviation from limits
             upper_violations = np.maximum(0, errors - upper_limits)
             lower_violations = np.maximum(0, lower_limits - errors)
@@ -665,7 +668,7 @@ class FastProcessor:
                 final_linearity_error_raw=max_violation,
                 final_linearity_error_shifted=max_violation,  # Same as raw in fast mode
                 linearity_pass=within_limits,
-                linearity_fail_points=0,  # Not calculated in fast mode
+                linearity_fail_points=int(fail_count),  # Calculate actual fail count
                 max_deviation=max_violation,  # Add missing field
                 max_deviation_position=max_deviation_position  # Add missing field
             )

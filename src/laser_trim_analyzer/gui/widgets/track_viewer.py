@@ -356,23 +356,27 @@ class IndividualTrackViewer(ctk.CTkFrame):
                 elif 'linearity_spec' in track_data:
                     spec_limit = track_data.get('linearity_spec', 5.0)
                     
-                self.profile_ax.axhline(y=spec_limit, color='r', linestyle='--', label=f'Spec: ±{spec_limit}%')
+                self.profile_ax.axhline(y=spec_limit, color='r', linestyle='--', label=f'Spec: ±{spec_limit} V')
                 self.profile_ax.axhline(y=-spec_limit, color='r', linestyle='--')
                 
                 # Add zero line
                 self.profile_ax.axhline(y=0, color='black', linestyle='-', linewidth=1, alpha=0.5)
                 
-                self.profile_ax.set_xlabel('Position (%)', color='black')
-                self.profile_ax.set_ylabel('Error (%)', color='black')
+                self.profile_ax.set_xlabel('Position (mm)', color='black')
+                self.profile_ax.set_ylabel('Error (V)', color='black')
                 self.profile_ax.set_title(f'Error Profile - {self.selected_track}', color='black')
                 self.profile_ax.grid(True, alpha=0.3, color='#cccccc')
                 
-                # Auto-scale with proper limits
-                self.profile_ax.relim()
-                self.profile_ax.autoscale_view(scalex=True, scaley=True)
-                
-                # Set x-axis limits to 0-100%
-                self.profile_ax.set_xlim(0, 100)
+                # Calculate actual x-axis range from position data
+                if positions:
+                    x_min = min(positions)
+                    x_max = max(positions)
+                    x_range = x_max - x_min
+                    x_padding = x_range * 0.05  # 5% padding
+                    self.profile_ax.set_xlim(x_min - x_padding, x_max + x_padding)
+                else:
+                    # Fallback to default range
+                    self.profile_ax.set_xlim(-200, 200)
                 
                 # Set y-axis limits based on scale factor
                 scale_factor = self.profile_scale_var.get() if hasattr(self, 'profile_scale_var') else 1.5

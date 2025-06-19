@@ -487,6 +487,10 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
 
     def _on_track_selected(self, selected_track: str):
         """Handle track selection change."""
+        # Prevent multiple simultaneous updates
+        if hasattr(self, '_updating_plot') and self._updating_plot:
+            return
+            
         if self.current_result and hasattr(self.current_result, 'tracks'):
             if selected_track in self.current_result.tracks:
                 track_data = self.current_result.tracks[selected_track]
@@ -630,9 +634,15 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         
     def _update_plot_display(self, result: AnalysisResult):
         """Update plot display with current track's plot if available."""
+        # Set flag to prevent concurrent updates
+        self._updating_plot = True
+        
         try:
             # Clear previous plot
             self.plot_viewer.clear()
+            
+            # Small delay to ensure Tkinter processes the clear operation
+            self.plot_viewer.update_idletasks()
             
             # Check if we have tracks and a selected track
             if hasattr(result, 'tracks') and result.tracks:
@@ -671,3 +681,6 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Error updating plot display: {e}")
             self.plot_viewer._show_error(f"Error loading plot: {str(e)}")
+        finally:
+            # Clear the update flag
+            self._updating_plot = False

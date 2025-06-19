@@ -22,12 +22,16 @@ logger = logging.getLogger(__name__)
 class DatabaseConfig(BaseSettings):
     """Database configuration."""
     enabled: bool = Field(default=True, description="Enable database storage")
+    mode: str = Field(default="local", description="Database mode: local or shared")
     path: Path = Field(
         default=Path.home() / ".laser_trim_analyzer" / "analysis.db",
         description="Database file path"
     )
+    shared_path: Optional[str] = Field(default=None, description="Network path for shared database")
     echo: bool = Field(default=False, description="Echo SQL statements")
     pool_size: int = Field(default=5, ge=1, description="Connection pool size")
+    sqlite_timeout: int = Field(default=30, description="SQLite timeout for locked database")
+    enable_wal_mode: bool = Field(default=True, description="Enable WAL mode for better concurrency")
 
     @field_validator('path')
     @classmethod
@@ -47,10 +51,13 @@ class DatabaseConfig(BaseSettings):
                     v = Path.home() / ".laser_trim_analyzer" / "analyzer_v2.db"
                     logger.info(f"Using default database path: {v}")
                 else:
-                    v = Path(v)
+                    # Expand environment variables first
+                    expanded = os.path.expandvars(v)
+                    v = Path(expanded)
             
-            # Ensure it's an absolute path
-            if not v.is_absolute():
+            # Don't make relative paths absolute if they contain drive letters (Windows)
+            # This avoids the issue of prepending CWD to an already absolute Windows path
+            if not v.is_absolute() and not (len(str(v)) > 1 and str(v)[1] == ':'):
                 v = Path.cwd() / v
             
             # Create parent directories with proper error handling
@@ -321,6 +328,15 @@ class MLConfig(BaseSettings):
     def ensure_model_directory(cls, v: Path) -> Path:
         """Ensure model directory exists."""
         try:
+            # Handle string paths with environment variables
+            if isinstance(v, str):
+                expanded = os.path.expandvars(v)
+                v = Path(expanded)
+            
+            # Don't make relative paths absolute if they contain drive letters
+            if not v.is_absolute() and not (len(str(v)) > 1 and str(v)[1] == ':'):
+                v = Path.cwd() / v
+                
             v.mkdir(parents=True, exist_ok=True)
             return v
         except Exception as e:
@@ -404,8 +420,9 @@ class Config(BaseSettings):
         try:
             # Ensure we have a proper Path object, not a corrupted one
             if isinstance(v, str):
-                # If it's a string, convert to Path
-                v = Path(v)
+                # Expand environment variables first
+                expanded = os.path.expandvars(v)
+                v = Path(expanded)
             
             # Validate that this is a reasonable path (not the Windows PATH variable)
             path_str = str(v)
@@ -416,6 +433,10 @@ class Config(BaseSettings):
                     v = Path.home() / ".laser_trim_analyzer" / "logs"
                 else:
                     v = Path.home() / "LaserTrimResults"
+            
+            # Don't make relative paths absolute if they contain drive letters
+            if not v.is_absolute() and not (len(str(v)) > 1 and str(v)[1] == ':'):
+                v = Path.cwd() / v
             
             # Ensure the directory exists
             v.mkdir(parents=True, exist_ok=True)
@@ -438,6 +459,19 @@ class Config(BaseSettings):
         with open(config_path, 'r') as f:
             config_data = yaml.safe_load(f)
 
+        # Recursively expand environment variables in the config data
+        def expand_env_vars(obj):
+            if isinstance(obj, dict):
+                return {k: expand_env_vars(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [expand_env_vars(item) for item in obj]
+            elif isinstance(obj, str):
+                return os.path.expandvars(obj)
+            else:
+                return obj
+        
+        config_data = expand_env_vars(config_data)
+        
         return cls(**config_data)
 
     def to_yaml(self, config_path: Path) -> None:
@@ -480,18 +514,30 @@ class Config(BaseSettings):
 @lru_cache()
 def get_config() -> Config:
     """Get application configuration (cached singleton)."""
-    # Try to load from default locations
-    config_paths = [
-        Path("config/production.yaml"),
+    # Check for environment variable to determine which config to use
+    env = os.environ.get('LTA_ENV', 'production').lower()
+    
+    # Try to load from environment-specific config first
+    config_paths = []
+    
+    if env == 'development':
+        config_paths.append(Path("config/development.yaml"))
+    elif env == 'production':
+        config_paths.append(Path("config/production.yaml"))
+    
+    # Add fallback paths
+    config_paths.extend([
         Path("config/default.yaml"),
         Path.home() / ".laser_trim_analyzer" / "config.yaml",
-    ]
+    ])
 
     for config_path in config_paths:
         if config_path.exists():
+            logger.info(f"Loading configuration from: {config_path}")
             return Config.from_yaml(config_path)
 
     # Fall back to environment/defaults
+    logger.warning("No configuration file found, using defaults")
     return Config()
 
 
