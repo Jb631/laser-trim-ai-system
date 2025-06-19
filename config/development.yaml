@@ -4,9 +4,11 @@ debug: true  # Enable debug mode for development
 
 database:
   enabled: true
-  path: "~/.laser_trim_analyzer/dev_analysis.db"  # Separate dev database
-  echo: true  # Enable SQL echo for debugging
+  path: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/laser_trim_dev.db"  # Separate dev database
+  echo: false  # Set to true to see SQL queries in console
   pool_size: 5
+  sqlite_timeout: 30
+  enable_wal_mode: true  # Better concurrency even for dev
 
 processing:
   max_workers: 4  # Reasonable for development machines
@@ -32,7 +34,7 @@ analysis:
 
 ml:
   enabled: true  # Enable ML features for testing
-  model_path: "~/.laser_trim_analyzer/dev_models"  # Separate dev models
+  model_path: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/models"  # Separate dev models
   failure_prediction_enabled: true
   failure_prediction_confidence_threshold: 0.7  # Lower threshold for testing
   threshold_optimization_enabled: true
@@ -60,8 +62,8 @@ gui:
   autosave_interval: 120  # More frequent saves during development
 
 # Development-friendly paths
-data_directory: "~/LaserTrimResults/Development"
-log_directory: "~/.laser_trim_analyzer/dev_logs"
+data_directory: "%USERPROFILE%/Documents/LaserTrimAnalyzer/dev/data"
+log_directory: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/logs"
 
 # Development-specific settings
 development:

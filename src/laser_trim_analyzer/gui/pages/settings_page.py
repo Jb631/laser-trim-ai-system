@@ -5,11 +5,13 @@ Provides a settings interface within the main application window.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
 import threading
+import os
+import yaml
 
 from laser_trim_analyzer.core.config import Config
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
@@ -171,6 +173,26 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.db_check.pack(anchor='w', padx=10, pady=(10, 5))
 
+        # Deployment mode section
+        mode_frame = ctk.CTkFrame(self.database_container, fg_color="transparent")
+        mode_frame.pack(fill='x', padx=10, pady=(10, 5))
+        
+        mode_label = ctk.CTkLabel(mode_frame, text="Database Mode:")
+        mode_label.pack(side='left', padx=10, pady=10)
+        
+        # Get current deployment mode from config
+        current_mode = self._get_deployment_mode()
+        self.db_mode_var = ctk.StringVar(value=current_mode)
+        self.db_mode_combo = ctk.CTkComboBox(
+            mode_frame,
+            variable=self.db_mode_var,
+            values=["Single User (Local)", "Multi-User (Network)"],
+            width=200,
+            height=30,
+            command=self._on_db_mode_changed
+        )
+        self.db_mode_combo.pack(side='left', padx=10, pady=10)
+
         # Database path
         path_frame = ctk.CTkFrame(self.database_container, fg_color="transparent")
         path_frame.pack(fill='x', padx=10, pady=5)
@@ -178,13 +200,29 @@ class SettingsPage(ctk.CTkFrame):
         path_label = ctk.CTkLabel(path_frame, text="Database:")
         path_label.pack(side='left', padx=10, pady=10)
 
-        db_path = getattr(self.config.database, 'path', 'default.db') if hasattr(self.config, 'database') else 'default.db'
+        # Database path with change button
+        self.db_path_frame = ctk.CTkFrame(path_frame, fg_color="transparent")
+        self.db_path_frame.pack(side='left', fill='x', expand=True)
+        
+        db_path = self._get_current_db_path()
         self.db_path_label = ctk.CTkLabel(
-            path_frame,
+            self.db_path_frame,
             text=str(db_path),
             font=ctk.CTkFont(size=10)
         )
         self.db_path_label.pack(side='left', padx=10, pady=10)
+        
+        # Change path button (only for multi-user mode)
+        self.change_path_button = ctk.CTkButton(
+            self.db_path_frame,
+            text="Change",
+            width=80,
+            height=25,
+            command=self._change_db_path
+        )
+        # Show/hide based on mode
+        if current_mode == "Multi-User (Network)":
+            self.change_path_button.pack(side='left', padx=5, pady=10)
 
         # Database status
         status_text = "Not connected"
@@ -197,6 +235,16 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=10)
         )
         self.db_status_label.pack(anchor='w', padx=10, pady=(0, 10))
+        
+        # Mode change warning
+        self.db_warning_label = ctk.CTkLabel(
+            self.database_container,
+            text="⚠️ Changing database mode requires application restart",
+            font=ctk.CTkFont(size=10),
+            text_color="orange"
+        )
+        # Initially hidden
+        self.db_warning_label.pack_forget()
 
     def _create_ml_section(self):
         """Create ML settings section (matching batch processing theme)."""
@@ -472,6 +520,243 @@ class SettingsPage(ctk.CTkFrame):
     def on_hide(self):
         """Called when page is hidden."""
         self.is_visible = False
+    
+    def _get_deployment_mode(self):
+        """Get current deployment mode from config."""
+        try:
+            # First check deployment.yaml
+            deployment_config_path = Path("config/deployment.yaml")
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    deployment_config = yaml.safe_load(f)
+                    mode = deployment_config.get('deployment_mode', 'single_user')
+                    return "Single User (Local)" if mode == 'single_user' else "Multi-User (Network)"
+            
+            # Fallback to checking main config
+            if hasattr(self.config, 'deployment_mode'):
+                mode = self.config.deployment_mode
+                return "Single User (Local)" if mode == 'single_user' else "Multi-User (Network)"
+            
+            # Default to single user
+            return "Single User (Local)"
+        except Exception as e:
+            self.logger.error(f"Error getting deployment mode: {e}")
+            return "Single User (Local)"
+    
+    def _get_current_db_path(self):
+        """Get current database path based on deployment mode."""
+        try:
+            mode = self._get_deployment_mode()
+            
+            # Check deployment.yaml
+            deployment_config_path = Path("config/deployment.yaml")
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    deployment_config = yaml.safe_load(f)
+                    
+                    if mode == "Single User (Local)":
+                        db_config = deployment_config.get('database', {}).get('single_user', {})
+                        path = db_config.get('path', '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db')
+                    else:
+                        db_config = deployment_config.get('database', {}).get('multi_user', {})
+                        path = db_config.get('path', '//server/share/laser_trim/database.db')
+                    
+                    # Expand environment variables
+                    path = os.path.expandvars(path)
+                    return path
+            
+            # Fallback to main config
+            if hasattr(self.config, 'database') and hasattr(self.config.database, 'path'):
+                return str(self.config.database.path)
+            
+            return "default.db"
+        except Exception as e:
+            self.logger.error(f"Error getting database path: {e}")
+            return "default.db"
+    
+    def _on_db_mode_changed(self, value=None):
+        """Handle database mode change."""
+        # Show warning
+        self.db_warning_label.pack(anchor='w', padx=10, pady=(5, 10))
+        
+        # Update path display
+        new_mode = self.db_mode_var.get()
+        
+        # Show/hide change button based on mode
+        if new_mode == "Multi-User (Network)":
+            self.change_path_button.pack(side='left', padx=5, pady=10)
+        else:
+            self.change_path_button.pack_forget()
+        
+        # Update the deployment configuration
+        self._update_deployment_mode(new_mode)
+        
+        # Update path label
+        self.db_path_label.configure(text=self._get_current_db_path())
+    
+    def _update_deployment_mode(self, mode):
+        """Update deployment mode in config file."""
+        try:
+            deployment_config_path = Path("config/deployment.yaml")
+            
+            # Load existing config
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+            else:
+                # Create default config structure
+                config = {
+                    'deployment_mode': 'single_user',
+                    'database': {
+                        'single_user': {
+                            'path': '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db'
+                        },
+                        'multi_user': {
+                            'path': '//server/share/laser_trim/database.db'
+                        }
+                    }
+                }
+            
+            # Update mode
+            config['deployment_mode'] = 'single_user' if mode == "Single User (Local)" else 'multi_user'
+            
+            # Save config
+            deployment_config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(deployment_config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            
+            self.logger.info(f"Updated deployment mode to: {mode}")
+            
+            # Show restart required message
+            messagebox.showinfo(
+                "Restart Required",
+                "The database mode has been changed. Please restart the application for the changes to take effect."
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update deployment mode: {e}")
+            messagebox.showerror("Error", f"Failed to update deployment mode: {e}")
+    
+    def _change_db_path(self):
+        """Open dialog to change network database path."""
+        try:
+            # Create a custom dialog for network path input
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("Change Network Database Path")
+            dialog.geometry("600x250")
+            
+            # Center the dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() // 2) - (300)
+            y = (dialog.winfo_screenheight() // 2) - (125)
+            dialog.geometry(f"600x250+{x}+{y}")
+            
+            # Make dialog modal
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Create content
+            label = ctk.CTkLabel(
+                dialog,
+                text="Enter the network path to the shared database:",
+                font=ctk.CTkFont(size=14)
+            )
+            label.pack(pady=20)
+            
+            # Example label
+            example_label = ctk.CTkLabel(
+                dialog,
+                text="Example: \\\\server\\share\\LaserTrimAnalyzer\\database.db",
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
+            )
+            example_label.pack(pady=(0, 10))
+            
+            # Path entry
+            current_path = self._get_current_db_path()
+            path_var = ctk.StringVar(value=current_path)
+            path_entry = ctk.CTkEntry(
+                dialog,
+                textvariable=path_var,
+                width=500,
+                height=35
+            )
+            path_entry.pack(pady=10)
+            
+            # Buttons frame
+            button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+            button_frame.pack(pady=20)
+            
+            def save_path():
+                new_path = path_var.get().strip()
+                if new_path:
+                    self._update_network_db_path(new_path)
+                    self.db_path_label.configure(text=new_path)
+                    dialog.destroy()
+                else:
+                    messagebox.showwarning("Invalid Path", "Please enter a valid network path.")
+            
+            # Save button
+            save_button = ctk.CTkButton(
+                button_frame,
+                text="Save",
+                command=save_path,
+                width=100
+            )
+            save_button.pack(side='left', padx=10)
+            
+            # Cancel button
+            cancel_button = ctk.CTkButton(
+                button_frame,
+                text="Cancel",
+                command=dialog.destroy,
+                width=100
+            )
+            cancel_button.pack(side='left', padx=10)
+            
+            # Focus on entry
+            path_entry.focus()
+            
+        except Exception as e:
+            self.logger.error(f"Error in change database path dialog: {e}")
+            messagebox.showerror("Error", f"Failed to open path dialog: {e}")
+    
+    def _update_network_db_path(self, new_path):
+        """Update the network database path in deployment config."""
+        try:
+            deployment_config_path = Path("config/deployment.yaml")
+            
+            # Load existing config
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+            else:
+                config = {}
+            
+            # Update network path
+            if 'database' not in config:
+                config['database'] = {}
+            if 'multi_user' not in config['database']:
+                config['database']['multi_user'] = {}
+            
+            # Convert backslashes to forward slashes for YAML
+            config['database']['multi_user']['path'] = new_path.replace('\\', '/')
+            
+            # Save config
+            with open(deployment_config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            
+            self.logger.info(f"Updated network database path to: {new_path}")
+            
+            # Show restart message
+            messagebox.showinfo(
+                "Restart Required",
+                "The database path has been changed. Please restart the application for the changes to take effect."
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update network database path: {e}")
+            messagebox.showerror("Error", f"Failed to update database path: {e}")
     
     def cleanup(self):
         """Clean up resources when page is destroyed."""

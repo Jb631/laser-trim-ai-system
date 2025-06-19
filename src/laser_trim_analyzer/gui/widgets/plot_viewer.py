@@ -174,6 +174,10 @@ class PlotViewerWidget(ctk.CTkFrame):
         """Update the displayed image based on current zoom level."""
         if not self.original_image:
             return
+        
+        # Check if widget still exists
+        if not self.winfo_exists():
+            return
             
         try:
             # Calculate new size
@@ -187,6 +191,16 @@ class PlotViewerWidget(ctk.CTkFrame):
                 Image.Resampling.LANCZOS
             )
             
+            # Keep previous CTkImage reference to prevent garbage collection
+            # This prevents the "pyimage doesn't exist" error
+            if hasattr(self, 'ctk_image') and self.ctk_image:
+                if not hasattr(self, '_previous_ctk_images'):
+                    self._previous_ctk_images = []
+                self._previous_ctk_images.append(self.ctk_image)
+                # Keep only last 2 images to prevent memory buildup
+                if len(self._previous_ctk_images) > 2:
+                    self._previous_ctk_images.pop(0)
+            
             # Convert to CTkImage for proper scaling support
             self.ctk_image = ctk.CTkImage(
                 light_image=self.displayed_image,
@@ -195,7 +209,15 @@ class PlotViewerWidget(ctk.CTkFrame):
             )
             
             # Update label with CTkImage
-            self.image_label.configure(image=self.ctk_image, text="")
+            try:
+                self.image_label.configure(image=self.ctk_image, text="")
+                # Keep a reference to prevent garbage collection
+                self.image_label.image = self.ctk_image
+            except Exception as e:
+                logger.error(f"Error configuring image label: {e}")
+                # Try alternative approach
+                self.image_label.image = self.ctk_image
+                self.image_label.configure(image=self.ctk_image, text="")
             
             # Update zoom label
             zoom_percent = int(self.zoom_level * 100)
@@ -291,12 +313,26 @@ class PlotViewerWidget(ctk.CTkFrame):
         
     def clear(self):
         """Clear the current plot display."""
+        # Store current image before clearing to prevent premature garbage collection
+        if hasattr(self, 'ctk_image') and self.ctk_image:
+            if not hasattr(self, '_previous_ctk_images'):
+                self._previous_ctk_images = []
+            self._previous_ctk_images.append(self.ctk_image)
+            # Keep only last 3 images to prevent memory buildup
+            if len(self._previous_ctk_images) > 3:
+                self._previous_ctk_images.pop(0)
+        
         self.current_image_path = None
         self.original_image = None
         self.displayed_image = None
         self.ctk_image = None
         self.zoom_level = 1.0
         
+        # Clear image reference but keep the widget
+        if hasattr(self.image_label, 'image'):
+            self.image_label.image = None
+        
+        # Configure label with text, but don't destroy the widget
         self.image_label.configure(
             image=None,
             text="📊\n\nNo plot loaded\n\nComplete an analysis to generate plots",

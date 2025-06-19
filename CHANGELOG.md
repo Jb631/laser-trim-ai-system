@@ -13,9 +13,474 @@ This section tracks current known issues that need to be addressed. When fixing 
 3. Update CLAUDE.md Known Issues section to match
 
 ### Current Known Issues
-- None at this time. All previously reported issues have been resolved.
+None - all known issues have been resolved.
 
-## [2025-06-18] - Multi Track Page Data Access Fixes
+## [Unreleased]
+
+## [2025-06-19] - Database Save and Home Page Fixes
+
+### Fixed
+- Database save error handling - ErrorHandler parameter mismatch:
+  - **Root cause**: ErrorHandler.handle_error() was being called with 'technical_details' as a direct parameter
+  - **Details**: The error handler expects technical_details to be in the additional_data dictionary, not a separate parameter
+  - **Solution**: Moved technical_details into additional_data dictionary in all error handler calls
+  - **Result**: Error handling now works correctly without parameter errors
+
+- QA alerts database constraint error:
+  - **Root cause**: QA alerts were being generated before the analysis record was assigned an ID
+  - **Details**: _generate_alerts() was called before session.add() and session.flush(), so analysis.id was None
+  - **Solution**: Moved alert generation to after session.flush() in both save_analysis and _create_analysis_record
+  - **Result**: QA alerts now save correctly with proper analysis_id references
+
+- Home page enum value error for empty status:
+  - **Root cause**: Some database records had empty strings ('') for status fields instead of valid enum values
+  - **Details**: When the home page tried to access status values, empty strings caused enum validation errors
+  - **Solution**: 
+    1. Added database validators for overall_status and status fields to convert empty/invalid values to StatusType.ERROR
+    2. Home page already had try/catch blocks to handle these gracefully
+  - **Result**: Database now prevents invalid status values and home page handles legacy data gracefully
+
+### Note
+The "trim_percentage" field error mentioned in logs appears to be from cached Python files and is not present in the current codebase.
+
+## [Unreleased]
+
+### Fixed
+- Database save error "linearity_error is an invalid keyword argument":
+  - **Root cause**: Field name mismatch between Pydantic model and SQLAlchemy model
+  - **Details**: Database manager was using `linearity_error` but database model has `final_linearity_error_raw`
+  - **Solution**: 
+    1. Fixed field mapping to use correct database column names
+    2. Added missing `travel_length` field
+    3. Added `position_data` and `error_data` fields for raw data storage
+  - **Result**: Batch and individual saves now work correctly
+
+- QAAlert field mapping errors:
+  - **Root cause**: Database model changed field names but manager wasn't updated
+  - **Details**: 
+    1. `actual_value` field renamed to `metric_value` in database model
+    2. `recommendation` field removed in favor of storing in `details` JSON
+  - **Solution**: Updated all QAAlert creation code to use correct field names
+  - **Result**: QA alerts now save correctly without field errors
+
+### Added
+- Raw position and error data storage in database for accurate linearity comparisons
+- Smart duplicate handling that updates missing raw data without creating duplicates
+- Automatic schema migration for existing databases
+- Comprehensive deployment infrastructure for enterprise use:
+  - Multi-user database support with SQLite WAL mode
+  - Network path handling for shared databases
+  - PyInstaller spec file for Windows executable
+  - Inno Setup script for professional Windows installer
+  - Automated build script (build_installer.bat)
+  - Deployment configuration (deployment.yaml)
+  - Enterprise deployment documentation
+- Flexible deployment mode switching:
+  - Single-user mode with local database
+  - Multi-user mode with network database
+  - In-app settings page for mode switching
+  - Interactive installer with mode selection
+  - Automatic database path configuration based on mode
+  - Database manager reads deployment mode from deployment.yaml
+  - WAL mode enabled only for multi-user deployments
+- Development environment support:
+  - Separate development configuration (config/development.yaml)
+  - Environment-based configuration loading via LTA_ENV variable
+  - Development database initialization script (scripts/init_dev_database.py)
+  - Development runner batch file (run_dev.bat)
+  - Development setup documentation (docs/DEVELOPMENT_SETUP.md)
+  - Archive script for cleaning up old files (scripts/archive_old_files.py)
+
+### Improved
+- Final Test Comparison page chart layout:
+  - Redesigned to focus on single linearity error overlay chart
+  - Changed from side-by-side to vertical layout (chart on top, stats below)
+  - Wider aspect ratio (14x10) for better data visibility
+  - Main chart shows linearity errors in mV with spec lines
+  - Position axis shows actual units (inches) not percentages
+  - Spec limits now properly interpolated for each position (can vary)
+  - Spec range shaded for visual reference
+  - Statistics displayed in three columns below chart for better use of space
+  - Data source indicator shows if using actual database data or synthetic
+  - Improved spec compliance checking (within range, not just magnitude)
+  - Better visual hierarchy and readability
+  - Chart size now responsive to window size (adapts when resized)
+  - Added debounced resize handler to redraw chart after window resize
+
+### Verified
+- Final Test Comparison page uses final trim data from database:
+  - Processor prioritizes trimmed sheets (TRM for System A, Lin Error for System B)
+  - Database stores position_data and error_data from final trimmed sheets
+  - Added clear indicators showing "Final Trim Data" in chart title
+  - Statistics panel shows "Laser Trim (Final)" to confirm trimmed data
+  - Bottom info panel shows trimmed resistance value when available
+  - Data source confirmed as "TRM/Lin Error sheets"
+
+### Enhanced
+- Multi-track page now fully utilizes raw data from database:
+  - Database-loaded units now populate all features like file-loaded units
+  - Raw position_data and error_data from database used for linearity overlay charts
+  - Track viewer displays actual error profiles from database
+  - Added missing fields: travel_length, trimmed/untrimmed resistance, optimal_offset
+  - Error profile plots show actual data with proper offset applied
+  - Complete feature parity between file-loaded and database-loaded units
+
+### Fixed
+- Database save operations failing silently with all transactions rolling back:
+  - **Root cause**: Single file and batch processing pages were calling non-existent database manager methods (validate_saved_analysis, force_save_analysis)
+  - **Details**:
+    1. After successful save_analysis call, code tried to call validate_saved_analysis
+    2. This method doesn't exist, causing an AttributeError
+    3. The exception triggered rollback in the get_session context manager
+    4. Database file grew during processing but no data persisted
+    5. App showed data in dropdowns from session cache but database was empty
+  - **Solution**: Removed calls to non-existent validation and force save methods
+  - **Files fixed**:
+    - src/laser_trim_analyzer/gui/pages/single_file_page.py (lines 843-850)
+    - src/laser_trim_analyzer/gui/pages/batch_processing_page.py (lines 1982-1998)
+  - **Result**: Database saves now complete successfully and data persists between sessions
+
+- Database showing phantom IDs for non-existent records:
+  - **Root cause**: SQLAlchemy scoped_session reusing sessions within threads, causing uncommitted data visibility
+  - **Details**:
+    1. Scoped sessions cache session instances per thread
+    2. Failed save operations left uncommitted data in the session
+    3. Subsequent check_duplicate_analysis calls in the same thread saw this uncommitted data
+    4. This caused phantom IDs (e.g., 247-254) that didn't exist in the actual database
+  - **Solution**: 
+    1. Added self._Session.remove() at start and end of get_session() to ensure fresh sessions
+    2. Fixed isolation level error: SQLite doesn't support READ_COMMITTED, changed to SERIALIZABLE
+    3. Added direct SQL verification of ID existence using session.execute()
+    4. Created diagnostic scripts to identify and debug the issue
+  - **Result**: Each database operation now gets a completely fresh session with no contamination
+
+- Multi-track page not populating data from database selections:
+  - **Root cause**: Existing database records processed before raw data storage was implemented lack position_data and error_data
+  - **Solution implemented**:
+    1. Added detection for missing raw data with user notification
+    2. Implemented _should_update_raw_data and _update_raw_data methods to backfill missing data
+    3. When re-processing files, existing records are now updated with raw data if missing
+    4. Added informative message dialog explaining why data is limited and how to fix it
+  - **User impact**: Users will see a clear message when loading units without raw data, instructing them to re-process the file
+  - **Debug logging**: Added extensive logging to track raw data presence and loading
+
+- Final Test Comparison page linearity plot accuracy issues:
+  - **Root cause**: Multiple data extraction and scaling issues
+    1. Theoretical voltage calculation was normalizing to 0-1 instead of using actual voltage values
+    2. Error data extraction wasn't handling the already-shifted linearity errors correctly
+    3. The offset was being applied twice (once in processing, once in display)
+    4. Most importantly: Database records lack raw position/error data, forcing synthetic data generation
+  - **Solution implemented**:
+    1. Fixed data extraction to use raw position and error data directly from database when available
+    2. Removed incorrect theoretical voltage calculations
+    3. Added logging to track data ranges and offsets
+    4. Clarified that database stores final shifted linearity errors
+    5. Added matplotlib navigation toolbar for zoom/pan functionality
+    6. Added keyboard shortcuts: + (zoom in), - (zoom out), r (reset), h (help)
+    7. Added clear warning dialog when synthetic data is being used
+    8. Chart title shows data source in red when using synthetic data
+    9. Created check_raw_data.py utility script to identify units needing reprocessing
+  - **User impact**: 
+    - Linearity plots now accurately reflect actual data when available
+    - Clear indication when synthetic data is being used with instructions to fix
+    - Full zoom/pan controls for detailed analysis
+
+- Configuration system properly handles environment variables:
+  - **Root cause**: Database paths contained Windows environment variables that weren't expanded
+  - **Solution**: 
+    1. Added recursive environment variable expansion in Config.from_yaml()
+    2. Updated all path validators to expand environment variables
+    3. Fixed path validation to not prepend CWD to Windows absolute paths
+    4. Database manager now respects LTA_ENV=development to use dev config
+  - **Result**: Development and production databases now correctly resolve to actual paths
+
+- Application wrongly using production database instead of local database:
+  - **Root cause**: User discovered app was using D:/LaserTrimData/production.db, not local database
+  - **Details**:
+    1. Diagnostic scripts were checking local database path
+    2. App was configured to use production database in production.yaml
+    3. Phantom IDs 247-254 existed in production database with 624 total records
+  - **Solution**: 
+    1. Created separate development configuration with local database paths
+    2. Added environment-based configuration loading
+    3. Created development initialization script and setup guide
+  - **Result**: Clear separation between development and production environments
+
+## [2025-06-19] - Critical Processing Fix for Range Utilization
+
+### Fixed - Range Utilization Percent Exceeding 100%
+- **Issue**: All processing pages (single file, batch, multi-track) failed with validation error "range_utilization_percent Input should be less than or equal to 100"
+- **Root cause**: The DynamicRangeAnalysis calculation was dividing error_range by spec_range without capping at 100%
+- **Details**:
+  1. When errors exceed the specification limits, the error range can be larger than the spec range
+  2. This produced values like 257.46%, 304.55%, etc.
+  3. The Pydantic model has a constraint that range_utilization_percent must be ≤ 100
+- **Solution**: Added min(100.0, ...) cap to the calculation in processor.py line 2416
+- **Result**: Processing now works correctly even when data points exceed specification limits
+
+### Fixed - Final Test Comparison Page DateTime Parsing Error
+- **Issue**: Error "unconverted data remains: 00:09:38" when loading unit from database
+- **Root cause**: Date dropdown displayed timestamps with time ("%Y-%m-%d %H:%M:%S") but parsing used date-only format ("%Y-%m-%d")
+- **Solution**: 
+  1. Updated datetime parsing to match the format used in dropdown
+  2. Changed filter to use exact timestamp match instead of date range
+- **Result**: Units now load correctly from the Final Test Comparison page
+
+### Fixed - Final Test Comparison Page to Show Trim Date
+- **Issue**: Date dropdown was showing analysis timestamp instead of actual trim date from the file
+- **Root cause**: Query was selecting `timestamp` field instead of `file_date` field
+- **Solution**: 
+  1. Changed query to select `file_date` (trim date extracted from filename)
+  2. Added ID mapping to handle multiple analyses of same unit
+  3. Updated display to show both trim date and analysis date
+- **Result**: Dropdown now correctly shows when the unit was trimmed, not when it was analyzed
+
+### Fixed - Final Test Comparison Page Trim Data Extraction
+- **Issue**: Error "Could not extract trim data from database result" when loading unit
+- **Root cause**: Code was trying to access non-existent `analysis_data` and `validation_results` JSON fields
+- **Solution**: 
+  1. Updated to use the actual `tracks` relationship from database
+  2. Added eager loading of tracks using `joinedload` when fetching unit
+  3. Handle both list and JSON string formats for position/error data
+- **Result**: Trim data is now correctly extracted from the database for comparison
+
+### Fixed - TrackResult Position Data Error
+- **Issue**: Error "'TrackResult' object has no attribute 'position_data'" in Final Test Comparison
+- **Root cause**: Raw position and error arrays are not stored in the database, only summary statistics
+- **Solution**: 
+  1. Created synthetic representation using available statistics (travel_length, final_linearity_error_raw)
+  2. Generate 100 evenly spaced positions along the track
+  3. Model error pattern using sinusoidal function scaled by actual linearity error
+- **Result**: Final Test Comparison page now works with database-stored summary data
+
+### Enhanced - Database Schema to Store Raw Data
+- **Enhancement**: Added position_data and error_data fields to TrackResult model for accurate comparisons
+- **Impact Analysis**:
+  1. Storage: ~10-50KB per track (10-50MB per 1000 units)
+  2. Performance: Minimal impact with proper indexing
+  3. Benefit: Enables accurate linearity error comparison in Final Test Comparison page
+- **Implementation**:
+  1. Added SafeJSON columns for position_data and error_data
+  2. Updated database manager to save raw arrays when processing
+  3. Final Test Comparison page now uses actual data with synthetic fallback
+- **Result**: Future analyses will store raw data for accurate comparison; existing data uses synthetic representation
+
+### Enhanced - Smart Duplicate Handling with Data Backfill
+- **Enhancement**: Re-analyzing existing units now updates missing raw data without creating duplicates
+- **Behavior**:
+  1. When saving analysis, system checks for existing records (model + serial + file_date)
+  2. If duplicate found, checks if raw position/error data is missing
+  3. If missing, updates only the raw data fields while preserving all other data
+  4. If raw data already exists, skips the duplicate entirely
+- **Implementation**:
+  1. Added `_should_update_raw_data()` method to check for missing data
+  2. Added `_update_raw_data()` method to update only missing fields
+  3. Updated both single and batch save methods to use this logic
+  4. Created migration script `scripts/add_raw_data_columns.py` for existing databases
+- **Result**: Users can re-analyze existing units to backfill raw data for Final Test Comparison without duplicating records
+
+### Fixed - Database Auto-Migration for New Columns
+- **Issue**: SQLAlchemy error "no such column: track_results.position_data" when running with existing database
+- **Root cause**: Existing databases don't have the new position_data and error_data columns
+- **Solution**: 
+  1. Made columns nullable in the model definition
+  2. Added automatic schema migration to `init_db()` method
+  3. Migration runs transparently when app starts with existing database
+  4. Uses ALTER TABLE to add missing columns without data loss
+- **Result**: App now handles database schema updates automatically without user intervention
+
+## [2025-06-18] - Multi-Track Page Final Trim Data and Export Fixes
+
+### Fixed - Multi-Track Page to Use Final Trim Data Only
+- **Issue**: Multi-track page was using untrimmed data for plotting instead of final trim data
+- **Root cause**: The linearity overlay plot was prioritizing untrimmed data "to show all points"
+- **Solution**: 
+  1. Removed logic that used untrimmed data for plotting
+  2. Ensured all charts use position_data/error_data (trimmed data) exclusively
+  3. Kept untrimmed data references for logging only
+- **Result**: All charts on multi-track page now display only the final trim data as requested
+
+### Enhanced - Added Offset Note to Linearity Overlay Plot
+- **Enhancement**: Added visual note to linearity overlay plot indicating that optimal offset has been applied
+- **Details**: 
+  1. The overlay plot applies the optimal offset to show shifted linearity errors
+  2. The error profile plot in individual track viewer shows raw errors without offset
+  3. Added "Note: Optimal offset applied" text box to clarify this difference
+- **Result**: Users can now clearly see that the overlay plot shows offset-corrected values
+
+### Fixed - Final Test Comparison Page Database Query Error
+- **Issue**: Error "type object 'AnalysisResult' has no attribute 'serial_number'" when refreshing serials
+- **Root cause**: Database query was using incorrect column name 'serial_number' instead of 'serial'
+- **Solution**: 
+  1. Changed order_by clause from DBAnalysisResult.serial_number to DBAnalysisResult.serial
+  2. Changed result access from r.serial_number to r.serial
+- **Result**: Final Test Comparison page now correctly loads serials from database
+
+### Fixed - AnimatedButton Event Handler Error
+- **Issue**: Error "AnimatedButton._on_leave() missing 1 required positional argument: 'event'"
+- **Root cause**: Event handlers were being called without event parameter in some cases
+- **Solution**: Made event parameter optional (event=None) in all AnimatedButton event handlers
+- **Result**: AnimatedButton no longer throws errors when event handlers are called without event
+
+### Information - Final Test Comparison Page Button States
+- **Design**: The Final Test Comparison page follows a specific workflow:
+  1. User must first select a unit from database (model -> serial -> date)
+  2. Browse button is enabled only after loading a unit from database
+  3. Compare button is enabled only after loading both unit and final test file
+- **Note**: If no units appear in database dropdowns, ensure units have been analyzed and saved to database first
+
+### Fixed - Batch Processing Database Save Errors (Comprehensive Fix)
+- **Issue**: Multiple attribute errors during batch database save including "'LinearityAnalysis' object has no attribute 'final_linearity_error'"
+- **Root cause**: 
+  1. Database manager was using incorrect attribute name 'final_linearity_error'
+  2. Some analysis components were returning None instead of proper objects
+  3. DynamicRangeAnalysis was creating wrong fields
+- **Solution**: 
+  1. Changed 'final_linearity_error' to correct attribute 'final_linearity_error_raw'
+  2. Fixed all analysis methods to always return proper objects (never None):
+     - DynamicRangeAnalysis now calculates range_utilization_percent, margins, and bias
+     - ZoneAnalysis always returns with proper fields even for minimal data
+     - FailurePrediction is always created, using heuristics when ML is unavailable
+  3. Added safe attribute access with getattr() as defensive programming
+- **Result**: All analysis components are now guaranteed to exist with proper attributes, eliminating database save errors
+
+## [2025-06-18] - Multi-Track Page Error Profile and Export Fixes
+
+### Fixed - Individual Track Viewer Error Profile X-Axis
+- **Issue**: Error profile chart in individual track viewer still showed x-axis as 0-100 instead of actual position range
+- **Root cause**: The error profile plot was hardcoded to set x-axis limits to 0-100 at line 375 of track_viewer.py
+- **Solution**: 
+  1. Calculate actual x-axis range from position data
+  2. Add 5% padding to ensure all data points are visible
+  3. Update axis labels to show "Position (mm)" and "Error (V)"
+  4. Update spec limit label to show "V" instead of "%"
+- **Result**: Error profile chart now shows correct position range matching the actual data
+
+### Fixed - Multi-Track Page Excel Export Error
+- **Issue**: Export failed with error "Export failed: 'tracks'"
+- **Root cause**: Export function directly accessed self.current_unit_data['tracks'] but tracks were nested under 'files' structure
+- **Solution**: 
+  1. Extract tracks from files structure before processing
+  2. Check both 'files' and 'tracks' data structures for compatibility
+  3. Update both individual track data export and validation summary to use extracted tracks
+- **Result**: Excel export now works correctly with proper data extraction
+
+### Fixed - Multi-Track Page PDF Generation Error
+- **Issue**: PDF generation showed "No multi-track data available to generate report"
+- **Root cause**: PDF generation checked for self.current_unit_data.get('tracks') but tracks were nested under 'files'
+- **Solution**: 
+  1. Extract tracks from files structure at the beginning of PDF generation
+  2. Update all track data access to use extracted tracks
+  3. Handle both dictionary and object data formats in table generation
+- **Result**: PDF generation now works correctly with proper data visualization
+
+## [2025-06-18] - Multi-Track Page Unit Display Fix
+
+### Fixed - Multi-Track Page Linearity Units Mismatch
+- **Issue**: Multi-track page was displaying linearity errors with "%" units when they are actually in volts
+- **Root cause**: The linearity analyzer works with error values in volts (voltage difference between measured and theory), but the multi-track page was displaying these values with percentage symbols
+- **Solution**: 
+  1. Changed Y-axis label from "Linearity Error (%)" to "Linearity Error (Volts)" in overlay chart
+  2. Changed X-axis label from "Position (%)" to "Position (mm)" to match actual data
+  3. Updated all linearity error displays to show "V" instead of "%"
+  4. Fixed spec limit display to show "±0.0XXX V" instead of "±0.0XXX%"
+  5. Updated table headers, chart labels, and individual track viewer displays
+- **Result**: Multi-track page now correctly displays linearity errors in volts, matching the single file page and actual data units
+
+## [2025-06-18] - Plot Display and Analysis Fixes
+
+### Fixed - Tkinter Image Error for Track 2 Plot Display
+- **Issue**: Track 2 plot fails to load with error "image 'pyimage8' doesn't exist"
+- **Root cause**: Tkinter was garbage collecting the CTkImage reference when switching between tracks
+- **Solution**: 
+  1. Added image reference retention in PlotViewerWidget._update_display()
+  2. Store reference in self.image_label.image to prevent garbage collection
+  3. Keep previous CTkImage reference during updates
+  4. Clear image references properly in clear() method
+- **Result**: All track plots now display correctly without Tkinter errors
+
+### Fixed - Incorrect Fail Count in Status Reason
+- **Issue**: Status reason displays "0 points out of spec" even when analysis shows failed points
+- **Root cause**: processor.py was looking for 'fail_count' attribute but LinearityAnalysis uses 'linearity_fail_points'
+- **Solution**: Updated processor.py line 2493 to use correct attribute name 'linearity_fail_points'
+- **Result**: Status reason now correctly displays the actual number of out-of-spec points
+
+### Fixed - Tkinter Image Error When Switching Tracks (Comprehensive Fix)
+- **Issue**: Error "image 'pyimage4' doesn't exist" when switching between tracks in multi-track analysis
+- **Root cause**: Multiple issues with Tkinter garbage collection and race conditions during track switching
+- **Solution**: 
+  1. Enhanced image reference retention in PlotViewerWidget.clear() - store references before clearing
+  2. Added widget existence check in _update_display() to prevent accessing destroyed widgets
+  3. Added update_idletasks() call after clear() to ensure Tkinter processes operations in order
+  4. Implemented mutex flag (_updating_plot) to prevent concurrent plot updates during rapid switching
+  5. Added try-catch around image configuration with fallback approach
+  6. Store up to 3 previous images to handle rapid switching scenarios
+- **Result**: Track switching now works reliably without Tkinter image errors
+
+### Enhanced - Multi-Track Page Plot Margins
+- **Issue**: Plots on multi-track page were too zoomed in with no border space
+- **Solution**: Added padding to linearity overlay plot:
+  1. X-axis: Added 5% padding on each side (-5 to 105 instead of 0 to 100)
+  2. Y-axis: Added 10% padding beyond the spec limits
+- **Result**: Plots now have comfortable margins making data easier to view
+
+### Fixed - Multi-Track Page Missing Data Points
+- **Issue**: Multi-track page plots were missing data points compared to single file page
+- **Root cause**: Multi-track page was only plotting trimmed data, not the full untrimmed dataset
+- **Solution**: 
+  1. Modified _update_linearity_overlay() to check for untrimmed_positions/untrimmed_errors first
+  2. Use untrimmed data when available to show all points (matching single file page behavior)
+  3. Fall back to trimmed data only if untrimmed is not available
+- **Result**: Multi-track page now shows complete data matching the source file and single file page
+
+### Fixed - Multi-Track Page X-Axis Scaling
+- **Issue**: Multi-track page was cutting off start and end portions of data
+- **Root cause**: X-axis was hardcoded to 0-100 range when actual position data is in millimeters (e.g., -170 to +170)
+- **Solution**: 
+  1. Calculate actual x-axis range from the plotted position data
+  2. Use the min/max of actual positions instead of forcing 0-100
+  3. Add 5% padding to ensure all data points are visible
+- **Result**: Multi-track page now shows the full position range matching the actual data
+
+### Fixed - Multi-Track Page Individual Track Viewer
+- **Issue**: Error profile chart in track viewer was showing trimmed data instead of full data
+- **Solution**: Modified to use untrimmed_positions/untrimmed_errors when available
+- **Result**: Individual track viewer now shows complete data matching the overlay plot
+
+### Removed - Analyze Folder Button
+- **Change**: Removed "Analyze Folder" button from multi-track page per user request
+- **Result**: Simplified interface with just "Select Track File" and "From Database" options
+
+### Fixed - Generate PDF Button
+- **Issue**: Generate PDF button was not working due to incorrect data structure access
+- **Root cause**: Code expected object attributes but data was in dictionary format
+- **Solution**: 
+  1. Updated PDF generation to handle both dict and object data structures
+  2. Fixed track data access for sigma_gradient and linearity_error
+  3. Fixed position/error data access for track plots
+  4. Updated plot labels to show correct units (V instead of %)
+- **Result**: PDF generation now works correctly with proper data visualization
+
+### Fixed - Multi-Track Page Export Error
+- **Issue**: Export failed with error 'tracks' when trying to export comparison report
+- **Root cause**: Export function expected object-based data structure but received dictionary format
+- **Solution**: 
+  1. Updated _export_comparison_report to handle dictionary data structure
+  2. Added proper field mapping for track data export
+  3. Simplified validation summary section to work with current data format
+- **Result**: Export to Excel now works correctly with proper data extraction
+
+### Fixed - Multi-Track Page Plot Data and Offset
+- **Issue**: Multi-track page plots don't match single file page plots due to incorrect offset handling
+- **Root cause**: Multi-track page was looking for offset in wrong field ('linearity_offset' instead of linearity_analysis.optimal_offset)
+- **Solution**: 
+  1. Updated offset extraction to first check linearity_analysis.optimal_offset
+  2. Added fallback to legacy 'linearity_offset' field for compatibility
+  3. Handle both dict and object attribute access patterns
+- **Result**: Multi-track plots now apply the same offset as single file plots
+- **Note**: Multi-track page shows linearity error percentages while single file shows error values in volts - this is by design for different use cases
+
+## [2025-06-18] - Multi Track Page Data Access Fixes and Project Cleanup
 
 ### Fixed - Multi Track Page Position/Error Data Access
 - **Issue**: Multi-track page was not displaying position and error data in linearity overlay plot
@@ -31,6 +496,20 @@ This section tracks current known issues that need to be addressed. When fixing 
 - The processor correctly creates TrackData objects with position_data and error_data fields (lines 716-717 in processor.py)
 - These fields are populated from the trimmed data when available, falling back to untrimmed data
 - The multi-track page now correctly uses this trimmed data for comparison plots as requested by the user
+
+### Project Cleanup - Archived Unused Files
+- **Purpose**: Clean up project directory by archiving unused files
+- **Analysis performed**: 
+  1. Scanned entire codebase for import statements
+  2. Identified files with missing dependencies
+  3. Located test and example files referencing non-existent modules
+- **Files archived** (9 items moved to `_archive_unused_20250618_071256/`):
+  - Test files with missing dependencies: `test_performance_optimizer.py`, `test_progress_system.py`, `test_cache_manager.py`
+  - Example files with missing dependencies: `lazy_loading_example.py`, `import_optimization_demo.py`, `progress_example_integration.py`, `database_performance_optimization.py`
+  - Debug/development files: `debug_exe.bat`
+  - Generated output: `6-17-2025 file/` directory
+- **Python cache cleaned**: Removed all `__pycache__` directories and `.pyc` files (12 items)
+- **Result**: Cleaner project structure with only actively used files remaining
 
 ## [2025-06-18] - Multi Track Page File Analysis Fix
 

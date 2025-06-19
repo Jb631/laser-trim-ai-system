@@ -58,11 +58,17 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         # Thread safety
         self._comparison_lock = threading.Lock()
         
+        # Window resize handling
+        self._resize_job = None
+        
         # Create the page
         self._create_page()
         
         # Apply hover fixes after page creation
         self.after(100, self._apply_hover_fixes)
+        
+        # Bind resize event
+        self.bind("<Configure>", self._on_window_resize)
         
     def _create_page(self):
         """Create page content."""
@@ -387,9 +393,9 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                     DBAnalysisResult.serial
                 ).filter(
                     DBAnalysisResult.model == model
-                ).distinct().order_by(DBAnalysisResult.serial_number).all()
+                ).distinct().order_by(DBAnalysisResult.serial).all()
                 
-                serials = [r.serial_number for r in results if r.serial_number]
+                serials = [r.serial for r in results if r.serial]
                 
                 # Update dropdown
                 self.serial_dropdown.configure(values=serials)
@@ -419,21 +425,24 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             return
             
         try:
-            # Get unique dates for this model and serial
+            # Get unique trim dates for this model and serial
             with self.main_window.db_manager.get_session() as session:
                 results = session.query(
-                    DBAnalysisResult.timestamp
+                    DBAnalysisResult.file_date,
+                    DBAnalysisResult.id
                 ).filter(
                     DBAnalysisResult.model == model,
                     DBAnalysisResult.serial == serial
-                ).order_by(DBAnalysisResult.timestamp.desc()).all()
+                ).order_by(DBAnalysisResult.file_date.desc()).all()
                 
                 # Format dates with time for display
                 date_options = []
+                self._date_to_id_map = {}  # Store mapping of date string to record ID
                 for result in results:
-                    if result.timestamp:
-                        date_str = result.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                    if result.file_date:
+                        date_str = result.file_date.strftime("%Y-%m-%d %H:%M:%S")
                         date_options.append(date_str)
+                        self._date_to_id_map[date_str] = result.id
                 
                 # Update dropdown
                 self.date_dropdown.configure(values=date_options)
@@ -464,23 +473,30 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             # Extract serial number from selection
             serial = serial_with_time.split(" (")[0] if " (" in serial_with_time else serial_with_time
             
-            # Parse date
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            # Get the record ID from the mapping
+            record_id = getattr(self, '_date_to_id_map', {}).get(date_str)
+            if not record_id:
+                self.show_error("Invalid date selection")
+                return
             
-            # Load unit from database
+            # Load unit from database by ID with tracks eagerly loaded
             with self.main_window.db_manager.get_session() as session:
-                result = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.timestamp >= date,
-                    DBAnalysisResult.timestamp < datetime.combine(date, datetime.max.time()),
-                    DBAnalysisResult.model == model,
-                    DBAnalysisResult.serial == serial
-                ).order_by(DBAnalysisResult.timestamp.desc()).first()
+                from sqlalchemy.orm import joinedload
+                result = session.query(DBAnalysisResult).options(
+                    joinedload(DBAnalysisResult.tracks)
+                ).filter(
+                    DBAnalysisResult.id == record_id
+                ).first()
                 
                 if result:
                     self.selected_unit = result
                     # Update unit info display
                     info_text = f"Loaded: {model} - {serial}\n"
-                    info_text += f"Trim Date: {result.timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    if result.file_date:
+                        info_text += f"Trim Date: {result.file_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    else:
+                        info_text += f"Trim Date: Unknown\n"
+                    info_text += f"Analysis Date: {result.timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     info_text += f"Status: {result.overall_status}"
                     self.unit_info_label.configure(text=info_text)
                     
@@ -633,63 +649,97 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             
     def _extract_trim_data_safe(self, selected_unit) -> pd.DataFrame:
         """Extract linearity data from laser trim results (thread-safe)."""
-        import json
-        
         try:
-            # First try to get analysis data from the analysis_data field
-            if hasattr(selected_unit, 'analysis_data') and selected_unit.analysis_data:
-                analysis_data = json.loads(selected_unit.analysis_data)
+            # Get track data from the related tracks (loaded via relationship)
+            if hasattr(selected_unit, 'tracks') and selected_unit.tracks:
+                # Get the first/primary track
+                primary_track = selected_unit.tracks[0]
                 
-                # Extract primary track data
-                if 'tracks' in analysis_data:
-                    # Get the first track (primary track)
-                    track_key = next(iter(analysis_data['tracks']))
-                    track_data = analysis_data['tracks'][track_key]
+                # Extract position and error data from the track
+                positions = primary_track.position_data
+                errors = primary_track.error_data
+                
+                if positions and errors and len(positions) == len(errors):
+                    # Convert JSON strings to lists if needed
+                    if isinstance(positions, str):
+                        import json
+                        positions = json.loads(positions)
+                    if isinstance(errors, str):
+                        import json
+                        errors = json.loads(errors)
                     
-                    # Extract position and error data
-                    if 'position_data' in track_data and 'error_data' in track_data:
-                        positions = track_data['position_data']
-                        errors = track_data['error_data']
-                        
-                        # Calculate measured values (assuming linear theoretical)
-                        # For a potentiometer, theoretical is typically linear from 0 to max
-                        max_pos = max(positions) if positions else 1
-                        theoretical = [pos / max_pos for pos in positions]
-                        measured = [theoretical[i] + errors[i] for i in range(len(positions))]
-                        
-                        trim_df = pd.DataFrame({
-                            'position': positions,
-                            'measured': measured,
-                            'theoretical': theoretical,
-                            'error': errors
-                        })
-                        return trim_df
-                        
-            # Fallback: try validation_results field
-            if hasattr(selected_unit, 'validation_results') and selected_unit.validation_results:
-                validation_data = json.loads(selected_unit.validation_results)
-                
-                # Look for track data in various formats
-                for key, value in validation_data.items():
-                    if isinstance(value, dict):
-                        if all(k in value for k in ['positions', 'errors']):
-                            positions = value['positions']
-                            errors = value['errors']
+                    # Using actual database raw data (from trimmed sheets)
+                    self.logger.info(f"Using actual raw data from database (trimmed): {len(positions)} points")
+                    self._using_database_data = True
+                    self._data_is_trimmed = True
+                    
+                    # Get optimal offset for information
+                    optimal_offset = primary_track.optimal_offset or 0.0
+                    self.logger.info(f"Optimal offset from database: {optimal_offset:.6f} (already applied)")
+                    
+                    # The errors from database are from the final trimmed sheets
+                    # They should already represent the shifted linearity error
+                    # Check if we're dealing with raw or shifted data
+                    if hasattr(primary_track, 'final_linearity_error_shifted') and hasattr(primary_track, 'final_linearity_error_raw'):
+                        # Log which type of data we have
+                        self.logger.info(f"Final linearity error (raw): {primary_track.final_linearity_error_raw:.6f}")
+                        self.logger.info(f"Final linearity error (shifted): {primary_track.final_linearity_error_shifted:.6f}")
+                    
+                    # Use errors as-is from database (they should be the final shifted values)
+                    errors_shifted = errors
+                    
+                    # For laser trim data, we only have positions and errors
+                    # The error is the linearity error (deviation from ideal)
+                    trim_df = pd.DataFrame({
+                        'position': positions,
+                        'error': errors_shifted  # Use shifted errors
+                    })
+                    
+                    # Log some debug info
+                    self.logger.info(f"Trim data range - Position: [{min(positions):.3f}, {max(positions):.3f}]")
+                    self.logger.info(f"Trim data range - Error: [{min(errors_shifted):.6f}, {max(errors_shifted):.6f}]")
+                    
+                    return trim_df
+                else:
+                    # Fallback: create synthetic data if raw data not available
+                    self.logger.warning("Raw position/error data not available, using synthetic representation from summary stats")
+                    self._using_database_data = False
+                    self._data_is_trimmed = True  # Summary stats are from trimmed data
+                    
+                    # Show warning to user
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Synthetic Data Warning",
+                        "This unit does not have raw position/error data in the database.\n\n"
+                        "The chart will show a synthetic representation based on summary statistics, "
+                        "which may not accurately reflect the actual error profile.\n\n"
+                        "To see accurate data:\n"
+                        "1. Locate the original Excel file for this unit\n"
+                        "2. Re-process it through the Single File or Batch Processing page\n"
+                        "3. The database will be updated with raw data\n"
+                        "4. Return to this page for accurate comparison"
+                    ))
+                    
+                    travel_length = primary_track.travel_length or 100
+                    positions = np.linspace(0, travel_length, 100).tolist()
+                    max_error = primary_track.final_linearity_error_raw or 0
+                    
+                    # Use the final linearity error (shifted) from database
+                    final_error = primary_track.final_linearity_error_shifted or 0
+                    
+                    # Generate synthetic error pattern
+                    errors = []
+                    for i, pos in enumerate(positions):
+                        phase = (pos / travel_length) * 2 * np.pi
+                        error = final_error * np.sin(phase) * (1 + 0.3 * np.sin(phase * 3))
+                        errors.append(error)
+                    
+                    trim_df = pd.DataFrame({
+                        'position': positions,
+                        'error': errors
+                    })
+                    return trim_df
                             
-                            # Calculate measured/theoretical
-                            max_pos = max(positions) if positions else 1
-                            theoretical = [pos / max_pos for pos in positions]
-                            measured = [theoretical[i] + errors[i] for i in range(len(positions))]
-                            
-                            trim_df = pd.DataFrame({
-                                'position': positions,
-                                'measured': measured,
-                                'theoretical': theoretical,
-                                'error': errors
-                            })
-                            return trim_df
-                            
-            raise ValueError("Could not extract trim data from database result")
+            raise ValueError("Could not extract trim data from database result - no track data found")
             
         except Exception as e:
             self.logger.error(f"Error extracting trim data: {e}")
@@ -699,48 +749,55 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         """Compare linearity between trim and test data."""
         results = {}
         
-        # Normalize position ranges for comparison
+        # Get position ranges (keep in original units, e.g., inches)
         trim_positions = trim_data['position'].values
         test_positions = test_data['position'].values
         
-        # Interpolate data to common positions
-        common_positions = np.linspace(
-            max(trim_positions.min(), test_positions.min()),
-            min(trim_positions.max(), test_positions.max()),
-            100
-        )
+        # Find common position range
+        min_pos = max(trim_positions.min(), test_positions.min())
+        max_pos = min(trim_positions.max(), test_positions.max())
         
-        # Interpolate trim data
-        trim_measured_interp = np.interp(common_positions, trim_positions, trim_data['measured'].values)
-        trim_theoretical_interp = np.interp(common_positions, trim_positions, trim_data['theoretical'].values)
-        trim_error_interp = trim_measured_interp - trim_theoretical_interp
+        # Log position ranges for debugging
+        self.logger.info(f"Trim position range: [{trim_positions.min():.3f}, {trim_positions.max():.3f}]")
+        self.logger.info(f"Test position range: [{test_positions.min():.3f}, {test_positions.max():.3f}]")
+        self.logger.info(f"Common position range: [{min_pos:.3f}, {max_pos:.3f}]")
         
-        # Interpolate test data
-        test_measured_interp = np.interp(common_positions, test_positions, test_data['measured_volts'].values)
-        test_theoretical_interp = np.interp(common_positions, test_positions, test_data['theoretical_volts'].values)
-        test_error_interp = test_measured_interp - test_theoretical_interp
+        # Create common position array
+        common_positions = np.linspace(min_pos, max_pos, 200)  # 200 points for smooth curves
+        
+        # Interpolate trim error data (already in volts)
+        trim_error_interp = np.interp(common_positions, trim_positions, trim_data['error'].values)
+        
+        # Calculate test error from measured and theoretical
+        test_error = test_data['error_volts'].values
+        test_error_interp = np.interp(common_positions, test_positions, test_error)
+        
+        # Log error ranges
+        self.logger.info(f"Trim error range: [{trim_error_interp.min():.6f}, {trim_error_interp.max():.6f}] V")
+        self.logger.info(f"Test error range: [{test_error_interp.min():.6f}, {test_error_interp.max():.6f}] V")
+        
+        # Interpolate spec limits (they can vary with position)
+        test_spec_upper_interp = np.interp(common_positions, test_positions, test_data['linearity_spec_upper'].values)
+        test_spec_lower_interp = np.interp(common_positions, test_positions, test_data['linearity_spec_lower'].values)
         
         # Calculate differences
-        measured_diff = trim_measured_interp - test_measured_interp
         error_diff = trim_error_interp - test_error_interp
         
         # Calculate statistics
         results['position'] = common_positions
-        results['trim_measured'] = trim_measured_interp
         results['trim_error'] = trim_error_interp
-        results['test_measured'] = test_measured_interp
         results['test_error'] = test_error_interp
-        results['measured_diff'] = measured_diff
         results['error_diff'] = error_diff
+        results['spec_upper'] = test_spec_upper_interp
+        results['spec_lower'] = test_spec_lower_interp
         
         # Summary statistics
         results['stats'] = {
-            'mean_measured_diff': np.mean(measured_diff),
-            'std_measured_diff': np.std(measured_diff),
-            'max_measured_diff': np.max(np.abs(measured_diff)),
             'mean_error_diff': np.mean(error_diff),
             'std_error_diff': np.std(error_diff),
-            'max_error_diff': np.max(np.abs(error_diff))
+            'max_error_diff': np.max(np.abs(error_diff)),
+            'trim_max_error': np.max(np.abs(trim_error_interp)),
+            'test_max_error': np.max(np.abs(test_error_interp))
         }
         
         # Store for later use
@@ -757,9 +814,8 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             # Display statistics
             stats = results['stats']
             results_text = "Comparison Results:\n\n"
-            results_text += f"Mean Measured Difference: {stats['mean_measured_diff']:.6f} V\n"
-            results_text += f"Std Dev Measured Difference: {stats['std_measured_diff']:.6f} V\n"
-            results_text += f"Max Measured Difference: {stats['max_measured_diff']:.6f} V\n\n"
+            results_text += f"Laser Trim Max Error: {stats['trim_max_error']:.6f} V\n"
+            results_text += f"Final Test Max Error: {stats['test_max_error']:.6f} V\n\n"
             results_text += f"Mean Error Difference: {stats['mean_error_diff']:.6f} V\n"
             results_text += f"Std Dev Error Difference: {stats['std_error_diff']:.6f} V\n"
             results_text += f"Max Error Difference: {stats['max_error_diff']:.6f} V"
@@ -785,7 +841,7 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         self.show_error(f"Comparison failed: {error_msg}")
         
     def _create_comparison_chart(self, results: Dict[str, Any]):
-        """Create comparison overlay chart."""
+        """Create comparison overlay chart focused on linearity error."""
         try:
             # Clear previous chart and figure
             if self.canvas:
@@ -795,85 +851,206 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                 plt.close(self.current_plot)
                 self.current_plot = None
                 
-            # Create figure with subplots
-            fig = Figure(figsize=(14, 10), dpi=100)
-            
-            # Create 2x2 subplot layout
-            # Top left: Linearity comparison
-            ax1 = fig.add_subplot(2, 2, 1)
-            ax1.plot(results['position'], results['trim_measured'], 'b-', label='Laser Trim', linewidth=2, alpha=0.8)
-            ax1.plot(results['position'], results['test_measured'], 'r--', label='Final Test', linewidth=2, alpha=0.8)
-            ax1.set_xlabel('Position (%)')
-            ax1.set_ylabel('Output Voltage (V)')
-            ax1.set_title('Linearity Comparison: Laser Trim vs Final Test')
-            ax1.legend(loc='upper left')
-            ax1.grid(True, alpha=0.3)
-            
-            # Top right: Error comparison
-            ax2 = fig.add_subplot(2, 2, 2)
-            ax2.plot(results['position'], results['trim_error'], 'b-', label='Laser Trim Error', linewidth=2, alpha=0.8)
-            ax2.plot(results['position'], results['test_error'], 'r--', label='Final Test Error', linewidth=2, alpha=0.8)
-            ax2.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-            
-            # Add tolerance bands if available
-            if 'tolerance' in results:
-                tol = results['tolerance']
-                ax2.axhline(y=tol, color='g', linestyle=':', alpha=0.5, label=f'±{tol}V Tolerance')
-                ax2.axhline(y=-tol, color='g', linestyle=':', alpha=0.5)
-            
-            ax2.set_xlabel('Position (%)')
-            ax2.set_ylabel('Linearity Error (V)')
-            ax2.set_title('Linearity Error Comparison')
-            ax2.legend(loc='upper right')
-            ax2.grid(True, alpha=0.3)
-            
-            # Bottom left: Difference plot
-            ax3 = fig.add_subplot(2, 2, 3)
-            error_diff = results['error_diff']
-            ax3.plot(results['position'], error_diff, 'g-', linewidth=2, label='Error Difference')
-            ax3.fill_between(results['position'], 0, error_diff, alpha=0.3, color='green')
-            ax3.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-            ax3.set_xlabel('Position (%)')
-            ax3.set_ylabel('Error Difference (V)')
-            ax3.set_title('Final Test - Laser Trim Error Difference')
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
-            
-            # Bottom right: Statistics summary
-            ax4 = fig.add_subplot(2, 2, 4)
-            ax4.axis('off')
-            
-            stats = results['stats']
-            stats_text = "Comparison Statistics:\n\n"
-            stats_text += f"Measurement Differences:\n"
-            stats_text += f"  Mean: {stats['mean_measured_diff']:.6f} V\n"
-            stats_text += f"  Std Dev: {stats['std_measured_diff']:.6f} V\n"
-            stats_text += f"  Maximum: {stats['max_measured_diff']:.6f} V\n\n"
-            stats_text += f"Error Differences:\n"
-            stats_text += f"  Mean: {stats['mean_error_diff']:.6f} V\n"
-            stats_text += f"  Std Dev: {stats['std_error_diff']:.6f} V\n"
-            stats_text += f"  Maximum: {stats['max_error_diff']:.6f} V\n\n"
-            
-            # Add pass/fail assessment
-            max_error_limit = 0.01  # 10mV typical limit
-            if abs(stats['max_error_diff']) < max_error_limit:
-                stats_text += f"✓ PASS: Error difference within {max_error_limit*1000:.0f}mV limit"
-                color = 'green'
+            # Get current window size to make chart responsive
+            if hasattr(self.chart_display_frame, 'winfo_width'):
+                frame_width = self.chart_display_frame.winfo_width()
+                frame_height = self.chart_display_frame.winfo_height()
+                # Default sizes if window not yet drawn
+                if frame_width <= 1:
+                    frame_width = 1200
+                if frame_height <= 1:
+                    frame_height = 800
             else:
-                stats_text += f"✗ FAIL: Error difference exceeds {max_error_limit*1000:.0f}mV limit"
-                color = 'red'
+                frame_width = 1200
+                frame_height = 800
+                
+            # Calculate figure size based on frame size (leave some margin)
+            fig_width = max(10, (frame_width - 40) / 100)  # Convert pixels to inches at 100 DPI
+            fig_height = max(8, (frame_height - 40) / 100)
             
-            ax4.text(0.1, 0.9, stats_text, transform=ax4.transAxes, fontsize=11,
-                    verticalalignment='top', fontfamily='monospace')
-            ax4.text(0.1, 0.15, stats_text.split('\n')[-1], transform=ax4.transAxes, 
-                    fontsize=12, fontweight='bold', color=color)
+            # Create figure with responsive size
+            fig = Figure(figsize=(fig_width, fig_height), dpi=100)
             
-            fig.tight_layout()
+            # Create GridSpec for better control
+            from matplotlib.gridspec import GridSpec
+            gs = GridSpec(3, 1, figure=fig, height_ratios=[2, 1, 0.1])
+            
+            # Main plot on top (66% of figure height)
+            ax_main = fig.add_subplot(gs[0, 0])
+            
+            # Plot linearity errors with thicker lines
+            ax_main.plot(results['position'], results['trim_error'] * 1000, 'b-', 
+                        label='Laser Trim', linewidth=2.5, alpha=0.9)
+            ax_main.plot(results['position'], results['test_error'] * 1000, 'r--', 
+                        label='Final Test', linewidth=2.5, alpha=0.9)
+            
+            # Add spec lines using interpolated values
+            if 'spec_upper' in results and 'spec_lower' in results:
+                spec_upper = results['spec_upper'] * 1000  # Convert to mV
+                spec_lower = results['spec_lower'] * 1000
+                
+                # Plot spec limits (they can vary with position)
+                ax_main.plot(results['position'], spec_upper, 'g:', linewidth=2, 
+                            alpha=0.7, label='Upper Spec')
+                ax_main.plot(results['position'], spec_lower, 'g:', linewidth=2, 
+                            alpha=0.7, label='Lower Spec')
+                
+                # Shade spec region
+                ax_main.fill_between(results['position'], spec_lower, spec_upper, 
+                                    alpha=0.1, color='green')
+            
+            # Add zero line
+            ax_main.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+            
+            # Formatting
+            ax_main.set_xlabel('Position (inches)', fontsize=12)
+            ax_main.set_ylabel('Linearity Error (mV)', fontsize=12)
+            
+            # Add data source indicator to title
+            if getattr(self, '_using_database_data', False):
+                data_source = "(Using Actual Raw Data)"
+                title_color = 'black'
+            else:
+                data_source = "(Using Synthetic Data - Reprocess File for Accuracy)"
+                title_color = 'darkred'
+            ax_main.set_title(f'Linearity Error Comparison: Laser Trim vs Final Test {data_source}', 
+                             fontsize=14, fontweight='bold', pad=15, color=title_color)
+            ax_main.legend(loc='best', framealpha=0.9, fontsize=11)
+            ax_main.grid(True, alpha=0.3, linestyle='--')
+            
+            # Set y-axis to show reasonable range
+            trim_error_range = np.max(np.abs(results['trim_error'])) * 1000
+            test_error_range = np.max(np.abs(results['test_error'])) * 1000
+            max_error = max(trim_error_range, test_error_range) * 1.2
+            if 'spec_upper' in results and 'spec_lower' in results:
+                spec_max = max(np.max(np.abs(results['spec_upper'] * 1000)), 
+                              np.max(np.abs(results['spec_lower'] * 1000)))
+                max_error = max(max_error, spec_max * 1.1)
+            ax_main.set_ylim(-max_error, max_error)
+            
+            # Statistics text area below chart
+            ax_stats = fig.add_subplot(gs[1, 0])
+            ax_stats.axis('off')
+            
+            # Calculate statistics
+            stats = results['stats']
+            
+            # Build statistics text with better formatting
+            stats_text = "COMPARISON STATISTICS\n" + "="*25 + "\n\n"
+            
+            # Convert to mV for display
+            stats_text += "Linearity Error Stats:\n"
+            stats_text += "-"*25 + "\n"
+            
+            # Laser Trim stats
+            trim_max_error = np.max(np.abs(results['trim_error'])) * 1000
+            trim_mean_error = np.mean(results['trim_error']) * 1000
+            trim_std_error = np.std(results['trim_error']) * 1000
+            
+            stats_text += "Laser Trim (Final):\n"
+            stats_text += f"  Max Error: {trim_max_error:.2f} mV\n"
+            stats_text += f"  Mean Error: {trim_mean_error:.2f} mV\n"
+            stats_text += f"  Std Dev: {trim_std_error:.2f} mV\n\n"
+            
+            # Final Test stats
+            test_max_error = np.max(np.abs(results['test_error'])) * 1000
+            test_mean_error = np.mean(results['test_error']) * 1000
+            test_std_error = np.std(results['test_error']) * 1000
+            
+            stats_text += "Final Test:\n"
+            stats_text += f"  Max Error: {test_max_error:.2f} mV\n"
+            stats_text += f"  Mean Error: {test_mean_error:.2f} mV\n"
+            stats_text += f"  Std Dev: {test_std_error:.2f} mV\n\n"
+            
+            # Difference stats
+            stats_text += "Differences:\n"
+            stats_text += "-"*25 + "\n"
+            stats_text += f"Mean Diff: {stats['mean_error_diff']*1000:.2f} mV\n"
+            stats_text += f"Max Diff: {stats['max_error_diff']*1000:.2f} mV\n"
+            stats_text += f"Std Dev: {stats['std_error_diff']*1000:.2f} mV\n\n"
+            
+            # Add spec compliance check
+            stats_text += "Spec Compliance:\n"
+            stats_text += "-"*25 + "\n"
+            
+            if 'spec_upper' in results and 'spec_lower' in results:
+                # Check if both are within spec
+                # Errors should be between lower spec (negative) and upper spec (positive)
+                trim_errors = results['trim_error'] * 1000  # Convert to mV
+                test_errors = results['test_error'] * 1000
+                spec_upper_mv = results['spec_upper'] * 1000
+                spec_lower_mv = results['spec_lower'] * 1000
+                
+                # Check if all points are within spec
+                trim_in_spec = np.all((trim_errors >= spec_lower_mv) & (trim_errors <= spec_upper_mv))
+                test_in_spec = np.all((test_errors >= spec_lower_mv) & (test_errors <= spec_upper_mv))
+                
+                if trim_in_spec:
+                    stats_text += "✓ Laser Trim: PASS\n"
+                    trim_color = 'green'
+                else:
+                    stats_text += "✗ Laser Trim: FAIL\n"
+                    trim_color = 'red'
+                    
+                if test_in_spec:
+                    stats_text += "✓ Final Test: PASS\n"
+                    test_color = 'green'
+                else:
+                    stats_text += "✗ Final Test: FAIL\n"
+                    test_color = 'red'
+            
+            # Display statistics in multiple columns for better horizontal use
+            # Left column
+            ax_stats.text(0.05, 0.95, stats_text[:stats_text.find('Differences:')], 
+                         transform=ax_stats.transAxes, fontsize=10, 
+                         verticalalignment='top', fontfamily='monospace')
+            
+            # Middle column
+            diff_section = stats_text[stats_text.find('Differences:'):stats_text.find('Spec Compliance:')]
+            ax_stats.text(0.35, 0.95, diff_section, transform=ax_stats.transAxes, 
+                         fontsize=10, verticalalignment='top', fontfamily='monospace')
+            
+            # Right column
+            spec_section = stats_text[stats_text.find('Spec Compliance:'):]
+            ax_stats.text(0.65, 0.95, spec_section, transform=ax_stats.transAxes, 
+                         fontsize=10, verticalalignment='top', fontfamily='monospace')
+            
+            # Add unit info at bottom center
+            if hasattr(self, 'selected_unit') and self.selected_unit:
+                unit_info = f"Unit: {self.selected_unit.model} - {self.selected_unit.serial}"
+                if self.selected_unit.file_date:
+                    unit_info += f"  |  Trim Date: {self.selected_unit.file_date.strftime('%Y-%m-%d %H:%M')}"
+                
+                # Add data source confirmation
+                if hasattr(self.selected_unit, 'tracks') and self.selected_unit.tracks:
+                    track = self.selected_unit.tracks[0]
+                    if hasattr(track, 'trimmed_resistance') and track.trimmed_resistance:
+                        unit_info += f"  |  Trimmed R: {track.trimmed_resistance:.2f} Ω"
+                
+                unit_info += f"  |  Data: {'TRM/Lin Error sheets' if getattr(self, '_data_is_trimmed', True) else 'Unknown'}"
+                
+                ax_stats.text(0.5, 0.02, unit_info, transform=ax_stats.transAxes, 
+                             fontsize=9, verticalalignment='bottom', horizontalalignment='center', 
+                             style='italic')
+            
+            # Adjust layout - more space for chart, less for stats
+            fig.subplots_adjust(left=0.08, right=0.95, top=0.95, bottom=0.05, hspace=0.25)
             
             # Create canvas
             self.canvas = FigureCanvasTkAgg(fig, master=self.chart_display_frame)
             self.canvas.draw()
-            self.canvas.get_tk_widget().pack(fill='both', expand=True)
+            
+            # Add navigation toolbar for zoom/pan functionality
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            toolbar = NavigationToolbar2Tk(self.canvas, self.chart_display_frame)
+            toolbar.update()
+            
+            # Pack canvas and toolbar
+            self.canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
+            toolbar.pack(side='bottom', fill='x')
+            
+            # Add custom zoom controls
+            self._add_zoom_controls(ax_main)
             
             # Store current plot for export
             self.current_plot = fig
@@ -942,6 +1119,44 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             self.logger.error(f"Error printing chart: {e}")
             self.show_error(f"Error printing chart: {str(e)}")
             
+    def _add_zoom_controls(self, ax):
+        """Add keyboard shortcuts for zooming."""
+        def on_key(event):
+            """Handle keyboard events for zooming."""
+            if event.key == '=':  # Zoom in on Y-axis
+                ylim = ax.get_ylim()
+                center = (ylim[0] + ylim[1]) / 2
+                span = (ylim[1] - ylim[0]) * 0.8  # Reduce span by 20%
+                ax.set_ylim(center - span/2, center + span/2)
+                self.canvas.draw()
+            elif event.key == '-':  # Zoom out on Y-axis
+                ylim = ax.get_ylim()
+                center = (ylim[0] + ylim[1]) / 2
+                span = (ylim[1] - ylim[0]) * 1.25  # Increase span by 25%
+                ax.set_ylim(center - span/2, center + span/2)
+                self.canvas.draw()
+            elif event.key == 'r':  # Reset zoom
+                # Reset to original limits
+                trim_error_range = np.max(np.abs(self.comparison_results['trim_error'])) * 1000
+                test_error_range = np.max(np.abs(self.comparison_results['test_error'])) * 1000
+                max_error = max(trim_error_range, test_error_range) * 1.2
+                if 'spec_upper' in self.comparison_results and 'spec_lower' in self.comparison_results:
+                    spec_max = max(np.max(np.abs(self.comparison_results['spec_upper'] * 1000)), 
+                                  np.max(np.abs(self.comparison_results['spec_lower'] * 1000)))
+                    max_error = max(max_error, spec_max * 1.1)
+                ax.set_ylim(-max_error, max_error)
+                self.canvas.draw()
+            elif event.key == 'h':  # Help
+                help_text = "Zoom Controls:\n" \
+                           "+ or = : Zoom in (Y-axis)\n" \
+                           "- : Zoom out (Y-axis)\n" \
+                           "r : Reset zoom\n" \
+                           "Use toolbar below for pan/zoom"
+                messagebox.showinfo("Zoom Controls", help_text)
+        
+        # Connect key press event
+        self.canvas.mpl_connect('key_press_event', on_key)
+            
     def refresh(self):
         """Refresh page data."""
         # Refresh dates based on current selection
@@ -987,6 +1202,24 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         except Exception as e:
             self.logger.error(f"Error showing error message: {e}")
             
+    def _on_window_resize(self, event=None):
+        """Handle window resize events."""
+        # Cancel any pending resize job
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        
+        # Schedule chart redraw after resize stops (debounce)
+        if self.comparison_results and self.canvas:
+            self._resize_job = self.after(300, self._redraw_chart)
+    
+    def _redraw_chart(self):
+        """Redraw the chart with current window size."""
+        if self.comparison_results:
+            try:
+                self._create_comparison_chart(self.comparison_results)
+            except Exception as e:
+                self.logger.error(f"Error redrawing chart: {e}")
+                
     def _create_error_page(self, error_msg: str):
         """Create an error display page."""
         error_frame = ctk.CTkFrame(self)

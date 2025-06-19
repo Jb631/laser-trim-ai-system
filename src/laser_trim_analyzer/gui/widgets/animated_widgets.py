@@ -208,21 +208,21 @@ class AnimatedButton(ctk.CTkButton):
         self._scale = 1.0
         self._animating_scale = False
     
-    def _on_enter(self, event):
+    def _on_enter(self, event=None):
         """Handle mouse enter with animation."""
         if not self._animating_scale:
             self._animate_scale(1.05, duration=0.1)
     
-    def _on_leave(self, event):
+    def _on_leave(self, event=None):
         """Handle mouse leave with animation."""
         if not self._animating_scale:
             self._animate_scale(1.0, duration=0.1)
     
-    def _on_press(self, event):
+    def _on_press(self, event=None):
         """Handle button press with animation."""
         self._animate_scale(0.95, duration=0.05)
     
-    def _on_release(self, event):
+    def _on_release(self, event=None):
         """Handle button release with animation."""
         self._animate_scale(1.05, duration=0.05)
     

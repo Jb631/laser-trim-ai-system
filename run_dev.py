@@ -14,6 +14,7 @@ sys.path.insert(0, str(src_dir))
 
 # Set development environment
 os.environ["LASER_TRIM_DEV_MODE"] = "1"
+os.environ["LTA_ENV"] = "development"
 
 # Run the application
 if __name__ == "__main__":

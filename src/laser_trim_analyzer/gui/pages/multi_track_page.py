@@ -123,14 +123,15 @@ class MultiTrackPage(ctk.CTkFrame):
         )
         self.select_file_btn.pack(side='left', padx=(10, 10), pady=10)
 
-        self.analyze_folder_btn = ctk.CTkButton(
-            button_frame,
-            text="📂 Analyze Folder",
-            command=self._analyze_folder,
-            width=150,
-            height=40
-        )
-        self.analyze_folder_btn.pack(side='left', padx=(0, 10), pady=10)
+        # Analyze Folder button removed per user request
+        # self.analyze_folder_btn = ctk.CTkButton(
+        #     button_frame,
+        #     text="📂 Analyze Folder",
+        #     command=self._analyze_folder,
+        #     width=150,
+        #     height=40
+        # )
+        # self.analyze_folder_btn.pack(side='left', padx=(0, 10), pady=10)
 
         self.from_database_btn = ctk.CTkButton(
             button_frame,
@@ -1195,7 +1196,7 @@ class MultiTrackPage(ctk.CTkFrame):
                 resistance_values = [m['resistance'] for m in metrics_data]
                 
                 ax.bar(x - width, sigma_values, width, label='Sigma Gradient', color='blue')
-                ax.bar(x, linearity_values, width, label='Linearity Error %', color='orange')
+                ax.bar(x, linearity_values, width, label='Linearity Error (V)', color='orange')
                 ax.bar(x + width, resistance_values, width, label='Resistance Change %', color='green')
                 
                 ax.set_xlabel('Track ID')
@@ -1336,29 +1337,48 @@ class MultiTrackPage(ctk.CTkFrame):
                 
                 # Individual track data with validation information
                 track_data = []
-                for track_id, result in self.current_unit_data['tracks'].items():
-                    primary_track = result.primary_track
-                    if primary_track:
-                        track_info = {
+                # Extract tracks from files structure
+                all_tracks = {}
+                if 'files' in self.current_unit_data:
+                    for file_data in self.current_unit_data.get('files', []):
+                        file_tracks = file_data.get('tracks', {})
+                        all_tracks.update(file_tracks)
+                elif 'tracks' in self.current_unit_data:
+                    all_tracks = self.current_unit_data['tracks']
+                    
+                for track_id, track_info in all_tracks.items():
+                    # Handle dictionary format
+                    if isinstance(track_info, dict):
+                        track_record = {
                             'Track ID': track_id,
-                            'Status': primary_track.status.value,
-                            'Sigma Gradient': primary_track.sigma_analysis.sigma_gradient,
-                            'Sigma Pass': primary_track.sigma_analysis.sigma_pass,
-                            'Sigma Validation Status': primary_track.sigma_analysis.validation_status.value if hasattr(primary_track.sigma_analysis, 'validation_status') else 'Not Validated',
-                            'Sigma Industry Compliance': primary_track.sigma_analysis.industry_compliance if hasattr(primary_track.sigma_analysis, 'industry_compliance') else 'Not Available',
-                            'Linearity Error': primary_track.linearity_analysis.final_linearity_error_shifted,
-                            'Linearity Pass': primary_track.linearity_analysis.linearity_pass,
-                            'Linearity Validation Status': primary_track.linearity_analysis.validation_status.value if hasattr(primary_track.linearity_analysis, 'validation_status') else 'Not Validated',
-                            'Linearity Industry Grade': primary_track.linearity_analysis.industry_grade if hasattr(primary_track.linearity_analysis, 'industry_grade') else 'Not Available',
-                            'Resistance Change %': primary_track.unit_properties.resistance_change_percent,
-                            'Resistance Validation Status': primary_track.resistance_analysis.validation_status.value if hasattr(primary_track.resistance_analysis, 'validation_status') else 'Not Validated',
-                            'Resistance Stability Grade': primary_track.resistance_analysis.resistance_stability_grade if hasattr(primary_track.resistance_analysis, 'resistance_stability_grade') else 'Not Available',
-                            'Risk Category': primary_track.failure_prediction.risk_category.value if primary_track.failure_prediction else 'Unknown',
-                            'Overall Validation Status': primary_track.overall_validation_status.value if hasattr(primary_track, 'overall_validation_status') else 'Not Validated',
-                            'Validation Warnings Count': len(primary_track.validation_warnings) if hasattr(primary_track, 'validation_warnings') else 0,
-                            'Validation Recommendations Count': len(primary_track.validation_recommendations) if hasattr(primary_track, 'validation_recommendations') else 0
+                            'Status': track_info.get('overall_status', 'Unknown'),
+                            'Sigma Gradient': track_info.get('sigma_gradient', 0),
+                            'Sigma Pass': track_info.get('sigma_pass', False),
+                            'Sigma Margin': track_info.get('sigma_margin', 0),
+                            'Linearity Error': track_info.get('linearity_error', 0),
+                            'Linearity Pass': track_info.get('linearity_pass', False),
+                            'Linearity Spec': track_info.get('linearity_spec', 0),
+                            'Resistance Change %': track_info.get('resistance_change_percent', 0),
+                            'Travel Length': track_info.get('travel_length', 0),
+                            'File Path': track_info.get('file_path', 'N/A')
                         }
-                        track_data.append(track_info)
+                        track_data.append(track_record)
+                    else:
+                        # Handle object format (legacy)
+                        try:
+                            primary_track = track_info.primary_track if hasattr(track_info, 'primary_track') else track_info
+                            track_record = {
+                                'Track ID': track_id,
+                                'Status': primary_track.status.value if hasattr(primary_track.status, 'value') else str(primary_track.status),
+                                'Sigma Gradient': primary_track.sigma_analysis.sigma_gradient if hasattr(primary_track, 'sigma_analysis') else 0,
+                                'Sigma Pass': primary_track.sigma_analysis.sigma_pass if hasattr(primary_track, 'sigma_analysis') else False,
+                                'Linearity Error': primary_track.linearity_analysis.final_linearity_error_shifted if hasattr(primary_track, 'linearity_analysis') else 0,
+                                'Linearity Pass': primary_track.linearity_analysis.linearity_pass if hasattr(primary_track, 'linearity_analysis') else False,
+                                'Resistance Change %': primary_track.unit_properties.resistance_change_percent if hasattr(primary_track, 'unit_properties') else 0
+                            }
+                            track_data.append(track_record)
+                        except:
+                            pass
                 
                 if track_data:
                     tracks_df = pd.DataFrame(track_data)
@@ -1366,12 +1386,23 @@ class MultiTrackPage(ctk.CTkFrame):
                 
                 # Validation summary sheet
                 validation_summary_data = []
-                for track_id, result in self.current_unit_data['tracks'].items():
-                    primary_track = result.primary_track
-                    if primary_track and hasattr(primary_track, 'validation_summary'):
-                        validation_info = primary_track.validation_summary
-                        validation_info['Track ID'] = track_id
-                        validation_summary_data.append(validation_info)
+                for track_id, track_info in all_tracks.items():
+                    if isinstance(track_info, dict):
+                        # Create validation summary from available data
+                        validation_record = {
+                            'Track ID': track_id,
+                            'Overall Status': track_info.get('overall_status', 'Unknown'),
+                            'Sigma Test': 'PASS' if track_info.get('sigma_pass', False) else 'FAIL',
+                            'Sigma Gradient': track_info.get('sigma_gradient', 0),
+                            'Sigma Threshold': track_info.get('sigma_spec', 0),
+                            'Linearity Test': 'PASS' if track_info.get('linearity_pass', False) else 'FAIL',
+                            'Linearity Error': track_info.get('linearity_error', 0),
+                            'Linearity Spec': track_info.get('linearity_spec', 0),
+                            'Resistance Test': track_info.get('validation_status', 'Unknown'),
+                            'Resistance Change %': track_info.get('resistance_change_percent', 0),
+                            'Industry Grade': track_info.get('industry_grade', 'N/A')
+                        }
+                        validation_summary_data.append(validation_record)
                 
                 if validation_summary_data:
                     validation_df = pd.DataFrame(validation_summary_data)
@@ -1387,7 +1418,20 @@ class MultiTrackPage(ctk.CTkFrame):
 
     def _generate_pdf_report(self):
         """Generate PDF report for multi-track analysis."""
-        if not self.current_unit_data or not self.current_unit_data.get('tracks'):
+        if not self.current_unit_data:
+            messagebox.showwarning("No Data", "No multi-track data available to generate report")
+            return
+            
+        # Extract tracks from files structure
+        all_tracks = {}
+        if 'files' in self.current_unit_data:
+            for file_data in self.current_unit_data.get('files', []):
+                file_tracks = file_data.get('tracks', {})
+                all_tracks.update(file_tracks)
+        elif 'tracks' in self.current_unit_data:
+            all_tracks = self.current_unit_data['tracks']
+            
+        if not all_tracks:
             messagebox.showwarning("No Data", "No multi-track data available to generate report")
             return
         
@@ -1445,11 +1489,20 @@ Consistency Analysis:
                 ax_table.axis('off')
                 
                 # Prepare table data
-                table_data = [['Track ID', 'Status', 'Sigma Gradient', 'Linearity Error (%)']]
+                table_data = [['Track ID', 'Status', 'Sigma Gradient', 'Linearity Error (V)']]
                 
-                if 'tracks' in self.current_unit_data:
-                    for track_id, result in self.current_unit_data['tracks'].items():
-                        if hasattr(result, 'primary_track') and result.primary_track:
+                if all_tracks:
+                    for track_id, result in all_tracks.items():
+                        if isinstance(result, dict):
+                            # Handle dictionary format
+                            table_data.append([
+                                track_id,
+                                result.get('overall_status', 'Unknown'),
+                                f"{result.get('sigma_gradient', 0):.6f}",
+                                f"{result.get('linearity_error', 0):.4f}"
+                            ])
+                        elif hasattr(result, 'primary_track') and result.primary_track:
+                            # Handle object format
                             primary_track = result.primary_track
                             table_data.append([
                                 track_id,
@@ -1490,7 +1543,7 @@ Consistency Analysis:
                 plt.close(fig)
                 
                 # Page 2: Track Comparison Charts
-                if 'tracks' in self.current_unit_data and len(self.current_unit_data['tracks']) > 0:
+                if all_tracks and len(all_tracks) > 0:
                     fig2 = plt.figure(figsize=(8.5, 11))
                     fig2.suptitle('Track Comparison Charts', fontsize=16, fontweight='bold')
                     
@@ -1499,11 +1552,15 @@ Consistency Analysis:
                     sigma_values = []
                     linearity_values = []
                     
-                    for track_id, result in self.current_unit_data['tracks'].items():
-                        if hasattr(result, 'primary_track') and result.primary_track:
-                            track_ids.append(track_id)
-                            sigma_values.append(result.primary_track.sigma_analysis.sigma_gradient)
-                            linearity_values.append(result.primary_track.linearity_analysis.final_linearity_error_shifted)
+                    for track_id, track_data in all_tracks.items():
+                        track_ids.append(track_id)
+                        # Handle different data structures
+                        if isinstance(track_data, dict):
+                            sigma_values.append(track_data.get('sigma_gradient', 0))
+                            linearity_values.append(abs(track_data.get('linearity_error', 0)))
+                        elif hasattr(track_data, 'sigma_gradient'):
+                            sigma_values.append(getattr(track_data, 'sigma_gradient', 0))
+                            linearity_values.append(abs(getattr(track_data, 'linearity_error', 0)))
                     
                     if track_ids:
                         # Sigma comparison
@@ -1524,7 +1581,7 @@ Consistency Analysis:
                         ax2 = fig2.add_subplot(2, 1, 2)
                         bars2 = ax2.bar(track_ids, linearity_values, color='lightcoral', edgecolor='darkred')
                         ax2.set_xlabel('Track ID')
-                        ax2.set_ylabel('Linearity Error (%)')
+                        ax2.set_ylabel('Linearity Error (V)')
                         ax2.set_title('Linearity Error by Track')
                         ax2.grid(True, alpha=0.3)
                         
@@ -1544,12 +1601,16 @@ Consistency Analysis:
                 track_list = []
                 
                 if 'tracks' in self.current_unit_data:
-                    for track_id, result in self.current_unit_data['tracks'].items():
-                        if hasattr(result, 'primary_track') and result.primary_track:
-                            primary_track = result.primary_track
-                            if hasattr(primary_track, 'position_data') and hasattr(primary_track, 'error_data'):
-                                if primary_track.position_data is not None and primary_track.error_data is not None:
-                                    track_list.append((track_id, primary_track))
+                    for track_id, track_data in all_tracks.items():
+                        # Handle different data structures
+                        if isinstance(track_data, dict):
+                            # Check for position and error data
+                            if 'position_data' in track_data and 'error_data' in track_data:
+                                if track_data['position_data'] and track_data['error_data']:
+                                    track_list.append((track_id, track_data))
+                        elif hasattr(track_data, 'position_data') and hasattr(track_data, 'error_data'):
+                            if track_data.position_data and track_data.error_data:
+                                track_list.append((track_id, track_data))
                 
                 if track_list:
                     # Create pages with 4 tracks each
@@ -1559,27 +1620,31 @@ Consistency Analysis:
                         
                         page_tracks = track_list[page_start:page_start + tracks_per_page]
                         
-                        for i, (track_id, primary_track) in enumerate(page_tracks):
+                        for i, (track_id, track_data) in enumerate(page_tracks):
                             ax = fig3.add_subplot(2, 2, i + 1)
                             
+                            # Get position and error data
+                            if isinstance(track_data, dict):
+                                positions = track_data.get('position_data', [])
+                                errors = track_data.get('error_data', [])
+                                spec_limit = track_data.get('linearity_spec', 0.01)
+                            else:
+                                positions = track_data.position_data
+                                errors = track_data.error_data
+                                spec_limit = getattr(track_data, 'linearity_spec', 0.01)
+                            
                             # Plot error data
-                            ax.plot(primary_track.position_data, primary_track.error_data, 
-                                   'b-', linewidth=1.5, label='Error')
+                            ax.plot(positions, errors, 'b-', linewidth=1.5, label='Error')
                             
                             # Add zero line
                             ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
                             
-                            # Add limit lines if available
-                            if hasattr(primary_track, 'limits') and primary_track.limits:
-                                if hasattr(primary_track.limits, 'upper_limit'):
-                                    ax.axhline(y=primary_track.limits.upper_limit, 
-                                             color='r', linestyle='--', alpha=0.7, label='Upper Limit')
-                                if hasattr(primary_track.limits, 'lower_limit'):
-                                    ax.axhline(y=primary_track.limits.lower_limit, 
-                                             color='r', linestyle='--', alpha=0.7, label='Lower Limit')
+                            # Add spec limit lines
+                            ax.axhline(y=spec_limit, color='r', linestyle='--', alpha=0.7, label=f'Spec: ±{spec_limit:.4f}V')
+                            ax.axhline(y=-spec_limit, color='r', linestyle='--', alpha=0.7)
                             
-                            ax.set_xlabel('Position')
-                            ax.set_ylabel('Error (%)')
+                            ax.set_xlabel('Position (mm)')
+                            ax.set_ylabel('Error (V)')
                             ax.set_title(f'Track {track_id}')
                             ax.grid(True, alpha=0.3)
                             ax.legend(fontsize=8)
@@ -1717,7 +1782,7 @@ Recommendations:
                     
                     ctk.CTkLabel(
                         left_frame,
-                        text=f"Linearity: {primary_track.linearity_analysis.final_linearity_error_shifted:.4f}%",
+                        text=f"Linearity: {primary_track.linearity_analysis.final_linearity_error_shifted:.4f}V",
                         font=ctk.CTkFont(size=12)
                     ).pack(anchor='w', padx=10, pady=(2, 10))
                     
@@ -1844,7 +1909,7 @@ Unit Properties:
         linearity_card = MetricCard(
             metrics_container,
             title="Linearity Error",
-            value=f"{track_data.linearity_analysis.final_linearity_error_shifted:.4f}%",
+            value=f"{track_data.linearity_analysis.final_linearity_error_shifted:.4f}V",
             status="success" if track_data.linearity_analysis.linearity_pass else "danger"
         )
         linearity_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
@@ -1865,8 +1930,8 @@ Unit Properties:
 • Pass: {'✓' if track_data.sigma_analysis.sigma_pass else '✗'}
 
 Linearity Analysis:
-• Error (Shifted): {track_data.linearity_analysis.final_linearity_error_shifted:.4f}%
-• Specification: {track_data.linearity_analysis.linearity_spec:.4f}%
+• Error (Shifted): {track_data.linearity_analysis.final_linearity_error_shifted:.4f}V
+• Specification: {track_data.linearity_analysis.linearity_spec:.4f}V
 • Pass: {'✓' if track_data.linearity_analysis.linearity_pass else '✗'}
 
 Trim Effectiveness:
@@ -1933,8 +1998,8 @@ Statistical Analysis:
         ).pack(anchor='w', padx=10, pady=(10, 5))
         
         metrics_text = f"""Primary Measurements:
-• Final Linearity Error (Shifted): {linearity.final_linearity_error_shifted:.4f}%
-• Linearity Specification: {linearity.linearity_spec:.4f}%
+• Final Linearity Error (Shifted): {linearity.final_linearity_error_shifted:.4f}V
+• Linearity Specification: {linearity.linearity_spec:.4f}V
 • Pass Status: {'PASS' if linearity.linearity_pass else 'FAIL'}
 
 Analysis Details:
@@ -2008,15 +2073,29 @@ Quality Assessment:
             )
             error_chart.pack(fill='x', padx=10, pady=10)
             
-            # Plot error data
-            if track_data.position_data and track_data.error_data:
+            # Plot error data - use untrimmed if available for full view
+            positions = None
+            errors = None
+            
+            # Check for untrimmed data first
+            if hasattr(track_data, 'untrimmed_positions') and hasattr(track_data, 'untrimmed_errors'):
+                if track_data.untrimmed_positions and track_data.untrimmed_errors:
+                    positions = track_data.untrimmed_positions
+                    errors = track_data.untrimmed_errors
+            
+            # Fall back to trimmed data if untrimmed not available
+            if positions is None and track_data.position_data and track_data.error_data:
+                positions = track_data.position_data
+                errors = track_data.error_data
+            
+            if positions and errors:
                 error_chart.plot_line(
-                    x_data=track_data.position_data,
-                    y_data=track_data.error_data,
+                    x_data=positions,
+                    y_data=errors,
                     label="Error Profile",
                     color='primary',
                     xlabel="Position (mm)",
-                    ylabel="Error (%)"
+                    ylabel="Error (V)"
                 )
         else:
             # No chart data available
@@ -2077,6 +2156,10 @@ Quality Assessment:
                 }
 
                 for track in analysis.tracks:
+                    # Debug logging for raw data
+                    self.logger.debug(f"Track {track.track_id} - position_data type: {type(track.position_data)}, length: {len(track.position_data) if track.position_data else 0}")
+                    self.logger.debug(f"Track {track.track_id} - error_data type: {type(track.error_data)}, length: {len(track.error_data) if track.error_data else 0}")
+                    
                     # Get all track data including analysis details
                     track_info = {
                         'track_id': track.track_id,
@@ -2097,26 +2180,38 @@ Quality Assessment:
                         'position': track.track_id,  # For track viewer
                         'serial': serial,  # For track viewer
                         'timestamp': analysis.timestamp,
+                        # Add additional fields for full feature support
+                        'travel_length': track.travel_length,
+                        'untrimmed_resistance': track.untrimmed_resistance,
+                        'trimmed_resistance': track.trimmed_resistance,
+                        'optimal_offset': track.optimal_offset,
+                        'linearity_offset': track.optimal_offset,  # Legacy name
                         # Add nested structure for consistency analyzer
                         'sigma_analysis': {
                             'sigma_gradient': track.sigma_gradient
                         },
                         'linearity_analysis': {
-                            'final_linearity_error_shifted': track.final_linearity_error_shifted
+                            'final_linearity_error_shifted': track.final_linearity_error_shifted,
+                            'optimal_offset': track.optimal_offset,
+                            'linearity_spec': track.linearity_spec
                         },
                         'unit_properties': {
                             'resistance_change_percent': track.resistance_change_percent
                         },
-                        # Database doesn't store raw position/error data
-                        'position_data': [],
-                        'error_data': [],
+                        # Get raw position/error data from database
+                        'position_data': track.position_data if track.position_data else [],
+                        'error_data': track.error_data if track.error_data else [],
                         'error_profile': {
-                            'positions': [],
-                            'errors': [],
+                            'positions': track.position_data if track.position_data else [],
+                            'errors': track.error_data if track.error_data else [],
                             'spec_limit': track.linearity_spec,
-                            'note': 'Raw data not available from database'
+                            'note': 'Database data' if track.position_data else 'Raw data not available'
                         }
                     }
+                    
+                    # More debug logging
+                    self.logger.debug(f"Track {track.track_id} - position_data in track_info: {len(track_info['position_data'])} points")
+                    self.logger.debug(f"Track {track.track_id} - error_data in track_info: {len(track_info['error_data'])} points")
                     file_info['tracks'][track.track_id] = track_info
 
                 unit_summary['files'].append(file_info)
@@ -2177,10 +2272,37 @@ Quality Assessment:
 
             self.current_unit_data = unit_summary
             
+            # Debug logging for final unit summary
+            self.logger.debug(f"Unit summary files: {len(unit_summary['files'])}")
+            for i, file_info in enumerate(unit_summary['files']):
+                self.logger.debug(f"File {i}: {file_info['filename']} - tracks: {list(file_info['tracks'].keys())}")
+                for track_id, track_data in file_info['tracks'].items():
+                    self.logger.debug(f"  Track {track_id}: position_data={len(track_data.get('position_data', []))} points, error_data={len(track_data.get('error_data', []))} points")
+            
+            # Check if we have raw data available
+            has_raw_data = False
+            for file_info in unit_summary['files']:
+                for track_data in file_info['tracks'].values():
+                    if track_data.get('position_data') and len(track_data['position_data']) > 0:
+                        has_raw_data = True
+                        break
+                if has_raw_data:
+                    break
+            
+            if not has_raw_data:
+                self.logger.warning(f"No raw position/error data found for {model}/{serial}. This unit may have been processed before raw data storage was implemented.")
+                # Show message to user
+                self.after(0, lambda: messagebox.showinfo(
+                    "Limited Data Available",
+                    f"Unit {model}/{serial} was found in the database, but does not contain raw position/error data.\n\n"
+                    "This typically means the unit was processed before raw data storage was implemented.\n\n"
+                    "To see full charts and features, please re-process the original Excel file."
+                ))
+            
             # Update UI in main thread
             self.after(0, self._update_multi_track_display)
 
-            self.logger.info(f"Loaded multi-track data from database: {model}/{serial} - {len(historical_data)} files")
+            self.logger.info(f"Loaded multi-track data from database: {model}/{serial} - {len(historical_data)} files, has_raw_data={has_raw_data}")
 
         except Exception as e:
             error_msg = str(e)
@@ -2392,8 +2514,8 @@ Quality Assessment:
             spine.set_color('#cccccc')
         
         # Set labels and title
-        self.linearity_ax.set_xlabel('Position (%)', fontsize=12, color='black')
-        self.linearity_ax.set_ylabel('Linearity Error (%)', fontsize=12, color='black')
+        self.linearity_ax.set_xlabel('Position (mm)', fontsize=12, color='black')
+        self.linearity_ax.set_ylabel('Linearity Error (Volts)', fontsize=12, color='black')
         self.linearity_ax.set_title('Track Linearity Error Overlay', fontsize=14, fontweight='bold', color='black')
         
         # Add grid
@@ -2457,8 +2579,18 @@ Quality Assessment:
             # Check if we have position_data and error_data
             positions = []
             errors = []
+            untrimmed_positions = []
+            untrimmed_errors = []
             
-            # Use final trimmed data for multi-track comparison
+            # First try to get untrimmed data (full dataset)
+            if 'untrimmed_positions' in track_data and 'untrimmed_errors' in track_data:
+                untrimmed_positions = track_data.get('untrimmed_positions', [])
+                untrimmed_errors = track_data.get('untrimmed_errors', [])
+                if untrimmed_positions:
+                    self.logger.info(f"Track {track_id}: Found untrimmed data ({len(untrimmed_positions)} points)")
+                    self.logger.info(f"Track {track_id}: Untrimmed position range: [{min(untrimmed_positions):.1f}, {max(untrimmed_positions):.1f}]")
+            
+            # Get trimmed data (final trim data only)
             if 'position_data' in track_data and 'error_data' in track_data:
                 positions = track_data.get('position_data', [])
                 errors = track_data.get('error_data', [])
@@ -2473,15 +2605,33 @@ Quality Assessment:
                 self.logger.info(f"Track {track_id}: Using error_profile data ({len(positions)} points)")
                 if positions:
                     self.logger.info(f"Track {track_id}: Position range from error_profile: [{min(positions):.1f}, {max(positions):.1f}]")
-            else:
-                self.logger.debug(f"Track {track_id}: No position/error data found")
+            
+            # Only use trimmed data for multi-track page (final trim data)
+            if not positions:
+                self.logger.debug(f"Track {track_id}: No trimmed position/error data found")
+                # Check if this is from database without raw data
+                if 'files' in self.current_unit_data:
+                    self.logger.info(f"Track {track_id}: This appears to be database data without raw position/error arrays")
             
             if positions and errors and len(positions) == len(errors) and len(positions) > 0:
                 pos_min, pos_max = min(positions), max(positions)
                 self.logger.info(f"Plotting track {track_id} with {len(positions)} points, position range: [{pos_min:.1f}, {pos_max:.1f}]")
                 
                 # Apply offset if available (to get shifted linearity error)
-                offset = track_data.get('linearity_offset', 0.0)
+                # Try to get offset from linearity analysis first
+                offset = 0.0
+                if 'linearity_analysis' in track_data and track_data['linearity_analysis']:
+                    linearity_analysis = track_data['linearity_analysis']
+                    if isinstance(linearity_analysis, dict):
+                        offset = linearity_analysis.get('optimal_offset', 0.0)
+                    else:
+                        # Handle object attributes
+                        offset = getattr(linearity_analysis, 'optimal_offset', 0.0)
+                
+                # Fallback to legacy field name
+                if offset == 0.0:
+                    offset = track_data.get('linearity_offset', 0.0)
+                
                 if offset != 0.0:
                     self.logger.info(f"Track {track_id}: Applying offset {offset:.6f}")
                     # Log some statistics before and after offset
@@ -2519,7 +2669,7 @@ Quality Assessment:
         # Add spec limit lines
         if track_count > 0:
             self.linearity_ax.axhline(y=spec_limit, color='red', linestyle='--', 
-                                    linewidth=2, alpha=0.7, label=f'Spec Limit: ±{spec_limit}%')
+                                    linewidth=2, alpha=0.7, label=f'Spec Limit: ±{spec_limit:.4f}V')
             self.linearity_ax.axhline(y=-spec_limit, color='red', linestyle='--', 
                                     linewidth=2, alpha=0.7)
             
@@ -2529,7 +2679,7 @@ Quality Assessment:
         
         # Set labels and title
         self.linearity_ax.set_xlabel('Position (mm)', fontsize=12, color='black')
-        self.linearity_ax.set_ylabel('Linearity Error (%)', fontsize=12, color='black')
+        self.linearity_ax.set_ylabel('Linearity Error (Volts)', fontsize=12, color='black')
         self.linearity_ax.set_title(f'Track Linearity Error Overlay - {self.current_unit_data.get("model", "Unknown")} {self.current_unit_data.get("serial", "Unknown")}', 
                                   fontsize=14, fontweight='bold', color='black')
         
@@ -2539,6 +2689,15 @@ Quality Assessment:
         # Add legend if tracks were plotted
         if track_count > 0:
             self.linearity_ax.legend(loc='best', framealpha=0.9)
+            
+            # Add note about offset application
+            self.linearity_ax.text(0.02, 0.98, 'Note: Optimal offset applied', 
+                                  transform=self.linearity_ax.transAxes,
+                                  verticalalignment='top',
+                                  fontsize=10, 
+                                  style='italic',
+                                  color='gray',
+                                  bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='gray', alpha=0.8))
         else:
             # Check if this is database data
             from_database = False
@@ -2567,12 +2726,28 @@ Quality Assessment:
             # Get scale factor (default to 1.5 if not initialized yet)
             scale_factor = self.y_scale_var.get() if hasattr(self, 'y_scale_var') else 1.5
             
-            # Set x-axis to 0-100%
-            self.linearity_ax.set_xlim(0, 100)
+            # Calculate actual x-axis range from plotted data
+            all_positions = []
+            for track_id, track_data in all_tracks.items():
+                if track_id in tracks_plotted:
+                    # Get the positions that were actually plotted
+                    if 'untrimmed_positions' in track_data and track_data['untrimmed_positions']:
+                        all_positions.extend(track_data['untrimmed_positions'])
+                    elif 'position_data' in track_data and track_data['position_data']:
+                        all_positions.extend(track_data['position_data'])
             
-            # Set y-axis based on scale factor and spec limits
+            if all_positions:
+                x_min = min(all_positions)
+                x_max = max(all_positions)
+                x_range = x_max - x_min
+                x_padding = x_range * 0.05  # 5% padding
+                self.linearity_ax.set_xlim(x_min - x_padding, x_max + x_padding)
+                self.logger.info(f"X-axis range: [{x_min - x_padding:.1f}, {x_max + x_padding:.1f}] mm")
+            
+            # Set y-axis based on scale factor and spec limits with additional padding
             y_limit = spec_limit * scale_factor
-            self.linearity_ax.set_ylim(-y_limit, y_limit)
+            y_padding = y_limit * 0.1  # Add 10% padding
+            self.linearity_ax.set_ylim(-y_limit - y_padding, y_limit + y_padding)
             
             self.logger.info(f"Chart scaled to ±{y_limit:.1f} (spec: {spec_limit}, scale: {scale_factor}x)")
         

@@ -25,6 +25,7 @@ from pathlib import Path
 import time
 import threading
 from queue import Queue
+import yaml
 
 from sqlalchemy import create_engine, func, and_, or_, desc, inspect, text, event, Integer
 from sqlalchemy.orm import sessionmaker, Session, scoped_session
@@ -188,14 +189,7 @@ class DatabaseManager:
             elif hasattr(database_url_or_config, 'database'):
                 # It's a Config object
                 config = database_url_or_config
-                if hasattr(config.database, 'url') and config.database.url:
-                    database_url = config.database.url
-                else:
-                    # Use file path from config
-                    db_path = Path(config.database.path)
-                    db_path.parent.mkdir(parents=True, exist_ok=True)
-                    database_url = f"sqlite:///{db_path.absolute()}"
-                    self.logger.info(f"Using SQLite database from config at: {db_path}")
+                database_url = self._get_database_url_from_config(config)
             else:
                 # It's a string URL
                 database_url = database_url_or_config
@@ -227,6 +221,92 @@ class DatabaseManager:
             self.logger.error(f"Failed to initialize database manager: {str(e)}")
             raise DatabaseConnectionError(f"Database initialization failed: {str(e)}") from e
 
+    def _get_database_url_from_config(self, config: Any) -> str:
+        """Get database URL from config, checking deployment.yaml for mode."""
+        # Check if we're in development mode - if so, use config directly
+        if os.environ.get('LTA_ENV', '').lower() == 'development':
+            self.logger.info("Development mode detected, using development configuration")
+            # Use the config object directly
+            if hasattr(config.database, 'path'):
+                db_path = Path(str(config.database.path))
+                # Path should already be expanded by config loader
+                try:
+                    db_path.parent.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    self.logger.warning(f"Could not create database directory: {e}")
+                database_url = f"sqlite:///{db_path.absolute()}"
+                self.logger.info(f"Using development database at: {db_path}")
+                return database_url
+        
+        # For non-development, check deployment.yaml for deployment mode
+        deployment_mode = 'single_user'
+        deployment_config_path = Path("config/deployment.yaml")
+        
+        try:
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    deployment_config = yaml.safe_load(f)
+                    deployment_mode = deployment_config.get('deployment_mode', 'single_user')
+                    
+                    # Get database config based on mode
+                    db_config = deployment_config.get('database', {})
+                    if deployment_mode == 'single_user':
+                        db_path = db_config.get('single_user', {}).get('path', '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db')
+                    else:
+                        db_path = db_config.get('multi_user', {}).get('path', '//server/share/laser_trim/database.db')
+                    
+                    # Expand environment variables
+                    db_path = os.path.expandvars(db_path)
+                    
+                    # Handle Windows paths
+                    if deployment_mode == 'multi_user' and (db_path.startswith('//') or db_path.startswith('\\\\')):
+                        db_path = db_path.replace('\\', '/')
+                        database_url = f"sqlite:///{db_path}"
+                        self.logger.info(f"Using multi-user network database at: {db_path}")
+                    else:
+                        # Single user or local path
+                        db_path = Path(db_path)
+                        db_path.parent.mkdir(parents=True, exist_ok=True)
+                        database_url = f"sqlite:///{db_path.absolute()}"
+                        self.logger.info(f"Using single-user local database at: {db_path}")
+                    
+                    return database_url
+        except Exception as e:
+            self.logger.warning(f"Could not read deployment.yaml: {e}, falling back to config object")
+        
+        # Fallback to config object if deployment.yaml not available
+        if hasattr(config.database, 'url') and config.database.url:
+            return config.database.url
+        else:
+            # Check for shared mode in config
+            if hasattr(config.database, 'mode') and config.database.mode == 'shared' and hasattr(config.database, 'shared_path') and config.database.shared_path:
+                # Use shared network path
+                shared_path = config.database.shared_path
+                # Handle Windows UNC paths
+                if shared_path.startswith('//') or shared_path.startswith('\\\\'):
+                    shared_path = shared_path.replace('\\', '/')
+                    database_url = f"sqlite:///{shared_path}"
+                    self.logger.info(f"Using shared network database at: {shared_path}")
+                else:
+                    database_url = f"sqlite:///{shared_path}"
+            else:
+                # Use local file path from config
+                db_path_str = str(config.database.path)
+                # Expand environment variables
+                db_path_str = os.path.expandvars(db_path_str)
+                db_path = Path(db_path_str)
+                
+                # Create parent directories if they don't exist
+                try:
+                    db_path.parent.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    self.logger.warning(f"Could not create database directory: {e}")
+                
+                database_url = f"sqlite:///{db_path.absolute()}"
+                self.logger.info(f"Using local SQLite database from config at: {db_path}")
+            
+            return database_url
+
     def _initialize_engine(self, database_url: str, echo: bool, pool_size: int, 
                           max_overflow: int, pool_timeout: int) -> None:
         """Initialize the database engine with proper configuration."""
@@ -234,6 +314,19 @@ class DatabaseManager:
             "echo": echo,
             "future": True,  # Use SQLAlchemy 2.0 style
         }
+        
+        # Check deployment mode for WAL settings
+        enable_wal = False
+        deployment_config_path = Path("config/deployment.yaml")
+        if deployment_config_path.exists():
+            try:
+                with open(deployment_config_path, 'r') as f:
+                    deployment_config = yaml.safe_load(f)
+                    deployment_mode = deployment_config.get('deployment_mode', 'single_user')
+                    if deployment_mode == 'multi_user':
+                        enable_wal = True
+            except Exception:
+                pass
 
         # Configure pooling based on database type
         if database_url.startswith("sqlite"):
@@ -253,12 +346,31 @@ class DatabaseManager:
             engine_kwargs["pool_pre_ping"] = True  # Verify connections before use
 
         self._engine = create_engine(database_url, **engine_kwargs)
+        
+        # Enable WAL mode for SQLite shared databases
+        if database_url.startswith("sqlite"):
+            @event.listens_for(self._engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                # Enable WAL mode for multi-user databases
+                if enable_wal:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    # Set busy timeout (30 seconds)
+                    cursor.execute("PRAGMA busy_timeout=30000")
+                else:
+                    # Single user mode - use default DELETE mode
+                    cursor.execute("PRAGMA journal_mode=DELETE")
+                    cursor.execute("PRAGMA busy_timeout=10000")
+                # Increase cache size for better performance
+                cursor.execute("PRAGMA cache_size=10000")
+                cursor.close()
 
         # Create session factory
         self._session_factory = sessionmaker(
             bind=self._engine,
             expire_on_commit=False,
-            autoflush=False
+            autoflush=True,  # Changed to True to ensure data is flushed before queries
+            autocommit=False  # Explicit transaction control
         )
 
         # Create scoped session for thread safety
@@ -422,6 +534,8 @@ class DatabaseManager:
             raise DatabaseConnectionError("Database not initialized")
 
         self.logger.debug("DEBUG: Creating new database session...")
+        # CRITICAL: Remove any existing session for this thread to ensure fresh state
+        self._Session.remove()
         session = self._Session()
         self.logger.debug("DEBUG: Database session created successfully")
         try:
@@ -445,6 +559,8 @@ class DatabaseManager:
         finally:
             try:
                 session.close()
+                # CRITICAL: Remove the session from the registry to ensure clean state
+                self._Session.remove()
             except Exception as e:
                 self.logger.warning(f"Error closing database session: {str(e)}")
 
@@ -464,10 +580,30 @@ class DatabaseManager:
                 Base.metadata.drop_all(self.engine)
                 self.logger.warning("All tables dropped")
 
+            # Check what tables already exist
+            inspector = inspect(self.engine)
+            existing_tables = set(inspector.get_table_names())
+            self.logger.info(f"Existing tables before creation: {existing_tables}")
+            
             self.logger.info("Creating database tables...")
-            Base.metadata.create_all(self.engine)
-
-            # Verify tables were created
+            
+            # Create all tables at once first
+            try:
+                Base.metadata.create_all(self.engine, checkfirst=True)
+                self.logger.info("Called create_all successfully")
+            except Exception as e:
+                self.logger.error(f"Error in create_all: {e}")
+                # Try to create tables individually to handle any issues
+                for table in Base.metadata.sorted_tables:
+                    if table.name not in existing_tables:
+                        try:
+                            table.create(self.engine, checkfirst=True)
+                            self.logger.info(f"Created table: {table.name}")
+                        except Exception as e:
+                            # Table exists but might need migration
+                            self.logger.warning(f"Could not create table {table.name}: {e}")
+            
+            # Re-check tables after creation attempt - need fresh inspector
             inspector = inspect(self.engine)
             tables = inspector.get_table_names()
             
@@ -484,10 +620,41 @@ class DatabaseManager:
                 raise DatabaseError(f"Missing expected tables: {missing_tables}")
 
             self.logger.info(f"Successfully created {len(tables)} tables: {', '.join(sorted(tables))}")
+            
+            # Check for schema updates on existing databases
+            if 'track_results' in tables:
+                self._migrate_track_results_schema()
 
         except Exception as e:
             self.logger.error(f"Failed to initialize database: {str(e)}")
             raise DatabaseError(f"Database initialization failed: {str(e)}") from e
+    
+    def _migrate_track_results_schema(self) -> None:
+        """Migrate track_results table to add new columns if missing."""
+        try:
+            inspector = inspect(self.engine)
+            existing_columns = [col['name'] for col in inspector.get_columns('track_results')]
+            
+            columns_to_add = []
+            if 'position_data' not in existing_columns:
+                columns_to_add.append(('position_data', 'TEXT'))
+            if 'error_data' not in existing_columns:
+                columns_to_add.append(('error_data', 'TEXT'))
+            
+            if columns_to_add:
+                self.logger.info(f"Migrating track_results schema - adding columns: {[c[0] for c in columns_to_add]}")
+                with self.engine.begin() as conn:
+                    for column_name, column_type in columns_to_add:
+                        try:
+                            conn.execute(text(f"ALTER TABLE track_results ADD COLUMN {column_name} {column_type}"))
+                            self.logger.info(f"Added column: {column_name}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not add column {column_name}: {e}")
+                self.logger.info("Schema migration completed")
+                
+        except Exception as e:
+            self.logger.warning(f"Schema migration check failed: {e}")
+            # Don't raise - allow app to continue with existing schema
 
     def initialize_schema(self) -> None:
         """
@@ -509,6 +676,57 @@ class DatabaseManager:
         serial={'type': 'serial_number'},
         file_date={'type': 'date'}
     )
+    def _should_update_raw_data(self, existing_id: int, analysis: PydanticAnalysisResult) -> bool:
+        """Check if existing record needs raw data update."""
+        try:
+            with self.get_session() as session:
+                # Get existing tracks
+                existing_tracks = session.query(DBTrackResult).filter(
+                    DBTrackResult.analysis_id == existing_id
+                ).all()
+                
+                # Check if any track is missing position_data or error_data
+                for track in existing_tracks:
+                    if track.position_data is None or track.error_data is None:
+                        return True
+                        
+                return False
+        except Exception as e:
+            self.logger.error(f"Error checking raw data status: {e}")
+            return False
+    
+    def _update_raw_data(self, existing_id: int, analysis: PydanticAnalysisResult, session) -> None:
+        """Update existing tracks with raw position and error data."""
+        try:
+            # Get existing tracks
+            existing_tracks = session.query(DBTrackResult).filter(
+                DBTrackResult.analysis_id == existing_id
+            ).all()
+            
+            # Create a mapping of track_id to track data from the new analysis
+            new_tracks_map = {track_id: track_data for track_id, track_data in analysis.tracks.items()}
+            
+            # Update each existing track with raw data
+            for db_track in existing_tracks:
+                if db_track.track_id in new_tracks_map:
+                    new_track_data = new_tracks_map[db_track.track_id]
+                    
+                    # Update only if missing
+                    if db_track.position_data is None and hasattr(new_track_data, 'position_data'):
+                        db_track.position_data = new_track_data.position_data
+                        
+                    if db_track.error_data is None and hasattr(new_track_data, 'error_data'):
+                        db_track.error_data = new_track_data.error_data
+                        
+                    self.logger.info(f"Updated track {db_track.track_id} with raw data")
+            
+            session.commit()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update raw data: {e}")
+            session.rollback()
+            raise
+    
     def check_duplicate_analysis(
             self,
             model: str,
@@ -539,6 +757,11 @@ class DatabaseManager:
 
         try:
             with self.get_session() as session:
+                # CRITICAL: For SQLite, use SERIALIZABLE to ensure we only see committed data
+                # SQLite doesn't support READ_COMMITTED, only READ UNCOMMITTED, SERIALIZABLE, AUTOCOMMIT
+                if self.database_url.startswith("sqlite"):
+                    session.connection(execution_options={"isolation_level": "SERIALIZABLE"})
+                
                 # Security: Use parameterized queries (SQLAlchemy does this automatically)
                 # Model and serial are already sanitized by the decorator
                 # Check for exact match (model + serial + file date)
@@ -551,11 +774,20 @@ class DatabaseManager:
                 ).first()
                 
                 if existing:
-                    self.logger.info(
-                        f"Found duplicate analysis for {model}-{serial} from {file_date}: "
-                        f"ID {existing.id}"
-                    )
-                    return existing.id
+                    # Double-check the ID actually exists with a direct SQL query
+                    result = session.execute(
+                        text("SELECT COUNT(*) FROM analysis_results WHERE id = :id"),
+                        {"id": existing.id}
+                    ).scalar()
+                    
+                    if result > 0:
+                        self.logger.info(
+                            f"Found duplicate analysis for {model}-{serial} from {file_date}: "
+                            f"ID {existing.id}"
+                        )
+                        return existing.id
+                    else:
+                        self.logger.warning(f"Phantom ID {existing.id} detected - ignoring")
                 
                 return None
 
@@ -598,6 +830,24 @@ class DatabaseManager:
         # Log detailed information about what we're about to save
         self.logger.info(f"Attempting to save analysis: {analysis_data.metadata.filename}")
         self.logger.debug(f"Analysis details: model={analysis_data.metadata.model}, serial={analysis_data.metadata.serial}, tracks={len(analysis_data.tracks) if analysis_data.tracks else 0}")
+
+        # Check for existing duplicate
+        existing_id = self.check_duplicate_analysis(
+            analysis_data.metadata.model,
+            analysis_data.metadata.serial,
+            analysis_data.metadata.file_date
+        )
+        
+        if existing_id:
+            # Check if we should update with missing raw data
+            if self._should_update_raw_data(existing_id, analysis_data):
+                self.logger.info(f"Updating existing record {existing_id} with missing raw data")
+                with self.get_session() as session:
+                    self._update_raw_data(existing_id, analysis_data, session)
+                return existing_id
+            else:
+                self.logger.info(f"Duplicate analysis found for {analysis_data.metadata.model}-{analysis_data.metadata.serial}, skipping save")
+                return existing_id
 
         # Use retry logic for the entire save operation
         return self._execute_with_retry(self._save_analysis_impl, analysis_data)
@@ -677,13 +927,15 @@ class DatabaseManager:
                             RiskCategory.LOW: DBRiskCategory.LOW,
                             RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
                         }
-                        risk_category = risk_map.get(track_data.failure_prediction.risk_category)
+                        risk_category = risk_map.get(getattr(track_data.failure_prediction, 'risk_category', None))
 
                     track = DBTrackResult(
                         track_id=track_id.strip(),
                         status=track_status,
                         travel_length=track_data.travel_length,
                         linearity_spec=getattr(track_data.linearity_analysis, 'linearity_spec', None) if track_data.linearity_analysis else None,
+                        position_data=track_data.position_data if hasattr(track_data, 'position_data') else None,
+                        error_data=track_data.error_data if hasattr(track_data, 'error_data') else None,
                         sigma_gradient=getattr(track_data.sigma_analysis, 'sigma_gradient', None) if track_data.sigma_analysis else None,
                         sigma_threshold=getattr(track_data.sigma_analysis, 'sigma_threshold', None) if track_data.sigma_analysis else None,
                         sigma_pass=getattr(track_data.sigma_analysis, 'sigma_pass', None) if track_data.sigma_analysis else None,
@@ -718,10 +970,12 @@ class DatabaseManager:
                     )
                     analysis.tracks.append(track)
 
-                # Generate alerts based on real analysis data
-                self._generate_alerts(analysis, session)
-
                 session.add(analysis)
+                session.flush()  # Ensure analysis gets an ID
+                
+                # Generate alerts based on real analysis data (after ID is assigned)
+                self._generate_alerts(analysis, session)
+                
                 session.commit()
 
                 self.logger.info(
@@ -785,12 +1039,14 @@ class DatabaseManager:
                 severity=ErrorSeverity.ERROR,
                 code=ErrorCode.DB_QUERY_FAILED,
                 user_message="Failed to save analysis to database. Please try again.",
-                technical_details=str(e),
                 recovery_suggestions=[
                     "Check database connection",
                     "Verify database is not full",
                     "Try again in a few moments"
-                ]
+                ],
+                additional_data={
+                    'technical_details': str(e)
+                }
             )
             raise DatabaseError(f"Database operation failed: {str(e)}") from e
             
@@ -803,10 +1059,10 @@ class DatabaseManager:
                 severity=ErrorSeverity.ERROR,
                 code=ErrorCode.UNKNOWN_ERROR,
                 user_message="An unexpected error occurred while saving analysis.",
-                technical_details=str(e),
                 additional_data={
                     'filename': analysis_data.metadata.filename if analysis_data.metadata else 'unknown',
-                    'error_type': type(e).__name__
+                    'error_type': type(e).__name__,
+                    'technical_details': str(e)
                 }
             )
             
@@ -1093,9 +1349,10 @@ class DatabaseManager:
                         severity="High",  # Must be 'Critical', 'High', 'Medium', or 'Low'
                         message=f"High risk track {track.track_id}: failure probability {track.failure_probability:.2%}",
                         track_id=track.track_id,
+                        metric_name="failure_probability",
+                        metric_value=track.failure_probability,
                         threshold_value=0.7,  # High risk threshold
-                        actual_value=track.failure_probability,
-                        recommendation="Immediate inspection recommended"
+                        details={"recommendation": "Immediate inspection recommended"}
                     )
                     session.add(alert)
                 
@@ -1107,9 +1364,10 @@ class DatabaseManager:
                         severity="Medium",  # Must be 'Critical', 'High', 'Medium', or 'Low'
                         message=f"Sigma gradient exceeds threshold on track {track.track_id}",
                         track_id=track.track_id,
+                        metric_name="sigma_gradient",
+                        metric_value=track.sigma_gradient,
                         threshold_value=track.sigma_threshold,
-                        actual_value=track.sigma_gradient,
-                        recommendation="Review trimming parameters"
+                        details={"recommendation": "Review trimming parameters"}
                     )
                     session.add(alert)
             
@@ -1120,7 +1378,7 @@ class DatabaseManager:
                     alert_type=DBAlertType.PROCESS_ERROR if analysis.overall_status == DBStatusType.ERROR else DBAlertType.HIGH_RISK,
                     severity="Critical" if analysis.overall_status == DBStatusType.ERROR else "High",  # Must be 'Critical', 'High', 'Medium', or 'Low'
                     message=f"Analysis failed with status: {analysis.overall_status.value}",
-                    recommendation="Review all test parameters and retry"
+                    details={"recommendation": "Review all test parameters and retry"}
                 )
                 session.add(alert)
                 
@@ -1274,8 +1532,14 @@ class DatabaseManager:
                         )
                         
                         if existing_id:
-                            self.logger.info(f"Skipping duplicate: {analysis.metadata.model}-{analysis.metadata.serial}")
-                            saved_ids.append(existing_id)
+                            # Check if we should update with missing raw data
+                            if self._should_update_raw_data(existing_id, analysis):
+                                self.logger.info(f"Updating existing record {existing_id} with missing raw data")
+                                self._update_raw_data(existing_id, analysis, session)
+                                saved_ids.append(existing_id)
+                            else:
+                                self.logger.info(f"Skipping duplicate: {analysis.metadata.model}-{analysis.metadata.serial}")
+                                saved_ids.append(existing_id)
                             continue
                         
                         # Create database record but don't add to session yet
@@ -1382,7 +1646,7 @@ class DatabaseManager:
         
         # Convert risk category
         risk_category = None
-        if track_data.failure_prediction and track_data.failure_prediction.risk_category:
+        if track_data.failure_prediction and hasattr(track_data.failure_prediction, 'risk_category') and track_data.failure_prediction.risk_category:
             risk_map = {
                 RiskCategory.HIGH: "high",
                 RiskCategory.MEDIUM: "medium", 
@@ -1390,42 +1654,45 @@ class DatabaseManager:
             }
             risk_category = risk_map.get(track_data.failure_prediction.risk_category)
         
-        # Create track record
+        # Create track record with safe attribute access
         track = DBTrackResult(
             analysis_id=analysis_id,
             track_id=track_id,
             status=track_status,
-            sigma_gradient=track_data.sigma_analysis.sigma_gradient if track_data.sigma_analysis else None,
-            sigma_threshold=track_data.sigma_analysis.sigma_threshold if track_data.sigma_analysis else None,
-            sigma_pass=track_data.sigma_analysis.sigma_pass if track_data.sigma_analysis else None,
-            linearity_spec=track_data.linearity_analysis.linearity_spec if track_data.linearity_analysis else None,
-            linearity_error=track_data.linearity_analysis.final_linearity_error if track_data.linearity_analysis else None,
-            linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted if track_data.linearity_analysis else None,
-            optimal_offset=track_data.linearity_analysis.optimal_offset if track_data.linearity_analysis else None,
-            linearity_pass=track_data.linearity_analysis.linearity_pass if track_data.linearity_analysis else None,
-            trimmed_resistance=track_data.unit_properties.trimmed_resistance if track_data.unit_properties else None,
-            untrimmed_resistance=track_data.unit_properties.untrimmed_resistance if track_data.unit_properties else None,
-            trim_percentage=track_data.resistance_analysis.resistance_change_percent if track_data.resistance_analysis else None,
-            abs_value_change=track_data.resistance_analysis.resistance_change if track_data.resistance_analysis else None,
-            relative_change=track_data.resistance_analysis.resistance_change_percent if track_data.resistance_analysis else None,
-            max_deviation=track_data.linearity_analysis.max_deviation if track_data.linearity_analysis else None,
-            max_deviation_position=track_data.linearity_analysis.max_deviation_position if track_data.linearity_analysis else None,
+            travel_length=track_data.travel_length,
+            sigma_gradient=getattr(track_data.sigma_analysis, 'sigma_gradient', None) if track_data.sigma_analysis else None,
+            sigma_threshold=getattr(track_data.sigma_analysis, 'sigma_threshold', None) if track_data.sigma_analysis else None,
+            sigma_pass=getattr(track_data.sigma_analysis, 'sigma_pass', None) if track_data.sigma_analysis else None,
+            linearity_spec=getattr(track_data.linearity_analysis, 'linearity_spec', None) if track_data.linearity_analysis else None,
+            final_linearity_error_raw=getattr(track_data.linearity_analysis, 'final_linearity_error_raw', None) if track_data.linearity_analysis else None,
+            final_linearity_error_shifted=getattr(track_data.linearity_analysis, 'final_linearity_error_shifted', None) if track_data.linearity_analysis else None,
+            optimal_offset=getattr(track_data.linearity_analysis, 'optimal_offset', None) if track_data.linearity_analysis else None,
+            linearity_pass=getattr(track_data.linearity_analysis, 'linearity_pass', None) if track_data.linearity_analysis else None,
+            trimmed_resistance=getattr(track_data.unit_properties, 'trimmed_resistance', None) if track_data.unit_properties else None,
+            untrimmed_resistance=getattr(track_data.unit_properties, 'untrimmed_resistance', None) if track_data.unit_properties else None,
+            resistance_change=getattr(track_data.resistance_analysis, 'resistance_change', None) if track_data.resistance_analysis else None,
+            resistance_change_percent=getattr(track_data.resistance_analysis, 'resistance_change_percent', None) if track_data.resistance_analysis else None,
+            max_deviation=getattr(track_data.linearity_analysis, 'max_deviation', None) if track_data.linearity_analysis else None,
+            max_deviation_position=getattr(track_data.linearity_analysis, 'max_deviation_position', None) if track_data.linearity_analysis else None,
             deviation_uniformity=None,  # Calculate if needed
-            trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
-            untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
-            trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
-            max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
-            worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
-            worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and track_data.zone_analysis.worst_zone_position) else None,
-            zone_details=track_data.zone_analysis.zone_results if (track_data.zone_analysis and track_data.zone_analysis.zone_results) else None,
-            failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
+            trim_improvement_percent=getattr(track_data.trim_effectiveness, 'improvement_percent', None) if track_data.trim_effectiveness else None,
+            untrimmed_rms_error=getattr(track_data.trim_effectiveness, 'untrimmed_rms_error', None) if track_data.trim_effectiveness else None,
+            trimmed_rms_error=getattr(track_data.trim_effectiveness, 'trimmed_rms_error', None) if track_data.trim_effectiveness else None,
+            max_error_reduction_percent=getattr(track_data.trim_effectiveness, 'max_error_reduction_percent', None) if track_data.trim_effectiveness else None,
+            worst_zone=getattr(track_data.zone_analysis, 'worst_zone', None) if track_data.zone_analysis else None,
+            worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and hasattr(track_data.zone_analysis, 'worst_zone_position') and track_data.zone_analysis.worst_zone_position) else None,
+            zone_details=getattr(track_data.zone_analysis, 'zone_results', None) if track_data.zone_analysis else None,
+            failure_probability=getattr(track_data.failure_prediction, 'failure_probability', None) if track_data.failure_prediction else None,
             risk_category=risk_category,
-            gradient_margin=track_data.sigma_analysis.gradient_margin if hasattr(track_data.sigma_analysis, 'gradient_margin') else None,
-            range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
-            minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
-            minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
-            margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
-            plot_path=str(track_data.plot_path) if track_data.plot_path else None
+            gradient_margin=getattr(track_data.sigma_analysis, 'gradient_margin', None) if track_data.sigma_analysis else None,
+            range_utilization_percent=getattr(track_data.dynamic_range, 'range_utilization_percent', None) if track_data.dynamic_range else None,
+            minimum_margin=getattr(track_data.dynamic_range, 'minimum_margin', None) if track_data.dynamic_range else None,
+            minimum_margin_position=getattr(track_data.dynamic_range, 'minimum_margin_position', None) if track_data.dynamic_range else None,
+            margin_bias=getattr(track_data.dynamic_range, 'margin_bias', None) if track_data.dynamic_range else None,
+            plot_path=str(track_data.plot_path) if track_data.plot_path else None,
+            # Raw data for accurate plotting
+            position_data=track_data.position_data,
+            error_data=track_data.error_data
         )
         
         return track
@@ -1525,14 +1792,14 @@ class DatabaseManager:
             )
             analysis.tracks.append(track)
 
-        # Generate alerts
-        self._generate_alerts(analysis, session)
-        
         # Add to session
         session.add(analysis)
         
         try:
             session.flush()  # Get the ID without committing
+            
+            # Generate alerts after ID is assigned
+            self._generate_alerts(analysis, session)
             self.logger.debug(f"Successfully flushed analysis record, ID: {analysis.id}")
         except Exception as e:
             self.logger.error(f"Failed to flush analysis record: {str(e)}")
@@ -1841,4 +2108,57 @@ class DatabaseManager:
             self.logger.error(f"DEBUG: save_analysis_result failed with {type(e).__name__}: {str(e)}")
             import traceback
             self.logger.error(f"DEBUG: Traceback:\n{traceback.format_exc()}")
+            raise
+    
+    def _should_update_raw_data(self, existing_id: int, analysis_data: PydanticAnalysisResult) -> bool:
+        """Check if we should update an existing record with missing raw data."""
+        try:
+            with self.get_session() as session:
+                # Get existing analysis with tracks
+                existing = session.query(DBAnalysisResult).filter_by(id=existing_id).first()
+                if not existing:
+                    return False
+                
+                # Check if any tracks are missing raw data
+                for track in existing.tracks:
+                    if not track.position_data or not track.error_data:
+                        # Check if new data has raw data for this track
+                        if track.track_id in analysis_data.tracks:
+                            new_track = analysis_data.tracks[track.track_id]
+                            if hasattr(new_track, 'position_data') and new_track.position_data:
+                                return True
+                
+                return False
+        except Exception as e:
+            self.logger.error(f"Error checking if should update raw data: {e}")
+            return False
+    
+    def _update_raw_data(self, existing_id: int, analysis_data: PydanticAnalysisResult, session: Session) -> None:
+        """Update an existing record with missing raw data."""
+        try:
+            # Get existing analysis with tracks
+            existing = session.query(DBAnalysisResult).filter_by(id=existing_id).first()
+            if not existing:
+                return
+            
+            # Update tracks with missing raw data
+            updated_count = 0
+            for track in existing.tracks:
+                if not track.position_data or not track.error_data:
+                    # Check if new data has raw data for this track
+                    if track.track_id in analysis_data.tracks:
+                        new_track = analysis_data.tracks[track.track_id]
+                        if hasattr(new_track, 'position_data') and new_track.position_data:
+                            track.position_data = new_track.position_data
+                            track.error_data = new_track.error_data if hasattr(new_track, 'error_data') else []
+                            updated_count += 1
+                            self.logger.info(f"Updated track {track.track_id} with {len(track.position_data)} position points")
+            
+            if updated_count > 0:
+                session.commit()
+                self.logger.info(f"Updated {updated_count} tracks with raw data for analysis {existing_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating raw data: {e}")
+            session.rollback()
             raise

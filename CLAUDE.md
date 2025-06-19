@@ -60,10 +60,34 @@
 
 ### Commands to Remember
 
-- **Run Application**: `python src/__main__.py` or `python run_dev.py`
+- **Run Application (Production)**: `python src/__main__.py`
+- **Run Application (Development)**: `run_dev.bat` or `set LTA_ENV=development && python src/__main__.py`
+- **Initialize Development Database**: `python scripts/init_dev_database.py --clean --seed-data`
 - **Install Dependencies**: `pip install -e .`
 - **Run Tests**: `pytest tests/`
 - **Check Linting**: `ruff check .` (if available)
+
+### Database Configuration
+
+The application uses different databases based on environment:
+
+1. **Production** (`config/production.yaml`):
+   - Database: `D:/LaserTrimData/production.db`
+   - Models: `D:/LaserTrimData/models`
+   - Data: `D:/LaserTrimData/Production`
+
+2. **Development** (`config/development.yaml`):
+   - Database: `%LOCALAPPDATA%/LaserTrimAnalyzer/dev/laser_trim_dev.db`
+   - Models: `%LOCALAPPDATA%/LaserTrimAnalyzer/dev/models`
+   - Data: `%USERPROFILE%/Documents/LaserTrimAnalyzer/dev/data`
+
+3. **Deployment** (`config/deployment.yaml`):
+   - Single User: `%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db`
+   - Multi User: Network path configured by IT
+
+To switch environments, set the `LTA_ENV` environment variable:
+- Windows: `set LTA_ENV=development` or `set LTA_ENV=production`
+- Linux/Mac: `export LTA_ENV=development` or `export LTA_ENV=production`
 
 ### Known Issues Tracking
 
@@ -75,9 +99,13 @@
 ### Current Known Issues
 
 None - All previously known issues have been fixed:
-- ✓ ML features now required and properly error if dependencies missing
-- ✓ Drag-and-drop now required and properly errors if tkinterdnd2 missing
-- ✓ MetricCard widget has been implemented
+- ✓ Range utilization percent calculation now properly capped at 100%
+- ✓ Final Test Comparison page datetime parsing fixed
+- ✓ Final Test Comparison page now shows trim date from file
+- ✓ Multi-track page correctly shows all tracks
+- ✓ Home page enum value error for empty status fixed (2025-06-19)
+- ✓ Database save error handling fixed (2025-06-19)
+- ✓ QA alerts constraint error fixed (2025-06-19)
 
 ### Change Tracking
 

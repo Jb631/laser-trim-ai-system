@@ -1978,24 +1978,9 @@ class BatchProcessingPage(ctk.CTkFrame):
             logger.info(f"Duplicate found for {Path(file_path).name} (ID: {existing_id})")
             result.db_id = existing_id
         else:
-            # Try using the debug save method first
-            try:
-                # Use debug method if available
-                if hasattr(self._db_manager, 'save_analysis_result'):
-                    logger.debug(f"Using debug save method for {Path(file_path).name}")
-                    result.db_id = self._db_manager.save_analysis_result(result)
-                else:
-                    result.db_id = self._db_manager.save_analysis(result)
-                
-                # Validate the save
-                if not self._db_manager.validate_saved_analysis(result.db_id):
-                    raise RuntimeError("Database validation failed")
-                    
-            except Exception as save_error:
-                logger.warning(f"Normal save failed for {Path(file_path).name}, trying force save: {save_error}")
-                # Try force save as fallback
-                result.db_id = self._db_manager.force_save_analysis(result)
-                logger.info(f"Force saved {Path(file_path).name} to database")
+            # Save analysis to database
+            result.db_id = self._db_manager.save_analysis(result)
+            logger.info(f"Saved {Path(file_path).name} to database with ID: {result.db_id}")
 
     def _handle_batch_success(self, results: Dict[str, AnalysisResult], output_dir: Optional[Path]):
         """Handle successful batch completion."""

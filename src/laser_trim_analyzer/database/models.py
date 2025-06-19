@@ -244,6 +244,23 @@ class AnalysisResult(Base):
             raise ValueError("Processing time cannot be negative")
         return processing_time
 
+    @validates('overall_status')
+    def validate_overall_status(self, key, overall_status):
+        """Validate overall_status is a valid enum value."""
+        if overall_status is None:
+            # Default to ERROR if not specified
+            return StatusType.ERROR
+        if isinstance(overall_status, str):
+            # Handle empty strings or invalid values
+            if not overall_status or overall_status.strip() == '':
+                return StatusType.ERROR
+            # Try to convert string to enum
+            try:
+                return StatusType(overall_status)
+            except ValueError:
+                return StatusType.ERROR
+        return overall_status
+
     def __repr__(self):
         return f"<AnalysisResult(id={self.id}, filename='{self.filename}', model='{self.model}', serial='{self.serial}')>"
 
@@ -301,6 +318,10 @@ class TrackResult(Base):
     trimmed_rms_error = Column(Float)
     max_error_reduction_percent = Column(Float)
 
+    # Raw data for detailed analysis and comparison
+    position_data = Column(SafeJSON, nullable=True)  # Array of position values
+    error_data = Column(SafeJSON, nullable=True)     # Array of error values
+    
     # Zone analysis
     worst_zone = Column(Integer)
     worst_zone_position = Column(Float)
@@ -403,6 +424,23 @@ class TrackResult(Base):
             if range_utilization_percent < 0 or range_utilization_percent > 100:
                 raise ValueError("Range utilization percent must be between 0 and 100")
         return range_utilization_percent
+
+    @validates('status')
+    def validate_status(self, key, status):
+        """Validate status is a valid enum value."""
+        if status is None:
+            # Default to ERROR if not specified
+            return StatusType.ERROR
+        if isinstance(status, str):
+            # Handle empty strings or invalid values
+            if not status or status.strip() == '':
+                return StatusType.ERROR
+            # Try to convert string to enum
+            try:
+                return StatusType(status)
+            except ValueError:
+                return StatusType.ERROR
+        return status
 
     def __repr__(self):
         return f"<TrackResult(id={self.id}, analysis_id={self.analysis_id}, track_id='{self.track_id}', status='{self.status}')>"

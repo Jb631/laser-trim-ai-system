@@ -672,11 +672,40 @@ class LaserTrimProcessor:
             sigma_analysis, linearity_analysis, resistance_analysis
         )
 
-        # Step 6: ML prediction if available
-        failure_prediction = None
+        # Step 6: ML prediction (required per CLAUDE.md)
         if self.ml_predictor:
             failure_prediction = await self._predict_failure(
                 sigma_analysis, linearity_analysis, unit_props
+            )
+        else:
+            # Create default failure prediction when ML is not available
+            # Use simple heuristics based on analysis results
+            failure_prob = 0.1  # Base probability
+            
+            # Increase probability based on failures
+            if not sigma_analysis.sigma_pass:
+                failure_prob += 0.3
+            if not linearity_analysis.linearity_pass:
+                failure_prob += 0.3
+            if resistance_analysis and hasattr(resistance_analysis, 'resistance_change_percent'):
+                if abs(resistance_analysis.resistance_change_percent) > 50:
+                    failure_prob += 0.2
+            
+            # Determine risk category
+            if failure_prob >= 0.7:
+                risk_cat = RiskCategory.HIGH
+            elif failure_prob >= 0.4:
+                risk_cat = RiskCategory.MEDIUM
+            else:
+                risk_cat = RiskCategory.LOW
+            
+            failure_prediction = FailurePrediction(
+                failure_probability=min(failure_prob, 1.0),
+                risk_category=risk_cat,
+                contributing_factors=[
+                    f"Sigma {'FAIL' if not sigma_analysis.sigma_pass else 'PASS'}",
+                    f"Linearity {'FAIL' if not linearity_analysis.linearity_pass else 'PASS'}"
+                ]
             )
 
         # Step 7: Determine track-level validation status
@@ -2297,13 +2326,20 @@ class LaserTrimProcessor:
         
         return resistance_analysis
 
-    async def _analyze_zones(self, data: Dict[str, Any]) -> Optional[ZoneAnalysis]:
+    async def _analyze_zones(self, data: Dict[str, Any]) -> ZoneAnalysis:
         """Analyze position zones for consistency."""
         positions = data.get('positions', [])
         errors = data.get('errors', [])
         
-        if not positions or not errors or len(positions) < 10:
-            return None
+        # Always return a ZoneAnalysis object, even with minimal data
+        if not positions or not errors:
+            # Return empty zone analysis
+            return ZoneAnalysis(
+                num_zones=0,
+                worst_zone=None,
+                worst_zone_position=None,
+                zone_results=[]
+            )
         
         # Simple zone analysis - divide into thirds
         n_zones = 3
@@ -2325,23 +2361,65 @@ class LaserTrimProcessor:
                 'point_count': len(zone_errors)
             })
         
+        # Find worst zone
+        worst_zone_idx = None
+        worst_zone_pos = None
+        if zones:
+            worst_zone_idx = max(range(len(zones)), key=lambda i: zones[i]['rms_error']) + 1
+            worst_zone = zones[worst_zone_idx - 1]
+            worst_zone_pos = (worst_zone['start_position'], worst_zone['end_position'])
+        
         return ZoneAnalysis(
-            zones=zones,
-            zone_consistency=max(z['rms_error'] for z in zones) / min(z['rms_error'] for z in zones) if zones else 1.0
+            num_zones=n_zones,
+            worst_zone=worst_zone_idx,
+            worst_zone_position=worst_zone_pos,
+            zone_results=zones
         )
 
-    async def _analyze_dynamic_range(self, data: Dict[str, Any]) -> Optional[DynamicRangeAnalysis]:
+    async def _analyze_dynamic_range(self, data: Dict[str, Any]) -> DynamicRangeAnalysis:
         """Analyze dynamic range characteristics."""
         positions = data.get('positions', [])
         errors = data.get('errors', [])
+        upper_limits = data.get('upper_limits', [])
+        lower_limits = data.get('lower_limits', [])
         
-        if not positions or not errors:
-            return None
+        # Calculate range utilization and margins
+        range_utilization_percent = 0.0
+        minimum_margin = None
+        minimum_margin_position = None
+        margin_bias = "balanced"
+        
+        if positions and errors:
+            # Calculate how much of the available range is being utilized
+            if upper_limits and lower_limits and len(upper_limits) == len(errors):
+                # Calculate margins to limits
+                upper_margins = [upper_limits[i] - errors[i] for i in range(len(errors))]
+                lower_margins = [errors[i] - lower_limits[i] for i in range(len(errors))]
+                
+                all_margins = upper_margins + lower_margins
+                if all_margins:
+                    minimum_margin = min(all_margins)
+                    min_idx = all_margins.index(minimum_margin)
+                    if min_idx < len(upper_margins):
+                        minimum_margin_position = positions[min_idx] if min_idx < len(positions) else None
+                        margin_bias = "upper"
+                    else:
+                        idx = min_idx - len(upper_margins)
+                        minimum_margin_position = positions[idx] if idx < len(positions) else None
+                        margin_bias = "lower"
+                
+                # Calculate range utilization
+                spec_range = abs(upper_limits[0] - lower_limits[0]) if upper_limits and lower_limits else 0
+                if spec_range > 0:
+                    error_range = max(errors) - min(errors)
+                    # Cap at 100% when errors exceed specification range
+                    range_utilization_percent = min(100.0, (error_range / spec_range) * 100)
         
         return DynamicRangeAnalysis(
-            position_range=max(positions) - min(positions),
-            error_range=max(errors) - min(errors),
-            signal_to_noise_ratio=abs(np.mean(errors)) / np.std(errors) if np.std(errors) > 0 else 0
+            range_utilization_percent=range_utilization_percent,
+            minimum_margin=minimum_margin,
+            minimum_margin_position=minimum_margin_position,
+            margin_bias=margin_bias
         )
 
     async def _calculate_trim_effectiveness(
@@ -2490,7 +2568,7 @@ class LaserTrimProcessor:
         """
         if not linearity_analysis.linearity_pass:
             # Primary requirement not met
-            fail_count = getattr(linearity_analysis, 'fail_count', 0)
+            fail_count = getattr(linearity_analysis, 'linearity_fail_points', 0)
             total_points = getattr(linearity_analysis, 'total_points', 0)
             reason = f"Linearity failed: {fail_count} points out of spec (0 allowed)"
             return AnalysisStatus.FAIL, reason
