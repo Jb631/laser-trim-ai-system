@@ -53,7 +53,8 @@
       "Bash(cp:*)",
       "Bash(.venv/Scripts/python:*)",
       "Bash(tree:*)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(pip3:*)"
     ],
     "deny": []
   }

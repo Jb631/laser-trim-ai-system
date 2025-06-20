@@ -17,6 +17,40 @@ None - all known issues have been resolved.
 
 ## [Unreleased]
 
+## [2025-06-20] - Multiple Critical Fixes
+
+### Fixed
+- Risk category enum value error in database:
+  - **Root cause**: Database manager was mapping RiskCategory enum values to lowercase strings instead of database enum values
+  - **Details**: The bug was in the risk_map dictionary which mapped to strings like "high" instead of DBRiskCategory.HIGH
+  - **Solution**: 
+    1. Updated all risk_map dictionaries in database manager to map to proper DBRiskCategory enum values
+    2. Created comprehensive fix_database_enums.py script to fix all enum values in existing database
+    3. Added validators to database models to automatically convert and validate enum values
+  - **Validators added**:
+    - TrackResult.validate_risk_category() - Converts string values to proper enum
+    - MLPrediction.validate_predicted_risk_category() - Converts string values to proper enum
+  - **Result**: Risk categories and other enums now save and load correctly without validation errors
+
+- "No more menus can be allocated" error:
+  - **Root cause**: Windows has a limit on menu resources, and dropdown menus were not being properly destroyed
+  - **Details**: CTkComboBox widgets create dropdown menus that must be explicitly destroyed
+  - **Solution**: 
+    1. Added cleanup() methods to pages that use CTkComboBox widgets
+    2. Modified main window to call cleanup() when switching pages
+    3. Added cleanup for all pages when window closes
+  - **Pages updated**: model_summary_page, historical_page, final_test_comparison_page
+  - **Result**: Dropdown menus are properly destroyed, preventing resource exhaustion
+
+- DropdownMenu font error on window close:
+  - **Root cause**: Tkinter trying to access font attributes after widget destruction
+  - **Solution**: Added proper cleanup sequence in on_closing() method
+  - **Result**: Clean shutdown without font errors
+
+- Welcome popup removed:
+  - **Details**: Disabled welcome message popup to save time and memory as requested
+  - **Solution**: Commented out the after() call that triggered _show_welcome_message()
+
 ## [2025-06-19] - Database Save and Home Page Fixes
 
 ### Fixed

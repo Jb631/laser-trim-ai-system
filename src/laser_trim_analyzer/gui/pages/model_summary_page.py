@@ -1039,4 +1039,18 @@ class ModelSummaryPage(ctk.CTkFrame):
         # Load models when page is first shown
         if not hasattr(self, '_models_loaded'):
             self._load_models()
-            self._models_loaded = True 
+            self._models_loaded = True
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        # Destroy dropdown menu to prevent "No more menus can be allocated" error
+        if hasattr(self, 'model_combo'):
+            try:
+                if hasattr(self.model_combo, '_dropdown_menu'):
+                    self.model_combo._dropdown_menu.destroy()
+                self.model_combo.destroy()
+            except Exception:
+                pass
+        
+        # Call parent cleanup
+        super().cleanup() 

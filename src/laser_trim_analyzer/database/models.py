@@ -441,6 +441,21 @@ class TrackResult(Base):
             except ValueError:
                 return StatusType.ERROR
         return status
+    
+    @validates('risk_category')
+    def validate_risk_category(self, key, risk_category):
+        """Validate risk_category is a valid enum value."""
+        if risk_category is None:
+            # None is acceptable for risk_category
+            return None
+        if isinstance(risk_category, str):
+            # Handle lowercase or mixed case strings
+            risk_category_upper = risk_category.upper()
+            if risk_category_upper in ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']:
+                return RiskCategory[risk_category_upper]
+            # Default to UNKNOWN for invalid values
+            return RiskCategory.UNKNOWN
+        return risk_category
 
     def __repr__(self):
         return f"<TrackResult(id={self.id}, analysis_id={self.analysis_id}, track_id='{self.track_id}', status='{self.status}')>"
@@ -545,6 +560,21 @@ class MLPrediction(Base):
             if drift_direction not in valid_directions:
                 raise ValueError(f"Drift direction must be one of: {valid_directions}")
         return drift_direction
+    
+    @validates('predicted_risk_category')
+    def validate_predicted_risk_category(self, key, predicted_risk_category):
+        """Validate predicted_risk_category is a valid enum value."""
+        if predicted_risk_category is None:
+            # None is acceptable for predicted_risk_category
+            return None
+        if isinstance(predicted_risk_category, str):
+            # Handle lowercase or mixed case strings
+            risk_category_upper = predicted_risk_category.upper()
+            if risk_category_upper in ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']:
+                return RiskCategory[risk_category_upper]
+            # Default to UNKNOWN for invalid values
+            return RiskCategory.UNKNOWN
+        return predicted_risk_category
 
     def __repr__(self):
         return f"<MLPrediction(id={self.id}, analysis_id={self.analysis_id}, type='{self.prediction_type}', date='{self.prediction_date}')>"
