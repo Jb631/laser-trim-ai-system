@@ -470,14 +470,23 @@ class CTkMainWindow(CTkMainWindowBase):
         
         # Hide current page
         if self.current_page and self.current_page in self.pages:
+            current_page_obj = self.pages[self.current_page]
+            
+            # Call cleanup if available to properly destroy resources
+            if hasattr(current_page_obj, 'cleanup'):
+                try:
+                    current_page_obj.cleanup()
+                except Exception as e:
+                    self.logger.error(f"Error during page cleanup: {e}")
+            
             # Use the page's hide() method if available, otherwise use grid_remove()
-            if hasattr(self.pages[self.current_page], 'hide'):
-                self.pages[self.current_page].hide()
+            if hasattr(current_page_obj, 'hide'):
+                current_page_obj.hide()
             else:
-                self.pages[self.current_page].grid_remove()
+                current_page_obj.grid_remove()
                 # Call on_hide if available (only if we didn't use hide() which already calls it)
-                if hasattr(self.pages[self.current_page], 'on_hide'):
-                    self.pages[self.current_page].on_hide()
+                if hasattr(current_page_obj, 'on_hide'):
+                    current_page_obj.on_hide()
         
         # Create page if not exists (lazy loading)
         if page_name not in self.pages:
@@ -596,8 +605,8 @@ class CTkMainWindow(CTkMainWindowBase):
             self._show_page("home")
         else:
             self._show_page("single_file")
-            # Show welcome message after delay
-            self.after(1000, self._show_welcome_message)
+            # Welcome message disabled to save time and memory
+            # self.after(1000, self._show_welcome_message)
     
     def _show_welcome_message(self):
         """Show welcome message for new users"""
@@ -956,6 +965,17 @@ class CTkMainWindow(CTkMainWindowBase):
                 settings_manager.save()
             except:
                 pass
+        
+        # Clean up all pages before destroying window
+        try:
+            for page_name, page in self.pages.items():
+                if hasattr(page, 'cleanup'):
+                    try:
+                        page.cleanup()
+                    except Exception as e:
+                        self.logger.error(f"Error cleaning up {page_name} page: {e}")
+        except Exception as e:
+            self.logger.error(f"Error during page cleanup: {e}")
         
         # Destroy window
         self.destroy()

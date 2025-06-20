@@ -1648,9 +1648,10 @@ class DatabaseManager:
         risk_category = None
         if track_data.failure_prediction and hasattr(track_data.failure_prediction, 'risk_category') and track_data.failure_prediction.risk_category:
             risk_map = {
-                RiskCategory.HIGH: "high",
-                RiskCategory.MEDIUM: "medium", 
-                RiskCategory.LOW: "low"
+                RiskCategory.HIGH: DBRiskCategory.HIGH,
+                RiskCategory.MEDIUM: DBRiskCategory.MEDIUM, 
+                RiskCategory.LOW: DBRiskCategory.LOW,
+                RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
             }
             risk_category = risk_map.get(track_data.failure_prediction.risk_category)
         

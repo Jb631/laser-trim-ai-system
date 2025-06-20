@@ -1240,3 +1240,22 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             wraplength=600
         )
         detail_label.pack(pady=10)
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        # Destroy dropdown menus to prevent "No more menus can be allocated" error
+        combo_widgets = ['model_combo', 'part_number_combo', 'serial_combo']
+        
+        for widget_name in combo_widgets:
+            if hasattr(self, widget_name):
+                try:
+                    widget = getattr(self, widget_name)
+                    if hasattr(widget, '_dropdown_menu'):
+                        widget._dropdown_menu.destroy()
+                    widget.destroy()
+                except Exception:
+                    pass
+        
+        # Call parent cleanup if it exists
+        if hasattr(super(), 'cleanup'):
+            super().cleanup()

@@ -2271,3 +2271,22 @@ Metrics:
             
         except Exception as e:
             self.logger.error(f"Error updating prediction chart: {e}")
+    
+    def cleanup(self):
+        """Clean up resources when page is destroyed."""
+        # Destroy dropdown menus to prevent "No more menus can be allocated" error
+        combo_widgets = ['model_combo', 'period_combo', 'chart_type_combo']
+        
+        for widget_name in combo_widgets:
+            if hasattr(self, widget_name):
+                try:
+                    widget = getattr(self, widget_name)
+                    if hasattr(widget, '_dropdown_menu'):
+                        widget._dropdown_menu.destroy()
+                    widget.destroy()
+                except Exception:
+                    pass
+        
+        # Call parent cleanup if it exists
+        if hasattr(super(), 'cleanup'):
+            super().cleanup()
