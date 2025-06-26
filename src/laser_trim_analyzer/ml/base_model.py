@@ -49,12 +49,16 @@ class BaseMLModel(ABC):
             **self.metadata
         }
     
-    def save(self, filepath: Path) -> bool:
+    def save(self, filepath) -> bool:
         """Save the trained model to disk."""
         try:
             if not self.is_trained:
                 self.logger.warning("Attempting to save untrained model")
                 return False
+                
+            # Convert to Path object if string
+            from pathlib import Path
+            filepath = Path(filepath)
                 
             # Create directory if it doesn't exist
             filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -81,9 +85,13 @@ class BaseMLModel(ABC):
             self.logger.error(f"Failed to save model: {e}")
             return False
     
-    def load(self, filepath: Path) -> bool:
+    def load(self, filepath) -> bool:
         """Load a trained model from disk."""
         try:
+            # Convert to Path object if string
+            from pathlib import Path
+            filepath = Path(filepath)
+            
             if not filepath.exists():
                 self.logger.error(f"Model file not found: {filepath}")
                 return False

@@ -344,6 +344,15 @@ class ModelSummaryPage(ctk.CTkFrame):
             hover_color="darkgreen"
         )
         self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
+        
+        self.print_chart_btn = ctk.CTkButton(
+            button_frame,
+            text="🖨️ Print Chart",
+            command=self._print_chart,
+            width=120,
+            height=40
+        )
+        self.print_chart_btn.pack(side='left', padx=(0, 10), pady=10)
 
     def _load_models(self):
         """Load available models from database."""
@@ -368,10 +377,12 @@ class ModelSummaryPage(ctk.CTkFrame):
                         models.append(row[0])
 
             # Fix: Use configure() instead of ['values'] for CTk widgets
-            self.model_combo.configure(values=models)
-            if models and not self.model_var.get():
-                self.model_var.set(models[0])
-                self._on_model_selected()
+            # Check if we're cleaning up before updating combo box
+            if not getattr(self, '_cleaning_up', False):
+                self.model_combo.configure(values=models)
+                if models and not self.model_var.get():
+                    self.model_var.set(models[0])
+                    self._on_model_selected()
 
             self.logger.info(f"Loaded {len(models)} models for summary page")
 
@@ -753,6 +764,9 @@ class ModelSummaryPage(ctk.CTkFrame):
                         fail_count = len(status_data) - pass_count
                         correlation_info += f"\n\nPass: {pass_count} | Fail: {fail_count}"
                         
+                        # Store correlation data for printing
+                        self._last_correlation_data = (x_data, y_data)
+                        
                         self.correlation_chart.update_chart_data(pd.DataFrame({'x': x_data, 'y': y_data}))
                         self.logger.info(f"Updated correlation analysis with {len(x_data)} data points")
                     else:
@@ -1003,6 +1017,99 @@ class ModelSummaryPage(ctk.CTkFrame):
             messagebox.showerror("Report Error", error_msg)
             self.logger.error(f"Report generation failed: {e}")
 
+    def _print_chart(self):
+        """Export current chart in print-friendly format."""
+        if self.model_data is None or len(self.model_data) == 0:
+            messagebox.showwarning("No Data", "No data available to print")
+            return
+        
+        try:
+            # Determine which tab is active
+            current_tab = self.analysis_tabview.get()
+            
+            # Get the corresponding chart
+            if current_tab == "Distribution":
+                chart = self.distribution_chart
+            elif current_tab == "Pass/Fail Trend":
+                chart = self.passfail_chart
+            elif current_tab == "Correlation":
+                chart = self.correlation_chart
+            else:
+                # Default to trend chart
+                chart = self.trend_chart
+            
+            # Create a print-friendly version
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_pdf import PdfPages
+            
+            # Get save location
+            initial_filename = f"chart_{self.selected_model}_{current_tab.replace('/', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            
+            filename = filedialog.asksaveasfilename(
+                title="Save Chart for Printing",
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf"), ("PNG files", "*.png"), ("All files", "*.*")],
+                initialfile=initial_filename
+            )
+            
+            if not filename:
+                return
+            
+            # Create a new figure with white background for printing
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111)
+            
+            # Set white background
+            fig.patch.set_facecolor('white')
+            ax.set_facecolor('white')
+            
+            # Re-plot the data with print-friendly settings
+            if current_tab == "Correlation" and hasattr(self, '_last_correlation_data'):
+                x_data, y_data = self._last_correlation_data
+                ax.scatter(x_data, y_data, alpha=0.6, s=50, color='blue')
+                ax.set_xlabel('Sigma Gradient', fontsize=12)
+                ax.set_ylabel('Linearity Error', fontsize=12)
+                ax.set_title(f'Sigma vs Linearity Correlation - Model {self.selected_model}', fontsize=14, fontweight='bold')
+                
+                # Add correlation value
+                if len(x_data) > 5:
+                    correlation = np.corrcoef(x_data, y_data)[0, 1]
+                    ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
+                           transform=ax.transAxes, fontsize=11,
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor='white', edgecolor='black'))
+            else:
+                # For other charts, use the trend data
+                df_sorted = self.model_data.sort_values('trim_date')
+                ax.plot(df_sorted['trim_date'], df_sorted['sigma_gradient'], 
+                       marker='o', linewidth=2, markersize=4, color='blue', alpha=0.8)
+                ax.set_xlabel('Date', fontsize=12)
+                ax.set_ylabel('Sigma Gradient', fontsize=12)
+                ax.set_title(f'Sigma Gradient Trend - Model {self.selected_model}', fontsize=14, fontweight='bold')
+                ax.tick_params(axis='x', rotation=45)
+            
+            # Add grid for readability
+            ax.grid(True, alpha=0.3, linestyle='--')
+            
+            # Add footer with metadata
+            fig.text(0.5, 0.02, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | Model: {self.selected_model}', 
+                    ha='center', fontsize=9, color='gray')
+            
+            plt.tight_layout()
+            
+            # Save the figure
+            if filename.endswith('.pdf'):
+                fig.savefig(filename, format='pdf', bbox_inches='tight', facecolor='white')
+            else:
+                fig.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white')
+            
+            plt.close(fig)
+            
+            messagebox.showinfo("Export Successful", f"Chart exported to:\n{filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export chart:\n{str(e)}")
+            self.logger.error(f"Chart export error: {e}")
+    
     def _calculate_summary_stats(self) -> Dict[str, str]:
         """Calculate comprehensive summary statistics."""
         if self.model_data is None or len(self.model_data) == 0:
@@ -1043,14 +1150,14 @@ class ModelSummaryPage(ctk.CTkFrame):
     
     def cleanup(self):
         """Clean up resources when page is destroyed."""
-        # Destroy dropdown menu to prevent "No more menus can be allocated" error
+        # Mark as cleaning up to prevent further operations
+        self._cleaning_up = True
+        
+        # Only destroy dropdown menu, not the entire combo box
+        # The combo box will be destroyed when the frame is destroyed
         if hasattr(self, 'model_combo'):
             try:
                 if hasattr(self.model_combo, '_dropdown_menu'):
                     self.model_combo._dropdown_menu.destroy()
-                self.model_combo.destroy()
             except Exception:
-                pass
-        
-        # Call parent cleanup
-        super().cleanup() 
+                pass 

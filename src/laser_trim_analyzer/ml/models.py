@@ -93,6 +93,7 @@ class ThresholdOptimizer(BaseMLModel):
 
             # Store results
             self.is_trained = True
+            self.training_date = pd.Timestamp.now()
             self.training_metadata = {
                 'n_samples': len(X_train),
                 'n_features': X_train.shape[1],
@@ -306,6 +307,7 @@ class FailurePredictor(BaseMLModel):
 
             # Store results
             self.is_trained = True
+            self.training_date = pd.Timestamp.now()
             self.training_metadata = {
                 'n_samples': len(X_train),
                 'n_features': X_train.shape[1],
@@ -520,6 +522,7 @@ class DriftDetector(BaseMLModel):
 
             # Store results
             self.is_trained = True
+            self.training_date = pd.Timestamp.now()
             self.training_metadata = {
                 'n_samples': len(X),
                 'n_features': X.shape[1],

@@ -50,7 +50,7 @@ from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
 class HistoricalPage(ctk.CTkFrame):
-    """Advanced historical data analysis page with analytics features."""
+    """QA-focused historical data analysis page with manufacturing insights."""
 
     def __init__(self, parent, main_window):
         super().__init__(parent)
@@ -71,6 +71,13 @@ class HistoricalPage(ctk.CTkFrame):
         self.correlation_matrix = None
         self._pending_filters = {}  # Store filters to apply after UI is created
         
+        # QA-specific data storage
+        self.risk_analysis_data = {}
+        self.batch_comparison_data = {}
+        self.failure_mode_data = {}
+        self.trim_effectiveness_data = {}
+        self.selected_analysis_id = None  # For detailed view
+        
         # Thread safety
         self._analytics_lock = threading.Lock()
         
@@ -78,27 +85,28 @@ class HistoricalPage(ctk.CTkFrame):
         self._create_page()
 
     def _create_page(self):
-        """Create enhanced historical page content with advanced analytics."""
+        """Create QA-focused historical analysis page."""
         # Main scrollable container
         self.main_container = ctk.CTkScrollableFrame(self)
         self.main_container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Create enhanced sections
+        # Create sections in QA priority order
         self._create_header()
         self._create_query_section_ctk()
-        self._create_analytics_dashboard()
-        self._create_results_section_ctk()
-        self._create_charts_section_ctk()
-        self._create_advanced_analytics_section()
+        self._create_qa_metrics_dashboard()  # Enhanced QA metrics
+        self._create_risk_dashboard()  # New risk analysis section
+        self._create_results_section_ctk()  # Enhanced results display
+        self._create_manufacturing_insights()  # Replace basic charts
+        self._create_process_control_section()  # Replace advanced analytics
 
     def _create_header(self):
-        """Create enhanced header section."""
+        """Create QA-focused header section."""
         self.header_frame = ctk.CTkFrame(self.main_container)
         self.header_frame.pack(fill='x', pady=(0, 20))
 
         self.title_label = ctk.CTkLabel(
             self.header_frame,
-            text="Advanced Historical Data Analytics",
+            text="QA Historical Analysis & Process Control",
             font=ctk.CTkFont(size=24, weight="bold")
         )
         self.title_label.pack(pady=15)
@@ -122,14 +130,14 @@ class HistoricalPage(ctk.CTkFrame):
         )
         self.analytics_indicator.pack(side='right', padx=10, pady=10)
 
-    def _create_analytics_dashboard(self):
-        """Create quick analytics dashboard."""
+    def _create_qa_metrics_dashboard(self):
+        """Create QA-focused metrics dashboard with key quality indicators."""
         self.dashboard_frame = ctk.CTkFrame(self.main_container)
         self.dashboard_frame.pack(fill='x', pady=(0, 20))
 
         self.dashboard_label = ctk.CTkLabel(
             self.dashboard_frame,
-            text="Analytics Dashboard:",
+            text="Quality Metrics Dashboard:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.dashboard_label.pack(anchor='w', padx=15, pady=(15, 10))
@@ -138,195 +146,255 @@ class HistoricalPage(ctk.CTkFrame):
         self.metrics_container = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
         self.metrics_container.pack(fill='x', padx=15, pady=(0, 15))
 
-        # Row 1 of metrics
+        # Row 1 - Key QA metrics
         metrics_row1 = ctk.CTkFrame(self.metrics_container, fg_color="transparent")
         metrics_row1.pack(fill='x', padx=10, pady=(10, 5))
 
         self.total_records_card = MetricCard(
             metrics_row1,
-            title="Total Records",
+            title="Total Units",
             value="--",
             color_scheme="info"
         )
         self.total_records_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.pass_rate_card = MetricCard(
+        self.yield_card = MetricCard(
             metrics_row1,
-            title="Overall Pass Rate",
+            title="Overall Yield",
             value="--",
             color_scheme="success"
         )
-        self.pass_rate_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.yield_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.trend_direction_card = MetricCard(
+        self.high_risk_card = MetricCard(
             metrics_row1,
-            title="Trend Direction",
+            title="High Risk Units",
             value="--",
-            color_scheme="neutral"
+            color_scheme="error"
         )
-        self.trend_direction_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.high_risk_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.prediction_accuracy_card = MetricCard(
+        self.sigma_pass_rate_card = MetricCard(
             metrics_row1,
-            title="Prediction Accuracy",
+            title="Sigma Pass Rate",
             value="--",
             color_scheme="warning"
         )
-        self.prediction_accuracy_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.sigma_pass_rate_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        # Row 2 of metrics
+        # Row 2 - Process stability metrics
         metrics_row2 = ctk.CTkFrame(self.metrics_container, fg_color="transparent")
         metrics_row2.pack(fill='x', padx=10, pady=(5, 10))
 
-        self.sigma_correlation_card = MetricCard(
+        self.cpk_card = MetricCard(
             metrics_row2,
-            title="Sigma Correlation",
+            title="Process Cpk",
             value="--",
             color_scheme="info"
         )
-        self.sigma_correlation_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.cpk_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.linearity_stability_card = MetricCard(
+        self.drift_alert_card = MetricCard(
             metrics_row2,
-            title="Linearity Stability",
-            value="--",
-            color_scheme="success"
-        )
-        self.linearity_stability_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
-
-        self.quality_score_card = MetricCard(
-            metrics_row2,
-            title="Quality Score",
+            title="Drift Alerts",
             value="--",
             color_scheme="warning"
         )
-        self.quality_score_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.drift_alert_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.anomaly_count_card = MetricCard(
+        self.avg_linearity_card = MetricCard(
             metrics_row2,
-            title="Anomalies Detected",
+            title="Avg Linearity Error",
             value="--",
-            color_scheme="danger"
+            color_scheme="info"
         )
-        self.anomaly_count_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
+        self.avg_linearity_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-    def _create_advanced_analytics_section(self):
-        """Create advanced analytics section."""
-        self.advanced_frame = ctk.CTkFrame(self.main_container)
-        self.advanced_frame.pack(fill='both', expand=True, pady=(0, 20))
+        self.unresolved_alerts_card = MetricCard(
+            metrics_row2,
+            title="Open QA Alerts",
+            value="--",
+            color_scheme="error"
+        )
+        self.unresolved_alerts_card.pack(side='left', fill='x', expand=True, padx=5, pady=10)
 
-        self.advanced_label = ctk.CTkLabel(
-            self.advanced_frame,
-            text="Advanced Analytics:",
+    def _create_risk_dashboard(self):
+        """Create risk analysis dashboard for quick identification of problem units."""
+        self.risk_frame = ctk.CTkFrame(self.main_container)
+        self.risk_frame.pack(fill='x', pady=(0, 20))
+
+        self.risk_label = ctk.CTkLabel(
+            self.risk_frame,
+            text="Risk Analysis Dashboard:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.advanced_label.pack(anchor='w', padx=15, pady=(15, 10))
+        self.risk_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Analytics controls
-        controls_frame = ctk.CTkFrame(self.advanced_frame, fg_color="transparent")
-        controls_frame.pack(fill='x', padx=15, pady=(0, 10))
+        # Risk visualization container
+        self.risk_container = ctk.CTkFrame(self.risk_frame)
+        self.risk_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        self.trend_analysis_btn = ctk.CTkButton(
-            controls_frame,
-            text="📈 Trend Analysis",
-            command=self._run_trend_analysis,
-            width=140,
-            height=40
+        # Create tabs for different risk views
+        self.risk_tabview = ctk.CTkTabview(self.risk_container)
+        self.risk_tabview.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # Add risk analysis tabs
+        self.risk_tabview.add("Risk Distribution")
+        self.risk_tabview.add("High Risk Units")
+        self.risk_tabview.add("Risk Trends")
+
+        # Risk distribution chart
+        self.risk_dist_chart = ChartWidget(
+            self.risk_tabview.tab("Risk Distribution"),
+            chart_type='bar',
+            title="Risk Category Distribution",
+            figsize=(8, 4)
         )
-        self.trend_analysis_btn.pack(side='left', padx=(10, 5), pady=10)
+        self.risk_dist_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-        self.correlation_analysis_btn = ctk.CTkButton(
-            controls_frame,
-            text="🔗 Correlation Analysis",
-            command=self._run_correlation_analysis,
-            width=140,
-            height=40
+        # High risk units list
+        self.high_risk_frame = ctk.CTkScrollableFrame(
+            self.risk_tabview.tab("High Risk Units"),
+            height=200
         )
-        self.correlation_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
+        self.high_risk_frame.pack(fill='both', expand=True, padx=5, pady=5)
 
-        self.statistical_summary_btn = ctk.CTkButton(
-            controls_frame,
-            text="📊 Statistical Summary",
-            command=self._generate_statistical_summary,
-            width=140,
-            height=40
-        )
-        self.statistical_summary_btn.pack(side='left', padx=(5, 5), pady=10)
+        # High risk header
+        header_frame = ctk.CTkFrame(self.high_risk_frame)
+        header_frame.pack(fill='x', pady=(0, 10))
+        
+        columns = ['Date', 'Model', 'Serial', 'Risk Score', 'Primary Issue']
+        for i, col in enumerate(columns):
+            label = ctk.CTkLabel(
+                header_frame,
+                text=col,
+                font=ctk.CTkFont(size=12, weight="bold")
+            )
+            label.grid(row=0, column=i, padx=10, pady=5, sticky='w')
 
-        self.predictive_analysis_btn = ctk.CTkButton(
-            controls_frame,
-            text="🔮 Predictive Analysis",
-            command=self._run_predictive_analysis,
-            width=140,
-            height=40
-        )
-        self.predictive_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
-
-        self.anomaly_detection_btn = ctk.CTkButton(
-            controls_frame,
-            text="🚨 Detect Anomalies",
-            command=self._detect_anomalies,
-            width=140,
-            height=40
-        )
-        self.anomaly_detection_btn.pack(side='left', padx=(5, 10), pady=10)
-
-        # Analytics results tabview
-        self.analytics_tabview = ctk.CTkTabview(self.advanced_frame)
-        self.analytics_tabview.pack(fill='both', expand=True, padx=15, pady=(0, 15))
-
-        # Add analytics tabs
-        self.analytics_tabview.add("Trend Analysis")
-        self.analytics_tabview.add("Correlation Matrix")
-        self.analytics_tabview.add("Statistical Summary")
-        self.analytics_tabview.add("Predictive Models")
-        self.analytics_tabview.add("Anomaly Detection")
-
-        # Trend analysis tab
-        self.trend_analysis_chart = ChartWidget(
-            self.analytics_tabview.tab("Trend Analysis"),
+        # Risk trends chart
+        self.risk_trend_chart = ChartWidget(
+            self.risk_tabview.tab("Risk Trends"),
             chart_type='line',
-            title="Performance Trends Over Time",
+            title="Risk Score Trends by Model",
+            figsize=(8, 4)
+        )
+        self.risk_trend_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+    def _create_process_control_section(self):
+        """Create statistical process control section for manufacturing quality."""
+        self.spc_frame = ctk.CTkFrame(self.main_container)
+        self.spc_frame.pack(fill='both', expand=True, pady=(0, 20))
+
+        self.spc_label = ctk.CTkLabel(
+            self.spc_frame,
+            text="Statistical Process Control:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.spc_label.pack(anchor='w', padx=15, pady=(15, 10))
+
+        # SPC controls
+        spc_controls = ctk.CTkFrame(self.spc_frame, fg_color="transparent")
+        spc_controls.pack(fill='x', padx=15, pady=(0, 10))
+
+        self.control_chart_btn = ctk.CTkButton(
+            spc_controls,
+            text="📊 Control Charts",
+            command=self._generate_control_charts,
+            width=140,
+            height=40
+        )
+        self.control_chart_btn.pack(side='left', padx=(10, 5), pady=10)
+
+        self.capability_btn = ctk.CTkButton(
+            spc_controls,
+            text="📈 Capability Study",
+            command=self._run_capability_study,
+            width=140,
+            height=40
+        )
+        self.capability_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.pareto_btn = ctk.CTkButton(
+            spc_controls,
+            text="📉 Pareto Analysis",
+            command=self._run_pareto_analysis,
+            width=140,
+            height=40
+        )
+        self.pareto_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.drift_analysis_btn = ctk.CTkButton(
+            spc_controls,
+            text="🎯 Drift Detection",
+            command=self._detect_process_drift,
+            width=140,
+            height=40
+        )
+        self.drift_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
+
+        self.failure_mode_btn = ctk.CTkButton(
+            spc_controls,
+            text="⚡ Failure Mode Analysis",
+            command=self._analyze_failure_modes,
+            width=140,
+            height=40
+        )
+        self.failure_mode_btn.pack(side='left', padx=(5, 10), pady=10)
+
+        # SPC results tabview
+        self.spc_tabview = ctk.CTkTabview(self.spc_frame)
+        self.spc_tabview.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+
+        # Add SPC tabs
+        self.spc_tabview.add("Control Charts")
+        self.spc_tabview.add("Process Capability")
+        self.spc_tabview.add("Pareto Analysis")
+        self.spc_tabview.add("Drift Detection")
+        self.spc_tabview.add("Failure Modes")
+
+        # Control charts tab
+        self.control_chart = ChartWidget(
+            self.spc_tabview.tab("Control Charts"),
+            chart_type='line',
+            title="Sigma Gradient Control Chart",
             figsize=(12, 6)
         )
-        self.trend_analysis_chart.pack(fill='both', expand=True, padx=5, pady=5)
+        self.control_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-        # Correlation matrix tab
-        self.correlation_chart = ChartWidget(
-            self.analytics_tabview.tab("Correlation Matrix"),
-            chart_type='heatmap',
-            title="Parameter Correlation Matrix",
-            figsize=(10, 8)
-        )
-        self.correlation_chart.pack(fill='both', expand=True, padx=5, pady=5)
-
-        # Statistical summary tab
-        self.stats_display = ctk.CTkTextbox(
-            self.analytics_tabview.tab("Statistical Summary"),
+        # Process capability tab
+        self.capability_display = ctk.CTkTextbox(
+            self.spc_tabview.tab("Process Capability"),
             height=400,
             state="disabled"
         )
-        self.stats_display.pack(fill='both', expand=True, padx=5, pady=5)
+        self.capability_display.pack(fill='both', expand=True, padx=5, pady=5)
 
-        # Predictive models tab
-        predictive_frame = ctk.CTkFrame(self.analytics_tabview.tab("Predictive Models"), fg_color="transparent")
-        predictive_frame.pack(fill='both', expand=True, padx=5, pady=5)
-
-        self.prediction_chart = ChartWidget(
-            predictive_frame,
-            chart_type='scatter',
-            title="Actual vs Predicted Values",
+        # Pareto analysis tab
+        self.pareto_chart = ChartWidget(
+            self.spc_tabview.tab("Pareto Analysis"),
+            chart_type='bar',
+            title="Failure Mode Pareto Chart",
             figsize=(10, 6)
         )
-        self.prediction_chart.pack(fill='both', expand=True, padx=5, pady=5)
+        self.pareto_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
-        # Anomaly detection tab
-        self.anomaly_display = ctk.CTkTextbox(
-            self.analytics_tabview.tab("Anomaly Detection"),
+        # Drift detection tab
+        self.drift_chart = ChartWidget(
+            self.spc_tabview.tab("Drift Detection"),
+            chart_type='line',
+            title="Process Drift Analysis",
+            figsize=(12, 6)
+        )
+        self.drift_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Failure modes tab
+        self.failure_mode_display = ctk.CTkTextbox(
+            self.spc_tabview.tab("Failure Modes"),
             height=400,
             state="disabled"
         )
-        self.anomaly_display.pack(fill='both', expand=True, padx=5, pady=5)
+        self.failure_mode_display.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_query_section_ctk(self):
         """Create query filters section (matching batch processing theme)."""
@@ -472,7 +540,7 @@ class HistoricalPage(ctk.CTkFrame):
         export_btn.pack(side='left', padx=(0, 10), pady=10)
 
     def _create_results_section_ctk(self):
-        """Create results display section (matching batch processing theme)."""
+        """Create enhanced results display with detailed view capability."""
         self.results_frame = ctk.CTkFrame(self.main_container)
         self.results_frame.pack(fill='x', pady=(0, 20))
 
@@ -483,7 +551,7 @@ class HistoricalPage(ctk.CTkFrame):
         )
         self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
         
-        # Results summary
+        # Results summary with export button
         self.summary_frame = ctk.CTkFrame(self.results_frame)
         self.summary_frame.pack(fill='x', padx=15, pady=(0, 10))
         
@@ -492,7 +560,18 @@ class HistoricalPage(ctk.CTkFrame):
             text="No results to display",
             font=ctk.CTkFont(size=12)
         )
-        self.summary_label.pack(padx=10, pady=5)
+        self.summary_label.pack(side='left', padx=10, pady=5)
+        
+        # Export selected button
+        self.export_selected_btn = ctk.CTkButton(
+            self.summary_frame,
+            text="Export Selected",
+            command=self._export_selected_results,
+            width=120,
+            height=30,
+            state="disabled"
+        )
+        self.export_selected_btn.pack(side='right', padx=10, pady=5)
 
         # Results table using scrollable frame with grid layout
         self.table_container = ctk.CTkFrame(self.results_frame)
@@ -502,15 +581,18 @@ class HistoricalPage(ctk.CTkFrame):
         self.table_header_frame = ctk.CTkFrame(self.table_container)
         self.table_header_frame.pack(fill='x', padx=0, pady=(0, 1))
         
-        # Define column widths
+        # Define enhanced column widths
         self.column_widths = {
+            '': 30,  # Selection checkbox
             'Date': 100,
             'Model': 80,
             'Serial': 120,
-            'Status': 80,
-            'Sigma': 100,
-            'Linearity': 100,
-            'Risk': 80
+            'Status': 60,
+            'Yield': 60,
+            'Sigma': 80,
+            'Linearity': 80,
+            'Risk': 60,
+            'View': 60  # Details button
         }
         
         # Create header labels
@@ -536,87 +618,67 @@ class HistoricalPage(ctk.CTkFrame):
         for i, width in enumerate(self.column_widths.values()):
             self.results_scroll_frame.columnconfigure(i, weight=0, minsize=width)
 
-    def _create_charts_section_ctk(self):
-        """Create charts section (matching batch processing theme)."""
-        self.charts_frame = ctk.CTkFrame(self.main_container)
-        self.charts_frame.pack(fill='both', expand=True, pady=(0, 20))
+    def _create_manufacturing_insights(self):
+        """Create manufacturing insights section with actionable visualizations."""
+        self.insights_frame = ctk.CTkFrame(self.main_container)
+        self.insights_frame.pack(fill='both', expand=True, pady=(0, 20))
 
-        self.charts_label = ctk.CTkLabel(
-            self.charts_frame,
-            text="Data Visualization:",
+        self.insights_label = ctk.CTkLabel(
+            self.insights_frame,
+            text="Manufacturing Insights:",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.charts_label.pack(anchor='w', padx=15, pady=(15, 10))
+        self.insights_label.pack(anchor='w', padx=15, pady=(15, 10))
 
         # Charts container
-        self.charts_container = ctk.CTkFrame(self.charts_frame)
-        self.charts_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.insights_container = ctk.CTkFrame(self.insights_frame)
+        self.insights_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
 
-        # Chart tabs
-        self.chart_tabview = ctk.CTkTabview(self.charts_container)
-        self.chart_tabview.pack(fill='both', expand=True, padx=10, pady=10)
+        # Enhanced chart tabs
+        self.insights_tabview = ctk.CTkTabview(self.insights_container)
+        self.insights_tabview.pack(fill='both', expand=True, padx=10, pady=10)
 
-        # Add tabs
-        self.chart_tabview.add("Pass Rate Trend")
-        self.chart_tabview.add("Sigma Distribution")
-        self.chart_tabview.add("Model Comparison")
+        # Add manufacturing-focused tabs
+        self.insights_tabview.add("Yield Analysis")
+        self.insights_tabview.add("Trim Effectiveness")
+        self.insights_tabview.add("Linearity Analysis")
+        self.insights_tabview.add("Process Capability")
 
-        # Create actual chart widgets instead of placeholder labels
-        try:
-            from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
-            
-            self.trend_chart = ChartWidget(
-                self.chart_tabview.tab("Pass Rate Trend"),
-                chart_type='line',
-                title="Pass Rate Over Time",
-                figsize=(10, 4)
-            )
-            self.trend_chart.pack(fill='both', expand=True)
-            
-            self.dist_chart = ChartWidget(
-                self.chart_tabview.tab("Sigma Distribution"),
-                chart_type='histogram',
-                title="Sigma Gradient Distribution",
-                figsize=(10, 4)
-            )
-            self.dist_chart.pack(fill='both', expand=True)
-            
-            self.comp_chart = ChartWidget(
-                self.chart_tabview.tab("Model Comparison"),
-                chart_type='bar',
-                title="Pass Rate by Model",
-                figsize=(10, 4)
-            )
-            self.comp_chart.pack(fill='both', expand=True)
-            
-        except ImportError as e:
-            logger.warning(f"Could not create chart widgets: {e}")
-            # Fallback to placeholder labels
-            self.trend_chart_label = ctk.CTkLabel(
-                self.chart_tabview.tab("Pass Rate Trend"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.trend_chart_label.pack(expand=True)
-
-            self.distribution_chart_label = ctk.CTkLabel(
-                self.chart_tabview.tab("Sigma Distribution"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.distribution_chart_label.pack(expand=True)
-
-            self.comparison_chart_label = ctk.CTkLabel(
-                self.chart_tabview.tab("Model Comparison"),
-                text="Chart widgets not available",
-                font=ctk.CTkFont(size=12)
-            )
-            self.comparison_chart_label.pack(expand=True)
-            
-            # Set chart objects to None for safe access
-            self.trend_chart = None
-            self.dist_chart = None
-            self.comp_chart = None
+        # Yield analysis chart
+        self.yield_chart = ChartWidget(
+            self.insights_tabview.tab("Yield Analysis"),
+            chart_type='line',
+            title="Yield Trends by Model",
+            figsize=(10, 5)
+        )
+        self.yield_chart.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Trim effectiveness chart
+        self.trim_effect_chart = ChartWidget(
+            self.insights_tabview.tab("Trim Effectiveness"),
+            chart_type='scatter',
+            title="Trim Improvement vs Initial Error",
+            figsize=(10, 5)
+        )
+        self.trim_effect_chart.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Linearity analysis chart
+        self.linearity_chart = ChartWidget(
+            self.insights_tabview.tab("Linearity Analysis"),
+            chart_type='histogram',
+            title="Linearity Error Distribution",
+            figsize=(10, 5)
+        )
+        self.linearity_chart.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Process capability chart
+        self.cpk_chart = ChartWidget(
+            self.insights_tabview.tab("Process Capability"),
+            chart_type='bar',
+            title="Process Capability Index (Cpk) by Model",
+            figsize=(10, 5)
+        )
+        self.cpk_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _run_query(self):
         """Run database query with current filters."""
@@ -685,6 +747,20 @@ class HistoricalPage(ctk.CTkFrame):
                 logger.warning("risk_category parameter not supported, querying without it")
                 results = self.db_manager.get_historical_data(**query_params)
 
+            # Log results summary
+            logger.info(f"Retrieved {len(results)} results from database")
+            if results and results[0].tracks:
+                first_track = results[0].tracks[0]
+                logger.info(f"First track sigma_gradient: {getattr(first_track, 'sigma_gradient', 'NOT FOUND')}")
+                # Log all numeric attributes to see what's available
+                numeric_attrs = {}
+                for attr in dir(first_track):
+                    if not attr.startswith('_'):
+                        val = getattr(first_track, attr, None)
+                        if isinstance(val, (int, float)):
+                            numeric_attrs[attr] = val
+                logger.info(f"First track numeric attributes: {numeric_attrs}")
+            
             # Update UI in main thread
             self.after(0, self._display_results, results)
             self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
@@ -695,6 +771,7 @@ class HistoricalPage(ctk.CTkFrame):
 
     def _display_results(self, results):
         """Display query results in the table format."""
+        logger.info(f"Displaying {len(results)} results")
         try:
             # Clear existing results
             for widget in self.results_scroll_frame.winfo_children():
@@ -721,25 +798,65 @@ class HistoricalPage(ctk.CTkFrame):
             summary_text = f"Total: {total_count} | Pass: {pass_count} ({pass_rate:.1f}%) | Fail: {fail_count} ({100-pass_rate:.1f}%)"
             self.summary_label.configure(text=summary_text)
             
-            # Display results in table
+            # Track selected results
+            self.selected_results = set()
+            
+            # Display results in enhanced table
             for row_idx, result in enumerate(results):
                 # Extract data for each column
-                date_str = result.timestamp.strftime('%Y-%m-%d') if hasattr(result, 'timestamp') else 'Unknown'
-                model = str(getattr(result, 'model', 'Unknown'))[:8]
-                serial = str(getattr(result, 'serial', 'Unknown'))[:12]
+                date_str = result.file_date.strftime('%Y-%m-%d %H:%M') if hasattr(result, 'file_date') and result.file_date else (
+                    result.timestamp.strftime('%Y-%m-%d %H:%M') if hasattr(result, 'timestamp') else 'Unknown'
+                )
+                model = str(getattr(result, 'model', 'Unknown'))
+                serial = str(getattr(result, 'serial', 'Unknown'))
                 status = result.overall_status.value if hasattr(result, 'overall_status') else 'Unknown'
                 
-                # Get metrics from first track
+                # Calculate yield and metrics from tracks
                 sigma = "--"
                 linearity = "--"
                 risk = "--"
+                yield_value = "--"
                 
                 if result.tracks and len(result.tracks) > 0:
+                    # Calculate average values across tracks
+                    sigma_values = []
+                    linearity_values = []
+                    sigma_pass_count = 0
+                    
+                    for track in result.tracks:
+                        # Debug logging for sigma values
+                        sigma_val = getattr(track, 'sigma_gradient', None)
+                        if i == 0:  # Only log for first result to avoid spam
+                            logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            sigma_values.append(track.sigma_gradient)
+                        if hasattr(track, 'final_linearity_error_shifted') and track.final_linearity_error_shifted is not None:
+                            linearity_values.append(abs(track.final_linearity_error_shifted))
+                        elif hasattr(track, 'final_linearity_error_raw') and track.final_linearity_error_raw is not None:
+                            linearity_values.append(abs(track.final_linearity_error_raw))
+                        if hasattr(track, 'sigma_pass') and track.sigma_pass:
+                            sigma_pass_count += 1
+                    
+                    # Average sigma gradient
+                    if sigma_values:
+                        avg_sigma = np.mean(sigma_values)
+                        sigma = f"{avg_sigma:.4f}"
+                        if i == 0:  # Log first result for debugging
+                            logger.info(f"First result: found {len(sigma_values)} sigma values, average = {avg_sigma}")
+                    else:
+                        if i == 0 and result.tracks:  # Log first result for debugging
+                            logger.warning(f"First result: no sigma values found for {len(result.tracks)} tracks")
+                    
+                    # Average linearity error
+                    if linearity_values:
+                        linearity = f"{np.mean(linearity_values):.4f}"
+                    
+                    # Track yield (percentage of tracks passing)
+                    if len(result.tracks) > 0:
+                        yield_value = f"{(sigma_pass_count / len(result.tracks)) * 100:.0f}%"
+                    
+                    # Get risk from first track (or worst)
                     track = result.tracks[0]
-                    if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
-                        sigma = f"{track.sigma_gradient:.4f}"
-                    if hasattr(track, 'linearity_error') and track.linearity_error is not None:
-                        linearity = f"{track.linearity_error:.3f}%"
                     if hasattr(track, 'risk_category'):
                         risk = getattr(track.risk_category, 'value', str(track.risk_category))
                 
@@ -755,11 +872,24 @@ class HistoricalPage(ctk.CTkFrame):
                 for i, width in enumerate(self.column_widths.values()):
                     row_frame.columnconfigure(i, weight=0, minsize=width)
                 
-                # Create cells
-                values = [date_str, model, serial, status, sigma, linearity, risk]
-                colors = ['Status', 'Risk']  # Columns that need color coding
+                # Column 0: Selection checkbox
+                checkbox_var = tk.BooleanVar()
+                checkbox = ctk.CTkCheckBox(
+                    row_frame,
+                    text="",
+                    variable=checkbox_var,
+                    width=20,
+                    height=20,
+                    command=lambda r=result, v=checkbox_var: self._toggle_result_selection(r, v)
+                )
+                checkbox.grid(row=0, column=0, padx=5, pady=4)
                 
-                for col_idx, (col_name, value) in enumerate(zip(self.column_widths.keys(), values)):
+                # Create cells
+                values = [date_str, model, serial, status, yield_value, sigma, linearity, risk]
+                colors = ['Status', 'Risk', 'Yield']  # Columns that need color coding
+                
+                # Start from column 1 (skip checkbox column)
+                for col_idx, (col_name, value) in enumerate(zip(list(self.column_widths.keys())[1:-1], values), start=1):
                     # Determine text color
                     text_color = None
                     if col_name == 'Status':
@@ -779,6 +909,18 @@ class HistoricalPage(ctk.CTkFrame):
                             text_color = ("#e74c3c", "#c0392b")  # Red for high
                         else:
                             text_color = ("#95a5a6", "#7f8c8d")  # Gray for unknown
+                    elif col_name == 'Yield':
+                        # Color code yield percentage
+                        try:
+                            yield_pct = float(value.rstrip('%'))
+                            if yield_pct >= 95:
+                                text_color = ("#27ae60", "#2ecc71")  # Green
+                            elif yield_pct >= 90:
+                                text_color = ("#f39c12", "#d68910")  # Orange
+                            else:
+                                text_color = ("#e74c3c", "#c0392b")  # Red
+                        except:
+                            pass
                     
                     label = ctk.CTkLabel(
                         row_frame,
@@ -790,6 +932,17 @@ class HistoricalPage(ctk.CTkFrame):
                         fg_color="transparent"
                     )
                     label.grid(row=0, column=col_idx, padx=5, pady=4, sticky='w')
+                
+                # Last column: View details button
+                view_btn = ctk.CTkButton(
+                    row_frame,
+                    text="View",
+                    command=lambda r=result: self._show_detailed_analysis(r),
+                    width=50,
+                    height=24,
+                    font=ctk.CTkFont(size=10)
+                )
+                view_btn.grid(row=0, column=len(self.column_widths)-1, padx=5, pady=4)
                 
                 # Add hover effect
                 def on_enter(event, frame=row_frame, idx=row_idx):
@@ -814,13 +967,16 @@ class HistoricalPage(ctk.CTkFrame):
             # Store current data for potential export
             self.current_data = results
             
-            # CRITICAL FIX: Update charts and analytics when data is loaded
+            # Update all visualizations when data is loaded
             try:
-                self._update_charts(results)
-                # Also update analytics dashboard
-                self._prepare_and_update_analytics(results)
+                self._update_manufacturing_insights(results)
+                self._update_risk_dashboard(results)
+                self._update_qa_metrics(results)
+                self._update_spc_charts(results)  # Add automatic SPC chart updates
+                # Enable export selected button
+                self.export_selected_btn.configure(state="normal")
             except Exception as e:
-                logger.error(f"Error updating charts and analytics: {e}")
+                logger.error(f"Error updating visualizations: {e}")
             
             logger.info(f"Displayed {len(results)} query results")
             
@@ -828,53 +984,242 @@ class HistoricalPage(ctk.CTkFrame):
             logger.error(f"Error displaying results: {e}")
             self.summary_label.configure(text=f"Error displaying results: {str(e)}")
 
-    def _update_charts(self, results):
-        """Update all charts with query results."""
+    def _update_manufacturing_insights(self, results):
+        """Update manufacturing insight charts with QA-focused visualizations."""
         if not results:
+            self.logger.warning("No results to update manufacturing insights")
             return
 
         try:
-            # Convert database results to DataFrame format for chart consumption
-            chart_data = []
+            self.logger.info(f"Updating manufacturing insights with {len(results)} results")
+            
+            # Prepare data for analysis
+            data_records = []
             for result in results:
-                record = {
-                    'date': result.timestamp if hasattr(result, 'timestamp') else None,
-                    'file_date': getattr(result, 'file_date', None),
-                    'model': getattr(result, 'model', 'Unknown'),
-                    'serial': getattr(result, 'serial', 'Unknown'),
+                base_record = {
+                    'date': result.file_date or result.timestamp,
+                    'model': result.model,
+                    'serial': result.serial,
                     'status': result.overall_status.value,
-                    'sigma_gradient': None
+                    'system': result.system.value if hasattr(result, 'system') else 'Unknown'
                 }
                 
-                # Extract track data for analytics
-                if result.tracks and len(result.tracks) > 0:
-                    track = result.tracks[0]
-                    if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
-                        record['sigma_gradient'] = track.sigma_gradient
-                    if hasattr(track, 'final_linearity_error_shifted'):
-                        record['linearity_error'] = track.final_linearity_error_shifted
-                    elif hasattr(track, 'final_linearity_error_raw'):
-                        record['linearity_error'] = track.final_linearity_error_raw
-                    if hasattr(track, 'risk_category') and track.risk_category:
-                        record['risk_category'] = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
-                
-                # Add overall status in correct format
-                record['overall_status'] = 'PASS' if record['status'].upper() == 'PASS' else 'FAIL'
-                record['timestamp'] = record['date'] or record['file_date'] or datetime.now()
-                
-                chart_data.append(record)
+                # Extract detailed track data
+                if result.tracks:
+                    for track in result.tracks:
+                        record = base_record.copy()
+                        record.update({
+                            'track_id': track.track_id,
+                            'sigma_gradient': track.sigma_gradient,
+                            'sigma_pass': track.sigma_pass,
+                            'linearity_error': abs(track.final_linearity_error_shifted or track.final_linearity_error_raw or 0),
+                            'linearity_pass': track.linearity_pass,
+                            'trim_improvement': track.trim_improvement_percent,
+                            'untrimmed_rms': track.untrimmed_rms_error,
+                            'trimmed_rms': track.trimmed_rms_error,
+                            'risk_category': track.risk_category.value if track.risk_category else 'Unknown',
+                            'failure_probability': track.failure_probability,
+                            'range_utilization': track.range_utilization_percent
+                        })
+                        data_records.append(record)
+                else:
+                    data_records.append(base_record)
             
-            # Store as DataFrame for chart methods
-            import pandas as pd
-            self.current_data_df = pd.DataFrame(chart_data)
+            # Convert to DataFrame
+            df = pd.DataFrame(data_records)
+            self.current_data_df = df
             
-            # Update individual charts
-            self._update_trend_chart()
-            self._update_distribution_chart()
-            self._update_comparison_chart()
+            # Update each insight chart
+            self._update_yield_analysis(df)
+            self._update_trim_effectiveness(df)
+            self._update_linearity_analysis(df)
+            self._update_process_capability(df)
+            
             
         except Exception as e:
-            logger.error(f"Error preparing chart data: {e}")
+            logger.error(f"Error updating manufacturing insights: {e}")
+    
+    def _update_yield_analysis(self, df):
+        """Update yield analysis chart."""
+        if df.empty:
+            self.yield_chart.show_placeholder("No yield data available", "Run a query to view yield trends")
+            return
+            
+        try:
+            # Calculate yield by model and date
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            yield_data = df.groupby(['date', 'model']).agg({
+                'sigma_pass': lambda x: (x.sum() / len(x) * 100) if len(x) > 0 else 0
+            }).reset_index()
+            yield_data.columns = ['date', 'model', 'yield']
+            
+            # For line chart, we need to prepare data differently
+            # Get the most recent model's data for the line chart
+            if len(yield_data) > 0:
+                # Get the model with the most data points
+                model_counts = yield_data['model'].value_counts()
+                if len(model_counts) > 0:
+                    primary_model = model_counts.index[0]
+                    primary_data = yield_data[yield_data['model'] == primary_model].sort_values('date')
+                    
+                    # Prepare data for line chart with required columns
+                    chart_data = pd.DataFrame({
+                        'trim_date': primary_data['date'],
+                        'sigma_gradient': primary_data['yield'] / 100.0  # Convert percentage to decimal for gradient scale
+                    })
+                    
+                    # Update the chart
+                    self.yield_chart.update_chart_data(chart_data)
+                    
+                    # Manually adjust the chart after update to show yield-specific formatting
+                    if self.yield_chart.figure.axes:
+                        ax = self.yield_chart.figure.axes[0]
+                        ax.set_ylabel('Yield (%)')
+                        ax.set_title(f'Yield Trend - {primary_model}')
+                        # Scale y-axis back to percentage
+                        y_ticks = ax.get_yticks()
+                        ax.set_yticklabels([f'{y*100:.0f}' for y in y_ticks])
+                        ax.set_ylim(0, 1.05)  # 0-105%
+                        self.yield_chart.canvas.draw_idle()
+            else:
+                self.yield_chart.show_placeholder("No yield data available", "Run a query to view yield trends")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating yield analysis: {e}")
+    
+    def _update_trim_effectiveness(self, df):
+        """Update trim effectiveness chart."""
+        if df.empty or 'trim_improvement' not in df.columns:
+            self.trim_effect_chart.show_placeholder("No trim effectiveness data", "Run a query to view trim improvements")
+            return
+            
+        try:
+            # Filter valid data
+            valid_data = df[(df['untrimmed_rms'].notna()) & 
+                          (df['trim_improvement'].notna()) &
+                          (df['untrimmed_rms'] > 0)].copy()
+            
+            if len(valid_data) == 0:
+                self.trim_effect_chart.show_placeholder("No valid trim data", "Need untrimmed RMS and improvement data")
+                return
+            
+            # Prepare scatter data
+            chart_data = pd.DataFrame({
+                'x': valid_data['untrimmed_rms'],
+                'y': valid_data['trim_improvement']
+            })
+            
+            # Update chart
+            self.trim_effect_chart.update_chart_data(chart_data)
+            
+            # Update labels
+            if self.trim_effect_chart.figure.axes:
+                ax = self.trim_effect_chart.figure.axes[0]
+                ax.set_xlabel('Initial Error (Untrimmed RMS)')
+                ax.set_ylabel('Trim Improvement (%)')
+                ax.set_title('Trim Effectiveness Analysis')
+                self.trim_effect_chart.canvas.draw_idle()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating trim effectiveness: {e}")
+            self.trim_effect_chart.show_placeholder("Error displaying chart", f"Error: {str(e)}")
+    
+    def _update_linearity_analysis(self, df):
+        """Update linearity analysis chart."""
+        if df.empty or 'linearity_error' not in df.columns:
+            self.linearity_chart.show_placeholder("No linearity data available", "Run a query to view linearity distribution")
+            return
+            
+        try:
+            # Get linearity error data
+            linearity_data = df['linearity_error'].dropna()
+            
+            if len(linearity_data) == 0:
+                self.linearity_chart.show_placeholder("No linearity data available", "Run a query to view linearity distribution")
+                return
+            
+            # Prepare histogram data - histogram chart expects 'sigma_gradient' column
+            chart_data = pd.DataFrame({
+                'sigma_gradient': linearity_data  # Use sigma_gradient column name for histogram
+            })
+            
+            # Update chart
+            self.linearity_chart.update_chart_data(chart_data)
+            
+            # Update the title to reflect linearity data
+            if self.linearity_chart.figure.axes:
+                ax = self.linearity_chart.figure.axes[0]
+                ax.set_xlabel('Linearity Error')
+                ax.set_title('Linearity Error Distribution')
+                self.linearity_chart.canvas.draw_idle()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating linearity analysis: {e}")
+    
+    def _update_process_capability(self, df):
+        """Update process capability chart."""
+        if df.empty or 'sigma_gradient' not in df.columns:
+            self.cpk_chart.show_placeholder("No process capability data", "Run a query to view Cpk analysis")
+            return
+            
+        try:
+            # Calculate Cpk by model
+            cpk_data = []
+            
+            for model in df['model'].unique():
+                model_data = df[df['model'] == model]
+                sigma_values = model_data['sigma_gradient'].dropna()
+                
+                if len(sigma_values) > 3:
+                    # Calculate Cpk (simplified version)
+                    mean_val = sigma_values.mean()
+                    std_val = sigma_values.std()
+                    
+                    # Assuming specification limits (example)
+                    usl = 0.05  # Upper specification limit (more realistic for sigma)
+                    lsl = 0.0   # Lower specification limit
+                    
+                    if std_val > 0:
+                        cpu = (usl - mean_val) / (3 * std_val)
+                        cpl = (mean_val - lsl) / (3 * std_val)
+                        cpk = min(cpu, cpl)
+                    else:
+                        cpk = 0
+                    
+                    cpk_data.append({
+                        'model': model,
+                        'cpk': max(0, cpk),
+                        'count': len(sigma_values)
+                    })
+            
+            if cpk_data:
+                # Sort by Cpk value
+                cpk_data = sorted(cpk_data, key=lambda x: x['cpk'], reverse=True)
+                
+                # Prepare chart data with correct column names for bar chart
+                chart_data = pd.DataFrame({
+                    'month_year': [d['model'] for d in cpk_data],
+                    'track_status': [d['cpk'] * 100 for d in cpk_data]  # Scale for percentage display
+                })
+                
+                # Update chart
+                self.cpk_chart.update_chart_data(chart_data)
+                
+                # Update chart labels
+                if self.cpk_chart.figure.axes:
+                    ax = self.cpk_chart.figure.axes[0]
+                    ax.set_xlabel('Model')
+                    ax.set_ylabel('Process Capability (Cpk)')
+                    ax.set_title('Process Capability by Model')
+                    # Fix y-axis labels to show Cpk values
+                    y_ticks = ax.get_yticks()
+                    ax.set_yticklabels([f'{y/100:.2f}' for y in y_ticks])
+                    self.cpk_chart.canvas.draw_idle()
+            else:
+                self.cpk_chart.show_placeholder("Insufficient data for Cpk analysis", "Need at least 4 samples per model")
+                
+        except Exception as e:
+            self.logger.error(f"Error updating process capability: {e}")
 
     def _prepare_and_update_analytics(self, results):
         """Prepare data and update analytics dashboard."""
@@ -906,6 +1251,10 @@ class HistoricalPage(ctk.CTkFrame):
                     risk_categories = []
                     
                     for track in result.tracks:
+                        # Debug logging for sigma values
+                        sigma_val = getattr(track, 'sigma_gradient', None)
+                        if i == 0:  # Only log for first result to avoid spam
+                            logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
                         if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
                             sigma_values.append(track.sigma_gradient)
                         
@@ -950,28 +1299,39 @@ class HistoricalPage(ctk.CTkFrame):
         if self.current_data_df is None or self.current_data_df.empty or not hasattr(self, 'trend_chart') or self.trend_chart is None:
             return
 
-        # Group by date and calculate pass rate
-        df = self.current_data_df.copy()
-        # Use file_date if available, otherwise date
-        df['date'] = pd.to_datetime(df['file_date'].fillna(df['date'])).dt.date
+        try:
+            # Group by date and calculate pass rate
+            df = self.current_data_df.copy()
+            # Use file_date if available, otherwise date
+            df['date'] = pd.to_datetime(df['file_date'].fillna(df['date'])).dt.date
 
-        daily_stats = df.groupby('date').agg({
-            'status': lambda x: (x == 'Pass').mean() * 100
-        }).reset_index()
-        daily_stats.columns = ['date', 'pass_rate']
+            daily_stats = df.groupby('date').agg({
+                'status': lambda x: (x.str.upper() == 'PASS').mean() * 100
+            }).reset_index()
+            daily_stats.columns = ['date', 'pass_rate']
 
-        # Sort by date
-        daily_stats = daily_stats.sort_values('date')
+            # Sort by date
+            daily_stats = daily_stats.sort_values('date')
 
-        # Update chart with data
-        if len(daily_stats) > 1:
-            # Prepare data in format expected by update_chart_data
-            chart_data = pd.DataFrame({
-                'trim_date': daily_stats['date'],
-                'sigma_gradient': daily_stats['pass_rate']  # Using sigma_gradient column for pass rate data
-            })
-            self.trend_chart.update_chart_data(chart_data)
-        else:
+            # Update chart with data
+            if len(daily_stats) > 0:
+                # Set title to clarify what we're showing
+                self.trend_chart.title = "Pass Rate Over Time"
+                
+                # Convert dates to datetime for the chart
+                daily_stats['date'] = pd.to_datetime(daily_stats['date'])
+                # Prepare data in format expected by update_chart_data
+                chart_data = pd.DataFrame({
+                    'trim_date': daily_stats['date'],
+                    'sigma_gradient': daily_stats['pass_rate']  # Using sigma_gradient column for pass rate data
+                })
+                self.logger.info(f"Updating trend chart with {len(chart_data)} data points")
+                self.trend_chart.update_chart_data(chart_data)
+            else:
+                self.logger.warning("No data for trend chart")
+                self.trend_chart.update_chart_data(pd.DataFrame())
+        except Exception as e:
+            self.logger.error(f"Error updating trend chart: {e}")
             self.trend_chart.update_chart_data(pd.DataFrame())
 
     def _update_distribution_chart(self):
@@ -979,14 +1339,18 @@ class HistoricalPage(ctk.CTkFrame):
         if (self.current_data_df is None or self.current_data_df.empty or 
             'sigma_gradient' not in self.current_data_df.columns or 
             not hasattr(self, 'dist_chart') or self.dist_chart is None):
+            self.logger.warning("Cannot update distribution chart - missing data or chart widget")
             return
 
         # Get sigma values
         sigma_values = self.current_data_df['sigma_gradient'].dropna()
 
         if len(sigma_values) == 0:
+            self.logger.warning("No sigma gradient values to plot")
             return
 
+        self.logger.info(f"Updating distribution chart with {len(sigma_values)} sigma values")
+        
         # Update chart with data
         # For histogram, we need sigma_gradient data
         chart_data = pd.DataFrame({
@@ -998,44 +1362,53 @@ class HistoricalPage(ctk.CTkFrame):
         """Update model comparison chart."""
         if (self.current_data_df is None or self.current_data_df.empty or 
             not hasattr(self, 'comp_chart') or self.comp_chart is None):
+            self.logger.warning("Cannot update comparison chart - missing data or chart widget")
             return
 
-        # Calculate pass rate by model
-        model_stats = self.current_data_df.groupby('model').agg({
-            'status': [
-                lambda x: (x == 'Pass').mean() * 100,
-                'count'
-            ]
-        }).reset_index()
+        try:
+            # Calculate pass rate by model
+            model_stats = self.current_data_df.groupby('model').agg({
+                'status': [
+                    lambda x: (x.str.upper() == 'PASS').mean() * 100,
+                    'count'
+                ]
+            }).reset_index()
 
-        model_stats.columns = ['model', 'pass_rate', 'count']
+            model_stats.columns = ['model', 'pass_rate', 'count']
 
-        # Filter models with sufficient data
-        model_stats = model_stats[model_stats['count'] >= 5]
+            # Filter models with sufficient data
+            model_stats = model_stats[model_stats['count'] >= 5]
 
-        if len(model_stats) == 0:
-            return
+            if len(model_stats) == 0:
+                self.logger.warning("No models with sufficient data (>=5 samples)")
+                return
 
-        # Sort by pass rate
-        model_stats = model_stats.sort_values('pass_rate', ascending=False)
+            self.logger.info(f"Updating comparison chart with {len(model_stats)} models")
+            
+            # Sort by pass rate
+            model_stats = model_stats.sort_values('pass_rate', ascending=False)
 
-        # Determine colors based on pass rate
-        colors = []
-        for rate in model_stats['pass_rate']:
-            if rate >= 95:
-                colors.append('pass')
-            elif rate >= 90:
-                colors.append('warning')
-            else:
-                colors.append('fail')
+            # Determine colors based on pass rate
+            colors = []
+            for rate in model_stats['pass_rate']:
+                if rate >= 95:
+                    colors.append('pass')
+                elif rate >= 90:
+                    colors.append('warning')
+                else:
+                    colors.append('fail')
 
-        # Update chart with data
-        # For bar chart, we need month_year and track_status columns
-        chart_data = pd.DataFrame({
-            'month_year': model_stats['model'],  # Using month_year column for categories
-            'track_status': model_stats['pass_rate']  # Using track_status column for values
-        })
-        self.comp_chart.update_chart_data(chart_data)
+            # Update chart with data
+            # For bar chart, we need month_year and track_status columns
+            chart_data = pd.DataFrame({
+                'month_year': model_stats['model'],  # Using month_year column for categories
+                'track_status': model_stats['pass_rate']  # Using track_status column for values
+            })
+            self.comp_chart.update_chart_data(chart_data)
+            
+        except Exception as e:
+            self.logger.error(f"Error updating comparison chart: {e}")
+            self.logger.error(traceback.format_exc())
 
     def _get_days_back(self) -> Optional[int]:
         """Convert date range selection to days."""
@@ -2290,3 +2663,971 @@ Metrics:
         # Call parent cleanup if it exists
         if hasattr(super(), 'cleanup'):
             super().cleanup()
+
+    def _update_risk_dashboard(self, results):
+        """Update risk analysis dashboard with current data."""
+        if not results:
+            self.logger.warning("No results to update risk dashboard")
+            return
+        
+        try:
+            # Prepare risk data
+            risk_counts = {'High': 0, 'Medium': 0, 'Low': 0, 'Unknown': 0}
+            high_risk_units = []
+            risk_trends = {}
+            
+            for result in results:
+                # Count risk categories
+                if result.tracks:
+                    for track in result.tracks:
+                        risk_cat = 'Unknown'
+                        if hasattr(track, 'risk_category') and track.risk_category:
+                            risk_cat = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                        risk_counts[risk_cat] = risk_counts.get(risk_cat, 0) + 1
+                        
+                        # Collect high risk units
+                        if risk_cat == 'High':
+                            high_risk_units.append({
+                                'date': result.file_date or result.timestamp,
+                                'model': result.model,
+                                'serial': result.serial,
+                                'risk_score': getattr(track, 'failure_probability', 0),
+                                'issue': self._identify_primary_issue(track)
+                            })
+                        
+                        # Track risk trends by model
+                        if result.model not in risk_trends:
+                            risk_trends[result.model] = []
+                        risk_trends[result.model].append({
+                            'date': result.file_date or result.timestamp,
+                            'risk_score': getattr(track, 'failure_probability', 0)
+                        })
+            
+            # Update risk distribution chart
+            if risk_counts and any(risk_counts.values()):
+                # Prepare data for pie chart
+                categories = []
+                values = []
+                for cat, count in risk_counts.items():
+                    if count > 0:  # Only include categories with data
+                        categories.append(cat)
+                        values.append(count)
+                
+                if categories:
+                    # Create figure for pie chart
+                    self.risk_dist_chart.clear_chart()
+                    fig = self.risk_dist_chart.figure
+                    ax = fig.add_subplot(111)
+                    
+                    # Create pie chart
+                    colors = {'High': '#e74c3c', 'Medium': '#f39c12', 'Low': '#27ae60', 'Unknown': '#95a5a6'}
+                    pie_colors = [colors.get(cat, '#95a5a6') for cat in categories]
+                    
+                    wedges, texts, autotexts = ax.pie(values, labels=categories, colors=pie_colors, 
+                                                      autopct='%1.1f%%', startangle=90)
+                    ax.set_title('Risk Distribution')
+                    
+                    # Equal aspect ratio ensures that pie is drawn as a circle
+                    ax.axis('equal')
+                    
+                    fig.tight_layout()
+                    self.risk_dist_chart.canvas.draw()
+            
+            # Update high risk units list
+            self._update_high_risk_list(high_risk_units[:20])  # Show top 20
+            
+            # Update risk trends chart
+            self._update_risk_trends_chart(risk_trends)
+            
+        except Exception as e:
+            self.logger.error(f"Error updating risk dashboard: {e}")
+    
+    def _update_spc_charts(self, results):
+        """Update SPC charts automatically when data is loaded."""
+        if not results:
+            return
+            
+        try:
+            # Update control chart with sigma gradient data
+            chart_data = []
+            for result in results:
+                if result.tracks:
+                    for track in result.tracks:
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            chart_data.append({
+                                'date': result.file_date or result.timestamp,
+                                'value': track.sigma_gradient,
+                                'model': result.model
+                            })
+            
+            if chart_data:
+                # Sort by date and prepare for line chart
+                df = pd.DataFrame(chart_data).sort_values('date')
+                
+                # Prepare data for control chart (line chart format)
+                control_chart_data = pd.DataFrame({
+                    'trim_date': df['date'],
+                    'sigma_gradient': df['value']
+                })
+                
+                # Update control chart
+                self.control_chart.update_chart_data(control_chart_data)
+                
+                # Add control limits to the chart
+                if self.control_chart.figure.axes:
+                    ax = self.control_chart.figure.axes[0]
+                    
+                    # Calculate control limits
+                    mean = df['value'].mean()
+                    std = df['value'].std()
+                    ucl = mean + 3 * std
+                    lcl = mean - 3 * std
+                    
+                    # Add control limit lines
+                    ax.axhline(y=mean, color='g', linestyle='-', alpha=0.7, label=f'Mean: {mean:.4f}')
+                    ax.axhline(y=ucl, color='r', linestyle='--', alpha=0.7, label=f'UCL: {ucl:.4f}')
+                    ax.axhline(y=lcl, color='r', linestyle='--', alpha=0.7, label=f'LCL: {lcl:.4f}')
+                    
+                    # Update labels and title
+                    ax.set_xlabel('Date')
+                    ax.set_ylabel('Sigma Gradient')
+                    ax.set_title('Sigma Gradient Control Chart')
+                    ax.legend(loc='upper right')
+                    
+                    self.control_chart.canvas.draw_idle()
+            else:
+                self.control_chart.show_placeholder("No control chart data", "Run a query to view control charts")
+                
+            # Note: Pareto and drift charts remain on-demand since they require specific analysis
+            
+        except Exception as e:
+            self.logger.error(f"Error updating SPC charts: {e}")
+    
+    def _update_qa_metrics(self, results):
+        """Update QA metrics cards with calculated values."""
+        if not results:
+            # Reset all metrics
+            self.total_records_card.update_value("0")
+            self.yield_card.update_value("0%")
+            self.high_risk_card.update_value("0")
+            self.sigma_pass_rate_card.update_value("0%")
+            self.cpk_card.update_value("--")
+            self.drift_alert_card.update_value("0")
+            self.avg_linearity_card.update_value("--")
+            self.unresolved_alerts_card.update_value("0")
+            return
+        
+        try:
+            # Calculate metrics
+            total = len(results)
+            pass_count = sum(1 for r in results if r.overall_status.value == "Pass")
+            yield_rate = (pass_count / total * 100) if total > 0 else 0
+            
+            # Risk and sigma metrics
+            high_risk_count = 0
+            sigma_pass_count = 0
+            linearity_errors = []
+            sigma_values = []
+            
+            for result in results:
+                if result.tracks:
+                    for track in result.tracks:
+                        # Count high risk
+                        if hasattr(track, 'risk_category') and track.risk_category:
+                            risk_cat = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                            if risk_cat == 'High':
+                                high_risk_count += 1
+                        
+                        # Count sigma pass
+                        if hasattr(track, 'sigma_pass') and track.sigma_pass:
+                            sigma_pass_count += 1
+                        
+                        # Collect linearity errors
+                        if hasattr(track, 'final_linearity_error_shifted') and track.final_linearity_error_shifted is not None:
+                            linearity_errors.append(abs(track.final_linearity_error_shifted))
+                        
+                        # Collect sigma values for Cpk
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            sigma_values.append(track.sigma_gradient)
+            
+            # Calculate average linearity error
+            avg_linearity = np.mean(linearity_errors) if linearity_errors else 0
+            
+            # Calculate Cpk for overall process
+            cpk = "--"
+            if len(sigma_values) > 3:
+                mean_sigma = np.mean(sigma_values)
+                std_sigma = np.std(sigma_values)
+                if std_sigma > 0:
+                    # Assuming spec limits
+                    usl = 0.7
+                    lsl = 0.3
+                    cpu = (usl - mean_sigma) / (3 * std_sigma)
+                    cpl = (mean_sigma - lsl) / (3 * std_sigma)
+                    cpk_val = min(cpu, cpl)
+                    cpk = f"{max(0, cpk_val):.2f}"
+            
+            # Update metrics
+            self.total_records_card.update_value(str(total))
+            self.yield_card.update_value(f"{yield_rate:.1f}%")
+            self.high_risk_card.update_value(str(high_risk_count))
+            
+            total_tracks = sum(len(r.tracks) if r.tracks else 0 for r in results)
+            sigma_pass_rate = (sigma_pass_count / total_tracks * 100) if total_tracks > 0 else 0
+            self.sigma_pass_rate_card.update_value(f"{sigma_pass_rate:.1f}%")
+            
+            self.cpk_card.update_value(cpk)
+            # Get drift alerts count (placeholder - would implement actual detection)
+            drift_count = 0
+            if hasattr(self, '_drift_alerts'):
+                drift_count = self._drift_alerts
+            self.drift_alert_card.update_value(str(drift_count))
+            
+            self.avg_linearity_card.update_value(f"{avg_linearity:.4f}" if avg_linearity > 0 else "--")
+            
+            # Get unresolved alerts from database
+            unresolved_count = 0
+            try:
+                if hasattr(self.main_window, 'database_manager') or hasattr(self.main_window, 'db_manager'):
+                    db_manager = getattr(self.main_window, 'database_manager', None) or getattr(self.main_window, 'db_manager', None)
+                    if db_manager:
+                        with db_manager.get_session() as session:
+                            from laser_trim_analyzer.database.models import QAAlert
+                            unresolved_count = session.query(QAAlert).filter(QAAlert.resolved == False).count()
+            except Exception as e:
+                self.logger.debug(f"Could not query QA alerts: {e}")
+            
+            self.unresolved_alerts_card.update_value(str(unresolved_count))
+            
+            # Update color schemes based on values
+            if yield_rate >= 95:
+                self.yield_card.set_color_scheme("success")
+            elif yield_rate >= 90:
+                self.yield_card.set_color_scheme("warning")
+            else:
+                self.yield_card.set_color_scheme("error")
+            
+            if high_risk_count == 0:
+                self.high_risk_card.set_color_scheme("success")
+            elif high_risk_count <= 5:
+                self.high_risk_card.set_color_scheme("warning")
+            else:
+                self.high_risk_card.set_color_scheme("error")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating QA metrics: {e}")
+    
+    def _toggle_result_selection(self, result, checkbox_var):
+        """Toggle selection of a result for batch operations."""
+        try:
+            if checkbox_var.get():
+                self.selected_results.add(result.id)
+            else:
+                self.selected_results.discard(result.id)
+            
+            # Update export button state
+            if len(self.selected_results) > 0:
+                self.export_selected_btn.configure(state="normal")
+            else:
+                self.export_selected_btn.configure(state="disabled")
+                
+        except Exception as e:
+            self.logger.error(f"Error toggling selection: {e}")
+    
+    def _export_selected_results(self):
+        """Export only selected results to file."""
+        if not self.selected_results:
+            messagebox.showwarning("No Selection", "Please select results to export")
+            return
+        
+        try:
+            # Filter results
+            selected_data = [r for r in self.current_data if r.id in self.selected_results]
+            
+            if not selected_data:
+                messagebox.showwarning("No Data", "No selected data to export")
+                return
+            
+            # Ask for file location
+            filename = filedialog.asksaveasfilename(
+                defaultextension='.xlsx',
+                filetypes=[
+                    ('Excel files', '*.xlsx'),
+                    ('CSV files', '*.csv'),
+                    ('All files', '*.*')
+                ],
+                initialfile=f'selected_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            )
+            
+            if not filename:
+                return
+            
+            # Convert to DataFrame
+            export_df = pd.DataFrame([{
+                'date': r.file_date or r.timestamp,
+                'model': r.model,
+                'serial': r.serial,
+                'status': r.overall_status.value,
+                'system': r.system.value if hasattr(r, 'system') else 'Unknown',
+                'processing_time': r.processing_time
+            } for r in selected_data])
+            
+            # Export
+            if filename.endswith('.xlsx'):
+                export_df.to_excel(filename, index=False)
+            else:
+                export_df.to_csv(filename, index=False)
+            
+            messagebox.showinfo("Export Complete", f"Selected data exported to:\n{filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export selected data:\n{str(e)}")
+    
+    def _show_detailed_analysis(self, result):
+        """Show detailed analysis view for a specific result."""
+        try:
+            # Create detailed view dialog
+            dialog = tk.Toplevel(self.winfo_toplevel())
+            dialog.title(f"Detailed Analysis - {result.model} - {result.serial}")
+            dialog.geometry("900x700")
+            
+            # Create notebook for organized view
+            notebook = ttk.Notebook(dialog)
+            notebook.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Overview tab
+            overview_frame = ttk.Frame(notebook)
+            notebook.add(overview_frame, text="Overview")
+            
+            overview_text = tk.Text(overview_frame, wrap='word', width=100, height=30)
+            overview_text.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            # Build overview content
+            overview_content = f"""ANALYSIS OVERVIEW
+{'=' * 80}
+File: {result.filename}
+Date: {result.file_date or result.timestamp}
+Model: {result.model}
+Serial: {result.serial}
+System: {result.system.value if hasattr(result, 'system') else 'Unknown'}
+Overall Status: {result.overall_status.value}
+Processing Time: {result.processing_time:.2f}s
+
+TRACK DETAILS:
+"""
+            
+            # Add track details
+            if result.tracks:
+                for i, track in enumerate(result.tracks, 1):
+                    overview_content += f"\n{'-' * 40}\nTrack {i}: {track.track_id}\n"
+                    overview_content += f"Status: {track.status.value}\n"
+                    overview_content += f"Sigma Gradient: {track.sigma_gradient:.6f}\n"
+                    overview_content += f"Sigma Pass: {'Yes' if track.sigma_pass else 'No'}\n"
+                    overview_content += f"Linearity Error: {abs(track.final_linearity_error_shifted or track.final_linearity_error_raw or 0):.6f}\n"
+                    overview_content += f"Risk Category: {track.risk_category.value if track.risk_category else 'Unknown'}\n"
+                    overview_content += f"Failure Probability: {track.failure_probability:.2%}\n"
+                    overview_content += f"Trim Improvement: {track.trim_improvement_percent:.1f}%\n"
+            
+            overview_text.insert('1.0', overview_content)
+            overview_text.configure(state='disabled')
+            
+            # Metrics tab
+            metrics_frame = ttk.Frame(notebook)
+            notebook.add(metrics_frame, text="Detailed Metrics")
+            
+            # Add charts if track data exists
+            if result.tracks and len(result.tracks) > 0:
+                track = result.tracks[0]  # Use first track for now
+                
+                # Create figure for metrics visualization
+                from matplotlib.figure import Figure
+                fig = Figure(figsize=(8, 6))
+                
+                # Position vs Error plot
+                if hasattr(track, 'position_data') and hasattr(track, 'error_data'):
+                    ax = fig.add_subplot(111)
+                    ax.plot(track.position_data, track.error_data, 'b-', linewidth=2)
+                    ax.axhline(y=0, color='k', linestyle='--', alpha=0.5)
+                    ax.set_xlabel('Position')
+                    ax.set_ylabel('Error')
+                    ax.set_title('Position vs Error Profile')
+                    ax.grid(True, alpha=0.3)
+                    
+                    canvas = FigureCanvasTkAgg(fig, metrics_frame)
+                    canvas.draw()
+                    canvas.get_tk_widget().pack(fill='both', expand=True)
+            
+            # Close button
+            close_btn = ttk.Button(dialog, text="Close", command=dialog.destroy)
+            close_btn.pack(pady=10)
+            
+        except Exception as e:
+            self.logger.error(f"Error showing detailed analysis: {e}")
+            messagebox.showerror("Error", f"Failed to show detailed analysis:\n{str(e)}")
+    
+    def _identify_primary_issue(self, track):
+        """Identify the primary issue for a track."""
+        issues = []
+        
+        if hasattr(track, 'sigma_pass') and not track.sigma_pass:
+            issues.append("Sigma Fail")
+        
+        if hasattr(track, 'linearity_pass') and not track.linearity_pass:
+            issues.append("Linearity Fail")
+        
+        if hasattr(track, 'range_utilization_percent') and track.range_utilization_percent < 80:
+            issues.append("Low Range Utilization")
+        
+        if hasattr(track, 'failure_probability') and track.failure_probability > 0.5:
+            issues.append("High Failure Risk")
+        
+        return ", ".join(issues) if issues else "Multiple Issues"
+    
+    def _update_high_risk_list(self, high_risk_units):
+        """Update the high risk units list display."""
+        try:
+            # Clear existing items
+            for widget in self.high_risk_frame.winfo_children():
+                if widget.winfo_class() != 'Frame' or widget.winfo_y() > 50:  # Keep header
+                    widget.destroy()
+            
+            # Add high risk units
+            for i, unit in enumerate(high_risk_units):
+                row_frame = ctk.CTkFrame(self.high_risk_frame)
+                row_frame.pack(fill='x', pady=2)
+                
+                # Date
+                date_label = ctk.CTkLabel(
+                    row_frame,
+                    text=unit['date'].strftime('%Y-%m-%d') if unit['date'] else 'Unknown',
+                    width=100
+                )
+                date_label.grid(row=0, column=0, padx=10, pady=5, sticky='w')
+                
+                # Model
+                model_label = ctk.CTkLabel(row_frame, text=unit['model'], width=80)
+                model_label.grid(row=0, column=1, padx=10, pady=5, sticky='w')
+                
+                # Serial
+                serial_label = ctk.CTkLabel(row_frame, text=unit['serial'], width=120)
+                serial_label.grid(row=0, column=2, padx=10, pady=5, sticky='w')
+                
+                # Risk Score
+                risk_label = ctk.CTkLabel(
+                    row_frame,
+                    text=f"{unit['risk_score']:.2%}",
+                    width=80,
+                    text_color="red"
+                )
+                risk_label.grid(row=0, column=3, padx=10, pady=5, sticky='w')
+                
+                # Primary Issue
+                issue_label = ctk.CTkLabel(row_frame, text=unit['issue'], width=150)
+                issue_label.grid(row=0, column=4, padx=10, pady=5, sticky='w')
+                
+        except Exception as e:
+            self.logger.error(f"Error updating high risk list: {e}")
+    
+    def _update_risk_trends_chart(self, risk_trends):
+        """Update risk trends chart."""
+        try:
+            self.risk_trend_chart.clear_chart()
+            ax = self.risk_trend_chart.figure.add_subplot(111)
+            
+            colors = ['#e74c3c', '#f39c12', '#3498db', '#2ecc71', '#9b59b6']
+            
+            for i, (model, trends) in enumerate(list(risk_trends.items())[:5]):  # Top 5 models
+                if trends:
+                    # Sort by date
+                    trends = sorted(trends, key=lambda x: x['date'])
+                    dates = [t['date'] for t in trends]
+                    scores = [t['risk_score'] for t in trends]
+                    
+                    ax.plot(dates, scores, marker='o', label=model, 
+                           color=colors[i % len(colors)], linewidth=2)
+            
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Risk Score')
+            ax.set_title('Risk Score Trends by Model')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(0, 1)
+            
+            # Format dates
+            import matplotlib.dates as mdates
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax.xaxis.set_major_locator(mdates.DayLocator(interval=7))
+            self.risk_trend_chart.figure.autofmt_xdate()
+            
+            self.risk_trend_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating risk trends chart: {e}")
+    
+    def _generate_control_charts(self):
+        """Generate statistical control charts for key parameters."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Switch to control charts tab
+            self.spc_tabview.set("Control Charts")
+            
+            # Prepare data
+            chart_data = []
+            for result in self.current_data:
+                if result.tracks:
+                    for track in result.tracks:
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            chart_data.append({
+                                'date': result.file_date or result.timestamp,
+                                'value': track.sigma_gradient,
+                                'model': result.model
+                            })
+            
+            if not chart_data:
+                messagebox.showwarning("No Data", "No sigma gradient data available")
+                return
+            
+            # Create control chart
+            df = pd.DataFrame(chart_data).sort_values('date')
+            
+            self.control_chart.clear_chart()
+            ax = self.control_chart.figure.add_subplot(111)
+            
+            # Plot values
+            ax.plot(df.index, df['value'], 'bo-', label='Sigma Gradient')
+            
+            # Calculate control limits
+            mean = df['value'].mean()
+            std = df['value'].std()
+            ucl = mean + 3 * std
+            lcl = mean - 3 * std
+            
+            # Plot control limits
+            ax.axhline(y=mean, color='g', linestyle='-', label=f'Mean: {mean:.4f}')
+            ax.axhline(y=ucl, color='r', linestyle='--', label=f'UCL: {ucl:.4f}')
+            ax.axhline(y=lcl, color='r', linestyle='--', label=f'LCL: {lcl:.4f}')
+            
+            # Highlight out-of-control points
+            ooc_points = df[(df['value'] > ucl) | (df['value'] < lcl)]
+            if not ooc_points.empty:
+                ax.plot(ooc_points.index, ooc_points['value'], 'ro', markersize=10, label='Out of Control')
+            
+            ax.set_xlabel('Sample Number')
+            ax.set_ylabel('Sigma Gradient')
+            ax.set_title('Sigma Gradient Control Chart')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            self.control_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error generating control charts: {e}")
+            messagebox.showerror("Error", f"Failed to generate control charts:\n{str(e)}")
+    
+    def _run_capability_study(self):
+        """Run process capability study."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Switch to capability tab
+            self.spc_tabview.set("Process Capability")
+            
+            # Collect data
+            sigma_values = []
+            for result in self.current_data:
+                if result.tracks:
+                    for track in result.tracks:
+                        # Debug logging for sigma values
+                        sigma_val = getattr(track, 'sigma_gradient', None)
+                        if i == 0:  # Only log for first result to avoid spam
+                            logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            sigma_values.append(track.sigma_gradient)
+            
+            if len(sigma_values) < 30:
+                messagebox.showwarning("Insufficient Data", 
+                                     f"Need at least 30 samples for capability study. Found: {len(sigma_values)}")
+                return
+            
+            # Calculate statistics
+            mean = np.mean(sigma_values)
+            std = np.std(sigma_values, ddof=1)
+            
+            # Specification limits (example)
+            usl = 0.7
+            lsl = 0.3
+            
+            # Calculate capability indices
+            cp = (usl - lsl) / (6 * std) if std > 0 else 0
+            cpu = (usl - mean) / (3 * std) if std > 0 else 0
+            cpl = (mean - lsl) / (3 * std) if std > 0 else 0
+            cpk = min(cpu, cpl)
+            
+            # Percentage within spec
+            within_spec = sum(1 for v in sigma_values if lsl <= v <= usl)
+            pct_within_spec = (within_spec / len(sigma_values)) * 100
+            
+            # Generate report
+            report = f"""PROCESS CAPABILITY STUDY REPORT
+{'=' * 80}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Parameter: Sigma Gradient
+
+SAMPLE STATISTICS:
+    Sample Size: {len(sigma_values)}
+    Mean: {mean:.6f}
+    Std Dev: {std:.6f}
+    Min: {min(sigma_values):.6f}
+    Max: {max(sigma_values):.6f}
+
+SPECIFICATION LIMITS:
+    LSL: {lsl:.6f}
+    USL: {usl:.6f}
+    Target: {(usl + lsl) / 2:.6f}
+
+PROCESS CAPABILITY INDICES:
+    Cp:  {cp:.3f}  {'(Poor)' if cp < 1.0 else '(Acceptable)' if cp < 1.33 else '(Good)'}
+    Cpk: {cpk:.3f} {'(Poor)' if cpk < 1.0 else '(Acceptable)' if cpk < 1.33 else '(Good)'}
+    Cpu: {cpu:.3f}
+    Cpl: {cpl:.3f}
+
+PERFORMANCE:
+    % Within Spec: {pct_within_spec:.2f}%
+    Expected PPM Defective: {((1 - pct_within_spec/100) * 1000000):.0f}
+
+INTERPRETATION:
+"""
+            
+            if cpk < 1.0:
+                report += "    ⚠️  Process is not capable. Significant improvement needed.\n"
+            elif cpk < 1.33:
+                report += "    ⚡ Process is marginally capable. Consider improvement.\n"
+            else:
+                report += "    ✅ Process is capable and meeting specifications.\n"
+            
+            # Display report
+            self.capability_display.configure(state='normal')
+            self.capability_display.delete('1.0', tk.END)
+            self.capability_display.insert('1.0', report)
+            self.capability_display.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error running capability study: {e}")
+            messagebox.showerror("Error", f"Failed to run capability study:\n{str(e)}")
+    
+    def _run_pareto_analysis(self):
+        """Run Pareto analysis on failure modes."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Switch to Pareto tab
+            self.spc_tabview.set("Pareto Analysis")
+            
+            # Collect failure data
+            failure_counts = {}
+            
+            for result in self.current_data:
+                if result.tracks:
+                    for track in result.tracks:
+                        failures = []
+                        
+                        # Check various failure modes
+                        if hasattr(track, 'sigma_pass') and not track.sigma_pass:
+                            failures.append('Sigma Failure')
+                        
+                        if hasattr(track, 'linearity_pass') and not track.linearity_pass:
+                            failures.append('Linearity Failure')
+                        
+                        if hasattr(track, 'risk_category') and track.risk_category:
+                            risk = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                            if risk == 'High':
+                                failures.append('High Risk')
+                        
+                        if hasattr(track, 'range_utilization_percent') and track.range_utilization_percent is not None and track.range_utilization_percent < 80:
+                            failures.append('Low Range Utilization')
+                        
+                        # Count failures
+                        for failure in failures:
+                            failure_counts[failure] = failure_counts.get(failure, 0) + 1
+            
+            if not failure_counts:
+                messagebox.showinfo("No Failures", "No failures found in the current data")
+                return
+            
+            # Sort by count (descending)
+            sorted_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+            
+            # Prepare data for Pareto chart
+            categories = [f[0] for f in sorted_failures]
+            counts = [f[1] for f in sorted_failures]
+            
+            # Calculate cumulative percentage
+            total = sum(counts)
+            cumulative_pct = []
+            cumulative = 0
+            for count in counts:
+                cumulative += count
+                cumulative_pct.append((cumulative / total) * 100)
+            
+            # Create Pareto chart
+            self.pareto_chart.clear_chart()
+            fig = self.pareto_chart.figure
+            ax1 = fig.add_subplot(111)
+            
+            # Bar chart
+            x = np.arange(len(categories))
+            bars = ax1.bar(x, counts, color='steelblue', alpha=0.8)
+            ax1.set_xlabel('Failure Mode')
+            ax1.set_ylabel('Count', color='steelblue')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(categories, rotation=45, ha='right')
+            
+            # Add value labels on bars
+            for bar, count in zip(bars, counts):
+                height = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{count}', ha='center', va='bottom')
+            
+            # Cumulative line
+            ax2 = ax1.twinx()
+            ax2.plot(x, cumulative_pct, 'ro-', linewidth=2, markersize=8)
+            ax2.set_ylabel('Cumulative %', color='red')
+            ax2.set_ylim(0, 105)
+            
+            # Add 80% reference line
+            ax2.axhline(y=80, color='green', linestyle='--', alpha=0.7, label='80% line')
+            
+            ax1.set_title('Pareto Analysis of Failure Modes')
+            fig.tight_layout()
+            self.pareto_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error running Pareto analysis: {e}")
+            messagebox.showerror("Error", f"Failed to run Pareto analysis:\n{str(e)}")
+    
+    def _detect_process_drift(self):
+        """Detect process drift using statistical methods."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Switch to drift detection tab
+            self.spc_tabview.set("Drift Detection")
+            
+            # Prepare time series data
+            drift_data = []
+            for result in self.current_data:
+                if result.tracks:
+                    for track in result.tracks:
+                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
+                            drift_data.append({
+                                'date': result.file_date or result.timestamp,
+                                'value': track.sigma_gradient,
+                                'model': result.model
+                            })
+            
+            if len(drift_data) < 20:
+                messagebox.showwarning("Insufficient Data", 
+                                     f"Need at least 20 samples for drift detection. Found: {len(drift_data)}")
+                return
+            
+            # Convert to DataFrame and sort by date
+            df = pd.DataFrame(drift_data).sort_values('date')
+            
+            # Calculate moving averages
+            window_size = min(10, len(df) // 4)
+            df['ma'] = df['value'].rolling(window=window_size).mean()
+            df['ma_std'] = df['value'].rolling(window=window_size).std()
+            
+            # Detect drift using CUSUM or similar
+            target = df['value'].iloc[:window_size].mean()
+            k = 0.5  # Slack parameter
+            h = 4    # Decision interval
+            
+            cusum_pos = []
+            cusum_neg = []
+            c_pos = 0
+            c_neg = 0
+            
+            for value in df['value']:
+                c_pos = max(0, c_pos + value - target - k)
+                c_neg = max(0, c_neg + target - value - k)
+                cusum_pos.append(c_pos)
+                cusum_neg.append(c_neg)
+            
+            df['cusum_pos'] = cusum_pos
+            df['cusum_neg'] = cusum_neg
+            
+            # Plot drift analysis
+            self.drift_chart.clear_chart()
+            fig = self.drift_chart.figure
+            
+            # Create subplots
+            ax1 = fig.add_subplot(211)
+            ax2 = fig.add_subplot(212)
+            
+            # Plot values and moving average
+            ax1.plot(df.index, df['value'], 'bo-', alpha=0.5, label='Actual')
+            ax1.plot(df.index, df['ma'], 'r-', linewidth=2, label='Moving Average')
+            ax1.fill_between(df.index, 
+                            df['ma'] - 2*df['ma_std'], 
+                            df['ma'] + 2*df['ma_std'],
+                            alpha=0.2, color='red', label='±2σ Band')
+            ax1.set_ylabel('Sigma Gradient')
+            ax1.set_title('Process Values with Moving Average')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot CUSUM
+            ax2.plot(df.index, df['cusum_pos'], 'g-', linewidth=2, label='CUSUM+')
+            ax2.plot(df.index, df['cusum_neg'], 'r-', linewidth=2, label='CUSUM-')
+            ax2.axhline(y=h, color='k', linestyle='--', alpha=0.5, label=f'h={h}')
+            ax2.set_xlabel('Sample Number')
+            ax2.set_ylabel('CUSUM Value')
+            ax2.set_title('CUSUM Chart for Drift Detection')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Detect drift points
+            drift_points = df[(df['cusum_pos'] > h) | (df['cusum_neg'] > h)]
+            if not drift_points.empty:
+                ax2.scatter(drift_points.index, 
+                          [h] * len(drift_points), 
+                          color='red', s=100, marker='v', 
+                          label=f'Drift Detected ({len(drift_points)} points)')
+                ax2.legend()
+            
+            fig.tight_layout()
+            self.drift_chart.canvas.draw()
+            
+            # Update drift alert metric
+            if not drift_points.empty:
+                self._drift_alerts = len(drift_points)  # Store for metric update
+                self.drift_alert_card.update_value(str(len(drift_points)))
+                self.drift_alert_card.set_color_scheme("error")
+                
+                # Show drift details
+                messagebox.showinfo("Drift Detected", 
+                                  f"Process drift detected at {len(drift_points)} points.\n"
+                                  f"Review the CUSUM chart for details.")
+            else:
+                self._drift_alerts = 0
+                self.drift_alert_card.update_value("0")
+                self.drift_alert_card.set_color_scheme("success")
+                
+                messagebox.showinfo("No Drift", 
+                                  "No significant process drift detected.\n"
+                                  "Process appears to be stable.")
+            
+        except Exception as e:
+            self.logger.error(f"Error detecting process drift: {e}")
+            messagebox.showerror("Error", f"Failed to detect process drift:\n{str(e)}")
+    
+    def _analyze_failure_modes(self):
+        """Analyze failure modes and patterns."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Switch to failure modes tab
+            self.spc_tabview.set("Failure Modes")
+            
+            # Analyze failure patterns
+            failure_analysis = {
+                'total_units': 0,
+                'failed_units': 0,
+                'failure_modes': {},
+                'correlations': {},
+                'recommendations': []
+            }
+            
+            for result in self.current_data:
+                failure_analysis['total_units'] += 1
+                
+                if result.overall_status.value != "Pass":
+                    failure_analysis['failed_units'] += 1
+                
+                if result.tracks:
+                    for track in result.tracks:
+                        # Identify failure modes
+                        failures = []
+                        
+                        if hasattr(track, 'sigma_pass') and not track.sigma_pass:
+                            failures.append('Sigma Failure')
+                            
+                        if hasattr(track, 'linearity_pass') and not track.linearity_pass:
+                            failures.append('Linearity Failure')
+                            
+                        if hasattr(track, 'risk_category') and track.risk_category:
+                            risk = track.risk_category.value if hasattr(track.risk_category, 'value') else str(track.risk_category)
+                            if risk == 'High':
+                                failures.append('High Risk Classification')
+                        
+                        # Count failure combinations
+                        if failures:
+                            failure_key = ' + '.join(sorted(failures))
+                            failure_analysis['failure_modes'][failure_key] = \
+                                failure_analysis['failure_modes'].get(failure_key, 0) + 1
+            
+            # Generate recommendations based on analysis
+            if failure_analysis['failure_modes']:
+                top_failure = max(failure_analysis['failure_modes'].items(), key=lambda x: x[1])
+                
+                if 'Sigma Failure' in top_failure[0]:
+                    failure_analysis['recommendations'].append(
+                        "• Review and optimize trim parameters - sigma failures are prevalent"
+                    )
+                
+                if 'Linearity Failure' in top_failure[0]:
+                    failure_analysis['recommendations'].append(
+                        "• Investigate mechanical alignment and calibration procedures"
+                    )
+                
+                if 'High Risk' in top_failure[0]:
+                    failure_analysis['recommendations'].append(
+                        "• Implement additional quality checks for high-risk units"
+                    )
+            
+            # Generate report
+            report = f"""FAILURE MODE ANALYSIS REPORT
+{'=' * 80}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+SUMMARY:
+    Total Units Analyzed: {failure_analysis['total_units']}
+    Failed Units: {failure_analysis['failed_units']}
+    Failure Rate: {(failure_analysis['failed_units'] / failure_analysis['total_units'] * 100):.2f}%
+
+FAILURE MODE BREAKDOWN:
+"""
+            
+            # Sort failure modes by frequency
+            sorted_modes = sorted(failure_analysis['failure_modes'].items(), 
+                                key=lambda x: x[1], reverse=True)
+            
+            for mode, count in sorted_modes:
+                percentage = (count / failure_analysis['failed_units'] * 100) if failure_analysis['failed_units'] > 0 else 0
+                report += f"    {mode}: {count} occurrences ({percentage:.1f}%)\n"
+            
+            report += f"\nRECOMMENDATIONS:\n"
+            for rec in failure_analysis['recommendations']:
+                report += f"{rec}\n"
+            
+            # Display report
+            self.failure_mode_display.configure(state='normal')
+            self.failure_mode_display.delete('1.0', tk.END)
+            self.failure_mode_display.insert('1.0', report)
+            self.failure_mode_display.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing failure modes: {e}")
+            messagebox.showerror("Error", f"Failed to analyze failure modes:\n{str(e)}")

@@ -42,11 +42,26 @@ def fix_database_enums(dry_run=False):
     if dry_run:
         print("DRY RUN MODE - No changes will be made")
     
-    # Get database path
-    db_path = os.path.expandvars(str(config.database.path))
+    # Get database path - try multiple locations
+    possible_paths = [
+        os.path.expandvars(str(config.database.path)),
+        os.path.expandvars(os.path.join(os.environ.get('TEMP', ''), 'laser_trim_analyzer', 'analyzer_v2.db')),
+        os.path.expandvars(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'LaserTrimAnalyzer', 'database', 'laser_trim_local.db')),
+        os.path.expandvars(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'LaserTrimAnalyzer', 'dev', 'laser_trim_dev.db')),
+        os.path.join(os.path.expanduser('~'), '.laser_trim_analyzer', 'analyzer_v2.db'),
+        os.path.join(os.path.expanduser('~'), '.laser_trim_analyzer', 'analysis.db'),
+    ]
     
-    if not os.path.exists(db_path):
-        print(f"Database not found at: {db_path}")
+    db_path = None
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            db_path = path
+            break
+    
+    if not db_path:
+        print(f"Database not found. Checked these locations:")
+        for path in possible_paths:
+            print(f"  - {path}")
         return
     
     print(f"Database: {db_path}")
@@ -73,9 +88,9 @@ def fix_database_enums(dry_run=False):
                 ("'Unknown'", "'UNKNOWN'"),
             ]
         },
-        # Risk Category fixes in prediction_risk
+        # Risk Category fixes in ml_predictions
         {
-            'table': 'prediction_risk',
+            'table': 'ml_predictions',
             'column': 'predicted_risk_category',
             'fixes': [
                 ("'high'", "'HIGH'"),
@@ -93,42 +108,42 @@ def fix_database_enums(dry_run=False):
             'table': 'track_results',
             'column': 'status',
             'fixes': [
-                ("'pass'", "'PASS'"),
-                ("'fail'", "'FAIL'"),
-                ("'warning'", "'WARNING'"),
-                ("'error'", "'ERROR'"),
-                ("'Pass'", "'PASS'"),
-                ("'Fail'", "'FAIL'"),
-                ("'Warning'", "'WARNING'"),
-                ("'Error'", "'ERROR'"),
+                ("'pass'", "'Pass'"),
+                ("'fail'", "'Fail'"),
+                ("'warning'", "'Warning'"),
+                ("'error'", "'Error'"),
+                ("'PASS'", "'Pass'"),
+                ("'FAIL'", "'Fail'"),
+                ("'WARNING'", "'Warning'"),
+                ("'ERROR'", "'Error'"),
+                ("''", "'Error'"),  # Empty strings to Error
             ]
         },
         {
             'table': 'analysis_results',
             'column': 'overall_status',
             'fixes': [
-                ("'pass'", "'PASS'"),
-                ("'fail'", "'FAIL'"),
-                ("'warning'", "'WARNING'"),
-                ("'error'", "'ERROR'"),
-                ("'Pass'", "'PASS'"),
-                ("'Fail'", "'FAIL'"),
-                ("'Warning'", "'WARNING'"),
-                ("'Error'", "'ERROR'"),
-                ("'pending'", "'PROCESSING_FAILED'"),
-                ("'Pending'", "'PROCESSING_FAILED'"),
-                ("''", "'ERROR'"),  # Empty strings to ERROR
+                ("'pass'", "'Pass'"),
+                ("'fail'", "'Fail'"),
+                ("'warning'", "'Warning'"),
+                ("'error'", "'Error'"),
+                ("'PASS'", "'Pass'"),
+                ("'FAIL'", "'Fail'"),
+                ("'WARNING'", "'Warning'"),
+                ("'ERROR'", "'Error'"),
+                ("'pending'", "'Processing Failed'"),
+                ("'Pending'", "'Processing Failed'"),
+                ("'processing_failed'", "'Processing Failed'"),
+                ("''", "'Error'"),  # Empty strings to Error
             ]
         },
         # System Type fixes
         {
             'table': 'analysis_results',
-            'column': 'system_type',
+            'column': 'system',
             'fixes': [
                 ("'a'", "'A'"),
                 ("'b'", "'B'"),
-                ("'unknown'", "'UNKNOWN'"),
-                ("'Unknown'", "'UNKNOWN'"),
             ]
         },
         # Alert Type fixes
@@ -136,13 +151,13 @@ def fix_database_enums(dry_run=False):
             'table': 'qa_alerts',
             'column': 'alert_type',
             'fixes': [
-                ("'carbon_screen'", "'CARBON_SCREEN'"),
-                ("'high_risk'", "'HIGH_RISK'"),
-                ("'drift_detected'", "'DRIFT_DETECTED'"),
-                ("'threshold_exceeded'", "'THRESHOLD_EXCEEDED'"),
-                ("'maintenance_required'", "'MAINTENANCE_REQUIRED'"),
-                ("'sigma_fail'", "'SIGMA_FAIL'"),
-                ("'process_error'", "'PROCESS_ERROR'"),
+                ("'carbon_screen'", "'Carbon Screen Check'"),
+                ("'high_risk'", "'High Risk Unit'"),
+                ("'drift_detected'", "'Manufacturing Drift'"),
+                ("'threshold_exceeded'", "'Threshold Exceeded'"),
+                ("'maintenance_required'", "'Maintenance Required'"),
+                ("'sigma_fail'", "'Sigma Validation Failed'"),
+                ("'process_error'", "'Process Error'"),
             ]
         }
     ]
@@ -182,10 +197,9 @@ def fix_database_enums(dry_run=False):
     
     # Also check for NULL values that should be set to defaults
     null_fixes = [
-        ('track_results', 'risk_category', "'UNKNOWN'"),
-        ('track_results', 'status', "'ERROR'"),
-        ('analysis_results', 'overall_status', "'ERROR'"),
-        ('analysis_results', 'system_type', "'UNKNOWN'"),
+        ('track_results', 'risk_category', "'Unknown'"),
+        ('track_results', 'status', "'Error'"),
+        ('analysis_results', 'overall_status', "'Error'"),
     ]
     
     print("\nChecking for NULL values:")

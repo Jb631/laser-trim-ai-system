@@ -261,8 +261,17 @@ class ChartWidget(ctk.CTkFrame):
                 ax.plot(x_data, trend_y, "--", color=self.qa_colors['warning'], 
                        linewidth=2, alpha=0.7, label=f'Trend (slope: {z[0]:.6f})')
                 
-                # Add legend
-                ax.legend(loc='upper right', fontsize=9)
+                # Add legend with better contrast
+                legend = ax.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True)
+                # Set legend background based on theme
+                if is_dark:
+                    legend.get_frame().set_facecolor('#2b2b2b')
+                    legend.get_frame().set_edgecolor('#555555')
+                    legend.get_frame().set_alpha(0.9)
+                else:
+                    legend.get_frame().set_facecolor('white')
+                    legend.get_frame().set_edgecolor('#cccccc')
+                    legend.get_frame().set_alpha(0.9)
             
             ax.set_xlabel('Date')
             ax.set_ylabel('Sigma Gradient')
@@ -369,17 +378,30 @@ class ChartWidget(ctk.CTkFrame):
             x_data = data['x']
             y_data = data['y']
             
-            ax.scatter(x_data, y_data, alpha=0.6, s=50, color=self.qa_colors['primary'])
-            ax.set_xlabel('Sigma Gradient')
-            ax.set_ylabel('Linearity Error')
+            # Filter out any NaN values
+            mask = ~(np.isnan(x_data) | np.isnan(y_data))
+            x_data = x_data[mask]
+            y_data = y_data[mask]
             
-            # Add correlation if enough points
-            if len(x_data) > 5:
-                correlation = np.corrcoef(x_data, y_data)[0, 1]
-                if not np.isnan(correlation):
-                    ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
-                           transform=ax.transAxes, fontsize=10,
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor=theme_colors["bg"]["primary"], alpha=0.8))
+            if len(x_data) > 0:
+                ax.scatter(x_data, y_data, alpha=0.6, s=50, color=self.qa_colors['primary'], edgecolors='black', linewidth=0.5)
+                ax.set_xlabel('Sigma Gradient')
+                ax.set_ylabel('Linearity Error')
+                
+                # Add correlation if enough points
+                if len(x_data) > 5:
+                    correlation = np.corrcoef(x_data, y_data)[0, 1]
+                    if not np.isnan(correlation):
+                        # Better contrast for text box
+                        box_color = '#2b2b2b' if is_dark else 'white'
+                        text_color_inv = 'white' if is_dark else 'black'
+                        ax.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
+                               transform=ax.transAxes, fontsize=10, color=text_color_inv,
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor=box_color, edgecolor=grid_color, alpha=0.9))
+                else:
+                    ax.text(0.5, 0.5, 'Insufficient data for correlation\n(minimum 5 points required)', 
+                           transform=ax.transAxes, fontsize=12, ha='center', va='center',
+                           color=text_color, alpha=0.7)
                 
         if self.title:
             ax.set_title(self.title, color=text_color)
