@@ -277,16 +277,29 @@ class ModelVersionControl:
         # Save config
         config_file = self.configs_path / model_name / f'{version}.json'
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        model.config.save(str(config_file))
+        
+        # Save config if model has one
+        if hasattr(model, 'config') and hasattr(model.config, 'save'):
+            model.config.save(str(config_file))
+        else:
+            # Create a basic config if model doesn't have one
+            basic_config = {
+                'model_type': model_name,
+                'version': version,
+                'features': [],
+                'target': None
+            }
+            with open(config_file, 'w') as f:
+                json.dump(basic_config, f, indent=2)
 
         # Save metadata
         metadata = {
             'model_name': model_name,
             'version': version,
             'saved_at': datetime.now().isoformat(),
-            'training_metadata': model.training_metadata,
-            'performance_metrics': model.performance_metrics,
-            'config_hash': self._hash_config(model.config.to_dict())
+            'training_metadata': getattr(model, 'training_metadata', {}),
+            'performance_metrics': getattr(model, 'performance_metrics', {}),
+            'config_hash': self._hash_config(model.config.to_dict()) if hasattr(model, 'config') else ''
         }
 
         metadata_file = self.metadata_path / model_name / f'{version}.json'
@@ -433,6 +446,12 @@ class MLEngine:
 
         # Retraining scheduler
         self.retraining_schedule: Dict[str, datetime] = {}
+
+        # Load saved engine state if available
+        try:
+            self.load_engine_state()
+        except Exception as e:
+            self.logger.warning(f"Could not load saved engine state: {e}")
 
         self.logger.info("ML Engine initialized")
 

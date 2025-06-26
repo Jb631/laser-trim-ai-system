@@ -139,13 +139,18 @@ class SigmaAnalyzer(BaseAnalyzer):
         gradients = []
         step_size = self.analysis_config.matlab_gradient_step
 
+        # Log initial data characteristics
+        self.logger.info(f"Calculating sigma gradient: {len(positions)} positions, "
+                        f"range [{min(positions):.3f}, {max(positions):.3f}], step_size={step_size}")
+        
         # Calculate gradients with specified step size
         for i in range(len(positions) - step_size):
             dx = positions[i + step_size] - positions[i]
             dy = errors[i + step_size] - errors[i]
 
             # FIXED: Add proper bounds checking for division by zero
-            if abs(dx) > 1e-10:  # Ensure dx is not effectively zero
+            # Use a more reasonable threshold based on typical position resolution
+            if abs(dx) > 1e-6:  # Changed from 1e-10 to 1e-6 for better numerical stability
                 gradient = dy / dx
                 # Additional bounds checking for numerical stability
                 if not (np.isnan(gradient) or np.isinf(gradient)):
@@ -153,11 +158,16 @@ class SigmaAnalyzer(BaseAnalyzer):
                 else:
                     self.logger.warning(f"Invalid gradient calculated at index {i}: {gradient}")
             else:
-                self.logger.debug(f"Skipping near-zero position difference at index {i}: dx={dx}")
+                self.logger.warning(f"Skipping near-zero position difference at index {i}: dx={dx:.12f}, "
+                                  f"positions[{i}]={positions[i]:.6f}, positions[{i+step_size}]={positions[i+step_size]:.6f}")
 
         if not gradients:
-            self.logger.warning("No valid gradients calculated - insufficient position variation")
-            return 0.0
+            self.logger.error(f"No valid gradients calculated - insufficient position variation. "
+                             f"Positions range: {min(positions):.6f} to {max(positions):.6f}, "
+                             f"Errors range: {min(errors):.6f} to {max(errors):.6f}, "
+                             f"Step size: {step_size}, Total points: {len(positions)}")
+            # Return a small non-zero value instead of 0 to indicate processing occurred
+            return 0.000001
 
         # Calculate standard deviation with N-1 degrees of freedom
         # Additional safety check for edge cases
@@ -166,7 +176,40 @@ class SigmaAnalyzer(BaseAnalyzer):
             return abs(gradients[0])
         
         try:
+            # Add detailed validation logging
+            gradient_stats = {
+                'count': len(gradients),
+                'mean': np.mean(gradients),
+                'median': np.median(gradients),
+                'min': np.min(gradients),
+                'max': np.max(gradients),
+                'range': np.max(gradients) - np.min(gradients)
+            }
+            
             sigma_gradient = np.std(gradients, ddof=1)
+            
+            # Log comprehensive calculation details for validation
+            self.logger.info(f"Sigma gradient calculation validation:")
+            self.logger.info(f"  - Input: {len(positions)} positions, {len(errors)} errors")
+            self.logger.info(f"  - Valid gradients: {gradient_stats['count']} (out of {len(positions) - step_size} possible)")
+            self.logger.info(f"  - Gradient statistics:")
+            self.logger.info(f"    * Mean: {gradient_stats['mean']:.6f}")
+            self.logger.info(f"    * Median: {gradient_stats['median']:.6f}")
+            self.logger.info(f"    * Min: {gradient_stats['min']:.6f}")
+            self.logger.info(f"    * Max: {gradient_stats['max']:.6f}")
+            self.logger.info(f"    * Range: {gradient_stats['range']:.6f}")
+            self.logger.info(f"  - Calculated sigma (std dev): {sigma_gradient:.6f}")
+            
+            # Validation checks
+            if gradient_stats['count'] < len(positions) * 0.5:
+                self.logger.warning(f"Less than 50% of gradients were valid ({gradient_stats['count']}/{len(positions) - step_size})")
+            
+            # Check if sigma is reasonable compared to gradient range
+            if gradient_stats['range'] > 0:
+                sigma_to_range_ratio = sigma_gradient / gradient_stats['range']
+                self.logger.info(f"  - Sigma to range ratio: {sigma_to_range_ratio:.3f}")
+                if sigma_to_range_ratio > 0.5:
+                    self.logger.warning("High sigma relative to range - may indicate outliers")
             
             # Bounds checking for the final result
             if np.isnan(sigma_gradient) or np.isinf(sigma_gradient):

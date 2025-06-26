@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 class DatabaseConfig(BaseSettings):
     """Database configuration."""
+    model_config = SettingsConfigDict(
+        # Disable environment variable loading for this nested config
+        # to prevent PATH corruption issues
+        env_prefix="",
+        env_nested_delimiter=""
+    )
+    
     enabled: bool = Field(default=True, description="Enable database storage")
     mode: str = Field(default="local", description="Database mode: local or shared")
     path: Path = Field(
@@ -466,7 +473,14 @@ class Config(BaseSettings):
             elif isinstance(obj, list):
                 return [expand_env_vars(item) for item in obj]
             elif isinstance(obj, str):
-                return os.path.expandvars(obj)
+                # Special handling to prevent PATH environment variable corruption
+                expanded = os.path.expandvars(obj)
+                # Check if this looks like the Windows PATH variable was expanded
+                if ';' in expanded and ('Program Files' in expanded or 'Windows' in expanded) and len(expanded) > 500:
+                    logger.warning(f"Detected corrupted PATH expansion in config value: {obj}")
+                    # Return the original string without expansion
+                    return obj
+                return expanded
             else:
                 return obj
         
@@ -534,7 +548,18 @@ def get_config() -> Config:
     for config_path in config_paths:
         if config_path.exists():
             logger.info(f"Loading configuration from: {config_path}")
-            return Config.from_yaml(config_path)
+            config = Config.from_yaml(config_path)
+            
+            # Debug log the database path
+            if hasattr(config, 'database') and hasattr(config.database, 'path'):
+                logger.debug(f"Loaded database path: {config.database.path}")
+                # Check if path looks corrupted
+                path_str = str(config.database.path)
+                if ';' in path_str and len(path_str) > 500:
+                    logger.error(f"WARNING: Database path appears to be corrupted with PATH env var!")
+                    logger.error(f"First 200 chars: {path_str[:200]}...")
+            
+            return config
 
     # Fall back to environment/defaults
     logger.warning("No configuration file found, using defaults")

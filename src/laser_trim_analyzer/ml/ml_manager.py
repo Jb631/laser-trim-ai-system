@@ -344,51 +344,81 @@ class MLEngineManager:
                 self.ml_engine.models = {}
             self.ml_engine.models[model_name] = model
             
+            # Also register the model config with ML engine if not already registered
+            if hasattr(self.ml_engine, 'model_configs') and model_name not in self.ml_engine.model_configs:
+                self.ml_engine.model_configs[model_name] = config
+                self.logger.info(f"Registered {model_name} config with ML engine")
+            
             # Check if model is trained (try to load from disk)
-            model_path = self._get_model_path(model_name)
             is_trained = False
             load_error = None
             
-            if model_path.exists():
+            # Try to load using ML engine's version control first
+            if hasattr(self.ml_engine, 'version_control') and self.ml_engine.version_control:
                 try:
-                    # Validate model file before loading
-                    if not self._validate_model_file(model_path):
-                        raise ValueError("Model file validation failed")
-                    
-                    model.load(model_path)
-                    is_trained = True
-                    self.logger.info(f"Loaded trained model from {model_path}")
-                    
-                except (pickle.UnpicklingError, EOFError) as e:
-                    load_error = "Model file is corrupted"
-                    self.logger.error(f"Corrupted model file for {model_name}: {e}")
-                    
-                except MemoryError as e:
-                    load_error = "Insufficient memory to load model"
-                    self.logger.error(f"Memory error loading {model_name}: {e}")
-                    raise  # Re-raise memory errors
-                    
-                except AttributeError as e:
-                    load_error = "Model version mismatch"
-                    self.logger.error(f"Version mismatch for {model_name}: {e}")
-                    
-                    error_handler.handle_error(
-                        error=e,
-                        category=ErrorCategory.ML_MODEL,
-                        severity=ErrorSeverity.WARNING,
-                        code=ErrorCode.MODEL_VERSION_MISMATCH,
-                        user_message=f"Model '{model_name}' has version mismatch. Retraining required.",
-                        recovery_suggestions=[
-                            "Retrain the model using current data",
-                            "Delete old model file and retrain"
-                        ]
-                    )
-                    
+                    # Check if model has any versions
+                    latest_version = self.ml_engine.version_control.get_latest_version(model_name)
+                    if latest_version:
+                        # Load the model using version control
+                        loaded_model = self.ml_engine.version_control.load_model(model_class, model_name, latest_version)
+                        
+                        # Replace the model instance
+                        self.ml_engine.models[model_name] = loaded_model
+                        model = loaded_model
+                        
+                        is_trained = True
+                        self.logger.info(f"Loaded trained model {model_name} version {latest_version} using version control")
+                    else:
+                        self.logger.info(f"No saved versions found for {model_name}")
+                        
                 except Exception as e:
-                    load_error = str(e)
-                    self.logger.warning(f"Could not load saved model {model_name}: {e}")
-            else:
-                self.logger.info(f"No saved model found for {model_name} at {model_path}")
+                    load_error = f"Version control load failed: {str(e)}"
+                    self.logger.warning(f"Could not load model {model_name} using version control: {e}")
+                    
+            # Fallback to direct model loading if version control failed or not available
+            if not is_trained:
+                model_path = self._get_model_path(model_name)
+                
+                if model_path.exists():
+                    try:
+                        # Validate model file before loading
+                        if not self._validate_model_file(model_path):
+                            raise ValueError("Model file validation failed")
+                        
+                        model.load(model_path)
+                        is_trained = True
+                        self.logger.info(f"Loaded trained model from {model_path}")
+                        
+                    except (pickle.UnpicklingError, EOFError) as e:
+                        load_error = "Model file is corrupted"
+                        self.logger.error(f"Corrupted model file for {model_name}: {e}")
+                        
+                    except MemoryError as e:
+                        load_error = "Insufficient memory to load model"
+                        self.logger.error(f"Memory error loading {model_name}: {e}")
+                        raise  # Re-raise memory errors
+                        
+                    except AttributeError as e:
+                        load_error = "Model version mismatch"
+                        self.logger.error(f"Version mismatch for {model_name}: {e}")
+                        
+                        error_handler.handle_error(
+                            error=e,
+                            category=ErrorCategory.ML_MODEL,
+                            severity=ErrorSeverity.WARNING,
+                            code=ErrorCode.MODEL_VERSION_MISMATCH,
+                            user_message=f"Model '{model_name}' has version mismatch. Retraining required.",
+                            recovery_suggestions=[
+                                "Retrain the model using current data",
+                                "Delete old model file and retrain"
+                            ]
+                        )
+                        
+                    except Exception as e:
+                        load_error = str(e)
+                        self.logger.warning(f"Could not load saved model {model_name}: {e}")
+                else:
+                    self.logger.info(f"No saved model found for {model_name} at {model_path}")
             
             # Update model status
             self._models_status[model_name] = {
@@ -437,30 +467,44 @@ class MLEngineManager:
         return targets.get(model_name, 'target')
     
     def save_model(self, model_name: str) -> bool:
-        """Save a trained model to disk."""
+        """Save a trained model to disk using ML engine's version control."""
         try:
             if model_name not in self.ml_engine.models:
                 self.logger.error(f"Model {model_name} not found in ML engine")
                 return False
                 
             model = self.ml_engine.models[model_name]
-            model_path = self._get_model_path(model_name)
             
-            # Always save as .pkl for consistency
-            model_path = model_path.parent / f"{model_name}.pkl"
-            
-            # Save the model
-            if hasattr(model, 'save'):
-                model.save(str(model_path))
-                self.logger.info(f"Saved model {model_name} using model.save()")
-            else:
-                # Fallback to pickle
-                import pickle
-                with open(model_path, 'wb') as f:
-                    pickle.dump(model, f)
-                self.logger.info(f"Saved model {model_name} using pickle")
+            # Use ML engine's version control to save the model
+            if hasattr(self.ml_engine, 'version_control') and self.ml_engine.version_control:
+                version = self.ml_engine.version_control.save_model(model, model_name)
+                self.logger.info(f"Saved model {model_name} version {version} using ML engine version control")
                 
-            return True
+                # Also save engine state to persist metadata
+                if hasattr(self.ml_engine, 'save_engine_state'):
+                    self.ml_engine.save_engine_state()
+                    self.logger.info("Saved ML engine state")
+                
+                return True
+            else:
+                # Fallback to direct save if version control not available
+                model_path = self._get_model_path(model_name)
+                
+                # Always save as .pkl for consistency
+                model_path = model_path.parent / f"{model_name}.pkl"
+                
+                # Save the model
+                if hasattr(model, 'save'):
+                    model.save(str(model_path))
+                    self.logger.info(f"Saved model {model_name} using model.save()")
+                else:
+                    # Fallback to pickle
+                    import pickle
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(model, f)
+                    self.logger.info(f"Saved model {model_name} using pickle")
+                    
+                return True
             
         except Exception as e:
             self.logger.error(f"Failed to save model {model_name}: {e}")

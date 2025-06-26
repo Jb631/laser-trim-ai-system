@@ -223,6 +223,21 @@ class DatabaseManager:
 
     def _get_database_url_from_config(self, config: Any) -> str:
         """Get database URL from config, checking deployment.yaml for mode."""
+        # Log the raw database path for debugging
+        if hasattr(config.database, 'path'):
+            raw_path = str(config.database.path)
+            self.logger.debug(f"Raw database path from config: {raw_path}")
+            
+            # Check if the path looks like the Windows PATH environment variable
+            if ';' in raw_path and len(raw_path) > 500:
+                self.logger.error(f"Database path appears to be the Windows PATH environment variable!")
+                self.logger.error(f"First 200 chars: {raw_path[:200]}...")
+                # Use a safe default
+                safe_path = Path.home() / ".laser_trim_analyzer" / "analyzer_v2.db"
+                self.logger.info(f"Using safe fallback path: {safe_path}")
+                safe_path.parent.mkdir(parents=True, exist_ok=True)
+                return f"sqlite:///{safe_path.absolute()}"
+        
         # Check if we're in development mode - if so, use config directly
         if os.environ.get('LTA_ENV', '').lower() == 'development':
             self.logger.info("Development mode detected, using development configuration")
@@ -294,7 +309,15 @@ class DatabaseManager:
                 db_path_str = str(config.database.path)
                 # Expand environment variables
                 db_path_str = os.path.expandvars(db_path_str)
-                db_path = Path(db_path_str)
+                
+                # Check if this looks like a corrupted PATH environment variable
+                if ';' in db_path_str and ('Program Files' in db_path_str or 'Windows' in db_path_str):
+                    self.logger.error(f"Database path appears to be corrupted with PATH variable: {db_path_str[:200]}...")
+                    # Fall back to default
+                    db_path = Path.home() / ".laser_trim_analyzer" / "analyzer_v2.db"
+                    self.logger.info(f"Using fallback database path: {db_path}")
+                else:
+                    db_path = Path(db_path_str)
                 
                 # Create parent directories if they don't exist
                 try:
@@ -1127,7 +1150,14 @@ class DatabaseManager:
 
         try:
             with self.get_session() as session:
+                # Import joinedload for eager loading
+                from sqlalchemy.orm import joinedload
+                
                 query = session.query(DBAnalysisResult)
+                
+                # Apply eager loading if tracks are requested
+                if include_tracks:
+                    query = query.options(joinedload(DBAnalysisResult.tracks))
 
                 # Apply filters with SQL injection protection
                 # Note: SQLAlchemy parameterizes these automatically
@@ -1187,12 +1217,6 @@ class DatabaseManager:
 
                 # Execute query
                 results = query.all()
-
-                # Optionally load tracks (eager loading)
-                if include_tracks and results:
-                    for result in results:
-                        # Access tracks to trigger loading
-                        _ = result.tracks
 
                 self.logger.info(f"Retrieved {len(results)} historical records")
                 return results

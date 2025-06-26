@@ -252,10 +252,8 @@ class CTkMainWindow(CTkMainWindowBase):
         self.db_manager = None
         if self.config.database.enabled:
             try:
-                db_path = self.config.database.path
-                if not str(db_path).startswith(('sqlite://', 'postgresql://', 'mysql://')):
-                    db_path = f"sqlite:///{Path(db_path).absolute()}"
-                self.db_manager = DatabaseManager(db_path)
+                # Pass the config object directly to DatabaseManager
+                self.db_manager = DatabaseManager(self.config)
                 self.logger.info("Database connected")
             except Exception as e:
                 self.logger.error(f"Could not connect to database: {e}")
@@ -472,12 +470,8 @@ class CTkMainWindow(CTkMainWindowBase):
         if self.current_page and self.current_page in self.pages:
             current_page_obj = self.pages[self.current_page]
             
-            # Call cleanup if available to properly destroy resources
-            if hasattr(current_page_obj, 'cleanup'):
-                try:
-                    current_page_obj.cleanup()
-                except Exception as e:
-                    self.logger.error(f"Error during page cleanup: {e}")
+            # Don't call cleanup here - only when window is closing
+            # Pages should remain functional when hidden
             
             # Use the page's hide() method if available, otherwise use grid_remove()
             if hasattr(current_page_obj, 'hide'):

@@ -54,7 +54,11 @@
       "Bash(.venv/Scripts/python:*)",
       "Bash(tree:*)",
       "Bash(sqlite3:*)",
-      "Bash(pip3:*)"
+      "Bash(pip3:*)",
+      "Bash(env)",
+      "Bash(set LTA_ENV=development)",
+      "Bash(export LTA_ENV=development)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }

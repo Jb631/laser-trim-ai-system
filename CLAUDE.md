@@ -62,10 +62,14 @@
 
 - **Run Application (Production)**: `python src/__main__.py`
 - **Run Application (Development)**: `run_dev.bat` or `set LTA_ENV=development && python src/__main__.py`
+- **Run Application (from Linux/WSL)**: `.venv/Scripts/python.exe src/__main__.py` (Windows venv)
+- **Run Application with Environment**: `export LTA_ENV=development && .venv/Scripts/python.exe src/__main__.py`
 - **Initialize Development Database**: `python scripts/init_dev_database.py --clean --seed-data`
 - **Install Dependencies**: `pip install -e .`
 - **Run Tests**: `pytest tests/`
 - **Check Linting**: `ruff check .` (if available)
+
+**Note**: The application runs in GUI mode which may timeout in automated environments. The virtual environment is located at `.venv/` with Windows-style structure (Scripts/ instead of bin/).
 
 ### Database Configuration
 
