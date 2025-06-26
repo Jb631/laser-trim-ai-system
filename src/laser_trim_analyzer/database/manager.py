@@ -1157,7 +1157,12 @@ class DatabaseManager:
                 
                 # Apply eager loading if tracks are requested
                 if include_tracks:
-                    query = query.options(joinedload(DBAnalysisResult.tracks))
+                    from sqlalchemy.orm import selectinload
+                    query = query.options(
+                        selectinload(DBAnalysisResult.tracks),
+                        selectinload(DBAnalysisResult.ml_predictions),
+                        selectinload(DBAnalysisResult.qa_alerts)
+                    )
 
                 # Apply filters with SQL injection protection
                 # Note: SQLAlchemy parameterizes these automatically
@@ -1217,6 +1222,19 @@ class DatabaseManager:
 
                 # Execute query
                 results = query.all()
+                
+                # Force loading of all relationships to avoid lazy loading issues
+                # when objects are used outside the session context
+                if include_tracks:
+                    for result in results:
+                        # Access tracks to force loading
+                        _ = len(result.tracks)
+                        for track in result.tracks:
+                            # Force load the back-reference to analysis
+                            _ = track.analysis_id
+                        # Access other relationships to force loading
+                        _ = len(result.ml_predictions)
+                        _ = len(result.qa_alerts)
 
                 self.logger.info(f"Retrieved {len(results)} historical records")
                 return results

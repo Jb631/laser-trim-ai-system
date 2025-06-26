@@ -826,7 +826,7 @@ class HistoricalPage(ctk.CTkFrame):
                     for track in result.tracks:
                         # Debug logging for sigma values
                         sigma_val = getattr(track, 'sigma_gradient', None)
-                        if i == 0:  # Only log for first result to avoid spam
+                        if row_idx == 0:  # Only log for first result to avoid spam
                             logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
                         if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
                             sigma_values.append(track.sigma_gradient)
@@ -841,10 +841,10 @@ class HistoricalPage(ctk.CTkFrame):
                     if sigma_values:
                         avg_sigma = np.mean(sigma_values)
                         sigma = f"{avg_sigma:.4f}"
-                        if i == 0:  # Log first result for debugging
+                        if row_idx == 0:  # Log first result for debugging
                             logger.info(f"First result: found {len(sigma_values)} sigma values, average = {avg_sigma}")
                     else:
-                        if i == 0 and result.tracks:  # Log first result for debugging
+                        if row_idx == 0 and result.tracks:  # Log first result for debugging
                             logger.warning(f"First result: no sigma values found for {len(result.tracks)} tracks")
                     
                     # Average linearity error
