@@ -4691,82 +4691,82 @@ Performance Metrics:
         threading.Thread(target=predict, daemon=True).start()
     
     def _display_yield_predictions(self, predictions: Dict[str, Any]):
-        """Display yield prediction results."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Yield Prediction Analysis")
-        dialog.geometry("800x600")
-        
-        # Create notebook for tabs
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Summary tab
-        summary_frame = ctk.CTkFrame(notebook)
-        notebook.add(summary_frame, text="Summary")
-        
-        summary_text = ctk.CTkTextbox(summary_frame, wrap='word')
-        summary_text.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        content = "YIELD PREDICTION SUMMARY\n" + "=" * 50 + "\n\n"
-        
-        overall_current = np.mean([p['current_yield'] for p in predictions.values()])
-        overall_predicted = np.mean([p['predicted_yield'] for p in predictions.values()])
-        
-        content += f"Overall Current Yield: {overall_current:.1%}\n"
-        content += f"Overall Predicted Yield: {overall_predicted:.1%}\n"
-        content += f"Expected Change: {'+' if overall_predicted > overall_current else ''}{(overall_predicted - overall_current):.1%}\n\n"
-        
-        content += "MODEL-SPECIFIC PREDICTIONS:\n" + "-" * 30 + "\n"
-        for model, pred in sorted(predictions.items(), key=lambda x: x[1]['predicted_yield'], reverse=True):
-            content += f"\n{model}:\n"
-            content += f"  Current Yield: {pred['current_yield']:.1%}\n"
-            content += f"  Predicted Yield: {pred['predicted_yield']:.1%}\n"
-            content += f"  Confidence: {pred['confidence']:.1%}\n"
-            content += f"  Sample Size: {pred['sample_size']} units\n"
-            content += f"  Improvement Potential: {pred['improvement_potential']:.1%}\n"
-        
-        summary_text.insert('1.0', content)
-        summary_text.configure(state='disabled')
-        
-        # Visualization tab
-        viz_frame = ctk.CTkFrame(notebook)
-        notebook.add(viz_frame, text="Visualization")
-        
-        fig = Figure(figsize=(10, 6))
-        ax = fig.add_subplot(111)
-        
-        models = list(predictions.keys())
-        current_yields = [predictions[m]['current_yield'] * 100 for m in models]
-        predicted_yields = [predictions[m]['predicted_yield'] * 100 for m in models]
-        
-        x = np.arange(len(models))
-        width = 0.35
-        
-        bars1 = ax.bar(x - width/2, current_yields, width, label='Current Yield', color='#3498db')
-        bars2 = ax.bar(x + width/2, predicted_yields, width, label='Predicted Yield', color='#2ecc71')
-        
-        ax.set_xlabel('Model')
-        ax.set_ylabel('Yield (%)')
-        ax.set_title('Current vs Predicted Yield by Model')
-        ax.set_xticks(x)
-        ax.set_xticklabels(models, rotation=45, ha='right')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        
-        # Add value labels on bars
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.1f}%', ha='center', va='bottom')
-        
-        fig.tight_layout()
-        canvas = FigureCanvasTkAgg(fig, viz_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill='both', expand=True)
-        
-        # Close button
-        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=10)
+        """Display yield prediction results in the existing chart widget."""
+        try:
+            # Switch to the Yield Prediction tab
+            self.analytics_results.set("Yield Prediction")
+            
+            # Prepare data for the chart
+            models = list(predictions.keys())
+            current_yields = [predictions[m]['current_yield'] * 100 for m in models]
+            predicted_yields = [predictions[m]['predicted_yield'] * 100 for m in models]
+            
+            # Create DataFrame for the chart widget
+            chart_data = pd.DataFrame({
+                'month_year': models,  # Using month_year column for bar chart compatibility
+                'track_status': predicted_yields  # This is what the bar chart expects
+            })
+            
+            # Update the yield chart
+            self.yield_chart.chart_type = 'bar'  # Switch to bar chart for this data
+            self.yield_chart.title = 'Predicted Yield by Model'
+            self.yield_chart.update_chart_data(chart_data)
+            
+            # Also prepare summary text for display alongside
+            overall_current = np.mean([p['current_yield'] for p in predictions.values()])
+            overall_predicted = np.mean([p['predicted_yield'] for p in predictions.values()])
+            
+            summary = f"YIELD PREDICTION SUMMARY\n" + "=" * 30 + "\n\n"
+            summary += f"Overall Current Yield: {overall_current:.1%}\n"
+            summary += f"Overall Predicted Yield: {overall_predicted:.1%}\n"
+            summary += f"Expected Change: {'+' if overall_predicted > overall_current else ''}{(overall_predicted - overall_current):.1%}\n\n"
+            
+            # Add model-specific predictions
+            summary += "MODEL-SPECIFIC PREDICTIONS:\n" + "-" * 25 + "\n"
+            for model, pred in sorted(predictions.items(), key=lambda x: x[1]['predicted_yield'], reverse=True):
+                summary += f"\n{model}:\n"
+                summary += f"  Current: {pred['current_yield']:.1%} → Predicted: {pred['predicted_yield']:.1%}\n"
+                summary += f"  Confidence: {pred['confidence']:.1%} | Sample Size: {pred['sample_size']}\n"
+            
+            # Create a text widget to show summary alongside the chart if needed
+            # Check if we already have a summary widget in the yield prediction tab
+            yield_tab = self.analytics_results.tab("Yield Prediction")
+            
+            # Look for existing summary widget
+            summary_widget = None
+            for widget in yield_tab.winfo_children():
+                if isinstance(widget, ctk.CTkTextbox):
+                    summary_widget = widget
+                    break
+            
+            if not summary_widget:
+                # Create a frame to hold both chart and summary
+                container = ctk.CTkFrame(yield_tab)
+                container.pack(fill='both', expand=True)
+                
+                # Move the chart to the left side
+                self.yield_chart.pack_forget()
+                self.yield_chart = ChartWidget(
+                    container,
+                    chart_type='bar',
+                    title="Predicted Yield by Model",
+                    figsize=(6, 4)
+                )
+                self.yield_chart.pack(side='left', fill='both', expand=True, padx=(5, 2), pady=5)
+                
+                # Add summary text on the right
+                summary_widget = ctk.CTkTextbox(container, width=250)
+                summary_widget.pack(side='right', fill='y', padx=(2, 5), pady=5)
+            
+            # Update summary text
+            summary_widget.configure(state='normal')
+            summary_widget.delete('1.0', 'end')
+            summary_widget.insert('1.0', summary)
+            summary_widget.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying yield predictions: {e}")
+            messagebox.showerror("Display Error", f"Failed to display predictions: {str(e)}")
     
     def _run_failure_forecast(self):
         """Run failure forecast analysis."""
@@ -4916,57 +4916,60 @@ Performance Metrics:
         return recommendations
     
     def _display_failure_forecast(self, forecast: Dict[str, Any]):
-        """Display failure forecast results."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Failure Forecast Analysis")
-        dialog.geometry("700x500")
-        
-        # Main frame
-        main_frame = ctk.CTkScrollableFrame(dialog)
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Title
-        title = ctk.CTkLabel(main_frame, text="Failure Forecast Report", 
-                           font=ctk.CTkFont(size=18, weight="bold"))
-        title.pack(pady=10)
-        
-        # Current status
-        status_frame = ctk.CTkFrame(main_frame)
-        status_frame.pack(fill='x', pady=10)
-        
-        ctk.CTkLabel(status_frame, text="Current Failure Rate:", 
-                    font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=5, sticky='w')
-        ctk.CTkLabel(status_frame, text=f"{forecast['current_failure_rate']:.1%}").grid(row=0, column=1, padx=10, pady=5)
-        
-        ctk.CTkLabel(status_frame, text="Forecast Horizon:", 
-                    font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, padx=10, pady=5, sticky='w')
-        ctk.CTkLabel(status_frame, text=forecast['forecast_horizon']).grid(row=1, column=1, padx=10, pady=5)
-        
-        ctk.CTkLabel(status_frame, text="Predicted Failures:", 
-                    font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, padx=10, pady=5, sticky='w')
-        ci = forecast['confidence_interval']
-        ctk.CTkLabel(status_frame, text=f"{forecast['predicted_failures']} ({ci[0]}-{ci[1]})").grid(row=2, column=1, padx=10, pady=5)
-        
-        # Risk factors
-        risk_frame = ctk.CTkFrame(main_frame)
-        risk_frame.pack(fill='x', pady=10)
-        
-        ctk.CTkLabel(risk_frame, text="Risk Factor Analysis", 
-                    font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
-        
-        risk_text = ctk.CTkTextbox(risk_frame, height=150)
-        risk_text.pack(fill='x', padx=10, pady=5)
-        
-        content = "PRIMARY FAILURE CAUSES:\n"
-        for cause, count in forecast['risk_factors']['primary_causes'].items():
-            content += f"  • {cause}: {count} occurrences\n"
-        
-        content += "\nMODEL VULNERABILITY:\n"
-        for model, count in sorted(forecast['risk_factors']['model_vulnerability'].items(), 
-                                  key=lambda x: x[1], reverse=True)[:5]:
-            content += f"  • {model}: {count} failures\n"
-        
-        risk_text.insert('1.0', content)
+        """Display failure forecast results in the existing display area."""
+        try:
+            # Switch to the Failure Forecast tab
+            self.analytics_results.set("Failure Forecast")
+            
+            # Build the forecast report content
+            content = "FAILURE FORECAST REPORT\n" + "=" * 30 + "\n\n"
+            
+            # Current status
+            content += "CURRENT STATUS:\n"
+            content += f"  • Current Failure Rate: {forecast['current_failure_rate']:.1%}\n"
+            content += f"  • Forecast Horizon: {forecast['forecast_horizon']}\n"
+            ci = forecast['confidence_interval']
+            content += f"  • Predicted Failures: {forecast['predicted_failures']} ({ci[0]}-{ci[1]})\n\n"
+            
+            # Risk factors
+            content += "RISK FACTOR ANALYSIS:\n" + "-" * 25 + "\n\n"
+            
+            content += "Primary Failure Causes:\n"
+            for cause, count in forecast['risk_factors']['primary_causes'].items():
+                content += f"  • {cause}: {count} occurrences\n"
+            
+            content += "\nModel Vulnerability:\n"
+            for model, count in sorted(forecast['risk_factors']['model_vulnerability'].items(), 
+                                      key=lambda x: x[1], reverse=True)[:5]:
+                content += f"  • {model}: {count} failures\n"
+            
+            # Recommendations
+            content += "\nRECOMMENDATIONS:\n" + "-" * 25 + "\n"
+            for idx, rec in enumerate(forecast['recommendations'], 1):
+                content += f"  {idx}. {rec}\n"
+            
+            # Statistical analysis
+            content += "\nSTATISTICAL SUMMARY:\n" + "-" * 25 + "\n"
+            if forecast['predicted_failures'] > 0:
+                trend = "increasing" if forecast['predicted_failures'] > 10 else "stable"
+                content += f"  • Failure trend: {trend}\n"
+                content += f"  • Confidence level: {95 if ci[1] - ci[0] < 10 else 80}%\n"
+            else:
+                content += "  • No significant failure trend detected\n"
+                content += "  • System operating within normal parameters\n"
+            
+            # Update timestamp
+            content += f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            # Update the failure display textbox
+            self.failure_display.configure(state='normal')
+            self.failure_display.delete('1.0', 'end')
+            self.failure_display.insert('1.0', content)
+            self.failure_display.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying failure forecast: {e}")
+            messagebox.showerror("Display Error", f"Failed to display forecast: {str(e)}")
         risk_text.configure(state='disabled')
         
         # Recommendations
@@ -5042,94 +5045,86 @@ Performance Metrics:
         threading.Thread(target=analyze, daemon=True).start()
     
     def _display_qa_alert_analysis(self, alert_data: Dict[str, Any]):
-        """Display QA alert analysis results."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("QA Alert Analysis")
-        dialog.geometry("700x600")
-        
-        # Create notebook
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Summary tab
-        summary_frame = ctk.CTkFrame(notebook)
-        notebook.add(summary_frame, text="Summary")
-        
-        # Alert statistics
-        stats_frame = ctk.CTkFrame(summary_frame)
-        stats_frame.pack(fill='x', padx=10, pady=10)
-        
-        ctk.CTkLabel(stats_frame, text="Alert Statistics", 
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
-        
-        stats_grid = ctk.CTkFrame(stats_frame)
-        stats_grid.pack(pady=10)
-        
-        ctk.CTkLabel(stats_grid, text="Total Alerts:").grid(row=0, column=0, padx=10, pady=5, sticky='w')
-        ctk.CTkLabel(stats_grid, text=str(alert_data['total_alerts']), 
-                    font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, padx=10, pady=5)
-        
-        ctk.CTkLabel(stats_grid, text="Unresolved:").grid(row=1, column=0, padx=10, pady=5, sticky='w')
-        ctk.CTkLabel(stats_grid, text=str(alert_data['unresolved_alerts']), 
-                    font=ctk.CTkFont(weight="bold"),
-                    text_color="orange" if alert_data['unresolved_alerts'] > 0 else "green").grid(row=1, column=1, padx=10, pady=5)
-        
-        ctk.CTkLabel(stats_grid, text="Critical Alerts:").grid(row=2, column=0, padx=10, pady=5, sticky='w')
-        ctk.CTkLabel(stats_grid, text=str(alert_data['critical_alerts']), 
-                    font=ctk.CTkFont(weight="bold"),
-                    text_color="red" if alert_data['critical_alerts'] > 0 else "green").grid(row=2, column=1, padx=10, pady=5)
-        
-        # Alerts by type
-        type_frame = ctk.CTkFrame(summary_frame)
-        type_frame.pack(fill='x', padx=10, pady=10)
-        
-        ctk.CTkLabel(type_frame, text="Alerts by Type", 
-                    font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
-        
-        for alert_type, count in sorted(alert_data['alerts_by_type'].items(), 
-                                      key=lambda x: x[1], reverse=True):
-            row = ctk.CTkFrame(type_frame)
-            row.pack(fill='x', padx=20, pady=2)
-            ctk.CTkLabel(row, text=f"{alert_type}:").pack(side='left')
-            ctk.CTkLabel(row, text=str(count), font=ctk.CTkFont(weight="bold")).pack(side='right')
-        
-        # Recent alerts tab
-        recent_tab_frame = ttk.Frame(notebook)
-        notebook.add(recent_tab_frame, text="Recent Alerts")
-        
-        recent_frame = ctk.CTkScrollableFrame(recent_tab_frame)
-        recent_frame.pack(fill='both', expand=True)
-        
-        ctk.CTkLabel(recent_frame, text="Recent QA Alerts", 
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-        
-        for alert in alert_data['recent_alerts']:
-            alert_frame = ctk.CTkFrame(recent_frame)
-            alert_frame.pack(fill='x', padx=10, pady=5)
+        """Display QA alert analysis results in the existing display area."""
+        try:
+            # Switch to the QA Alerts tab
+            self.analytics_results.set("QA Alerts")
             
-            # Severity indicator
-            severity_color = {
-                'Critical': 'red',
-                'High': 'orange',
-                'Medium': 'yellow',
-                'Low': 'green'
-            }.get(alert['severity'], 'gray')
+            # Build the alert analysis content
+            content = "QA ALERT ANALYSIS\n" + "=" * 30 + "\n\n"
             
-            ctk.CTkLabel(alert_frame, text=f"● {alert['severity']}", 
-                        text_color=severity_color,
-                        font=ctk.CTkFont(weight="bold")).pack(side='left', padx=5)
+            # Alert Statistics
+            content += "ALERT STATISTICS:\n"
+            content += f"  • Total Alerts: {alert_data['total_alerts']}\n"
+            content += f"  • Unresolved: {alert_data['unresolved_alerts']}" 
+            if alert_data['unresolved_alerts'] > 0:
+                content += " ⚠️\n"
+            else:
+                content += " ✓\n"
+                
+            content += f"  • Critical Alerts: {alert_data['critical_alerts']}"
+            if alert_data['critical_alerts'] > 0:
+                content += " 🚨\n\n"
+            else:
+                content += " ✓\n\n"
             
-            # Alert details
-            details = f"{alert['type']} - {alert['message'][:50]}..."
-            ctk.CTkLabel(alert_frame, text=details).pack(side='left', padx=5)
+            # Alerts by Type
+            content += "ALERTS BY TYPE:\n" + "-" * 25 + "\n"
+            if alert_data['alerts_by_type']:
+                for alert_type, count in sorted(alert_data['alerts_by_type'].items(), 
+                                              key=lambda x: x[1], reverse=True):
+                    content += f"  • {alert_type}: {count}\n"
+            else:
+                content += "  No alerts categorized by type\n"
+            content += "\n"
             
-            # Status
-            status = "Resolved" if alert['resolved'] else "Open"
-            status_color = "green" if alert['resolved'] else "red"
-            ctk.CTkLabel(alert_frame, text=status, text_color=status_color).pack(side='right', padx=5)
-        
-        # Close button
-        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=10)
+            # Recent Alerts
+            content += "RECENT ALERTS:\n" + "-" * 25 + "\n"
+            if alert_data['recent_alerts']:
+                for idx, alert in enumerate(alert_data['recent_alerts'][:10], 1):
+                    severity_indicator = {
+                        'Critical': '🔴',
+                        'High': '🟠',
+                        'Medium': '🟡',
+                        'Low': '🟢'
+                    }.get(alert['severity'], '⚪')
+                    
+                    status = "[RESOLVED]" if alert['resolved'] else "[OPEN]"
+                    content += f"\n{idx}. {severity_indicator} {alert['severity']} - {status}\n"
+                    content += f"   Type: {alert['type']}\n"
+                    content += f"   Message: {alert['message'][:80]}"  
+                    if len(alert['message']) > 80:
+                        content += "..."
+                    content += "\n"
+                    if alert['created']:
+                        content += f"   Created: {alert['created'].strftime('%Y-%m-%d %H:%M')}\n"
+            else:
+                content += "  No recent alerts found\n"
+            
+            # Summary and Recommendations
+            content += "\nANALYSIS SUMMARY:\n" + "-" * 25 + "\n"
+            if alert_data['unresolved_alerts'] > 5:
+                content += "  ⚠️ High number of unresolved alerts - immediate attention required\n"
+            elif alert_data['unresolved_alerts'] > 0:
+                content += "  ℹ️ Some alerts require resolution\n"
+            else:
+                content += "  ✅ All alerts resolved - system in good state\n"
+            
+            if alert_data['critical_alerts'] > 0:
+                content += f"  🚨 {alert_data['critical_alerts']} critical alerts need immediate review\n"
+            
+            # Update timestamp
+            content += f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            # Update the QA alerts display textbox
+            self.qa_alerts_display.configure(state='normal')
+            self.qa_alerts_display.delete('1.0', 'end')
+            self.qa_alerts_display.insert('1.0', content)
+            self.qa_alerts_display.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying QA alert analysis: {e}")
+            messagebox.showerror("Display Error", f"Failed to display alert analysis: {str(e)}")
     
     def _assess_production_readiness(self):
         """Assess production readiness based on ML predictions."""
@@ -5298,108 +5293,65 @@ Performance Metrics:
         return recommendations
     
     def _display_production_readiness(self, readiness_data: Dict[str, Any]):
-        """Display production readiness assessment."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Production Readiness Assessment")
-        dialog.geometry("700x600")
-        
-        # Main frame
-        main_frame = ctk.CTkScrollableFrame(dialog)
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # Overall score
-        score_frame = ctk.CTkFrame(main_frame)
-        score_frame.pack(fill='x', padx=10, pady=10)
-        
-        ctk.CTkLabel(score_frame, text="Production Readiness Score", 
-                    font=ctk.CTkFont(size=18, weight="bold")).pack(pady=5)
-        
-        score_percent = readiness_data['percentage']
-        score_color = "green" if score_percent >= 80 else "red" if score_percent < 60 else "orange"
-        
-        ctk.CTkLabel(score_frame, text=f"{score_percent:.0f}%", 
-                    font=ctk.CTkFont(size=48, weight="bold"),
-                    text_color=score_color).pack(pady=10)
-        
-        ctk.CTkLabel(score_frame, text=f"Status: {readiness_data['status']}", 
-                    font=ctk.CTkFont(size=16),
-                    text_color=score_color).pack()
-        
-        # Detailed breakdown
-        detail_frame = ctk.CTkFrame(main_frame)
-        detail_frame.pack(fill='x', padx=10, pady=10)
-        
-        ctk.CTkLabel(detail_frame, text="Assessment Details", 
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
-        
-        for detail in readiness_data['details']:
-            row_frame = ctk.CTkFrame(detail_frame)
-            row_frame.pack(fill='x', padx=20, pady=5)
+        """Display production readiness assessment in the existing display area."""
+        try:
+            # Switch to the Production Readiness tab
+            self.analytics_results.set("Production Readiness")
             
-            # Category
-            ctk.CTkLabel(row_frame, text=detail['category'], 
-                        font=ctk.CTkFont(weight="bold")).pack(side='left', padx=5)
+            # Build the readiness assessment content
+            content = "PRODUCTION READINESS ASSESSMENT\n" + "=" * 35 + "\n\n"
             
-            # Score
-            score_text = f"{detail['score']:.0f}/{detail['max_score']}"
-            score_color = "green" if detail['score'] >= detail['max_score'] * 0.8 else "orange" if detail['score'] >= detail['max_score'] * 0.6 else "red"
-            ctk.CTkLabel(row_frame, text=score_text, 
-                        text_color=score_color).pack(side='right', padx=5)
+            # Overall Score
+            score_percent = readiness_data['percentage']
+            status_emoji = "✅" if score_percent >= 80 else "❌" if score_percent < 60 else "⚠️"
             
-            # Status
-            ctk.CTkLabel(row_frame, text=detail['status']).pack(side='right', padx=20)
-        
-        # Recommendations
-        rec_frame = ctk.CTkFrame(main_frame)
-        rec_frame.pack(fill='x', padx=10, pady=10)
-        
-        ctk.CTkLabel(rec_frame, text="Recommendations", 
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
-        
-        for i, rec in enumerate(readiness_data['recommendations'], 1):
-            is_critical = rec.startswith("CRITICAL")
-            text_color = "red" if is_critical else None
-            ctk.CTkLabel(rec_frame, text=f"{i}. {rec}", 
-                        wraplength=650, justify='left',
-                        text_color=text_color).pack(pady=2, padx=20, anchor='w')
-        
-        # Export button
-        export_frame = ctk.CTkFrame(dialog)
-        export_frame.pack(fill='x', padx=10, pady=5)
-        
-        def export_assessment():
-            try:
-                filename = filedialog.asksaveasfilename(
-                    title="Export Assessment",
-                    defaultextension=".txt",
-                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-                    initialfile=f"production_readiness_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                )
-                if filename:
-                    with open(filename, 'w') as f:
-                        f.write("PRODUCTION READINESS ASSESSMENT\n")
-                        f.write("=" * 50 + "\n\n")
-                        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                        f.write(f"Overall Score: {score_percent:.0f}%\n")
-                        f.write(f"Status: {readiness_data['status']}\n\n")
-                        
-                        f.write("DETAILED BREAKDOWN:\n")
-                        for detail in readiness_data['details']:
-                            f.write(f"\n{detail['category']}:\n")
-                            f.write(f"  Status: {detail['status']}\n")
-                            f.write(f"  Score: {detail['score']:.0f}/{detail['max_score']}\n")
-                            f.write(f"  Recommendation: {detail['recommendation']}\n")
-                        
-                        f.write("\n\nRECOMMENDATIONS:\n")
-                        for i, rec in enumerate(readiness_data['recommendations'], 1):
-                            f.write(f"{i}. {rec}\n")
-                    
-                    messagebox.showinfo("Export Complete", f"Assessment exported to:\n{filename}")
-            except Exception as e:
-                messagebox.showerror("Export Error", f"Failed to export assessment:\n{str(e)}")
-        
-        ctk.CTkButton(export_frame, text="Export Assessment", command=export_assessment).pack(side='left', padx=5)
-        ctk.CTkButton(export_frame, text="Close", command=dialog.destroy).pack(side='right', padx=5)
+            content += f"OVERALL SCORE: {score_percent:.0f}% {status_emoji}\n"
+            content += f"STATUS: {readiness_data['status']}\n"
+            content += f"Score: {readiness_data['overall_score']}/{readiness_data['max_score']}\n\n"
+            
+            # Detailed Assessment
+            content += "DETAILED ASSESSMENT:\n" + "-" * 30 + "\n"
+            for detail in readiness_data['details']:
+                score_ratio = detail['score'] / detail['max_score'] if detail['max_score'] > 0 else 0
+                indicator = "✅" if score_ratio >= 0.8 else "❌" if score_ratio < 0.6 else "⚠️"
+                
+                content += f"\n{detail['category']} {indicator}\n"
+                content += f"  Score: {detail['score']:.1f}/{detail['max_score']} ({score_ratio:.0%})\n"
+                content += f"  Status: {detail['status']}\n"
+                content += f"  Action: {detail['recommendation']}\n"
+            
+            # Recommendations
+            content += "\nRECOMMENDATIONS:\n" + "-" * 30 + "\n"
+            for idx, rec in enumerate(readiness_data['recommendations'], 1):
+                if rec.startswith("CRITICAL"):
+                    content += f"  🚨 {rec}\n"
+                else:
+                    content += f"  {idx}. {rec}\n"
+            
+            # Production Go/No-Go Decision
+            content += "\nPRODUCTION DECISION:\n" + "-" * 30 + "\n"
+            if score_percent >= 80:
+                content += "  ✅ APPROVED FOR PRODUCTION\n"
+                content += "  System meets all quality requirements\n"
+            elif score_percent >= 60:
+                content += "  ⚠️ CONDITIONAL APPROVAL\n"
+                content += "  Address identified issues before deployment\n"
+            else:
+                content += "  ❌ NOT READY FOR PRODUCTION\n"
+                content += "  Significant improvements required\n"
+            
+            # Update timestamp
+            content += f"\nAssessment Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            
+            # Update the readiness display textbox
+            self.readiness_display.configure(state='normal')
+            self.readiness_display.delete('1.0', 'end')
+            self.readiness_display.insert('1.0', content)
+            self.readiness_display.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying production readiness: {e}")
+            messagebox.showerror("Display Error", f"Failed to display assessment: {str(e)}")
     
     def show(self):
         """Override show method to refresh models when page is shown."""
