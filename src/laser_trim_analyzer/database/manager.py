@@ -1157,9 +1157,9 @@ class DatabaseManager:
                 
                 # Apply eager loading if tracks are requested
                 if include_tracks:
-                    from sqlalchemy.orm import selectinload
+                    from sqlalchemy.orm import selectinload, joinedload
                     query = query.options(
-                        selectinload(DBAnalysisResult.tracks),
+                        selectinload(DBAnalysisResult.tracks).joinedload(DBTrackResult.analysis),
                         selectinload(DBAnalysisResult.ml_predictions),
                         selectinload(DBAnalysisResult.qa_alerts)
                     )

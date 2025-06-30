@@ -200,9 +200,12 @@ def seed_test_data(db_manager):
     """Seed the database with test data."""
     from laser_trim_analyzer.core.models import (
         AnalysisResult, TrackData, AnalysisStatus, 
-        SystemType, RiskCategory
+        SystemType, RiskCategory, FileMetadata, UnitProperties,
+        SigmaAnalysis, LinearityAnalysis, ResistanceAnalysis,
+        FailurePrediction, TrimEffectiveness, ValidationStatus
     )
     import numpy as np
+    from pathlib import Path
     
     # Create some test analysis results
     test_results = []
@@ -211,57 +214,155 @@ def seed_test_data(db_manager):
     
     for i in range(5):
         for model in models:
-            # Create mock track data
-            tracks = []
-            for track_num in range(1, 6):
-                track = TrackData(
-                    track_number=track_num,
-                    pre_trim_mean=100.0 + np.random.normal(0, 5),
-                    pre_trim_std=2.0 + np.random.normal(0, 0.5),
-                    post_trim_mean=150.0 + np.random.normal(0, 3),
-                    post_trim_std=1.0 + np.random.normal(0, 0.2),
-                    drift_percentage=np.random.uniform(-0.5, 0.5),
-                    units_tested=1000,
-                    units_passed=int(950 + np.random.randint(-50, 50)),
-                    yield_percentage=95.0 + np.random.uniform(-5, 5),
-                    cpk=1.5 + np.random.uniform(-0.3, 0.5),
-                    risk_category=np.random.choice(list(RiskCategory))
-                )
-                tracks.append(track)
+            # Create file metadata - use temp directory
+            import tempfile
+            temp_dir = Path(tempfile.gettempdir()) / "laser_trim_test_data"
+            temp_dir.mkdir(exist_ok=True)
+            test_file = temp_dir / f"test_{model}_batch_{i+1}.xlsx"
+            # Create empty file
+            test_file.touch()
             
-            result = AnalysisResult(
+            metadata = FileMetadata(
                 filename=f"test_{model}_batch_{i+1}.xlsx",
-                timestamp=datetime.now(),
+                file_path=test_file,
+                file_date=datetime.now(),
                 model=model,
                 serial=f"TEST{i+1:04d}",
-                date_of_trim=datetime.now(),
+                system=SystemType.SYSTEM_A if i % 2 == 0 else SystemType.SYSTEM_B,
+                has_multi_tracks=True if model == "8575" else False
+            )
+            
+            # Create mock track data
+            tracks = {}
+            num_tracks = 5 if model == "8575" else 1
+            
+            for track_num in range(1, num_tracks + 1):
+                track_id = f"TRK{track_num}" if num_tracks > 1 else "default"
+                
+                # Generate some test data
+                travel_length = 100.0 + np.random.uniform(-10, 10)
+                num_points = 1000
+                positions = np.linspace(0, travel_length, num_points).tolist()
+                errors = (np.random.normal(0, 0.5, num_points) + np.sin(np.linspace(0, 2*np.pi, num_points)) * 0.3).tolist()
+                
+                # Create unit properties
+                unit_props = UnitProperties(
+                    unit_length=travel_length,
+                    untrimmed_resistance=10000.0 + np.random.normal(0, 100),
+                    trimmed_resistance=10500.0 + np.random.normal(0, 100)
+                )
+                
+                # Create sigma analysis
+                sigma = SigmaAnalysis(
+                    sigma_gradient=0.8 + np.random.uniform(-0.2, 0.2),
+                    sigma_threshold=1.0,
+                    sigma_pass=np.random.choice([True, False], p=[0.9, 0.1]),
+                    gradient_margin=0.2 + np.random.uniform(-0.1, 0.1),
+                    scaling_factor=24.0,
+                    validation_status=ValidationStatus.VALIDATED
+                )
+                
+                # Create linearity analysis
+                linearity = LinearityAnalysis(
+                    linearity_spec=0.5,
+                    optimal_offset=0.1 + np.random.uniform(-0.05, 0.05),
+                    final_linearity_error_raw=0.3 + np.random.uniform(-0.1, 0.1),
+                    final_linearity_error_shifted=0.2 + np.random.uniform(-0.1, 0.1),
+                    linearity_pass=np.random.choice([True, False], p=[0.85, 0.15]),
+                    linearity_fail_points=np.random.randint(0, 5),
+                    validation_status=ValidationStatus.VALIDATED
+                )
+                
+                # Create resistance analysis
+                resistance = ResistanceAnalysis(
+                    untrimmed_resistance=unit_props.untrimmed_resistance,
+                    trimmed_resistance=unit_props.trimmed_resistance,
+                    resistance_change=unit_props.resistance_change,
+                    resistance_change_percent=unit_props.resistance_change_percent,
+                    validation_status=ValidationStatus.VALIDATED
+                )
+                
+                # Create failure prediction
+                import random
+                risk_cat = random.choice([RiskCategory.HIGH, RiskCategory.MEDIUM, RiskCategory.LOW])
+                failure_pred = FailurePrediction(
+                    failure_probability=np.random.uniform(0.01, 0.2),
+                    risk_category=risk_cat,
+                    gradient_margin=sigma.gradient_margin,
+                    contributing_factors={"sigma": 0.4, "linearity": 0.3, "resistance": 0.3}
+                )
+                
+                # Create trim effectiveness
+                trim_effect = TrimEffectiveness(
+                    improvement_percent=60.0 + np.random.uniform(-20, 20),
+                    untrimmed_rms_error=0.8 + np.random.uniform(-0.2, 0.2),
+                    trimmed_rms_error=0.3 + np.random.uniform(-0.1, 0.1),
+                    max_error_reduction_percent=70.0 + np.random.uniform(-10, 10),
+                    validation_status=ValidationStatus.VALIDATED
+                )
+                
+                # Determine status
+                if sigma.sigma_pass and linearity.linearity_pass:
+                    status = AnalysisStatus.PASS
+                    status_reason = ""
+                elif not sigma.sigma_pass:
+                    status = AnalysisStatus.FAIL
+                    status_reason = "Sigma gradient exceeds threshold"
+                else:
+                    status = AnalysisStatus.WARNING
+                    status_reason = "Linearity test failed"
+                
+                track = TrackData(
+                    track_id=track_id,
+                    status=status,
+                    status_reason=status_reason,
+                    travel_length=travel_length,
+                    position_data=positions,
+                    error_data=errors,
+                    upper_limits=[1.0] * num_points,
+                    lower_limits=[-1.0] * num_points,
+                    unit_properties=unit_props,
+                    sigma_analysis=sigma,
+                    linearity_analysis=linearity,
+                    resistance_analysis=resistance,
+                    failure_prediction=failure_pred,
+                    trim_effectiveness=trim_effect,
+                    overall_validation_status=ValidationStatus.VALIDATED
+                )
+                
+                tracks[track_id] = track
+            
+            # Determine overall status
+            all_pass = all(track.status == AnalysisStatus.PASS for track in tracks.values())
+            any_fail = any(track.status == AnalysisStatus.FAIL for track in tracks.values())
+            
+            if all_pass:
+                overall_status = AnalysisStatus.PASS
+            elif any_fail:
+                overall_status = AnalysisStatus.FAIL
+            else:
+                overall_status = AnalysisStatus.WARNING
+            
+            result = AnalysisResult(
+                metadata=metadata,
+                overall_status=overall_status,
+                processing_time=np.random.uniform(0.5, 2.0),
                 tracks=tracks,
-                num_zones=5,
-                zone_results={},
-                filter_parameters={
-                    "sampling_frequency": 100,
-                    "cutoff_frequency": 40
-                },
-                sigma_thresholds={"scaling_factor": 24.0},
-                overall_yield=95.0 + np.random.uniform(-5, 5),
-                risk_assessment={
-                    "overall_risk": np.random.choice(["low", "medium", "high"]),
-                    "risk_factors": []
-                },
-                warnings=[],
-                position_data=None,
-                error_data=None,
-                system_type=SystemType.FIVE_TRACK,
-                status=AnalysisStatus.COMPLETED
+                overall_validation_status=ValidationStatus.VALIDATED
             )
             
             test_results.append(result)
     
     # Save to database
+    saved_count = 0
     for result in test_results:
-        db_manager.save_analysis(result)
+        try:
+            db_manager.save_analysis(result)
+            saved_count += 1
+        except Exception as e:
+            print(f"   ✗ Failed to save test record: {e}")
     
-    print(f"   Added {len(test_results)} test analysis records")
+    print(f"   ✓ Added {saved_count} test analysis records")
 
 
 def main():
