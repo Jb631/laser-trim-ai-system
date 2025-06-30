@@ -18,11 +18,39 @@ None - all known issues have been resolved.
 ## [Unreleased]
 
 ### Fixed
+- **ML Tools Page QA Predictive Analytics Buttons** (2025-06-30):
+  - Fixed all four QA Predictive Analytics buttons to update their respective display areas instead of showing popups
+  - **Root Cause**: The buttons (_run_yield_prediction, _run_failure_forecast, _run_qa_alert_analysis, _assess_production_readiness) were creating popup dialogs (CTkToplevel) instead of updating the existing chart widgets and text displays
+  - **Solution**: 
+    - Modified `_display_yield_predictions` to update the existing `self.yield_chart` ChartWidget using `update_chart_data()` with a pandas DataFrame
+    - Modified `_display_failure_forecast` to update the existing `self.failure_display` CTkTextbox with formatted report text
+    - Modified `_display_qa_alert_analysis` to update the existing `self.qa_alerts_display` CTkTextbox with formatted alert analysis
+    - Modified `_display_production_readiness` to update the existing `self.readiness_display` CTkTextbox with formatted assessment report
+  - **Impact**: All QA predictive analytics features now work as intended, populating the tabbed display areas without popups
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/ml_tools_page.py` lines 4693-4770, 4918-5047, 5295-5433
+
+### Verified
+- **Complete Page Button and Display Integration Audit** (2025-06-30):
+  - Audited all 12 pages to ensure buttons connect to their intended display areas instead of only showing popups
+  - **Full Audit Results**:
+    - Home Page: ✓ All buttons correctly navigate to other pages (no popup issues)
+    - Single File Page: ✓ Process button correctly updates the analysis_display widget
+    - Batch Processing Page: ✓ Start button shows progress dialog during processing then updates batch_results_widget
+    - Multi-Track Page: ✓ Selection dialogs are for choosing units only; results update page displays correctly
+    - Final Test Comparison Page: ✓ Compare button updates results_label and chart_display_frame correctly
+    - Model Summary Page: ✓ Model selection updates metrics, trend charts, and analysis charts on the page
+    - Historical Page: ✓ Query button updates results table and summary label directly
+    - AI Insights Page: ✓ Generate Insights button updates insights_display textbox on the page
+    - Settings Page: ✓ Settings auto-save when changed (no explicit save button needed)
+    - ML Tools Page: ✓ Fixed (see fix above) - was the only page that needed corrections
+  - **Conclusion**: 11 out of 12 pages were already properly integrated. Only the ML Tools page QA Predictive Analytics section required fixes to connect buttons to their display areas.
+
 - **Historical Page Database Session Error** (2025-06-26):
-  - Fixed "parent instance <TrackResult> is not bound to a Session" error when running blank queries
-  - **Root Cause**: The `result.tracks` relationship was being accessed after the database session was closed
-  - **Solution**: Modified `database/manager.py:get_historical_data()` to use SQLAlchemy's `joinedload` for eager loading tracks within the session context
-  - This ensures all track data is loaded before the session closes, preventing lazy loading errors
+  - Fixed "parent instance <TrackResult> is not bound to a Session" error when running queries on the historical page
+  - **Root Cause**: The lazy load operation of attribute 'analysis' on TrackResult was failing because the back-reference from tracks to their parent analysis wasn't being eagerly loaded
+  - **Solution**: Modified `database/manager.py:get_historical_data()` line 1162 to add `.joinedload(DBTrackResult.analysis)` to the selectinload options for tracks
+  - This ensures both the tracks relationship and the back-reference to analysis are loaded within the session context, preventing lazy loading errors
+  - Verified fix by testing direct access to `track.analysis` attribute after session closure
 
 ### Enhanced
 - **ML Tools Page Training Logging** (2025-06-22):
