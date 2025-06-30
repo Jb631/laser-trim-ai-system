@@ -58,7 +58,8 @@
       "Bash(env)",
       "Bash(set LTA_ENV=development)",
       "Bash(export LTA_ENV=development)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }
