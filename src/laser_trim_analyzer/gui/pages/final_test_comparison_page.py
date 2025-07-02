@@ -257,6 +257,27 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         )
         self.file_info_label.pack(pady=5)
         
+        # Position alignment option
+        self.alignment_frame = ctk.CTkFrame(self.final_test_frame)
+        self.alignment_frame.pack(fill='x', padx=20, pady=(0, 10))
+        
+        self.auto_align_var = ctk.BooleanVar(value=True)
+        self.auto_align_checkbox = ctk.CTkCheckBox(
+            self.alignment_frame,
+            text="Auto-align positions (normalize both datasets to start at 0)",
+            variable=self.auto_align_var,
+            font=ctk.CTkFont(size=12)
+        )
+        self.auto_align_checkbox.pack(pady=5)
+        
+        self.alignment_info_label = ctk.CTkLabel(
+            self.alignment_frame,
+            text="Ensures accurate comparison when datasets use different position references",
+            font=ctk.CTkFont(size=10),
+            text_color="gray60"
+        )
+        self.alignment_info_label.pack(pady=(0, 5))
+        
     def _create_comparison_section(self):
         """Create comparison controls section."""
         # Comparison Frame
@@ -675,24 +696,59 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                     
                     # Get optimal offset for information
                     optimal_offset = primary_track.optimal_offset or 0.0
-                    self.logger.info(f"Optimal offset from database: {optimal_offset:.6f} (already applied)")
+                    self.logger.info(f"Optimal offset from database: {optimal_offset:.6f}")
                     
-                    # The errors from database are from the final trimmed sheets
-                    # They should already represent the shifted linearity error
-                    # Check if we're dealing with raw or shifted data
+                    # The errors from database are raw voltage errors (measured - theoretical)
+                    # These need to be converted to linearity errors by removing the best-fit line
                     if hasattr(primary_track, 'final_linearity_error_shifted') and hasattr(primary_track, 'final_linearity_error_raw'):
                         # Log which type of data we have
-                        self.logger.info(f"Final linearity error (raw): {primary_track.final_linearity_error_raw:.6f}")
-                        self.logger.info(f"Final linearity error (shifted): {primary_track.final_linearity_error_shifted:.6f}")
+                        self.logger.info(f"Final linearity error (raw): {primary_track.final_linearity_error_raw:.6f} V")
+                        self.logger.info(f"Final linearity error (shifted): {primary_track.final_linearity_error_shifted:.6f} V")
                     
-                    # Use errors as-is from database (they should be the final shifted values)
-                    errors_shifted = errors
+                    # Calculate linearity errors from raw voltage errors
+                    # First fit a line to the raw errors to find the trend
+                    positions_array = np.array(positions)
+                    errors_array = np.array(errors)
                     
-                    # For laser trim data, we only have positions and errors
-                    # The error is the linearity error (deviation from ideal)
+                    # Fit a line: error = slope * position + intercept
+                    # This represents the systematic error trend
+                    coeffs = np.polyfit(positions_array, errors_array, 1)
+                    slope, intercept = coeffs
+                    
+                    # Calculate the trend line values
+                    trend_line = slope * positions_array + intercept
+                    
+                    # Linearity errors are deviations from this trend
+                    linearity_errors = errors_array - trend_line
+                    
+                    # Now apply the optimal offset to minimize max deviation
+                    errors_shifted = linearity_errors - optimal_offset
+                    
+                    # Log the transformation
+                    self.logger.info(f"Raw voltage error range: [{min(errors):.6f}, {max(errors):.6f}] V")
+                    self.logger.info(f"Best-fit line: slope={slope:.6e}, intercept={intercept:.6f}")
+                    self.logger.info(f"Linearity error range (detrended): [{linearity_errors.min():.6f}, {linearity_errors.max():.6f}] V")
+                    self.logger.info(f"Final shifted error range: [{errors_shifted.min():.6f}, {errors_shifted.max():.6f}] V")
+                    
+                    # For laser trim data, we have positions and linearity errors
+                    # Get the linearity spec from the track (this is the symmetric spec)
+                    linearity_spec = primary_track.linearity_spec or 0.0
+                    self.logger.info(f"Laser trim linearity spec: ±{linearity_spec:.6f} V")
+                    
+                    # The shifted errors should be the linearity errors
+                    # Verify the final linearity error matches what we calculated
+                    calc_max_error = np.max(np.abs(errors_shifted))
+                    if hasattr(primary_track, 'final_linearity_error_shifted'):
+                        db_max_error = primary_track.final_linearity_error_shifted
+                        self.logger.info(f"Calculated max linearity error: {calc_max_error:.6f} V")
+                        self.logger.info(f"Database max linearity error: {db_max_error:.6f} V")
+                        if abs(calc_max_error - db_max_error) > 0.01:
+                            self.logger.warning(f"Mismatch between calculated and database linearity errors!")
+                    
                     trim_df = pd.DataFrame({
                         'position': positions,
-                        'error': errors_shifted  # Use shifted errors
+                        'error': errors_shifted.tolist(),  # Convert numpy array to list
+                        'linearity_spec': linearity_spec  # Add spec to dataframe
                     })
                     
                     # Log some debug info
@@ -733,9 +789,13 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                         error = final_error * np.sin(phase) * (1 + 0.3 * np.sin(phase * 3))
                         errors.append(error)
                     
+                    # Get the linearity spec from the track (this is the symmetric spec)
+                    linearity_spec = primary_track.linearity_spec or 0.0
+                    
                     trim_df = pd.DataFrame({
                         'position': positions,
-                        'error': errors
+                        'error': errors,
+                        'linearity_spec': linearity_spec  # Add spec to dataframe
                     })
                     return trim_df
                             
@@ -750,35 +810,147 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         results = {}
         
         # Get position ranges (keep in original units, e.g., inches)
-        trim_positions = trim_data['position'].values
-        test_positions = test_data['position'].values
+        trim_positions = trim_data['position'].values.copy()  # Make a copy to avoid modifying original
+        test_positions = test_data['position'].values.copy()
         
-        # Find common position range
-        min_pos = max(trim_positions.min(), test_positions.min())
-        max_pos = min(trim_positions.max(), test_positions.max())
+        # Log raw data for debugging
+        self.logger.info(f"Raw trim positions - first 5: {trim_positions[:5]}, last 5: {trim_positions[-5:]}")
+        self.logger.info(f"Raw test positions - first 5: {test_positions[:5]}, last 5: {test_positions[-5:]}")
         
-        # Log position ranges for debugging
-        self.logger.info(f"Trim position range: [{trim_positions.min():.3f}, {trim_positions.max():.3f}]")
-        self.logger.info(f"Test position range: [{test_positions.min():.3f}, {test_positions.max():.3f}]")
-        self.logger.info(f"Common position range: [{min_pos:.3f}, {max_pos:.3f}]")
+        # Calculate travel lengths
+        trim_length = trim_positions.max() - trim_positions.min()
+        test_length = test_positions.max() - test_positions.min()
         
-        # Create common position array
+        self.logger.info(f"Original trim position range: [{trim_positions.min():.3f}, {trim_positions.max():.3f}], length: {trim_length:.3f}")
+        self.logger.info(f"Original test position range: [{test_positions.min():.3f}, {test_positions.max():.3f}], length: {test_length:.3f}")
+        
+        # ROBUST POSITION ALIGNMENT STRATEGY
+        alignment_note = "No alignment performed"
+        
+        # Check if auto-alignment is enabled
+        if self.auto_align_var.get():
+            # Handle various position reference scenarios:
+            # 1. Both start at 0 - no adjustment needed
+            # 2. Trim centered, test at 0 - shift trim to start at 0
+            # 3. Test centered, trim at 0 - shift test to start at 0
+            # 4. Both centered - shift both to start at 0
+            # 5. Different arbitrary offsets - normalize both to start at 0
+            
+            alignment_note = "No alignment needed"
+            
+            # Check if lengths are significantly different (more than 5%)
+            length_ratio = trim_length / test_length if test_length > 0 else 1
+            if abs(length_ratio - 1.0) > 0.05:
+                self.logger.warning(f"Travel lengths differ by {abs(length_ratio - 1.0) * 100:.1f}% - may be different units or setups")
+                # Add warning to alignment note
+                alignment_note = f"WARNING: Length mismatch {abs(length_ratio - 1.0) * 100:.1f}%"
+            
+            # Normalize both datasets to start at 0 for consistent comparison
+            trim_min = trim_positions.min()
+            test_min = test_positions.min()
+            
+            # Shift trim data if needed
+            if abs(trim_min) > 0.001:  # Not already at 0
+                trim_positions = trim_positions - trim_min
+                self.logger.info(f"Shifted trim positions by {-trim_min:.3f} to start at 0")
+                if alignment_note.startswith("WARNING"):
+                    alignment_note += f", Trim shifted by {-trim_min:.3f}"
+                else:
+                    alignment_note = f"Trim shifted by {-trim_min:.3f}"
+            
+            # Shift test data if needed
+            if abs(test_min) > 0.001:  # Not already at 0
+                test_positions = test_positions - test_min
+                self.logger.info(f"Shifted test positions by {-test_min:.3f} to start at 0")
+                if alignment_note == "No alignment needed":
+                    alignment_note = f"Test shifted by {-test_min:.3f}"
+                elif not alignment_note.startswith("WARNING"):
+                    alignment_note += f", Test shifted by {-test_min:.3f}"
+                else:
+                    alignment_note += f", Test shifted by {-test_min:.3f}"
+        else:
+            self.logger.info("Position alignment disabled by user")
+            alignment_note = "Position alignment disabled"
+            
+            # Still check for length mismatch as a warning
+            length_ratio = trim_length / test_length if test_length > 0 else 1
+            if abs(length_ratio - 1.0) > 0.05:
+                self.logger.warning(f"Travel lengths differ by {abs(length_ratio - 1.0) * 100:.1f}% - alignment recommended")
+        
+        # Store alignment info for display
+        self._position_alignment_note = alignment_note
+        
+        # Log final aligned ranges
+        self.logger.info(f"Aligned trim position range: [{trim_positions.min():.3f}, {trim_positions.max():.3f}]")
+        self.logger.info(f"Aligned test position range: [{test_positions.min():.3f}, {test_positions.max():.3f}]")
+        
+        # Set common range
+        min_pos = 0.0
+        max_pos = max(trim_positions.max(), test_positions.max())
+        
+        self.logger.info(f"Common position range for comparison: [{min_pos:.3f}, {max_pos:.3f}]")
+        
         common_positions = np.linspace(min_pos, max_pos, 200)  # 200 points for smooth curves
         
+        # Log first few position values to check alignment
+        self.logger.info(f"First 5 trim positions: {trim_positions[:5]}")
+        self.logger.info(f"First 5 test positions: {test_positions[:5]}")
+        self.logger.info(f"First 5 common positions: {common_positions[:5]}")
+        
+        # Check if positions are in same units (e.g., both in inches)
+        trim_pos_diff = np.diff(trim_positions).mean() if len(trim_positions) > 1 else 0
+        test_pos_diff = np.diff(test_positions).mean() if len(test_positions) > 1 else 0
+        self.logger.info(f"Average position spacing - Trim: {trim_pos_diff:.6f}, Test: {test_pos_diff:.6f}")
+        
         # Interpolate trim error data (already in volts)
-        trim_error_interp = np.interp(common_positions, trim_positions, trim_data['error'].values)
+        # Use fill_value='extrapolate' for scipy interp1d for better extrapolation
+        from scipy.interpolate import interp1d
+        
+        # Create interpolation functions
+        trim_interp_func = interp1d(trim_positions, trim_data['error'].values, 
+                                   kind='linear', bounds_error=False, 
+                                   fill_value='extrapolate')
+        trim_error_interp = trim_interp_func(common_positions)
         
         # Calculate test error from measured and theoretical
         test_error = test_data['error_volts'].values
-        test_error_interp = np.interp(common_positions, test_positions, test_error)
+        test_interp_func = interp1d(test_positions, test_error,
+                                   kind='linear', bounds_error=False,
+                                   fill_value='extrapolate')
+        test_error_interp = test_interp_func(common_positions)
         
         # Log error ranges
         self.logger.info(f"Trim error range: [{trim_error_interp.min():.6f}, {trim_error_interp.max():.6f}] V")
         self.logger.info(f"Test error range: [{test_error_interp.min():.6f}, {test_error_interp.max():.6f}] V")
         
-        # Interpolate spec limits (they can vary with position)
-        test_spec_upper_interp = np.interp(common_positions, test_positions, test_data['linearity_spec_upper'].values)
-        test_spec_lower_interp = np.interp(common_positions, test_positions, test_data['linearity_spec_lower'].values)
+        # Check for data integrity
+        if np.any(np.isnan(trim_error_interp)) or np.any(np.isinf(trim_error_interp)):
+            self.logger.warning(f"Found NaN or Inf in trim error interpolation!")
+        if np.any(np.isnan(test_error_interp)) or np.any(np.isinf(test_error_interp)):
+            self.logger.warning(f"Found NaN or Inf in test error interpolation!")
+        
+        # Handle spec limits for both datasets
+        # For laser trim data, use symmetric spec limits
+        if 'linearity_spec' in trim_data.columns:
+            trim_spec = trim_data['linearity_spec'].values[0]  # Single value for all positions
+            # Create symmetric spec limits arrays
+            trim_spec_upper = np.full_like(common_positions, trim_spec)
+            trim_spec_lower = np.full_like(common_positions, -trim_spec)
+            self.logger.info(f"Using laser trim symmetric spec: ±{trim_spec:.6f} V")
+        else:
+            # Fallback if spec not available
+            trim_spec_upper = None
+            trim_spec_lower = None
+            self.logger.warning("No laser trim spec found in data")
+        
+        # For final test data, interpolate the spec limits (they can vary with position)
+        test_spec_upper_func = interp1d(test_positions, test_data['linearity_spec_upper'].values,
+                                       kind='linear', bounds_error=False, fill_value='extrapolate')
+        test_spec_upper_interp = test_spec_upper_func(common_positions)
+        
+        test_spec_lower_func = interp1d(test_positions, test_data['linearity_spec_lower'].values,
+                                       kind='linear', bounds_error=False, fill_value='extrapolate')
+        test_spec_lower_interp = test_spec_lower_func(common_positions)
         
         # Calculate differences
         error_diff = trim_error_interp - test_error_interp
@@ -788,8 +960,12 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         results['trim_error'] = trim_error_interp
         results['test_error'] = test_error_interp
         results['error_diff'] = error_diff
-        results['spec_upper'] = test_spec_upper_interp
-        results['spec_lower'] = test_spec_lower_interp
+        # Store spec limits for both datasets
+        if trim_spec_upper is not None:
+            results['trim_spec_upper'] = trim_spec_upper
+            results['trim_spec_lower'] = trim_spec_lower
+        results['test_spec_upper'] = test_spec_upper_interp
+        results['test_spec_lower'] = test_spec_lower_interp
         
         # Summary statistics
         results['stats'] = {
@@ -799,6 +975,10 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             'trim_max_error': np.max(np.abs(trim_error_interp)),
             'test_max_error': np.max(np.abs(test_error_interp))
         }
+        
+        # Store original position ranges for chart display
+        results['trim_position_range'] = (trim_positions.min(), trim_positions.max())
+        results['test_position_range'] = (test_positions.min(), test_positions.max())
         
         # Store for later use
         self.comparison_results = results
@@ -873,31 +1053,73 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             
             # Create GridSpec for better control
             from matplotlib.gridspec import GridSpec
-            gs = GridSpec(3, 1, figure=fig, height_ratios=[2, 1, 0.1])
+            gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1], hspace=0.15)
             
             # Main plot on top (66% of figure height)
             ax_main = fig.add_subplot(gs[0, 0])
             
             # Plot linearity errors with thicker lines
-            ax_main.plot(results['position'], results['trim_error'] * 1000, 'b-', 
+            # Ensure we're plotting valid data
+            positions = results['position']
+            trim_errors_mv = results['trim_error'] * 1000  # Convert to mV
+            test_errors_mv = results['test_error'] * 1000  # Convert to mV
+            
+            # Log data being plotted
+            self.logger.info(f"Plotting - Position range: [{positions.min():.3f}, {positions.max():.3f}]")
+            self.logger.info(f"Plotting - Trim error range: [{trim_errors_mv.min():.3f}, {trim_errors_mv.max():.3f}] mV")
+            self.logger.info(f"Plotting - Test error range: [{test_errors_mv.min():.3f}, {test_errors_mv.max():.3f}] mV")
+            
+            ax_main.plot(positions, trim_errors_mv, 'b-', 
                         label='Laser Trim', linewidth=2.5, alpha=0.9)
-            ax_main.plot(results['position'], results['test_error'] * 1000, 'r--', 
+            ax_main.plot(positions, test_errors_mv, 'r--', 
                         label='Final Test', linewidth=2.5, alpha=0.9)
             
-            # Add spec lines using interpolated values
-            if 'spec_upper' in results and 'spec_lower' in results:
-                spec_upper = results['spec_upper'] * 1000  # Convert to mV
-                spec_lower = results['spec_lower'] * 1000
+            # Add vertical lines to indicate actual data ranges
+            trim_min, trim_max = results['trim_position_range']
+            test_min, test_max = results['test_position_range']
+            min_pos = results['position'].min()
+            max_pos = results['position'].max()
+            
+            # Add subtle shading for extrapolated regions
+            if trim_min > min_pos:
+                ax_main.axvspan(min_pos, trim_min, alpha=0.05, color='blue', label='_nolegend_')
+            if trim_max < max_pos:
+                ax_main.axvspan(trim_max, max_pos, alpha=0.05, color='blue', label='_nolegend_')
+            if test_min > min_pos:
+                ax_main.axvspan(min_pos, test_min, alpha=0.05, color='red', label='_nolegend_')
+            if test_max < max_pos:
+                ax_main.axvspan(test_max, max_pos, alpha=0.05, color='red', label='_nolegend_')
+            
+            # Add spec lines for both datasets
+            # Plot laser trim spec limits (if available)
+            if 'trim_spec_upper' in results and 'trim_spec_lower' in results:
+                trim_spec_upper = results['trim_spec_upper'] * 1000  # Convert to mV
+                trim_spec_lower = results['trim_spec_lower'] * 1000
                 
-                # Plot spec limits (they can vary with position)
-                ax_main.plot(results['position'], spec_upper, 'g:', linewidth=2, 
-                            alpha=0.7, label='Upper Spec')
-                ax_main.plot(results['position'], spec_lower, 'g:', linewidth=2, 
-                            alpha=0.7, label='Lower Spec')
+                # Plot laser trim spec limits (symmetric, blue)
+                ax_main.plot(results['position'], trim_spec_upper, 'b:', linewidth=2, 
+                            alpha=0.7, label='Trim Spec (±)')
+                ax_main.plot(results['position'], trim_spec_lower, 'b:', linewidth=2, 
+                            alpha=0.7, label='_nolegend_')
                 
-                # Shade spec region
-                ax_main.fill_between(results['position'], spec_lower, spec_upper, 
-                                    alpha=0.1, color='green')
+                # Shade trim spec region
+                ax_main.fill_between(results['position'], trim_spec_lower, trim_spec_upper, 
+                                    alpha=0.05, color='blue')
+            
+            # Plot final test spec limits
+            if 'test_spec_upper' in results and 'test_spec_lower' in results:
+                test_spec_upper = results['test_spec_upper'] * 1000  # Convert to mV
+                test_spec_lower = results['test_spec_lower'] * 1000
+                
+                # Plot final test spec limits (can be asymmetric, green)
+                ax_main.plot(results['position'], test_spec_upper, 'g:', linewidth=2, 
+                            alpha=0.7, label='Test Spec')
+                ax_main.plot(results['position'], test_spec_lower, 'g:', linewidth=2, 
+                            alpha=0.7, label='_nolegend_')
+                
+                # Shade test spec region
+                ax_main.fill_between(results['position'], test_spec_lower, test_spec_upper, 
+                                    alpha=0.05, color='green')
             
             # Add zero line
             ax_main.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
@@ -922,11 +1144,24 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             trim_error_range = np.max(np.abs(results['trim_error'])) * 1000
             test_error_range = np.max(np.abs(results['test_error'])) * 1000
             max_error = max(trim_error_range, test_error_range) * 1.2
-            if 'spec_upper' in results and 'spec_lower' in results:
-                spec_max = max(np.max(np.abs(results['spec_upper'] * 1000)), 
-                              np.max(np.abs(results['spec_lower'] * 1000)))
-                max_error = max(max_error, spec_max * 1.1)
+            
+            # Consider spec limits for y-axis range
+            if 'trim_spec_upper' in results and results['trim_spec_upper'] is not None:
+                trim_spec_max = np.max(np.abs(results['trim_spec_upper'] * 1000))
+                max_error = max(max_error, trim_spec_max * 1.1)
+            
+            if 'test_spec_upper' in results and results['test_spec_upper'] is not None:
+                test_spec_max = max(np.max(np.abs(results['test_spec_upper'] * 1000)), 
+                                   np.max(np.abs(results['test_spec_lower'] * 1000)))
+                max_error = max(max_error, test_spec_max * 1.1)
+            
+            # Ensure a minimum range for visibility
+            max_error = max(max_error, 50)  # At least ±50 mV
+            
             ax_main.set_ylim(-max_error, max_error)
+            
+            # Set x-axis limits explicitly
+            ax_main.set_xlim(positions.min(), positions.max())
             
             # Statistics text area below chart
             ax_stats = fig.add_subplot(gs[1, 0])
@@ -969,51 +1204,53 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             stats_text += f"Max Diff: {stats['max_error_diff']*1000:.2f} mV\n"
             stats_text += f"Std Dev: {stats['std_error_diff']*1000:.2f} mV\n\n"
             
-            # Add spec compliance check
-            stats_text += "Spec Compliance:\n"
-            stats_text += "-"*25 + "\n"
             
-            if 'spec_upper' in results and 'spec_lower' in results:
-                # Check if both are within spec
-                # Errors should be between lower spec (negative) and upper spec (positive)
-                trim_errors = results['trim_error'] * 1000  # Convert to mV
-                test_errors = results['test_error'] * 1000
-                spec_upper_mv = results['spec_upper'] * 1000
-                spec_lower_mv = results['spec_lower'] * 1000
+            # Create a more compact horizontal layout
+            # Format statistics in a single row format for better space usage
+            compact_stats = []
+            
+            # Laser Trim stats
+            compact_stats.append(f"Laser Trim: Max={trim_max_error:.2f}mV, Mean={trim_mean_error:.2f}mV, StdDev={trim_std_error:.2f}mV")
+            
+            # Final Test stats
+            compact_stats.append(f"Final Test: Max={test_max_error:.2f}mV, Mean={test_mean_error:.2f}mV, StdDev={test_std_error:.2f}mV")
+            
+            # Differences
+            compact_stats.append(f"Differences: Mean={stats['mean_error_diff']*1000:.2f}mV, Max={stats['max_error_diff']*1000:.2f}mV, StdDev={stats['std_error_diff']*1000:.2f}mV")
+            
+            # Spec compliance (check against respective specs)
+            trim_status = "N/A"
+            test_status = "N/A"
+            
+            # Check trim data against trim spec
+            if 'trim_spec_upper' in results and 'trim_spec_lower' in results:
+                trim_errors_mv = results['trim_error'] * 1000
+                trim_spec_upper_mv = results['trim_spec_upper'] * 1000
+                trim_spec_lower_mv = results['trim_spec_lower'] * 1000
+                trim_in_spec = np.all((trim_errors_mv >= trim_spec_lower_mv) & (trim_errors_mv <= trim_spec_upper_mv))
+                trim_status = "PASS" if trim_in_spec else "FAIL"
+            
+            # Check test data against test spec  
+            if 'test_spec_upper' in results and 'test_spec_lower' in results:
+                test_errors_mv = results['test_error'] * 1000
+                test_spec_upper_mv = results['test_spec_upper'] * 1000
+                test_spec_lower_mv = results['test_spec_lower'] * 1000
+                test_in_spec = np.all((test_errors_mv >= test_spec_lower_mv) & (test_errors_mv <= test_spec_upper_mv))
+                test_status = "PASS" if test_in_spec else "FAIL"
                 
-                # Check if all points are within spec
-                trim_in_spec = np.all((trim_errors >= spec_lower_mv) & (trim_errors <= spec_upper_mv))
-                test_in_spec = np.all((test_errors >= spec_lower_mv) & (test_errors <= spec_upper_mv))
-                
-                if trim_in_spec:
-                    stats_text += "✓ Laser Trim: PASS\n"
-                    trim_color = 'green'
-                else:
-                    stats_text += "✗ Laser Trim: FAIL\n"
-                    trim_color = 'red'
-                    
-                if test_in_spec:
-                    stats_text += "✓ Final Test: PASS\n"
-                    test_color = 'green'
-                else:
-                    stats_text += "✗ Final Test: FAIL\n"
-                    test_color = 'red'
+            compact_stats.append(f"Spec Compliance: Laser Trim={trim_status}, Final Test={test_status}")
             
-            # Display statistics in multiple columns for better horizontal use
-            # Left column
-            ax_stats.text(0.05, 0.95, stats_text[:stats_text.find('Differences:')], 
-                         transform=ax_stats.transAxes, fontsize=10, 
-                         verticalalignment='top', fontfamily='monospace')
+            # Display statistics with proper spacing
+            # Calculate vertical spacing based on number of lines
+            num_lines = len(compact_stats)
+            y_spacing = 0.9 / (num_lines + 1)  # Leave space at top and bottom
             
-            # Middle column
-            diff_section = stats_text[stats_text.find('Differences:'):stats_text.find('Spec Compliance:')]
-            ax_stats.text(0.35, 0.95, diff_section, transform=ax_stats.transAxes, 
-                         fontsize=10, verticalalignment='top', fontfamily='monospace')
-            
-            # Right column
-            spec_section = stats_text[stats_text.find('Spec Compliance:'):]
-            ax_stats.text(0.65, 0.95, spec_section, transform=ax_stats.transAxes, 
-                         fontsize=10, verticalalignment='top', fontfamily='monospace')
+            for i, stat_line in enumerate(compact_stats):
+                y_pos = 0.95 - (i + 1) * y_spacing
+                ax_stats.text(0.5, y_pos, stat_line, 
+                             transform=ax_stats.transAxes, fontsize=8, 
+                             verticalalignment='center', horizontalalignment='center',
+                             fontfamily='monospace', wrap=True)
             
             # Add unit info at bottom center
             if hasattr(self, 'selected_unit') and self.selected_unit:
@@ -1029,9 +1266,14 @@ class FinalTestComparisonPage(ctk.CTkFrame):
                 
                 unit_info += f"  |  Data: {'TRM/Lin Error sheets' if getattr(self, '_data_is_trimmed', True) else 'Unknown'}"
                 
-                ax_stats.text(0.5, 0.02, unit_info, transform=ax_stats.transAxes, 
-                             fontsize=9, verticalalignment='bottom', horizontalalignment='center', 
-                             style='italic')
+                # Add position alignment info
+                if hasattr(self, '_position_alignment_note'):
+                    unit_info += f"  |  Position Alignment: {self._position_alignment_note}"
+                
+                # Position unit info below the statistics
+                ax_stats.text(0.5, 0.05, unit_info, transform=ax_stats.transAxes, 
+                             fontsize=7, verticalalignment='bottom', horizontalalignment='center', 
+                             style='italic', wrap=True)
             
             # Adjust layout - more space for chart, less for stats
             fig.subplots_adjust(left=0.08, right=0.95, top=0.95, bottom=0.05, hspace=0.25)
