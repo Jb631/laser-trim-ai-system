@@ -195,6 +195,13 @@ class DatabaseManager:
                 database_url = database_url_or_config
 
             self.database_url = database_url
+            
+            # Extract database path for logging
+            if database_url.startswith('sqlite:///'):
+                self.db_path = database_url.replace('sqlite:///', '')
+            else:
+                self.db_path = database_url
+            
             self._initialize_engine(database_url, echo, pool_size, max_overflow, pool_timeout)
             self._test_connection()
             
@@ -1161,7 +1168,7 @@ class DatabaseManager:
                     query = query.options(
                         selectinload(DBAnalysisResult.tracks).joinedload(DBTrackResult.analysis),
                         selectinload(DBAnalysisResult.ml_predictions),
-                        selectinload(DBAnalysisResult.qa_alerts)
+                        joinedload(DBAnalysisResult.qa_alerts)  # Use joinedload to avoid SQLite IN clause issues
                     )
 
                 # Apply filters with SQL injection protection

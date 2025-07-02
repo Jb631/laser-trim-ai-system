@@ -71,7 +71,12 @@ def clean_development_environment():
 
 
 def init_development_database(seed_data=False, clean=False):
-    """Initialize the development database."""
+    """Initialize the development database.
+    
+    Args:
+        seed_data: If True, adds FAKE test data. Not recommended - use real files instead.
+        clean: If True, removes existing database and data before initializing.
+    """
     
     if clean:
         clean_development_environment()
@@ -147,12 +152,12 @@ def init_development_database(seed_data=False, clean=False):
     
     # Seed test data if requested
     if seed_data:
-        print("\n3. Seeding test data...")
+        print("\n3. Seeding fake test data...")
         try:
-            seed_test_data(db_manager)
-            print("   ✓ Test data seeded successfully")
+            seed_fake_test_data(db_manager)
+            print("   ✓ Fake test data seeded successfully")
         except Exception as e:
-            print(f"   ✗ Failed to seed test data: {e}")
+            print(f"   ✗ Failed to seed fake test data: {e}")
             import traceback
             traceback.print_exc()
     
@@ -187,6 +192,14 @@ This is a development environment. Data here should not be used for production.
         print(f"   ✗ Failed to create README: {e}")
     
     print("\n✅ Development environment initialized successfully!")
+    
+    if not seed_data:
+        print("\n📌 Note: No fake test data was added to the database.")
+        print("   To test the application, analyze real laser trim files.")
+    else:
+        print("\n⚠️  WARNING: Fake test data with TEST serial numbers was added.")
+        print("   For real testing, analyze actual laser trim files instead!")
+    
     print("\nTo use this environment, set the environment variable:")
     print("  Windows: set LTA_ENV=development")
     print("  Linux/Mac: export LTA_ENV=development")
@@ -196,8 +209,13 @@ This is a development environment. Data here should not be used for production.
     return True
 
 
-def seed_test_data(db_manager):
-    """Seed the database with test data."""
+def seed_fake_test_data(db_manager):
+    """
+    Seed the database with FAKE test data for development.
+    
+    WARNING: This creates artificial data with TEST serial numbers.
+    For real testing, analyze actual laser trim files instead.
+    """
     from laser_trim_analyzer.core.models import (
         AnalysisResult, TrackData, AnalysisStatus, 
         SystemType, RiskCategory, FileMetadata, UnitProperties,
@@ -206,6 +224,9 @@ def seed_test_data(db_manager):
     )
     import numpy as np
     from pathlib import Path
+    
+    print("\n   ⚠️  WARNING: Creating FAKE test data with TEST serial numbers")
+    print("      For real testing, analyze actual laser trim files instead!\n")
     
     # Create some test analysis results
     test_results = []
@@ -218,12 +239,12 @@ def seed_test_data(db_manager):
             import tempfile
             temp_dir = Path(tempfile.gettempdir()) / "laser_trim_test_data"
             temp_dir.mkdir(exist_ok=True)
-            test_file = temp_dir / f"test_{model}_batch_{i+1}.xlsx"
+            test_file = temp_dir / f"fake_test_{model}_batch_{i+1}.xlsx"
             # Create empty file
             test_file.touch()
             
             metadata = FileMetadata(
-                filename=f"test_{model}_batch_{i+1}.xlsx",
+                filename=f"fake_test_{model}_batch_{i+1}.xlsx",
                 file_path=test_file,
                 file_date=datetime.now(),
                 model=model,
@@ -373,7 +394,7 @@ def main():
     parser.add_argument(
         "--seed-data",
         action="store_true",
-        help="Seed the database with test data"
+        help="Seed the database with FAKE test data (TEST serial numbers). For real testing, analyze actual files instead."
     )
     parser.add_argument(
         "--clean",

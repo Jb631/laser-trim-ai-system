@@ -90,6 +90,26 @@ class ChartWidget(ctk.CTkFrame):
         # Show initial placeholder
         self.show_placeholder()
         
+    def _style_legend(self, legend):
+        """Apply theme-appropriate styling to legend."""
+        theme_colors = ThemeHelper.get_theme_colors()
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        
+        if is_dark:
+            legend.get_frame().set_facecolor('#2b2b2b')
+            legend.get_frame().set_edgecolor('#555555')
+            legend.get_frame().set_alpha(0.9)
+            # Set text color to white for dark theme
+            for text in legend.get_texts():
+                text.set_color('white')
+        else:
+            legend.get_frame().set_facecolor('white')
+            legend.get_frame().set_edgecolor('#cccccc')
+            legend.get_frame().set_alpha(0.9)
+            # Set text color to black for light theme
+            for text in legend.get_texts():
+                text.set_color('black')
+    
     def _apply_theme_to_axes(self, ax):
         """Apply theme colors to matplotlib axes."""
         # Get current theme colors
@@ -263,22 +283,35 @@ class ChartWidget(ctk.CTkFrame):
                 
                 # Add legend with better contrast
                 legend = ax.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True)
-                # Set legend background based on theme
-                if is_dark:
-                    legend.get_frame().set_facecolor('#2b2b2b')
-                    legend.get_frame().set_edgecolor('#555555')
-                    legend.get_frame().set_alpha(0.9)
-                else:
-                    legend.get_frame().set_facecolor('white')
-                    legend.get_frame().set_edgecolor('#cccccc')
-                    legend.get_frame().set_alpha(0.9)
+                self._style_legend(legend)
             
             ax.set_xlabel('Date')
             ax.set_ylabel('Sigma Gradient')
             
-            # Format x-axis dates
+            # Format x-axis dates properly
             if len(x_data) > 0:
-                ax.tick_params(axis='x', rotation=45)
+                # Determine appropriate date format based on date range
+                date_range = (x_data.max() - x_data.min()).days if hasattr(x_data.max() - x_data.min(), 'days') else 0
+                
+                if date_range <= 7:
+                    # Less than a week - show day and time
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+                    ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
+                elif date_range <= 31:
+                    # Less than a month - show day/month
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+                elif date_range <= 365:
+                    # Less than a year - show month/day
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    ax.xaxis.set_major_locator(mdates.MonthLocator())
+                else:
+                    # More than a year - show year/month
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+                
+                # Rotate labels for better readability
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
                 
         if self.title:
             ax.set_title(self.title, color=text_color)
@@ -331,11 +364,21 @@ class ChartWidget(ctk.CTkFrame):
             
             bars = ax.bar(categories, values, color=colors)
             
-            # Add value labels on bars
+            # Add value labels on bars with proper color
             for bar in bars:
                 height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width() / 2., height,
-                       f'{height:.1f}%', ha='center', va='bottom', fontsize=9)
+                # Use contrasting color for text - white on dark bars, dark on light bars
+                bar_color = bar.get_facecolor()
+                # Calculate luminance to determine if we need light or dark text
+                r, g, b, _ = bar_color
+                luminance = 0.299 * r + 0.587 * g + 0.114 * b
+                label_color = 'white' if luminance < 0.5 else 'black'
+                
+                ax.text(bar.get_x() + bar.get_width() / 2., height + 1,
+                       f'{height:.1f}%', ha='center', va='bottom', fontsize=9,
+                       color=text_color, fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white' if is_dark else 'black', 
+                                alpha=0.7, edgecolor='none'))
             
             ax.set_xlabel('Month')
             ax.set_ylabel('Pass Rate (%)')
@@ -442,21 +485,52 @@ class ChartWidget(ctk.CTkFrame):
             sigma_data = data['sigma_gradient'].dropna()
             
             if len(sigma_data) > 0:
-                ax.hist(sigma_data, bins=min(30, max(10, len(sigma_data) // 5)), 
-                       alpha=0.7, edgecolor='black', color=self.qa_colors['primary'])
-                
-                # Add statistics
+                # Calculate statistics
                 mean = sigma_data.mean()
                 std = sigma_data.std()
-                ax.axvline(mean, color='red', linestyle='--', linewidth=2,
-                          label=f'Mean: {mean:.4f}')
-                ax.axvline(mean + std, color='orange', linestyle='--', linewidth=1,
-                          label=f'±1σ: {std:.4f}')
-                ax.axvline(mean - std, color='orange', linestyle='--', linewidth=1)
+                
+                # Create histogram with better bins
+                n, bins, patches = ax.hist(sigma_data, bins=min(30, max(10, len(sigma_data) // 5)), 
+                                          alpha=0.7, edgecolor='black', density=True)
+                
+                # Color bars based on distance from mean (gradient effect)
+                cm = plt.cm.RdYlGn_r  # Red-Yellow-Green reversed
+                bin_centers = 0.5 * (bins[:-1] + bins[1:])  # compute bin centers
+                col = (bin_centers - mean) / (2 * std)  # normalize to standard deviations
+                col = np.clip(col, -1, 1)  # clip to [-1, 1]
+                
+                for c, p in zip(col, patches):
+                    plt.setp(p, 'facecolor', cm((c + 1) / 2))  # map to [0, 1] for colormap
+                
+                # Add normal distribution overlay
+                if std > 0:
+                    x = np.linspace(sigma_data.min(), sigma_data.max(), 100)
+                    from scipy import stats
+                    ax.plot(x, stats.norm.pdf(x, mean, std), 'k-', linewidth=2, 
+                           label=f'Normal (μ={mean:.3f}, σ={std:.3f})')
+                
+                # Add specification limits (0.3 to 0.7 as typical range)
+                ax.axvline(0.3, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Spec Limits')
+                ax.axvline(0.7, color='red', linestyle='--', linewidth=2, alpha=0.7)
+                ax.axvspan(0.3, 0.7, alpha=0.1, color='green', label='Target Range')
+                
+                # Add mean line
+                ax.axvline(mean, color='blue', linestyle='-', linewidth=2, label=f'Mean: {mean:.3f}')
+                
+                # Add text box with statistics
+                textstr = f'n = {len(sigma_data)}\nMean = {mean:.3f}\nStd = {std:.3f}\nCpk = {min((0.7-mean)/(3*std), (mean-0.3)/(3*std)):.2f}' if std > 0 else f'n = {len(sigma_data)}\nMean = {mean:.3f}'
+                props = dict(boxstyle='round', facecolor='wheat' if not is_dark else '#3a3a3a', alpha=0.8)
+                ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
+                       verticalalignment='top', bbox=props, color=text_color)
                 
                 ax.set_xlabel('Sigma Gradient')
-                ax.set_ylabel('Frequency')
-                ax.legend()
+                ax.set_ylabel('Probability Density')
+                ax.set_xlim(max(0, sigma_data.min() - 0.1), min(1, sigma_data.max() + 0.1))
+                
+                # Style legend
+                legend = ax.legend(loc='upper right')
+                if legend:
+                    self._style_legend(legend)
                 
         if self.title:
             ax.set_title(self.title, color=text_color)

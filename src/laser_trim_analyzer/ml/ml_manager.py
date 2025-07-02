@@ -352,6 +352,7 @@ class MLEngineManager:
             # Check if model is trained (try to load from disk)
             is_trained = False
             load_error = None
+            model_path = self._get_model_path(model_name)  # Define model_path early
             
             # Try to load using ML engine's version control first
             if hasattr(self.ml_engine, 'version_control') and self.ml_engine.version_control:
@@ -377,8 +378,6 @@ class MLEngineManager:
                     
             # Fallback to direct model loading if version control failed or not available
             if not is_trained:
-                model_path = self._get_model_path(model_name)
-                
                 if model_path.exists():
                     try:
                         # Validate model file before loading

@@ -264,13 +264,21 @@ class HistoricalPage(ctk.CTkFrame):
         header_frame.pack(fill='x', pady=(0, 10))
         
         columns = ['Date', 'Model', 'Serial', 'Risk Score', 'Primary Issue']
-        for i, col in enumerate(columns):
+        col_widths = [100, 100, 120, 100, 200]
+        
+        # Configure column weights
+        for i, width in enumerate(col_widths):
+            header_frame.columnconfigure(i, minsize=width, weight=0)
+        
+        for i, (col, width) in enumerate(zip(columns, col_widths)):
             label = ctk.CTkLabel(
                 header_frame,
                 text=col,
-                font=ctk.CTkFont(size=12, weight="bold")
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=width,
+                anchor='w'
             )
-            label.grid(row=0, column=i, padx=10, pady=5, sticky='w')
+            label.grid(row=0, column=i, padx=5, pady=5, sticky='w')
 
         # Risk trends chart
         self.risk_trend_chart = ChartWidget(
@@ -293,54 +301,27 @@ class HistoricalPage(ctk.CTkFrame):
         )
         self.spc_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # SPC controls
+        # Single SPC control button to generate all analyses
         spc_controls = ctk.CTkFrame(self.spc_frame, fg_color="transparent")
         spc_controls.pack(fill='x', padx=15, pady=(0, 10))
 
-        self.control_chart_btn = ctk.CTkButton(
+        self.generate_spc_btn = ctk.CTkButton(
             spc_controls,
-            text="📊 Control Charts",
-            command=self._generate_control_charts,
-            width=140,
+            text="📊 Generate All SPC Analyses",
+            command=self._generate_all_spc_analyses,
+            width=200,
             height=40
         )
-        self.control_chart_btn.pack(side='left', padx=(10, 5), pady=10)
-
-        self.capability_btn = ctk.CTkButton(
+        self.generate_spc_btn.pack(side='left', padx=(10, 10), pady=10)
+        
+        # Info label
+        spc_info_label = ctk.CTkLabel(
             spc_controls,
-            text="📈 Capability Study",
-            command=self._run_capability_study,
-            width=140,
-            height=40
+            text="Click to generate all statistical analyses, then use tabs below to view results",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
         )
-        self.capability_btn.pack(side='left', padx=(5, 5), pady=10)
-
-        self.pareto_btn = ctk.CTkButton(
-            spc_controls,
-            text="📉 Pareto Analysis",
-            command=self._run_pareto_analysis,
-            width=140,
-            height=40
-        )
-        self.pareto_btn.pack(side='left', padx=(5, 5), pady=10)
-
-        self.drift_analysis_btn = ctk.CTkButton(
-            spc_controls,
-            text="🎯 Drift Detection",
-            command=self._detect_process_drift,
-            width=140,
-            height=40
-        )
-        self.drift_analysis_btn.pack(side='left', padx=(5, 5), pady=10)
-
-        self.failure_mode_btn = ctk.CTkButton(
-            spc_controls,
-            text="⚡ Failure Mode Analysis",
-            command=self._analyze_failure_modes,
-            width=140,
-            height=40
-        )
-        self.failure_mode_btn.pack(side='left', padx=(5, 10), pady=10)
+        spc_info_label.pack(side='left', padx=(10, 10), pady=10)
 
         # SPC results tabview
         self.spc_tabview = ctk.CTkTabview(self.spc_frame)
@@ -644,36 +625,80 @@ class HistoricalPage(ctk.CTkFrame):
         self.insights_tabview.add("Linearity Analysis")
         self.insights_tabview.add("Process Capability")
 
-        # Yield analysis chart
+        # Yield analysis chart with explanation
+        yield_frame = ctk.CTkFrame(self.insights_tabview.tab("Yield Analysis"))
+        yield_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        yield_info = ctk.CTkLabel(
+            yield_frame,
+            text="Shows the percentage of units passing all tests over time. Higher is better (target: >95%).",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        yield_info.pack(anchor='w', padx=5, pady=(5, 0))
+        
         self.yield_chart = ChartWidget(
-            self.insights_tabview.tab("Yield Analysis"),
+            yield_frame,
             chart_type='line',
-            title="Yield Trends by Model",
+            title="Pass Rate Trends by Model",
             figsize=(10, 5)
         )
         self.yield_chart.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Trim effectiveness chart
+        # Trim effectiveness chart with explanation
+        trim_frame = ctk.CTkFrame(self.insights_tabview.tab("Trim Effectiveness"))
+        trim_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        trim_info = ctk.CTkLabel(
+            trim_frame,
+            text="Shows how much laser trimming improved accuracy. Points above the line indicate effective trimming.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        trim_info.pack(anchor='w', padx=5, pady=(5, 0))
+        
         self.trim_effect_chart = ChartWidget(
-            self.insights_tabview.tab("Trim Effectiveness"),
+            trim_frame,
             chart_type='scatter',
-            title="Trim Improvement vs Initial Error",
+            title="Trim Effectiveness: Error Reduction Analysis",
             figsize=(10, 5)
         )
         self.trim_effect_chart.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Linearity analysis chart
+        # Linearity analysis chart with explanation
+        linearity_frame = ctk.CTkFrame(self.insights_tabview.tab("Linearity Analysis"))
+        linearity_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        linearity_info = ctk.CTkLabel(
+            linearity_frame,
+            text="Distribution of linearity errors. Narrower distribution centered near zero indicates better performance.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        linearity_info.pack(anchor='w', padx=5, pady=(5, 0))
+        
         self.linearity_chart = ChartWidget(
-            self.insights_tabview.tab("Linearity Analysis"),
+            linearity_frame,
             chart_type='histogram',
             title="Linearity Error Distribution",
             figsize=(10, 5)
         )
         self.linearity_chart.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Process capability chart
+        # Process capability chart with explanation
+        cpk_frame = ctk.CTkFrame(self.insights_tabview.tab("Process Capability"))
+        cpk_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        cpk_info = ctk.CTkLabel(
+            cpk_frame,
+            text="Cpk measures process capability. Values >1.33 indicate a capable process (green), <1.0 needs improvement (red).",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        cpk_info.pack(anchor='w', padx=5, pady=(5, 0))
+        
         self.cpk_chart = ChartWidget(
-            self.insights_tabview.tab("Process Capability"),
+            cpk_frame,
             chart_type='bar',
             title="Process Capability Index (Cpk) by Model",
             figsize=(10, 5)
@@ -694,6 +719,12 @@ class HistoricalPage(ctk.CTkFrame):
     def _run_query_background(self):
         """Run database query in background thread."""
         try:
+            # Log database information for debugging
+            if hasattr(self.db_manager, 'db_path'):
+                logger.info(f"Using database: {self.db_manager.db_path}")
+            else:
+                logger.info("Database path not available")
+            
             # Get filter values - use the actual variables that exist in the UI
             model = self.model_var.get().strip() if self.model_var.get().strip() else None
             serial = self.serial_var.get().strip() if self.serial_var.get().strip() else None
@@ -749,6 +780,28 @@ class HistoricalPage(ctk.CTkFrame):
 
             # Log results summary
             logger.info(f"Retrieved {len(results)} results from database")
+            
+            # Check for test data
+            test_data_count = 0
+            for result in results:
+                if result.serial and result.serial.startswith('TEST'):
+                    test_data_count += 1
+            
+            if test_data_count > 0:
+                logger.warning(f"Found {test_data_count} test data entries (TEST serial numbers)")
+                if test_data_count == len(results):
+                    logger.warning("ALL data appears to be test data! Check database configuration.")
+                    # Show warning to user
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Fake Test Data Detected",
+                        f"The query returned FAKE test data (serial numbers starting with 'TEST').\n\n"
+                        f"This means the database was seeded with artificial test data.\n\n"
+                        f"To use real data:\n"
+                        f"1. Clean the database: python scripts/init_dev_database.py --clean\n"
+                        f"2. Analyze actual laser trim files through the app\n"
+                        f"3. Or switch to production: set LTA_ENV=production"
+                    ))
+            
             if results and results[0].tracks:
                 first_track = results[0].tracks[0]
                 logger.info(f"First track sigma_gradient: {getattr(first_track, 'sigma_gradient', 'NOT FOUND')}")
@@ -1012,7 +1065,7 @@ class HistoricalPage(ctk.CTkFrame):
                             'track_id': track.track_id,
                             'sigma_gradient': track.sigma_gradient,
                             'sigma_pass': track.sigma_pass,
-                            'linearity_error': abs(track.final_linearity_error_shifted or track.final_linearity_error_raw or 0),
+                            'linearity_error': track.final_linearity_error_shifted or track.final_linearity_error_raw or 0,
                             'linearity_pass': track.linearity_pass,
                             'trim_improvement': track.trim_improvement_percent,
                             'untrimmed_rms': track.untrimmed_rms_error,
@@ -1046,12 +1099,16 @@ class HistoricalPage(ctk.CTkFrame):
             return
             
         try:
-            # Calculate yield by model and date
+            # Calculate overall pass rate by model and date
             df['date'] = pd.to_datetime(df['date']).dt.date
+            
+            # Calculate pass rate based on both sigma and linearity pass
+            df['overall_pass'] = df['sigma_pass'] & df['linearity_pass']
+            
             yield_data = df.groupby(['date', 'model']).agg({
-                'sigma_pass': lambda x: (x.sum() / len(x) * 100) if len(x) > 0 else 0
+                'overall_pass': lambda x: (x.sum() / len(x) * 100) if len(x) > 0 else 0
             }).reset_index()
-            yield_data.columns = ['date', 'model', 'yield']
+            yield_data.columns = ['date', 'model', 'pass_rate']
             
             # For line chart, we need to prepare data differently
             # Get the most recent model's data for the line chart
@@ -1065,7 +1122,7 @@ class HistoricalPage(ctk.CTkFrame):
                     # Prepare data for line chart with required columns
                     chart_data = pd.DataFrame({
                         'trim_date': primary_data['date'],
-                        'sigma_gradient': primary_data['yield'] / 100.0  # Convert percentage to decimal for gradient scale
+                        'sigma_gradient': primary_data['pass_rate'] / 100.0  # Convert percentage to decimal for gradient scale
                     })
                     
                     # Update the chart
@@ -1074,12 +1131,19 @@ class HistoricalPage(ctk.CTkFrame):
                     # Manually adjust the chart after update to show yield-specific formatting
                     if self.yield_chart.figure.axes:
                         ax = self.yield_chart.figure.axes[0]
-                        ax.set_ylabel('Yield (%)')
-                        ax.set_title(f'Yield Trend - {primary_model}')
+                        ax.set_ylabel('Pass Rate (%)')
+                        ax.set_title(f'Overall Pass Rate Trend - {primary_model}')
                         # Scale y-axis back to percentage
-                        y_ticks = ax.get_yticks()
-                        ax.set_yticklabels([f'{y*100:.0f}' for y in y_ticks])
+                        import matplotlib.ticker as mticker
+                        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f'{y*100:.0f}'))
                         ax.set_ylim(0, 1.05)  # 0-105%
+                        
+                        # Add target line at 95%
+                        ax.axhline(y=0.95, color='green', linestyle='--', alpha=0.5, label='Target (95%)')
+                        legend = ax.legend()
+                        if legend:
+                            self.yield_chart._style_legend(legend)
+                        
                         self.yield_chart.canvas.draw_idle()
             else:
                 self.yield_chart.show_placeholder("No yield data available", "Run a query to view yield trends")
@@ -1089,18 +1153,30 @@ class HistoricalPage(ctk.CTkFrame):
     
     def _update_trim_effectiveness(self, df):
         """Update trim effectiveness chart."""
-        if df.empty or 'trim_improvement' not in df.columns:
-            self.trim_effect_chart.show_placeholder("No trim effectiveness data", "Run a query to view trim improvements")
+        if df.empty:
+            self.trim_effect_chart.show_placeholder("No data available", "Run a query to view trim improvements")
+            return
+            
+        # Log available columns
+        self.logger.info(f"Trim effectiveness - Available columns: {df.columns.tolist()}")
+        
+        if 'trim_improvement' not in df.columns or 'untrimmed_rms' not in df.columns:
+            self.trim_effect_chart.show_placeholder("Missing required data", "Need trim_improvement and untrimmed_rms data")
+            self.logger.warning(f"Missing columns. Available: {df.columns.tolist()}")
             return
             
         try:
+            # Log data statistics
+            self.logger.info(f"Trim improvement non-null: {df['trim_improvement'].notna().sum()}")
+            self.logger.info(f"Untrimmed RMS non-null: {df['untrimmed_rms'].notna().sum()}")
+            
             # Filter valid data
             valid_data = df[(df['untrimmed_rms'].notna()) & 
                           (df['trim_improvement'].notna()) &
                           (df['untrimmed_rms'] > 0)].copy()
             
             if len(valid_data) == 0:
-                self.trim_effect_chart.show_placeholder("No valid trim data", "Need untrimmed RMS and improvement data")
+                self.trim_effect_chart.show_placeholder("No valid trim data", "All trim_improvement or untrimmed_rms values are null")
                 return
             
             # Prepare scatter data
@@ -1112,12 +1188,26 @@ class HistoricalPage(ctk.CTkFrame):
             # Update chart
             self.trim_effect_chart.update_chart_data(chart_data)
             
-            # Update labels
+            # Update labels and add reference line
             if self.trim_effect_chart.figure.axes:
                 ax = self.trim_effect_chart.figure.axes[0]
                 ax.set_xlabel('Initial Error (Untrimmed RMS)')
                 ax.set_ylabel('Trim Improvement (%)')
                 ax.set_title('Trim Effectiveness Analysis')
+                
+                # Add reference line at 50% improvement
+                ax.axhline(y=50, color='green', linestyle='--', alpha=0.5, label='Target (50% improvement)')
+                
+                # Add diagonal reference line showing expected improvement
+                max_error = chart_data['x'].max()
+                if max_error > 0:
+                    x_ref = np.linspace(0, max_error, 100)
+                    # Expected improvement increases with initial error
+                    y_ref = 100 * (1 - np.exp(-2 * x_ref / max_error))
+                    ax.plot(x_ref, y_ref, 'r--', alpha=0.3, label='Expected improvement curve')
+                
+                ax.legend()
+                ax.set_ylim(bottom=0)
                 self.trim_effect_chart.canvas.draw_idle()
             
         except Exception as e:
@@ -1125,33 +1215,97 @@ class HistoricalPage(ctk.CTkFrame):
             self.trim_effect_chart.show_placeholder("Error displaying chart", f"Error: {str(e)}")
     
     def _update_linearity_analysis(self, df):
-        """Update linearity analysis chart."""
+        """Update linearity analysis with better visualization."""
         if df.empty or 'linearity_error' not in df.columns:
-            self.linearity_chart.show_placeholder("No linearity data available", "Run a query to view linearity distribution")
+            self.linearity_chart.show_placeholder("No linearity data available", "Run a query to view linearity analysis")
             return
             
         try:
-            # Get linearity error data
-            linearity_data = df['linearity_error'].dropna()
+            # Create box plot by model to show linearity error distribution
+            self.linearity_chart.clear_chart()
+            fig = self.linearity_chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
             
-            if len(linearity_data) == 0:
-                self.linearity_chart.show_placeholder("No linearity data available", "Run a query to view linearity distribution")
-                return
+            # Apply theme
+            self.linearity_chart._apply_theme_to_axes(ax)
             
-            # Prepare histogram data - histogram chart expects 'sigma_gradient' column
-            chart_data = pd.DataFrame({
-                'sigma_gradient': linearity_data  # Use sigma_gradient column name for histogram
-            })
+            # Get theme colors
+            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            is_dark = ctk.get_appearance_mode().lower() == "dark"
             
-            # Update chart
-            self.linearity_chart.update_chart_data(chart_data)
+            # Prepare data by model
+            models = df['model'].unique()
+            box_data = []
+            labels = []
             
-            # Update the title to reflect linearity data
-            if self.linearity_chart.figure.axes:
-                ax = self.linearity_chart.figure.axes[0]
-                ax.set_xlabel('Linearity Error')
-                ax.set_title('Linearity Error Distribution')
-                self.linearity_chart.canvas.draw_idle()
+            for model in models:
+                model_data = df[df['model'] == model]['linearity_error'].dropna()
+                if len(model_data) > 0:
+                    box_data.append(model_data.values * 100)  # Convert to percentage
+                    labels.append(f"{model}\n(n={len(model_data)})")
+            
+            if box_data:
+                # Create box plot
+                bp = ax.boxplot(box_data, labels=labels, patch_artist=True,
+                               notch=True, showmeans=True)
+                
+                # Color boxes based on performance
+                spec_limit = 1.0  # 1% spec limit
+                for i, (patch, data) in enumerate(zip(bp['boxes'], box_data)):
+                    # Check if 95% of data is within spec
+                    within_spec_pct = np.sum(np.abs(data) <= spec_limit) / len(data) * 100
+                    if within_spec_pct >= 95:
+                        patch.set_facecolor('#27ae60')  # Green
+                    elif within_spec_pct >= 90:
+                        patch.set_facecolor('#f39c12')  # Orange  
+                    else:
+                        patch.set_facecolor('#e74c3c')  # Red
+                    patch.set_alpha(0.7)
+                
+                # Style the plot elements for theme
+                for element in ['whiskers', 'fliers', 'means', 'medians', 'caps']:
+                    if element in bp:
+                        plt.setp(bp[element], color=text_color)
+                
+                # Add specification lines
+                ax.axhline(y=spec_limit, color='red', linestyle='--', alpha=0.5, label=f'Spec: ±{spec_limit}%')
+                ax.axhline(y=-spec_limit, color='red', linestyle='--', alpha=0.5)
+                ax.axhspan(-spec_limit, spec_limit, alpha=0.1, color='green')
+                
+                # Add zero line
+                ax.axhline(y=0, color=text_color, linestyle='-', alpha=0.3, linewidth=0.5)
+                
+                ax.set_ylabel('Linearity Error (%)', color=text_color)
+                ax.set_xlabel('Model', color=text_color)
+                ax.set_title('Linearity Performance by Model', fontsize=14, fontweight='bold', color=text_color)
+                
+                # Add overall statistics
+                all_data = np.concatenate(box_data)
+                within_spec_overall = np.sum(np.abs(all_data) <= spec_limit) / len(all_data) * 100
+                
+                stats_text = f'Overall Within Spec: {within_spec_overall:.1f}%\nTarget: >95%'
+                bg_color = theme_colors["bg"]["secondary"] if is_dark else 'wheat'
+                ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
+                       ha='right', va='top', fontsize=10, color=text_color,
+                       bbox=dict(boxstyle='round', facecolor=bg_color, alpha=0.8, edgecolor=text_color))
+                
+                legend = ax.legend(loc='upper left')
+                if legend:
+                    self.linearity_chart._style_legend(legend)
+                
+                ax.grid(True, axis='y', alpha=0.3)
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                
+            else:
+                ax.text(0.5, 0.5, 'No linearity data available', 
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, color=text_color)
+            
+            fig.tight_layout()
+            self.linearity_chart.canvas.draw()
             
         except Exception as e:
             self.logger.error(f"Error updating linearity analysis: {e}")
@@ -1163,34 +1317,57 @@ class HistoricalPage(ctk.CTkFrame):
             return
             
         try:
+            # Log data info
+            self.logger.info(f"Process capability - Models: {df['model'].unique().tolist()}")
+            self.logger.info(f"Process capability - Total records: {len(df)}")
+            
             # Calculate Cpk by model
             cpk_data = []
+            excluded_models = []
             
             for model in df['model'].unique():
                 model_data = df[df['model'] == model]
                 sigma_values = model_data['sigma_gradient'].dropna()
+                
+                # Log model data
+                self.logger.info(f"Model {model}: {len(sigma_values)} samples")
                 
                 if len(sigma_values) > 3:
                     # Calculate Cpk (simplified version)
                     mean_val = sigma_values.mean()
                     std_val = sigma_values.std()
                     
-                    # Assuming specification limits (example)
-                    usl = 0.05  # Upper specification limit (more realistic for sigma)
-                    lsl = 0.0   # Lower specification limit
+                    # More realistic specification limits for sigma gradient
+                    # Sigma gradient should be between 0.3 and 0.7 for most potentiometers
+                    target = 0.5  # Target sigma value
+                    usl = 0.7     # Upper specification limit
+                    lsl = 0.3     # Lower specification limit
                     
                     if std_val > 0:
                         cpu = (usl - mean_val) / (3 * std_val)
                         cpl = (mean_val - lsl) / (3 * std_val)
                         cpk = min(cpu, cpl)
+                        
+                        # Also calculate Cp for reference
+                        cp = (usl - lsl) / (6 * std_val)
                     else:
                         cpk = 0
+                        cp = 0
                     
                     cpk_data.append({
                         'model': model,
                         'cpk': max(0, cpk),
+                        'cp': max(0, cp),
+                        'mean': mean_val,
+                        'std': std_val,
                         'count': len(sigma_values)
                     })
+                else:
+                    excluded_models.append((model, len(sigma_values)))
+            
+            # Log excluded models
+            if excluded_models:
+                self.logger.info(f"Models excluded from Cpk analysis (insufficient samples): {excluded_models}")
             
             if cpk_data:
                 # Sort by Cpk value
@@ -1205,18 +1382,60 @@ class HistoricalPage(ctk.CTkFrame):
                 # Update chart
                 self.cpk_chart.update_chart_data(chart_data)
                 
-                # Update chart labels
+                # Update chart labels and add color coding
                 if self.cpk_chart.figure.axes:
                     ax = self.cpk_chart.figure.axes[0]
                     ax.set_xlabel('Model')
                     ax.set_ylabel('Process Capability (Cpk)')
                     ax.set_title('Process Capability by Model')
+                    
                     # Fix y-axis labels to show Cpk values
-                    y_ticks = ax.get_yticks()
-                    ax.set_yticklabels([f'{y/100:.2f}' for y in y_ticks])
+                    import matplotlib.ticker as mticker
+                    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f'{y/100:.2f}'))
+                    
+                    # Add reference lines for capability levels
+                    ax.axhline(y=133, color='green', linestyle='--', alpha=0.5, label='Capable (Cpk ≥ 1.33)')
+                    ax.axhline(y=100, color='orange', linestyle='--', alpha=0.5, label='Marginal (Cpk ≥ 1.0)')
+                    
+                    # Color bars based on Cpk value
+                    if ax.patches:
+                        for i, (patch, data) in enumerate(zip(ax.patches, cpk_data)):
+                            cpk_val = data['cpk']
+                            if cpk_val >= 1.33:
+                                patch.set_facecolor('#27ae60')  # Green
+                            elif cpk_val >= 1.0:
+                                patch.set_facecolor('#f39c12')  # Orange
+                            else:
+                                patch.set_facecolor('#e74c3c')  # Red
+                    
+                    # Get theme colors for text annotations
+                    from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+                    theme_colors = ThemeHelper.get_theme_colors()
+                    text_color = theme_colors["fg"]["primary"]
+                    
+                    # Add text annotations with sample counts
+                    for i, data in enumerate(cpk_data):
+                        if i < len(ax.patches):
+                            patch = ax.patches[i]
+                            height = patch.get_height()
+                            ax.text(patch.get_x() + patch.get_width()/2., height + 1,
+                                   f'n={data["count"]}', ha='center', va='bottom', fontsize=8, color=text_color)
+                    
+                    legend = ax.legend(loc='upper right')
+                    if legend:
+                        self.cpk_chart._style_legend(legend)
+                    ax.set_ylim(0, max(200, max(d['cpk'] * 100 for d in cpk_data) * 1.2))
                     self.cpk_chart.canvas.draw_idle()
             else:
-                self.cpk_chart.show_placeholder("Insufficient data for Cpk analysis", "Need at least 4 samples per model")
+                # Show more informative message about excluded models
+                if excluded_models:
+                    excluded_info = ", ".join([f"{model} ({count} samples)" for model, count in excluded_models])
+                    self.cpk_chart.show_placeholder(
+                        "Insufficient data for Cpk analysis", 
+                        f"Need at least 4 samples per model. Excluded: {excluded_info}"
+                    )
+                else:
+                    self.cpk_chart.show_placeholder("Insufficient data for Cpk analysis", "Need at least 4 samples per model")
                 
         except Exception as e:
             self.logger.error(f"Error updating process capability: {e}")
@@ -2687,21 +2906,30 @@ Metrics:
                         
                         # Collect high risk units
                         if risk_cat == 'High':
+                            risk_score_val = getattr(track, 'failure_probability', 0)
+                            if risk_score_val is None:
+                                risk_score_val = 0
                             high_risk_units.append({
                                 'date': result.file_date or result.timestamp,
                                 'model': result.model,
                                 'serial': result.serial,
-                                'risk_score': getattr(track, 'failure_probability', 0),
+                                'risk_score': risk_score_val,
                                 'issue': self._identify_primary_issue(track)
                             })
                         
                         # Track risk trends by model
                         if result.model not in risk_trends:
                             risk_trends[result.model] = []
-                        risk_trends[result.model].append({
-                            'date': result.file_date or result.timestamp,
-                            'risk_score': getattr(track, 'failure_probability', 0)
-                        })
+                        # Ensure we have valid date and risk score
+                        date_val = result.file_date or result.timestamp
+                        risk_score_val = getattr(track, 'failure_probability', 0)
+                        if risk_score_val is None:
+                            risk_score_val = 0
+                        if date_val is not None:  # Only add if we have a valid date
+                            risk_trends[result.model].append({
+                                'date': date_val,
+                                'risk_score': risk_score_val
+                            })
             
             # Update risk distribution chart
             if risk_counts and any(risk_counts.values()):
@@ -2717,6 +2945,7 @@ Metrics:
                     # Create figure for pie chart
                     self.risk_dist_chart.clear_chart()
                     fig = self.risk_dist_chart.figure
+                    fig.clear()  # Ensure the figure is completely cleared
                     ax = fig.add_subplot(111)
                     
                     # Create pie chart
@@ -2734,6 +2963,8 @@ Metrics:
                     self.risk_dist_chart.canvas.draw()
             
             # Update high risk units list
+            # Sort by risk score (handle None values)
+            high_risk_units.sort(key=lambda x: x.get('risk_score', 0) or 0, reverse=True)
             self._update_high_risk_list(high_risk_units[:20])  # Show top 20
             
             # Update risk trends chart
@@ -3075,10 +3306,10 @@ TRACK DETAILS:
         if hasattr(track, 'linearity_pass') and not track.linearity_pass:
             issues.append("Linearity Fail")
         
-        if hasattr(track, 'range_utilization_percent') and track.range_utilization_percent < 80:
+        if hasattr(track, 'range_utilization_percent') and track.range_utilization_percent is not None and track.range_utilization_percent < 80:
             issues.append("Low Range Utilization")
         
-        if hasattr(track, 'failure_probability') and track.failure_probability > 0.5:
+        if hasattr(track, 'failure_probability') and track.failure_probability is not None and track.failure_probability > 0.5:
             issues.append("High Failure Risk")
         
         return ", ".join(issues) if issues else "Multiple Issues"
@@ -3091,78 +3322,191 @@ TRACK DETAILS:
                 if widget.winfo_class() != 'Frame' or widget.winfo_y() > 50:  # Keep header
                     widget.destroy()
             
+            # Column widths to match header
+            col_widths = [100, 100, 120, 100, 200]
+            
             # Add high risk units
             for i, unit in enumerate(high_risk_units):
-                row_frame = ctk.CTkFrame(self.high_risk_frame)
-                row_frame.pack(fill='x', pady=2)
+                row_frame = ctk.CTkFrame(self.high_risk_frame,
+                                        fg_color=("gray90", "gray20") if i % 2 == 0 else ("gray95", "gray25"))
+                row_frame.pack(fill='x', pady=1)
+                
+                # Configure column weights to match header
+                for j, width in enumerate(col_widths):
+                    row_frame.columnconfigure(j, minsize=width, weight=0)
                 
                 # Date
                 date_label = ctk.CTkLabel(
                     row_frame,
                     text=unit['date'].strftime('%Y-%m-%d') if unit['date'] else 'Unknown',
-                    width=100
+                    width=col_widths[0],
+                    anchor='w'
                 )
-                date_label.grid(row=0, column=0, padx=10, pady=5, sticky='w')
+                date_label.grid(row=0, column=0, padx=5, pady=5, sticky='w')
                 
                 # Model
-                model_label = ctk.CTkLabel(row_frame, text=unit['model'], width=80)
-                model_label.grid(row=0, column=1, padx=10, pady=5, sticky='w')
+                model_label = ctk.CTkLabel(row_frame, text=unit['model'], width=col_widths[1], anchor='w')
+                model_label.grid(row=0, column=1, padx=5, pady=5, sticky='w')
                 
                 # Serial
-                serial_label = ctk.CTkLabel(row_frame, text=unit['serial'], width=120)
-                serial_label.grid(row=0, column=2, padx=10, pady=5, sticky='w')
+                serial_label = ctk.CTkLabel(row_frame, text=unit['serial'], width=col_widths[2], anchor='w')
+                serial_label.grid(row=0, column=2, padx=5, pady=5, sticky='w')
                 
                 # Risk Score
+                risk_score = unit.get('risk_score', 0)
+                risk_text = f"{risk_score:.2%}" if risk_score is not None else "N/A"
                 risk_label = ctk.CTkLabel(
                     row_frame,
-                    text=f"{unit['risk_score']:.2%}",
-                    width=80,
-                    text_color="red"
+                    text=risk_text,
+                    width=col_widths[3],
+                    text_color="red",
+                    anchor='w'
                 )
-                risk_label.grid(row=0, column=3, padx=10, pady=5, sticky='w')
+                risk_label.grid(row=0, column=3, padx=5, pady=5, sticky='w')
                 
                 # Primary Issue
-                issue_label = ctk.CTkLabel(row_frame, text=unit['issue'], width=150)
-                issue_label.grid(row=0, column=4, padx=10, pady=5, sticky='w')
+                issue_label = ctk.CTkLabel(row_frame, text=unit['issue'][:40], width=col_widths[4], anchor='w')
+                issue_label.grid(row=0, column=4, padx=5, pady=5, sticky='w')
                 
         except Exception as e:
             self.logger.error(f"Error updating high risk list: {e}")
     
     def _update_risk_trends_chart(self, risk_trends):
-        """Update risk trends chart."""
+        """Update risk trends chart with better visualization."""
         try:
             self.risk_trend_chart.clear_chart()
-            ax = self.risk_trend_chart.figure.add_subplot(111)
+            fig = self.risk_trend_chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
             
-            colors = ['#e74c3c', '#f39c12', '#3498db', '#2ecc71', '#9b59b6']
+            # Apply theme
+            self.risk_trend_chart._apply_theme_to_axes(ax)
             
-            for i, (model, trends) in enumerate(list(risk_trends.items())[:5]):  # Top 5 models
-                if trends:
-                    # Sort by date
-                    trends = sorted(trends, key=lambda x: x['date'])
-                    dates = [t['date'] for t in trends]
-                    scores = [t['risk_score'] for t in trends]
+            # Get theme colors
+            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            
+            # Prepare data for stacked area chart showing risk distribution over time
+            if risk_trends:
+                # Collect all dates
+                all_dates = set()
+                for trends in risk_trends.values():
+                    for t in trends:
+                        if t['date'] and t['risk_score'] is not None:
+                            all_dates.add(t['date'].date() if hasattr(t['date'], 'date') else t['date'])
+                
+                if all_dates:
+                    sorted_dates = sorted(all_dates)
                     
-                    ax.plot(dates, scores, marker='o', label=model, 
-                           color=colors[i % len(colors)], linewidth=2)
-            
-            ax.set_xlabel('Date')
-            ax.set_ylabel('Risk Score')
-            ax.set_title('Risk Score Trends by Model')
-            ax.legend(loc='best')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(0, 1)
-            
-            # Format dates
-            import matplotlib.dates as mdates
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            ax.xaxis.set_major_locator(mdates.DayLocator(interval=7))
-            self.risk_trend_chart.figure.autofmt_xdate()
+                    # Count risk levels by date
+                    date_risk_counts = {date: {'High': 0, 'Medium': 0, 'Low': 0} for date in sorted_dates}
+                    
+                    for model, trends in risk_trends.items():
+                        for t in trends:
+                            if t['date'] and t['risk_score'] is not None:
+                                date = t['date'].date() if hasattr(t['date'], 'date') else t['date']
+                                if date in date_risk_counts:
+                                    if t['risk_score'] >= 0.7:
+                                        date_risk_counts[date]['High'] += 1
+                                    elif t['risk_score'] >= 0.4:
+                                        date_risk_counts[date]['Medium'] += 1
+                                    else:
+                                        date_risk_counts[date]['Low'] += 1
+                    
+                    # Prepare data for stacked area
+                    dates = list(sorted_dates)
+                    high_counts = [date_risk_counts[d]['High'] for d in dates]
+                    medium_counts = [date_risk_counts[d]['Medium'] for d in dates]
+                    low_counts = [date_risk_counts[d]['Low'] for d in dates]
+                    
+                    # Create stacked area chart
+                    ax.fill_between(dates, 0, low_counts, color='#27ae60', alpha=0.7, label='Low Risk')
+                    ax.fill_between(dates, low_counts, [l+m for l,m in zip(low_counts, medium_counts)], 
+                                  color='#f39c12', alpha=0.7, label='Medium Risk')
+                    ax.fill_between(dates, [l+m for l,m in zip(low_counts, medium_counts)], 
+                                  [l+m+h for l,m,h in zip(low_counts, medium_counts, high_counts)], 
+                                  color='#e74c3c', alpha=0.7, label='High Risk')
+                    
+                    # Add trend line for total units
+                    total_counts = [l+m+h for l,m,h in zip(low_counts, medium_counts, high_counts)]
+                    ax.plot(dates, total_counts, 'k-', linewidth=2, alpha=0.8, label='Total Units')
+                    
+                    # Add annotations for latest state
+                    if total_counts and total_counts[-1] > 0:
+                        latest_high = high_counts[-1]
+                        latest_total = total_counts[-1]
+                        high_pct = (latest_high / latest_total * 100) if latest_total > 0 else 0
+                        
+                        ax.text(0.98, 0.98, f'Latest: {high_pct:.1f}% High Risk ({latest_high}/{latest_total})',
+                               transform=ax.transAxes, ha='right', va='top',
+                               bbox=dict(boxstyle='round', facecolor='white' if theme_colors["bg"]["primary"] == '#ffffff' else '#2b2b2b', 
+                                        alpha=0.8, edgecolor=text_color),
+                               color=text_color, fontsize=10)
+                    
+                    ax.set_xlabel('Date', color=text_color)
+                    ax.set_ylabel('Number of Units', color=text_color)
+                    ax.set_title('Risk Distribution Over Time', fontsize=14, fontweight='bold', color=text_color)
+                    
+                    # Style legend
+                    legend = ax.legend(loc='upper left')
+                    if legend:
+                        self.risk_trend_chart._style_legend(legend)
+                    
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Format dates
+                    import matplotlib.dates as mdates
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    if len(dates) > 7:
+                        ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates)//7)))
+                    
+                    fig.autofmt_xdate()
+                else:
+                    ax.text(0.5, 0.5, 'No risk data available\nRun a query to view trends', 
+                           ha='center', va='center', transform=ax.transAxes,
+                           fontsize=12, color=text_color)
+            else:
+                ax.text(0.5, 0.5, 'No risk data available\nRun a query to view trends', 
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, color=text_color)
             
             self.risk_trend_chart.canvas.draw()
             
         except Exception as e:
             self.logger.error(f"Error updating risk trends chart: {e}")
+    
+    def _generate_all_spc_analyses(self):
+        """Generate all SPC analyses at once."""
+        if not self.current_data:
+            messagebox.showwarning("No Data", "Please run a query first to load data")
+            return
+        
+        try:
+            # Show progress
+            self.generate_spc_btn.configure(text="⏳ Generating Analyses...", state='disabled')
+            
+            # Generate all analyses
+            self._generate_control_charts()
+            self._run_capability_study()
+            self._run_pareto_analysis()
+            self._detect_process_drift()
+            self._analyze_failure_modes()
+            
+            # Switch to first tab
+            self.spc_tabview.set("Control Charts")
+            
+            # Show success message
+            messagebox.showinfo("SPC Analysis Complete", 
+                              "All statistical analyses have been generated.\n"
+                              "Use the tabs to view different analyses.")
+            
+        except Exception as e:
+            self.logger.error(f"Error generating SPC analyses: {e}")
+            messagebox.showerror("Analysis Error", f"Failed to generate analyses:\n{str(e)}")
+        finally:
+            # Reset button
+            self.generate_spc_btn.configure(text="📊 Generate All SPC Analyses", state='normal')
     
     def _generate_control_charts(self):
         """Generate statistical control charts for key parameters."""
@@ -3194,32 +3538,78 @@ TRACK DETAILS:
             df = pd.DataFrame(chart_data).sort_values('date')
             
             self.control_chart.clear_chart()
-            ax = self.control_chart.figure.add_subplot(111)
+            fig = self.control_chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
             
-            # Plot values
-            ax.plot(df.index, df['value'], 'bo-', label='Sigma Gradient')
+            # Apply theme
+            self.control_chart._apply_theme_to_axes(ax)
+            
+            # Get theme colors
+            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            is_dark = ctk.get_appearance_mode().lower() == "dark"
+            bg_color = theme_colors["bg"]["secondary"] if is_dark else 'wheat'
+            
+            # Plot values with dates on x-axis
+            dates = pd.to_datetime(df['date'])
+            ax.plot(dates, df['value'], 'bo-', label='Sigma Gradient', markersize=6)
             
             # Calculate control limits
             mean = df['value'].mean()
             std = df['value'].std()
             ucl = mean + 3 * std
             lcl = mean - 3 * std
+            uwl = mean + 2 * std  # Upper warning limit
+            lwl = mean - 2 * std  # Lower warning limit
+            
+            # Add shaded zones
+            ax.axhspan(lcl, ucl, alpha=0.1, color='green', label='Control Zone (±3σ)')
+            ax.axhspan(lwl, uwl, alpha=0.1, color='yellow', label='Warning Zone (±2σ)')
             
             # Plot control limits
-            ax.axhline(y=mean, color='g', linestyle='-', label=f'Mean: {mean:.4f}')
-            ax.axhline(y=ucl, color='r', linestyle='--', label=f'UCL: {ucl:.4f}')
-            ax.axhline(y=lcl, color='r', linestyle='--', label=f'LCL: {lcl:.4f}')
+            ax.axhline(y=mean, color='green', linestyle='-', linewidth=2, label=f'Center Line: {mean:.4f}')
+            ax.axhline(y=ucl, color='red', linestyle='--', linewidth=1.5, label=f'UCL (+3σ): {ucl:.4f}')
+            ax.axhline(y=lcl, color='red', linestyle='--', linewidth=1.5, label=f'LCL (-3σ): {lcl:.4f}')
+            ax.axhline(y=uwl, color='orange', linestyle=':', alpha=0.7)
+            ax.axhline(y=lwl, color='orange', linestyle=':', alpha=0.7)
             
             # Highlight out-of-control points
             ooc_points = df[(df['value'] > ucl) | (df['value'] < lcl)]
             if not ooc_points.empty:
-                ax.plot(ooc_points.index, ooc_points['value'], 'ro', markersize=10, label='Out of Control')
+                ooc_dates = pd.to_datetime(ooc_points['date'])
+                ax.scatter(ooc_dates, ooc_points['value'], color='red', s=100, zorder=5, 
+                          label=f'Out of Control ({len(ooc_points)})')
             
-            ax.set_xlabel('Sample Number')
-            ax.set_ylabel('Sigma Gradient')
-            ax.set_title('Sigma Gradient Control Chart')
-            ax.legend()
+            # Add explanation text
+            explanation = (
+                "Control Chart Interpretation:\n"
+                "• Points within green zone = Normal variation\n"
+                "• Points in yellow zone = Warning\n" 
+                "• Points outside red lines = Action required"
+            )
+            ax.text(0.02, 0.98, explanation, transform=ax.transAxes,
+                   verticalalignment='top', fontsize=9, color=text_color,
+                   bbox=dict(boxstyle='round', facecolor=bg_color, alpha=0.8, edgecolor=text_color))
+            
+            # Format x-axis for dates
+            import matplotlib.dates as mdates
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            if len(dates) > 10:
+                ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates)//10)))
+            
+            ax.set_xlabel('Date', color=text_color)
+            ax.set_ylabel('Sigma Gradient', color=text_color)
+            ax.set_title('Statistical Process Control Chart', fontsize=14, fontweight='bold', color=text_color)
+            
+            legend = ax.legend(loc='lower right', fontsize=9)
+            if legend:
+                self.control_chart._style_legend(legend)
+            
             ax.grid(True, alpha=0.3)
+            fig.autofmt_xdate()
+            fig.tight_layout()
             
             self.control_chart.canvas.draw()
             
@@ -3239,13 +3629,13 @@ TRACK DETAILS:
             
             # Collect data
             sigma_values = []
-            for result in self.current_data:
+            for i, result in enumerate(self.current_data):
                 if result.tracks:
                     for track in result.tracks:
                         # Debug logging for sigma values
                         sigma_val = getattr(track, 'sigma_gradient', None)
                         if i == 0:  # Only log for first result to avoid spam
-                            logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
+                            self.logger.debug(f"Track {getattr(track, 'track_id', 'unknown')}: sigma_gradient = {sigma_val}")
                         if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
                             sigma_values.append(track.sigma_gradient)
             
@@ -3381,30 +3771,54 @@ INTERPRETATION:
             fig = self.pareto_chart.figure
             ax1 = fig.add_subplot(111)
             
+            # Apply theme to axes
+            self.pareto_chart._apply_theme_to_axes(ax1)
+            
+            # Get theme colors
+            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            
             # Bar chart
             x = np.arange(len(categories))
-            bars = ax1.bar(x, counts, color='steelblue', alpha=0.8)
-            ax1.set_xlabel('Failure Mode')
-            ax1.set_ylabel('Count', color='steelblue')
+            bars = ax1.bar(x, counts, color='steelblue', alpha=0.8, label='Failure Count')
+            ax1.set_xlabel('Failure Mode', fontsize=12)
+            ax1.set_ylabel('Count', color='steelblue', fontsize=12)
             ax1.set_xticks(x)
             ax1.set_xticklabels(categories, rotation=45, ha='right')
+            ax1.tick_params(axis='y', labelcolor='steelblue')
             
-            # Add value labels on bars
+            # Add value labels on bars with theme color
             for bar, count in zip(bars, counts):
                 height = bar.get_height()
                 ax1.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{count}', ha='center', va='bottom')
+                        f'{count}', ha='center', va='bottom', color=text_color)
             
             # Cumulative line
             ax2 = ax1.twinx()
-            ax2.plot(x, cumulative_pct, 'ro-', linewidth=2, markersize=8)
-            ax2.set_ylabel('Cumulative %', color='red')
+            line = ax2.plot(x, cumulative_pct, 'ro-', linewidth=2, markersize=8, label='Cumulative %')
+            ax2.set_ylabel('Cumulative %', color='red', fontsize=12)
             ax2.set_ylim(0, 105)
+            ax2.tick_params(axis='y', labelcolor='red')
             
             # Add 80% reference line
-            ax2.axhline(y=80, color='green', linestyle='--', alpha=0.7, label='80% line')
+            ref_line = ax2.axhline(y=80, color='green', linestyle='--', alpha=0.7, label='80% Reference')
             
-            ax1.set_title('Pareto Analysis of Failure Modes')
+            # Add percentage labels on cumulative line with theme color
+            for i, (xi, pct) in enumerate(zip(x, cumulative_pct)):
+                if i == 0 or i == len(x) - 1:  # Only label first and last
+                    ax2.text(xi, pct + 2, f'{pct:.0f}%', ha='center', fontsize=9, color=text_color)
+            
+            # Combined legend with theme styling
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            legend = ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+            if legend:
+                self.pareto_chart._style_legend(legend)
+            
+            ax1.set_title('Pareto Analysis of Failure Modes', fontsize=14, fontweight='bold')
+            ax1.grid(True, alpha=0.3, axis='y')
+            
             fig.tight_layout()
             self.pareto_chart.canvas.draw()
             
@@ -3466,35 +3880,100 @@ INTERPRETATION:
             df['cusum_pos'] = cusum_pos
             df['cusum_neg'] = cusum_neg
             
-            # Plot drift analysis
+            # Plot drift analysis with simpler visualization
             self.drift_chart.clear_chart()
             fig = self.drift_chart.figure
+            ax = fig.add_subplot(111)
             
-            # Create subplots
-            ax1 = fig.add_subplot(211)
-            ax2 = fig.add_subplot(212)
+            # Apply theme to axes
+            self.drift_chart._apply_theme_to_axes(ax)
             
-            # Plot values and moving average
-            ax1.plot(df.index, df['value'], 'bo-', alpha=0.5, label='Actual')
-            ax1.plot(df.index, df['ma'], 'r-', linewidth=2, label='Moving Average')
-            ax1.fill_between(df.index, 
-                            df['ma'] - 2*df['ma_std'], 
-                            df['ma'] + 2*df['ma_std'],
-                            alpha=0.2, color='red', label='±2σ Band')
-            ax1.set_ylabel('Sigma Gradient')
-            ax1.set_title('Process Values with Moving Average')
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
+            # Get theme colors
+            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
             
-            # Plot CUSUM
-            ax2.plot(df.index, df['cusum_pos'], 'g-', linewidth=2, label='CUSUM+')
-            ax2.plot(df.index, df['cusum_neg'], 'r-', linewidth=2, label='CUSUM-')
-            ax2.axhline(y=h, color='k', linestyle='--', alpha=0.5, label=f'h={h}')
-            ax2.set_xlabel('Sample Number')
-            ax2.set_ylabel('CUSUM Value')
-            ax2.set_title('CUSUM Chart for Drift Detection')
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
+            # Calculate drift severity based on CUSUM
+            df['drift_severity'] = np.maximum(df['cusum_pos'], df['cusum_neg']) / h
+            
+            # Plot individual values as gray dots
+            ax.scatter(df.index, df['value'], color='gray', alpha=0.3, s=30, label='Individual Values')
+            
+            # Plot moving average with color based on drift severity
+            # Color transitions: green (stable) -> yellow (warning) -> red (drift)
+            for i in range(1, len(df)):
+                if pd.notna(df['ma'].iloc[i]) and pd.notna(df['ma'].iloc[i-1]):
+                    severity = df['drift_severity'].iloc[i]
+                    if severity < 0.5:
+                        color = 'green'
+                    elif severity < 1.0:
+                        color = 'orange'
+                    else:
+                        color = 'red'
+                    
+                    ax.plot([i-1, i], [df['ma'].iloc[i-1], df['ma'].iloc[i]], 
+                           color=color, linewidth=3, alpha=0.8)
+            
+            # Add reference lines
+            ax.axhline(y=target, color='blue', linestyle='--', alpha=0.5, label=f'Target: {target:.3f}')
+            ax.axhline(y=target + 2*df['value'].std(), color='orange', linestyle=':', alpha=0.5)
+            ax.axhline(y=target - 2*df['value'].std(), color='orange', linestyle=':', alpha=0.5)
+            
+            # Add drift zones
+            ax.fill_between([0, len(df)], [target - 3*df['value'].std()]*2, [target - 2*df['value'].std()]*2, 
+                           color='yellow', alpha=0.1, label='Warning Zone')
+            ax.fill_between([0, len(df)], [target + 2*df['value'].std()]*2, [target + 3*df['value'].std()]*2, 
+                           color='yellow', alpha=0.1)
+            ax.fill_between([0, len(df)], [ax.get_ylim()[0]]*2, [target - 3*df['value'].std()]*2, 
+                           color='red', alpha=0.1, label='Drift Zone')
+            ax.fill_between([0, len(df)], [target + 3*df['value'].std()]*2, [ax.get_ylim()[1]]*2, 
+                           color='red', alpha=0.1)
+            
+            # Mark drift points
+            drift_points = df[(df['cusum_pos'] > h) | (df['cusum_neg'] > h)]
+            if not drift_points.empty:
+                ax.scatter(drift_points.index, drift_points['value'], 
+                          color='red', s=100, marker='v', label=f'Drift Detected ({len(drift_points)} points)')
+            
+            ax.set_xlabel('Sample Number', fontsize=12)
+            ax.set_ylabel('Sigma Gradient', fontsize=12)
+            ax.set_title('Process Drift Detection - Moving Average Colored by Stability', fontsize=14, fontweight='bold')
+            
+            # Create custom legend
+            from matplotlib.patches import Patch
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Line2D([0], [0], color='gray', marker='o', linestyle='', alpha=0.3, label='Individual Values'),
+                Line2D([0], [0], color='green', linewidth=3, label='Stable (Moving Avg)'),
+                Line2D([0], [0], color='orange', linewidth=3, label='Warning'),
+                Line2D([0], [0], color='red', linewidth=3, label='Drift Detected'),
+                Line2D([0], [0], color='blue', linestyle='--', label='Target'),
+                Patch(facecolor='yellow', alpha=0.3, label='Warning Zone'),
+                Patch(facecolor='red', alpha=0.3, label='Drift Zone')
+            ]
+            
+            legend = ax.legend(handles=legend_elements, loc='best', framealpha=0.9)
+            if legend:
+                self.drift_chart._style_legend(legend)
+            
+            ax.grid(True, alpha=0.3)
+            
+            # Add explanation text box
+            explanation = (
+                "This chart shows process stability over time:\n"
+                "• Gray dots: Individual measurements\n"
+                "• Colored line: Moving average (green=stable, orange=warning, red=drift)\n"
+                "• Blue dashed line: Target value\n"
+                "• Yellow zones: ±2-3σ warning zones\n"
+                "• Red zones: >±3σ drift zones\n"
+                "• Red triangles: Points where drift was detected"
+            )
+            
+            ax.text(0.02, 0.98, explanation, transform=ax.transAxes, 
+                   fontsize=9, verticalalignment='top',
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white' if ctk.get_appearance_mode().lower() == "light" else '#2b2b2b', 
+                            alpha=0.8, edgecolor=text_color),
+                   color=text_color)
             
             # Detect drift points
             drift_points = df[(df['cusum_pos'] > h) | (df['cusum_neg'] > h)]

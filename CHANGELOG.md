@@ -13,11 +13,462 @@ This section tracks current known issues that need to be addressed. When fixing 
 3. Update CLAUDE.md Known Issues section to match
 
 ### Current Known Issues
-None - all known issues have been resolved.
+- **Database Path Mismatch**: Application is using local database instead of production database where model 8340-1 records exist
+  - Production DB at `D:\LaserTrimData\production.db` contains 143 records for model "8340-1"
+  - App is using `C:\Users\Jayma\AppData\Local\LaserTrimAnalyzer\database\laser_trim_local.db` with 0 records
+  - User needs to ensure correct database configuration or environment settings
 
 ## [Unreleased]
 
+### Enhanced
+- **Historical Page Chart Improvements** (2025-07-02):
+  - **Issues Fixed**:
+    1. User reported "still dark text on some charts on the historical page, cant read that text because of the dark theme"
+    2. User reported "i dont like the risk trends chart in its current state"
+    3. User reported "i dont like the linearity analysis chart in its current state" 
+    4. User reported "the process capability only displays 3 models, why?"
+    5. User reported "i dont understand the control charts, pareto analysis and drift detection charts?"
+  - **Solutions Implemented**:
+    1. **Fixed Dark Theme Text Visibility**:
+       - Added theme-aware text colors to all chart annotations across the Historical page
+       - Updated linearity analysis, CPK chart, and Pareto chart with proper theme colors
+       - Used ThemeHelper.get_theme_colors() for consistent text styling
+    2. **Redesigned Risk Trends Chart**:
+       - Changed from confusing line chart to stacked area chart showing risk distribution over time
+       - Added color-coded risk levels (High=red, Medium=orange, Low=green)
+       - Shows cumulative risk categories making trends more obvious
+       - Added percentage labels and clear legend
+    3. **Improved Linearity Analysis**:
+       - Changed from scatter plot to box plot showing distribution by model
+       - Added median lines, quartile boxes, and outlier detection
+       - Color-coded boxes based on median performance (green<0.3, orange<0.5, red>0.5)
+       - Added reference line at linearity spec (0.5)
+    4. **Enhanced Control Charts**:
+       - Added color-coded zones (green=good, yellow=warning, red=out of control)
+       - Added UCL/LCL lines at ±3σ and warning limits at ±2σ
+       - Highlighted out-of-control points in red
+       - Added explanatory text box describing the zones
+    5. **Simplified Drift Detection**:
+       - Replaced complex dual-subplot CUSUM with single intuitive visualization
+       - Shows individual values as gray dots with moving average colored by drift severity
+       - Added drift zones and clear explanations
+       - Color transitions: green (stable) → orange (warning) → red (drift)
+    6. **Process Capability Diagnostics**:
+       - Added logging to show why models might be excluded
+       - Shows which models have insufficient samples (<4) for CPK calculation
+       - Improved placeholder message to list excluded models and sample counts
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`:
+      - Lines 1256-1270: Fixed theme colors in linearity analysis
+      - Lines 1364-1379: Fixed theme colors in CPK chart
+      - Lines 3319-3459: Complete redesign of risk trends chart
+      - Lines 1217-1314: Complete redesign of linearity analysis as box plot
+      - Lines 3522-3590: Enhanced control charts with zones and theme support
+      - Lines 3609-3652: Fixed Pareto chart theme colors
+      - Lines 3865-3925: Simplified drift detection visualization
+      - Lines 1332-1370, 1431-1436: Added CPK diagnostics
+  - **Impact**: All charts are now more understandable, properly themed, and provide actionable insights
+
+- **Model Summary Page Failure Analysis Debugging** (2025-07-02):
+  - Added detailed logging to diagnose why failure analysis chart shows "no data available"
+  - Logs now show data counts before and after filtering
+  - Displays sample values to identify data issues
+  - Shows more informative placeholders when data is insufficient
+  - Lowered threshold to show analysis even with minimal data (was >5, now >0)
+  - **Root Cause**: The app is using the wrong database path with 0 records for model 8340-1
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/model_summary_page.py` lines 763-782
+  - **Impact**: Users can now see exactly why the failure analysis isn't showing data
+
+- **Model Summary Page Chart Redesign** (2025-07-02):
+  - Completely redesigned the Additional Analysis section with more valuable charts
+  - **Previous Issues**:
+    - Performance Distribution histogram was confusing and not actionable
+    - Monthly Quality Trend was basic and didn't provide insights
+    - Failure Analysis scatter plot was hard to understand
+  - **New Charts**:
+    1. **Quality Overview Dashboard**: Combined bar chart showing key metrics at a glance
+       - Pass/Fail rates with visual indicators
+       - Performance zones (optimal, warning, critical)
+       - Risk category distribution
+       - Reference lines at 95% (target) and 90% (warning)
+    2. **Process Control Chart**: Statistical process control with control limits
+       - Daily averages with trend line
+       - Upper/Lower Control Limits (UCL/LCL) at ±3σ
+       - Warning limits at ±2σ
+       - Highlights out-of-control points
+       - Shows if process is stable and predictable
+    3. **Risk Assessment Matrix (FMEA)**: Visual risk analysis bubble chart
+       - Bubble size = failure frequency
+       - Color = Risk Priority Number (RPN)
+       - X-axis = Severity, Y-axis = Detectability
+       - Analyzes failure modes: Out of Spec, Linearity Issues, High Risk Units, Random Failures
+       - Color-coded risk zones (green/yellow/red)
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/model_summary_page.py`
+    - Lines 269-329: New chart definitions with better descriptions
+    - Lines 437-444: Updated chart clearing for new charts
+    - Lines 716-1012: Complete rewrite of _update_analysis_charts method
+  - **Impact**: Users now get actionable insights from charts that clearly show quality status, process stability, and risk areas
+
+- **Historical Page Test Data Detection** (2025-07-02):
+  - Added detection and warning for test data in query results
+  - **Issue**: Historical page was showing sample data with serial numbers like TEST0001, TEST0002, etc.
+  - **Root Cause**: Application is using development database which was seeded with test data, or production database contains test data
+  - **Solutions**:
+    1. Added database path logging to show which database is being used
+    2. Added test data detection that counts entries with serial numbers starting with 'TEST'
+    3. Shows warning dialog when all results are test data
+    4. Added db_path property to DatabaseManager for easier debugging
+  - **Files Modified**: 
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py` lines 749-829: Added logging and test data detection
+    - `src/laser_trim_analyzer/database/manager.py` lines 199-203: Added db_path property
+  - **Impact**: Users are now alerted when they're viewing test data and guided to use production database
+
+- **Development Database Fake Data Clarification** (2025-07-02):
+  - Clarified that init_dev_database.py creates FAKE test data, not real test data
+  - **Changes**:
+    1. Renamed `seed_test_data()` to `seed_fake_test_data()` to be explicit
+    2. Added warnings when seeding fake data
+    3. Updated help text to clarify it creates artificial data
+    4. Changed filenames to include "fake_test" prefix
+    5. Added notes encouraging use of real laser trim files for testing
+    6. Updated warning dialog to explain how to clean database and use real data
+  - **Files Modified**: 
+    - `scripts/init_dev_database.py` lines 199-216, 150-153, 194-207, 382-384
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py` lines 822-830
+  - **Impact**: Development database now clearly indicates when fake data is used vs real test data
+
+- **Model Summary Page Dark Theme Font Visibility** (2025-07-02):
+  - Fixed font visibility issues on charts when using dark theme
+  - **Issues Fixed**:
+    1. Bar chart value labels were using default black color, making them invisible on dark backgrounds
+    2. Risk matrix annotations had white background boxes that clashed with dark theme
+    3. Colorbar labels weren't respecting theme colors
+    4. Legend text wasn't being styled consistently
+  - **Solutions**:
+    1. Added theme-aware text colors for all chart annotations
+    2. Used ThemeHelper to get appropriate foreground/background colors
+    3. Applied _style_legend() to all chart legends for consistency
+    4. Made annotation boxes use theme-appropriate background colors
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/model_summary_page.py`
+    - Lines 31: Added ThemeHelper import
+    - Lines 760-766: Theme-aware bar value labels
+    - Lines 778-780: Legend styling for overview chart
+    - Lines 854-856: Legend styling for trend chart
+    - Lines 957-976: Theme-aware risk matrix annotations and colorbar
+  - **Impact**: All chart text is now clearly visible in both light and dark themes
+
+- **Historical Page UI Improvements** (2025-07-02):
+  - Fixed font visibility issues on charts when using dark theme
+  - Simplified Statistical Process Control section by removing redundant buttons
+  - **Font Visibility Fixes**:
+    1. Yield analysis chart: Added legend styling
+    2. Linearity analysis: Made statistics text box theme-aware with appropriate colors
+    3. Process capability (Cpk): Added theme colors for bar value annotations and legend
+    4. Pareto analysis: Fixed bar labels, cumulative percentage labels, and legend styling
+  - **SPC Button Simplification**:
+    1. Removed 5 individual analysis buttons (Control Charts, Capability Study, Pareto, Drift, Failure)
+    2. Replaced with single "Generate All SPC Analyses" button
+    3. Added informative label explaining to use tabs after generation
+    4. Created new `_generate_all_spc_analyses()` method that runs all analyses at once
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py`
+    - Lines 304-324: Replaced multiple buttons with single generate button
+    - Lines 1143-1145: Legend styling for yield chart
+    - Lines 1256-1270: Theme-aware linearity statistics
+    - Lines 1364-1379: Theme colors for Cpk annotations
+    - Lines 3341-3371: New combined analysis method
+    - Lines 3609-3652: Pareto chart theme fixes
+  - **Impact**: Cleaner UI with less clutter, all text visible in dark theme
+
 ### Fixed
+- **ThemeHelper Import Error** (2025-07-02):
+  - Fixed ModuleNotFoundError preventing Model Summary page from loading
+  - **Root Cause**: Incorrect import path `laser_trim_analyzer.gui.utils.theme` when actual path is `laser_trim_analyzer.gui.theme_helper`
+  - **Solution**: Updated all ThemeHelper imports to use correct path
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py` line 31
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py` lines 1257, 1365, 3613
+  - **Impact**: Model Summary page now loads successfully without import errors
+
+- **ML Manager Initialization Error** (2025-07-02):
+  - Fixed UnboundLocalError: "cannot access local variable 'model_path' where it is not associated with a value"
+  - **Root Cause**: model_path variable was only defined inside an if block but referenced outside of it
+  - **Solution**: Moved model_path definition to the beginning of the function to ensure it's always available
+  - **Files Modified**: `src/laser_trim_analyzer/ml/ml_manager.py` line 355
+  - **Impact**: ML Tools page now loads without crashing the application
+
+- **Historical Page Capability Study Error** (2025-07-02):
+  - Fixed NameError: "name 'i' is not defined" in capability study function
+  - **Root Cause**: Missing enumeration in for loop where index variable 'i' was referenced
+  - **Solution**: Added enumerate() to for loop to properly define the index variable
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py` line 3246
+  - **Impact**: Capability study now runs without errors
+
+- **Historical Page Risk Dashboard NoneType Comparison Errors** (2025-07-02):
+  - Fixed TypeError: "< not supported between instances of 'NoneType' and 'int'"
+  - **Root Causes**:
+    1. failure_probability and range_utilization_percent could be None when compared with numeric values
+    2. risk_score values could be None when collected for trends
+    3. Date sorting didn't handle None values properly
+  - **Solutions**:
+    1. Added None checks before numeric comparisons in _identify_primary_issue function
+    2. Ensured risk_score values default to 0 when None
+    3. Added None handling in date sorting using datetime.min as fallback
+    4. Added validation to prevent None dates from being added to trends
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py`
+    - Lines 3089, 3092: Added None checks for numeric comparisons
+    - Lines 2690-2692, 2704-2705: Ensure risk_score is never None
+    - Line 2706: Only add trends with valid dates
+    - Line 3152: Handle None in date sorting
+  - **Impact**: Risk dashboard now displays without errors even with incomplete data
+
+- **Historical Page Manufacturing Insights Improvements** (2025-07-02):
+  - Made Manufacturing Insights charts more valuable and understandable
+  - **Issues Addressed**:
+    1. Charts were unclear about what they showed and what constituted good/bad results
+    2. Yield Analysis was using sigma_gradient as a proxy for yield percentage
+    3. Charts lacked reference lines and context
+    4. Process capability used unrealistic specification limits
+  - **Solutions**:
+    1. Added explanatory text above each chart describing what it shows and target values
+    2. Changed Yield Analysis to show actual pass/fail rates instead of sigma values
+    3. Added reference lines, target lines, and color coding to all charts
+    4. Updated Process Capability to use realistic sigma gradient limits (0.3-0.7)
+    5. Added statistical information overlays on charts where helpful
+  - **Specific Improvements**:
+    - Yield Analysis: Now shows overall pass rate with 95% target line
+    - Trim Effectiveness: Added 50% improvement target and expected improvement curve
+    - Linearity Analysis: Added spec limits, statistics overlay showing mean/std/within-spec %
+    - Process Capability: Color-coded bars (green >1.33, orange >1.0, red <1.0) with sample counts
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py`
+    - Lines 647-725: Added explanatory labels and reorganized chart layouts
+    - Lines 1086-1141: Improved yield analysis to show actual pass rates
+    - Lines 1165-1188: Enhanced trim effectiveness with reference lines
+    - Lines 1216-1238: Added spec limits and statistics to linearity chart
+    - Lines 1262-1337: Improved Cpk chart with realistic limits and color coding
+  - **Impact**: Charts now provide clear, actionable insights for manufacturing quality analysis
+
+- **Model Summary Page Chart Improvements** (2025-07-02):
+  - Fixed sigma gradient trend chart date display issues
+  - Improved Additional Analysis charts to be more meaningful
+  - **Issues Addressed**:
+    1. Dates on sigma gradient trend chart were not properly formatted
+    2. Distribution chart was using wrong data format (trim_date instead of just sigma values)
+    3. Correlation chart showed obscure sigma vs linearity correlation instead of actionable insights
+    4. Charts lacked explanatory text
+  - **Solutions**:
+    1. Added intelligent date formatting based on date range (hours, days, months, years)
+    2. Fixed distribution chart to properly show histogram of sigma gradient values
+    3. Replaced correlation chart with failure analysis showing sigma gradient vs pass/fail status
+    4. Added explanatory text above each chart describing what it shows and target values
+    5. Renamed tabs to be more descriptive: "Performance Distribution", "Monthly Quality Trend", "Failure Analysis"
+  - **Specific Improvements**:
+    - Sigma Gradient Trend: Now properly formats dates based on data range
+    - Performance Distribution: Shows actual histogram with explanation of ideal values
+    - Monthly Quality Trend: Color-coded bars with clear pass rate targets
+    - Failure Analysis: Visual scatter plot showing pass/fail distribution by sigma gradient with spec limits
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py` lines 279-302: Added intelligent date formatting
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py` lines 269-329: Added explanatory labels
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py` lines 712-723: Fixed distribution data format
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py` lines 756-811: Replaced correlation with failure analysis
+  - **Impact**: Model Summary page now provides clear, actionable insights with properly formatted charts
+
+- **Historical Page Multiple Issues Fixed** (2025-07-02):
+  - Fixed multiple display and functionality issues on the Historical page
+  - **Issues Addressed**:
+    1. Text appearing behind risk distribution pie chart
+    2. High risk units list not aligning with headers
+    3. Risk trends chart had axis titles/legend but needed complete figure clearing
+    4. Empty charts in Manufacturing Insights (trim effectiveness, process capability)
+    5. Linearity analysis chart showing only positive values due to abs() function
+    6. Legend text not visible in dark theme
+    7. Pareto analysis missing proper axis titles and combined legend
+    8. Drift detection and failure modes charts appear empty (require manual button clicks)
+  - **Solutions**:
+    1. Added fig.clear() to ensure pie chart figure is completely cleared before redrawing
+    2. Fixed high risk units by using consistent column widths and grid layout with alternating row colors
+    3. Added complete figure clearing for risk trends chart
+    4. Added debug logging for trim effectiveness and process capability to diagnose data issues
+    5. Removed abs() from linearity error calculation to show actual positive/negative values
+    6. Created _style_legend() helper in ChartWidget to apply theme-appropriate text colors
+    7. Enhanced Pareto chart with proper labels, combined legend, and cumulative percentage labels
+    8. Note: SPC charts (drift detection, failure modes) require manual button clicks by design
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`:
+      - Line 2849: Added fig.clear() for pie chart
+      - Lines 262-282: Fixed high risk units header with column widths
+      - Lines 3232-3271: Fixed high risk units data rows with matching widths
+      - Line 3287: Added figure clearing for risk trends
+      - Lines 1157-1169: Added logging for trim effectiveness debugging
+      - Line 1067: Removed abs() from linearity error
+      - Lines 1270-1272: Added logging for process capability debugging
+      - Lines 3557-3596: Enhanced Pareto chart with full labels and legend
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`:
+      - Lines 93-111: Added _style_legend() helper method
+      - Lines 264-286: Updated line chart to use legend styling helper
+  - **Impact**: Historical page now displays all data correctly with proper alignment and visibility in both themes
+
+- **Model Summary Page Chart Fixes Round 2** (2025-07-02):
+  - Fixed remaining issues with Model Summary page charts after previous improvements
+  - **Issues Addressed**:
+    1. Sigma gradient trend dates still not displaying properly on x-axis
+    2. Performance distribution chart was basic and not informative
+    3. Monthly quality trend text was hard to read in dark theme
+    4. Failure analysis chart was blank due to scatter plot overwriting custom visualization
+  - **Solutions**:
+    1. Added explicit datetime conversion for trim_date to ensure proper date handling
+    2. Completely redesigned histogram with:
+       - Color gradient bars based on distance from mean
+       - Normal distribution overlay
+       - Specification limits (0.3-0.7) with target range shading
+       - Statistics box showing n, mean, std, and Cpk
+       - Proper legend styling for dark theme
+    3. Added text labels with background boxes for better readability in both themes
+    4. Changed from update_chart_data to manual chart creation to preserve custom pass/fail visualization
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`:
+      - Lines 679-681: Added explicit datetime conversion for dates
+      - Lines 792-836: Rewrote failure analysis to use manual chart creation
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`:
+      - Lines 477-523: Completely redesigned histogram visualization
+      - Lines 367-381: Added background boxes to bar chart labels
+  - **Impact**: Model Summary page now provides professional, informative visualizations with excellent readability in both themes
+
+- **Final Test Comparison Chart Data Misalignment** (2025-07-01):
+  - Fixed laser trim data showing incorrect error values (displaying raw voltage errors instead of linearity errors)
+  - Fixed potential negative position values in chart display
+  - **Root Causes**:
+    1. Error data from database contains raw voltage errors (measured - theoretical), not linearity errors
+    2. Linearity errors require detrending (removing best-fit line) from raw errors
+    3. Missing conversion from raw voltage errors to proper linearity errors
+  - **Solutions**:
+    1. Fit a trend line to raw voltage errors to find systematic error pattern
+    2. Calculate linearity errors as deviations from the trend line
+    3. Apply optimal offset to minimize maximum deviation
+    4. Ensure position range starts at 0 if minimum is within 0.1 units
+    5. Added extensive logging to track data transformations
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/final_test_comparison_page.py`
+    - Lines 680-709: Proper linearity error calculation from raw voltage errors
+    - Lines 710-731: Verification and logging of linearity errors
+    - Lines 773-778: Fix position range to start at 0 when appropriate
+    - Lines 936-952: Improved chart plotting with detailed logging
+    - Lines 1009-1025: Better axis limit calculation
+  - **Impact**: Chart now correctly displays linearity errors (deviations from best-fit line) instead of raw voltage errors
+
+- **Final Test Comparison Page Layout and Alignment Issues** (2025-07-01):
+  - Fixed overlapping text in statistics display area
+  - Fixed position alignment issues between laser trim and final test data
+  - **Root Causes**:
+    1. Statistics area was too small and text was overlapping
+    2. Position interpolation might not handle extrapolation correctly
+    3. Laser trim data was centered around 0 (e.g., -0.305 to +0.305) while final test data started at 0 (e.g., 0 to 0.61)
+  - **Solutions**:
+    1. Simplified GridSpec to 2 rows instead of 3, increased statistics area
+    2. Improved text spacing calculation to dynamically adjust based on content
+    3. Reduced font sizes and improved layout calculations
+    4. Switched from numpy.interp to scipy.interpolate.interp1d with explicit extrapolation
+    5. Added robust position alignment strategy that normalizes both datasets to start at 0
+    6. Added user-controllable checkbox for position alignment with helpful description
+    7. Added length mismatch detection and warnings (>5% difference)
+    8. Dynamic alignment note shows exactly what transformations were applied
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/final_test_comparison_page.py`
+    - Lines 260-279: Added position alignment checkbox and info
+    - Lines 827-881: Comprehensive position alignment logic with user control
+    - Lines 905-907: Simplified GridSpec layout
+    - Lines 1071-1081: Dynamic spacing for statistics display
+    - Lines 1229-1231: Dynamic position alignment note in chart
+  - **Impact**: Robust solution handles any position reference scenario, with user control and clear feedback
+
+- **SQLite API Misuse Error with QA Alerts** (2025-07-01):
+  - Fixed "bad parameter or other API misuse" error when loading historical data with QA alerts
+  - **Root Cause**: SQLAlchemy's `selectinload` was generating an IN clause with exactly 25 parameters, triggering a SQLite-specific issue
+  - **Solution**: Changed from `selectinload` to `joinedload` for qa_alerts relationship to use JOIN instead of separate query with IN clause
+  - **Files Modified**: `src/laser_trim_analyzer/database/manager.py` line 1164
+  - **Impact**: Resolves startup errors when loading historical data that includes QA alerts
+
+- **Historical Page Chart and Display Issues** (2025-07-01):
+  - Fixed matplotlib warnings about set_ticklabels() usage
+  - Fixed risk dashboard error "< not supported between instances of 'NoneType' and 'int'"
+  - **Root Causes**:
+    1. Deprecated matplotlib API usage for setting tick labels
+    2. High risk units were not sorted before display, and some risk_score values were None
+  - **Solutions**:
+    1. Replaced set_ticklabels() with FuncFormatter for proper tick formatting
+    2. Added proper sorting with None value handling for high risk units
+    3. Added None check when displaying risk scores
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py`
+    - Lines 1080-1081: Fixed yield chart tick labels
+    - Lines 1215-1216: Fixed Cpk chart tick labels
+    - Lines 2737-2738: Added sorting for high risk units with None handling
+    - Lines 3118-3119: Added None check for risk score display
+  - **Impact**: Charts display properly without warnings, risk dashboard loads without errors
+
+- **Final Test Comparison Page Chart Display** (2025-07-01):
+  - Fixed chart only showing first half of data for model 8340-1
+  - **Root Cause**: The comparison logic was limiting the display to only the common position range between laser trim and final test data
+  - **Solution**: Changed from using the overlapping range (min of maximums, max of minimums) to the full range covering both datasets (min of minimums, max of maximums)
+  - **Enhancement**: Added subtle shading to indicate extrapolated regions where only one dataset has actual data
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/final_test_comparison_page.py` lines 756-758, 887-899, 804-805
+  - **Impact**: Users can now see the complete data range from both datasets, with visual indicators showing where data is extrapolated
+
+- **Final Test Comparison Page Statistics Text Overlap** (2025-07-01):
+  - Fixed overlapping text in the statistics display area below the chart
+  - **Root Cause**: The three-column layout (at x positions 0.05, 0.35, 0.65) was causing text to overlap when statistics were lengthy
+  - **Solution**: 
+    - Redesigned statistics display to use centered, single-line format for each statistic category
+    - Changed from verbose multi-line format to compact inline format (e.g., "Laser Trim: Max=X, Mean=Y, StdDev=Z")
+    - Adjusted GridSpec height ratios from [2, 1, 0.1] to [3, 1, 0.1] for better chart/stats proportion
+    - Added proper vertical spacing (0.25 units) between statistic lines
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/final_test_comparison_page.py` lines 1022-1047, 880
+  - **Impact**: Statistics are now clearly readable without overlap, using space more efficiently
+
+- **Final Test Comparison Chart Spec Limits and Data Accuracy** (2025-07-01):
+  - Fixed incorrect spec limits display and improved data accuracy for model 8340-1
+  - **Root Causes**: 
+    1. Chart was only displaying final test spec limits, not laser trim spec limits
+    2. Laser trim has symmetric spec limits (±X) while final test can have asymmetric limits
+    3. Both datasets' spec limits were being compared against the same (test) spec
+  - **Solution**:
+    - Added laser trim spec limit loading from database (TrackResult.linearity_spec)
+    - Display both sets of spec limits on chart: blue dotted lines for trim spec (symmetric), green dotted lines for test spec
+    - Each dataset is now checked against its own spec limits for compliance
+    - Added logging to confirm spec values being used
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/final_test_comparison_page.py` 
+    - Lines 694-700, 741-747: Added linearity_spec to trim dataframe
+    - Lines 788-804: Handle spec limits for both datasets separately
+    - Lines 814-819: Store both sets of spec limits in results
+    - Lines 934-963: Display both trim and test spec limits on chart
+    - Lines 1078-1098: Check compliance against respective specs
+    - Lines 1035-1063: Removed incorrect spec compliance check
+  - **Impact**: Chart now correctly shows symmetric spec limits for laser trim data and properly evaluates each dataset against its own specifications
+
+### Investigated
+- **Model 8340 Export Shows Zeros** (2025-07-01):
+  - Investigated why model 8340 batch processing export shows mostly zeros
+  - **Root Cause Analysis**:
+    1. **Database Path Mismatch**: Application is using local database instead of production database
+       - Production DB at `D:\LaserTrimData\production.db` contains 143 records for model "8340-1"
+       - App is using `C:\Users\Jayma\AppData\Local\LaserTrimAnalyzer\database\laser_trim_local.db` with 0 records
+    2. **Model Naming Confusion**: User clarified that "8340" and "8340-1" are different models
+       - The production database contains "8340-1" records from April 2025
+       - User was trying to export data for model "8340" which has no records in the current database
+    3. **Duplicate Detection**: Logs show that when batch processing tries to save 8340-1 files, they are detected as duplicates and skipped
+  - **Investigation Tools Created**:
+    - `scripts/diagnose_8340_export.py` - Checks database for model 8340 records
+    - `scripts/investigate_8340_batch_save.py` - Investigates why batch processing doesn't save 8340 data
+    - `scripts/find_8340_duplicates.py` - Finds which database contains the 8340-1 records
+  - **Findings**: The zeros in the export are correct - there are no model "8340" records in the active database
+
+### Fixed
+- **Batch Export Data Issues** (2025-07-01):
+  - Fixed failure analysis sheet being empty in Excel exports due to status value mismatch
+  - **Root Cause**: The export code was checking for "FAIL" but the actual enum value is "Fail" (capitalized)
+  - **Solution**: Updated all status comparisons in enhanced_excel_export.py to use correct capitalization ("Pass", "Fail", "Warning")
+  - **Files Modified**: `src/laser_trim_analyzer/utils/enhanced_excel_export.py` lines 637-639, 675-677, 972, 1035-1040, 757-770
+  - **Additional Changes**: 
+    - Added safe attribute access for unit properties to prevent errors on missing data
+    - Enhanced _apply_status_formatting to handle both uppercase and capitalized status values
+
 - **ML Tools Page QA Predictive Analytics Buttons** (2025-06-30):
   - Fixed all four QA Predictive Analytics buttons to update their respective display areas instead of showing popups
   - **Root Cause**: The buttons (_run_yield_prediction, _run_failure_forecast, _run_qa_alert_analysis, _assess_production_readiness) were creating popup dialogs (CTkToplevel) instead of updating the existing chart widgets and text displays

@@ -634,9 +634,9 @@ class EnhancedExcelExporter:
         
         # Calculate statistics
         total_files = len(results)
-        passed_files = sum(1 for r in results if r.overall_status.value == "PASS")
-        failed_files = sum(1 for r in results if r.overall_status.value == "FAIL")
-        warning_files = sum(1 for r in results if r.overall_status.value == "WARNING")
+        passed_files = sum(1 for r in results if r.overall_status.value == "Pass")
+        failed_files = sum(1 for r in results if r.overall_status.value == "Fail")
+        warning_files = sum(1 for r in results if r.overall_status.value == "Warning")
         
         # Summary stats
         row = 3
@@ -672,9 +672,9 @@ class EnhancedExcelExporter:
                 model_stats[model] = {'total': 0, 'pass': 0, 'fail': 0, 'warning': 0}
             
             model_stats[model]['total'] += 1
-            if result.overall_status.value == "PASS":
+            if result.overall_status.value == "Pass":
                 model_stats[model]['pass'] += 1
-            elif result.overall_status.value == "FAIL":
+            elif result.overall_status.value == "Fail":
                 model_stats[model]['fail'] += 1
             else:
                 model_stats[model]['warning'] += 1
@@ -727,6 +727,15 @@ class EnhancedExcelExporter:
         # Add data for each result
         row = 2
         for result in results:
+            # Debug logging for model 8340
+            if "8340" in str(result.metadata.model):
+                self.logger.debug(f"Processing model 8340 file: {result.metadata.filename}")
+                self.logger.debug(f"  Tracks: {len(result.tracks)}")
+                if result.primary_track:
+                    self.logger.debug(f"  Primary track data points: {len(result.primary_track.position_data) if result.primary_track.position_data else 0}")
+                    if result.primary_track.position_data and len(result.primary_track.position_data) > 0:
+                        self.logger.debug(f"  First 5 position values: {result.primary_track.position_data[:5]}")
+                
             # Basic info
             ws.cell(row=row, column=1, value=result.metadata.filename)
             ws.cell(row=row, column=2, value=result.metadata.model)
@@ -745,10 +754,20 @@ class EnhancedExcelExporter:
                 
                 # Sigma analysis
                 if primary_track.sigma_analysis:
-                    ws.cell(row=row, column=10, value=primary_track.sigma_analysis.sigma_gradient)
-                    ws.cell(row=row, column=11, value=primary_track.sigma_analysis.sigma_threshold)
-                    ws.cell(row=row, column=12, value="PASS" if primary_track.sigma_analysis.sigma_pass else "FAIL")
-                    ws.cell(row=row, column=13, value=getattr(primary_track.sigma_analysis, 'sigma_ratio', 'N/A'))
+                    # Add safe value extraction with logging for debugging
+                    sigma_gradient = getattr(primary_track.sigma_analysis, 'sigma_gradient', None)
+                    sigma_threshold = getattr(primary_track.sigma_analysis, 'sigma_threshold', None)
+                    sigma_pass = getattr(primary_track.sigma_analysis, 'sigma_pass', None)
+                    sigma_ratio = getattr(primary_track.sigma_analysis, 'sigma_ratio', None)
+                    
+                    # Log if model 8340 has zero values
+                    if "8340" in str(result.metadata.model) and (sigma_gradient == 0 or sigma_gradient is None):
+                        self.logger.warning(f"Model 8340 file {result.metadata.filename} has sigma_gradient: {sigma_gradient}")
+                    
+                    ws.cell(row=row, column=10, value=sigma_gradient if sigma_gradient is not None else 'N/A')
+                    ws.cell(row=row, column=11, value=sigma_threshold if sigma_threshold is not None else 'N/A')
+                    ws.cell(row=row, column=12, value="PASS" if sigma_pass else "FAIL")
+                    ws.cell(row=row, column=13, value=sigma_ratio if sigma_ratio is not None else 'N/A')
                 
                 # Linearity analysis
                 if primary_track.linearity_analysis:
@@ -762,8 +781,8 @@ class EnhancedExcelExporter:
                 # Unit properties
                 if primary_track.unit_properties:
                     ws.cell(row=row, column=20, value=primary_track.unit_properties.unit_length)
-                    ws.cell(row=row, column=21, value=primary_track.unit_properties.resistance_change if primary_track.unit_properties else None)
-                    ws.cell(row=row, column=22, value=f"{primary_track.unit_properties.resistance_change_percent:.2f}%" if primary_track.unit_properties and primary_track.unit_properties.resistance_change_percent else "N/A")
+                    ws.cell(row=row, column=21, value=primary_track.unit_properties.resistance_change if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_change') else None)
+                    ws.cell(row=row, column=22, value=f"{primary_track.unit_properties.resistance_change_percent:.2f}%" if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_change_percent') and primary_track.unit_properties.resistance_change_percent is not None else "N/A")
             
             # ML predictions (from primary track)
             if primary_track and primary_track.failure_prediction:
@@ -969,7 +988,7 @@ class EnhancedExcelExporter:
         # Add only failed results
         row = 2
         for result in results:
-            if result.overall_status.value != "FAIL":
+            if result.overall_status.value != "Fail":
                 continue
             
             ws.cell(row=row, column=1, value=result.metadata.filename)
@@ -1032,11 +1051,11 @@ class EnhancedExcelExporter:
     
     def _apply_status_formatting(self, cell, status: str):
         """Apply color formatting based on status."""
-        if status == "PASS":
+        if status == "PASS" or status == "Pass":
             cell.fill = self.pass_fill
-        elif status == "FAIL":
+        elif status == "FAIL" or status == "Fail":
             cell.fill = self.fail_fill
-        elif status == "WARNING":
+        elif status == "WARNING" or status == "Warning":
             cell.fill = self.warning_fill
     
     def _format_contributing_factors(self, factors: Optional[Dict[str, float]]) -> str:
