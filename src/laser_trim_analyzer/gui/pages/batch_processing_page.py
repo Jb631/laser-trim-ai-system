@@ -147,6 +147,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         self.is_processing = False
         self.validation_results: Dict[str, bool] = {}
         self.last_output_dir: Optional[Path] = None
+        self.failed_files: List[Tuple[str, str]] = []  # Track failed files and errors
         
         # Validate required directories exist
         self._ensure_required_directories()
@@ -610,6 +611,19 @@ class BatchProcessingPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=14, weight="bold")
         )
         self.results_label.pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Master summary panel - shows overall statistics after processing
+        self.summary_frame = ctk.CTkFrame(self.results_frame)
+        self.summary_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        # Summary will be populated after batch processing completes
+        self.summary_label = ctk.CTkLabel(
+            self.summary_frame,
+            text="Process files to see summary statistics",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.summary_label.pack(pady=20)
         
         # Results widget
         self.batch_results_widget = BatchResultsWidget(self.results_frame)
@@ -1132,6 +1146,10 @@ class BatchProcessingPage(ctk.CTkFrame):
         # Start processing in thread (thread-safe)
         with self._state_lock:
             self.is_processing = True
+        
+        # Track processing start time for summary
+        self.processing_start_time = time.time()
+        
         self.processing_thread = threading.Thread(
             target=self._run_batch_processing,
             args=(processable_files,),
@@ -1285,12 +1303,9 @@ class BatchProcessingPage(ctk.CTkFrame):
                 file_count = len(file_paths)
                 
                 # Scale down workers for very large batches to prevent resource exhaustion
-                if file_count > 1000:
-                    max_workers = min(base_workers, 6)  # Max 6 workers for very large batches
-                elif file_count > 500:
-                    max_workers = min(base_workers, 8)  # Max 8 workers for large batches
-                else:
-                    max_workers = base_workers
+                # IMPORTANT: Further reduced worker counts to prevent 100% CPU usage
+                # Now always using single worker to prevent CPU overload
+                max_workers = 1  # Always single worker to prevent 100% CPU
                 
                 # Apply resource optimizations if available
                 processing_params = {
@@ -1473,7 +1488,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         from pathlib import Path
         
         results = {}
-        failed_files = []
+        self.failed_files = []  # Reset failed files tracking
         processed_files = 0
         total_files = len(file_paths)
         
@@ -1515,29 +1530,56 @@ class BatchProcessingPage(ctk.CTkFrame):
             # Process chunk with ThreadPoolExecutor
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             try:
-                # Submit all files in chunk
+                # Submit files with controlled concurrency to prevent CPU overload
                 future_to_file = {}
+                active_futures = set()
+                file_index = 0
                 
-                for file_path in chunk_files:
-                    # Check for cancellation before submitting
+                # Process files with limited concurrent submissions
+                while file_index < len(chunk_files) or active_futures:
+                    # Check for cancellation
                     if self._is_processing_cancelled():
                         break
+                    
+                    # Submit new files if we have capacity
+                    while len(active_futures) < max_workers and file_index < len(chunk_files):
+                        file_path = chunk_files[file_index]
+                        future = executor.submit(self._process_single_file_safe, file_path, output_dir)
+                        future_to_file[future] = file_path
+                        active_futures.add(future)
+                        file_index += 1
                         
-                    future = executor.submit(self._process_single_file_safe, file_path, output_dir)
-                    future_to_file[future] = file_path
+                        # Increased delay between submissions to prevent CPU spike
+                        time.sleep(0.2)  # 200ms between file submissions to reduce CPU load
+                        
+                        # Check CPU every 5 files
+                        if file_index % 5 == 0 and self.resource_manager:
+                            status = self.resource_manager.get_current_status()
+                            if status.cpu_percent > 70:
+                                logger.debug(f"CPU at {status.cpu_percent}%, adding extra delay")
+                                time.sleep(1.0)  # Extra 1 second delay when CPU is high
                 
-                # Collect results as they complete
-                try:
-                    for future in concurrent.futures.as_completed(future_to_file, timeout=300):  # 5 min timeout per file
-                        if self._is_processing_cancelled():
-                            logger.info("Cancellation requested, stopping file processing")
-                            # Cancel remaining futures
-                            for remaining_future in future_to_file:
-                                if not remaining_future.done():
-                                    remaining_future.cancel()
-                            break
+                    # Wait for completed futures
+                    if active_futures:
+                        done, pending = concurrent.futures.wait(
+                            active_futures, 
+                            timeout=0.5,  # Check every 500ms
+                            return_when=concurrent.futures.FIRST_COMPLETED
+                        )
                         
-                        file_path = future_to_file[future]
+                        # Process completed futures
+                        for future in done:
+                            active_futures.remove(future)
+                            
+                            if self._is_processing_cancelled():
+                                logger.info("Cancellation requested, stopping file processing")
+                                # Cancel remaining futures
+                                for remaining_future in future_to_file:
+                                    if not remaining_future.done():
+                                        remaining_future.cancel()
+                                break
+                            
+                            file_path = future_to_file[future]
                         
                         # Check if this future was cancelled
                         if future.cancelled():
@@ -1571,7 +1613,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                                     partial_results = results.copy()
                                     self.after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
                             else:
-                                failed_files.append((str(file_path), "Processing returned None"))
+                                self.failed_files.append((str(file_path), "Processing returned None"))
                                 # Log failure
                                 if self.batch_logger and file_start_time:
                                     self.batch_logger.log_file_complete(
@@ -1581,7 +1623,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                                 
                         except Exception as e:
                             logger.error(f"File processing failed for {file_path}: {e}")
-                            failed_files.append((str(file_path), str(e)))
+                            self.failed_files.append((str(file_path), str(e)))
                             # Log error to batch logger
                             if self.batch_logger:
                                 self.batch_logger.log_file_complete(file_path, file_start_time or time.time(), error=e)
@@ -1601,12 +1643,22 @@ class BatchProcessingPage(ctk.CTkFrame):
                             logger.info("Progress callback signaled to stop processing")
                             break
                         
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"Timeout processing files in chunk {chunk_start}-{chunk_end}")
-                    # Continue with next chunk
-                except Exception as e:
-                    logger.error(f"Error collecting results: {e}")
-                    # Continue processing if possible
+                        # Add small delay after each file to reduce CPU load
+                        time.sleep(0.1)  # 100ms delay after each file completion
+                        
+                        # Additional CPU check after each file
+                        if processed_files % 3 == 0 and self.resource_manager:
+                            status = self.resource_manager.get_current_status()
+                            if status.cpu_percent > 60:
+                                logger.debug(f"CPU at {status.cpu_percent}% after file {processed_files}, pausing")
+                                time.sleep(0.5)  # Extra 500ms when CPU is moderately high
+                            
+            except concurrent.futures.TimeoutError:
+                logger.error(f"Timeout processing files in chunk {chunk_start}-{chunk_end}")
+                # Continue with next chunk
+            except Exception as e:
+                logger.error(f"Error collecting results: {e}")
+                # Continue processing if possible
             finally:
                 # Ensure executor is properly shut down
                 executor.shutdown(wait=False)  # Don't wait if cancelled
@@ -1670,20 +1722,37 @@ class BatchProcessingPage(ctk.CTkFrame):
             if self.batch_logger:
                 self.batch_logger.log_memory_cleanup(force_gc=True)
             
-            # Small delay to prevent CPU overload
-            time.sleep(0.01)
+            # Significant delay between chunks to prevent CPU overload and system crashes
+            # Much longer delays to give CPU time to cool down
+            if chunk_size > 50:
+                time.sleep(2.0)  # 2 seconds for large chunks
+            elif chunk_size > 25:
+                time.sleep(1.5)  # 1.5 seconds for medium chunks
+            else:
+                time.sleep(1.0)  # 1 second for small chunks
+            
+            # Additional CPU check - if resource manager indicates high CPU, wait longer
+            if self.resource_manager:
+                status = self.resource_manager.get_current_status()
+                if status.cpu_high:
+                    logger.info(f"High CPU detected ({status.cpu_percent}%), pausing for recovery")
+                    time.sleep(5.0)  # 5 second pause when CPU is high
+                elif status.cpu_percent > 50:
+                    # Even if not "high", throttle for moderate CPU usage
+                    logger.info(f"Moderate CPU usage ({status.cpu_percent}%), adding delay")
+                    time.sleep(3.0)  # 3 second pause for moderate CPU
         
-        if failed_files:
-            logger.warning(f"Processing completed with {len(failed_files)} failures")
+        if self.failed_files:
+            logger.warning(f"Processing completed with {len(self.failed_files)} failures")
             # Show summary of all failures at the end
-            if len(failed_files) > 0:
+            if len(self.failed_files) > 0:
                 failure_summary = "The following files failed to process:\n\n"
-                for file_path, error in failed_files[:10]:  # Show first 10 errors
+                for file_path, error in self.failed_files[:10]:  # Show first 10 errors
                     file_name = Path(file_path).name
                     failure_summary += f"• {file_name}: {error}\n"
                 
-                if len(failed_files) > 10:
-                    failure_summary += f"\n... and {len(failed_files) - 10} more files"
+                if len(self.failed_files) > 10:
+                    failure_summary += f"\n... and {len(self.failed_files) - 10} more files"
                 
                 self.after(0, lambda: messagebox.showwarning(
                     "Processing Failures",
@@ -1884,8 +1953,48 @@ class BatchProcessingPage(ctk.CTkFrame):
             
         saved_count = 0
         failed_count = 0
+        duplicate_count = 0
         
         logger.info(f"Starting database save for {len(results)} results")
+        
+        # Convert results to list
+        result_list = list(results.values())
+        file_paths = list(results.keys())
+        
+        # Pre-filter duplicates within the batch itself
+        logger.info(f"Checking for duplicates within batch of {len(result_list)} files...")
+        seen_combinations = {}  # Maps (model, serial, date) to (result_index, db_id)
+        unique_indices = []  # Indices of unique results
+        within_batch_duplicates = 0
+        
+        for i, result in enumerate(result_list):
+            if result is None or not result.metadata:
+                # Track these as failed files
+                if i < len(file_paths):
+                    file_name = Path(file_paths[i]).name
+                    error_msg = "Invalid result: missing metadata" if result else "Result is None"
+                    self.failed_files.append((file_name, error_msg))
+                    logger.warning(f"Skipping invalid result for {file_name}: {error_msg}")
+                else:
+                    logger.warning(f"Skipping invalid result at index {i}: missing metadata")
+                continue
+                
+            # Create unique key for this result
+            key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
+            
+            if key in seen_combinations:
+                within_batch_duplicates += 1
+                first_idx, first_db_id = seen_combinations[key]
+                logger.info(f"Duplicate within batch: {Path(file_paths[i]).name} is duplicate of "
+                          f"{Path(file_paths[first_idx]).name} ({key[0]}-{key[1]})")
+                # Will update this result's db_id after the first one is saved
+            else:
+                seen_combinations[key] = (i, None)  # Store index, db_id will be set later
+                unique_indices.append(i)
+        
+        if within_batch_duplicates > 0:
+            logger.warning(f"Found {within_batch_duplicates} duplicates within the batch itself!")
+            logger.info(f"Will process {len(unique_indices)} unique results from {len(result_list)} total files")
         
         # Use batch save if available for better performance
         if hasattr(self._db_manager, 'save_analysis_batch'):
@@ -1895,30 +2004,63 @@ class BatchProcessingPage(ctk.CTkFrame):
                     logger.info("Cancellation requested during database save")
                     return
                 
-                # Convert to list for batch save
-                result_list = list(results.values())
-                if result_list:
-                    # Validate results before saving
-                    logger.info(f"Validating {len(result_list)} results before batch save...")
-                    valid_results = []
-                    for i, result in enumerate(result_list):
-                        if result is not None and result.metadata and result.metadata.model and result.metadata.serial:
-                            valid_results.append(result)
-                        else:
-                            logger.warning(f"Skipping invalid result at index {i}: missing required data")
+                # Process only unique results
+                unique_results = [result_list[i] for i in unique_indices]
+                
+                if unique_results:
+                    # Check for existing duplicates in database
+                    results_to_save = []
+                    db_duplicate_indices = []
                     
-                    if not valid_results:
-                        logger.error("No valid results to save!")
-                        return
+                    for idx, result in zip(unique_indices, unique_results):
+                        existing_id = self._db_manager.check_duplicate_analysis(
+                            result.metadata.model,
+                            result.metadata.serial,
+                            result.metadata.file_date
+                        )
                         
-                    logger.info(f"Attempting batch save of {len(valid_results)} valid results...")
-                    analysis_ids = self._db_manager.save_analysis_batch(valid_results)
-                    saved_count = len([id for id in analysis_ids if id is not None])
-                    logger.info(f"Batch saved {saved_count}/{len(valid_results)} analyses to database")
+                        if existing_id:
+                            duplicate_count += 1
+                            result.db_id = existing_id
+                            # Update seen_combinations with the existing ID
+                            key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
+                            seen_combinations[key] = (idx, existing_id)
+                            db_duplicate_indices.append(idx)
+                            logger.info(f"Database duplicate: {Path(file_paths[idx]).name} already exists "
+                                      f"with ID {existing_id} ({key[0]}-{key[1]})")
+                        else:
+                            results_to_save.append((idx, result))
                     
-                    # Update result objects with database IDs
-                    for result, db_id in zip(result_list, analysis_ids):
-                        result.db_id = db_id
+                    if duplicate_count > 0:
+                        logger.info(f"Found {duplicate_count} existing analyses in database")
+                    
+                    # Save new results
+                    if results_to_save:
+                        logger.info(f"Attempting batch save of {len(results_to_save)} new results...")
+                        results_only = [r[1] for r in results_to_save]
+                        analysis_ids = self._db_manager.save_analysis_batch(results_only)
+                        
+                        # Update saved results with database IDs
+                        for (idx, result), db_id in zip(results_to_save, analysis_ids):
+                            if db_id is not None:
+                                result.db_id = db_id
+                                saved_count += 1
+                                # Update seen_combinations
+                                key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
+                                seen_combinations[key] = (idx, db_id)
+                            else:
+                                failed_count += 1
+                        
+                        logger.info(f"Batch saved {saved_count} new analyses to database")
+                    
+                    # Update all results (including within-batch duplicates) with their database IDs
+                    for i, result in enumerate(result_list):
+                        if result and result.metadata:
+                            key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
+                            if key in seen_combinations:
+                                _, db_id = seen_combinations[key]
+                                if db_id is not None and not hasattr(result, 'db_id'):
+                                    result.db_id = db_id
             except Exception as e:
                 logger.error(f"Batch database save failed: {e}")
                 # Fall back to individual saves
@@ -1999,15 +2141,128 @@ class BatchProcessingPage(ctk.CTkFrame):
         # Calculate summary statistics
         total_processed = len(results)
         successful_count = len(results)
-        failed_count = len(self.selected_files) - successful_count
+        failed_count = len(self.failed_files)  # Use actual failed files count
+        
+        # Log detailed statistics for debugging
+        logger.info(f"Batch processing statistics:")
+        logger.info(f"  Total selected files: {len(self.selected_files)}")
+        logger.info(f"  Results received: {len(results)}")
+        logger.info(f"  Failed files: {failed_count}")
+        logger.info(f"  Success rate: {successful_count}/{len(self.selected_files)}")
+        
+        # Log the failed files for debugging
+        if failed_count > 0:
+            logger.info(f"Failed files ({failed_count} total):")
+            for file_name, error in self.failed_files[:10]:  # Show first 10
+                logger.info(f"  - {file_name}: {error}")
+            if failed_count > 10:
+                logger.info(f"  ... and {failed_count - 10} more")
         
         # Validation statistics
-        validated_count = sum(1 for r in results.values() 
-                            if r.overall_validation_status == ValidationStatus.VALIDATED)
-        warning_count = sum(1 for r in results.values() 
-                          if r.overall_validation_status == ValidationStatus.WARNING)
-        failed_validation_count = sum(1 for r in results.values() 
-                                    if r.overall_validation_status == ValidationStatus.FAILED)
+        validated_count = 0
+        warning_count = 0
+        failed_validation_count = 0
+        
+
+        
+        for r in results.values():
+            if hasattr(r, 'overall_validation_status'):
+                val_status = r.overall_validation_status
+                # Handle both enum and string values - check multiple possible formats
+                if hasattr(val_status, 'value'):
+                    val_str = val_status.value
+                else:
+                    val_str = str(val_status)
+                
+                # Normalize to uppercase for comparison
+                val_str_upper = val_str.upper()
+                
+                if val_str_upper in ['VALIDATED', 'VALID']:
+                    validated_count += 1
+                elif val_str_upper in ['WARNING', 'WARN']:
+                    warning_count += 1
+                elif val_str_upper in ['FAILED', 'FAIL', 'NOT VALIDATED', 'NOT_VALIDATED']:
+                    failed_validation_count += 1
+        
+        # Calculate processing time
+        if hasattr(self, 'processing_start_time'):
+            processing_time = time.time() - self.processing_start_time
+            time_str = f"{processing_time:.1f}s" if processing_time < 60 else f"{processing_time/60:.1f}m"
+        else:
+            time_str = "N/A"
+        
+        # Calculate detailed statistics for master summary
+        track_counts = []
+        pass_counts = []
+        fail_counts = []
+        models_processed = set()
+        serials_processed = set()
+        
+        for result in results.values():
+            # Model and serial tracking
+            if hasattr(result.metadata, 'model'):
+                models_processed.add(result.metadata.model)
+            if hasattr(result.metadata, 'serial'):
+                serials_processed.add(result.metadata.serial)
+            
+            # Track counts
+            if hasattr(result, 'tracks') and result.tracks:
+                if isinstance(result.tracks, dict):
+                    track_counts.append(len(result.tracks))
+                    # Count pass/fail for each track
+                    for track in result.tracks.values():
+                        if hasattr(track, 'status'):
+                            status = getattr(track.status, 'value', str(track.status))
+                            if status in ['Pass', 'PASS']:
+                                pass_counts.append(1)
+                            else:
+                                fail_counts.append(1)
+                        elif hasattr(track, 'overall_status'):
+                            status = getattr(track.overall_status, 'value', str(track.overall_status))
+                            if status in ['Pass', 'PASS']:
+                                pass_counts.append(1)
+                            else:
+                                fail_counts.append(1)
+                else:
+                    # Handle list format (from DB)
+                    track_counts.append(len(result.tracks))
+                    for track in result.tracks:
+                        if hasattr(track, 'status'):
+                            status = getattr(track.status, 'value', str(track.status))
+                            if status in ['Pass', 'PASS']:
+                                pass_counts.append(1)
+                            else:
+                                fail_counts.append(1)
+                        elif hasattr(track, 'overall_status'):
+                            status = getattr(track.overall_status, 'value', str(track.overall_status))
+                            if status in ['Pass', 'PASS']:
+                                pass_counts.append(1)
+                            else:
+                                fail_counts.append(1)
+        
+        # Calculate averages and totals
+        total_tracks = sum(track_counts) if track_counts else 0
+        avg_tracks_per_file = sum(track_counts) / len(track_counts) if track_counts else 0
+        total_pass = sum(pass_counts) if pass_counts else 0
+        total_fail = sum(fail_counts) if fail_counts else 0
+        
+        # Update master summary panel
+        self._update_master_summary(
+            total_files=len(self.selected_files),
+            processed=successful_count,
+            failed=failed_count,
+            validated=validated_count,
+            warnings=warning_count,
+            validation_failed=failed_validation_count,
+            processing_time=time_str,
+            total_tracks=total_tracks,
+            avg_tracks=avg_tracks_per_file,
+            tracks_passed=total_pass,
+            tracks_failed=total_fail,
+            unique_models=len(models_processed),
+            unique_serials=len(serials_processed),
+            error_details=self.failed_files  # Pass error details
+        )
         
         # Update batch status
         if failed_count == 0:
@@ -2080,6 +2335,185 @@ class BatchProcessingPage(ctk.CTkFrame):
         self.after(500, emit_completion_event)
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
+    
+    def _update_master_summary(self, **kwargs):
+        """Update the master summary panel with batch processing statistics."""
+        # Clear the summary frame
+        for widget in self.summary_frame.winfo_children():
+            widget.destroy()
+        
+        # Create a grid layout for the summary
+        summary_container = ctk.CTkFrame(self.summary_frame, fg_color="transparent")
+        summary_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            summary_container,
+            text="Batch Processing Summary",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 15), sticky='w')
+        
+        # Create summary items in a grid layout
+        summary_items = [
+            ("Processing Time:", kwargs.get('processing_time', 'N/A')),
+            ("Total Files:", f"{kwargs.get('total_files', 0)}"),
+            ("Successfully Processed:", f"{kwargs.get('processed', 0)}"),
+            ("Failed to Process:", f"{kwargs.get('failed', 0)}"),
+            ("", ""),  # Empty row for spacing
+            ("Validation Summary:", ""),
+            ("  • Validated:", f"{kwargs.get('validated', 0)}"),
+            ("  • Warnings:", f"{kwargs.get('warnings', 0)}"),
+            ("  • Failed Validation:", f"{kwargs.get('validation_failed', 0)}"),
+            ("", ""),  # Empty row for spacing
+            ("Track Analysis:", ""),
+            ("  • Total Tracks:", f"{kwargs.get('total_tracks', 0)}"),
+            ("  • Average per File:", f"{kwargs.get('avg_tracks', 0):.1f}"),
+            ("  • Tracks Passed:", f"{kwargs.get('tracks_passed', 0)}"),
+            ("  • Tracks Failed:", f"{kwargs.get('tracks_failed', 0)}"),
+            ("", ""),  # Empty row for spacing
+            ("Unique Models:", f"{kwargs.get('unique_models', 0)}"),
+            ("Unique Serials:", f"{kwargs.get('unique_serials', 0)}")
+        ]
+        
+        # Add summary items to grid
+        row = 1
+        for label_text, value_text in summary_items:
+            if label_text == "" and value_text == "":
+                # Empty row for spacing
+                row += 1
+                continue
+            
+            # Determine styling based on content
+            if label_text.endswith(":") and not label_text.startswith("  "):
+                # Main category labels
+                label_font = ctk.CTkFont(size=12, weight="bold")
+                value_font = ctk.CTkFont(size=12, weight="bold")
+            elif label_text.startswith("  "):
+                # Sub-items
+                label_font = ctk.CTkFont(size=11)
+                value_font = ctk.CTkFont(size=11)
+            else:
+                # Regular items
+                label_font = ctk.CTkFont(size=12)
+                value_font = ctk.CTkFont(size=12)
+            
+            # Create label
+            label = ctk.CTkLabel(
+                summary_container,
+                text=label_text,
+                font=label_font,
+                anchor='w'
+            )
+            label.grid(row=row, column=0, sticky='w', padx=(0, 10), pady=2)
+            
+            # Create value
+            if value_text:
+                # Determine color based on content
+                text_color = None
+                try:
+                    # Try to extract numeric value from the text
+                    numeric_value = int(value_text.split()[0]) if value_text else 0
+                    
+                    if "Failed" in label_text and numeric_value > 0:
+                        text_color = "red"
+                    elif "Warnings" in label_text and numeric_value > 0:
+                        text_color = "orange"
+                    elif "Validated" in label_text and "Failed" not in label_text:
+                        text_color = "green"
+                    elif "Passed" in label_text:
+                        text_color = "green"
+                except (ValueError, IndexError):
+                    # If we can't parse a number, use default colors based on keywords
+                    if "Failed" in label_text:
+                        text_color = "red"
+                    elif "Warning" in label_text:
+                        text_color = "orange"
+                    elif "Validated" in label_text or "Passed" in label_text:
+                        text_color = "green"
+                
+                value = ctk.CTkLabel(
+                    summary_container,
+                    text=value_text,
+                    font=value_font,
+                    text_color=text_color,
+                    anchor='w'
+                )
+                value.grid(row=row, column=1, sticky='w', pady=2)
+            
+            row += 1
+        
+        # Add a separator line
+        separator = ctk.CTkFrame(summary_container, height=2)
+        separator.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(15, 10))
+        row += 1
+        
+        # Add error details section if there are failed files
+        error_details = kwargs.get('error_details', [])
+        if error_details:
+            # Error section title
+            error_title = ctk.CTkLabel(
+                summary_container,
+                text="Processing Errors:",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="red",
+                anchor='w'
+            )
+            error_title.grid(row=row, column=0, columnspan=2, sticky='w', pady=(10, 5))
+            row += 1
+            
+            # Create scrollable frame for errors if many
+            if len(error_details) > 5:
+                error_frame = ctk.CTkScrollableFrame(
+                    summary_container,
+                    height=100,
+                    fg_color=("gray95", "gray15")
+                )
+                error_frame.grid(row=row, column=0, columnspan=2, sticky='ew', padx=(10, 0), pady=(0, 10))
+                error_parent = error_frame
+            else:
+                error_parent = summary_container
+            
+            # Display error details
+            error_row = 0
+            for file_path, error in error_details[:20]:  # Show max 20 errors
+                file_name = Path(file_path).name
+                error_text = f"• {file_name}: {error}"
+                
+                # Truncate long error messages
+                if len(error_text) > 80:
+                    error_text = error_text[:77] + "..."
+                
+                error_label = ctk.CTkLabel(
+                    error_parent,
+                    text=error_text,
+                    font=ctk.CTkFont(size=10),
+                    text_color="red",
+                    anchor='w'
+                )
+                
+                if error_parent == summary_container:
+                    error_label.grid(row=row, column=0, columnspan=2, sticky='w', padx=(20, 0), pady=1)
+                    row += 1
+                else:
+                    error_label.grid(row=error_row, column=0, sticky='w', padx=5, pady=1)
+                    error_row += 1
+            
+            if len(error_details) > 20:
+                more_label = ctk.CTkLabel(
+                    error_parent if error_parent != summary_container else summary_container,
+                    text=f"... and {len(error_details) - 20} more errors",
+                    font=ctk.CTkFont(size=10, style="italic"),
+                    text_color="gray",
+                    anchor='w'
+                )
+                if error_parent == summary_container:
+                    more_label.grid(row=row, column=0, columnspan=2, sticky='w', padx=(20, 0), pady=1)
+                else:
+                    more_label.grid(row=error_row, column=0, sticky='w', padx=5, pady=1)
+        
+        # Update the container to ensure proper sizing
+        summary_container.update_idletasks()
     
     def _on_resource_update(self, status: Any):
         """Handle resource status updates."""
@@ -2702,12 +3136,18 @@ class BatchProcessingPage(ctk.CTkFrame):
     def _clear_results(self):
         """Clear batch processing results."""
         self.batch_results = {}
+        self.failed_files = []  # Clear failed files tracking
         self.batch_results_widget.clear()
         self.export_excel_button.configure(state="disabled")
         self.export_html_button.configure(state="disabled")
         self.export_csv_button.configure(state="disabled")
         self.output_folder_button.configure(state="disabled")
         self.last_output_dir = None
+        
+        # Clear summary panel
+        if hasattr(self, 'summary_label'):
+            self.summary_label.configure(text="Process files to see summary statistics")
+        
         logger.info("Batch results cleared")
     
     def _open_output_folder(self):
