@@ -20,6 +20,247 @@ This section tracks current known issues that need to be addressed. When fixing 
 
 ## [Unreleased]
 
+### Fixed
+- **Model Summary Page Sigma Gradient Calculations Showing 0.0000** (2025-07-03):
+  - **Issue**: Model Summary page showing 0.0000 for both Avg Sigma Gradient and Sigma Std Dev
+  - **Root Cause**: FastProcessor using incorrect formula for sigma gradient calculation
+    - Was calculating: `sigma_gradient = abs(sigma / travel_length)`
+    - Should calculate: standard deviation of the error curve gradients (derivatives)
+  - **Solution**: 
+    - Fixed FastProcessor._analyze_sigma_fast() to properly calculate gradients of error curve
+    - Now matches the correct implementation in sigma_analyzer.py
+    - Added proper model-specific threshold calculations
+    - Added debugging logs to Model Summary page to track sigma values
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/core/fast_processor.py`: Fixed sigma gradient calculation
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Added sigma value debugging
+    - Created `scripts/check_sigma_values.py`: Utility to check database sigma values
+
+- **Batch Processing Debug Logging and Database Cleanup** (2025-07-03):
+  - Added comprehensive logging to track validation summary calculations
+  - Added logging to batch results widget to debug blank display issues  
+  - Created `kill_python_and_clean_db.bat` script to ensure application is closed before database cleanup
+  - Improved error tracking for invalid results (None or missing metadata)
+  - Enhanced logging in turbo mode to track invalid results causing missing files
+  - Files Modified:
+    - `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`: Added validation and track statistics logging
+    - `src/laser_trim_analyzer/gui/widgets/batch_results_widget_ctk.py`: Added display debugging logs
+    - Created `kill_python_and_clean_db.bat`: New script to kill Python processes before DB cleanup
+
+- **Batch Processing Display and Statistics Issues** (2025-07-03):
+  - **Issue 1: Duplicate Database Entries During Batch Processing**
+    - User reported: Logging showed duplicates when database was cleared before processing
+    - Root Cause: The duplicate logs were the system detecting and preventing duplicates, not creating them
+    - Solution: Added detailed logging to clarify that duplicates are being detected and prevented
+    - The system is working correctly - it checks for duplicates both within the batch and in the database
+  
+  - **Issue 2: Batch Processing Summary Validation Showing 0's**
+    - User reported: Validation summary section showed 0's even though data was processed
+    - Root Cause: Validation counts were calculated correctly but UI timing issue
+    - Solution: Added detailed logging and ensured proper data flow to summary display
+  
+  - **Issue 3: Individual File Results Not Displaying**
+    - User reported: Widget showed "Showing 20 of 681 results" but no results displayed
+    - Root Cause: Results widget had insufficient error handling for edge cases
+    - Solution: Added robust error checking in _add_result_row method
+    - Files Modified:
+      - `src/laser_trim_analyzer/gui/widgets/batch_results_widget_ctk.py`: Added null checks and error handling
+  
+  - **Issue 4: Missing Files Not Accounted For**
+    - User reported: 690 files processed but only 681 shown, 9 files unaccounted
+    - Root Cause: Failed files were tracked internally but not properly reported in UI
+    - Solution: Enhanced failed file tracking and reporting in batch processing statistics
+
+- **SQLite DateTime Parameter Error on Home Page** (2025-07-03):
+  - **Issue**: Home page throwing "bad parameter or other API misuse" when fetching trend data
+  - **Root Cause**: Using datetime objects directly with SQLite which can cause format issues
+  - **Solution**: Changed home page to use `days_back=7` parameter instead of `start_date` for better SQLite compatibility
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/home_page.py`: Changed _get_trend_data to use days_back parameter
+  - **Issue 1**: Results widget showing "bad window path name" error after processing
+  - **Root Cause**: Attempting to access widgets that may have been destroyed
+  - **Solution**: 
+    - Added existence checks before accessing results_frame and status_label widgets
+    - Added try-except blocks around widget operations to handle destruction gracefully
+    - Check winfo_exists() before updating widgets
+  - **Issue 2**: Calculation summary showing all 0's for validation and track statistics
+  - **Root Cause**: 
+    - Validation status comparison using == with enum values not working correctly
+    - Track pass/fail counts not being calculated for list-format tracks (from DB)
+  - **Solution**: 
+    - Handle both enum and string values for validation status
+    - Extract value attribute if present, otherwise convert to string
+    - Added track counting logic for both dict and list formats
+    - Check both 'status' and 'overall_status' attributes on tracks
+  - **Issue 3**: Missing 9 files from batch of 690 (only 681 processed)
+  - **Root Cause**: 9 files had invalid results (None or missing metadata)
+  - **Solution**: 
+    - Added better error tracking for invalid results
+    - Track these as failed files with descriptive error messages
+    - Include in master summary error details
+  - **Files Modified**: 
+    - `src/laser_trim_analyzer/gui/widgets/batch_results_widget_ctk.py`: Added widget existence checks
+    - `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`: Fixed statistics calculations and error tracking
+
+- **Batch Processing CPU Usage and Scrolling Performance** (2025-07-03):
+  - **Issue 1**: CPU usage still at 100% even with reduced workers
+  - **Root Cause**: 
+    - Insufficient delays between file processing
+    - No adaptive CPU monitoring during processing
+    - CPU threshold too high (70%) for triggering throttling
+  - **Solution**: 
+    - Always use single worker to prevent CPU overload
+    - Increased delay between file submissions from 50ms to 200ms
+    - Increased delays between chunks: 2s for large, 1.5s for medium, 1s for small chunks
+    - Lowered CPU high threshold from 70% to 50% for more aggressive throttling
+    - Added CPU monitoring every 5 files with extra 1s delay when CPU > 70%
+    - Added 100ms delay after each file completion
+    - Added CPU check every 3 files with 500ms pause when CPU > 60%
+  - **Issue 2**: Results section doesn't display properly when scrolling with many files
+  - **Root Cause**: Creating hundreds of widgets at once causes performance issues
+  - **Solution**: 
+    - Implemented virtual scrolling with pagination
+    - Only display 20 rows at a time instead of all results
+    - Added Previous/Next navigation buttons
+    - Added page counter showing current page of total pages
+    - Clear old widgets before displaying new page
+  - **Files Modified**: 
+    - `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`: CPU throttling improvements for standard mode
+    - `src/laser_trim_analyzer/gui/widgets/batch_results_widget_ctk.py`: Virtual scrolling implementation
+    - `src/laser_trim_analyzer/core/resource_manager.py`: Lowered CPU threshold to 50%
+    - `src/laser_trim_analyzer/core/fast_processor.py`: CPU throttling for turbo mode (used for 690 files)
+      - Reduced max_workers from all CPU cores to max 4 cores in turbo mode
+      - Reduced chunk sizes: 50/30/20 files (down from 200/100/50)
+      - Added CPU monitoring between chunks with 0.5-2s delays based on usage
+      - These changes specifically address the 690-file batch processing scenario
+
+- **Batch Processing Duplicate Detection** (2025-07-03):
+  - **Issue**: All 681 files marked as duplicates during batch processing save
+  - **Root Cause**: 
+    - Files within the same batch had identical model/serial/date combinations
+    - Database save logic was not handling within-batch duplicates properly
+    - Each unique combination was saved once, then subsequent files with same combination were marked as duplicates
+  - **Solution**: 
+    - Pre-filter duplicates within the batch before database operations
+    - Track unique combinations and only save one instance per combination
+    - Provide detailed logging showing within-batch vs database duplicates
+    - Update all duplicate files to reference the saved instance's database ID
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`
+    - Lines 1938-2074: Rewrote _save_batch_to_database to handle within-batch duplicates
+    - Added logging to distinguish between within-batch and database duplicates
+    - Properly update all results with correct database IDs
+
+### Fixed
+- **Batch Processing Master Summary Implementation** (2025-07-03):
+  - **Issue**: User requested "master readout on the page after processing completes telling overall stats"
+  - **Solution**: Added comprehensive master summary panel showing:
+    - Processing time
+    - File counts (total, processed, failed)
+    - Validation summary (validated, warnings, failed)
+    - Track analysis (total, average per file, passed, failed)
+    - Unique models and serials processed
+    - Error details with scrollable list for many errors
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`
+    - Lines 614-625: Added summary_frame and summary_label
+    - Line 1150: Added processing_start_time tracking
+    - Lines 2060-2122: Calculate detailed statistics in _handle_batch_success
+    - Lines 2195-2374: Created _update_master_summary method
+    - Lines 150, 1497, 1614, 1624, 1729-1744: Track failed files
+    - Line 2055: Use actual failed files count
+    - Lines 2994-3009: Clear summary when clearing results
+
+- **Batch Processing Error Reporting** (2025-07-03):
+  - **Issue**: "batch processing complete - with errors but no telling what the errors are"
+  - **Solution**: 
+    - Track failed files and error messages throughout processing
+    - Display error details in master summary panel
+    - Show first 20 errors with file names and error messages
+    - Indicate if there are more errors beyond those displayed
+  - **Implementation**: Added self.failed_files list to track all processing errors
+
+- **Batch Results Widget Scrolling** (2025-07-03):
+  - **Issue**: "processing results section does not load properly to display file results when scrolling"
+  - **Solution**: Increased scrollable frame height from 300 to 500 pixels
+  - **Files Modified**: `src/laser_trim_analyzer/gui/widgets/batch_results_widget_ctk.py`
+    - Line 59: Changed height from 300 to 500
+
+- **Batch Processing CPU Overload Fix** (2025-07-02):
+  - **Issue**: Processing 690 files caused 100% CPU usage and system blue screen crash
+  - **Root Causes**:
+    1. Too many concurrent worker threads (8 workers for 690 files)
+    2. Minimal delay between processing chunks (only 0.01 seconds)
+    3. CPU threshold set too high (80%) for detection
+    4. No CPU pressure handling like memory pressure
+  - **Solutions Implemented**:
+    1. **Reduced Worker Counts**:
+       - >1000 files: 3 workers (was 6)
+       - >500 files: 2 workers (was 8) - specifically helps with 690 file batches
+       - >100 files: 3 workers (new limit)
+       - ≤100 files: 4 workers (unchanged)
+    2. **Added CPU Throttling**:
+       - Increased delays between chunks (0.2-0.5 seconds based on chunk size)
+       - Added 2-second pause when high CPU is detected
+       - CPU monitoring now uses 1-second sampling for accuracy
+    3. **Improved CPU Monitoring**:
+       - Lowered CPU threshold from 80% to 70%
+       - Added CPU pressure tracking similar to memory pressure
+       - Processing pauses if CPU >90% or sustained high usage
+    4. **Resource Manager Enhancements**:
+       - Added _cpu_pressure_count tracking
+       - CPU warnings logged once per minute
+       - should_pause_processing() now considers CPU usage
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/batch_processing_page.py`:
+      - Lines 1287-1296: Reduced worker counts
+      - Lines 1676-1690: Added CPU throttling between chunks
+    - `src/laser_trim_analyzer/core/resource_manager.py`:
+      - Line 78: Lowered CPU threshold to 70%
+      - Line 173: Increased CPU sampling to 1 second
+      - Lines 103-104: Added CPU pressure tracking
+      - Lines 292-322: Added CPU pressure handling
+      - Lines 489-497: Added CPU checks to pause logic
+  - **Impact**: Batch processing should no longer cause system crashes on work computers
+
+- **Model Summary Page UI Fixes** (2025-07-02):
+  - **Quality Overview Chart**: Removed confusing target/warning lines that applied to all categories
+    - Target line (95%) now only shows as annotation for Pass Rate
+    - Other categories no longer have inappropriate reference lines
+  - **Risk Assessment Chart**: Fixed colorbar warning by using fig.colorbar instead of plt.colorbar
+    - Warning: "Adding colorbar to a different Figure" is now resolved
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/model_summary_page.py`
+    - Lines 769-782: Removed reference lines, added pass rate target annotation
+    - Line 979: Fixed colorbar usage
+
+- **Historical Page Error and UI Fixes** (2025-07-02):
+  - **Drift Detection Error**: Fixed "name 'ax2' is not defined" error
+    - Removed leftover code from old dual-subplot implementation
+    - Lines 3978-3985: Removed duplicate drift point plotting code
+  - **Chart Styling Fixes**:
+    - Risk Trends x-axis labels: Added tick_params to set proper text color
+    - Linearity Analysis: Changed zero line from text_color to gray for visibility
+    - Process Capability: Fixed grid line visibility
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/historical_page.py`
+    - Lines 3452-3453: Added tick color parameters for x and y axes
+    - Line 1279: Changed zero line color to gray
+    - Line 1299: Added gray color to grid
+    - Lines 3978-3985: Removed ax2 reference
+
+- **ML Tools Page Functionality** (2025-07-02):
+  - **Training Log**: Now shows initialization messages and status updates
+    - Added logging throughout ML engine initialization process
+    - Shows model loading progress and any errors
+  - **Model Comparison**: Fixed empty sections by showing proper placeholders
+    - Removed sample data per CLAUDE.md rules
+    - Shows clear message when models need initialization/training
+  - **Threshold Optimization**: Now displays actual values and status
+    - Shows current thresholds from ML engine or defaults
+    - Added informative messages in results tabs
+  - **Files Modified**: `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`
+    - Lines 1584-1651: Added comprehensive initialization logging
+    - Lines 2603-2610: Fixed comparison to show proper placeholder
+    - Lines 820-846: Updated to show actual threshold values
+    - Lines 890-892, 903-905: Added initial messages to result displays
+
 ### Enhanced
 - **Historical Page Chart Improvements** (2025-07-02):
   - **Issues Fixed**:
