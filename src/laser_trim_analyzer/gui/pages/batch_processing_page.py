@@ -2218,7 +2218,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                             else:
                                 fail_counts.append(1)
                         elif hasattr(track, 'overall_status'):
-                            status = getattr(track.overall_status, 'value', str(track.overall_status))
+                            status = getattr(track.status, 'value', str(track.status))
                             if status in ['Pass', 'PASS']:
                                 pass_counts.append(1)
                             else:
@@ -2234,7 +2234,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                             else:
                                 fail_counts.append(1)
                         elif hasattr(track, 'overall_status'):
-                            status = getattr(track.overall_status, 'value', str(track.overall_status))
+                            status = getattr(track.status, 'value', str(track.status))
                             if status in ['Pass', 'PASS']:
                                 pass_counts.append(1)
                             else:
@@ -2820,7 +2820,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                             
                         for track in tracks_iter:
                             if hasattr(track, 'overall_status'):
-                                track_status = getattr(track.overall_status, 'value', str(track.overall_status))
+                                track_status = getattr(track.status, 'value', str(track.status))
                                 if track_status == 'Pass':
                                     pass_count += 1
                                 else:
@@ -2864,7 +2864,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                                     'Model': model,
                                     'Serial': serial,
                                     'Track_ID': str(track_id),
-                                    'Track_Status': getattr(track.overall_status, 'value', 'Unknown') if hasattr(track, 'overall_status') else getattr(track.status, 'value', 'Unknown') if hasattr(track, 'status') else 'Unknown',
+                                    'Track_Status': getattr(track.status, 'value', 'Unknown') if hasattr(track, 'status') else 'Unknown',
                                     'Sigma_Gradient': track.sigma_analysis.sigma_gradient if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
                                     'Sigma_Threshold': track.sigma_analysis.sigma_threshold if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
                                     'Sigma_Pass': track.sigma_analysis.sigma_pass if hasattr(track, 'sigma_analysis') and track.sigma_analysis else None,
@@ -2931,7 +2931,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                             total_tracks += len(result.tracks)
                             for track in result.tracks.values():
                                 if hasattr(track, 'overall_status'):
-                                    if getattr(track.overall_status, 'value', '') == 'Pass':
+                                    if getattr(track.status, 'value', '') == 'Pass':
                                         tracks_passed += 1
                                     else:
                                         tracks_failed += 1
@@ -2944,7 +2944,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                             total_tracks += len(result.tracks)
                             for track in result.tracks:
                                 if hasattr(track, 'overall_status'):
-                                    if getattr(track.overall_status, 'value', '') == 'Pass':
+                                    if getattr(track.status, 'value', '') == 'Pass':
                                         tracks_passed += 1
                                     else:
                                         tracks_failed += 1

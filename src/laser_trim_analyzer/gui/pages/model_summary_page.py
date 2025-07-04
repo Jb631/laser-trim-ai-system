@@ -526,12 +526,29 @@ class ModelSummaryPage(ctk.CTkFrame):
                     self.logger.info(f"Date range: {self.model_data['trim_date'].min()} to {self.model_data['trim_date'].max()}")
                     self.logger.info(f"Columns: {list(self.model_data.columns)}")
                     
+                    # Debug sigma gradient values
+                    sigma_values = self.model_data['sigma_gradient'].dropna()
+                    self.logger.info(f"=== SIGMA GRADIENT DEBUG INFO ===")
+                    self.logger.info(f"Total rows: {len(self.model_data)}, Non-null sigma values: {len(sigma_values)}")
+                    if len(sigma_values) > 0:
+                        self.logger.info(f"Sigma gradient - Min: {sigma_values.min():.6f}, Max: {sigma_values.max():.6f}, "
+                                        f"Mean: {sigma_values.mean():.6f}, Std: {sigma_values.std():.6f}")
+                        # Show first few values
+                        self.logger.info(f"First 10 sigma values: {sigma_values.head(10).tolist()}")
+                        # Check for zeros
+                        zero_count = (sigma_values == 0).sum()
+                        if zero_count > 0:
+                            self.logger.warning(f"Found {zero_count} zero sigma gradient values ({zero_count/len(sigma_values)*100:.1f}%)")
+                    else:
+                        self.logger.error("No valid sigma gradient values found!")
+                    
                     # Add specific debugging for model 8340-1
                     if model == "8340-1":
                         self.logger.info(f"=== DEBUG INFO FOR MODEL 8340-1 ===")
-                        sample_dates = self.model_data[['filename', 'trim_date', 'timestamp']].head(10)
-                        for idx, row in sample_dates.iterrows():
-                            self.logger.info(f"File: {row['filename']}, Trim Date: {row['trim_date']}, Timestamp: {row['timestamp']}")
+                        sample_data = self.model_data[['filename', 'trim_date', 'sigma_gradient', 'sigma_threshold']].head(10)
+                        for idx, row in sample_data.iterrows():
+                            self.logger.info(f"File: {row['filename']}, Date: {row['trim_date']}, "
+                                           f"Sigma: {row['sigma_gradient']:.6f}, Threshold: {row['sigma_threshold']:.6f}")
                         self.logger.info(f"=== END DEBUG INFO ===")
                 
                     # Update UI on main thread safely
@@ -619,8 +636,23 @@ class ModelSummaryPage(ctk.CTkFrame):
         # Basic metrics
         total_units = len(df['analysis_id'].unique())
         pass_rate = (df['track_status'] == 'Pass').mean() * 100
-        sigma_avg = df['sigma_gradient'].mean()
-        sigma_std = df['sigma_gradient'].std()
+        
+        # Calculate sigma metrics with proper handling
+        sigma_values = df['sigma_gradient'].dropna()
+        if len(sigma_values) > 0:
+            sigma_avg = sigma_values.mean()
+            sigma_std = sigma_values.std()
+            
+            # Log for debugging
+            self.logger.debug(f"Sigma metrics - Count: {len(sigma_values)}, Avg: {sigma_avg:.6f}, Std: {sigma_std:.6f}")
+            
+            # Check if all values are zero or very small
+            if sigma_avg < 1e-6 and sigma_std < 1e-6:
+                self.logger.warning(f"Sigma values appear to be all zeros or very small: avg={sigma_avg}, std={sigma_std}")
+        else:
+            sigma_avg = 0.0
+            sigma_std = 0.0
+            self.logger.warning("No valid sigma gradient values for metrics calculation")
 
         # Advanced metrics
         validation_rate = df['linearity_pass'].mean() * 100 if df['linearity_pass'].notna().any() else 0
@@ -766,18 +798,19 @@ class ModelSummaryPage(ctk.CTkFrame):
                     ax.text(bar.get_x() + bar.get_width()/2., height + 1,
                            f'{val:.1f}%', ha='center', va='bottom', fontsize=10, color=text_color)
                 
-                # Add reference line at 95% (target)
-                ax.axhline(y=95, color='green', linestyle='--', alpha=0.5, label='Target (95%)')
-                ax.axhline(y=90, color='orange', linestyle='--', alpha=0.5, label='Warning (90%)')
-                
+                # Remove the confusing reference lines - they don't apply to all categories
                 ax.set_xticks(x)
                 ax.set_xticklabels(overview_data['category'], rotation=45, ha='right')
                 ax.set_ylabel('Percentage (%)')
                 ax.set_ylim(0, 110)
                 ax.set_title('Quality Metrics Overview', fontsize=14, fontweight='bold')
-                legend = ax.legend(loc='upper right')
-                if legend:
-                    self.overview_chart._style_legend(legend)
+                
+                # Add a text annotation for pass rate target
+                pass_rate_idx = 0  # Pass Rate is first in the list
+                ax.annotate('Target: 95%', xy=(pass_rate_idx, 95), xytext=(pass_rate_idx + 0.5, 100),
+                           arrowprops=dict(arrowstyle='->', color='green', alpha=0.5),
+                           fontsize=9, color='green', alpha=0.7)
+                
                 ax.grid(True, axis='y', alpha=0.3)
                 
                 fig.tight_layout()
@@ -974,8 +1007,8 @@ class ModelSummaryPage(ctk.CTkFrame):
                                    color=text_color,
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor=bg_color, alpha=0.8, edgecolor=text_color))
                     
-                    # Add colorbar for RPN
-                    cbar = plt.colorbar(scatter, ax=ax)
+                    # Add colorbar for RPN using fig.colorbar instead of plt.colorbar
+                    cbar = fig.colorbar(scatter, ax=ax)
                     cbar.set_label('Risk Priority Number (RPN)', rotation=270, labelpad=20, color=text_color)
                     cbar.ax.tick_params(colors=text_color)
                     

@@ -59,7 +59,14 @@
       "Bash(set LTA_ENV=development)",
       "Bash(export LTA_ENV=development)",
       "Bash(git add:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(cmd.exe /c clean_all_databases.bat)",
+      "Bash(cmd.exe:*)",
+      "Bash(taskkill:*)",
+      "Bash(./clean_and_verify_databases.bat)",
+      "Bash(del /f /q \"C:\\Users\\Jayma\\AppData\\Local\\LaserTrimAnalyzer\\dev\\laser_trim_dev.db\")",
+      "Bash(./kill_python_and_clean_db.bat)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

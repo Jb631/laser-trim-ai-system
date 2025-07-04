@@ -75,7 +75,7 @@ class ResourceManager:
     # Resource thresholds
     MEMORY_WARNING_THRESHOLD = 80  # % of total memory
     MEMORY_CRITICAL_THRESHOLD = 90  # % of total memory
-    CPU_HIGH_THRESHOLD = 80  # % CPU usage
+    CPU_HIGH_THRESHOLD = 50  # % CPU usage - lowered to 50% for more aggressive throttling
     DISK_LOW_THRESHOLD_MB = 500  # MB of free disk space
     
     # Processing limits based on memory
@@ -98,6 +98,10 @@ class ResourceManager:
         # Memory pressure mitigation
         self._memory_pressure_count = 0
         self._last_memory_warning = 0
+        
+        # CPU pressure mitigation
+        self._cpu_pressure_count = 0
+        self._last_cpu_warning = 0
         
         self.logger.info("Resource manager initialized")
     
@@ -168,8 +172,9 @@ class ResourceManager:
             process = psutil.Process()
             process_memory = process.memory_info().rss / (1024 * 1024)  # MB
             
-            # CPU info
-            cpu_percent = psutil.cpu_percent(interval=0.1)
+            # CPU info - use longer interval for more accurate measurement
+            # This helps detect sustained high CPU usage that can cause crashes
+            cpu_percent = psutil.cpu_percent(interval=1.0)  # 1 second sampling
             cpu_count = psutil.cpu_count()
             
             # Disk info (for current working directory)
@@ -283,6 +288,38 @@ class ResourceManager:
         else:
             # Reset pressure count when memory is normal
             self._memory_pressure_count = 0
+        
+        # CPU pressure handling
+        if status.cpu_high:
+            self._cpu_pressure_count += 1
+            
+            # Log warning if not recently warned
+            if current_time - self._last_cpu_warning > 60:  # Once per minute
+                self.logger.warning(f"High CPU usage detected: {status.cpu_percent:.1f}%")
+                self._last_cpu_warning = current_time
+                
+                # If sustained high CPU, recommend action
+                if self._cpu_pressure_count > 3:
+                    error_handler.handle_error(
+                        error=RuntimeError("Sustained high CPU usage"),
+                        category=ErrorCategory.RESOURCE,
+                        severity=ErrorSeverity.WARNING,
+                        code=ErrorCode.RESOURCE_EXHAUSTED,
+                        user_message=f"High CPU usage: {status.cpu_percent:.1f}%",
+                        recovery_suggestions=[
+                            "Reduce number of concurrent workers",
+                            "Process fewer files at once",
+                            "Close other CPU-intensive applications"
+                        ],
+                        additional_data={
+                            'cpu_percent': status.cpu_percent,
+                            'cpu_count': status.cpu_count,
+                            'should_reduce_workers': True
+                        }
+                    )
+        else:
+            # Reset pressure count when CPU is normal
+            self._cpu_pressure_count = 0
         
         # Disk space warning
         if status.disk_low:
@@ -447,6 +484,16 @@ class ResourceManager:
         # Pause if available memory is extremely low
         if status.available_memory_mb < 100:
             self.logger.warning("Recommending processing pause due to extremely low memory")
+            return True
+        
+        # Pause if CPU is high and pressure is sustained
+        if status.cpu_high and self._cpu_pressure_count > 5:
+            self.logger.warning(f"Recommending processing pause due to sustained high CPU ({status.cpu_percent:.1f}%)")
+            return True
+        
+        # Pause if CPU is extremely high (>90%)
+        if status.cpu_percent > 90:
+            self.logger.warning(f"Recommending processing pause due to extremely high CPU ({status.cpu_percent:.1f}%)")
             return True
         
         return False

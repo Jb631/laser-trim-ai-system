@@ -1770,7 +1770,7 @@ Recommendations:
                     
                     ctk.CTkLabel(
                         left_frame,
-                        text=f"Status: {primary_track.overall_status.value}",
+                        text=f"Status: {primary_track.status.value}",
                         font=ctk.CTkFont(size=12)
                     ).pack(anchor='w', padx=10, pady=2)
                     
