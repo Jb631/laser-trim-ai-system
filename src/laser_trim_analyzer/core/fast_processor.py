@@ -200,8 +200,14 @@ class FastProcessor:
         self.linearity_analyzer = LinearityAnalyzer(config, logger)
         self.resistance_analyzer = ResistanceAnalyzer(config, logger)
         
-        # Performance settings
-        self.max_workers = mp.cpu_count() if turbo_mode else max(mp.cpu_count() // 2, 1)
+        # Performance settings - limit workers to prevent 100% CPU usage
+        # Even in turbo mode, leave some CPU capacity for the system
+        if turbo_mode:
+            # Use at most 75% of cores, minimum 1, maximum 4 to prevent overload
+            self.max_workers = min(max(mp.cpu_count() * 3 // 4, 1), 4)
+        else:
+            # Standard mode uses half the cores, max 2
+            self.max_workers = min(max(mp.cpu_count() // 2, 1), 2)
         # Adaptive chunk sizing - will be set based on total files in process_batch
         self.chunk_size = 20  # Default chunk size
         self.enable_plots = False if turbo_mode else config.processing.generate_plots
@@ -223,21 +229,22 @@ class FastProcessor:
         logger.info(f"Available memory: {memory_available:.1f}GB")
         
         # Adaptive chunk sizing based on total files and available memory
+        # Reduced chunk sizes to prevent CPU overload
         if self.turbo_mode and total_files > 200:
-            # For large batches in turbo mode, use larger chunks
+            # For large batches in turbo mode, use smaller chunks to prevent CPU spikes
             if memory_available >= 4:
-                self.chunk_size = 200  # Aggressive for high memory systems
+                self.chunk_size = 50   # Reduced from 200
             elif memory_available >= 2:
-                self.chunk_size = 100  # Moderate for medium memory
+                self.chunk_size = 30   # Reduced from 100
             else:
-                self.chunk_size = 50   # Conservative for low memory
+                self.chunk_size = 20   # Reduced from 50
             logger.info(f"Turbo mode with {total_files} files: using chunk size {self.chunk_size}")
         elif memory_available < 2 and total_files > 100:
             logger.warning("Low memory detected - using conservative chunk size")
-            self.chunk_size = 20
+            self.chunk_size = 10  # Reduced from 20
         else:
             # Default chunk size for smaller batches
-            self.chunk_size = 20
+            self.chunk_size = 10  # Reduced from 20
         
         results = []
         processed = 0
@@ -283,6 +290,18 @@ class FastProcessor:
             # Memory management between chunks
             if chunk_idx % 5 == 0:
                 self._cleanup_memory()
+            
+            # CPU throttling - add delay between chunks to prevent 100% CPU
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            if cpu_percent > 80:
+                logger.info(f"High CPU usage ({cpu_percent:.1f}%), pausing for 2 seconds")
+                time.sleep(2.0)
+            elif cpu_percent > 60:
+                logger.debug(f"Moderate CPU usage ({cpu_percent:.1f}%), pausing for 1 second")
+                time.sleep(1.0)
+            else:
+                # Always add a small delay between chunks
+                time.sleep(0.5)
             
             # Check if we should continue
             memory_percent = psutil.virtual_memory().percent
@@ -355,13 +374,18 @@ class FastProcessor:
             # Determine overall status
             overall_status = self._determine_overall_status(tracks)
             
+            # Determine overall validation status using the same logic as the main processor
+            overall_validation_status = self._determine_overall_validation_status(tracks)
+            
             # Create result
             result = AnalysisResult(
                 metadata=metadata,
                 tracks=tracks,
                 overall_status=overall_status,
+                overall_validation_status=overall_validation_status,
                 processing_time=(time.time() - time.time()),  # Simplified timing
-                validation_status=ValidationStatus.NOT_VALIDATED if self.turbo_mode else ValidationStatus.VALIDATED
+                validation_issues=[],  # Empty list for fast mode
+                processing_errors=[]   # Empty list for fast mode
             )
             
             # Generate plot only if enabled and not in turbo mode
@@ -593,21 +617,53 @@ class FastProcessor:
             if len(positions) < 10:  # Minimum data points
                 return None
             
-            # Simple linear regression for sigma gradient
-            A = np.vstack([positions, np.ones(len(positions))]).T
-            m, c = np.linalg.lstsq(A, errors, rcond=None)[0]
+            # Calculate gradients (derivatives) of the error curve
+            # This is the correct calculation for sigma gradient
+            gradients = []
+            step_size = 1  # Use step size of 1 for fast processing
             
-            # Calculate residuals
-            fitted = m * positions + c
-            residuals = errors - fitted
-            sigma = np.std(residuals)
+            for i in range(len(positions) - step_size):
+                dx = positions[i + step_size] - positions[i]
+                dy = errors[i + step_size] - errors[i]
+                
+                # Avoid division by zero
+                if abs(dx) > 1e-6:
+                    gradient = dy / dx
+                    gradients.append(gradient)
             
-            # Quick sigma gradient calculation
+            if not gradients:
+                logger.warning("No valid gradients calculated in fast mode")
+                sigma_gradient = 0.0001  # Small non-zero value
+            else:
+                # Calculate standard deviation of gradients (this is the sigma gradient)
+                sigma_gradient = np.std(gradients, ddof=1)
+                
+                # Ensure valid value
+                if np.isnan(sigma_gradient) or np.isinf(sigma_gradient):
+                    sigma_gradient = 0.0001
+            
+            # Calculate threshold based on model
             travel_length = trim_data.get('travel_length', 1)
-            sigma_gradient = abs(sigma / travel_length) if travel_length > 0 else 0
+            linearity_spec = trim_data.get('linearity_spec', 0.01)
             
-            # Simple threshold
-            sigma_threshold = 0.3 if "PRECISION" in model.upper() else 0.5
+            # Model-specific thresholds (matching sigma_analyzer.py logic)
+            if model == '8340-1':
+                sigma_threshold = 0.4
+            elif model.startswith('8555'):
+                base_threshold = 0.0015
+                spec_factor = linearity_spec / 0.01 if linearity_spec > 0 else 1.0
+                sigma_threshold = base_threshold * spec_factor
+            else:
+                # Default calculation
+                scaling_factor = 24.0
+                effective_length = unit_props.unit_length if unit_props.unit_length and unit_props.unit_length > 0 else travel_length
+                if effective_length and effective_length > 0:
+                    sigma_threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)
+                else:
+                    sigma_threshold = scaling_factor * 0.01
+                
+                # Apply bounds
+                sigma_threshold = max(0.0001, min(0.05, sigma_threshold))
             
             # Calculate gradient margin
             gradient_margin = sigma_threshold - sigma_gradient
@@ -713,16 +769,63 @@ class FastProcessor:
             )
     
     def _determine_overall_status(self, tracks: Dict[str, TrackData]) -> AnalysisStatus:
-        """Quickly determine overall status."""
+        """Determine overall analysis status from all tracks."""
         if not tracks:
             return AnalysisStatus.ERROR
         
-        # Any track fails = overall fail
-        for track in tracks.values():
-            if track.status == AnalysisStatus.FAIL:
-                return AnalysisStatus.FAIL
+        all_pass = all(track.status == AnalysisStatus.PASS for track in tracks.values())
+        any_fail = any(track.status == AnalysisStatus.FAIL for track in tracks.values())
         
-        return AnalysisStatus.PASS
+        if all_pass:
+            return AnalysisStatus.PASS
+        elif any_fail:
+            return AnalysisStatus.FAIL
+        else:
+            return AnalysisStatus.WARNING
+    
+    def _determine_overall_validation_status(self, tracks: Dict[str, TrackData]) -> ValidationStatus:
+        """Determine overall validation status from all tracks - laser trimming focused."""
+        if not tracks:
+            return ValidationStatus.NOT_VALIDATED
+        
+        # For laser trimming, success means:
+        # 1. Linearity meets specification (most important)
+        # 2. Sigma is reasonable (process control)
+        # 3. Resistance changes are irrelevant if specs are met
+        
+        all_warnings = []
+        critical_failures = []
+        
+        for track_data in tracks.values():
+            # Check linearity - this is the PRIMARY goal of laser trimming
+            if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
+                if not track_data.linearity_analysis.linearity_pass:
+                    critical_failures.append("Linearity specification not met")
+                else:
+                    # Linearity passed - this is success for laser trimming
+                    pass
+            
+            # Check sigma - should be reasonable but not critical
+            if hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis:
+                if track_data.sigma_analysis.sigma_gradient > 1.0:  # Very high sigma
+                    all_warnings.append("High sigma gradient - check process control")
+                elif not track_data.sigma_analysis.sigma_pass:
+                    all_warnings.append("Sigma slightly above threshold")
+            
+            # Resistance changes are NORMAL and EXPECTED in laser trimming
+            # Only flag extreme cases (>50% change)
+            if hasattr(track_data, 'resistance_analysis') and track_data.resistance_analysis:
+                if (track_data.resistance_analysis.resistance_change_percent and 
+                    abs(track_data.resistance_analysis.resistance_change_percent) > 50):
+                    all_warnings.append("Very large resistance change - verify process")
+        
+        # Determine overall status based on laser trimming success criteria
+        if critical_failures:
+            return ValidationStatus.FAILED  # Failed to meet primary specifications
+        elif all_warnings:
+            return ValidationStatus.WARNING  # Met specs but with concerns
+        else:
+            return ValidationStatus.VALIDATED  # Successful trim
     
     def _generate_plot_fast(self, result: AnalysisResult, output_dir: Path):
         """Generate plot with minimal overhead."""

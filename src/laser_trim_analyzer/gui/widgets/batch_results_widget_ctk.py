@@ -239,9 +239,10 @@ class BatchResultsWidget(ctk.CTkFrame):
                     # If status is not recognized, log it for debugging
                     else:
                         self.logger.debug(f"Unknown track status: {track_status}")
-                elif hasattr(track, 'overall_status'):
-                    # Analysis tracks might have 'overall_status'
-                    track_status = getattr(track.overall_status, 'value', str(track.overall_status))
+                else:
+                    # Fallback - this shouldn't happen if data structure is correct
+                    self.logger.warning(f"Track object missing 'status' attribute: {type(track)}")
+                    track_status = 'Unknown'
                     if track_status in ['Pass', 'PASS']:
                         pass_count += 1
                     elif track_status in ['Fail', 'FAIL', 'Warning', 'WARNING', 'Error', 'ERROR']:

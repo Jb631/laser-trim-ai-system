@@ -291,11 +291,25 @@ class HomePage(BasePage):
             }
 
         try:
-            # Get today's data - use UTC naive datetime to match database timestamps
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            self.logger.info(f"Querying for today's data starting from UTC: {today_start}")
+            # Get today's data - use local time for "today" but convert to UTC for database query
+            # This ensures "Today's Performance" shows data from today in the user's timezone
+            local_today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Calculate UTC offset
+            from datetime import timezone
+            local_now = datetime.now()
+            utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+            utc_offset_hours = round((local_now - utc_now).total_seconds() / 3600)
+            
+            # Convert local midnight to UTC for database query
+            utc_today_start = local_today_start - timedelta(hours=utc_offset_hours)
+            
+            self.logger.info(f"Local today starts at: {local_today_start}")
+            self.logger.info(f"UTC offset: {utc_offset_hours} hours")
+            self.logger.info(f"Querying for today's data starting from UTC: {utc_today_start}")
+            
             results = self.main_window.db_manager.get_historical_data(
-                start_date=today_start,
+                start_date=utc_today_start,
                 include_tracks=True
             )
             self.logger.info(f"Found {len(results)} results for today")
@@ -400,12 +414,10 @@ class HomePage(BasePage):
     def _get_trend_data(self) -> List[Dict[str, Any]]:
         """Get 7-day trend data with single optimized query."""
         try:
-            # Get all data for last 7 days in single query - use UTC naive datetime
-            week_start = datetime.utcnow() - timedelta(days=7)
-            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-            
+            # Use days_back parameter instead of start_date to avoid datetime format issues
+            # This is more reliable with SQLite
             all_results = self.main_window.db_manager.get_historical_data(
-                start_date=week_start,
+                days_back=7,
                 include_tracks=False  # Don't need track data for trend
             )
             

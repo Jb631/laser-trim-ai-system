@@ -151,11 +151,13 @@ class MLEngineManager:
             # Create ML engine instance
             try:
                 self.logger.info("Creating MLEngine instance")
-                # Set up paths for ML engine
-                from pathlib import Path
-                home_dir = Path.home()
-                data_path = home_dir / '.laser_trim_analyzer' / 'ml_data'
-                models_path = home_dir / '.laser_trim_analyzer' / 'models'
+                # Get paths from configuration
+                from laser_trim_analyzer.core.config import get_config
+                config = get_config()
+                
+                # Use configured paths
+                models_path = config.ml.model_path
+                data_path = models_path.parent / 'ml_data'
                 
                 # Ensure directories exist
                 data_path.mkdir(parents=True, exist_ok=True)
@@ -357,6 +359,10 @@ class MLEngineManager:
             # Try to load using ML engine's version control first
             if hasattr(self.ml_engine, 'version_control') and self.ml_engine.version_control:
                 try:
+                    # Log version control path
+                    vc_path = self.ml_engine.version_control.models_path / model_name
+                    self.logger.info(f"Checking for saved versions at: {vc_path}")
+                    
                     # Check if model has any versions
                     latest_version = self.ml_engine.version_control.get_latest_version(model_name)
                     if latest_version:
@@ -368,9 +374,9 @@ class MLEngineManager:
                         model = loaded_model
                         
                         is_trained = True
-                        self.logger.info(f"Loaded trained model {model_name} version {latest_version} using version control")
+                        self.logger.info(f"Successfully loaded trained model {model_name} version {latest_version} from version control")
                     else:
-                        self.logger.info(f"No saved versions found for {model_name}")
+                        self.logger.info(f"No saved versions found for {model_name} in version control")
                         
                 except Exception as e:
                     load_error = f"Version control load failed: {str(e)}"
@@ -378,15 +384,19 @@ class MLEngineManager:
                     
             # Fallback to direct model loading if version control failed or not available
             if not is_trained:
+                self.logger.info(f"Checking for direct model file at: {model_path}")
                 if model_path.exists():
                     try:
                         # Validate model file before loading
                         if not self._validate_model_file(model_path):
                             raise ValueError("Model file validation failed")
                         
-                        model.load(model_path)
-                        is_trained = True
-                        self.logger.info(f"Loaded trained model from {model_path}")
+                        success = model.load(model_path)
+                        if success:
+                            is_trained = model.is_trained
+                            self.logger.info(f"Loaded model from {model_path}, is_trained={is_trained}")
+                        else:
+                            self.logger.warning(f"Failed to load model from {model_path}")
                         
                     except (pickle.UnpicklingError, EOFError) as e:
                         load_error = "Model file is corrupted"
@@ -447,7 +457,7 @@ class MLEngineManager:
             ],
             'failure_predictor': [
                 'sigma_gradient', 'linearity_error', 'resistance_change',
-                'trim_stability', 'spec_margin', 'environmental_factor'
+                'travel_efficiency', 'spec_margin', 'resistance_stability'
             ],
             'drift_detector': [
                 'timestamp_encoded', 'batch_mean_sigma', 'batch_std_sigma',
@@ -474,10 +484,19 @@ class MLEngineManager:
                 
             model = self.ml_engine.models[model_name]
             
+            # Log model state before saving
+            self.logger.info(f"Saving model {model_name} - is_trained: {getattr(model, 'is_trained', False)}")
+            
             # Use ML engine's version control to save the model
             if hasattr(self.ml_engine, 'version_control') and self.ml_engine.version_control:
                 version = self.ml_engine.version_control.save_model(model, model_name)
                 self.logger.info(f"Saved model {model_name} version {version} using ML engine version control")
+                
+                # Update model status to reflect saved state
+                if model_name in self._models_status:
+                    self._models_status[model_name]['status'] = 'Ready'
+                    self._models_status[model_name]['trained'] = getattr(model, 'is_trained', False)
+                    self._models_status[model_name]['last_saved'] = datetime.now().isoformat()
                 
                 # Also save engine state to persist metadata
                 if hasattr(self.ml_engine, 'save_engine_state'):
@@ -511,8 +530,12 @@ class MLEngineManager:
     
     def _get_model_path(self, model_name: str) -> Path:
         """Get the path where a model should be saved/loaded."""
-        models_dir = Path.home() / '.laser_trim_analyzer' / 'models'
+        # Get configured model path
+        from laser_trim_analyzer.core.config import get_config
+        config = get_config()
+        models_dir = config.ml.model_path
         models_dir.mkdir(parents=True, exist_ok=True)
+        
         # Check for both .pkl and .joblib extensions
         pkl_path = models_dir / f"{model_name}.pkl"
         joblib_path = models_dir / f"{model_name}.joblib"

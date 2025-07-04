@@ -1275,8 +1275,8 @@ class HistoricalPage(ctk.CTkFrame):
                 ax.axhline(y=-spec_limit, color='red', linestyle='--', alpha=0.5)
                 ax.axhspan(-spec_limit, spec_limit, alpha=0.1, color='green')
                 
-                # Add zero line
-                ax.axhline(y=0, color=text_color, linestyle='-', alpha=0.3, linewidth=0.5)
+                # Add zero line with darker color for visibility
+                ax.axhline(y=0, color='gray', linestyle='-', alpha=0.5, linewidth=1)
                 
                 ax.set_ylabel('Linearity Error (%)', color=text_color)
                 ax.set_xlabel('Model', color=text_color)
@@ -1296,7 +1296,7 @@ class HistoricalPage(ctk.CTkFrame):
                 if legend:
                     self.linearity_chart._style_legend(legend)
                 
-                ax.grid(True, axis='y', alpha=0.3)
+                ax.grid(True, axis='y', alpha=0.3, color='gray')
                 plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
                 
             else:
@@ -3448,6 +3448,10 @@ TRACK DETAILS:
                     ax.set_ylabel('Number of Units', color=text_color)
                     ax.set_title('Risk Distribution Over Time', fontsize=14, fontweight='bold', color=text_color)
                     
+                    # Fix x-axis and y-axis tick label colors
+                    ax.tick_params(axis='x', colors=text_color)
+                    ax.tick_params(axis='y', colors=text_color)
+                    
                     # Style legend
                     legend = ax.legend(loc='upper left')
                     if legend:
@@ -3461,7 +3465,7 @@ TRACK DETAILS:
                     if len(dates) > 7:
                         ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates)//7)))
                     
-                    fig.autofmt_xdate()
+                    fig.autofmt_xdate(rotation=45, ha='right')
                 else:
                     ax.text(0.5, 0.5, 'No risk data available\nRun a query to view trends', 
                            ha='center', va='center', transform=ax.transAxes,
@@ -3975,19 +3979,10 @@ INTERPRETATION:
                             alpha=0.8, edgecolor=text_color),
                    color=text_color)
             
-            # Detect drift points
-            drift_points = df[(df['cusum_pos'] > h) | (df['cusum_neg'] > h)]
-            if not drift_points.empty:
-                ax2.scatter(drift_points.index, 
-                          [h] * len(drift_points), 
-                          color='red', s=100, marker='v', 
-                          label=f'Drift Detected ({len(drift_points)} points)')
-                ax2.legend()
-            
             fig.tight_layout()
             self.drift_chart.canvas.draw()
             
-            # Update drift alert metric
+            # Update drift alert metric based on previously detected drift points
             if not drift_points.empty:
                 self._drift_alerts = len(drift_points)  # Store for metric update
                 self.drift_alert_card.update_value(str(len(drift_points)))
