@@ -208,10 +208,13 @@ class ChartWidget(ctk.CTkFrame):
         self._last_data = data.copy() if data is not None and len(data) > 0 else None
         
         if data is None or len(data) == 0:
+            logger.warning(f"ChartWidget.update_chart_data called with empty data for {self.title}")
             self.show_placeholder("No data available", "Load or analyze data to display chart")
             return
             
         self._has_data = True
+        logger.info(f"ChartWidget updating {self.chart_type} chart '{self.title}' with {len(data)} rows")
+        logger.debug(f"Data columns: {data.columns.tolist()}")
             
         try:
             # Don't call clear_chart here since each plot method clears the figure
@@ -225,8 +228,12 @@ class ChartWidget(ctk.CTkFrame):
                 self._plot_histogram_from_data(data)
             elif self.chart_type == 'heatmap':
                 self._plot_heatmap_from_data(data)
+            elif self.chart_type == 'grouped_bar':
+                # Treat grouped_bar as regular bar for now
+                self._plot_bar_from_data(data)
             else:
                 # Default to line plot
+                logger.warning(f"Unknown chart type '{self.chart_type}', defaulting to line plot")
                 self._plot_line_from_data(data)
                 
         except Exception as e:

@@ -110,6 +110,9 @@ None - All previously known issues have been fixed:
 - ✓ Home page enum value error for empty status fixed (2025-06-19)
 - ✓ Database save error handling fixed (2025-06-19)
 - ✓ QA alerts constraint error fixed (2025-06-19)
+- ✓ Model Summary page TypeError with None values fixed (2025-07-08)
+- ✓ Historical page drift_alert_card AttributeError fixed (2025-07-08)
+- ✓ Multi-track analysis 0.0% variations issue fixed (2025-07-08)
 
 ### Change Tracking
 

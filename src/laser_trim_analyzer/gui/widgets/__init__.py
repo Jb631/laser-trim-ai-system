@@ -34,41 +34,43 @@ from laser_trim_analyzer.gui.widgets.progress_widgets_ctk import (
     ProgressIndicator
 )
 
+import customtkinter as ctk
+
 
 def add_mousewheel_support(widget, canvas=None):
     """
     Add mouse wheel scrolling support to a widget.
     
     Args:
-        widget: The widget to add scrolling to (usually a Canvas, Treeview, or Listbox)
+        widget: The widget to add scrolling to (supports Canvas, Treeview, Listbox)
         canvas: Optional canvas widget if the widget is inside a canvas (for scrollable frames)
-    """
-    def _on_mousewheel(event):
-        # Determine which widget to scroll
-        scroll_widget = canvas if canvas else widget
         
-        # Different widgets have different scroll methods
-        if hasattr(scroll_widget, 'yview_scroll'):
-            scroll_widget.yview_scroll(int(-1*(event.delta/120)), "units")
-        elif hasattr(scroll_widget, 'yview'):
-            # Fallback for other scrollable widgets
-            try:
-                scroll_widget.yview('scroll', int(-1*(event.delta/120)), 'units')
-            except:
-                pass
-    
-    # Bind mouse wheel to the widget
-    widget.bind("<MouseWheel>", _on_mousewheel)
-    
-    # Also bind when mouse enters/leaves the widget area
-    def _bind_to_mousewheel(event):
-        widget.bind_all("<MouseWheel>", _on_mousewheel)
-    
-    def _unbind_from_mousewheel(event):
-        widget.unbind_all("<MouseWheel>")
-    
-    widget.bind('<Enter>', _bind_to_mousewheel)
-    widget.bind('<Leave>', _unbind_from_mousewheel)
+    Note:
+        CTkComboBox is not supported because it uses tkinter.Menu for dropdowns,
+        which run in their own event loop and cannot be customized with mousewheel events.
+    """
+    # CTkComboBox is not supported - skip it
+    if isinstance(widget, ctk.CTkComboBox):
+        return  # Cannot add mousewheel support to Menu-based dropdowns
+        
+    else:
+        # Original implementation for scrollable widgets
+        def _on_mousewheel(event):
+            # Determine which widget to scroll
+            scroll_widget = canvas if canvas else widget
+            
+            # Different widgets have different scroll methods
+            if hasattr(scroll_widget, 'yview_scroll'):
+                scroll_widget.yview_scroll(int(-1*(event.delta/120)), "units")
+            elif hasattr(scroll_widget, 'yview'):
+                # Fallback for other scrollable widgets
+                try:
+                    scroll_widget.yview('scroll', int(-1*(event.delta/120)), 'units')
+                except:
+                    pass
+        
+        # Bind mouse wheel directly to the widget only
+        widget.bind("<MouseWheel>", _on_mousewheel)
 
 
 __all__ = [

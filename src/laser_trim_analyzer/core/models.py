@@ -117,6 +117,7 @@ class FileMetadata(BaseAnalysisModel):
     filename: str = Field(..., description="Name of the file")
     file_path: Path = Field(..., description="Full path to the file")
     file_date: datetime = Field(..., description="File modification date")
+    test_date: Optional[datetime] = Field(None, description="Original test/trim date extracted from Excel file")
     model: str = Field(..., description="Potentiometer model number")
     serial: str = Field(..., description="Unit serial number")
     system: SystemType = Field(..., description="Trim system type")

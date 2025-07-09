@@ -1236,6 +1236,49 @@ class LaserTrimProcessor:
         """Extract file metadata with system type."""
         metadata = await self._extract_metadata(file_path)
         metadata.system = system_type
+        
+        # Try to extract test_date from the Excel file
+        try:
+            from laser_trim_analyzer.utils.excel_utils import extract_cell_value
+            
+            # For System A files, test_date is typically in cell B2
+            if system_type == SystemType.SYSTEM_A:
+                # Try to find a sheet to extract from
+                excel_file = pd.ExcelFile(file_path)
+                sheet_names = excel_file.sheet_names
+                
+                # Look for untrimmed or test sheet
+                test_sheet = None
+                for sheet in sheet_names:
+                    if '0' in sheet or 'untrimmed' in sheet.lower():
+                        test_sheet = sheet
+                        break
+                
+                if test_sheet:
+                    test_date_value = extract_cell_value(file_path, test_sheet, 'B2')
+                    if test_date_value:
+                        # Try to parse the date
+                        if isinstance(test_date_value, datetime):
+                            metadata.test_date = test_date_value
+                            self.logger.info(f"Extracted test date from Excel: {test_date_value}")
+                        elif isinstance(test_date_value, str):
+                            # Try to parse string date
+                            try:
+                                # Common date formats in Excel files
+                                for fmt in ['%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S', '%m/%d/%Y', '%Y-%m-%d']:
+                                    try:
+                                        metadata.test_date = datetime.strptime(test_date_value, fmt)
+                                        self.logger.info(f"Parsed test date from Excel: {metadata.test_date}")
+                                        break
+                                    except ValueError:
+                                        continue
+                            except Exception as e:
+                                self.logger.warning(f"Could not parse test date '{test_date_value}': {e}")
+                                
+        except Exception as e:
+            self.logger.warning(f"Could not extract test_date from Excel file: {e}")
+            # test_date will remain None if extraction fails
+        
         return metadata
 
     async def _find_track_sheets(self, file_path: Path, system_type: SystemType) -> Dict[str, Dict[str, str]]:

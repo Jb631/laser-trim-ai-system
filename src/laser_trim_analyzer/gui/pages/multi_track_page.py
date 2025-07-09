@@ -1248,6 +1248,21 @@ class MultiTrackPage(ctk.CTkFrame):
                     if 'sigma_analysis' in track_data:
                         self.logger.debug(f"Track {track_id} sigma_analysis: {track_data['sigma_analysis']}")
             
+            # Log the tracks data structure before analysis
+            self.logger.info(f"Sending {len(tracks_data)} tracks to consistency analyzer")
+            for track_id, track_info in tracks_data.items():
+                if isinstance(track_info, dict):
+                    self.logger.debug(f"Track {track_id} has keys: {list(track_info.keys())}")
+                    # Log the actual values we're interested in
+                    if 'sigma_gradient' in track_info:
+                        self.logger.debug(f"Track {track_id} sigma_gradient (direct): {track_info['sigma_gradient']}")
+                    if 'sigma_analysis' in track_info and isinstance(track_info['sigma_analysis'], dict):
+                        self.logger.debug(f"Track {track_id} sigma_analysis.sigma_gradient: {track_info['sigma_analysis'].get('sigma_gradient')}")
+                    if 'linearity_error' in track_info:
+                        self.logger.debug(f"Track {track_id} linearity_error (direct): {track_info['linearity_error']}")
+                    if 'resistance_change_percent' in track_info:
+                        self.logger.debug(f"Track {track_id} resistance_change_percent (direct): {track_info['resistance_change_percent']}")
+            
             # Perform consistency analysis
             consistency_metrics = self.consistency_analyzer.analyze_tracks(tracks_data)
             

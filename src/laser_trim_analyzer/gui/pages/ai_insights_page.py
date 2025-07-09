@@ -21,7 +21,7 @@ import sys
 # Removed alert_banner import to prevent glitching issues
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.api.client import QAAIAnalyzer, AIProvider
-# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
 
 class AIInsightsPage(ctk.CTkFrame):
@@ -128,6 +128,9 @@ class AIInsightsPage(ctk.CTkFrame):
             height=30
         )
         self.analysis_type_combo.pack(side='left', padx=(0, 20), pady=10)
+        
+        # Add mousewheel support to analysis type dropdown
+        add_mousewheel_support(self.analysis_type_combo)
 
         self.generate_insights_btn = ctk.CTkButton(
             controls_frame,
@@ -178,6 +181,9 @@ class AIInsightsPage(ctk.CTkFrame):
         )
         self.chat_history_combo.pack(side='left', padx=(0, 10))
         self.chat_history_combo.set("New Chat")
+        
+        # Add mousewheel support to chat history dropdown
+        add_mousewheel_support(self.chat_history_combo)
 
         self.clear_history_btn = ctk.CTkButton(
             history_frame,
@@ -263,6 +269,9 @@ class AIInsightsPage(ctk.CTkFrame):
             height=30
         )
         self.report_type_combo.pack(side='left', padx=(0, 20), pady=10)
+        
+        # Add mousewheel support to report type dropdown
+        add_mousewheel_support(self.report_type_combo)
 
         days_label = ctk.CTkLabel(controls_frame, text="Days:")
         days_label.pack(side='left', padx=10, pady=10)
@@ -276,6 +285,9 @@ class AIInsightsPage(ctk.CTkFrame):
             height=30
         )
         self.days_combo.pack(side='left', padx=(0, 20), pady=10)
+        
+        # Add mousewheel support to days dropdown
+        add_mousewheel_support(self.days_combo)
 
         self.generate_report_btn = ctk.CTkButton(
             controls_frame,

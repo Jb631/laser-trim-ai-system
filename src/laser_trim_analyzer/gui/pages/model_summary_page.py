@@ -22,14 +22,21 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.dates import DateFormatter
+import matplotlib.dates as mdates
 # import seaborn as sns  # Not used
+
+# Optional libraries for advanced analysis
+try:
+    from scipy import stats
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.theme_helper import ThemeHelper
-# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 
 
@@ -115,6 +122,10 @@ class ModelSummaryPage(ctk.CTkFrame):
             command=self._on_model_selected
         )
         self.model_combo.pack(side='left', padx=(0, 20), pady=10)
+        
+        # Note: Mousewheel support for CTkComboBox dropdowns is not possible due to 
+        # tkinter.Menu limitations. The dropdown uses a Menu widget which captures
+        # all events in its own event loop.
 
         self.refresh_btn = ctk.CTkButton(
             selection_row,
@@ -271,6 +282,8 @@ class ModelSummaryPage(ctk.CTkFrame):
         self.analysis_tabview.add("Quality Overview")
         self.analysis_tabview.add("Trend Analysis") 
         self.analysis_tabview.add("Risk Assessment")
+        self.analysis_tabview.add("Historical Data")
+        self.analysis_tabview.add("Process Capability")
 
         # Quality Overview - Combined metrics dashboard
         overview_frame = ctk.CTkFrame(self.analysis_tabview.tab("Quality Overview"))
@@ -328,6 +341,45 @@ class ModelSummaryPage(ctk.CTkFrame):
             chart_type="scatter"
         )
         self.risk_chart.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Historical Data - Detailed historical records table
+        history_frame = ctk.CTkFrame(self.analysis_tabview.tab("Historical Data"))
+        history_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        history_info = ctk.CTkLabel(
+            history_frame,
+            text="Complete historical data for this model. Sort by columns to find specific records.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        history_info.pack(anchor='w', padx=5, pady=(5, 10))
+        
+        # Create scrollable frame for historical data table
+        self.history_scroll = ctk.CTkScrollableFrame(history_frame, height=400)
+        self.history_scroll.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Historical data will be populated when model is selected
+        self.history_header_frame = None
+        self.history_data_frames = []
+
+        # Process Capability - Cpk and statistical analysis
+        cpk_frame = ctk.CTkFrame(self.analysis_tabview.tab("Process Capability"))
+        cpk_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        cpk_info = ctk.CTkLabel(
+            cpk_frame,
+            text="Process capability index (Cpk) shows how well the process meets specifications. Target: Cpk > 1.33",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        cpk_info.pack(anchor='w', padx=5, pady=(5, 0))
+        
+        self.cpk_chart = ChartWidget(
+            cpk_frame,
+            title="Process Capability Analysis",
+            chart_type="histogram"
+        )
+        self.cpk_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
     def _create_actions_section(self):
         """Create export and print controls section (matching batch processing theme)."""
@@ -441,6 +493,9 @@ class ModelSummaryPage(ctk.CTkFrame):
             self.overview_chart.clear()
             self.trend_analysis_chart.clear()
             self.risk_chart.clear()
+            self.cpk_chart.clear()
+            # Clear historical data table
+            self._clear_historical_table()
         except Exception as e:
             self.logger.warning(f"Error clearing charts: {e}")
 
@@ -497,25 +552,28 @@ class ModelSummaryPage(ctk.CTkFrame):
                         'overall_status': analysis.overall_status.value,
                         'track_id': track.track_id,
                         'track_status': track.status.value,
-                        'sigma_gradient': track.sigma_gradient,
-                        'sigma_threshold': track.sigma_threshold,
-                        'sigma_pass': track.sigma_pass,
-                        'linearity_spec': track.linearity_spec,
-                        'linearity_error_raw': track.final_linearity_error_raw,
-                        'linearity_error_shifted': track.final_linearity_error_shifted,
-                        'linearity_pass': track.linearity_pass,
-                        'linearity_fail_points': track.linearity_fail_points,
-                        'unit_length': track.unit_length,
-                        'untrimmed_resistance': track.untrimmed_resistance,
-                        'trimmed_resistance': track.trimmed_resistance,
-                        'resistance_change': track.resistance_change,
-                        'resistance_change_percent': track.resistance_change_percent,
-                        'failure_probability': track.failure_probability,
-                        'risk_category': track.risk_category.value if track.risk_category else None,
-                        'optimal_offset': track.optimal_offset,
-                        'max_deviation': track.max_deviation,
+                        # Direct track attributes (no nested objects)
+                        'sigma_gradient': getattr(track, 'sigma_gradient', None),
+                        'sigma_threshold': getattr(track, 'sigma_threshold', None),
+                        'sigma_pass': getattr(track, 'sigma_pass', False),
+                        'linearity_spec': getattr(track, 'linearity_spec', None),
+                        'linearity_error_raw': getattr(track, 'final_linearity_error_raw', None),
+                        'linearity_error_shifted': getattr(track, 'final_linearity_error_shifted', None),
+                        'linearity_pass': getattr(track, 'linearity_pass', False),
+                        'linearity_fail_points': getattr(track, 'linearity_fail_points', 0),
+                        'unit_length': getattr(track, 'unit_length', None),
+                        'untrimmed_resistance': getattr(track, 'untrimmed_resistance', None),
+                        'trimmed_resistance': getattr(track, 'trimmed_resistance', None),
+                        'resistance_change': getattr(track, 'resistance_change', None),
+                        'resistance_change_percent': getattr(track, 'resistance_change_percent', None),
+                        'failure_probability': getattr(track, 'failure_probability', None),
+                        'risk_category': track.risk_category.value if hasattr(track, 'risk_category') and track.risk_category else None,
+                        'optimal_offset': getattr(track, 'optimal_offset', None),
+                        'max_deviation': getattr(track, 'max_deviation', None),
                         'processing_time': analysis.processing_time
                         }
+                        # Add computed linearity_error field (use shifted if available, else raw)
+                        row['linearity_error'] = row['linearity_error_shifted'] or row['linearity_error_raw'] or 0
                         data_rows.append(row)
 
                 self.model_data = pd.DataFrame(data_rows)
@@ -547,8 +605,10 @@ class ModelSummaryPage(ctk.CTkFrame):
                         self.logger.info(f"=== DEBUG INFO FOR MODEL 8340-1 ===")
                         sample_data = self.model_data[['filename', 'trim_date', 'sigma_gradient', 'sigma_threshold']].head(10)
                         for idx, row in sample_data.iterrows():
+                            sigma_val = row['sigma_gradient'] if row['sigma_gradient'] is not None else 0.0
+                            thresh_val = row['sigma_threshold'] if row['sigma_threshold'] is not None else 0.0
                             self.logger.info(f"File: {row['filename']}, Date: {row['trim_date']}, "
-                                           f"Sigma: {row['sigma_gradient']:.6f}, Threshold: {row['sigma_threshold']:.6f}")
+                                           f"Sigma: {sigma_val:.6f}, Threshold: {thresh_val:.6f}")
                         self.logger.info(f"=== END DEBUG INFO ===")
                 
                     # Update UI on main thread safely
@@ -606,6 +666,18 @@ class ModelSummaryPage(ctk.CTkFrame):
                 self._update_analysis_charts()
             except Exception as e:
                 self.logger.error(f"Error updating analysis charts: {e}")
+
+            # Update historical data table
+            try:
+                self._update_historical_table()
+            except Exception as e:
+                self.logger.error(f"Error updating historical table: {e}")
+            
+            # Update process capability chart
+            try:
+                self._update_cpk_chart()
+            except Exception as e:
+                self.logger.error(f"Error updating Cpk chart: {e}")
 
             # Always enable action buttons if we have data
             self.export_excel_btn.configure(state='normal')
@@ -729,9 +801,15 @@ class ModelSummaryPage(ctk.CTkFrame):
                 trend_info += f"Range: {sigma_values.min():.4f} - {sigma_values.max():.4f}\n"
                 trend_info += f"Average: {sigma_values.mean():.4f}"
                 
-                self.trend_chart.update_chart_data(df[['trim_date', 'sigma_gradient']])
+                # Ensure we have valid data
+                chart_data = df[['trim_date', 'sigma_gradient']].dropna()
+                self.logger.info(f"Updating trend chart with {len(chart_data)} valid data points")
+                if len(chart_data) > 0:
+                    self.trend_chart.update_chart_data(chart_data)
+                else:
+                    self.trend_chart.show_placeholder("No valid sigma data", "All sigma gradient values are missing")
             else:
-                self.trend_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
+                self.trend_chart.show_placeholder("Insufficient data", "Need at least 2 data points for trend")
                 
         except Exception as e:
             self.logger.error(f"Error updating trend chart: {e}")
@@ -1111,7 +1189,11 @@ class ModelSummaryPage(ctk.CTkFrame):
                         'resistance_change_percent': lambda x: x.mean() if x.notna().any() else 0
                     }).round(4)
                     
-                    daily_agg.columns = ['_'.join(str(col)).strip() for col in daily_agg.columns]
+                    # Fix column names for readability
+                    daily_agg.columns = [
+                        'Units_Count', 'Sigma_Mean', 'Sigma_StdDev', 'Sigma_Min', 'Sigma_Max',
+                        'Pass_Rate_%', 'Linearity_Pass_%', 'Avg_Resistance_Change_%'
+                    ]
                     daily_agg.to_excel(writer, sheet_name='Daily Summary')
                 except Exception as e:
                     self.logger.warning(f"Could not create daily summary: {e}")
@@ -1126,7 +1208,11 @@ class ModelSummaryPage(ctk.CTkFrame):
                         'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 0,
                     }).round(4)
                     
-                    monthly_agg.columns = ['_'.join(str(col)).strip() for col in monthly_agg.columns]
+                    # Fix column names for readability
+                    monthly_agg.columns = [
+                        'Units_Count', 'Sigma_Mean', 'Sigma_StdDev',
+                        'Pass_Rate_%', 'Linearity_Pass_%'
+                    ]
                     monthly_agg.to_excel(writer, sheet_name='Monthly Summary')
                 except Exception as e:
                     self.logger.warning(f"Could not create monthly summary: {e}")
@@ -1396,10 +1482,10 @@ class ModelSummaryPage(ctk.CTkFrame):
             'Overall Pass Rate': f"{(df['track_status'] == 'Pass').mean() * 100:.1f}%",
             'Sigma Pass Rate': f"{df['sigma_pass'].mean() * 100:.1f}%",
             'Linearity Pass Rate': f"{df['linearity_pass'].mean() * 100:.1f}%" if df['linearity_pass'].notna().any() else "N/A",
-            'Avg Sigma Gradient': f"{df['sigma_gradient'].mean():.4f}",
-            'Sigma Std Dev': f"{df['sigma_gradient'].std():.4f}",
-            'Min Sigma': f"{df['sigma_gradient'].min():.4f}",
-            'Max Sigma': f"{df['sigma_gradient'].max():.4f}",
+            'Avg Sigma Gradient': f"{df['sigma_gradient'].mean():.4f}" if df['sigma_gradient'].notna().any() else "N/A",
+            'Sigma Std Dev': f"{df['sigma_gradient'].std():.4f}" if df['sigma_gradient'].notna().any() else "N/A",
+            'Min Sigma': f"{df['sigma_gradient'].min():.4f}" if df['sigma_gradient'].notna().any() else "N/A",
+            'Max Sigma': f"{df['sigma_gradient'].max():.4f}" if df['sigma_gradient'].notna().any() else "N/A",
             'Avg Resistance Change': f"{df['resistance_change_percent'].mean():.2f}%" if df['resistance_change_percent'].notna().any() else "N/A",
             'High Risk Units': f"{(df['risk_category'] == 'High').sum():,}" if df['risk_category'].notna().any() else "N/A",
             'Processing Time Avg': f"{df['processing_time'].mean():.2f}s" if df['processing_time'].notna().any() else "N/A"
@@ -1431,4 +1517,207 @@ class ModelSummaryPage(ctk.CTkFrame):
                 if hasattr(self.model_combo, '_dropdown_menu'):
                     self.model_combo._dropdown_menu.destroy()
             except Exception:
-                pass 
+                pass
+    
+    def _clear_historical_table(self):
+        """Clear the historical data table."""
+        if self.history_header_frame:
+            self.history_header_frame.destroy()
+            self.history_header_frame = None
+        
+        for frame in self.history_data_frames:
+            frame.destroy()
+        self.history_data_frames.clear()
+    
+    def _update_historical_table(self):
+        """Update the historical data table with model records."""
+        if self.model_data is None or len(self.model_data) == 0:
+            return
+        
+        # Clear existing table
+        self._clear_historical_table()
+        
+        # Create header
+        self.history_header_frame = ctk.CTkFrame(self.history_scroll)
+        self.history_header_frame.pack(fill='x', padx=5, pady=(5, 10))
+        
+        # Define columns
+        columns = ['Date', 'Serial', 'Status', 'Sigma', 'Linearity', 'Risk', 'File']
+        col_widths = [100, 120, 80, 80, 80, 80, 200]
+        
+        for i, (col, width) in enumerate(zip(columns, col_widths)):
+            label = ctk.CTkLabel(
+                self.history_header_frame,
+                text=col,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=width,
+                anchor='w'
+            )
+            label.grid(row=0, column=i, padx=5, pady=5, sticky='w')
+        
+        # Add data rows
+        df = self.model_data.sort_values('trim_date', ascending=False)
+        
+        for idx, (_, row) in enumerate(df.head(100).iterrows()):  # Show last 100 records
+            row_frame = ctk.CTkFrame(
+                self.history_scroll,
+                fg_color=("gray90", "gray20") if idx % 2 == 0 else ("gray95", "gray25")
+            )
+            row_frame.pack(fill='x', padx=5, pady=1)
+            
+            # Date
+            date_label = ctk.CTkLabel(
+                row_frame,
+                text=row['trim_date'].strftime('%Y-%m-%d'),
+                width=col_widths[0],
+                anchor='w'
+            )
+            date_label.grid(row=0, column=0, padx=5, pady=3, sticky='w')
+            
+            # Serial
+            serial_label = ctk.CTkLabel(
+                row_frame,
+                text=row['serial'],
+                width=col_widths[1],
+                anchor='w'
+            )
+            serial_label.grid(row=0, column=1, padx=5, pady=3, sticky='w')
+            
+            # Status
+            status_color = "green" if row['track_status'] == 'Pass' else "red"
+            status_label = ctk.CTkLabel(
+                row_frame,
+                text=row['track_status'],
+                width=col_widths[2],
+                anchor='w',
+                text_color=status_color
+            )
+            status_label.grid(row=0, column=2, padx=5, pady=3, sticky='w')
+            
+            # Sigma
+            sigma_text = f"{row['sigma_gradient']:.4f}" if pd.notna(row['sigma_gradient']) else "N/A"
+            sigma_label = ctk.CTkLabel(
+                row_frame,
+                text=sigma_text,
+                width=col_widths[3],
+                anchor='w'
+            )
+            sigma_label.grid(row=0, column=3, padx=5, pady=3, sticky='w')
+            
+            # Linearity
+            linearity = f"{row['linearity_error']:.2f}%" if pd.notna(row['linearity_error']) else "N/A"
+            linearity_label = ctk.CTkLabel(
+                row_frame,
+                text=linearity,
+                width=col_widths[4],
+                anchor='w'
+            )
+            linearity_label.grid(row=0, column=4, padx=5, pady=3, sticky='w')
+            
+            # Risk
+            risk_color = {"High": "red", "Medium": "orange", "Low": "green"}.get(row.get('risk_category', 'N/A'), "gray")
+            risk_label = ctk.CTkLabel(
+                row_frame,
+                text=row.get('risk_category', 'N/A'),
+                width=col_widths[5],
+                anchor='w',
+                text_color=risk_color
+            )
+            risk_label.grid(row=0, column=5, padx=5, pady=3, sticky='w')
+            
+            # Filename (truncated)
+            filename = row['filename']
+            if len(filename) > 30:
+                filename = "..." + filename[-27:]
+            file_label = ctk.CTkLabel(
+                row_frame,
+                text=filename,
+                width=col_widths[6],
+                anchor='w'
+            )
+            file_label.grid(row=0, column=6, padx=5, pady=3, sticky='w')
+            
+            self.history_data_frames.append(row_frame)
+    
+    def _update_cpk_chart(self):
+        """Update process capability (Cpk) chart."""
+        if self.model_data is None or len(self.model_data) == 0:
+            return
+        
+        df = self.model_data
+        sigma_values = df['sigma_gradient'].dropna()
+        
+        if len(sigma_values) < 10:
+            self.cpk_chart.show_placeholder("Insufficient data", "Need at least 10 samples for Cpk analysis")
+            return
+        
+        try:
+            # Calculate statistics
+            mean_val = sigma_values.mean()
+            std_val = sigma_values.std()
+            
+            # Define specification limits for sigma gradient
+            usl = 0.7  # Upper spec limit
+            lsl = 0.3  # Lower spec limit
+            target = 0.5  # Target value
+            
+            # Calculate Cpk
+            if std_val > 0:
+                cpu = (usl - mean_val) / (3 * std_val)
+                cpl = (mean_val - lsl) / (3 * std_val)
+                cpk = min(cpu, cpl)
+                cp = (usl - lsl) / (6 * std_val)
+            else:
+                cpk = cp = 0
+            
+            # Update chart
+            self.cpk_chart.clear_chart()
+            fig = self.cpk_chart.figure
+            ax = fig.add_subplot(111)
+            self.cpk_chart._apply_theme_to_axes(ax)
+            
+            # Create histogram
+            n, bins, patches = ax.hist(sigma_values, bins=20, density=True, alpha=0.7, 
+                                      color='blue', edgecolor='black')
+            
+            # Add normal distribution overlay if scipy is available
+            if HAS_SCIPY:
+                x = np.linspace(sigma_values.min(), sigma_values.max(), 100)
+                normal_dist = stats.norm.pdf(x, mean_val, std_val)
+                ax.plot(x, normal_dist, 'r-', linewidth=2, label='Normal Distribution')
+            
+            # Add specification limits
+            ax.axvline(x=lsl, color='red', linestyle='--', linewidth=2, label=f'LSL ({lsl})')
+            ax.axvline(x=usl, color='red', linestyle='--', linewidth=2, label=f'USL ({usl})')
+            ax.axvline(x=target, color='green', linestyle='-', linewidth=2, label=f'Target ({target})')
+            ax.axvline(x=mean_val, color='blue', linestyle=':', linewidth=2, label=f'Mean ({mean_val:.3f})')
+            
+            # Add text box with statistics
+            cpk_color = 'green' if cpk >= 1.33 else 'orange' if cpk >= 1.0 else 'red'
+            stats_text = f'Cpk = {cpk:.2f}\nCp = {cp:.2f}\nMean = {mean_val:.3f}\nStd = {std_val:.3f}'
+            
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+                   verticalalignment='top', fontsize=11,
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+                   color=text_color)
+            
+            ax.set_xlabel('Sigma Gradient')
+            ax.set_ylabel('Density')
+            ax.set_title(f'Process Capability Analysis (Cpk = {cpk:.2f})', 
+                        fontsize=14, fontweight='bold', color=cpk_color)
+            
+            legend = ax.legend(loc='upper right', fontsize=9)
+            if legend:
+                self.cpk_chart._style_legend(legend)
+            
+            ax.grid(True, alpha=0.3)
+            
+            fig.tight_layout()
+            self.cpk_chart.canvas.draw()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating Cpk chart: {e}")
+            self.cpk_chart.show_placeholder("Error", "Failed to calculate process capability")

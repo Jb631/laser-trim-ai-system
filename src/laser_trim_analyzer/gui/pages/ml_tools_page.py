@@ -1102,6 +1102,16 @@ class MLToolsPage(ctk.CTkFrame):
         status_label.pack(pady=(0, 5))
         card.status_label = status_label
         
+        # Training info label
+        info_label = ctk.CTkLabel(
+            card,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        info_label.pack(pady=(0, 2))
+        card.info_label = info_label
+        
         # Description
         ctk.CTkLabel(
             card,
@@ -1146,11 +1156,19 @@ class MLToolsPage(ctk.CTkFrame):
                 for model_id, info in models_info.items():
                     if model_id in self.model_cards:
                         card = self.model_cards[model_id]
-                        if info and info.get('is_trained'):
+                        # Check both 'trained' and 'is_trained' for compatibility
+                        if info and (info.get('trained') or info.get('is_trained')):
                             card.status_label.configure(
                                 text="● Trained",
                                 text_color="green"
                             )
+                            # Update model information display
+                            if hasattr(card, 'info_label') and info.get('last_training'):
+                                last_training = info['last_training']
+                                if isinstance(last_training, str):
+                                    card.info_label.configure(text=f"Last trained: {last_training}")
+                                else:
+                                    card.info_label.configure(text=f"Last trained: {last_training.strftime('%Y-%m-%d %H:%M')}")
                         else:
                             card.status_label.configure(
                                 text="● Not Trained",
@@ -1257,6 +1275,8 @@ class MLToolsPage(ctk.CTkFrame):
             
             # Update status - wait a bit for models to save
             self.after(500, self._update_model_status)
+            # Force another update after a longer delay to ensure saved models are reflected
+            self.after(2000, self._update_model_status)
             
         except Exception as e:
             self.logger.error(f"Error training models: {e}")
@@ -1434,16 +1454,42 @@ class MLToolsPage(ctk.CTkFrame):
                     info = None
                 
                 if info:
-                    self.model_details.insert("end", f"Status: {'Trained' if info.get('is_trained') else 'Not Trained'}\n")
-                    if info.get('is_trained'):
-                        self.model_details.insert("end", f"Last Trained: {info.get('training_date', 'Unknown')}\n")
-                        self.model_details.insert("end", f"Training Samples: {info.get('n_samples', 0)}\n")
-                        self.model_details.insert("end", f"Accuracy: {info.get('accuracy', 0):.1f}%\n\n")
+                    # Check both 'trained' and 'is_trained' for compatibility
+                    is_trained = info.get('trained') or info.get('is_trained')
+                    self.model_details.insert("end", f"Status: {'Trained' if is_trained else 'Not Trained'}\n")
+                    if is_trained:
+                        # Show last training date
+                        last_training = info.get('last_training', info.get('training_date', 'Unknown'))
+                        if isinstance(last_training, datetime):
+                            last_training = last_training.strftime('%Y-%m-%d %H:%M:%S')
+                        self.model_details.insert("end", f"Last Trained: {last_training}\n")
                         
-                        self.model_details.insert("end", "Performance Metrics:\n")
-                        metrics = info.get('metrics', {})
-                        for metric, value in metrics.items():
-                            self.model_details.insert("end", f"  • {metric}: {value}\n")
+                        # Show training samples if available
+                        if 'n_samples' in info:
+                            self.model_details.insert("end", f"Training Samples: {info.get('n_samples', 0)}\n")
+                        
+                        # Show performance metrics
+                        if 'performance' in info and info['performance']:
+                            self.model_details.insert("end", "\nPerformance Metrics:\n")
+                            metrics = info['performance']
+                            if isinstance(metrics, dict):
+                                for metric, value in metrics.items():
+                                    if isinstance(value, float):
+                                        self.model_details.insert("end", f"  • {metric}: {value:.3f}\n")
+                                    else:
+                                        self.model_details.insert("end", f"  • {metric}: {value}\n")
+                        elif 'metrics' in info and info['metrics']:
+                            self.model_details.insert("end", "\nPerformance Metrics:\n")
+                            metrics = info['metrics']
+                            for metric, value in metrics.items():
+                                self.model_details.insert("end", f"  • {metric}: {value}\n")
+                        
+                        # Show model features
+                        if 'features' in info:
+                            self.model_details.insert("end", f"\nFeatures Used: {', '.join(info['features'][:5])}")
+                            if len(info['features']) > 5:
+                                self.model_details.insert("end", f" (+{len(info['features'])-5} more)")
+                            self.model_details.insert("end", "\n")
                     else:
                         self.model_details.insert("end", "\nModel not trained. Click 'Train All Models' to train.\n")
                 else:
