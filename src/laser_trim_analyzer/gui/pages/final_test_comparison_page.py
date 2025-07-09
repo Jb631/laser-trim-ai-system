@@ -22,6 +22,7 @@ from laser_trim_analyzer.gui.widgets.hover_fix import fix_hover_glitches, stabil
 from laser_trim_analyzer.core.models import ValidationResult, TrackData
 from laser_trim_analyzer.database.models import AnalysisResult as DBAnalysisResult
 from laser_trim_analyzer.utils.plotting_utils import save_plot
+from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 
 
@@ -154,6 +155,9 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         )
         self.model_dropdown.pack(side='left', padx=(0, 20))
         
+        # Add mousewheel support to model dropdown
+        add_mousewheel_support(self.model_dropdown)
+        
         # Serial selection (SECOND)
         serial_frame = ctk.CTkFrame(self.selection_frame)
         serial_frame.pack(fill='x', pady=5)
@@ -170,6 +174,9 @@ class FinalTestComparisonPage(ctk.CTkFrame):
         )
         self.serial_dropdown.pack(side='left', padx=(0, 20))
         
+        # Add mousewheel support to serial dropdown
+        add_mousewheel_support(self.serial_dropdown)
+        
         # Date selection (THIRD)
         date_frame = ctk.CTkFrame(self.selection_frame)
         date_frame.pack(fill='x', pady=5)
@@ -185,6 +192,9 @@ class FinalTestComparisonPage(ctk.CTkFrame):
             state="disabled"
         )
         self.date_dropdown.pack(side='left', padx=(0, 20))
+        
+        # Add mousewheel support to date dropdown
+        add_mousewheel_support(self.date_dropdown)
         
         # Load unit button
         self.load_unit_button = AnimatedButton(

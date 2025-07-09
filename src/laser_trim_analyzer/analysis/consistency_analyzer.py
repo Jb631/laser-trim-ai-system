@@ -72,31 +72,54 @@ class ConsistencyAnalyzer:
         
         for track_id, track_data in tracks_data.items():
             # Log the structure for debugging
-            self.logger.debug(f"Analyzing track {track_id}, data keys: {track_data.keys() if isinstance(track_data, dict) else 'not a dict'}")
+            self.logger.debug(f"Analyzing track {track_id}, data type: {type(track_data)}")
+            if isinstance(track_data, dict):
+                self.logger.debug(f"Track {track_id} keys: {list(track_data.keys())}")
+                # Log nested structure if present
+                if 'sigma_analysis' in track_data and isinstance(track_data['sigma_analysis'], dict):
+                    self.logger.debug(f"Track {track_id} sigma_analysis keys: {list(track_data['sigma_analysis'].keys())}")
+                if 'linearity_analysis' in track_data and isinstance(track_data['linearity_analysis'], dict):
+                    self.logger.debug(f"Track {track_id} linearity_analysis keys: {list(track_data['linearity_analysis'].keys())}")
+                if 'unit_properties' in track_data and isinstance(track_data['unit_properties'], dict):
+                    self.logger.debug(f"Track {track_id} unit_properties keys: {list(track_data['unit_properties'].keys())}")
             
             # Extract sigma gradient
             sigma = self._extract_value(track_data, ['sigma_gradient', 'sigma_analysis.sigma_gradient'])
             if sigma is not None:
                 sigma_values.append(sigma)
-                self.logger.debug(f"Track {track_id} sigma: {sigma}")
+                self.logger.info(f"Track {track_id} sigma: {sigma}")
+            else:
+                self.logger.warning(f"Track {track_id}: No sigma gradient found")
                 
-            # Extract linearity error
+            # Extract linearity error - don't take absolute value yet to preserve variations
             linearity = self._extract_value(track_data, ['linearity_error', 'linearity_analysis.final_linearity_error_shifted'])
             if linearity is not None:
-                linearity_values.append(abs(linearity))
-                self.logger.debug(f"Track {track_id} linearity: {linearity}")
+                # Store the actual value, not absolute
+                linearity_values.append(linearity)
+                self.logger.info(f"Track {track_id} linearity: {linearity} (raw value)")
+            else:
+                self.logger.warning(f"Track {track_id}: No linearity error found")
                 
             # Extract resistance change
-            resistance = self._extract_value(track_data, ['resistance_change', 'resistance_change_percent', 'unit_properties.resistance_change_percent'])
+            resistance = self._extract_value(track_data, ['resistance_change_percent', 'unit_properties.resistance_change_percent', 'resistance_change'])
             if resistance is not None:
-                resistance_values.append(abs(resistance))
-                self.logger.debug(f"Track {track_id} resistance: {resistance}")
+                resistance_values.append(resistance)
+                self.logger.info(f"Track {track_id} resistance: {resistance}%")
+            else:
+                self.logger.warning(f"Track {track_id}: No resistance change found")
         
-        self.logger.info(f"Consistency analysis found: {len(sigma_values)} sigma, {len(linearity_values)} linearity, {len(resistance_values)} resistance values")
+        self.logger.info(f"Consistency analysis summary: {len(sigma_values)} sigma, {len(linearity_values)} linearity, {len(resistance_values)} resistance values")
+        if sigma_values:
+            self.logger.info(f"Sigma values: {sigma_values}")
+        if linearity_values:
+            self.logger.info(f"Linearity values: {linearity_values}")
+        if resistance_values:
+            self.logger.info(f"Resistance values: {resistance_values}")
         
         # Calculate coefficients of variation
         sigma_cv = self._calculate_cv(sigma_values)
-        linearity_cv = self._calculate_cv(linearity_values)
+        # For linearity, use absolute values for CV calculation
+        linearity_cv = self._calculate_cv([abs(v) for v in linearity_values]) if linearity_values else 0.0
         resistance_cv = self._calculate_cv(resistance_values)
         
         # Identify issues
@@ -155,29 +178,71 @@ class ConsistencyAnalyzer:
     
     def _extract_value(self, data: Dict[str, Any], paths: List[str]) -> Optional[float]:
         """Extract value from nested dictionary using multiple possible paths."""
+        if not isinstance(data, dict):
+            self.logger.debug(f"Data is not a dictionary: {type(data)}")
+            return None
+            
         for path in paths:
             value = data
-            for key in path.split('.'):
+            path_parts = path.split('.')
+            
+            # Navigate through the path
+            for i, key in enumerate(path_parts):
                 if isinstance(value, dict) and key in value:
                     value = value[key]
                 else:
+                    # Log what went wrong
+                    if not isinstance(value, dict):
+                        self.logger.debug(f"Path {path} failed at part {i} ({key}): parent is {type(value)}, not dict")
+                    else:
+                        self.logger.debug(f"Path {path} failed at part {i}: key '{key}' not found in {list(value.keys())}")
                     value = None
                     break
-            if value is not None and isinstance(value, (int, float)):
-                return float(value)
+                    
+            # Check if we found a valid numeric value
+            if value is not None:
+                if isinstance(value, (int, float)):
+                    self.logger.debug(f"Found value {value} at path {path}")
+                    return float(value)
+                else:
+                    self.logger.debug(f"Value at path {path} is not numeric: {type(value)} = {value}")
+                    
+        self.logger.debug(f"No value found in any of the paths: {paths}")
         return None
     
     def _calculate_cv(self, values: List[float]) -> float:
         """Calculate coefficient of variation (CV) as percentage."""
-        if not values or len(values) < 2:
+        if not values:
+            self.logger.debug("CV calculation: No values provided")
+            return 0.0
+            
+        if len(values) < 2:
+            self.logger.debug(f"CV calculation: Only {len(values)} value(s), need at least 2")
+            return 0.0
+        
+        # Check if all values are identical
+        if len(set(values)) == 1:
+            self.logger.info(f"CV calculation: All {len(values)} values are identical ({values[0]})")
             return 0.0
             
         avg = mean(values)
-        if avg == 0:
-            return 0.0
-            
         std = stdev(values)
-        return (std / abs(avg)) * 100
+        
+        self.logger.debug(f"CV calculation: mean={avg}, std={std}, n={len(values)}")
+        
+        # Handle near-zero mean
+        if abs(avg) < 1e-10:
+            self.logger.warning(f"CV calculation: Mean is near zero ({avg}), using alternative calculation")
+            # For near-zero mean, report relative to the range
+            value_range = max(values) - min(values)
+            if value_range > 0:
+                return (std / value_range) * 100
+            else:
+                return 0.0
+            
+        cv = (std / abs(avg)) * 100
+        self.logger.info(f"CV calculation result: {cv:.2f}%")
+        return cv
     
     def _check_outliers(self, tracks_data: Dict[str, Any], 
                        sigma_values: List[float], 
@@ -273,9 +338,33 @@ class ConsistencyAnalyzer:
         report += f"Overall Consistency: {metrics.overall_consistency}\n\n"
         
         report += "Variation Metrics:\n"
-        report += f"  • Sigma CV: {metrics.sigma_cv:.1f}%\n"
-        report += f"  • Linearity CV: {metrics.linearity_cv:.1f}%\n"
-        report += f"  • Resistance CV: {metrics.resistance_cv:.1f}%\n\n"
+        
+        # Sigma CV with interpretation
+        if metrics.sigma_cv == 0.0:
+            report += f"  • Sigma CV: {metrics.sigma_cv:.1f}% (All tracks have identical sigma gradients)\n"
+        else:
+            report += f"  • Sigma CV: {metrics.sigma_cv:.1f}%\n"
+            
+        # Linearity CV with interpretation
+        if metrics.linearity_cv == 0.0:
+            report += f"  • Linearity CV: {metrics.linearity_cv:.1f}% (All tracks have identical linearity errors)\n"
+        else:
+            report += f"  • Linearity CV: {metrics.linearity_cv:.1f}%\n"
+            
+        # Resistance CV with interpretation
+        if metrics.resistance_cv == 0.0:
+            report += f"  • Resistance CV: {metrics.resistance_cv:.1f}% (All tracks have identical resistance changes)\n"
+        else:
+            report += f"  • Resistance CV: {metrics.resistance_cv:.1f}%\n"
+            
+        report += "\n"
+        
+        # Add note if all CVs are zero
+        if metrics.sigma_cv == 0.0 and metrics.linearity_cv == 0.0 and metrics.resistance_cv == 0.0:
+            report += "NOTE: All variation metrics show 0.0%, indicating either:\n"
+            report += "  - All tracks have identical values (perfect consistency)\n"
+            report += "  - Data may be missing or not properly loaded\n"
+            report += "  - Check the log files for detailed analysis information\n\n"
         
         report += "Issues Identified:\n"
         if metrics.issues:

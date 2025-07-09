@@ -466,10 +466,10 @@ class ReportGenerator:
                         'Filename': result.metadata.filename,
                         'Model': result.metadata.model,
                         'Serial': result.metadata.serial,
-                        'System Type': result.metadata.system_type.value,
+                        'System Type': result.metadata.system.value,
                         'Overall Status': result.overall_status.value,
                         'Processing Time (s)': result.processing_time,
-                        'Analysis Date': result.metadata.test_date.isoformat() if result.metadata.test_date else None,
+                        'Trim Date': result.metadata.test_date.isoformat() if result.metadata.test_date else result.metadata.file_date.isoformat() if hasattr(result.metadata, 'file_date') else None,
                     }
                     
                     # Validation info

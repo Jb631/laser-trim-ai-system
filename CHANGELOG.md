@@ -21,6 +21,231 @@ This section tracks current known issues that need to be addressed. When fixing 
 ## [Unreleased]
 
 ### Fixed
+- **Historical Page Chart Issues** (2025-07-09):
+  - **Issue**: Charts showing no data, axes not displaying correctly, charts hard to understand
+  - **Root Cause**: Code was trying to access nested attributes (e.g., track.sigma_analysis.sigma_gradient) that don't exist in the database model
+  - **Solution**: 
+    - Fixed all data extraction to use direct attribute access with getattr()
+    - Fixed x-axis date formatting for better readability
+    - Added appropriate date locators based on data range (daily, bi-daily, or weekly)
+    - Rotated x-axis labels to prevent overlap
+    - Added tight_layout() to prevent label cutoff
+    - Fixed aggregation column name flattening
+    - Fixed trim_improvement calculation to handle None values properly
+  - **Charts Fixed**:
+    - Production Overview: Now shows pass rate with production volume bars
+    - Model Comparison: Shows comparative metrics across models
+    - Quality Trends: Displays quality indicators with proper date formatting
+    - Efficiency Metrics: Shows process efficiency by production period
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Fixed data extraction and chart formatting
+
+- **Model Summary Page Mousewheel Support Investigation** (2025-07-09):
+  - **Issue**: User requested mousewheel scrolling for model dropdown when open
+  - **Root Cause**: CTkComboBox uses tkinter.Menu for its dropdown, which:
+    - Runs in its own event loop when posted, blocking most external events
+    - Does not support mousewheel scrolling natively 
+    - Cannot be customized to add mousewheel support due to tkinter limitations
+  - **Resolution**: Determined to be not feasible with current CTkComboBox implementation
+  - **Alternatives**: Users can:
+    - Use keyboard arrows to navigate the dropdown
+    - Type the first letters of a model name for quick selection
+    - Consider implementing a custom dropdown widget if mousewheel is critical
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/__init__.py`: Added documentation about CTkComboBox limitation
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Added comment explaining why mousewheel isn't supported
+
+### Fixed
+- **Model Summary Page Multiple Issues** (2025-07-08):
+  - **Issue 1**: Mousewheel support missing from model dropdown
+    - **Solution**: Imported and added add_mousewheel_support function to model dropdown
+  - **Issue 2**: Key performance metrics showing 0 values (avg sigma gradient, sigma std dev, high risk units, validation rate, etc.)
+    - **Root Cause**: Code was trying to access nested attributes (e.g., track.sigma_analysis.sigma_gradient) that don't exist in the database model
+    - **Solution**: Changed to use direct attribute access with getattr(track, 'sigma_gradient', None) for all track attributes
+  - **Issue 3**: Sigma gradient trend chart showing only placeholder
+    - **Root Cause**: No valid data was being passed due to the attribute access issue
+    - **Solution**: Fixed data extraction and added data validation with dropna() before charting
+  - **Issue 4**: Excel export had malformed headers and missing data
+    - **Root Cause**: Pandas multi-level aggregation creates tuple column names that were being converted to strings
+    - **Solution**: Manually set readable column names after aggregation (e.g., "Units_Count" instead of "('sigma_gradient', 'count')")
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: 
+      - Lines 40, 127-128: Added mousewheel support
+      - Lines 556-577: Fixed data extraction to use direct attributes
+      - Lines 804-812: Added better error handling for trend chart
+      - Lines 1187-1190, 1206-1209: Fixed Excel export column headers
+
+### Fixed
+- **Historical Page Drift Alert Card AttributeError** (2025-07-08):
+  - **Issue**: Historical page throwing AttributeError for drift_alert_card
+  - **Root Cause**: drift_alert_card was referenced in multiple places but never created as a MetricCard
+  - **Solution**: Added drift_alert_card to the metrics dashboard in row 3
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Added drift_alert_card creation
+
+- **Model Summary Page TypeError with None Values** (2025-07-08):
+  - **Issue**: Model Summary page throwing TypeError when formatting None values for sigma_gradient
+  - **Root Cause**: DataFrame operations and string formatting not handling None/NaN values properly
+  - **Solution**: 
+    - Added pd.notna() checks before formatting sigma_gradient values
+    - Added None checks in summary statistics calculations
+    - Used "N/A" as fallback for missing values
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Fixed None value handling in multiple locations
+
+- **Historical Page Manufacturing Insights Charts Showing Placeholders** (2025-07-08):
+  - **Issue**: Historical page charts always showing placeholder text even after running queries
+  - **Root Cause**: 
+    - ChartWidget shows placeholder on initialization
+    - 'grouped_bar' chart type was not supported by ChartWidget
+    - Missing error handling and logging made issues hard to diagnose
+  - **Solution**:
+    - Changed model_comparison_chart from 'grouped_bar' to 'bar' type
+    - Added comprehensive logging to track chart update flow
+    - Added better placeholder messages for empty data cases
+    - Enhanced ChartWidget logging to debug update issues
+  - **Impact**: Charts now properly display data when queries are run
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Fixed chart type, added logging
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Added logging and grouped_bar fallback
+
+- **Multi-Track Analysis Showing 0.0% Variations** (2025-07-08):
+  - **Issue**: Multi-track consistency analysis was returning 0.0% for linearity and resistance variations
+  - **Root Cause**:
+    - ConsistencyAnalyzer was not finding values due to incorrect path extraction
+    - CV calculation was returning 0 when all values were identical
+    - Insufficient logging made it difficult to diagnose data extraction issues
+  - **Solution**:
+    - Added comprehensive debug logging to track value extraction and CV calculation
+    - Fixed _extract_value method to properly handle nested dictionary structures
+    - Improved CV calculation to handle edge cases (near-zero means, identical values)
+    - Added informative messages in consistency report when variations are 0%
+    - Enhanced multi-track page logging to show data structure before analysis
+  - **Impact**: 
+    - Users can now see why variations might be 0% (identical values vs missing data)
+    - Better diagnostic information in logs for troubleshooting
+    - More robust handling of edge cases in statistical calculations
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/analysis/consistency_analyzer.py`: Enhanced logging, fixed value extraction, improved CV calculation
+    - `src/laser_trim_analyzer/gui/pages/multi_track_page.py`: Added debug logging before consistency analysis
+
+- **Historical and Model Summary Pages Data Access Errors** (2025-07-08):
+  - **Issue**: Both pages were trying to access track attributes directly instead of through nested objects
+  - **Root Cause**: 
+    - Pages were written assuming flat track structure (e.g., `track.sigma_gradient`)
+    - Actual data model has nested structure (e.g., `track.sigma_analysis.sigma_gradient`)
+    - This caused AttributeError exceptions when displaying data
+  - **Solution**: 
+    - Updated Historical page `_update_manufacturing_insights` to access nested attributes correctly
+    - Updated Historical page `_display_results` to access nested attributes with proper checks
+    - Updated Model Summary page `_load_model_data` to extract data from nested structures
+    - Added hasattr checks to handle optional attributes like `failure_prediction`
+    - Fixed risk category access to use `track.failure_prediction.risk_category.value`
+    - Fixed card name inconsistencies in dashboard metrics update
+    - Commented out calls to undefined methods in _display_results
+  - **Impact**: Both pages now correctly display all metrics without errors
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Fixed all track attribute access patterns
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Fixed track data extraction in _load_model_data
+
+### Changed
+- **Historical Page Redesigned for Company-Wide Overview** (2025-07-08):
+  - **Issue**: Historical page duplicated Model Summary functionality by showing model-specific data
+  - **User Feedback**: "Model summary provides information and historical data for any specific model. Why do I need a second page that is historical that can filter to specific models? Shouldn't the historical page be an overview of the entire company?"
+  - **Solution**: 
+    - Removed model/serial filters from Historical page query section
+    - Added company-wide filters: Department, Shift (for larger organizations)
+    - Redesigned metrics dashboard to show company-wide KPIs:
+      - Total Production (instead of individual units)
+      - Company Yield (overall pass rate across all models)
+      - Active Models (count of unique models in production)
+      - Daily Throughput (productivity metric)
+      - Quality Index (composite quality score)
+      - Process Stability (consistency metric)
+      - Trim Efficiency (overall effectiveness)
+      - Defect Trend (company-wide defect rate)
+    - Updated risk analysis to show enterprise-level risk distribution
+    - Changed manufacturing insights tabs to focus on cross-model comparisons:
+      - Production Overview (volume and yield trends)
+      - Cross-Model Analysis (compare all models)
+      - Quality Trends (company-wide indicators)
+      - Efficiency Metrics (process performance)
+    - Statistical Process Control now analyzes entire production line
+  - **Architecture Rationale**: 
+    - Eliminates redundancy between pages
+    - Provides executives with company-wide insights
+    - Model Summary page remains the single source for model-specific analysis
+    - Historical page becomes valuable for enterprise-level decision making
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Complete redesign of filters, metrics, and visualizations
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Enhanced with additional historical analysis features
+
+- **Model Summary Page Enhanced with Historical Features** (2025-07-08):
+  - **Issue**: After redesigning Historical page for company-wide view, needed to ensure Model Summary has all model-specific historical features
+  - **Solution**: Added comprehensive historical analysis capabilities to Model Summary page:
+    - Added "Historical Data" tab with detailed records table showing last 100 records
+      - Displays: Date, Serial, Status, Sigma, Linearity, Risk, Filename
+      - Color-coded status and risk indicators for quick scanning
+    - Added "Process Capability" tab with Cpk analysis
+      - Shows histogram with normal distribution overlay
+      - Displays specification limits (LSL, USL, Target)
+      - Calculates and displays Cpk, Cp, mean, and standard deviation
+      - Color-codes title based on Cpk value (green >1.33, orange >1.0, red <1.0)
+    - Enhanced existing charts with better statistical analysis
+  - **Architecture Benefits**:
+    - Model Summary page now serves as comprehensive single source for all model-specific analysis
+    - Historical page focuses on enterprise-level insights without redundancy
+    - Clear separation of concerns between pages
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Added historical table and Cpk analysis
+
+### Fixed
+- **ML Tools Page Model Status Not Updating After Training** (2025-07-08):
+  - **Issue**: Model status cards showed "Not Trained" even after successful training
+  - **Root Cause**: 
+    - ML manager sets 'trained' field but ML tools page was checking for 'is_trained'
+    - Model status update happened too quickly before models were fully saved
+    - Model cards didn't have labels to show last training date
+  - **Solution**: 
+    - Updated _update_model_status() to check both 'trained' and 'is_trained' fields
+    - Added info_label to model cards to display last training date/time
+    - Added second delayed status update (2 seconds) to ensure saved models are reflected
+    - Enhanced _show_model_details() to display comprehensive model information including:
+      - Training date and time
+      - Performance metrics from training
+      - Features used by the model
+      - Training sample count
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Fixed status checking and display
+
+- **Batch Processing Excel Export Missing Data** (2025-07-08):
+  - **Issue**: Excel export showed "unknown" for system_type, analysis_date, and risk_category fields
+  - **Root Cause**: 
+    - Enhanced Excel exporter was not properly populating the Batch Summary sheet with all required fields
+    - Field name mismatches: looking for 'system_type' instead of 'system', 'analysis_date' instead of 'file_date'
+    - Risk category was not being extracted from the correct location in the data structure
+    - Missing many useful fields that would provide comprehensive analysis insights
+  - **Solution**: 
+    - Updated _create_batch_summary_sheet() to include detailed file results with all fields
+    - Fixed field access to use correct attribute names (system.value, file_date, etc.)
+    - Added proper handling for analysis_date (current timestamp when analysis was performed)
+    - Fixed risk_category extraction from track.failure_prediction or result.ml_prediction
+    - Added new "Enhanced Data" sheet with comprehensive analysis metrics including:
+      - Unit properties (resistance before/after, change %, normalized range)
+      - Complete sigma analysis metrics (gradient, threshold, ratio, margin)
+      - Complete linearity analysis metrics (spec, error, offset, max deviation)
+      - ML predictions (failure probability, risk category)
+      - Industry compliance and validation grades
+      - Track data metrics (data points, travel length)
+      - Helpful comments for quick issue identification
+    - Changed "Analysis Date" to "Trim Date" in all export sheets to show the original test date
+    - Added test_date field to FileMetadata model to store the original trim date from Excel files
+    - Enhanced processor to extract test_date from cell B2 for System A files
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/utils/enhanced_excel_export.py`: Enhanced batch export with comprehensive data and trim date
+    - `src/laser_trim_analyzer/core/models.py`: Added test_date field to FileMetadata
+    - `src/laser_trim_analyzer/core/processor.py`: Enhanced to extract test_date from Excel files
+
 - **ML Tools Page TrackResult Attribute Errors** (2025-07-03):
   - **Issue**: ML Tools page training failed with "'TrackResult' object has no attribute 'overall_status'" error
   - **Root Cause**: 

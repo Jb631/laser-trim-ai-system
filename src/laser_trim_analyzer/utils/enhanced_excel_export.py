@@ -130,13 +130,16 @@ class EnhancedExcelExporter:
             # 2. Detailed Results Sheet (all files)
             self._create_batch_detailed_sheet(wb, results)
             
-            # 3. Statistical Analysis Sheet
+            # 3. Enhanced Data Sheet (additional useful fields)
+            self._create_enhanced_data_sheet(wb, results)
+            
+            # 4. Statistical Analysis Sheet
             self._create_statistical_analysis_sheet(wb, results)
             
-            # 4. Model Performance Sheet
+            # 5. Model Performance Sheet
             self._create_model_performance_sheet(wb, results)
             
-            # 5. Failure Analysis Sheet
+            # 6. Failure Analysis Sheet
             self._create_failure_analysis_sheet(wb, results)
             
             # 6. Individual File Details (limited)
@@ -624,13 +627,19 @@ class EnhancedExcelExporter:
             row += 1
     
     def _create_batch_summary_sheet(self, wb: Workbook, results: List[AnalysisResult]):
-        """Create batch summary sheet."""
+        """Create batch summary sheet with detailed file information."""
         ws = wb.create_sheet("Batch Summary")
         
         # Title
         ws['A1'] = "Batch Processing Summary"
         ws['A1'].font = Font(size=16, bold=True)
-        ws.merge_cells('A1:F1')
+        ws.merge_cells('A1:L1')
+        
+        # Overall statistics section
+        row = 3
+        ws[f'A{row}'] = "OVERALL STATISTICS"
+        ws[f'A{row}'].font = Font(bold=True, size=12)
+        row += 1
         
         # Calculate statistics
         total_files = len(results)
@@ -638,19 +647,13 @@ class EnhancedExcelExporter:
         failed_files = sum(1 for r in results if r.overall_status.value == "Fail")
         warning_files = sum(1 for r in results if r.overall_status.value == "Warning")
         
-        # Summary stats
-        row = 3
-        ws[f'A{row}'] = "OVERALL STATISTICS"
-        ws[f'A{row}'].font = Font(bold=True, size=12)
-        row += 1
-        
         stats = [
             ("Total Files Processed", total_files),
             ("Passed", passed_files),
             ("Failed", failed_files),
             ("Warnings", warning_files),
             ("Pass Rate", f"{(passed_files/total_files*100):.1f}%" if total_files > 0 else "0%"),
-            ("Processing Date", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            ("Export Date", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
         ]
         
         for label, value in stats:
@@ -658,49 +661,112 @@ class EnhancedExcelExporter:
             ws[f'B{row}'] = value
             row += 1
         
-        row += 1
+        row += 2
         
-        # Model breakdown
-        ws[f'A{row}'] = "MODEL BREAKDOWN"
+        # Detailed file results table
+        ws[f'A{row}'] = "DETAILED FILE RESULTS"
         ws[f'A{row}'].font = Font(bold=True, size=12)
         row += 1
         
-        model_stats = {}
-        for result in results:
-            model = result.metadata.model
-            if model not in model_stats:
-                model_stats[model] = {'total': 0, 'pass': 0, 'fail': 0, 'warning': 0}
-            
-            model_stats[model]['total'] += 1
-            if result.overall_status.value == "Pass":
-                model_stats[model]['pass'] += 1
-            elif result.overall_status.value == "Fail":
-                model_stats[model]['fail'] += 1
-            else:
-                model_stats[model]['warning'] += 1
+        # Headers for file details
+        headers = [
+            "Filename", "Model", "Serial", "System Type", "File Date", "Trim Date",
+            "Overall Status", "Validation Status", "Processing Time (s)", 
+            "Track Count", "ML Risk Category", "Primary Failure Mode"
+        ]
         
-        ws[f'A{row}'] = "Model"
-        ws[f'B{row}'] = "Total"
-        ws[f'C{row}'] = "Pass"
-        ws[f'D{row}'] = "Fail"
-        ws[f'E{row}'] = "Warning"
-        ws[f'F{row}'] = "Pass Rate"
-        
-        for col in range(1, 7):
-            ws.cell(row=row, column=col).font = Font(bold=True)
-            ws.cell(row=row, column=col).fill = self.header_fill
-            ws.cell(row=row, column=col).font = self.header_font
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=col, value=header)
+            cell.font = self.header_font
+            cell.fill = self.header_fill
+            cell.alignment = self.header_alignment
+            cell.border = self.border
         
         row += 1
         
-        for model, stats in model_stats.items():
-            ws[f'A{row}'] = model
-            ws[f'B{row}'] = stats['total']
-            ws[f'C{row}'] = stats['pass']
-            ws[f'D{row}'] = stats['fail']
-            ws[f'E{row}'] = stats['warning']
-            ws[f'F{row}'] = f"{(stats['pass']/stats['total']*100):.1f}%" if stats['total'] > 0 else "0%"
-            row += 1
+        # Add data for each file
+        for result in results:
+            try:
+                # Basic metadata
+                ws.cell(row=row, column=1, value=result.metadata.filename)
+                ws.cell(row=row, column=2, value=result.metadata.model)
+                ws.cell(row=row, column=3, value=result.metadata.serial)
+                ws.cell(row=row, column=4, value=result.metadata.system.value)
+                
+                # File date (when file was created/modified)
+                ws.cell(row=row, column=5, value=result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S'))
+                
+                # Trim date (original test date from the Excel file)
+                trim_date = "Unknown"
+                if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
+                    trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
+                elif hasattr(result.metadata, 'file_date'):
+                    # Fallback to file date if test_date not available
+                    trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
+                ws.cell(row=row, column=6, value=trim_date)
+                
+                # Status information
+                ws.cell(row=row, column=7, value=result.overall_status.value)
+                self._apply_status_formatting(ws.cell(row=row, column=7), result.overall_status.value)
+                
+                # Validation status
+                validation_status = "N/A"
+                if hasattr(result, 'overall_validation_status'):
+                    validation_status = result.overall_validation_status.value
+                ws.cell(row=row, column=8, value=validation_status)
+                
+                # Processing time
+                ws.cell(row=row, column=9, value=f"{result.processing_time:.2f}")
+                
+                # Track count
+                ws.cell(row=row, column=10, value=len(result.tracks))
+                
+                # ML Risk Category (from primary track)
+                risk_category = "Unknown"
+                primary_failure = "N/A"
+                if result.primary_track:
+                    # Check for ML prediction in track
+                    if hasattr(result.primary_track, 'failure_prediction') and result.primary_track.failure_prediction:
+                        risk_category = result.primary_track.failure_prediction.risk_category.value
+                    elif hasattr(result, 'ml_prediction') and result.ml_prediction:
+                        risk_category = result.ml_prediction.risk_category.value
+                    
+                    # Determine primary failure mode
+                    failures = []
+                    if result.primary_track.sigma_analysis and not result.primary_track.sigma_analysis.sigma_pass:
+                        failures.append("Sigma")
+                    if result.primary_track.linearity_analysis and not result.primary_track.linearity_analysis.linearity_pass:
+                        failures.append("Linearity")
+                    primary_failure = ", ".join(failures) if failures else "None"
+                
+                ws.cell(row=row, column=11, value=risk_category)
+                ws.cell(row=row, column=12, value=primary_failure)
+                
+                # Apply borders to all cells in row
+                for col in range(1, 13):
+                    ws.cell(row=row, column=col).border = self.border
+                
+                row += 1
+                
+            except Exception as e:
+                self.logger.error(f"Error processing result for batch summary: {e}")
+                # Add minimal data for failed row
+                ws.cell(row=row, column=1, value=getattr(result.metadata, 'filename', 'Error'))
+                ws.cell(row=row, column=2, value="Error processing")
+                row += 1
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
     
     def _create_batch_detailed_sheet(self, wb: Workbook, results: List[AnalysisResult]):
         """Create detailed results sheet for all files in batch."""
@@ -708,8 +774,8 @@ class EnhancedExcelExporter:
         
         # Create comprehensive headers
         headers = [
-            "Filename", "Model", "Serial", "System Type", "Status", "Processing Time",
-            "Tracks", "Primary Track ID", "Data Points", 
+            "Filename", "Model", "Serial", "System Type", "File Date", "Trim Date",
+            "Status", "Processing Time", "Tracks", "Primary Track ID", "Data Points", 
             "Sigma Gradient", "Sigma Threshold", "Sigma Pass", "Sigma Ratio",
             "Linearity Spec", "Linearity Pass", "Fail Points", "Optimal Offset",
             "Final Linearity Error", "Max Deviation",
@@ -741,16 +807,29 @@ class EnhancedExcelExporter:
             ws.cell(row=row, column=2, value=result.metadata.model)
             ws.cell(row=row, column=3, value=result.metadata.serial)
             ws.cell(row=row, column=4, value=result.metadata.system.value)
-            ws.cell(row=row, column=5, value=result.overall_status.value)
-            self._apply_status_formatting(ws.cell(row=row, column=5), result.overall_status.value)
-            ws.cell(row=row, column=6, value=result.processing_time)
-            ws.cell(row=row, column=7, value=len(result.tracks))
+            
+            # File date
+            ws.cell(row=row, column=5, value=result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S'))
+            
+            # Trim date (original test date from the Excel file)
+            trim_date = "Unknown"
+            if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
+                trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
+            elif hasattr(result.metadata, 'file_date'):
+                # Fallback to file date if test_date not available
+                trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
+            ws.cell(row=row, column=6, value=trim_date)
+            
+            ws.cell(row=row, column=7, value=result.overall_status.value)
+            self._apply_status_formatting(ws.cell(row=row, column=7), result.overall_status.value)
+            ws.cell(row=row, column=8, value=result.processing_time)
+            ws.cell(row=row, column=9, value=len(result.tracks))
             
             # Primary track analysis
             primary_track = result.primary_track
             if primary_track:
-                ws.cell(row=row, column=8, value=primary_track.track_id)
-                ws.cell(row=row, column=9, value=len(primary_track.position_data) if primary_track.position_data else 0)
+                ws.cell(row=row, column=10, value=primary_track.track_id)
+                ws.cell(row=row, column=11, value=len(primary_track.position_data) if primary_track.position_data else 0)
                 
                 # Sigma analysis
                 if primary_track.sigma_analysis:
@@ -764,40 +843,203 @@ class EnhancedExcelExporter:
                     if "8340" in str(result.metadata.model) and (sigma_gradient == 0 or sigma_gradient is None):
                         self.logger.warning(f"Model 8340 file {result.metadata.filename} has sigma_gradient: {sigma_gradient}")
                     
-                    ws.cell(row=row, column=10, value=sigma_gradient if sigma_gradient is not None else 'N/A')
-                    ws.cell(row=row, column=11, value=sigma_threshold if sigma_threshold is not None else 'N/A')
-                    ws.cell(row=row, column=12, value="PASS" if sigma_pass else "FAIL")
-                    ws.cell(row=row, column=13, value=sigma_ratio if sigma_ratio is not None else 'N/A')
+                    ws.cell(row=row, column=12, value=sigma_gradient if sigma_gradient is not None else 'N/A')
+                    ws.cell(row=row, column=13, value=sigma_threshold if sigma_threshold is not None else 'N/A')
+                    ws.cell(row=row, column=14, value="PASS" if sigma_pass else "FAIL")
+                    ws.cell(row=row, column=15, value=sigma_ratio if sigma_ratio is not None else 'N/A')
                 
                 # Linearity analysis
                 if primary_track.linearity_analysis:
-                    ws.cell(row=row, column=14, value=primary_track.linearity_analysis.linearity_spec)
-                    ws.cell(row=row, column=15, value="PASS" if primary_track.linearity_analysis.linearity_pass else "FAIL")
-                    ws.cell(row=row, column=16, value=primary_track.linearity_analysis.linearity_fail_points)
-                    ws.cell(row=row, column=17, value=primary_track.linearity_analysis.optimal_offset)
-                    ws.cell(row=row, column=18, value=primary_track.linearity_analysis.final_linearity_error_shifted)
-                    ws.cell(row=row, column=19, value=getattr(primary_track.linearity_analysis, 'max_deviation', 'N/A'))
+                    ws.cell(row=row, column=16, value=primary_track.linearity_analysis.linearity_spec)
+                    ws.cell(row=row, column=17, value="PASS" if primary_track.linearity_analysis.linearity_pass else "FAIL")
+                    ws.cell(row=row, column=18, value=primary_track.linearity_analysis.linearity_fail_points)
+                    ws.cell(row=row, column=19, value=primary_track.linearity_analysis.optimal_offset)
+                    ws.cell(row=row, column=20, value=primary_track.linearity_analysis.final_linearity_error_shifted)
+                    ws.cell(row=row, column=21, value=getattr(primary_track.linearity_analysis, 'max_deviation', 'N/A'))
                 
                 # Unit properties
                 if primary_track.unit_properties:
-                    ws.cell(row=row, column=20, value=primary_track.unit_properties.unit_length)
-                    ws.cell(row=row, column=21, value=primary_track.unit_properties.resistance_change if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_change') else None)
-                    ws.cell(row=row, column=22, value=f"{primary_track.unit_properties.resistance_change_percent:.2f}%" if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_change_percent') and primary_track.unit_properties.resistance_change_percent is not None else "N/A")
+                    ws.cell(row=row, column=22, value=primary_track.unit_properties.unit_length)
+                    ws.cell(row=row, column=23, value=primary_track.unit_properties.resistance_range if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_range') else None)
+                    ws.cell(row=row, column=24, value=f"{primary_track.unit_properties.normalized_range:.2f}%" if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'normalized_range') and primary_track.unit_properties.normalized_range is not None else "N/A")
             
             # ML predictions (from primary track)
-            if primary_track and primary_track.failure_prediction:
-                ws.cell(row=row, column=23, value=primary_track.failure_prediction.risk_category.value if primary_track.failure_prediction.risk_category else 'N/A')
-                ws.cell(row=row, column=24, value=f"{primary_track.failure_prediction.failure_probability:.2%}" if primary_track.failure_prediction.failure_probability else 'N/A')
-                ws.cell(row=row, column=25, value=primary_track.sigma_analysis.gradient_margin if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'gradient_margin') else 'N/A')
+            risk_category = "Unknown"
+            if primary_track:
+                if hasattr(primary_track, 'failure_prediction') and primary_track.failure_prediction:
+                    risk_category = primary_track.failure_prediction.risk_category.value if hasattr(primary_track.failure_prediction, 'risk_category') else 'Unknown'
+                    ws.cell(row=row, column=26, value=f"{primary_track.failure_prediction.failure_probability:.2%}" if hasattr(primary_track.failure_prediction, 'failure_probability') else 'N/A')
+                    ws.cell(row=row, column=27, value=primary_track.sigma_analysis.gradient_margin if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'gradient_margin') else 'N/A')
+                elif hasattr(result, 'ml_prediction') and result.ml_prediction:
+                    risk_category = result.ml_prediction.risk_category if hasattr(result.ml_prediction, 'risk_category') else 'Unknown'
+                    ws.cell(row=row, column=26, value=f"{result.ml_prediction.failure_probability:.2%}" if hasattr(result.ml_prediction, 'failure_probability') else 'N/A')
+                    ws.cell(row=row, column=27, value=result.ml_prediction.gradient_margin if hasattr(result.ml_prediction, 'gradient_margin') else 'N/A')
+                else:
+                    ws.cell(row=row, column=26, value='N/A')
+                    ws.cell(row=row, column=27, value='N/A')
+            else:
+                ws.cell(row=row, column=26, value='N/A')
+                ws.cell(row=row, column=27, value='N/A')
+            
+            ws.cell(row=row, column=25, value=risk_category)
             
             # Validation
-            ws.cell(row=row, column=26, value=result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A')
-            ws.cell(row=row, column=27, value=result.validation_grade if hasattr(result, 'validation_grade') else 'N/A')
+            ws.cell(row=row, column=28, value=result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A')
+            ws.cell(row=row, column=29, value=result.validation_grade if hasattr(result, 'validation_grade') else 'N/A')
             
             # Processing errors/issues
-            ws.cell(row=row, column=28, value="; ".join(result.processing_errors) if hasattr(result, 'processing_errors') and result.processing_errors else "")
+            ws.cell(row=row, column=30, value="; ".join(result.processing_errors) if hasattr(result, 'processing_errors') and result.processing_errors else "")
             
             row += 1
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+    
+    def _create_enhanced_data_sheet(self, wb: Workbook, results: List[AnalysisResult]):
+        """Create enhanced data sheet with additional useful information."""
+        ws = wb.create_sheet("Enhanced Data")
+        
+        # Title
+        ws['A1'] = "Enhanced Analysis Data"
+        ws['A1'].font = Font(size=14, bold=True)
+        ws.merge_cells('A1:Q1')
+        
+        # Headers with all useful fields
+        headers = [
+            "Filename", "Model", "Serial", "System Type", "File Date", "Trim Date",
+            "Overall Status", "Sigma Pass", "Linearity Pass", "Risk Category",
+            "Unit Length (deg)", "Resistance Before (Ω)", "Resistance After (Ω)", 
+            "Resistance Change (%)", "Normalized Range (%)",
+            "Sigma Gradient", "Sigma Threshold", "Sigma Ratio", "Gradient Margin",
+            "Linearity Spec", "Linearity Error", "Optimal Offset", "Max Deviation",
+            "Failure Probability (%)", "Industry Compliance", "Validation Grade",
+            "Data Points", "Travel Length", "Comments"
+        ]
+        
+        row = 3
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=col, value=header)
+            cell.font = self.header_font
+            cell.fill = self.header_fill
+            cell.alignment = self.header_alignment
+            cell.border = self.border
+        
+        row += 1
+        
+        # Add data for each result
+        for result in results:
+            try:
+                # Basic info
+                ws.cell(row=row, column=1, value=result.metadata.filename)
+                ws.cell(row=row, column=2, value=result.metadata.model)
+                ws.cell(row=row, column=3, value=result.metadata.serial)
+                ws.cell(row=row, column=4, value=result.metadata.system.value)
+                ws.cell(row=row, column=5, value=result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S'))
+                # Trim date (original test date from the Excel file)
+                trim_date = "Unknown"
+                if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
+                    trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
+                elif hasattr(result.metadata, 'file_date'):
+                    # Fallback to file date if test_date not available
+                    trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
+                ws.cell(row=row, column=6, value=trim_date)
+                ws.cell(row=row, column=7, value=result.overall_status.value)
+                self._apply_status_formatting(ws.cell(row=row, column=7), result.overall_status.value)
+                
+                if result.primary_track:
+                    track = result.primary_track
+                    
+                    # Pass/Fail status
+                    sigma_pass = "PASS" if track.sigma_analysis and track.sigma_analysis.sigma_pass else "FAIL"
+                    linearity_pass = "PASS" if track.linearity_analysis and track.linearity_analysis.linearity_pass else "FAIL"
+                    ws.cell(row=row, column=8, value=sigma_pass)
+                    self._apply_status_formatting(ws.cell(row=row, column=8), sigma_pass)
+                    ws.cell(row=row, column=9, value=linearity_pass)
+                    self._apply_status_formatting(ws.cell(row=row, column=9), linearity_pass)
+                    
+                    # Risk category
+                    risk_category = "Unknown"
+                    failure_prob = None
+                    if hasattr(track, 'failure_prediction') and track.failure_prediction:
+                        risk_category = track.failure_prediction.risk_category.value if hasattr(track.failure_prediction, 'risk_category') else 'Unknown'
+                        failure_prob = track.failure_prediction.failure_probability
+                    elif hasattr(result, 'ml_prediction') and result.ml_prediction:
+                        risk_category = result.ml_prediction.risk_category if hasattr(result.ml_prediction, 'risk_category') else 'Unknown'
+                        failure_prob = result.ml_prediction.failure_probability
+                    ws.cell(row=row, column=10, value=risk_category)
+                    
+                    # Unit properties
+                    if track.unit_properties:
+                        ws.cell(row=row, column=11, value=track.unit_properties.unit_length)
+                        ws.cell(row=row, column=12, value=track.unit_properties.untrimmed_resistance if hasattr(track.unit_properties, 'untrimmed_resistance') else 'N/A')
+                        ws.cell(row=row, column=13, value=track.unit_properties.trimmed_resistance if hasattr(track.unit_properties, 'trimmed_resistance') else 'N/A')
+                        ws.cell(row=row, column=14, value=f"{track.unit_properties.resistance_change_percent:.2f}" if hasattr(track.unit_properties, 'resistance_change_percent') and track.unit_properties.resistance_change_percent is not None else 'N/A')
+                        ws.cell(row=row, column=15, value=f"{track.unit_properties.normalized_range:.2f}" if hasattr(track.unit_properties, 'normalized_range') else 'N/A')
+                    
+                    # Sigma analysis
+                    if track.sigma_analysis:
+                        ws.cell(row=row, column=16, value=track.sigma_analysis.sigma_gradient)
+                        ws.cell(row=row, column=17, value=track.sigma_analysis.sigma_threshold)
+                        ws.cell(row=row, column=18, value=f"{track.sigma_analysis.sigma_ratio:.3f}" if hasattr(track.sigma_analysis, 'sigma_ratio') else 'N/A')
+                        ws.cell(row=row, column=19, value=track.sigma_analysis.gradient_margin if hasattr(track.sigma_analysis, 'gradient_margin') else 'N/A')
+                        
+                        # Industry compliance
+                        industry_compliance = track.sigma_analysis.industry_compliance if hasattr(track.sigma_analysis, 'industry_compliance') else 'N/A'
+                        ws.cell(row=row, column=25, value=industry_compliance)
+                    
+                    # Linearity analysis
+                    if track.linearity_analysis:
+                        ws.cell(row=row, column=20, value=track.linearity_analysis.linearity_spec)
+                        ws.cell(row=row, column=21, value=track.linearity_analysis.final_linearity_error_shifted if hasattr(track.linearity_analysis, 'final_linearity_error_shifted') else 'N/A')
+                        ws.cell(row=row, column=22, value=track.linearity_analysis.optimal_offset)
+                        ws.cell(row=row, column=23, value=track.linearity_analysis.max_deviation if hasattr(track.linearity_analysis, 'max_deviation') else 'N/A')
+                    
+                    # ML prediction
+                    if failure_prob is not None:
+                        ws.cell(row=row, column=24, value=f"{failure_prob * 100:.1f}")
+                    else:
+                        ws.cell(row=row, column=24, value='N/A')
+                    
+                    # Validation grade
+                    validation_grade = result.validation_grade if hasattr(result, 'validation_grade') else 'N/A'
+                    ws.cell(row=row, column=26, value=validation_grade)
+                    
+                    # Track data
+                    ws.cell(row=row, column=27, value=track.data_points if hasattr(track, 'data_points') else len(track.position_data) if hasattr(track, 'position_data') else 'N/A')
+                    ws.cell(row=row, column=28, value=track.travel_length if hasattr(track, 'travel_length') else 'N/A')
+                    
+                    # Comments
+                    comments = []
+                    if track.sigma_analysis and not track.sigma_analysis.sigma_pass:
+                        comments.append("Sigma fail")
+                    if track.linearity_analysis and not track.linearity_analysis.linearity_pass:
+                        comments.append(f"Linearity fail ({track.linearity_analysis.linearity_fail_points} pts)")
+                    if hasattr(result, 'processing_errors') and result.processing_errors:
+                        comments.extend(result.processing_errors)
+                    ws.cell(row=row, column=29, value="; ".join(comments))
+                
+                # Apply borders
+                for col in range(1, 30):
+                    ws.cell(row=row, column=col).border = self.border
+                
+                row += 1
+                
+            except Exception as e:
+                self.logger.error(f"Error adding enhanced data for {getattr(result.metadata, 'filename', 'Unknown')}: {e}")
+                # Add minimal data
+                ws.cell(row=row, column=1, value=getattr(result.metadata, 'filename', 'Error'))
+                ws.cell(row=row, column=2, value="Error")
+                row += 1
         
         # Auto-adjust column widths
         for column in ws.columns:
