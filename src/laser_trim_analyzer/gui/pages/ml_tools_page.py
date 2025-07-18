@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import logging
 from tkinter import messagebox
+import matplotlib.pyplot as plt
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -344,6 +345,7 @@ class MLToolsPage(ctk.CTkFrame):
             avg_confidence = 0
             false_positive_rate = 0
             predictions_per_sec = 0
+            total_predictions = 0
             
             if self.ml_manager:
                 # Get model performance metrics
@@ -455,12 +457,59 @@ class MLToolsPage(ctk.CTkFrame):
                     accuracies.append(accuracy)
                 
                 if dates and accuracies:
-                    # Convert to pandas DataFrame for ChartWidget
-                    df = pd.DataFrame({
-                        'Date': dates,
-                        'Model Accuracy %': accuracies
-                    })
-                    self.quality_trend_chart.update_chart_data(df)
+                    try:
+                        # Convert to pandas DataFrame for ChartWidget
+                        df = pd.DataFrame({
+                            'trim_date': pd.to_datetime(dates),
+                            'accuracy': accuracies
+                        })
+                        
+                        # Clear and update chart with custom rendering
+                        self.quality_trend_chart.clear_chart()
+                        ax = self.quality_trend_chart._get_or_create_axes()
+                        
+                        # Plot accuracy trend with theme colors
+                        ax.plot(df['trim_date'], df['accuracy'], 
+                               color=self.quality_trend_chart.qa_colors['primary'],
+                               linewidth=2.5, marker='o', markersize=6,
+                               label='Model Accuracy')
+                        
+                        # Add reference lines
+                        reference_lines = {
+                            'Target': 95,
+                            'Acceptable': 85,
+                            'Warning': 75
+                        }
+                        self.quality_trend_chart.add_reference_lines(ax, reference_lines)
+                        
+                        # Labels and formatting
+                        ax.set_xlabel('Date')
+                        ax.set_ylabel('Accuracy (%)')
+                        ax.set_title('ML Model Performance Trend', fontweight='bold')
+                        ax.set_ylim(0, 105)
+                        
+                        # Format dates
+                        import matplotlib.dates as mdates
+                        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                        
+                        # Add informative annotation
+                        avg_accuracy = df['accuracy'].mean()
+                        trend = "improving" if df['accuracy'].iloc[-1] > df['accuracy'].iloc[0] else "declining"
+                        annotation_text = f"Average: {avg_accuracy:.1f}% | Trend: {trend} | Latest: {df['accuracy'].iloc[-1]:.1f}%"
+                        self.quality_trend_chart.add_chart_annotation(ax, annotation_text, position='top')
+                        
+                        # Legend
+                        legend = ax.legend(loc='best', frameon=True, fancybox=True, shadow=True)
+                        self.quality_trend_chart._style_legend(legend)
+                        
+                        self.quality_trend_chart.canvas.draw_idle()
+                    except Exception as e:
+                        self.logger.error(f"Error updating quality trend chart: {e}")
+                        self.quality_trend_chart.show_error(
+                            "Chart Update Error",
+                            "Failed to display quality trends"
+                        )
             else:
                 # No data - show empty state
                 for card in self.metric_cards.values():
@@ -705,13 +754,64 @@ class MLToolsPage(ctk.CTkFrame):
                     current_yields = [current_yields[i] for i in sorted_indices]
                     predicted_yields = [predicted_yields[i] for i in sorted_indices]
                 
-                # Convert to pandas DataFrame for ChartWidget
-                df = pd.DataFrame({
-                    'Model': models,
-                    'Current Yield %': current_yields,
-                    'Predicted Yield %': predicted_yields
-                })
-                self.yield_chart.update_chart_data(df)
+                # Clear and create custom grouped bar chart
+                self.yield_chart.clear_chart()
+                ax = self.yield_chart._get_or_create_axes()
+                
+                # Bar positions
+                x = np.arange(len(models))
+                width = 0.35
+                
+                # Create bars
+                bars1 = ax.bar(x - width/2, current_yields, width, 
+                              label='Current Yield', color=self.yield_chart.qa_colors['primary'], alpha=0.8)
+                bars2 = ax.bar(x + width/2, predicted_yields, width,
+                              label='ML Predicted', color=self.yield_chart.qa_colors['secondary'], alpha=0.8)
+                
+                # Add value labels on bars
+                for bars in [bars1, bars2]:
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+                               f'{height:.1f}%', ha='center', va='bottom', fontsize=8)
+                
+                # Add improvement indicators
+                for i, (curr, pred) in enumerate(zip(current_yields, predicted_yields)):
+                    if pred > curr:
+                        improvement = pred - curr
+                        ax.annotate(f'+{improvement:.1f}%', 
+                                  xy=(i, pred), xytext=(i, pred + 2),
+                                  ha='center', fontsize=8,
+                                  color=self.yield_chart.qa_colors.get('good', self.yield_chart.qa_colors['pass']),
+                                  arrowprops=dict(arrowstyle='->', color=self.yield_chart.qa_colors.get('good', self.yield_chart.qa_colors['pass']), alpha=0.5))
+                
+                # Formatting
+                ax.set_xlabel('Model')
+                ax.set_ylabel('Yield (%)')
+                ax.set_title('Yield Optimization Forecast', fontweight='bold')
+                ax.set_xticks(x)
+                ax.set_xticklabels(models, rotation=45, ha='right')
+                ax.set_ylim(0, 105)
+                
+                # Add target line
+                target_yield = 95
+                ax.axhline(y=target_yield, color='green', linestyle='--', alpha=0.7, 
+                          linewidth=1.5, label=f'Target: {target_yield}%')
+                
+                # Legend
+                legend = ax.legend(loc='best', frameon=True, fancybox=True, shadow=True)
+                self.yield_chart._style_legend(legend)
+                
+                # Add informative annotation
+                avg_current = np.mean(current_yields)
+                avg_predicted = np.mean(predicted_yields)
+                potential_gain = avg_predicted - avg_current
+                annotation_text = (f"Average Current: {avg_current:.1f}% | "
+                                 f"Predicted: {avg_predicted:.1f}% | "
+                                 f"Potential Gain: {potential_gain:+.1f}%")
+                self.yield_chart.add_chart_annotation(ax, annotation_text, position='top')
+                
+                self.yield_chart.canvas.draw_idle()
                 
         except Exception as e:
             self.logger.error(f"Error updating yield forecast: {e}")

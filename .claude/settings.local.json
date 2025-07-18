@@ -67,7 +67,8 @@
       "Bash(del /f /q \"C:\\Users\\Jayma\\AppData\\Local\\LaserTrimAnalyzer\\dev\\laser_trim_dev.db\")",
       "Bash(./kill_python_and_clean_db.bat)",
       "Bash(sed:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(cat:*)"
     ],
     "deny": []
   }
