@@ -392,16 +392,6 @@ class MultiTrackPage(ctk.CTkFrame):
             state="disabled"
         )
         self.generate_pdf_btn.pack(side='left', padx=(0, 10), pady=10)
-        
-        # Add test data button for debugging
-        self.test_data_button = ctk.CTkButton(
-            button_frame,
-            text="🧪 Test Data",
-            command=self._load_test_data,
-            width=120,
-            height=40
-        )
-        self.test_data_button.pack(side='left', padx=(0, 10), pady=10)
 
     def _select_track_file(self):
         """Select a single track file to analyze."""
@@ -926,9 +916,21 @@ class MultiTrackPage(ctk.CTkFrame):
                 linearity_cv = unit_data.get('linearity_cv', 0)
                 resistance_cv = unit_data.get('resistance_cv', 0)
                 
-                self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}%")
-                self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}%")
-                self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.1f}%")
+                # Use more decimal places for small values
+                if sigma_cv < 1:
+                    self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.2f}%")
+                else:
+                    self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}%")
+                    
+                if linearity_cv < 1:
+                    self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.2f}%")
+                else:
+                    self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}%")
+                    
+                if resistance_cv < 1:
+                    self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.2f}%")
+                else:
+                    self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.1f}%")
                 
                 # Set color schemes based on variation
                 sigma_color = 'success' if sigma_cv < 5 else 'warning' if sigma_cv < 10 else 'danger'
@@ -972,13 +974,97 @@ class MultiTrackPage(ctk.CTkFrame):
                 # Calculate metrics for file-based data
                 tracks = unit_data.get('tracks', {})
                 if tracks:
-                    sigma_values = [t.get('sigma_gradient', 0) for t in tracks.values() if t.get('sigma_gradient')]
-                    if sigma_values:
-                        sigma_cv = (np.std(sigma_values) / np.mean(sigma_values)) * 100
-                        self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}")
+                    # Extract values for CV calculations
+                    sigma_values = []
+                    linearity_values = []
+                    resistance_values = []
                     
-                    # Update other metrics as available
-                    consistency = "GOOD" if len(tracks) > 1 else "N/A"
+                    for track_id, track_data in tracks.items():
+                        # Handle different track data structures
+                        if hasattr(track_data, 'primary_track') and track_data.primary_track:
+                            # Object format
+                            primary = track_data.primary_track
+                            if hasattr(primary, 'sigma_analysis') and primary.sigma_analysis:
+                                sigma_values.append(primary.sigma_analysis.sigma_gradient)
+                            if hasattr(primary, 'linearity_analysis') and primary.linearity_analysis:
+                                linearity_values.append(abs(primary.linearity_analysis.final_linearity_error_shifted))
+                            if hasattr(primary, 'unit_properties') and primary.unit_properties:
+                                if primary.unit_properties.resistance_change_percent is not None:
+                                    resistance_values.append(abs(primary.unit_properties.resistance_change_percent))
+                        elif isinstance(track_data, dict):
+                            # Dictionary format
+                            if track_data.get('sigma_gradient') is not None:
+                                sigma_values.append(track_data['sigma_gradient'])
+                            if track_data.get('linearity_error') is not None:
+                                linearity_values.append(abs(track_data['linearity_error']))
+                            if track_data.get('resistance_change_percent') is not None:
+                                resistance_values.append(abs(track_data['resistance_change_percent']))
+                    
+                    # Calculate CVs
+                    if len(sigma_values) > 1:
+                        sigma_cv = (np.std(sigma_values) / np.mean(sigma_values)) * 100
+                    else:
+                        sigma_cv = 0
+                        
+                    if len(linearity_values) > 1:
+                        linearity_cv = (np.std(linearity_values) / abs(np.mean(linearity_values))) * 100
+                    else:
+                        linearity_cv = 0
+                        
+                    if len(resistance_values) > 1:
+                        mean_resistance = np.mean(resistance_values)
+                        if abs(mean_resistance) > 0:
+                            resistance_cv = (np.std(resistance_values) / abs(mean_resistance)) * 100
+                        else:
+                            resistance_cv = 0
+                    else:
+                        resistance_cv = 0
+                    
+                    # Update CV displays with appropriate precision
+                    if sigma_cv < 1:
+                        self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.2f}%")
+                    else:
+                        self.overview_cards['sigma_cv'].update_value(f"{sigma_cv:.1f}%")
+                        
+                    if linearity_cv < 1:
+                        self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.2f}%")
+                    else:
+                        self.overview_cards['linearity_cv'].update_value(f"{linearity_cv:.1f}%")
+                        
+                    if resistance_cv < 1:
+                        self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.2f}%")
+                    else:
+                        self.overview_cards['resistance_cv'].update_value(f"{resistance_cv:.1f}%")
+                    
+                    # Set color schemes based on variation
+                    sigma_color = 'success' if sigma_cv < 5 else 'warning' if sigma_cv < 10 else 'danger'
+                    linearity_color = 'success' if linearity_cv < 10 else 'warning' if linearity_cv < 20 else 'danger'
+                    resistance_color = 'success' if resistance_cv < 2 else 'warning' if resistance_cv < 5 else 'danger'
+                    
+                    self.overview_cards['sigma_cv'].set_color_scheme(sigma_color)
+                    self.overview_cards['linearity_cv'].set_color_scheme(linearity_color)
+                    self.overview_cards['resistance_cv'].set_color_scheme(resistance_color)
+                    
+                    # Calculate and update risk level
+                    risk_score = 0
+                    if sigma_cv > 10: risk_score += 1
+                    if linearity_cv > 20: risk_score += 1
+                    if resistance_cv > 5: risk_score += 1
+                    
+                    risk_level = 'Low' if risk_score == 0 else 'Medium' if risk_score == 1 else 'High'
+                    risk_color = 'success' if risk_score == 0 else 'warning' if risk_score == 1 else 'danger'
+                    self.overview_cards['risk_level'].update_value(risk_level)
+                    self.overview_cards['risk_level'].set_color_scheme(risk_color)
+                    
+                    # Determine consistency rating
+                    if sigma_cv < 5 and linearity_cv < 10:
+                        consistency = 'EXCELLENT'
+                    elif sigma_cv < 10 and linearity_cv < 20:
+                        consistency = 'GOOD'
+                    elif sigma_cv < 20 and linearity_cv < 30:
+                        consistency = 'FAIR'
+                    else:
+                        consistency = 'POOR'
                     self.overview_cards['consistency'].update_value(consistency)
 
             # Update individual track viewer
@@ -2174,6 +2260,7 @@ Quality Assessment:
                     # Debug logging for raw data
                     self.logger.debug(f"Track {track.track_id} - position_data type: {type(track.position_data)}, length: {len(track.position_data) if track.position_data else 0}")
                     self.logger.debug(f"Track {track.track_id} - error_data type: {type(track.error_data)}, length: {len(track.error_data) if track.error_data else 0}")
+                    self.logger.debug(f"Track {track.track_id} - resistance_change_percent from DB: {track.resistance_change_percent}")
                     
                     # Get all track data including analysis details
                     track_info = {
@@ -2255,7 +2342,9 @@ Quality Assessment:
                     if track_info['linearity_error'] is not None:
                         all_linearity_errors.append(abs(track_info['linearity_error']))
                     if track_info.get('resistance_change_percent') is not None:
-                        all_resistance_changes.append(abs(track_info['resistance_change_percent']))
+                        res_val = track_info['resistance_change_percent']
+                        self.logger.debug(f"Track {track_info['track_id']}: resistance_change_percent = {res_val}")
+                        all_resistance_changes.append(abs(res_val))
 
             if all_sigma_gradients and len(all_sigma_gradients) > 1:
                 sigma_cv = (np.std(all_sigma_gradients) / np.mean(all_sigma_gradients)) * 100
@@ -2269,11 +2358,24 @@ Quality Assessment:
             else:
                 unit_summary['linearity_cv'] = 0
 
+            # Debug logging for resistance changes
+            self.logger.debug(f"Resistance changes collected: {all_resistance_changes}")
+            self.logger.debug(f"Number of resistance values: {len(all_resistance_changes)}")
+            
             if all_resistance_changes and len(all_resistance_changes) > 1:
-                resistance_cv = (np.std(all_resistance_changes) / abs(np.mean(all_resistance_changes))) * 100
+                mean_resistance = np.mean(all_resistance_changes)
+                std_resistance = np.std(all_resistance_changes)
+                self.logger.debug(f"Resistance mean: {mean_resistance}, std: {std_resistance}")
+                
+                # Avoid division by zero
+                if abs(mean_resistance) > 0:
+                    resistance_cv = (std_resistance / abs(mean_resistance)) * 100
+                else:
+                    resistance_cv = 0
                 unit_summary['resistance_cv'] = resistance_cv
             else:
                 unit_summary['resistance_cv'] = 0
+                self.logger.debug(f"Setting resistance_cv to 0 - insufficient data points")
 
             # Determine consistency grade
             if unit_summary['sigma_cv'] < 5 and unit_summary['linearity_cv'] < 10:
@@ -2894,108 +2996,6 @@ Quality Assessment:
         
         return stats
     
-    def _load_test_data(self):
-        """Load test data for debugging."""
-        # Create sample multi-track data
-        test_data = {
-            'model': 'TEST_MODEL',
-            'serial': 'TEST_001',
-            'total_files': 3,
-            'track_count': 3,
-            'overall_status': 'PASS',
-            'consistency': 'GOOD',
-            'sigma_cv': 8.5,
-            'linearity_cv': 15.2,
-            'resistance_cv': 3.7,
-            'files': [
-                {
-                    'filename': 'test_file_1.xlsx',
-                    'status': 'PASS',
-                    'track_count': 3,
-                    'tracks': {
-                        'TA': {
-                            'track_id': 'TA',
-                            'status': 'PASS',
-                            'overall_status': 'PASS',
-                            'sigma_gradient': 0.00045,
-                            'sigma_spec': 0.0006,
-                            'sigma_margin': 0.25,
-                            'linearity_error': 0.25,
-                            'linearity_spec': 0.5,
-                            'resistance_change': 2.5,
-                            'resistance_change_percent': 2.5,
-                            'trim_stability': 0.95,
-                            'industry_grade': 'A',
-                            'sigma_pass': True,
-                            'linearity_pass': True,
-                            'validation_status': 'Valid',
-                            'timestamp': datetime.now().isoformat(),
-                            'position': 'A',
-                            'sigma_analysis': {'sigma_gradient': 0.00045},
-                            'linearity_analysis': {'final_linearity_error_shifted': 0.25},
-                            'unit_properties': {'resistance_change_percent': 2.5},
-                            # Add position and error data for plotting
-                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
-                            'error_data': [0.1 * (i % 10 - 5) + 0.05 * np.sin(i/10) for i in range(0, 101, 2)]
-                        },
-                        'TB': {
-                            'track_id': 'TB',
-                            'status': 'PASS',
-                            'overall_status': 'PASS',
-                            'sigma_gradient': 0.00048,
-                            'sigma_spec': 0.0006,
-                            'sigma_margin': 0.20,
-                            'linearity_error': 0.28,
-                            'linearity_spec': 0.5,
-                            'resistance_change': 2.8,
-                            'resistance_change_percent': 2.8,
-                            'trim_stability': 0.92,
-                            'industry_grade': 'B',
-                            'sigma_pass': True,
-                            'linearity_pass': True,
-                            'validation_status': 'Valid',
-                            'timestamp': datetime.now().isoformat(),
-                            'position': 'B',
-                            'sigma_analysis': {'sigma_gradient': 0.00048},
-                            'linearity_analysis': {'final_linearity_error_shifted': 0.28},
-                            'unit_properties': {'resistance_change_percent': 2.8},
-                            # Add position and error data for plotting
-                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
-                            'error_data': [0.15 * (i % 10 - 5) + 0.08 * np.sin(i/8) for i in range(0, 101, 2)]
-                        },
-                        'TC': {
-                            'track_id': 'TC',
-                            'status': 'WARNING',
-                            'overall_status': 'WARNING',
-                            'sigma_gradient': 0.00052,
-                            'sigma_spec': 0.0006,
-                            'sigma_margin': 0.13,
-                            'linearity_error': 0.35,
-                            'linearity_spec': 0.5,
-                            'resistance_change': 3.2,
-                            'resistance_change_percent': 3.2,
-                            'trim_stability': 0.88,
-                            'industry_grade': 'C',
-                            'sigma_pass': False,
-                            'linearity_pass': True,
-                            'validation_status': 'Warning',
-                            'timestamp': datetime.now().isoformat(),
-                            'position': 'C',
-                            'sigma_analysis': {'sigma_gradient': 0.00052},
-                            'linearity_analysis': {'final_linearity_error_shifted': 0.35},
-                            'unit_properties': {'resistance_change_percent': 3.2},
-                            # Add position and error data for plotting
-                            'position_data': list(range(0, 101, 2)),  # 0, 2, 4, ... 100
-                            'error_data': [0.2 * (i % 10 - 5) + 0.1 * np.sin(i/6) for i in range(0, 101, 2)]
-                        }
-                    }
-                }
-            ]
-        }
-        
-        self.current_unit_data = test_data
-        self._update_multi_track_display()
-        self.logger.info("Test data loaded successfully")
             
     def show(self):
         """Show the page using grid layout."""

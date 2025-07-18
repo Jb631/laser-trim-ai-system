@@ -1500,6 +1500,45 @@ class DatabaseManager:
             self.logger.error(f"Unexpected error in get_risk_summary: {e}")
             raise DatabaseError(f"Unexpected error getting risk summary: {e}")
     
+    def get_latest_ml_threshold(self, model: str, serial: Optional[str] = None) -> Optional[float]:
+        """
+        Get the latest ML-recommended threshold for a model.
+        
+        Args:
+            model: Model number
+            serial: Optional serial number for more specific threshold
+            
+        Returns:
+            Latest recommended threshold from ML predictions, or None if not found
+        """
+        try:
+            with self.get_session() as session:
+                query = session.query(DBMLPrediction.recommended_threshold)\
+                    .join(DBAnalysisResult)\
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        DBMLPrediction.prediction_type == 'threshold_optimization',
+                        DBMLPrediction.recommended_threshold.isnot(None)
+                    )
+                
+                # Add serial filter if provided
+                if serial:
+                    query = query.filter(DBAnalysisResult.serial == serial)
+                
+                # Get the most recent prediction
+                result = query.order_by(DBMLPrediction.prediction_date.desc()).first()
+                
+                if result:
+                    self.logger.info(f"Found ML threshold for model {model}: {result[0]}")
+                    return float(result[0])
+                else:
+                    self.logger.info(f"No ML threshold found for model {model}")
+                    return None
+                    
+        except Exception as e:
+            self.logger.error(f"Error getting ML threshold: {e}")
+            return None
+    
     def save_analysis_batch(self, analyses: List[PydanticAnalysisResult]) -> List[int]:
         """
         Save multiple analyses in a batch for performance.

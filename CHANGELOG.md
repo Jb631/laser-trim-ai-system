@@ -18,7 +18,435 @@ This section tracks current known issues that need to be addressed. When fixing 
   - App is using `C:\Users\Jayma\AppData\Local\LaserTrimAnalyzer\database\laser_trim_local.db` with 0 records
   - User needs to ensure correct database configuration or environment settings
 
+- **ML Model Version Loading**: ML models are saved correctly as version 1.0.2 but load version 1.0.1 on restart
+  - Models train and save to new versions but engine state file retains old version references
+  - Causes ML features to appear untrained after app restart despite successful training
+  
+- **Chart Layout and Overlapping**: Multiple chart display issues remain
+  - Text labels overlapping on axes
+  - Improper spacing between chart elements
+  - Some charts showing with incorrect dimensions
+  
+- **Pareto Analysis Error**: "Error running Pareto analysis: 'disabled'" in Historical page
+  - Similar to the chart processing error but in different context
+  - Prevents Pareto analysis from displaying
+
+
 ## [Unreleased]
+
+### Fixed
+- **Chart Processing 'disabled' Error** (2025-07-18):
+  - **Issue**: Error "Error processing chart data: 'disabled'" appearing in model summary page
+  - **Root Cause**: Legend creation failing when handles/labels were in disabled state
+  - **Solution**: Added try-catch around legend creation and check for valid handles/labels before creating legend
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Added exception handling for legend creation (lines 914-925)
+  - **Impact**: Charts now render without throwing exceptions when legend data is unavailable
+
+- **Missing plot_pie Method** (2025-07-18):
+  - **Issue**: AttributeError: 'ChartWidget' object has no attribute 'plot_pie' in risk analysis
+  - **Root Cause**: Risk analysis trying to call plot_pie method that didn't exist in ChartWidget
+  - **Solution**: Added plot_pie method to ChartWidget with proper theme support
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Added plot_pie method (lines 1230-1278)
+  - **Impact**: Risk analysis pie charts now display correctly
+
+- **Comprehensive Chart Rendering Fixes** (2025-07-18):
+  - **Issues**: 
+    1. Black/incorrect chart backgrounds not matching theme
+    2. Overlapping text labels on x-axis
+    3. Erratic vertical lines in historical data charts
+    4. Poor matplotlib backend integration
+  - **Root Causes**:
+    1. Figure and axes backgrounds not properly synced with theme changes
+    2. Missing data aggregation causing multiple points per date
+    3. Insufficient padding and rotation for date labels
+    4. Matplotlib backend not configured for Tkinter integration
+  - **Solutions**:
+    1. Added explicit matplotlib backend configuration (TkAgg)
+    2. Fixed figure creation with explicit facecolor parameter
+    3. Updated _apply_theme_to_axes to ensure figure patch color matches
+    4. Added data aggregation in _plot_line_from_data to group by date
+    5. Added padding and improved label rotation handling
+    6. Added canvas.flush_events() for better rendering
+    7. Improved constrained_layout padding settings
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Major improvements to theme handling and data plotting
+  - **Impact**: Charts now render correctly with proper backgrounds, no overlapping labels, and smooth data lines
+
+- **Incorrect Sigma Gradient Target Lines** (2025-07-18):
+  - **Issue**: Target lines on sigma gradient trend chart were set at 0.3, 0.5, and 0.7, which are 10-100x higher than actual sigma gradient values (typically 0.01-0.05)
+  - **Root Cause**: Hardcoded values didn't match the actual data scale for sigma gradients
+  - **Solution**: 
+    1. Changed reference lines to realistic values: Excellent (0.01), Good (0.02), Acceptable (0.04), Warning (0.05)
+    2. Updated annotation text to clarify that lower values are better
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Fixed target values in _update_sigma_gradient_trend
+  - **Impact**: Sigma gradient chart now shows meaningful target lines that align with actual data ranges
+
+- **Empty Risk Analysis Charts** (2025-07-18):
+  - **Issue**: Enterprise Risk Analysis section on Historical page showing empty pie, bar, and line charts
+  - **Root Cause**: Missing _update_risk_analysis() method implementation
+  - **Solution**: Added complete _update_risk_analysis() method with risk overview pie chart, model comparison stacked bars, and risk trends line chart
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Added _update_risk_analysis method
+  - **Impact**: Risk analysis charts now properly display data with appropriate visualizations
+
+- **Quality Health Dashboard Layout Issues** (2025-07-18):
+  - **Issue**: Dashboard showing large blank space below title and overlapping metric cards
+  - **Root Cause**: Duplicate plot_quality_dashboard method definitions causing incorrect layout logic
+  - **Solution**: 
+    1. Removed duplicate method definition
+    2. Improved dashboard layout with fixed card positioning
+    3. Added _draw_metric_card method for better card rendering
+    4. Fixed card spacing and alignment issues
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed dashboard layout and rendering
+  - **Impact**: Quality Health Dashboard now displays properly with all 4 metrics clearly visible
+
+- **Navigation Toolbar Dark Mode Styling** (2025-07-18):
+  - **Issue**: Matplotlib navigation toolbar not properly styled in dark mode, showing default light colors
+  - **Root Cause**: Toolbar styling only applied at initialization, not responding to theme changes
+  - **Solution**:
+    1. Added _style_toolbar() method for comprehensive toolbar styling
+    2. Added _check_theme_change() method that polls for theme changes every second
+    3. Added _on_theme_change() callback for dynamic theme updates
+    4. Theme tracking initialization in _setup_ui
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Enhanced toolbar theme support
+  - **Impact**: Navigation toolbar now properly matches the application theme in both light and dark modes
+  
+- **Theme Callback Registration Error** (2025-07-18):
+  - **Issue**: AttributeError: 'ThemeHelper' has no attribute 'register_theme_callback' preventing page creation
+  - **Root Cause**: Attempted to use non-existent theme callback registration system
+  - **Solution**: Replaced with polling-based theme change detection using after() method
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Removed theme callback registration, added polling
+  - **Impact**: Pages now load correctly and theme changes are still detected
+
+## [2025-07-17]
+
+### Fixed  
+- **Chart Widget Theme Color Errors**:
+  - **Issue**: Multiple chart rendering errors with KeyError: 'card' across Model Summary, Historical, and ML Tools pages
+  - **Root Causes**:
+    1. Theme colors dictionary didn't have 'card' key, but code was trying to access theme_colors["bg"]["card"]
+    2. ThemeHelper class was missing is_dark_theme() method but it was being called in historical page
+    3. ML Tools page had uninitialized total_predictions variable causing runtime errors
+    4. Chart widget qa_colors dictionary was missing 'good' and 'bad' keys
+  - **Solutions**:
+    1. Changed theme_colors["bg"]["card"] to theme_colors["bg"]["secondary"] in chart_widget.py (lines 100, 1786)
+    2. Added is_dark_theme() static method to ThemeHelper class (lines 15-17)
+    3. Initialized total_predictions = 0 at start of _update_ml_analytics method (line 348)
+    4. Added 'good' and 'bad' color entries to qa_colors dictionary (lines 85-86)
+    5. Updated ML Tools page to use qa_colors.get() with fallback for 'good' color (lines 785-786)
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed theme color references and added missing qa_colors
+    - `src/laser_trim_analyzer/gui/theme_helper.py`: Added is_dark_theme() method
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Fixed uninitialized variable and color references
+  - **Impact**: All charts now render correctly without errors; theme colors are properly applied in both light and dark modes
+
+- **Comprehensive Chart Theme Integration Fix** (2025-07-17):
+  - **Issue**: Charts had incorrect backgrounds, poor text contrast, and didn't integrate with dark theme
+  - **Root Causes**:
+    1. Matplotlib figure and canvas backgrounds weren't synced with app theme
+    2. Navigation toolbar had light theme styling in dark mode
+    3. Text colors and legends had poor contrast
+    4. Matplotlib rcParams weren't configured for theme support
+  - **Solutions**:
+    1. Updated _update_figure_theme() to also configure canvas widget background
+    2. Added theme-aware toolbar styling in _setup_ui()
+    3. Enhanced _apply_theme_to_axes() with explicit text color settings for all elements
+    4. Added matplotlib rcParams configuration for both light and dark themes
+    5. Improved legend styling with proper background colors and z-order
+    6. Enhanced refresh_theme() to update rcParams when theme changes
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Complete theme integration overhaul
+  - **Impact**: Charts now properly display with correct backgrounds, readable text, and full dark theme support
+
+- **Chart Rendering Issues - Erratic Lines and Overlapping Elements** (2025-07-17):
+  - **Issue**: Charts were showing erratic vertical lines, overlapping data points, and text overlap in titles
+  - **Root Causes**: 
+    1. Multiple measurements per date were plotted without aggregation, causing vertical lines
+    2. Chart titles and subtitles were overlapping due to layout constraints
+    3. Legends were overlapping with chart content
+  - **Solutions**:
+    1. Added data aggregation to calculate daily averages when multiple measurements exist per date
+    2. Removed overlapping subtitles from chart titles
+    3. Moved legends outside plot area and reduced font sizes for better fit
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Added daily aggregation for trend chart (lines 825-864)
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: 
+      - Fixed early warning system title overlap (line 1648)
+      - Added data aggregation for control charts (lines 1801-1816)
+      - Fixed moving range calculation for aggregated data (lines 1862-1872)
+      - Adjusted legend positioning to prevent overlap (lines 1852, 1891)
+  - **Impact**: Charts now display smooth trend lines instead of erratic spikes, with readable text and proper layout
+
+- **Comprehensive Chart Improvements Across All Pages** (2025-07-17):
+  - **Theme Support Enhancement**:
+    - **Issue**: Fonts were difficult to read in dark theme
+    - **Solution**: Implemented dynamic font sizing and theme-aware colors throughout all charts
+    - **Implementation**: Added enhanced `_apply_theme_to_axes()` method with dynamic font calculations
+  - **Legend and Explanation Improvements**:
+    - **Issue**: Charts lacked context and were difficult to understand
+    - **Solution**: Added comprehensive legends, annotations, and reference lines to all charts
+    - **Implementation**: New helper methods `add_chart_annotation()` and `add_reference_lines()`
+  - **Space Optimization**:
+    - **Issue**: Charts were not utilizing available space efficiently
+    - **Solution**: Improved layout management with constrained_layout and smart legend positioning
+    - **Implementation**: Legends moved outside plot areas when crowded, font sizes adjusted based on figure size
+  - **Page-Specific Improvements**:
+    - **Model Summary Page**:
+      - Sigma gradient trend chart with daily aggregation and error bars
+      - Added reference lines for threshold values (0.3, 0.5, 0.7)
+      - Comprehensive annotations explaining data points and trends
+    - **Historical Page**:
+      - Enhanced Pareto chart with 80% rule annotation
+      - Theme-aware bar and line colors
+      - Informative text showing vital few analysis
+    - **ML Tools Page**:
+      - Quality trend chart with custom rendering and reference lines
+      - Yield optimization grouped bar chart showing current vs predicted
+      - Clear legends explaining all data series
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Core theme and helper method enhancements
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Sigma trend improvements
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Pareto chart enhancements
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Quality trend and yield chart improvements
+  - **Impact**: All charts now have consistent, theme-aware styling with clear legends, proper data aggregation, and informative annotations
+
+### Changed
+- **Removed Test Data Button from Multi-Track Page** (2025-07-10):
+  - **Issue**: "Test Data" button on multi-track page was introducing false/fake data
+  - **Solution**: Removed the button and associated `_load_test_data` method
+  - **Root Cause**: Debug feature was left in production code
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/multi_track_page.py`: Removed test data button and method
+
+### Fixed
+- **Model Summary Page Chart Improvements** (2025-07-10):
+  - **Sigma Trend Chart Date Format**:
+    - **Issue**: X-axis showed truncated dates (e.g., "04/17") instead of full dates
+    - **Solution**: Changed all date formats to show full dates (YYYY-MM-DD)
+    - **Root Cause**: Date formatter was using short format for readability, but user needs full dates for trends
+  - **Quality Overview Chart Font Color**:
+    - **Issue**: Bar chart value labels had dark font on dark theme, making them unreadable
+    - **Solution**: Applied theme-aware text color to bar value labels
+    - **Root Cause**: Bar value labels were not using the theme color system
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed date formatting and bar label colors
+  - **App Crash Investigation**:
+    - **Issue**: App crashed while user was typing
+    - **Observation**: Clean exit without error traceback suggests possible GUI thread issue
+    - **Note**: No specific keyboard event handlers found that would cause crash
+
+- **Chart Placeholder Persistence Issue** (2025-07-10):
+  - **Issue**: Chart placeholders remained visible even after data was plotted
+  - **Solution**: Modified `_get_or_create_axes` to clear figure when transitioning from placeholder
+  - **Root Cause**: Figure wasn't being cleared when switching from placeholder state to data state
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed placeholder clearing logic
+
+### Enhanced
+- **Sigma Gradient Chart Improvements** (2025-07-10):
+  - **Added Features**:
+    - Moving average smoothing line (7-point or 1/3 of data)
+    - Threshold reference lines (0.3, 0.5, 0.7)
+    - Full date formatting (YYYY-MM-DD)
+    - Better layout with increased padding
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Enhanced sigma chart rendering
+
+### Redesigned
+- **Model Summary Page Chart Overhaul** (2025-07-10):
+  - **Quality Health Dashboard** (replaced Quality Overview):
+    - Traffic light indicators for key metrics
+    - Real-time trend arrows (up/down/stable)
+    - Sparkline charts showing 30-day history
+    - Clear status indicators (green/yellow/red)
+  - **Early Warning System** (replaced Trend Analysis):
+    - Control chart with violation detection
+    - Moving range chart for variation monitoring
+    - CUSUM shift detection bar
+    - Statistical pattern recognition
+  - **Failure Pattern Analysis** (replaced Risk Assessment):
+    - Time-based heat map showing failure patterns by week
+    - Pareto chart with 80/20 analysis
+    - 7-day failure rate projection with confidence bounds
+  - **Performance Scorecard** (replaced Process Capability):
+    - Composite quality score timeline with zones
+    - Dual-axis yield & efficiency tracking
+    - Comparative performance table (week/month/all-time)
+    - Color-coded performance indicators
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Added new visualization methods
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Integrated new chart types
+
+### Documentation
+- **Added Deployment Strategy to CLAUDE.md** (2025-07-09):
+  - Documented plan for portable executable deployment
+  - No installation required - download from GitHub and run
+  - Database location flexibility for work/home environments
+  - Technical considerations to keep in mind during development
+  - Ensures all future development maintains portability
+
+### Fixed
+- **Multi-Track Page Resistance Variation Display** (2025-07-09):
+
+### Fixed  
+- **Model Summary Page Chart Visual Issues** (2025-07-10):
+  - **Chart Layout and White Space**:
+    - **Issue**: Charts had white space on the right side and layout issues
+    - **Solution**: Switched from tight_layout to constrained_layout throughout
+    - **Root Cause**: tight_layout wasn't properly handling the chart boundaries
+  - **Matplotlib Warnings**:
+    - **Issue**: Getting warnings about tight_layout and colorbar usage
+    - **Solution**: Removed all tight_layout calls and fixed colorbar instantiation
+    - **Root Cause**: Deprecated usage patterns in matplotlib
+  - **Failure Rate Projections**:
+    - **Issue**: Failure rate projections could go negative
+    - **Solution**: Added clamping to ensure rates stay between 0-100%
+    - **Root Cause**: Polynomial projection didn't have bounds checking
+  - **Chart Explanations**:
+    - **Issue**: Charts were complex without explanations
+    - **Solution**: Added explanatory subtitles to all new chart designs
+    - **Root Cause**: Complex visualizations need context for users
+  - **Excel Export Verification**:
+    - **Issue**: Uncertainty about missing columns in Excel export
+    - **Solution**: Added logging to show columns being exported
+    - **Root Cause**: No visibility into what was being exported
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: All visual fixes
+
+- **Chart Widget Indentation Error** (2025-07-10):
+  - **Issue**: Application crashed with "IndentationError: unexpected indent" at line 372
+  - **Solution**: Removed orphaned subplots_adjust lines with incorrect indentation
+  - **Root Cause**: Incomplete removal of tight_layout fallback code left indented lines
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed indentation errors
+
+- **Model Summary Page Layout Overhaul** (2025-07-10):
+  - **Nested Scrollable Frame Issue**:
+    - **Issue**: Historical data tab had nested CTkScrollableFrame causing layout conflicts
+    - **Solution**: Changed inner scrollable frame to regular CTkFrame
+    - **Root Cause**: Nested scrollable frames create competing scroll behaviors
+  - **Chart Container Sizing**:
+    - **Issue**: Charts were cut off on right side with white space
+    - **Solution**: Added explicit height configurations (400px trend, 600px analysis)
+    - **Root Cause**: Containers were collapsing without minimum height constraints
+  - **Tab View Configuration**:
+    - **Issue**: CTkTabview had no height configuration causing sizing issues
+    - **Solution**: Set explicit height of 550px for analysis tabs
+    - **Root Cause**: Tab view relied on content for sizing which was inconsistent
+  - **Chart Widget Default Size**:
+    - **Issue**: Default figure size too small for complex charts
+    - **Solution**: Increased default figsize from (8, 6) to (10, 6)
+    - **Root Cause**: Charts needed more horizontal space for proper display
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Layout fixes
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Figure size adjustment
+
+- **Sigma Gradient Chart ML Threshold Integration** (2025-07-10):
+  - **Removed Hardcoded Limits**:
+    - **Issue**: Arbitrary sigma gradient limits (0.3, 0.7) with unknown origin
+    - **Solution**: Removed from config/default.yaml completely
+    - **Root Cause**: These were placeholder values not based on any engineering data
+  - **ML-Based Threshold Display**:
+    - **Issue**: Chart showed fixed limits instead of dynamic ML-determined thresholds
+    - **Solution**: Query latest ML threshold from database and display on chart
+    - **Implementation**: Added `get_latest_ml_threshold()` method to DatabaseManager
+  - **Quality Metrics Update**:
+    - **Issue**: In-spec rate calculation used hardcoded 0.3-0.7 range
+    - **Solution**: Use ML threshold when available, otherwise use pass rate as proxy
+    - **Root Cause**: Metrics were based on arbitrary limits instead of data-driven values
+  - **Chart Simplification**:
+    - **Issue**: Too many reference lines cluttering the visualization
+    - **Solution**: Show only actual data, moving average, and ML threshold (if available)
+    - **Result**: Cleaner chart focused on trends and ML-driven insights
+  - **Files Modified**:
+    - `config/default.yaml`: Removed sigma gradient limit configurations
+    - `src/laser_trim_analyzer/database/manager.py`: Added ML threshold query method
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Updated chart and metrics
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Removed hardcoded categorization
+
+- **Database Import and Layout Warning Fixes** (2025-07-10):
+  - **MLPrediction Import Error**:
+    - **Issue**: NameError when querying ML thresholds
+    - **Solution**: Use correct import alias (DBMLPrediction)
+    - **Root Cause**: Inconsistent naming between import and usage
+  - **Matplotlib Layout Warnings**:
+    - **Issue**: Warnings about tight_layout and subplots_adjust
+    - **Solution**: Removed incompatible layout calls
+    - **Root Cause**: Constrained layout conflicts with manual adjustments
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/database/manager.py`: Fixed import references
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Removed layout conflicts
+
+- **Multi-Track Page Resistance Variation Display** (2025-07-09):
+  - **Issue**: Resistance variation was showing 0.0% but was actually 0.01%
+  - **Root Cause**: Display was using only 1 decimal place, rounding very small CV values to 0.0%
+  - **Solution**: 
+    - Added dynamic precision: shows 2 decimal places for CV values less than 1%
+    - Fixed missing CV calculations for file-based data (only sigma CV was calculated)
+    - Now properly calculates and displays all three CV metrics (sigma, linearity, resistance)
+  - **Additional Improvements**:
+    - Added risk level calculation based on all three CV values
+    - Added consistency rating (EXCELLENT/GOOD/FAIR/POOR) based on metrics
+    - Added proper color coding for all variation displays
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/multi_track_page.py`: Fixed display precision and added missing calculations
+
+- **Comprehensive Chart and Visualization Fixes** (2025-07-09):
+  - **Chart Axis and Readability Issues**:
+    - Fixed tight_layout padding from 1.5 to 2.0 with proper h_pad and w_pad spacing
+    - Added automatic date label rotation (45°) for better readability
+    - Implemented intelligent tick reduction when more than 15 ticks to prevent crowding
+    - Fixed overlapping labels on all chart types
+    - Added proper date formatting based on data range (hourly, daily, monthly, yearly)
+  
+  - **Responsive Design Implementation**:
+    - Added resize event handlers to ChartWidget for dynamic scaling
+    - Implemented font size scaling based on widget dimensions (0.7x to 1.5x)
+    - Added debounced resize handling to prevent flickering
+    - Charts now adapt to different screen sizes automatically
+  
+  - **Error Handling and Loading States**:
+    - Added show_loading() method to display loading indicators during data processing
+    - Added show_error() method with user-friendly error messages
+    - Improved error handling with specific exceptions (KeyError, ValueError, etc.)
+    - Added proper error messages instead of raw exception text
+    - Charts now show informative messages when data is unavailable
+  
+  - **Model Summary Page Fixes**:
+    - Fixed direct matplotlib figure manipulation issues
+    - Updated all charts to use ChartWidget API methods properly
+    - Fixed risk chart to use plot_scatter method correctly
+    - Added error handling for date parsing and data processing
+  
+  - **Historical Page Fixes**:
+    - Removed extensive direct matplotlib manipulation code
+    - Fixed production, model comparison, and quality trends charts
+    - Added proper error messages for chart failures
+    - Simplified chart updates to use ChartWidget API
+  
+  - **ML Tools Page Fixes**:
+    - Fixed DataFrame column naming for ChartWidget compatibility
+    - Updated quality trend chart to use correct column names (trim_date, sigma_gradient)
+    - Fixed yield forecast chart to use proper data format
+    - Added error handling for chart updates
+  
+  - **Interactive Features**:
+    - Fixed drag-and-drop ImportError to handle missing tkinterdnd2 gracefully
+    - Verified all button command handlers are properly implemented
+    - Fixed file selection methods in batch processing and single file pages
+  
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Added loading states, error handling, responsive design
+    - `src/laser_trim_analyzer/gui/pages/model_summary_page.py`: Fixed chart updates and error handling
+    - `src/laser_trim_analyzer/gui/pages/historical_page.py`: Fixed chart implementations
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Fixed DataFrame formatting
+    - `src/laser_trim_analyzer/gui/widgets/file_drop_zone.py`: Fixed ImportError handling
 
 ### Fixed
 - **Historical Page Chart Issues** (2025-07-09):

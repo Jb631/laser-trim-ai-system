@@ -1048,8 +1048,9 @@ class HistoricalPage(ctk.CTkFrame):
             # Update all visualizations when data is loaded
             try:
                 self._update_manufacturing_insights(results)
+                # Update risk analysis charts
+                self._update_risk_analysis(results)
                 # These methods need to be implemented or removed:
-                # self._update_risk_dashboard(results)
                 # self._update_qa_metrics(results)
                 # self._update_spc_charts(results)  # Add automatic SPC chart updates
                 
@@ -1173,56 +1174,18 @@ class HistoricalPage(ctk.CTkFrame):
                 # Update the chart
                 self.production_chart.update_chart_data(chart_data)
                 
-                # Customize the chart for production overview
-                if self.production_chart.figure.axes:
-                    ax = self.production_chart.figure.axes[0]
-                    ax.set_ylabel('Pass Rate (%)')
-                    ax.set_title('Company-Wide Production Volume & Yield')
-                    
-                    # Format y-axis as percentage
-                    import matplotlib.ticker as mticker
-                    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f'{y*100:.0f}'))
-                    ax.set_ylim(0, 1.05)  # 0-105%
-                    
-                    # Add volume bars on secondary axis
-                    ax2 = ax.twinx()
-                    ax2.bar(daily_data['date'], daily_data['total_units'], alpha=0.3, color='blue', label='Production Volume')
-                    ax2.set_ylabel('Units Produced', color='blue')
-                    ax2.tick_params(axis='y', labelcolor='blue')
-                    
-                    # Add target line
-                    ax.axhline(y=0.95, color='green', linestyle='--', alpha=0.5, label='Target (95%)')
-                    
-                    # Format x-axis dates
-                    import matplotlib.dates as mdates
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-                    # Use appropriate locator based on date range
-                    if len(daily_data) > 30:
-                        ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
-                    elif len(daily_data) > 7:
-                        ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-                    else:
-                        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
-                    
-                    # Rotate labels for better readability
-                    for label in ax.xaxis.get_ticklabels():
-                        label.set_rotation(45)
-                        label.set_ha('right')
-                    
-                    # Combine legends
-                    lines1, labels1 = ax.get_legend_handles_labels()
-                    lines2, labels2 = ax2.get_legend_handles_labels()
-                    ax.legend(lines1 + lines2, labels1 + labels2, loc='best')
-                    
-                    # Adjust layout to prevent label cutoff
-                    self.production_chart.figure.tight_layout()
-                    self.production_chart.canvas.draw_idle()
-                    self.logger.info("Production chart updated successfully")
+                # Add threshold line for target
+                self.production_chart.add_threshold_lines({'Target (95%)': 0.95}, orientation='horizontal')
+                self.logger.info("Production chart updated successfully")
             else:
                 self.production_chart.show_placeholder("No production data available", "Run a query to view trends")
             
         except Exception as e:
             self.logger.error(f"Error updating production overview: {e}")
+            self.production_chart.show_error(
+                "Production Chart Error",
+                f"Failed to calculate production metrics: {str(e)}"
+            )
     
     def _update_model_comparison(self, df):
         """Update model comparison chart with cross-model performance metrics."""
@@ -1241,54 +1204,25 @@ class HistoricalPage(ctk.CTkFrame):
             }).reset_index()
             
             if len(model_metrics) > 0:
-                # Clear and create new grouped bar chart
-                self.model_comparison_chart.clear_chart()
-                fig = self.model_comparison_chart.figure
-                ax = fig.add_subplot(111)
-                self.model_comparison_chart._apply_theme_to_axes(ax)
-                
-                # Prepare data for grouped bars
+                # Prepare data for bar chart - use average of sigma and linearity pass rates
                 models = model_metrics['model'].tolist()
                 sigma_pass = model_metrics['sigma_pass'].tolist()
                 linearity_pass = model_metrics['linearity_pass'].tolist()
                 
-                # Bar positions
-                x = np.arange(len(models))
-                width = 0.35
+                # Calculate overall pass rate
+                overall_pass = [(s + l) / 2 for s, l in zip(sigma_pass, linearity_pass)]
                 
-                # Create bars
-                bars1 = ax.bar(x - width/2, sigma_pass, width, label='Sigma Pass %', color='#3498db', alpha=0.8)
-                bars2 = ax.bar(x + width/2, linearity_pass, width, label='Linearity Pass %', color='#2ecc71', alpha=0.8)
+                # Create data for bar chart
+                chart_data = pd.DataFrame({
+                    'month_year': models,  # Using month_year column for categories
+                    'track_status': overall_pass  # Values to display
+                })
                 
-                # Add value labels on bars
-                for bars in [bars1, bars2]:
-                    for bar in bars:
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height + 1,
-                               f'{height:.1f}%', ha='center', va='bottom', fontsize=9)
+                # Update the chart
+                self.model_comparison_chart.update_chart_data(chart_data)
                 
-                # Customize chart
-                ax.set_xlabel('Model')
-                ax.set_ylabel('Pass Rate (%)')
-                ax.set_title('Model Performance Comparison')
-                ax.set_xticks(x)
-                ax.set_xticklabels(models, rotation=45 if len(models) > 5 else 0, ha='right')
-                ax.set_ylim(0, 110)
-                
-                # Add target line
-                ax.axhline(y=95, color='red', linestyle='--', alpha=0.5, label='Target (95%)')
-                
-                # Add high risk count as text
-                for i, (model, high_risk) in enumerate(zip(models, model_metrics['risk_category'])):
-                    if high_risk > 0:
-                        ax.text(i, 5, f'HR: {int(high_risk)}', ha='center', va='bottom', 
-                               color='red', fontweight='bold', fontsize=8)
-                
-                ax.legend(loc='best')
-                ax.grid(True, axis='y', alpha=0.3)
-                
-                fig.tight_layout()
-                self.model_comparison_chart.canvas.draw()
+                # Add threshold line
+                self.model_comparison_chart.add_threshold_lines({'Target': 95}, orientation='horizontal')
             else:
                 self.model_comparison_chart.show_placeholder("No model data available", "Need data from multiple models")
             
@@ -1324,63 +1258,152 @@ class HistoricalPage(ctk.CTkFrame):
             daily_quality = daily_quality.sort_values('date')
             
             if len(daily_quality) > 0:
-                # Create multi-line chart
-                self.quality_trends_chart.clear_chart()
-                fig = self.quality_trends_chart.figure
-                ax = fig.add_subplot(111)
-                self.quality_trends_chart._apply_theme_to_axes(ax)
+                # Use quality index as the main metric
+                chart_data = pd.DataFrame({
+                    'trim_date': pd.to_datetime(daily_quality['date']),
+                    'sigma_gradient': daily_quality['quality_index'] / 100.0  # Convert to 0-1 scale
+                })
                 
-                # Plot multiple quality indicators
-                dates = daily_quality['date']
-                ax.plot(dates, daily_quality['quality_index'], 'b-', linewidth=2.5, label='Quality Index', marker='o', markersize=4)
-                ax.plot(dates, daily_quality['sigma_pass'], 'g--', linewidth=1.5, label='Sigma Pass %', alpha=0.7)
-                ax.plot(dates, daily_quality['linearity_pass'], 'm--', linewidth=1.5, label='Linearity Pass %', alpha=0.7)
+                # Update the chart
+                self.quality_trends_chart.update_chart_data(chart_data)
                 
-                # Add target lines
-                ax.axhline(y=95, color='red', linestyle=':', alpha=0.5, label='Target (95%)')
-                ax.axhline(y=90, color='orange', linestyle=':', alpha=0.3)
-                
-                # Fill area under quality index
-                ax.fill_between(dates, 0, daily_quality['quality_index'], alpha=0.1, color='blue')
-                
-                # Customize chart
-                ax.set_xlabel('Date')
-                ax.set_ylabel('Quality Score (%)')
-                ax.set_title('Company-Wide Quality Indicators')
-                ax.set_ylim(0, 105)
-                
-                # Format x-axis
-                import matplotlib.dates as mdates
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-                # Use appropriate locator based on date range
-                if len(dates) > 30:
-                    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
-                elif len(dates) > 7:
-                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
-                else:
-                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
-                    
-                # Rotate labels for better readability
-                for label in ax.xaxis.get_ticklabels():
-                    label.set_rotation(45)
-                    label.set_ha('right')
-                
-                # Add rolling average
-                if len(daily_quality) > 7:
-                    rolling_avg = daily_quality['quality_index'].rolling(window=7, center=True).mean()
-                    ax.plot(dates, rolling_avg, 'r-', linewidth=2, label='7-Day Average', alpha=0.8)
-                
-                ax.legend(loc='best')
-                ax.grid(True, alpha=0.3)
-                
-                fig.tight_layout()
-                self.quality_trends_chart.canvas.draw()
+                # Add threshold lines
+                self.quality_trends_chart.add_threshold_lines({
+                    'Target': 0.95,
+                    'Warning': 0.90
+                }, orientation='horizontal')
             else:
                 self.quality_trends_chart.show_placeholder("No quality trend data", "Need more data points")
             
         except Exception as e:
             self.logger.error(f"Error updating quality trends: {e}")
             self.quality_trends_chart.show_placeholder("Error displaying trends", str(e))
+    
+    def _update_risk_analysis(self, results):
+        """Update risk analysis charts with data."""
+        if not results:
+            self.risk_overview_chart.show_placeholder("No data loaded", "Run a query to view risk analysis")
+            self.model_risk_chart.show_placeholder("No data loaded", "Run a query to compare model risks")
+            self.risk_trends_chart.show_placeholder("No data loaded", "Run a query to view risk trends")
+            return
+            
+        try:
+            # Calculate risk categories
+            risk_counts = {'Low Risk': 0, 'Medium Risk': 0, 'High Risk': 0, 'Critical': 0}
+            model_risks = {}
+            risk_timeline = {}
+            
+            for result in results:
+                # Determine risk level based on status
+                if result.overall_status.value == 'Pass':
+                    risk_level = 'Low Risk'
+                elif result.overall_status.value == 'Conditional Pass':
+                    risk_level = 'Medium Risk'
+                elif result.overall_status.value == 'Fail':
+                    # Check if it's critical based on sigma gradient
+                    if result.tracks and any(track.sigma_gradient > 0.05 for track in result.tracks if hasattr(track, 'sigma_gradient')):
+                        risk_level = 'Critical'
+                    else:
+                        risk_level = 'High Risk'
+                else:
+                    risk_level = 'Medium Risk'
+                    
+                risk_counts[risk_level] += 1
+                
+                # Count by model
+                if result.model not in model_risks:
+                    model_risks[result.model] = {'Low Risk': 0, 'Medium Risk': 0, 'High Risk': 0, 'Critical': 0}
+                model_risks[result.model][risk_level] += 1
+                
+                # Track over time
+                date_key = result.file_date.date() if result.file_date else result.timestamp.date()
+                if date_key not in risk_timeline:
+                    risk_timeline[date_key] = {'Low Risk': 0, 'Medium Risk': 0, 'High Risk': 0, 'Critical': 0}
+                risk_timeline[date_key][risk_level] += 1
+            
+            # Update risk overview pie chart
+            if sum(risk_counts.values()) > 0:
+                pie_data = pd.DataFrame({
+                    'category': list(risk_counts.keys()),
+                    'count': list(risk_counts.values())
+                })
+                self.risk_overview_chart.plot_pie(
+                    pie_data['count'].tolist(),
+                    pie_data['category'].tolist(),
+                    colors=['green', 'yellow', 'orange', 'red']
+                )
+            
+            # Update model comparison chart
+            if model_risks:
+                # Prepare data for stacked bar chart
+                models = list(model_risks.keys())
+                risk_categories = ['Low Risk', 'Medium Risk', 'High Risk', 'Critical']
+                
+                # Create data for each risk category
+                chart_data = pd.DataFrame()
+                for risk in risk_categories:
+                    chart_data[risk] = [model_risks[model][risk] for model in models]
+                chart_data['model'] = models
+                
+                # Plot stacked bar chart
+                self.model_risk_chart.clear_chart()
+                fig = self.model_risk_chart.figure
+                ax = fig.add_subplot(111)
+                self.model_risk_chart._apply_theme_to_axes(ax)
+                
+                # Create stacked bars
+                bottom = np.zeros(len(models))
+                colors = ['green', 'yellow', 'orange', 'red']
+                for i, risk in enumerate(risk_categories):
+                    ax.bar(models, chart_data[risk], bottom=bottom, label=risk, color=colors[i])
+                    bottom += chart_data[risk]
+                
+                ax.set_xlabel('Model')
+                ax.set_ylabel('Count')
+                ax.set_title('Risk Distribution by Model')
+                ax.legend()
+                
+                # Rotate labels if many models
+                if len(models) > 5:
+                    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                
+                self.model_risk_chart.canvas.draw()
+            
+            # Update risk trends chart
+            if risk_timeline:
+                # Convert to DataFrame for easier plotting
+                timeline_df = pd.DataFrame(risk_timeline).T.fillna(0)
+                timeline_df = timeline_df.sort_index()
+                
+                # Plot trends
+                self.risk_trends_chart.clear_chart()
+                fig = self.risk_trends_chart.figure
+                ax = fig.add_subplot(111)
+                self.risk_trends_chart._apply_theme_to_axes(ax)
+                
+                # Plot each risk category
+                for i, risk in enumerate(['Critical', 'High Risk', 'Medium Risk', 'Low Risk']):
+                    if risk in timeline_df.columns:
+                        ax.plot(timeline_df.index, timeline_df[risk], 
+                               marker='o', label=risk, color=['red', 'orange', 'yellow', 'green'][i])
+                
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Count')
+                ax.set_title('Risk Trends Over Time')
+                ax.legend()
+                
+                # Format dates
+                import matplotlib.dates as mdates
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                
+                self.risk_trends_chart.canvas.draw()
+                
+        except Exception as e:
+            self.logger.error(f"Error updating risk analysis: {e}")
+            self.risk_overview_chart.show_placeholder("Error", f"Failed to analyze risk: {str(e)}")
+            self.model_risk_chart.show_placeholder("Error", f"Failed to analyze risk: {str(e)}")
+            self.risk_trends_chart.show_placeholder("Error", f"Failed to analyze risk: {str(e)}")
     
     def _update_efficiency_metrics(self, df):
         """Update efficiency metrics chart with process performance indicators."""
@@ -1427,45 +1450,12 @@ class HistoricalPage(ctk.CTkFrame):
                 # Update chart
                 self.efficiency_chart.update_chart_data(chart_data)
                 
-                # Customize chart
-                if self.efficiency_chart.figure.axes:
-                    ax = self.efficiency_chart.figure.axes[0]
-                    ax.set_xlabel('Week')
-                    ax.set_ylabel('Efficiency Score (%)')
-                    ax.set_title('Process Efficiency by Production Period')
-                    
-                    # Add reference lines
-                    ax.axhline(y=90, color='green', linestyle='--', alpha=0.5, label='Excellent (≥90%)')
-                    ax.axhline(y=80, color='orange', linestyle='--', alpha=0.5, label='Good (≥80%)')
-                    ax.axhline(y=70, color='red', linestyle='--', alpha=0.5, label='Needs Improvement (<70%)')
-                    
-                    # Color bars based on efficiency
-                    if ax.patches:
-                        for patch, score in zip(ax.patches, weekly_efficiency['efficiency_score']):
-                            if score >= 90:
-                                patch.set_facecolor('#27ae60')  # Green
-                            elif score >= 80:
-                                patch.set_facecolor('#f39c12')  # Orange
-                            elif score >= 70:
-                                patch.set_facecolor('#e67e22')  # Dark orange
-                            else:
-                                patch.set_facecolor('#e74c3c')  # Red
-                    
-                    # Add volume as text annotation
-                    for i, (patch, volume) in enumerate(zip(ax.patches, weekly_efficiency['production_volume'])):
-                        height = patch.get_height()
-                        ax.text(patch.get_x() + patch.get_width()/2., height + 1,
-                               f'{int(volume)} units', ha='center', va='bottom', fontsize=8)
-                    
-                    # Rotate x-axis labels if many weeks
-                    if len(weekly_efficiency) > 8:
-                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-                    
-                    ax.legend(loc='best')
-                    ax.set_ylim(0, 105)
-                    ax.grid(True, axis='y', alpha=0.3)
-                    
-                    self.efficiency_chart.canvas.draw_idle()
+                # Add reference lines
+                self.efficiency_chart.add_threshold_lines({
+                    'Excellent (≥90%)': 90,
+                    'Good (≥80%)': 80,
+                    'Needs Improvement (<70%)': 70
+                }, orientation='horizontal')
             else:
                 self.efficiency_chart.show_placeholder("No efficiency data", "Need more production data")
                 
@@ -3798,48 +3788,78 @@ INTERPRETATION:
             from laser_trim_analyzer.gui.theme_helper import ThemeHelper
             theme_colors = ThemeHelper.get_theme_colors()
             text_color = theme_colors["fg"]["primary"]
+            is_dark = ThemeHelper.is_dark_theme()
+            
+            # Use theme-appropriate colors
+            bar_color = self.pareto_chart.qa_colors['primary']
+            line_color = self.pareto_chart.qa_colors['warning']
             
             # Bar chart
             x = np.arange(len(categories))
-            bars = ax1.bar(x, counts, color='steelblue', alpha=0.8, label='Failure Count')
-            ax1.set_xlabel('Failure Mode', fontsize=12)
-            ax1.set_ylabel('Count', color='steelblue', fontsize=12)
+            bars = ax1.bar(x, counts, color=bar_color, alpha=0.8, label='Failure Count')
+            ax1.set_xlabel('Failure Mode')
+            ax1.set_ylabel('Count', color=bar_color)
             ax1.set_xticks(x)
             ax1.set_xticklabels(categories, rotation=45, ha='right')
-            ax1.tick_params(axis='y', labelcolor='steelblue')
+            ax1.tick_params(axis='y', labelcolor=bar_color)
             
-            # Add value labels on bars with theme color
+            # Add value labels on bars with proper contrast
             for bar, count in zip(bars, counts):
                 height = bar.get_height()
-                ax1.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{count}', ha='center', va='bottom', color=text_color)
+                # Use contrasting color for bar labels
+                label_bg = 'white' if is_dark else 'black'
+                label_fg = 'black' if is_dark else 'white'
+                ax1.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+                        f'{count}', ha='center', va='bottom', 
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor=label_bg, 
+                                alpha=0.7, edgecolor='none'),
+                        color=label_fg, fontsize=9, fontweight='bold')
             
             # Cumulative line
             ax2 = ax1.twinx()
-            line = ax2.plot(x, cumulative_pct, 'ro-', linewidth=2, markersize=8, label='Cumulative %')
-            ax2.set_ylabel('Cumulative %', color='red', fontsize=12)
+            line = ax2.plot(x, cumulative_pct, color=line_color, marker='o', 
+                          linewidth=2.5, markersize=8, label='Cumulative %')
+            ax2.set_ylabel('Cumulative %', color=line_color)
             ax2.set_ylim(0, 105)
-            ax2.tick_params(axis='y', labelcolor='red')
+            ax2.tick_params(axis='y', labelcolor=line_color)
             
-            # Add 80% reference line
-            ref_line = ax2.axhline(y=80, color='green', linestyle='--', alpha=0.7, label='80% Reference')
+            # Add reference lines
+            reference_lines = {
+                '80% Rule': 80,
+                '95% Coverage': 95
+            }
+            self.pareto_chart.add_reference_lines(ax2, reference_lines)
             
-            # Add percentage labels on cumulative line with theme color
+            # Add percentage labels on cumulative line
             for i, (xi, pct) in enumerate(zip(x, cumulative_pct)):
-                if i == 0 or i == len(x) - 1:  # Only label first and last
+                if pct >= 80 and (i == 0 or cumulative_pct[i-1] < 80):  # Mark 80% point
+                    ax2.annotate(f'80% at {categories[i]}', 
+                               xy=(xi, pct), xytext=(xi+0.5, pct+5),
+                               arrowprops=dict(arrowstyle='->', color=text_color, alpha=0.7),
+                               fontsize=9, color=text_color)
+                elif i == len(x) - 1:  # Label last point
                     ax2.text(xi, pct + 2, f'{pct:.0f}%', ha='center', fontsize=9, color=text_color)
             
-            # Combined legend with theme styling
+            # Combined legend with better positioning
             lines1, labels1 = ax1.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
-            legend = ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+            legend = ax1.legend(lines1 + lines2, labels1 + labels2, 
+                              loc='center left', bbox_to_anchor=(1.1, 0.5))
             if legend:
                 self.pareto_chart._style_legend(legend)
             
-            ax1.set_title('Pareto Analysis of Failure Modes', fontsize=14, fontweight='bold')
-            ax1.grid(True, alpha=0.3, axis='y')
+            # Title and annotations
+            ax1.set_title('Pareto Analysis of Failure Modes', fontweight='bold')
             
-            fig.tight_layout()
+            # Add informative annotation
+            vital_few = sum(1 for pct in cumulative_pct if pct <= 80)
+            annotation_text = (f"{vital_few} of {len(categories)} failure modes account for 80% of issues\n"
+                             f"Total failures analyzed: {total}")
+            self.pareto_chart.add_chart_annotation(ax1, annotation_text, position='bottom')
+            
+            # Grid styling already handled by _apply_theme_to_axes
+            
+            # Use constrained layout instead of tight_layout
             self.pareto_chart.canvas.draw()
             
         except Exception as e:

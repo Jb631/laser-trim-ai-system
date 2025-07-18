@@ -102,7 +102,20 @@ To switch environments, set the `LTA_ENV` environment variable:
 
 ### Current Known Issues
 
-None - All previously known issues have been fixed:
+- **ML Model Version Loading**: ML models are saved correctly as version 1.0.2 but load version 1.0.1 on restart
+  - Models train and save to new versions but engine state file retains old version references
+  - Causes ML features to appear untrained after app restart despite successful training
+  
+- **Chart Layout and Overlapping**: Multiple chart display issues remain
+  - Text labels overlapping on axes
+  - Improper spacing between chart elements
+  - Some charts showing with incorrect dimensions
+  
+- **Pareto Analysis Error**: "Error running Pareto analysis: 'disabled'" in Historical page
+  - Similar to the chart processing error but in different context
+  - Prevents Pareto analysis from displaying
+
+### Previously Fixed Issues
 - ✓ Range utilization percent calculation now properly capped at 100%
 - ✓ Final Test Comparison page datetime parsing fixed
 - ✓ Final Test Comparison page now shows trim date from file
@@ -136,3 +149,38 @@ Remember: Always think through the full implementation before starting any fix.
 5. Use parallel tool operations when possible
 6. Document ALL changes in CHANGELOG.md immediately after implementation
 7. Update Known Issues sections as issues are discovered or fixed
+
+### Deployment Strategy (Future)
+
+**Goal**: Create a portable executable that can be downloaded from GitHub and run without installation.
+
+#### Deployment Requirements
+1. **No Installation Required** - Extract and run from any folder
+2. **No Admin Rights** - Runs entirely from user space
+3. **GitHub Distribution** - Download releases directly from GitHub
+4. **Desktop Shortcut** - Users can create shortcuts to the exe
+5. **IT-Friendly** - No registry modifications, services, or installers
+
+#### Technical Considerations for Development
+1. **File Paths** - Always use relative or user-specific paths, never hardcode system paths
+2. **Database Location** - Support flexible database locations:
+   - Network share (work environment)
+   - User Documents folder (persistent local)
+   - Portable folder (travels with app)
+3. **Configuration** - Store configs in user-accessible locations
+4. **Dependencies** - Ensure all dependencies can be bundled with PyInstaller
+5. **Updates** - Design for simple file replacement updates
+
+#### Database Path Priority
+1. Environment variable (LTA_DATABASE_PATH)
+2. Network location (if available)
+3. User Documents folder
+4. Portable app folder
+
+#### Build Process (When Ready)
+- Use PyInstaller for Windows executable
+- Create "portable" folder distribution
+- Package as zip for GitHub releases
+- No MSI/installer needed
+
+**Remember**: Every feature should work in a portable context without requiring installation or admin rights.

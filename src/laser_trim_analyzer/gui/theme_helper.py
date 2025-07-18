@@ -12,6 +12,11 @@ class ThemeHelper:
     """Helper class for consistent theming across the application."""
     
     @staticmethod
+    def is_dark_theme() -> bool:
+        """Check if the current theme is dark mode."""
+        return ctk.get_appearance_mode().lower() == "dark"
+    
+    @staticmethod
     def get_theme_colors() -> Dict[str, Dict[str, str]]:
         """Get theme colors for current appearance mode."""
         mode = ctk.get_appearance_mode().lower()

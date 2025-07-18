@@ -106,8 +106,12 @@ class FileDropZone(ttk.Frame):
             error_msg = "Drag and drop requires tkinterdnd2. Install with: pip install tkinterdnd2"
             self.primary_label.configure(text='Click browse to select files')
             self.secondary_label.pack_forget()
-            # This is a required feature, not optional
-            raise ImportError(error_msg)
+            # Log warning but don't crash the app
+            if self.logger:
+                self.logger.warning(error_msg)
+            # Show in UI that drag-drop is unavailable but allow browse functionality
+            self.secondary_label.configure(text="(Drag & drop unavailable - use browse button)")
+            self.secondary_label.pack()
 
     def _check_dnd_initialized(self):
         """Check if drag and drop is properly initialized."""

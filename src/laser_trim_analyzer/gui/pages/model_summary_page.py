@@ -246,9 +246,10 @@ class ModelSummaryPage(ctk.CTkFrame):
         )
         self.trend_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Chart container
-        self.trend_container = ctk.CTkFrame(self.trend_frame)
+        # Chart container with minimum height
+        self.trend_container = ctk.CTkFrame(self.trend_frame, height=400)
         self.trend_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.trend_container.pack_propagate(False)  # Prevent container from shrinking
 
         # Create matplotlib chart widget
         self.trend_chart = ChartWidget(
@@ -270,12 +271,13 @@ class ModelSummaryPage(ctk.CTkFrame):
         )
         self.analysis_label.pack(anchor='w', padx=15, pady=(15, 10))
 
-        # Analysis container with tabs
-        self.analysis_container = ctk.CTkFrame(self.analysis_frame)
+        # Analysis container with tabs and minimum height
+        self.analysis_container = ctk.CTkFrame(self.analysis_frame, height=600)
         self.analysis_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.analysis_container.pack_propagate(False)  # Prevent container from shrinking
 
-        # Analysis tabs
-        self.analysis_tabview = ctk.CTkTabview(self.analysis_container)
+        # Analysis tabs with explicit height
+        self.analysis_tabview = ctk.CTkTabview(self.analysis_container, height=550)
         self.analysis_tabview.pack(fill='both', expand=True, padx=10, pady=10)
 
         # Add tabs with more valuable charts
@@ -354,8 +356,8 @@ class ModelSummaryPage(ctk.CTkFrame):
         )
         history_info.pack(anchor='w', padx=5, pady=(5, 10))
         
-        # Create scrollable frame for historical data table
-        self.history_scroll = ctk.CTkScrollableFrame(history_frame, height=400)
+        # Create regular frame for historical data table (avoid nested scrollable frames)
+        self.history_scroll = ctk.CTkFrame(history_frame)
         self.history_scroll.pack(fill='both', expand=True, padx=5, pady=5)
         
         # Historical data will be populated when model is selected
@@ -802,10 +804,142 @@ class ModelSummaryPage(ctk.CTkFrame):
                 trend_info += f"Average: {sigma_values.mean():.4f}"
                 
                 # Ensure we have valid data
-                chart_data = df[['trim_date', 'sigma_gradient']].dropna()
-                self.logger.info(f"Updating trend chart with {len(chart_data)} valid data points")
+                chart_data = df[['trim_date', 'sigma_gradient']].copy()
+                # Remove rows where either column is NaN
+                chart_data = chart_data.dropna(subset=['trim_date', 'sigma_gradient'])
+                
+                self.logger.info(f"Updating trend chart with {len(chart_data)} valid data points out of {len(df)} total")
+                
                 if len(chart_data) > 0:
-                    self.trend_chart.update_chart_data(chart_data)
+                    try:
+                        # Ensure trim_date is datetime
+                        chart_data['trim_date'] = pd.to_datetime(chart_data['trim_date'])
+                        # Sort by date for proper line chart display
+                        chart_data = chart_data.sort_values('trim_date')
+                        
+                        # Log sample data for debugging
+                        if len(chart_data) > 0:
+                            self.logger.debug(f"First data point: {chart_data.iloc[0]['trim_date']} -> {chart_data.iloc[0]['sigma_gradient']}")
+                            self.logger.debug(f"Last data point: {chart_data.iloc[-1]['trim_date']} -> {chart_data.iloc[-1]['sigma_gradient']}")
+                        
+                        # Aggregate multiple measurements per date to avoid erratic lines
+                        daily_data = chart_data.groupby(chart_data['trim_date'].dt.date).agg({
+                            'sigma_gradient': ['mean', 'std', 'count']
+                        }).reset_index()
+                        daily_data.columns = ['date', 'mean_sigma', 'std_sigma', 'count']
+                        daily_data['date'] = pd.to_datetime(daily_data['date'])
+                        
+                        # Add moving average for smoothing
+                        window_size = min(7, len(daily_data) // 3)  # 7-point or 1/3 of data
+                        if window_size > 1:
+                            daily_data['moving_avg'] = daily_data['mean_sigma'].rolling(
+                                window=window_size, center=True, min_periods=1
+                            ).mean()
+                        
+                        # Update chart with enhanced data
+                        self.trend_chart.clear_chart()
+                        
+                        # Plot raw data
+                        ax = self.trend_chart._get_or_create_axes()
+                        theme_colors = ThemeHelper.get_theme_colors()
+                        
+                        # Daily average points with error bars for multiple measurements
+                        if daily_data['count'].max() > 1:
+                            # Show error bars where we have multiple measurements
+                            yerr = daily_data['std_sigma'].where(daily_data['count'] > 1, 0)
+                            ax.errorbar(daily_data['date'], daily_data['mean_sigma'], 
+                                       yerr=yerr, fmt='o', markersize=4, capsize=3,
+                                       color=self.trend_chart.qa_colors['primary'], 
+                                       label='Daily Average', alpha=0.7)
+                        else:
+                            ax.plot(daily_data['date'], daily_data['mean_sigma'], 
+                                   marker='o', linewidth=1.5, markersize=4, 
+                                   color=self.trend_chart.qa_colors['primary'], 
+                                   label='Daily Average', alpha=0.7)
+                        
+                        # Add smoothed line if we have enough data
+                        if window_size > 1 and 'moving_avg' in daily_data.columns:
+                            ax.plot(daily_data['date'], daily_data['moving_avg'], 
+                                   linewidth=2.5, color=self.trend_chart.qa_colors['warning'], 
+                                   label=f'{window_size}-point Moving Average', alpha=0.9)
+                        
+                        # Add reference lines for optimal ranges (based on typical sigma gradient values)
+                        reference_lines = {
+                            'Excellent': 0.01,    # Excellent performance
+                            'Good': 0.02,         # Good performance 
+                            'Acceptable': 0.04,   # Acceptable threshold
+                            'Warning': 0.05       # Warning level
+                        }
+                        self.trend_chart.add_reference_lines(ax, reference_lines)
+                        
+                        # Add ML-determined threshold if available
+                        if self.db_manager and self.selected_model:
+                            ml_threshold = self.db_manager.get_latest_ml_threshold(self.selected_model)
+                            if ml_threshold:
+                                ax.axhline(y=ml_threshold, color='green', linestyle='--', alpha=0.7, 
+                                          linewidth=2, label=f'ML Threshold: {ml_threshold:.3f}')
+                                self.logger.info(f"Displaying ML threshold: {ml_threshold}")
+                        
+                        # Add informative annotation
+                        annotation_text = (
+                            f"Showing {len(daily_data)} daily averages from {len(chart_data)} measurements\n"
+                            f"Lower values are better | Excellent: <0.01 | Good: <0.02 | Acceptable: <0.04"
+                        )
+                        self.trend_chart.add_chart_annotation(ax, annotation_text, position='top')
+                        
+                        # Labels and formatting
+                        ax.set_xlabel('Date')
+                        ax.set_ylabel('Sigma Gradient')
+                        ax.set_title('Sigma Gradient Trend Analysis', fontweight='bold')
+                        
+                        # Format dates intelligently based on range
+                        date_range = (daily_data['date'].max() - daily_data['date'].min()).days
+                        if date_range <= 7:
+                            date_formatter = mdates.DateFormatter('%Y-%m-%d %H:%M')
+                        elif date_range <= 30:
+                            date_formatter = mdates.DateFormatter('%Y-%m-%d')
+                        elif date_range <= 365:
+                            date_formatter = mdates.DateFormatter('%Y-%m-%d')
+                            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+                        else:
+                            date_formatter = mdates.DateFormatter('%Y-%m')
+                            ax.xaxis.set_major_locator(mdates.MonthLocator())
+                            
+                        ax.xaxis.set_major_formatter(date_formatter)
+                        
+                        # Rotate labels for better readability
+                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                        
+                        # Create comprehensive legend
+                        try:
+                            handles, labels = ax.get_legend_handles_labels()
+                            if handles and labels:  # Only create legend if there are items
+                                legend = ax.legend(handles, labels, 
+                                                 title='Legend',
+                                                 loc='best', 
+                                                 frameon=True,
+                                                 fancybox=True,
+                                                 shadow=True)
+                                self.trend_chart._style_legend(legend)
+                        except Exception as e:
+                            self.logger.warning(f"Could not create legend: {e}")
+                        
+                        # Apply theme styling (grid already set by _apply_theme_to_axes)
+                        
+                        # Force canvas update (layout handled by constrained_layout)
+                        self.trend_chart.canvas.draw_idle()
+                    except pd.errors.OutOfBoundsDatetime:
+                        self.logger.error("Invalid date values in data")
+                        self.trend_chart.show_error(
+                            "Date Error",
+                            "Some dates in the data are invalid or out of range"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Error processing chart data: {e}")
+                        self.trend_chart.show_error(
+                            "Data Processing Error",
+                            f"Unable to process the trend data: {str(e)}"
+                        )
                 else:
                     self.trend_chart.show_placeholder("No valid sigma data", "All sigma gradient values are missing")
             else:
@@ -813,7 +947,10 @@ class ModelSummaryPage(ctk.CTkFrame):
                 
         except Exception as e:
             self.logger.error(f"Error updating trend chart: {e}")
-            self.trend_chart.update_chart_data(pd.DataFrame({'trim_date': [], 'sigma_gradient': []}))
+            self.trend_chart.show_error(
+                "Chart Update Error",
+                "Failed to update the trend chart. Please try refreshing the data."
+            )
 
     def _update_analysis_charts(self):
         """Update the additional analysis charts with more valuable visualizations."""
@@ -829,301 +966,149 @@ class ModelSummaryPage(ctk.CTkFrame):
                 # Calculate key quality metrics
                 total_units = len(df)
                 pass_rate = (df['track_status'] == 'Pass').mean() * 100
-                fail_rate = 100 - pass_rate
                 
-                # Sigma gradient zones
-                optimal_zone = ((df['sigma_gradient'] >= 0.3) & (df['sigma_gradient'] <= 0.7)).sum()
-                warning_zone = ((df['sigma_gradient'] < 0.3) | (df['sigma_gradient'] > 0.7)).sum()
-                critical_zone = (df['sigma_gradient'].isna()).sum()
+                # Sigma gradient statistics
+                sigma_values = df['sigma_gradient'].dropna()
                 
-                # Risk categories
-                if 'risk_category' in df.columns:
-                    high_risk = (df['risk_category'] == 'High').sum()
-                    medium_risk = (df['risk_category'] == 'Medium').sum()
-                    low_risk = (df['risk_category'] == 'Low').sum()
+                # Use ML threshold if available, otherwise calculate based on pass/fail
+                ml_threshold = None
+                if self.db_manager and self.selected_model:
+                    ml_threshold = self.db_manager.get_latest_ml_threshold(self.selected_model)
+                
+                if ml_threshold:
+                    # Count values below ML threshold as "in spec"
+                    in_spec_count = (sigma_values <= ml_threshold).sum()
+                    in_spec_rate = (in_spec_count / len(sigma_values) * 100) if len(sigma_values) > 0 else 0
                 else:
-                    high_risk = medium_risk = low_risk = 0
+                    # Without ML threshold, use pass rate as proxy for in-spec rate
+                    in_spec_rate = pass_rate
                 
-                # Create overview data
-                overview_data = pd.DataFrame({
-                    'category': ['Pass Rate', 'Fail Rate', 'Optimal Zone', 'Warning Zone', 'Critical Zone', 
-                                'High Risk', 'Medium Risk', 'Low Risk'],
-                    'value': [pass_rate, fail_rate, 
-                             (optimal_zone/total_units)*100 if total_units > 0 else 0,
-                             (warning_zone/total_units)*100 if total_units > 0 else 0,
-                             (critical_zone/total_units)*100 if total_units > 0 else 0,
-                             (high_risk/total_units)*100 if total_units > 0 else 0,
-                             (medium_risk/total_units)*100 if total_units > 0 else 0,
-                             (low_risk/total_units)*100 if total_units > 0 else 0],
-                    'color': ['green', 'red', 'green', 'orange', 'red', 'red', 'orange', 'green']
-                })
+                # Calculate stability (based on standard deviation)
+                sigma_std = sigma_values.std() if len(sigma_values) > 1 else 0
+                stability_score = max(0, 100 - (sigma_std * 200))  # Lower std = higher stability
                 
-                # Update overview chart
-                self.overview_chart.clear_chart()
-                fig = self.overview_chart.figure
-                ax = fig.add_subplot(111)
-                self.overview_chart._apply_theme_to_axes(ax)
+                # Risk level calculation
+                if 'risk_category' in df.columns:
+                    high_risk_count = (df['risk_category'] == 'High').sum()
+                    risk_score = 100 - (high_risk_count / total_units * 100) if total_units > 0 else 100
+                else:
+                    risk_score = 100 if pass_rate > 95 else (pass_rate if pass_rate > 80 else pass_rate * 0.8)
                 
-                # Create grouped bar chart
-                x = np.arange(len(overview_data))
-                bars = ax.bar(x, overview_data['value'], color=overview_data['color'], alpha=0.7)
+                # Calculate trend for each metric (last 30 days if available)
+                recent_df = df.tail(min(30, len(df)))
+                old_pass_rate = (recent_df.head(15)['track_status'] == 'Pass').mean() * 100
+                new_pass_rate = (recent_df.tail(15)['track_status'] == 'Pass').mean() * 100
+                pass_trend = 'up' if new_pass_rate > old_pass_rate else ('down' if new_pass_rate < old_pass_rate else 'stable')
                 
-                # Add value labels on bars with theme-aware color
-                theme_colors = ThemeHelper.get_theme_colors()
-                text_color = theme_colors["fg"]["primary"]
-                for bar, val in zip(bars, overview_data['value']):
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height + 1,
-                           f'{val:.1f}%', ha='center', va='bottom', fontsize=10, color=text_color)
+                # Get historical data for sparklines
+                # Group by date to get daily averages
+                daily_metrics = df.groupby(df['trim_date'].dt.date).agg({
+                    'track_status': lambda x: (x == 'Pass').mean() * 100,
+                    'sigma_gradient': lambda x: ((x >= 0.3) & (x <= 0.7)).mean() * 100 if len(x) > 0 else 0
+                }).tail(30)  # Last 30 days
                 
-                # Remove the confusing reference lines - they don't apply to all categories
-                ax.set_xticks(x)
-                ax.set_xticklabels(overview_data['category'], rotation=45, ha='right')
-                ax.set_ylabel('Percentage (%)')
-                ax.set_ylim(0, 110)
-                ax.set_title('Quality Metrics Overview', fontsize=14, fontweight='bold')
+                # Prepare dashboard metrics
+                dashboard_metrics = {
+                    'Pass Rate': {
+                        'value': pass_rate,
+                        'status': 'green' if pass_rate >= 95 else ('yellow' if pass_rate >= 85 else 'red'),
+                        'trend': pass_trend,
+                        'history': daily_metrics['track_status'].tolist() if len(daily_metrics) > 0 else [],
+                        'target': 95,
+                        'label': 'Pass Rate'
+                    },
+                    'In-Spec Rate': {
+                        'value': in_spec_rate,
+                        'status': 'green' if in_spec_rate >= 90 else ('yellow' if in_spec_rate >= 75 else 'red'),
+                        'trend': 'stable',  # Could calculate if needed
+                        'history': daily_metrics['sigma_gradient'].tolist() if len(daily_metrics) > 0 else [],
+                        'target': 90,
+                        'label': 'Sigma In-Spec'
+                    },
+                    'Stability': {
+                        'value': stability_score,
+                        'status': 'green' if stability_score >= 80 else ('yellow' if stability_score >= 60 else 'red'),
+                        'trend': 'stable',
+                        'history': [],  # Could calculate rolling std
+                        'target': 80,
+                        'label': 'Process Stability'
+                    },
+                    'Risk Score': {
+                        'value': risk_score,
+                        'status': 'green' if risk_score >= 90 else ('yellow' if risk_score >= 70 else 'red'),
+                        'trend': 'stable',
+                        'history': [],
+                        'target': 90,
+                        'label': 'Risk Score'
+                    }
+                }
                 
-                # Add a text annotation for pass rate target
-                pass_rate_idx = 0  # Pass Rate is first in the list
-                ax.annotate('Target: 95%', xy=(pass_rate_idx, 95), xytext=(pass_rate_idx + 0.5, 100),
-                           arrowprops=dict(arrowstyle='->', color='green', alpha=0.5),
-                           fontsize=9, color='green', alpha=0.7)
+                # Update the chart with the quality dashboard
+                self.overview_chart.plot_quality_dashboard(dashboard_metrics)
                 
-                ax.grid(True, axis='y', alpha=0.3)
-                
-                fig.tight_layout()
-                self.overview_chart.canvas.draw()
-                
-                self.logger.info("Updated quality overview dashboard")
+                self.logger.info("Updated quality health dashboard")
                 
             except Exception as e:
                 self.logger.error(f"Error creating quality overview: {e}")
-                self.overview_chart.show_placeholder("Error displaying overview", "Check data format")
+                self.overview_chart.show_error(
+                    "Overview Chart Error",
+                    f"Failed to create quality overview: {str(e)}"
+                )
 
-            # 2. Trend Analysis - Process control chart with control limits
+            # 2. Early Warning System - Moving range, CUSUM, and violation detection
             try:
-                # Sort by date and calculate rolling statistics
+                # Sort by date
                 df_sorted = df.sort_values('trim_date').copy()
                 
-                # Calculate daily averages if multiple units per day
-                daily_stats = df_sorted.groupby(df_sorted['trim_date'].dt.date).agg({
-                    'sigma_gradient': ['mean', 'std', 'count'],
-                    'track_status': lambda x: (x == 'Pass').sum()
-                }).reset_index()
-                
-                daily_stats.columns = ['date', 'mean_sigma', 'std_sigma', 'count', 'pass_count']
-                daily_stats['pass_rate'] = (daily_stats['pass_count'] / daily_stats['count']) * 100
-                
-                if len(daily_stats) > 2:
-                    # Calculate control limits
-                    overall_mean = daily_stats['mean_sigma'].mean()
-                    overall_std = daily_stats['mean_sigma'].std()
-                    ucl = overall_mean + 3 * overall_std  # Upper Control Limit
-                    lcl = overall_mean - 3 * overall_std  # Lower Control Limit
-                    uwl = overall_mean + 2 * overall_std  # Upper Warning Limit
-                    lwl = overall_mean - 2 * overall_std  # Lower Warning Limit
+                # Prepare data for early warning system
+                if len(df_sorted) > 5:  # Need at least 5 points for meaningful analysis
+                    # Get individual measurements (not daily averages) for better sensitivity
+                    warning_data = df_sorted[['trim_date', 'sigma_gradient']].dropna()
                     
-                    # Update trend analysis chart
-                    self.trend_analysis_chart.clear_chart()
-                    fig = self.trend_analysis_chart.figure
-                    ax = fig.add_subplot(111)
-                    self.trend_analysis_chart._apply_theme_to_axes(ax)
+                    # Update early warning system chart
+                    self.trend_analysis_chart.plot_early_warning_system(warning_data)
                     
-                    # Plot the main trend line
-                    dates = pd.to_datetime(daily_stats['date'])
-                    ax.plot(dates, daily_stats['mean_sigma'], 'b-o', markersize=6, 
-                           linewidth=2, label='Daily Average', alpha=0.8)
+                    # Calculate warning statistics
+                    values = warning_data['sigma_gradient']
+                    mean_val = values.mean()
+                    std_val = values.std()
                     
-                    # Add control limits
-                    ax.axhline(y=overall_mean, color='green', linestyle='-', linewidth=2, 
-                              label=f'Center Line ({overall_mean:.3f})')
-                    ax.axhline(y=ucl, color='red', linestyle='--', linewidth=1.5, 
-                              label=f'UCL ({ucl:.3f})')
-                    ax.axhline(y=lcl, color='red', linestyle='--', linewidth=1.5, 
-                              label=f'LCL ({lcl:.3f})')
-                    ax.axhline(y=uwl, color='orange', linestyle=':', linewidth=1, alpha=0.7)
-                    ax.axhline(y=lwl, color='orange', linestyle=':', linewidth=1, alpha=0.7)
+                    # Count violations and warnings
+                    ucl = mean_val + 3 * std_val
+                    lcl = mean_val - 3 * std_val
+                    uwl = mean_val + 2 * std_val
+                    lwl = mean_val - 2 * std_val
                     
-                    # Shade zones
-                    ax.fill_between(dates, lcl, ucl, alpha=0.1, color='green', label='Control Zone')
-                    ax.fill_between(dates, lwl, uwl, alpha=0.1, color='yellow')
+                    violations = ((values > ucl) | (values < lcl)).sum()
+                    warnings = (((values > uwl) & (values <= ucl)) | ((values < lwl) & (values >= lcl))).sum()
                     
-                    # Highlight out-of-control points
-                    ooc_mask = (daily_stats['mean_sigma'] > ucl) | (daily_stats['mean_sigma'] < lcl)
-                    if ooc_mask.any():
-                        ax.scatter(dates[ooc_mask], daily_stats['mean_sigma'][ooc_mask], 
-                                  color='red', s=100, zorder=5, label='Out of Control')
+                    # Log summary
+                    self.logger.info(f"Early Warning System: {violations} violations, {warnings} warnings out of {len(values)} points")
                     
-                    # Format x-axis
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates)//10)))
-                    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-                    
-                    ax.set_xlabel('Date')
-                    ax.set_ylabel('Sigma Gradient')
-                    ax.set_title('Process Control Chart', fontsize=14, fontweight='bold')
-                    legend = ax.legend(loc='best', fontsize=9)
-                    if legend:
-                        self.trend_analysis_chart._style_legend(legend)
-                    ax.grid(True, alpha=0.3)
-                    
-                    fig.tight_layout()
-                    self.trend_analysis_chart.canvas.draw()
-                    
-                    self.logger.info(f"Updated trend analysis with {len(daily_stats)} data points")
                 else:
                     self.trend_analysis_chart.show_placeholder(
                         "Insufficient data",
-                        "Need at least 3 days of data for control limits"
+                        "Need at least 5 data points for early warning analysis"
                     )
                     
             except Exception as e:
                 self.logger.error(f"Error creating trend analysis: {e}")
-                self.trend_analysis_chart.show_placeholder("Error displaying trends", "Check data format")
+                self.trend_analysis_chart.show_error(
+                    "Trend Analysis Error",
+                    f"Unable to calculate control limits: {str(e)}"
+                )
 
-            # 3. Risk Assessment Matrix - Visual risk analysis
+            # 3. Failure Pattern Analysis - Heat map, Pareto, and projections
             try:
-                # Calculate risk metrics for each failure mode
-                risk_data = []
+                # Use the failure pattern analysis method
+                self.risk_chart.plot_failure_pattern_analysis(df)
                 
-                # Group by failure patterns
-                fail_df = df[df['track_status'] == 'Fail'].copy()
+                # Log summary statistics
+                fail_count = (df['track_status'] == 'Fail').sum()
+                total_count = len(df)
+                fail_rate = (fail_count / total_count * 100) if total_count > 0 else 0
                 
-                if len(fail_df) > 0:
-                    # Analyze failure modes
-                    # 1. Out of spec failures
-                    out_of_spec = fail_df[(fail_df['sigma_gradient'] < 0.3) | (fail_df['sigma_gradient'] > 0.7)]
-                    if len(out_of_spec) > 0:
-                        risk_data.append({
-                            'failure_mode': 'Out of Spec',
-                            'frequency': len(out_of_spec),
-                            'severity': 8,  # High severity
-                            'detectability': 3,  # Easy to detect
-                            'rpn': len(out_of_spec) * 8 * 3
-                        })
-                    
-                    # 2. Linearity failures
-                    if 'linearity_pass' in fail_df.columns:
-                        linearity_fail = fail_df[fail_df['linearity_pass'] == False]
-                        if len(linearity_fail) > 0:
-                            risk_data.append({
-                                'failure_mode': 'Linearity Issues',
-                                'frequency': len(linearity_fail),
-                                'severity': 6,  # Medium severity
-                                'detectability': 5,  # Moderate to detect
-                                'rpn': len(linearity_fail) * 6 * 5
-                            })
-                    
-                    # 3. High risk category failures
-                    if 'risk_category' in fail_df.columns:
-                        high_risk_fail = fail_df[fail_df['risk_category'] == 'High']
-                        if len(high_risk_fail) > 0:
-                            risk_data.append({
-                                'failure_mode': 'High Risk Units',
-                                'frequency': len(high_risk_fail),
-                                'severity': 9,  # Very high severity
-                                'detectability': 7,  # Hard to detect
-                                'rpn': len(high_risk_fail) * 9 * 7
-                            })
-                    
-                    # 4. Random failures (in spec but still failed)
-                    in_spec_fail = fail_df[(fail_df['sigma_gradient'] >= 0.3) & (fail_df['sigma_gradient'] <= 0.7)]
-                    if len(in_spec_fail) > 0:
-                        risk_data.append({
-                            'failure_mode': 'Random Failures',
-                            'frequency': len(in_spec_fail),
-                            'severity': 5,  # Medium severity
-                            'detectability': 8,  # Very hard to detect
-                            'rpn': len(in_spec_fail) * 5 * 8
-                        })
-                
-                # Also analyze warning conditions from passing units
-                pass_df = df[df['track_status'] == 'Pass'].copy()
-                if len(pass_df) > 0:
-                    # Near spec limit warnings
-                    near_limit = pass_df[(pass_df['sigma_gradient'] < 0.35) | (pass_df['sigma_gradient'] > 0.65)]
-                    if len(near_limit) > 0:
-                        risk_data.append({
-                            'failure_mode': 'Near Spec Limits',
-                            'frequency': len(near_limit),
-                            'severity': 3,  # Low severity (still passing)
-                            'detectability': 2,  # Easy to detect
-                            'rpn': len(near_limit) * 3 * 2
-                        })
-                
-                if risk_data:
-                    # Create risk matrix visualization
-                    self.risk_chart.clear_chart()
-                    fig = self.risk_chart.figure
-                    ax = fig.add_subplot(111)
-                    self.risk_chart._apply_theme_to_axes(ax)
-                    
-                    # Prepare data for bubble chart
-                    x = [d['severity'] for d in risk_data]
-                    y = [d['detectability'] for d in risk_data]
-                    sizes = [d['frequency'] * 50 for d in risk_data]  # Scale for visibility
-                    colors = [d['rpn'] for d in risk_data]
-                    labels = [d['failure_mode'] for d in risk_data]
-                    
-                    # Create scatter plot with varying sizes and colors
-                    scatter = ax.scatter(x, y, s=sizes, c=colors, cmap='RdYlGn_r', 
-                                       alpha=0.6, edgecolors='black', linewidth=1)
-                    
-                    # Get theme colors for annotations
-                    theme_colors = ThemeHelper.get_theme_colors()
-                    is_dark = ctk.get_appearance_mode().lower() == "dark"
-                    text_color = theme_colors["fg"]["primary"]
-                    bg_color = theme_colors["bg"]["secondary"] if is_dark else 'white'
-                    
-                    # Add labels for each bubble
-                    for i, label in enumerate(labels):
-                        ax.annotate(f"{label}\n({risk_data[i]['frequency']})", 
-                                   (x[i], y[i]), 
-                                   xytext=(5, 5), 
-                                   textcoords='offset points',
-                                   fontsize=9,
-                                   color=text_color,
-                                   bbox=dict(boxstyle='round,pad=0.3', facecolor=bg_color, alpha=0.8, edgecolor=text_color))
-                    
-                    # Add colorbar for RPN using fig.colorbar instead of plt.colorbar
-                    cbar = fig.colorbar(scatter, ax=ax)
-                    cbar.set_label('Risk Priority Number (RPN)', rotation=270, labelpad=20, color=text_color)
-                    cbar.ax.tick_params(colors=text_color)
-                    
-                    # Add risk zones
-                    ax.axhspan(1, 3, xmin=0, xmax=0.33, alpha=0.1, color='green')  # Low risk
-                    ax.axhspan(1, 3, xmin=0.33, xmax=0.67, alpha=0.1, color='yellow')  # Medium risk
-                    ax.axhspan(1, 3, xmin=0.67, xmax=1, alpha=0.1, color='red')  # High risk
-                    
-                    ax.axhspan(3, 6, xmin=0, xmax=0.33, alpha=0.1, color='yellow')
-                    ax.axhspan(3, 6, xmin=0.33, xmax=0.67, alpha=0.1, color='orange')
-                    ax.axhspan(3, 6, xmin=0.67, xmax=1, alpha=0.1, color='red')
-                    
-                    ax.axhspan(6, 10, xmin=0, xmax=0.33, alpha=0.1, color='orange')
-                    ax.axhspan(6, 10, xmin=0.33, xmax=1, alpha=0.1, color='red')
-                    
-                    # Set axis properties
-                    ax.set_xlabel('Severity (1=Low, 10=High)')
-                    ax.set_ylabel('Detectability (1=Easy, 10=Hard)')
-                    ax.set_xlim(0, 11)
-                    ax.set_ylim(0, 11)
-                    ax.set_title('Risk Assessment Matrix (FMEA)', fontsize=14, fontweight='bold')
-                    ax.grid(True, alpha=0.3)
-                    
-                    # Add risk zone labels
-                    ax.text(2, 9.5, 'LOW RISK', fontsize=8, color='green', fontweight='bold', ha='center')
-                    ax.text(5, 9.5, 'MEDIUM RISK', fontsize=8, color='orange', fontweight='bold', ha='center')
-                    ax.text(8.5, 9.5, 'HIGH RISK', fontsize=8, color='red', fontweight='bold', ha='center')
-                    
-                    fig.tight_layout()
-                    self.risk_chart.canvas.draw()
-                    
-                    self.logger.info(f"Updated risk assessment with {len(risk_data)} failure modes")
-                else:
-                    self.risk_chart.show_placeholder(
-                        "No failures detected",
-                        "Risk assessment requires failure data"
-                    )
+                self.logger.info(f"Failure Pattern Analysis: {fail_count} failures out of {total_count} units ({fail_rate:.1f}%)")
                     
             except Exception as e:
                 self.logger.error(f"Error creating risk assessment: {e}")
@@ -1169,7 +1154,19 @@ class ModelSummaryPage(ctk.CTkFrame):
                 return
                 
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                # Raw data
+                # Raw data - ensure all columns are included
+                # Log what columns we're exporting
+                self.logger.info(f"Exporting {len(self.model_data)} rows with columns: {list(self.model_data.columns)}")
+                
+                # Check for missing columns and log
+                expected_cols = ['linearity_fail_points', 'unit_length']
+                for col in expected_cols:
+                    if col not in self.model_data.columns:
+                        self.logger.warning(f"Column '{col}' not found in model data")
+                    else:
+                        non_null = self.model_data[col].notna().sum()
+                        self.logger.info(f"Column '{col}' has {non_null} non-null values out of {len(self.model_data)}")
+                
                 self.model_data.to_excel(writer, sheet_name='Raw Data', index=False)
                 
                 # Summary statistics
@@ -1640,84 +1637,28 @@ class ModelSummaryPage(ctk.CTkFrame):
             self.history_data_frames.append(row_frame)
     
     def _update_cpk_chart(self):
-        """Update process capability (Cpk) chart."""
+        """Update performance scorecard."""
         if self.model_data is None or len(self.model_data) == 0:
             return
         
         df = self.model_data
-        sigma_values = df['sigma_gradient'].dropna()
         
-        if len(sigma_values) < 10:
-            self.cpk_chart.show_placeholder("Insufficient data", "Need at least 10 samples for Cpk analysis")
+        # Need at least some data for meaningful scorecard
+        if len(df) < 3:
+            self.cpk_chart.show_placeholder("Insufficient data", "Need at least 3 data points for performance analysis")
             return
         
         try:
-            # Calculate statistics
-            mean_val = sigma_values.mean()
-            std_val = sigma_values.std()
+            # Use the performance scorecard visualization
+            self.cpk_chart.plot_performance_scorecard(df)
             
-            # Define specification limits for sigma gradient
-            usl = 0.7  # Upper spec limit
-            lsl = 0.3  # Lower spec limit
-            target = 0.5  # Target value
+            # Calculate and log summary statistics
+            pass_rate = (df['track_status'] == 'Pass').mean() * 100
+            in_spec_rate = ((df['sigma_gradient'] >= 0.3) & (df['sigma_gradient'] <= 0.7)).mean() * 100
+            avg_sigma = df['sigma_gradient'].mean()
             
-            # Calculate Cpk
-            if std_val > 0:
-                cpu = (usl - mean_val) / (3 * std_val)
-                cpl = (mean_val - lsl) / (3 * std_val)
-                cpk = min(cpu, cpl)
-                cp = (usl - lsl) / (6 * std_val)
-            else:
-                cpk = cp = 0
-            
-            # Update chart
-            self.cpk_chart.clear_chart()
-            fig = self.cpk_chart.figure
-            ax = fig.add_subplot(111)
-            self.cpk_chart._apply_theme_to_axes(ax)
-            
-            # Create histogram
-            n, bins, patches = ax.hist(sigma_values, bins=20, density=True, alpha=0.7, 
-                                      color='blue', edgecolor='black')
-            
-            # Add normal distribution overlay if scipy is available
-            if HAS_SCIPY:
-                x = np.linspace(sigma_values.min(), sigma_values.max(), 100)
-                normal_dist = stats.norm.pdf(x, mean_val, std_val)
-                ax.plot(x, normal_dist, 'r-', linewidth=2, label='Normal Distribution')
-            
-            # Add specification limits
-            ax.axvline(x=lsl, color='red', linestyle='--', linewidth=2, label=f'LSL ({lsl})')
-            ax.axvline(x=usl, color='red', linestyle='--', linewidth=2, label=f'USL ({usl})')
-            ax.axvline(x=target, color='green', linestyle='-', linewidth=2, label=f'Target ({target})')
-            ax.axvline(x=mean_val, color='blue', linestyle=':', linewidth=2, label=f'Mean ({mean_val:.3f})')
-            
-            # Add text box with statistics
-            cpk_color = 'green' if cpk >= 1.33 else 'orange' if cpk >= 1.0 else 'red'
-            stats_text = f'Cpk = {cpk:.2f}\nCp = {cp:.2f}\nMean = {mean_val:.3f}\nStd = {std_val:.3f}'
-            
-            theme_colors = ThemeHelper.get_theme_colors()
-            text_color = theme_colors["fg"]["primary"]
-            
-            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                   verticalalignment='top', fontsize=11,
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
-                   color=text_color)
-            
-            ax.set_xlabel('Sigma Gradient')
-            ax.set_ylabel('Density')
-            ax.set_title(f'Process Capability Analysis (Cpk = {cpk:.2f})', 
-                        fontsize=14, fontweight='bold', color=cpk_color)
-            
-            legend = ax.legend(loc='upper right', fontsize=9)
-            if legend:
-                self.cpk_chart._style_legend(legend)
-            
-            ax.grid(True, alpha=0.3)
-            
-            fig.tight_layout()
-            self.cpk_chart.canvas.draw()
+            self.logger.info(f"Performance Scorecard: Pass Rate={pass_rate:.1f}%, In-Spec={in_spec_rate:.1f}%, Avg Sigma={avg_sigma:.3f}")
             
         except Exception as e:
-            self.logger.error(f"Error updating Cpk chart: {e}")
-            self.cpk_chart.show_placeholder("Error", "Failed to calculate process capability")
+            self.logger.error(f"Error updating performance scorecard: {e}")
+            self.cpk_chart.show_placeholder("Error", "Failed to create performance scorecard")
