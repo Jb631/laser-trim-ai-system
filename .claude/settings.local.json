@@ -68,7 +68,8 @@
       "Bash(./kill_python_and_clean_db.bat)",
       "Bash(sed:*)",
       "Bash(timeout:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(winget install:*)"
     ],
     "deny": []
   }
