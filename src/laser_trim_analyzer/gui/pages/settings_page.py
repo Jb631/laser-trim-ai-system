@@ -111,7 +111,10 @@ class SettingsPage(ctk.CTkFrame):
         workers_label = ctk.CTkLabel(workers_frame, text="Parallel Workers:")
         workers_label.pack(side='left', padx=10, pady=10)
 
-        self.workers_var = ctk.StringVar(value=str(getattr(self.config.processing, 'max_workers', 4) if hasattr(self.config, 'processing') else 4))
+        # Load from settings_manager first, then fall back to config
+        workers_value = settings_manager.get('performance.thread_pool_size', 
+                                            getattr(self.config.processing, 'max_workers', 4) if hasattr(self.config, 'processing') else 4)
+        self.workers_var = ctk.StringVar(value=str(workers_value))
         self.workers_entry = ctk.CTkEntry(
             workers_frame,
             textvariable=self.workers_var,
@@ -129,7 +132,10 @@ class SettingsPage(ctk.CTkFrame):
         help_label.pack(side='left', padx=10, pady=10)
 
         # Checkboxes
-        self.plots_var = ctk.BooleanVar(value=getattr(self.config.processing, 'generate_plots', True) if hasattr(self.config, 'processing') else True)
+        # Load from settings_manager first, then fall back to config
+        plots_value = settings_manager.get('display.include_charts',
+                                          getattr(self.config.processing, 'generate_plots', True) if hasattr(self.config, 'processing') else True)
+        self.plots_var = ctk.BooleanVar(value=plots_value)
         self.plots_check = ctk.CTkCheckBox(
             self.processing_container,
             text="Generate analysis plots",
@@ -138,7 +144,10 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.plots_check.pack(anchor='w', padx=10, pady=5)
 
-        self.cache_var = ctk.BooleanVar(value=getattr(self.config.processing, 'cache_enabled', True) if hasattr(self.config, 'processing') else True)
+        # Load from settings_manager first, then fall back to config
+        cache_value = settings_manager.get('performance.enable_caching',
+                                          getattr(self.config.processing, 'cache_enabled', True) if hasattr(self.config, 'processing') else True)
+        self.cache_var = ctk.BooleanVar(value=cache_value)
         self.cache_check = ctk.CTkCheckBox(
             self.processing_container,
             text="Enable result caching",
@@ -164,7 +173,10 @@ class SettingsPage(ctk.CTkFrame):
         self.database_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable database
-        self.db_var = ctk.BooleanVar(value=getattr(self.config.database, 'enabled', True) if hasattr(self.config, 'database') else True)
+        # Load from settings_manager first, then fall back to config
+        db_value = settings_manager.get('data.auto_backup',
+                                       getattr(self.config.database, 'enabled', True) if hasattr(self.config, 'database') else True)
+        self.db_var = ctk.BooleanVar(value=db_value)
         self.db_check = ctk.CTkCheckBox(
             self.database_container,
             text="Save results to database",
@@ -212,17 +224,17 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.db_path_label.pack(side='left', padx=10, pady=10)
         
-        # Change path button (only for multi-user mode)
+        # Change/Browse path button
+        button_text = "Browse" if current_mode == "Single User (Local)" else "Change"
         self.change_path_button = ctk.CTkButton(
             self.db_path_frame,
-            text="Change",
+            text=button_text,
             width=80,
             height=25,
-            command=self._change_db_path
+            command=self._change_db_path if current_mode == "Multi-User (Network)" else self._browse_db_path
         )
-        # Show/hide based on mode
-        if current_mode == "Multi-User (Network)":
-            self.change_path_button.pack(side='left', padx=5, pady=10)
+        # Always show the button for both modes
+        self.change_path_button.pack(side='left', padx=5, pady=10)
 
         # Database status
         status_text = "Not connected"
@@ -263,7 +275,10 @@ class SettingsPage(ctk.CTkFrame):
         self.ml_container.pack(fill='x', padx=15, pady=(0, 15))
 
         # Enable ML
-        self.ml_var = ctk.BooleanVar(value=getattr(self.config.ml, 'enabled', True) if hasattr(self.config, 'ml') else True)
+        # Load from settings_manager first, then fall back to config
+        ml_value = settings_manager.get('analysis.enable_ml_predictions',
+                                       getattr(self.config.ml, 'enabled', True) if hasattr(self.config, 'ml') else True)
+        self.ml_var = ctk.BooleanVar(value=ml_value)
         self.ml_check = ctk.CTkCheckBox(
             self.ml_container,
             text="Enable ML predictions",
@@ -276,9 +291,10 @@ class SettingsPage(ctk.CTkFrame):
         features_frame = ctk.CTkFrame(self.ml_container, fg_color="transparent")
         features_frame.pack(fill='x', padx=10, pady=5)
 
-        self.failure_pred_var = ctk.BooleanVar(
-            value=getattr(self.config.ml, 'failure_prediction_enabled', True) if hasattr(self.config, 'ml') else True
-        )
+        # Load from settings_manager first, then fall back to config
+        failure_pred_value = settings_manager.get('notifications.notification_types.ml_insights',
+                                                 getattr(self.config.ml, 'failure_prediction_enabled', True) if hasattr(self.config, 'ml') else True)
+        self.failure_pred_var = ctk.BooleanVar(value=failure_pred_value)
         self.failure_pred_check = ctk.CTkCheckBox(
             features_frame,
             text="Failure prediction",
@@ -287,9 +303,10 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.failure_pred_check.pack(anchor='w', padx=10, pady=2)
 
-        self.threshold_opt_var = ctk.BooleanVar(
-            value=getattr(self.config.ml, 'threshold_optimization_enabled', True) if hasattr(self.config, 'ml') else True
-        )
+        # Load from settings_manager first, then fall back to config
+        threshold_opt_value = settings_manager.get('analysis.threshold_optimization',
+                                                  getattr(self.config.ml, 'threshold_optimization_enabled', True) if hasattr(self.config, 'ml') else True)
+        self.threshold_opt_var = ctk.BooleanVar(value=threshold_opt_value)
         self.threshold_opt_check = ctk.CTkCheckBox(
             features_frame,
             text="Threshold optimization",
@@ -335,6 +352,7 @@ class SettingsPage(ctk.CTkFrame):
         self.theme_combo.pack(side='left', padx=10, pady=10)
 
         # UI visibility options
+        # Already using settings_manager correctly
         self.advanced_mode_var = ctk.BooleanVar(value=settings_manager.get('advanced.experimental_features', False))
         self.advanced_mode_check = ctk.CTkCheckBox(
             self.appearance_container,
@@ -417,6 +435,7 @@ class SettingsPage(ctk.CTkFrame):
             self.config.ml.threshold_optimization_enabled = self.threshold_opt_var.get()
         # Save in settings manager
         settings_manager.set('notifications.notification_types.ml_insights', self.failure_pred_var.get())
+        settings_manager.set('analysis.threshold_optimization', self.threshold_opt_var.get())
         self._save_config()
 
     def _on_theme_changed(self, value=None):
@@ -556,13 +575,19 @@ class SettingsPage(ctk.CTkFrame):
                     
                     if mode == "Single User (Local)":
                         db_config = deployment_config.get('database', {}).get('single_user', {})
-                        path = db_config.get('path', '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db')
+                        path = db_config.get('path', './data/laser_trim.db')
                     else:
                         db_config = deployment_config.get('database', {}).get('multi_user', {})
                         path = db_config.get('path', '//server/share/laser_trim/database.db')
                     
-                    # Expand environment variables
-                    path = os.path.expandvars(path)
+                    # Handle relative paths for portable deployment
+                    if path.startswith('./'):
+                        # Show as absolute path for clarity
+                        app_dir = Path.cwd()
+                        path = str(app_dir / path[2:])
+                    else:
+                        # Expand environment variables
+                        path = os.path.expandvars(path)
                     return path
             
             # Fallback to main config
@@ -582,11 +607,11 @@ class SettingsPage(ctk.CTkFrame):
         # Update path display
         new_mode = self.db_mode_var.get()
         
-        # Show/hide change button based on mode
+        # Update button text and command based on mode
         if new_mode == "Multi-User (Network)":
-            self.change_path_button.pack(side='left', padx=5, pady=10)
+            self.change_path_button.configure(text="Change", command=self._change_db_path)
         else:
-            self.change_path_button.pack_forget()
+            self.change_path_button.configure(text="Browse", command=self._browse_db_path)
         
         # Update the deployment configuration
         self._update_deployment_mode(new_mode)
@@ -609,7 +634,7 @@ class SettingsPage(ctk.CTkFrame):
                     'deployment_mode': 'single_user',
                     'database': {
                         'single_user': {
-                            'path': '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db'
+                            'path': './data/laser_trim.db'  # Portable by default
                         },
                         'multi_user': {
                             'path': '//server/share/laser_trim/database.db'
@@ -756,6 +781,239 @@ class SettingsPage(ctk.CTkFrame):
             
         except Exception as e:
             self.logger.error(f"Failed to update network database path: {e}")
+            messagebox.showerror("Error", f"Failed to update database path: {e}")
+    
+    def _browse_db_path(self):
+        """Open file dialog to browse for local database path."""
+        try:
+            # Get current path
+            current_path = self._get_current_db_path()
+            current_dir = str(Path(current_path).parent) if current_path else str(Path.cwd())
+            
+            # Create custom dialog
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("Select Database Location")
+            dialog.geometry("700x400")
+            
+            # Center the dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() // 2) - 350
+            y = (dialog.winfo_screenheight() // 2) - 200
+            dialog.geometry(f"700x400+{x}+{y}")
+            
+            # Make dialog modal
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Title
+            title_label = ctk.CTkLabel(
+                dialog,
+                text="Choose Database Location",
+                font=ctk.CTkFont(size=16, weight="bold")
+            )
+            title_label.pack(pady=20)
+            
+            # Options frame
+            options_frame = ctk.CTkFrame(dialog)
+            options_frame.pack(fill='both', expand=True, padx=20, pady=10)
+            
+            # Read the actual path from deployment.yaml to determine type
+            actual_path = current_path
+            deployment_config_path = Path("config/deployment.yaml")
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    deployment_config = yaml.safe_load(f)
+                    actual_path = deployment_config.get('database', {}).get('single_user', {}).get('path', './data/laser_trim.db')
+            
+            # Determine initial selection based on actual path
+            initial_selection = "custom"  # Default to custom
+            if actual_path.startswith("./"):
+                initial_selection = "portable"
+            elif "%USERPROFILE%/Documents" in actual_path:
+                initial_selection = "documents"
+            
+            # Radio button variable
+            location_var = ctk.StringVar(value=initial_selection)
+            
+            # Option 1: Portable (with app)
+            portable_radio = ctk.CTkRadioButton(
+                options_frame,
+                text="Portable (travels with application)",
+                variable=location_var,
+                value="portable",
+                font=ctk.CTkFont(size=14)
+            )
+            portable_radio.pack(anchor='w', padx=20, pady=10)
+            
+            portable_desc = ctk.CTkLabel(
+                options_frame,
+                text="📁 Database stored in: [App Folder]/data/laser_trim.db",
+                font=ctk.CTkFont(size=11),
+                text_color="gray"
+            )
+            portable_desc.pack(anchor='w', padx=40, pady=(0, 10))
+            
+            # Option 2: Documents
+            documents_radio = ctk.CTkRadioButton(
+                options_frame,
+                text="Documents Folder (persistent)",
+                variable=location_var,
+                value="documents",
+                font=ctk.CTkFont(size=14)
+            )
+            documents_radio.pack(anchor='w', padx=20, pady=10)
+            
+            docs_path = str(Path.home() / "Documents" / "LaserTrimAnalyzer" / "laser_trim.db")
+            documents_desc = ctk.CTkLabel(
+                options_frame,
+                text=f"📁 Database stored in: {docs_path}",
+                font=ctk.CTkFont(size=11),
+                text_color="gray"
+            )
+            documents_desc.pack(anchor='w', padx=40, pady=(0, 10))
+            
+            # Option 3: Custom
+            custom_radio = ctk.CTkRadioButton(
+                options_frame,
+                text="Custom Location",
+                variable=location_var,
+                value="custom",
+                font=ctk.CTkFont(size=14)
+            )
+            custom_radio.pack(anchor='w', padx=20, pady=10)
+            
+            # Custom path entry
+            custom_frame = ctk.CTkFrame(options_frame, fg_color="transparent")
+            custom_frame.pack(fill='x', padx=40, pady=(0, 10))
+            
+            custom_path_var = ctk.StringVar(value=current_path)
+            # Enable custom entry if custom is initially selected
+            entry_state = "normal" if initial_selection == "custom" else "disabled"
+            custom_entry = ctk.CTkEntry(
+                custom_frame,
+                textvariable=custom_path_var,
+                width=400,
+                height=30,
+                state=entry_state
+            )
+            custom_entry.pack(side='left', padx=(0, 10))
+            
+            def browse_custom():
+                file_path = filedialog.asksaveasfilename(
+                    title="Select Database File",
+                    defaultextension=".db",
+                    filetypes=[("Database Files", "*.db"), ("All Files", "*.*")],
+                    initialdir=current_dir,
+                    initialfile="laser_trim.db"
+                )
+                if file_path:
+                    custom_path_var.set(file_path)
+                    location_var.set("custom")
+            
+            browse_btn = ctk.CTkButton(
+                custom_frame,
+                text="Browse...",
+                width=80,
+                height=30,
+                command=browse_custom
+            )
+            browse_btn.pack(side='left')
+            
+            # Enable/disable custom entry based on selection
+            def on_radio_change():
+                if location_var.get() == "custom":
+                    custom_entry.configure(state="normal")
+                else:
+                    custom_entry.configure(state="disabled")
+            
+            portable_radio.configure(command=on_radio_change)
+            documents_radio.configure(command=on_radio_change)
+            custom_radio.configure(command=on_radio_change)
+            
+            # Buttons frame
+            button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+            button_frame.pack(pady=20)
+            
+            def save_selection():
+                choice = location_var.get()
+                
+                if choice == "portable":
+                    new_path = "./data/laser_trim.db"
+                elif choice == "documents":
+                    new_path = "%USERPROFILE%/Documents/LaserTrimAnalyzer/laser_trim.db"
+                else:  # custom
+                    new_path = custom_path_var.get().strip()
+                    if not new_path:
+                        messagebox.showwarning("Invalid Path", "Please enter a valid database path.")
+                        return
+                
+                # Update the configuration
+                self._update_local_db_path(new_path)
+                
+                # Update display (show full path)
+                display_path = new_path
+                if new_path.startswith('./'):
+                    display_path = str(Path.cwd() / new_path[2:])
+                elif '%' in new_path:
+                    display_path = os.path.expandvars(new_path)
+                
+                self.db_path_label.configure(text=display_path)
+                dialog.destroy()
+            
+            save_button = ctk.CTkButton(
+                button_frame,
+                text="Save",
+                command=save_selection,
+                width=100
+            )
+            save_button.pack(side='left', padx=10)
+            
+            cancel_button = ctk.CTkButton(
+                button_frame,
+                text="Cancel",
+                command=dialog.destroy,
+                width=100
+            )
+            cancel_button.pack(side='left', padx=10)
+            
+        except Exception as e:
+            self.logger.error(f"Error in browse database path dialog: {e}")
+            messagebox.showerror("Error", f"Failed to open browse dialog: {e}")
+    
+    def _update_local_db_path(self, new_path):
+        """Update the local database path in deployment config."""
+        try:
+            deployment_config_path = Path("config/deployment.yaml")
+            
+            # Load existing config
+            if deployment_config_path.exists():
+                with open(deployment_config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+            else:
+                config = {}
+            
+            # Update local path
+            if 'database' not in config:
+                config['database'] = {}
+            if 'single_user' not in config['database']:
+                config['database']['single_user'] = {}
+            
+            config['database']['single_user']['path'] = new_path
+            
+            # Save config
+            with open(deployment_config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            
+            self.logger.info(f"Updated local database path to: {new_path}")
+            
+            # Show restart message
+            messagebox.showinfo(
+                "Restart Required",
+                "The database location has been changed. Please restart the application for the changes to take effect."
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update local database path: {e}")
             messagebox.showerror("Error", f"Failed to update database path: {e}")
     
     def cleanup(self):

@@ -273,12 +273,21 @@ class DatabaseManager:
                     # Get database config based on mode
                     db_config = deployment_config.get('database', {})
                     if deployment_mode == 'single_user':
-                        db_path = db_config.get('single_user', {}).get('path', '%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db')
+                        db_path = db_config.get('single_user', {}).get('path', './data/laser_trim.db')
                     else:
                         db_path = db_config.get('multi_user', {}).get('path', '//server/share/laser_trim/database.db')
                     
-                    # Expand environment variables
-                    db_path = os.path.expandvars(db_path)
+                    # Handle different path types
+                    if db_path.startswith('./'):
+                        # Relative to application directory
+                        app_dir = Path.cwd()
+                        db_path = str(app_dir / db_path[2:])
+                    elif ':' in db_path or db_path.startswith('/'):
+                        # Absolute path (Windows with drive letter or Unix-style)
+                        db_path = os.path.expandvars(db_path)
+                    else:
+                        # Expand environment variables for other paths
+                        db_path = os.path.expandvars(db_path)
                     
                     # Handle Windows paths
                     if deployment_mode == 'multi_user' and (db_path.startswith('//') or db_path.startswith('\\\\')):

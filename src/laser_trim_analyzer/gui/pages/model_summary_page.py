@@ -251,11 +251,12 @@ class ModelSummaryPage(ctk.CTkFrame):
         self.trend_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
         self.trend_container.pack_propagate(False)  # Prevent container from shrinking
 
-        # Create matplotlib chart widget
+        # Create matplotlib chart widget with proper sizing for control chart
         self.trend_chart = ChartWidget(
             self.trend_container,
-            title="Sigma Gradient Trend",
-            chart_type="line"
+            title="Sigma Gradient Control Chart",
+            chart_type="line",
+            figsize=(10, 6)  # Standard control chart size
         )
         self.trend_chart.pack(fill='both', expand=True, padx=10, pady=10)
 
@@ -301,8 +302,9 @@ class ModelSummaryPage(ctk.CTkFrame):
         
         self.overview_chart = ChartWidget(
             overview_frame,
-            title="Quality Overview Dashboard",
-            chart_type="bar"
+            title="Quality Metrics Dashboard",
+            chart_type="bar",
+            figsize=(8, 5)  # Compact dashboard size
         )
         self.overview_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -320,8 +322,9 @@ class ModelSummaryPage(ctk.CTkFrame):
         
         self.trend_analysis_chart = ChartWidget(
             trend_frame,
-            title="Process Control Chart",
-            chart_type="line"
+            title="X-bar & R Control Chart",
+            chart_type="line",
+            figsize=(10, 6)  # Standard SPC chart size
         )
         self.trend_analysis_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -339,8 +342,9 @@ class ModelSummaryPage(ctk.CTkFrame):
         
         self.risk_chart = ChartWidget(
             risk_frame,
-            title="Risk Assessment Matrix",
-            chart_type="scatter"
+            title="Risk Assessment Heat Map",
+            chart_type="scatter",
+            figsize=(8, 6)  # Square aspect for heat map
         )
         self.risk_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -378,8 +382,9 @@ class ModelSummaryPage(ctk.CTkFrame):
         
         self.cpk_chart = ChartWidget(
             cpk_frame,
-            title="Process Capability Analysis",
-            chart_type="histogram"
+            title="Process Capability (Cpk) Analysis",
+            chart_type="histogram",
+            figsize=(8, 5)  # Standard histogram size
         )
         self.cpk_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -829,12 +834,25 @@ class ModelSummaryPage(ctk.CTkFrame):
                         daily_data.columns = ['date', 'mean_sigma', 'std_sigma', 'count']
                         daily_data['date'] = pd.to_datetime(daily_data['date'])
                         
-                        # Add moving average for smoothing
-                        window_size = min(7, len(daily_data) // 3)  # 7-point or 1/3 of data
-                        if window_size > 1:
-                            daily_data['moving_avg'] = daily_data['mean_sigma'].rolling(
-                                window=window_size, center=True, min_periods=1
+                        # Add moving average for smoothing (using best practice window sizes)
+                        # For manufacturing data: 7-day for short-term, 30-day for long-term trends
+                        if len(daily_data) >= 7:
+                            daily_data['ma_7'] = daily_data['mean_sigma'].rolling(
+                                window=7, center=True, min_periods=3
                             ).mean()
+                        
+                        if len(daily_data) >= 30:
+                            daily_data['ma_30'] = daily_data['mean_sigma'].rolling(
+                                window=30, center=True, min_periods=15
+                            ).mean()
+                        
+                        # Calculate control limits (3-sigma limits)
+                        mean_value = daily_data['mean_sigma'].mean()
+                        std_value = daily_data['mean_sigma'].std()
+                        ucl = mean_value + 3 * std_value  # Upper Control Limit
+                        lcl = mean_value - 3 * std_value  # Lower Control Limit
+                        uwl = mean_value + 2 * std_value  # Upper Warning Limit
+                        lwl = mean_value - 2 * std_value  # Lower Warning Limit
                         
                         # Update chart with enhanced data
                         self.trend_chart.clear_chart()
@@ -843,34 +861,44 @@ class ModelSummaryPage(ctk.CTkFrame):
                         ax = self.trend_chart._get_or_create_axes()
                         theme_colors = ThemeHelper.get_theme_colors()
                         
-                        # Daily average points with error bars for multiple measurements
-                        if daily_data['count'].max() > 1:
-                            # Show error bars where we have multiple measurements
-                            yerr = daily_data['std_sigma'].where(daily_data['count'] > 1, 0)
-                            ax.errorbar(daily_data['date'], daily_data['mean_sigma'], 
-                                       yerr=yerr, fmt='o', markersize=4, capsize=3,
-                                       color=self.trend_chart.qa_colors['primary'], 
-                                       label='Daily Average', alpha=0.7)
-                        else:
-                            ax.plot(daily_data['date'], daily_data['mean_sigma'], 
-                                   marker='o', linewidth=1.5, markersize=4, 
-                                   color=self.trend_chart.qa_colors['primary'], 
-                                   label='Daily Average', alpha=0.7)
+                        # Plot data points with control chart style
+                        ax.plot(daily_data['date'], daily_data['mean_sigma'], 
+                               'o-', markersize=5, linewidth=1, 
+                               color=self.trend_chart.qa_colors['primary'], 
+                               label='Daily Average', alpha=0.8)
                         
-                        # Add smoothed line if we have enough data
-                        if window_size > 1 and 'moving_avg' in daily_data.columns:
-                            ax.plot(daily_data['date'], daily_data['moving_avg'], 
-                                   linewidth=2.5, color=self.trend_chart.qa_colors['warning'], 
-                                   label=f'{window_size}-point Moving Average', alpha=0.9)
+                        # Add control limits
+                        ax.axhline(y=ucl, color='red', linestyle='--', linewidth=2, 
+                                  label=f'UCL: {ucl:.4f}', alpha=0.7)
+                        ax.axhline(y=uwl, color='orange', linestyle=':', linewidth=1.5, 
+                                  label=f'UWL: {uwl:.4f}', alpha=0.6)
+                        ax.axhline(y=mean_value, color='green', linestyle='-', linewidth=2, 
+                                  label=f'Mean: {mean_value:.4f}', alpha=0.8)
+                        ax.axhline(y=lwl, color='orange', linestyle=':', linewidth=1.5, 
+                                  label=f'LWL: {lwl:.4f}', alpha=0.6)
+                        ax.axhline(y=lcl, color='red', linestyle='--', linewidth=2, 
+                                  label=f'LCL: {lcl:.4f}', alpha=0.7)
                         
-                        # Add reference lines for optimal ranges (based on typical sigma gradient values)
-                        reference_lines = {
-                            'Excellent': 0.01,    # Excellent performance
-                            'Good': 0.02,         # Good performance 
-                            'Acceptable': 0.04,   # Acceptable threshold
-                            'Warning': 0.05       # Warning level
-                        }
-                        self.trend_chart.add_reference_lines(ax, reference_lines)
+                        # Add moving averages if available
+                        if 'ma_7' in daily_data.columns:
+                            ax.plot(daily_data['date'], daily_data['ma_7'], 
+                                   linewidth=2, color='blue', 
+                                   label='7-day MA', alpha=0.6, linestyle='-.')
+                        
+                        if 'ma_30' in daily_data.columns:
+                            ax.plot(daily_data['date'], daily_data['ma_30'], 
+                                   linewidth=2.5, color='purple', 
+                                   label='30-day MA', alpha=0.7, linestyle='-')
+                        
+                        # Highlight out-of-control points
+                        ooc_points = daily_data[(daily_data['mean_sigma'] > ucl) | 
+                                               (daily_data['mean_sigma'] < lcl)]
+                        if len(ooc_points) > 0:
+                            ax.scatter(ooc_points['date'], ooc_points['mean_sigma'], 
+                                      color='red', s=100, marker='x', linewidth=3, 
+                                      label='Out of Control', zorder=5)
+                        
+                        # Note: Reference lines removed in favor of statistical control limits
                         
                         # Add ML-determined threshold if available
                         if self.db_manager and self.selected_model:
@@ -880,46 +908,60 @@ class ModelSummaryPage(ctk.CTkFrame):
                                           linewidth=2, label=f'ML Threshold: {ml_threshold:.3f}')
                                 self.logger.info(f"Displaying ML threshold: {ml_threshold}")
                         
-                        # Add informative annotation
+                        # Add informative annotation for control chart
+                        out_of_control_count = len(ooc_points) if len(ooc_points) > 0 else 0
                         annotation_text = (
-                            f"Showing {len(daily_data)} daily averages from {len(chart_data)} measurements\n"
-                            f"Lower values are better | Excellent: <0.01 | Good: <0.02 | Acceptable: <0.04"
+                            f"Control Chart: {len(daily_data)} daily averages | "
+                            f"Out of Control: {out_of_control_count} points | "
+                            f"Process Capability: {'Stable' if out_of_control_count == 0 else 'Unstable'}"
                         )
                         self.trend_chart.add_chart_annotation(ax, annotation_text, position='top')
                         
                         # Labels and formatting
-                        ax.set_xlabel('Date')
-                        ax.set_ylabel('Sigma Gradient')
-                        ax.set_title('Sigma Gradient Trend Analysis', fontweight='bold')
+                        ax.set_xlabel('Date', fontsize=10)
+                        ax.set_ylabel('Sigma Gradient', fontsize=10)
+                        ax.set_title('Sigma Gradient Statistical Process Control Chart', fontweight='bold', fontsize=14, pad=20)
                         
                         # Format dates intelligently based on range
                         date_range = (daily_data['date'].max() - daily_data['date'].min()).days
                         if date_range <= 7:
-                            date_formatter = mdates.DateFormatter('%Y-%m-%d %H:%M')
+                            date_formatter = mdates.DateFormatter('%m/%d %H:%M')
+                            ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
                         elif date_range <= 30:
-                            date_formatter = mdates.DateFormatter('%Y-%m-%d')
-                        elif date_range <= 365:
-                            date_formatter = mdates.DateFormatter('%Y-%m-%d')
+                            date_formatter = mdates.DateFormatter('%m/%d')
+                            ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+                        elif date_range <= 90:
+                            date_formatter = mdates.DateFormatter('%m/%d')
                             ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+                        elif date_range <= 365:
+                            date_formatter = mdates.DateFormatter('%m/%d')
+                            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
                         else:
                             date_formatter = mdates.DateFormatter('%Y-%m')
                             ax.xaxis.set_major_locator(mdates.MonthLocator())
                             
                         ax.xaxis.set_major_formatter(date_formatter)
                         
-                        # Rotate labels for better readability
-                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                        # Rotate labels for better readability with smaller font
+                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
                         
-                        # Create comprehensive legend
+                        # Add proper layout spacing
+                        plt.tight_layout(pad=2.0)
+                        
+                        # Create comprehensive legend with better positioning
                         try:
                             handles, labels = ax.get_legend_handles_labels()
                             if handles and labels:  # Only create legend if there are items
+                                # Position legend outside the plot area to avoid overlaps
                                 legend = ax.legend(handles, labels, 
                                                  title='Legend',
-                                                 loc='best', 
+                                                 loc='upper left', 
+                                                 bbox_to_anchor=(0.02, 0.98),
                                                  frameon=True,
                                                  fancybox=True,
-                                                 shadow=True)
+                                                 shadow=True,
+                                                 fontsize=8,
+                                                 title_fontsize=9)
                                 self.trend_chart._style_legend(legend)
                         except Exception as e:
                             self.logger.warning(f"Could not create legend: {e}")

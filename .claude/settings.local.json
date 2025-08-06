@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(find:*)",
@@ -69,7 +70,10 @@
       "Bash(sed:*)",
       "Bash(timeout:*)",
       "Bash(cat:*)",
-      "Bash(winget install:*)"
+      "Bash(winget install:*)",
+      "Bash(.venv/Scripts/pip.exe list:*)",
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(.venv/Scripts/pyinstaller.exe laser_trim_analyzer.spec --clean)"
     ],
     "deny": []
   }

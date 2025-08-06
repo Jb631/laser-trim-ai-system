@@ -173,8 +173,8 @@ class MLToolsPage(ctk.CTkFrame):
             self.quality_trend_chart = ChartWidget(
                 chart_frame,
                 chart_type='line',
-                title='Model Performance Trend',
-                figsize=(12, 4)
+                title='ML Model Performance with Moving Average',
+                figsize=(14, 5)  # Wider for better trend visibility
             )
             self.quality_trend_chart.pack(fill='both', expand=True)
         
@@ -252,11 +252,12 @@ class MLToolsPage(ctk.CTkFrame):
             self.yield_chart = ChartWidget(
                 yield_frame,
                 chart_type='bar',
-                title='Predicted Yield by Model',
-                figsize=(10, 5)
+                title='Yield Forecast & Optimization Potential',
+                figsize=(12, 6)  # Standard dashboard size for comparison
             )
             self.yield_chart.pack(fill='both', expand=True, padx=5, pady=5)
         else:
+            self.yield_chart = None
             ctk.CTkLabel(
                 yield_frame,
                 text="Chart widget not available",
@@ -350,19 +351,34 @@ class MLToolsPage(ctk.CTkFrame):
             if self.ml_manager:
                 # Get model performance metrics
                 try:
-                    # Get threshold optimizer performance
-                    threshold_info = self.ml_manager.get_model_info('threshold_optimizer')
-                    if threshold_info and threshold_info.get('is_trained'):
-                        model_accuracy = threshold_info.get('metrics', {}).get('accuracy', 0)
-                    
-                    # Get failure predictor performance
+                    # Get failure predictor performance (primary model for accuracy)
                     predictor_info = self.ml_manager.get_model_info('failure_predictor')
                     if predictor_info and predictor_info.get('is_trained'):
-                        avg_confidence = predictor_info.get('metrics', {}).get('avg_confidence', 0)
-                        false_positive_rate = predictor_info.get('metrics', {}).get('false_positive_rate', 0)
+                        # Use actual accuracy from performance metrics
+                        perf = predictor_info.get('performance', {})
+                        model_accuracy = perf.get('accuracy', 0) * 100
+                        # Use precision as confidence metric
+                        precision = perf.get('precision', 0)
+                        avg_confidence = precision * 100 if precision > 0 else 0
+                        # Calculate false positive rate from precision
+                        false_positive_rate = (1 - precision) * 100 if precision > 0 else 0
                     
-                    # Calculate processing speed from recent predictions
-                    if recent_results:
+                    # Get threshold optimizer performance
+                    threshold_info = self.ml_manager.get_model_info('threshold_optimizer')
+                    if threshold_info and threshold_info.get('is_trained') and model_accuracy == 0:
+                        # Use R² score as accuracy proxy if failure predictor not available
+                        r2_score = threshold_info.get('performance', {}).get('r2_score', 0)
+                        model_accuracy = max(0, r2_score * 100)  # R² can be negative, clip at 0
+                    
+                    # Get drift detector status
+                    drift_info = self.ml_manager.get_model_info('drift_detector')
+                    if drift_info and drift_info.get('is_trained'):
+                        # Use detection rate as a proxy for processing capability
+                        detection_rate = drift_info.get('performance', {}).get('detection_rate', 0)
+                        predictions_per_sec = detection_rate * 10  # Rough estimate
+                    
+                    # Calculate processing speed from recent predictions if not set
+                    if predictions_per_sec == 0 and recent_results:
                         total_predictions = len(recent_results)
                         time_span = 7 * 24 * 3600  # 7 days in seconds
                         predictions_per_sec = total_predictions / time_span
@@ -464,28 +480,45 @@ class MLToolsPage(ctk.CTkFrame):
                             'accuracy': accuracies
                         })
                         
+                        # Add moving average if enough data
+                        if len(df) >= 7:
+                            df['ma_7'] = df['accuracy'].rolling(window=7, min_periods=3).mean()
+                        
                         # Clear and update chart with custom rendering
                         self.quality_trend_chart.clear_chart()
                         ax = self.quality_trend_chart._get_or_create_axes()
                         
                         # Plot accuracy trend with theme colors
                         ax.plot(df['trim_date'], df['accuracy'], 
+                               'o-', markersize=5, linewidth=1.5,
                                color=self.quality_trend_chart.qa_colors['primary'],
-                               linewidth=2.5, marker='o', markersize=6,
-                               label='Model Accuracy')
+                               label='Daily Accuracy', alpha=0.7)
                         
-                        # Add reference lines
-                        reference_lines = {
-                            'Target': 95,
-                            'Acceptable': 85,
-                            'Warning': 75
-                        }
-                        self.quality_trend_chart.add_reference_lines(ax, reference_lines)
+                        # Add moving average
+                        if 'ma_7' in df.columns:
+                            ax.plot(df['trim_date'], df['ma_7'], 
+                                   linewidth=2.5, color='blue',
+                                   label='7-day MA', alpha=0.9)
+                        
+                        # Add control limits based on historical performance
+                        mean_acc = df['accuracy'].mean()
+                        std_acc = df['accuracy'].std()
+                        ucl = min(100, mean_acc + 2 * std_acc)
+                        lcl = max(0, mean_acc - 2 * std_acc)
+                        
+                        ax.axhline(y=ucl, color='orange', linestyle=':', linewidth=1.5, 
+                                  label=f'UCL: {ucl:.1f}%', alpha=0.6)
+                        ax.axhline(y=mean_acc, color='green', linestyle='-', linewidth=2, 
+                                  label=f'Mean: {mean_acc:.1f}%', alpha=0.7)
+                        ax.axhline(y=lcl, color='orange', linestyle=':', linewidth=1.5, 
+                                  label=f'LCL: {lcl:.1f}%', alpha=0.6)
+                        ax.axhline(y=95, color='darkgreen', linestyle='--', linewidth=2, 
+                                  label='Target: 95%', alpha=0.7)
                         
                         # Labels and formatting
                         ax.set_xlabel('Date')
                         ax.set_ylabel('Accuracy (%)')
-                        ax.set_title('ML Model Performance Trend', fontweight='bold')
+                        ax.set_title('ML Model Performance Control Chart', fontweight='bold', fontsize=14)
                         ax.set_ylim(0, 105)
                         
                         # Format dates
@@ -494,9 +527,11 @@ class MLToolsPage(ctk.CTkFrame):
                         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
                         
                         # Add informative annotation
-                        avg_accuracy = df['accuracy'].mean()
-                        trend = "improving" if df['accuracy'].iloc[-1] > df['accuracy'].iloc[0] else "declining"
-                        annotation_text = f"Average: {avg_accuracy:.1f}% | Trend: {trend} | Latest: {df['accuracy'].iloc[-1]:.1f}%"
+                        latest_acc = df['accuracy'].iloc[-1]
+                        ma_latest = df['ma_7'].iloc[-1] if 'ma_7' in df.columns else latest_acc
+                        in_control = lcl <= latest_acc <= ucl
+                        status = "In Control" if in_control else "Out of Control"
+                        annotation_text = f"Status: {status} | Latest: {latest_acc:.1f}% | 7-day MA: {ma_latest:.1f}%"
                         self.quality_trend_chart.add_chart_annotation(ax, annotation_text, position='top')
                         
                         # Legend
@@ -701,7 +736,12 @@ class MLToolsPage(ctk.CTkFrame):
     def _update_yield_forecast(self):
         """Update yield forecast with predictions."""
         try:
-            if not self.db_manager or not hasattr(self, 'yield_chart'):
+            if not self.db_manager:
+                self.logger.warning("No database manager available for yield forecast")
+                return
+            
+            if not hasattr(self, 'yield_chart') or self.yield_chart is None:
+                self.logger.warning("Yield chart widget not initialized")
                 return
             
             # Get historical data by model
@@ -785,21 +825,25 @@ class MLToolsPage(ctk.CTkFrame):
                                   color=self.yield_chart.qa_colors.get('good', self.yield_chart.qa_colors['pass']),
                                   arrowprops=dict(arrowstyle='->', color=self.yield_chart.qa_colors.get('good', self.yield_chart.qa_colors['pass']), alpha=0.5))
                 
-                # Formatting
-                ax.set_xlabel('Model')
-                ax.set_ylabel('Yield (%)')
-                ax.set_title('Yield Optimization Forecast', fontweight='bold')
+                # Formatting with improved layout
+                ax.set_xlabel('Model', fontsize=10)
+                ax.set_ylabel('Yield (%)', fontsize=10)
+                ax.set_title('Yield Optimization Forecast', fontweight='bold', fontsize=14, pad=20)
                 ax.set_xticks(x)
-                ax.set_xticklabels(models, rotation=45, ha='right')
+                ax.set_xticklabels(models, rotation=45, ha='right', fontsize=8)
                 ax.set_ylim(0, 105)
+                
+                # Add tight layout for better spacing
+                plt.tight_layout(pad=2.0)
                 
                 # Add target line
                 target_yield = 95
                 ax.axhline(y=target_yield, color='green', linestyle='--', alpha=0.7, 
                           linewidth=1.5, label=f'Target: {target_yield}%')
                 
-                # Legend
-                legend = ax.legend(loc='best', frameon=True, fancybox=True, shadow=True)
+                # Legend with better positioning
+                legend = ax.legend(loc='upper left', bbox_to_anchor=(0.02, 0.98), 
+                                 frameon=True, fancybox=True, shadow=True, fontsize=8)
                 self.yield_chart._style_legend(legend)
                 
                 # Add informative annotation
@@ -1375,8 +1419,11 @@ class MLToolsPage(ctk.CTkFrame):
             
             # Update status - wait a bit for models to save
             self.after(500, self._update_model_status)
+            # Update ML analytics to show new performance metrics
+            self.after(1000, self._update_ml_analytics)
             # Force another update after a longer delay to ensure saved models are reflected
             self.after(2000, self._update_model_status)
+            self.after(2500, self._update_ml_analytics)
             
         except Exception as e:
             self.logger.error(f"Error training models: {e}")
@@ -1988,6 +2035,10 @@ class MLToolsPage(ctk.CTkFrame):
         self.is_visible = True
         self._update_ml_analytics()
         self._update_model_status()
+        # Update insights tabs with latest data
+        self.after(500, self._update_yield_forecast)
+        self.after(600, self._update_risk_analysis)
+        self.after(700, self._update_process_health)
 
     def on_hide(self):
         """Called when page is hidden."""

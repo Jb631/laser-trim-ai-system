@@ -292,6 +292,10 @@ class ModelVersionControl:
             with open(config_file, 'w') as f:
                 json.dump(basic_config, f, indent=2)
 
+        # Update the model config version in engine state
+        if model_name in self.model_configs:
+            self.model_configs[model_name].version = version
+        
         # Save metadata
         metadata = {
             'model_name': model_name,

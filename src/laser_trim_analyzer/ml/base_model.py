@@ -63,20 +63,30 @@ class BaseMLModel(ABC):
             # Create directory if it doesn't exist
             filepath.parent.mkdir(parents=True, exist_ok=True)
             
-            # Save model state
+            # Save model state with additional metadata
             model_data = {
                 'model': self.model,
                 'metadata': self.get_metadata(),
                 'training_date': self.training_date,
-                'is_trained': self.is_trained
+                'is_trained': self.is_trained,
+                'version': getattr(self, 'version', '1.0.0'),
+                'last_trained': getattr(self, 'last_trained', self.training_date),
+                'training_samples': getattr(self, 'training_samples', 0),
+                'performance_metrics': getattr(self, 'performance_metrics', {}),
+                'model_type': getattr(self, 'model_type', self.__class__.__name__)
             }
             
             # Save scaler if exists
             if hasattr(self, 'scaler'):
                 model_data['scaler'] = self.scaler
-                
-            with open(filepath, 'wb') as f:
-                pickle.dump(model_data, f)
+            
+            # Try joblib first, fallback to pickle
+            try:
+                import joblib
+                joblib.dump(model_data, filepath)
+            except ImportError:
+                with open(filepath, 'wb') as f:
+                    pickle.dump(model_data, f)
                 
             self.logger.info(f"Model saved to {filepath}")
             return True
@@ -95,14 +105,31 @@ class BaseMLModel(ABC):
             if not filepath.exists():
                 self.logger.error(f"Model file not found: {filepath}")
                 return False
-                
-            with open(filepath, 'rb') as f:
-                model_data = pickle.load(f)
+            
+            # Try joblib first, fallback to pickle
+            try:
+                import joblib
+                model_data = joblib.load(filepath)
+            except (ImportError, Exception):
+                with open(filepath, 'rb') as f:
+                    model_data = pickle.load(f)
                 
             self.model = model_data['model']
             self.metadata = model_data.get('metadata', {})
             self.training_date = model_data.get('training_date')
             self.is_trained = model_data.get('is_trained', True)
+            
+            # Load additional metadata if present
+            if 'version' in model_data:
+                self.version = model_data['version']
+            if 'last_trained' in model_data:
+                self.last_trained = model_data['last_trained']
+            if 'training_samples' in model_data:
+                self.training_samples = model_data['training_samples']
+            if 'performance_metrics' in model_data:
+                self.performance_metrics = model_data['performance_metrics']
+            if 'model_type' in model_data:
+                self.model_type = model_data['model_type']
             
             # Load scaler if exists
             if 'scaler' in model_data:

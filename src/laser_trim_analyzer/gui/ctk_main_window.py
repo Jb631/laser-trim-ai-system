@@ -58,8 +58,9 @@ from laser_trim_analyzer.gui.settings_manager import settings_manager
 from laser_trim_analyzer.core.config import get_config
 from laser_trim_analyzer.core.constants import APP_NAME
 
-# Set appearance mode and color theme
-ctk.set_appearance_mode("dark")
+# Load saved theme or use defaults
+saved_theme = settings_manager.get('theme.mode', 'dark')
+ctk.set_appearance_mode(saved_theme)
 ctk.set_default_color_theme("blue")
 
 
@@ -95,6 +96,10 @@ class CTkMainWindow(CTkMainWindowBase):
         
         self.config = config or get_config()
         self.logger = logging.getLogger(__name__)
+        
+        # Apply saved settings to config
+        from laser_trim_analyzer.gui.utils import apply_saved_settings_to_config
+        apply_saved_settings_to_config(self.config, settings_manager)
         
         # Set up global exception handler to prevent crashes
         self._setup_exception_handler()
