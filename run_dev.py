@@ -1,23 +1,24 @@
-#!/usr/bin/env python3
-"""
-Development runner for Laser Trim Analyzer
-Run this instead of building .exe during development
-"""
-
-import sys
+"""Run Laser Trim Analyzer in Development Mode"""
 import os
-from pathlib import Path
-
-# Add src to path
-src_dir = Path(__file__).parent / "src"
-sys.path.insert(0, str(src_dir))
+import sys
 
 # Set development environment
-os.environ["LASER_TRIM_DEV_MODE"] = "1"
 os.environ["LTA_ENV"] = "development"
 
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 # Run the application
-if __name__ == "__main__":
-    from src.__main__ import main
-    main()
-    
+from laser_trim_analyzer.gui.main_window import MainWindow
+from laser_trim_analyzer.core.config import get_config
+from laser_trim_analyzer.core.utils import setup_logging
+import logging
+
+# Initialize configuration and logging
+config = get_config()
+logger = setup_logging(config.log_directory, logging.INFO)
+logger.info("Laser Trim Analyzer - Starting GUI mode (DEVELOPMENT)...")
+
+# Create and run the GUI application
+app = MainWindow(config)
+app.run()

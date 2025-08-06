@@ -13,26 +13,170 @@ This section tracks current known issues that need to be addressed. When fixing 
 3. Update CLAUDE.md Known Issues section to match
 
 ### Current Known Issues
-- **Database Path Mismatch**: Application is using local database instead of production database where model 8340-1 records exist
-  - Production DB at `D:\LaserTrimData\production.db` contains 143 records for model "8340-1"
-  - App is using `C:\Users\Jayma\AppData\Local\LaserTrimAnalyzer\database\laser_trim_local.db` with 0 records
-  - User needs to ensure correct database configuration or environment settings
+- None currently tracked
 
-- **ML Model Version Loading**: ML models are saved correctly as version 1.0.2 but load version 1.0.1 on restart
-  - Models train and save to new versions but engine state file retains old version references
-  - Causes ML features to appear untrained after app restart despite successful training
+
+## [2.2.0] - 2025-08-06
+
+### Enhanced
+- **Deployment Package**:
+  - **Root Cause**: Needed fully functional portable deployment for work environment
+  - **Implementation**: Created comprehensive PyInstaller deployment package
+  - **Features Added**:
+    - Portable executable that runs without installation
+    - No admin rights required
+    - Includes all dependencies and configuration files
+    - ML models folder support for trained models
+    - Configurable database location through Settings
+    - All DLLs and libraries bundled
+  - **Technical Details**:
+    - Updated PyInstaller spec to handle dynamic model files
+    - Added proper hidden imports for all dependencies
+    - Included TkDnD2 binaries for drag-and-drop support
+    - Created comprehensive deployment instructions
+    - Build process now handles missing model files gracefully
+  - **Package Contents**:
+    - Main executable (LaserTrimAnalyzer.exe)
+    - Configuration files (deployment/development/production.yaml)
+    - Documentation (README, CHANGELOG, CLAUDE.md)
+    - All required libraries and DLLs
+
+## [2.1.0] - 2025-08-05
+
+### Fixed
+- **ML Model Persistence**:
+  - **Root Cause**: ML models were not persisting between application sessions
+  - **Implementation**: Added comprehensive model save/load functionality
+  - **Improvements**:
+    - Models now automatically load from disk on startup
+    - Added joblib support for efficient model serialization
+    - Models save with full metadata (version, training date, samples, metrics)
+    - Portable model storage in ./models directory
+    - Fixed path handling for relative model directories
+  - **Technical Details**:
+    - Enhanced BaseMLModel with save/load methods using joblib
+    - Added _load_existing_models method to MLPredictor
+    - Fixed MLEngine initialization with proper path handling
+    - Models persist training state and performance metrics
+
+## [2.1.0] - 2025-08-05 (Earlier)
+
+### Enhanced
+- **Database Path Configuration**:
+  - **Root Cause**: Hardcoded database path was not suitable for portable deployment
+  - **Implementation**: Added comprehensive database location settings in Settings page
+  - **Features Added**:
+    - Browse button for Single User mode to select database location
+    - Three location options: Portable (with app), Documents folder, or Custom
+    - Change button for Multi-User mode to specify network path
+    - Visual database path display showing current location
+    - Automatic path expansion for environment variables
+
+- **Settings Persistence System**:
+  - **Root Cause**: Settings were not properly persisting across application sessions
+  - **Implementation**: Fixed settings loading and saving mechanism
+  - **Improvements**:
+    - All settings now load from settings_manager on startup
+    - Settings apply to config object when application starts
+    - Theme preference persists across sessions
+    - Worker count, plot generation, caching, ML settings all persist
+    - Database path configuration properly retained
+  - **Technical Details**:
+    - Created apply_saved_settings_to_config utility function
+    - Updated settings page to read from settings_manager first
+    - Fixed save callbacks to update both config and settings_manager
+    - Theme now loads before window creation
+  - **Configuration Updated**:
+    - Changed default single_user path to `./data/laser_trim.db` for portability
+    - Database manager now properly handles relative paths
+    - Settings persist across application restarts
+  - **User Impact**: Database can now travel with the application or be stored in any user-selected location
+
+### Deployment
+- **Created Production Deployment Package**:
+  - Built portable Windows executable using PyInstaller
+  - No installation or admin rights required
+  - Includes all dependencies (342MB total)
+  - Database now defaults to portable location within app folder
+  - Added deployment instructions and test launch script
+  - Ready for work environment deployment
+
+### Fixed (2025-08-01)
+
+- **Chart Layout and Display Issues (Comprehensive Fix)**:
+  - **Root Cause**: Multiple issues including overlapping text, poor spacing, and legend positioning
+  - **Analysis**: Reviewed all 17 screenshots to identify specific display problems
+  - **Fixed**: Updated all chart date formatters to dynamically adjust based on date range
+  - **Fixed**: Repositioned legends to avoid overlaps using bbox_to_anchor positioning
+  - **Fixed**: Added proper padding and font size adjustments for axis labels
+  - **Fixed**: Implemented tight_layout with appropriate padding on all charts
+  - **Fixed**: Adjusted annotation positioning to prevent overlap with chart elements
+  - **Fixed**: Early Warning System legend overlap by moving legend outside plot area
+  - **Fixed**: Failure Pattern Analysis title overlaps by increasing subplot spacing
+  - **Fixed**: Shortened control limit labels from 3 to 2 decimal places for readability
+  - **Affected Charts**: 
+    - Historical page: Production Volume & Yield, Quality KPIs with Control Limits, Pareto Analysis
+    - Model Summary page: Sigma Gradient Statistical Process Control Chart, Early Warning System
+    - ML Tools page: Yield Optimization Forecast
+    - Chart Widget: Early Warning System, Failure Pattern Analysis, Process Capability
   
-- **Chart Layout and Overlapping**: Multiple chart display issues remain
-  - Text labels overlapping on axes
-  - Improper spacing between chart elements
-  - Some charts showing with incorrect dimensions
-  
-- **Pareto Analysis Error**: "Error running Pareto analysis: 'disabled'" in Historical page
-  - Similar to the chart processing error but in different context
-  - Prevents Pareto analysis from displaying
+- **Pareto Analysis Error**:
+  - **Root Cause**: Already fixed in previous update when 'disabled' theme color was replaced with 'tertiary'
+  - **Verified**: The fix in chart_widget.py line 232 resolved this issue
+  - **Status**: Confirmed working, error message was from older version
 
+### Enhanced (2025-07-31)
 
-## [Unreleased]
+- **Chart Visualization Improvements Across All Pages**:
+  - **Research**: Implemented best practices for manufacturing quality control charts based on 2025 industry standards
+  - **Key Improvements**:
+    1. **Control Charts**: Replaced simple trend lines with proper Statistical Process Control (SPC) charts including UCL/LCL limits
+    2. **Moving Averages**: Added 7-day and 30-day moving averages to smooth noisy data and reveal trends
+    3. **Chart Sizing**: Optimized chart dimensions based on chart type (e.g., 14x7 for SPC charts, 7x7 for pie charts)
+    4. **Visual Hierarchy**: Enhanced chart titles, annotations, and legends for better readability
+  - **Model Summary Page**:
+    - Converted main trend chart to X-bar control chart with control limits
+    - Added 7-day and 30-day moving averages
+    - Enhanced Process Capability (Cpk) analysis visualization
+  - **Historical Page**:
+    - Added moving averages to production and quality trends
+    - Implemented control limits on quality KPI charts
+    - Enhanced chart sizing for better visibility
+  - **ML Tools Page**:
+    - Added control chart methodology to ML performance tracking
+    - Implemented 7-day moving average for accuracy trends
+    - Added statistical control limits (UCL/LCL)
+
+### Fixed (2025-07-31)
+
+- **ML Performance Analytics Not Displaying After Training**:
+  - **Issue**: ML Performance Analytics showed no data after training models
+  - **Root Cause**: Metrics were being accessed incorrectly - looking for 'metrics' field instead of 'performance' field in model info
+  - **Solution**: Updated ML tools page to correctly access performance metrics from model info and added refresh calls after training
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Fixed metric access and added analytics refresh after training
+
+- **Yield Forecast Not Displaying**:
+  - **Issue**: Yield Forecast tab showed no data even when data was available
+  - **Root Cause**: Chart widget initialization issue and missing automatic updates
+  - **Solution**: Fixed chart widget initialization and added automatic updates when page is shown
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/pages/ml_tools_page.py`: Fixed yield_chart initialization and added on_show updates
+
+- **Sigma Gradient Trend Data Processing Error**:
+  - **Issue**: Error "Error processing chart data: 'disabled'" on Model Summary page
+  - **Root Cause**: ChartWidget trying to access non-existent 'disabled' key in theme colors
+  - **Solution**: Fixed to use 'tertiary' color with fallback to gray
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/gui/widgets/chart_widget.py`: Fixed theme color access with proper fallback
+
+- **ML Model Version Mismatch**:
+  - **Issue**: ML models saved as version 1.0.3 but loaded as version 1.0.2 on restart
+  - **Root Cause**: Engine state file not being updated with new version numbers after model save
+  - **Solution**: Updated engine to track version changes and save state after initialization
+  - **Files Modified**:
+    - `src/laser_trim_analyzer/ml/engine.py`: Update model config version after save
+    - `src/laser_trim_analyzer/ml/ml_manager.py`: Update version in engine state after load and save state after initialization
 
 ### Fixed
 - **Chart Processing 'disabled' Error** (2025-07-18):

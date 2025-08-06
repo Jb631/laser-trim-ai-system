@@ -32,7 +32,7 @@ analysis:
 
 ml:
   enabled: true
-  model_path: "D:/LaserTrimData/models"  # Production models path
+  model_path: "./models"  # Portable models directory
   failure_prediction_enabled: true
   failure_prediction_confidence_threshold: 0.9  # Higher confidence threshold
   threshold_optimization_enabled: true

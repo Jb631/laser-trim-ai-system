@@ -285,6 +285,10 @@ class MLEngineManager:
                     self._status = "Ready"
                     self._status_color = "green"
                     self.logger.info("ML engine initialization complete - all models ready")
+                    # Save engine state after successful initialization to persist updated versions
+                    if hasattr(self.ml_engine, 'save_engine_state'):
+                        self.ml_engine.save_engine_state()
+                        self.logger.info("Saved ML engine state after initialization")
                 elif success_count > 0:
                     self._status = "Partially Ready"
                     self._status_color = "orange"
@@ -372,6 +376,10 @@ class MLEngineManager:
                         # Replace the model instance
                         self.ml_engine.models[model_name] = loaded_model
                         model = loaded_model
+                        
+                        # Update the model config version in engine state
+                        if model_name in self.ml_engine.model_configs:
+                            self.ml_engine.model_configs[model_name].version = latest_version
                         
                         is_trained = True
                         self.logger.info(f"Successfully loaded trained model {model_name} version {latest_version} from version control")

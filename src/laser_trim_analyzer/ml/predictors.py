@@ -13,6 +13,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
+import traceback
 
 from laser_trim_analyzer.core.config import Config
 from laser_trim_analyzer.core.models import (
@@ -102,9 +103,16 @@ class MLPredictor:
 
         # Initialize ML Engine if not provided
         if ml_engine is None:
+            # Get data directory from config or use default
+            data_dir = getattr(config, 'data_directory', './data')
+            if hasattr(config, 'ml') and hasattr(config.ml, 'model_path'):
+                models_dir = config.ml.model_path
+            else:
+                models_dir = './models'
+            
             ml_engine = MLEngine(
-                data_path=str(config.data_directory),
-                models_path=str(config.ml.model_path),
+                data_path=str(data_dir),
+                models_path=str(models_dir),
                 logger=self.logger
             )
         self.ml_engine = ml_engine
@@ -175,6 +183,9 @@ class MLPredictor:
 
             # Load or register models with MLEngine
             self._register_models()
+            
+            # Try to load existing trained models from disk
+            self._load_existing_models()
 
             # Check if models need training
             if self._check_models_need_training():
@@ -342,6 +353,74 @@ class MLPredictor:
             self._log_with_context('error', "Error registering models",
                 context={'error': str(e)})
             raise
+    
+    def _load_existing_models(self):
+        """Load existing trained models from disk if available."""
+        try:
+            # Handle relative paths
+            if self.model_path and self.model_path.startswith('./'):
+                model_dir = Path.cwd() / self.model_path[2:]
+            else:
+                model_dir = Path(self.model_path) if self.model_path else None
+            
+            if not model_dir or not model_dir.exists():
+                self._log_with_context('debug', "Model path does not exist, skipping model loading",
+                                      context={'model_path': str(model_dir)})
+                return
+            
+            loaded_models = []
+            
+            # Try to load each registered model
+            for model_name, model in self.ml_engine.models.items():
+                try:
+                    # Check for model files (look for exact name or versioned)
+                    model_files = list(model_dir.glob(f"{model_name}.pkl"))
+                    if not model_files:
+                        model_files = list(model_dir.glob(f"{model_name}.joblib"))
+                    if not model_files:
+                        model_files = list(model_dir.glob(f"{model_name}_*.pkl"))
+                    if not model_files:
+                        model_files = list(model_dir.glob(f"{model_name}_*.joblib"))
+                    
+                    if model_files:
+                        # Sort by modification time to get the latest
+                        latest_model_file = max(model_files, key=lambda p: p.stat().st_mtime)
+                        
+                        # Load the model state
+                        import joblib
+                        loaded_state = joblib.load(latest_model_file)
+                        
+                        # Apply the loaded state to the model
+                        if hasattr(model, 'model') and 'model' in loaded_state:
+                            model.model = loaded_state['model']
+                            model.is_trained = True
+                            
+                            # Load other attributes if available
+                            if 'version' in loaded_state:
+                                model.version = loaded_state['version']
+                            if 'last_trained' in loaded_state:
+                                model.last_trained = loaded_state['last_trained']
+                            if 'training_samples' in loaded_state:
+                                model.training_samples = loaded_state['training_samples']
+                            if 'performance_metrics' in loaded_state:
+                                model.performance_metrics = loaded_state['performance_metrics']
+                            
+                            loaded_models.append(model_name)
+                            self._log_with_context('info', f"Loaded trained model: {model_name}",
+                                                 context={'model_file': str(latest_model_file),
+                                                        'is_trained': True})
+                        
+                except Exception as e:
+                    self._log_with_context('warning', f"Could not load model {model_name}: {e}",
+                                         context={'model_name': model_name, 'error': str(e)})
+            
+            if loaded_models:
+                self._log_with_context('info', f"Successfully loaded {len(loaded_models)} trained models",
+                                     context={'loaded_models': loaded_models})
+                
+        except Exception as e:
+            self._log_with_context('error', f"Error loading existing models: {e}",
+                                 context={'error': str(e), 'traceback': traceback.format_exc()[:500]})
 
     def _check_models_need_training(self) -> bool:
         """Check if models need initial training."""

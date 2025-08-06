@@ -189,20 +189,20 @@ class ChartWidget(ctk.CTkFrame):
         }
         default_props.update(kwargs)
         
-        # Determine position
+        # Determine position with better spacing
         if position == 'top':
-            x, y = 0.5, 0.98
+            x, y = 0.5, 0.95  # Moved down to avoid overlap with title
         elif position == 'bottom':
-            x, y = 0.5, 0.02
+            x, y = 0.5, 0.05  # Moved up to avoid overlap with x-axis labels
             default_props['va'] = 'bottom'
         elif position == 'right':
-            x, y = 0.98, 0.5
+            x, y = 0.95, 0.5  # Moved left to avoid edge
             default_props['ha'] = 'right'
             default_props['va'] = 'center'
         elif isinstance(position, tuple) and len(position) == 2:
             x, y = position
         else:
-            x, y = 0.5, 0.98
+            x, y = 0.5, 0.95  # Default to top with spacing
             
         # Add the text
         return ax.text(x, y, text, **default_props)
@@ -229,7 +229,7 @@ class ChartWidget(ctk.CTkFrame):
                 color = self.qa_colors.get('bad', 'red')
                 style = '--'
             else:
-                color = theme_colors["fg"]["disabled"]
+                color = theme_colors["fg"].get("tertiary", "#808080")  # Use tertiary or fallback gray
                 style = '-'
                 
             # Add line
@@ -1983,9 +1983,9 @@ class ChartWidget(ctk.CTkFrame):
         theme_colors = ThemeHelper.get_theme_colors()
         text_color = theme_colors["fg"]["primary"]
         
-        # Create subplots
+        # Create subplots with better spacing
         fig = self.figure
-        gs = fig.add_gridspec(3, 1, height_ratios=[2, 1.5, 0.5], hspace=0.3)
+        gs = fig.add_gridspec(3, 1, height_ratios=[2, 1.5, 0.5], hspace=0.4)
         
         # 1. Main control chart with violations
         ax1 = fig.add_subplot(gs[0])
@@ -2007,12 +2007,12 @@ class ChartWidget(ctk.CTkFrame):
         ax1.plot(dates, values, 'o-', color=self.qa_colors['primary'], 
                 markersize=4, linewidth=1.5, label='Sigma Gradient')
         
-        # Plot control limits
-        ax1.axhline(ucl, color='red', linestyle='--', alpha=0.5, label=f'UCL ({ucl:.3f})')
-        ax1.axhline(uwl, color='orange', linestyle=':', alpha=0.5, label=f'UWL ({uwl:.3f})')
-        ax1.axhline(mean_val, color='green', linestyle='-', alpha=0.5, label=f'Mean ({mean_val:.3f})')
-        ax1.axhline(lwl, color='orange', linestyle=':', alpha=0.5, label=f'LWL ({lwl:.3f})')
-        ax1.axhline(lcl, color='red', linestyle='--', alpha=0.5, label=f'LCL ({lcl:.3f})')
+        # Plot control limits with shorter labels
+        ax1.axhline(ucl, color='red', linestyle='--', alpha=0.5, label=f'UCL: {ucl:.2f}')
+        ax1.axhline(uwl, color='orange', linestyle=':', alpha=0.5, label=f'UWL: {uwl:.2f}')
+        ax1.axhline(mean_val, color='green', linestyle='-', alpha=0.5, label=f'Mean: {mean_val:.2f}')
+        ax1.axhline(lwl, color='orange', linestyle=':', alpha=0.5, label=f'LWL: {lwl:.2f}')
+        ax1.axhline(lcl, color='red', linestyle='--', alpha=0.5, label=f'LCL: {lcl:.2f}')
         
         # Highlight violations
         violations = ((values > ucl) | (values < lcl))
@@ -2026,13 +2026,23 @@ class ChartWidget(ctk.CTkFrame):
                        color='orange', s=80, marker='^', label='Warnings', zorder=5)
         
         ax1.set_ylabel('Sigma Gradient', fontsize=10)
-        ax1.set_title('Control Chart with Violation Detection', fontsize=12, color=text_color)
-        ax1.legend(loc='upper left', fontsize=8, ncol=3)
+        ax1.set_title('Control Chart with Violation Detection', fontsize=12, color=text_color, pad=15)
+        # Place legend outside plot area to avoid overlap
+        ax1.legend(loc='center left', fontsize=6, ncol=2, bbox_to_anchor=(1.02, 0.5), framealpha=0.9)
         ax1.grid(True, alpha=0.3)
         
-        # Format dates
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        # Format dates with better spacing
+        date_range = (dates.max() - dates.min()).days if hasattr(dates.max() - dates.min(), 'days') else 30
+        if date_range > 60:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+        elif date_range > 30:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+        else:
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
         
         # 2. Moving Range Chart
         ax2 = fig.add_subplot(gs[1])
@@ -2054,14 +2064,14 @@ class ChartWidget(ctk.CTkFrame):
             ax2.scatter(dates[large_variations], moving_range[large_variations],
                        color='red', s=80, marker='x', linewidth=2, label='High Variation', zorder=5)
         
-        ax2.set_ylabel('Moving Range', fontsize=10)
-        ax2.set_title('Moving Range Chart - Variation Detection', fontsize=11, color=text_color)
-        ax2.legend(loc='upper left', fontsize=8)
+        ax2.set_ylabel('Moving Range', fontsize=9)
+        ax2.set_title('Moving Range Chart - Variation Detection', fontsize=11, color=text_color, pad=10)
+        ax2.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.02, 0.98))
         ax2.grid(True, alpha=0.3)
         
-        # Format dates
+        # Format dates with better spacing
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
         
         # 3. CUSUM Indicator Bar
         ax3 = fig.add_subplot(gs[2])
@@ -2113,7 +2123,10 @@ class ChartWidget(ctk.CTkFrame):
                     fontsize=8, color='white', weight='bold')
         
         # Main title (without overlapping subtitle due to layout constraints)
-        fig.suptitle('Early Warning System Dashboard', fontsize=14, color=text_color)
+        fig.suptitle('Early Warning System Dashboard', fontsize=14, color=text_color, y=0.98)
+        
+        # Apply tight layout to prevent overlaps
+        plt.tight_layout(rect=[0, 0, 0.85, 0.96])  # Leave space for legend on right and title on top
         
         # Layout is handled by constrained_layout
         self.canvas.draw_idle()
@@ -2438,9 +2451,9 @@ class ChartWidget(ctk.CTkFrame):
         theme_colors = ThemeHelper.get_theme_colors()
         text_color = theme_colors["fg"]["primary"]
         
-        # Create subplots
+        # Create subplots with better spacing
         fig = self.figure
-        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[2, 1], hspace=0.3, wspace=0.3)
+        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[2, 1], hspace=0.4, wspace=0.35)
         
         # 1. Time-based Heat Map (top left)
         ax1 = fig.add_subplot(gs[0, 0])
@@ -2487,7 +2500,7 @@ class ChartWidget(ctk.CTkFrame):
                 cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
                 cbar.set_label('Failure Count', fontsize=8)
                 
-                ax1.set_title('Failure Pattern Heat Map (by Week)', fontsize=11, color=text_color)
+                ax1.set_title('Failure Pattern Heat Map (by Week)', fontsize=10, color=text_color, pad=10)
                 ax1.set_xlabel('Week', fontsize=9)
                 ax1.set_ylabel('Failure Type', fontsize=9)
             else:
@@ -2537,7 +2550,7 @@ class ChartWidget(ctk.CTkFrame):
             ax2.set_xticks(range(len(failure_counts)))
             ax2.set_xticklabels(failure_counts.index, rotation=45, ha='right', fontsize=8)
             ax2.set_ylabel('Count', fontsize=9)
-            ax2.set_title('Failure Pareto Chart', fontsize=11, color=text_color)
+            ax2.set_title('Failure Pareto Chart', fontsize=10, color=text_color, pad=10)
         else:
             ax2.text(0.5, 0.5, 'No failures\nto analyze', 
                     ha='center', va='center', transform=ax2.transAxes,
@@ -2602,7 +2615,7 @@ class ChartWidget(ctk.CTkFrame):
             # Format
             ax3.set_xlabel('Date', fontsize=10)
             ax3.set_ylabel('Failure Rate (%)', fontsize=10)
-            ax3.set_title('Failure Rate Trend & 7-Day Projection', fontsize=12, color=text_color)
+            ax3.set_title('Failure Rate Trend & 7-Day Projection', fontsize=10, color=text_color, pad=10)
             ax3.legend(loc='upper left', fontsize=8)
             ax3.grid(True, alpha=0.3)
             

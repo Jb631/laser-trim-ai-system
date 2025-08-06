@@ -86,8 +86,9 @@ The application uses different databases based on environment:
    - Data: `%USERPROFILE%/Documents/LaserTrimAnalyzer/dev/data`
 
 3. **Deployment** (`config/deployment.yaml`):
-   - Single User: `%LOCALAPPDATA%/LaserTrimAnalyzer/database/laser_trim_local.db`
+   - Single User: `./data/laser_trim.db` (portable by default)
    - Multi User: Network path configured by IT
+   - Database location is now configurable through Settings page
 
 To switch environments, set the `LTA_ENV` environment variable:
 - Windows: `set LTA_ENV=development` or `set LTA_ENV=production`
@@ -102,18 +103,7 @@ To switch environments, set the `LTA_ENV` environment variable:
 
 ### Current Known Issues
 
-- **ML Model Version Loading**: ML models are saved correctly as version 1.0.2 but load version 1.0.1 on restart
-  - Models train and save to new versions but engine state file retains old version references
-  - Causes ML features to appear untrained after app restart despite successful training
-  
-- **Chart Layout and Overlapping**: Multiple chart display issues remain
-  - Text labels overlapping on axes
-  - Improper spacing between chart elements
-  - Some charts showing with incorrect dimensions
-  
-- **Pareto Analysis Error**: "Error running Pareto analysis: 'disabled'" in Historical page
-  - Similar to the chart processing error but in different context
-  - Prevents Pareto analysis from displaying
+- None currently tracked
 
 ### Previously Fixed Issues
 - ✓ Range utilization percent calculation now properly capped at 100%
@@ -126,6 +116,9 @@ To switch environments, set the `LTA_ENV` environment variable:
 - ✓ Model Summary page TypeError with None values fixed (2025-07-08)
 - ✓ Historical page drift_alert_card AttributeError fixed (2025-07-08)
 - ✓ Multi-track analysis 0.0% variations issue fixed (2025-07-08)
+- ✓ Chart layout and overlapping issues fixed (2025-08-01)
+- ✓ Pareto analysis 'disabled' error fixed (2025-08-01)
+- ✓ Database path configuration made portable and user-configurable (2025-08-05)
 
 ### Change Tracking
 
@@ -150,7 +143,7 @@ Remember: Always think through the full implementation before starting any fix.
 6. Document ALL changes in CHANGELOG.md immediately after implementation
 7. Update Known Issues sections as issues are discovered or fixed
 
-### Deployment Strategy (Future)
+### Deployment Strategy
 
 **Goal**: Create a portable executable that can be downloaded from GitHub and run without installation.
 
@@ -177,10 +170,53 @@ Remember: Always think through the full implementation before starting any fix.
 3. User Documents folder
 4. Portable app folder
 
-#### Build Process (When Ready)
-- Use PyInstaller for Windows executable
-- Create "portable" folder distribution
-- Package as zip for GitHub releases
-- No MSI/installer needed
+#### Build Process
+```bash
+# 1. Install PyInstaller if not already installed
+pip install pyinstaller
+
+# 2. Create the executable using the spec file
+pyinstaller laser_trim_analyzer.spec --clean
+
+# 3. The executable will be in dist/LaserTrimAnalyzer/
+# 4. Copy config folder to dist/LaserTrimAnalyzer/
+# 5. Create a zip file for distribution
+```
+
+#### Development and Update Workflow
+
+**Development (Your PC):**
+1. Make changes in source code
+2. Test with `python src/__main__.py`
+3. Update version in `pyproject.toml`
+4. Build executable with PyInstaller
+5. Test the executable locally
+
+**Deployment (Work):**
+1. Copy new .exe to work computer
+2. Replace old .exe (keep backup)
+3. Run - no installation needed
+4. Settings and database remain intact
+
+#### Update Process for Production
+1. **Version Management**: Always increment version in `pyproject.toml`
+2. **Backup**: Keep previous .exe as backup (rename with version)
+3. **Database**: Never modify database schema without migration plan
+4. **Testing**: Test with production data copy before deploying
+
+#### Important Paths for Deployment
+- **Development DB**: Uses local paths from development.yaml
+- **Production DB**: `D:\LaserTrimData\production.db` (from production.yaml)
+- **Config Files**: Packaged with executable in `config/` folder
+- **Log Files**: Written to user's AppData folder
+
+#### Pre-Deployment Checklist
+- [ ] All features tested and working
+- [ ] Version number updated in pyproject.toml
+- [ ] CHANGELOG.md updated with changes
+- [ ] No hardcoded paths in code
+- [ ] Database compatibility verified
+- [ ] Config files updated if needed
+- [ ] Build tested on clean system
 
 **Remember**: Every feature should work in a portable context without requiring installation or admin rights.

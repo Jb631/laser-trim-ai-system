@@ -262,7 +262,7 @@ class HistoricalPage(ctk.CTkFrame):
             self.risk_tabview.tab("Risk Overview"),
             chart_type='pie',
             title="Company-Wide Risk Distribution",
-            figsize=(8, 4)
+            figsize=(7, 7)  # Square aspect for pie chart
         )
         self.risk_overview_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -274,8 +274,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.model_risk_chart = ChartWidget(
             self.model_comparison_frame,
             chart_type='bar',
-            title="Risk Distribution by Model",
-            figsize=(10, 5)
+            title="Risk Distribution by Model - Pareto Analysis",
+            figsize=(12, 6)  # Wider for Pareto chart
         )
         self.model_risk_chart.pack(fill='both', expand=True)
 
@@ -283,8 +283,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.risk_trends_chart = ChartWidget(
             self.risk_tabview.tab("Production Risk Trends"),
             chart_type='line',
-            title="Company-Wide Risk Trends Over Time",
-            figsize=(10, 5)
+            title="Risk Trends with Moving Average",
+            figsize=(12, 6)  # Standard trend chart size
         )
         self.risk_trends_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -337,8 +337,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.control_chart = ChartWidget(
             self.spc_tabview.tab("Control Charts"),
             chart_type='line',
-            title="Sigma Gradient Control Chart",
-            figsize=(12, 6)
+            title="X-bar & R Statistical Process Control Chart",
+            figsize=(14, 7)  # Larger for SPC chart with dual axes
         )
         self.control_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -354,8 +354,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.pareto_chart = ChartWidget(
             self.spc_tabview.tab("Pareto Analysis"),
             chart_type='bar',
-            title="Failure Mode Pareto Chart",
-            figsize=(10, 6)
+            title="Failure Mode Pareto Analysis (80/20 Rule)",
+            figsize=(12, 7)  # Larger for dual-axis Pareto
         )
         self.pareto_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -363,8 +363,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.drift_chart = ChartWidget(
             self.spc_tabview.tab("Drift Detection"),
             chart_type='line',
-            title="Process Drift Analysis",
-            figsize=(12, 6)
+            title="Process Drift Detection with EWMA",
+            figsize=(12, 6)  # Standard for drift analysis
         )
         self.drift_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -659,8 +659,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.production_chart = ChartWidget(
             overview_frame,
             chart_type='line',
-            title="Company Production Volume & Yield Trends",
-            figsize=(10, 5)
+            title="Production Volume & Yield with 30-Day MA",
+            figsize=(12, 6)  # Standard dashboard size
         )
         self.production_chart.pack(fill='both', expand=True, padx=5, pady=5)
         
@@ -699,8 +699,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.quality_trends_chart = ChartWidget(
             quality_frame,
             chart_type='line',
-            title="Company-Wide Quality Indicators",
-            figsize=(10, 5)
+            title="Quality KPIs with Control Limits",
+            figsize=(12, 6)  # Standard for multi-metric chart
         )
         self.quality_trends_chart.pack(fill='both', expand=True, padx=5, pady=5)
         
@@ -719,8 +719,8 @@ class HistoricalPage(ctk.CTkFrame):
         self.efficiency_chart = ChartWidget(
             efficiency_frame,
             chart_type='bar',
-            title="Process Efficiency by Production Period",
-            figsize=(10, 5)
+            title="Manufacturing Efficiency Metrics",
+            figsize=(10, 6)  # Standard bar chart size
         )
         self.efficiency_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -1161,22 +1161,74 @@ class HistoricalPage(ctk.CTkFrame):
             daily_data = daily_data.sort_values('date')
             
             if len(daily_data) > 0:
-                # Create dual-axis chart data
-                chart_data = pd.DataFrame({
-                    'trim_date': daily_data['date'],
-                    'sigma_gradient': daily_data['pass_rate'] / 100.0  # Using sigma_gradient column for pass rate
-                })
+                # Add moving averages for trend smoothing
+                if len(daily_data) >= 7:
+                    daily_data['ma_7'] = daily_data['pass_rate'].rolling(window=7, min_periods=3).mean()
+                if len(daily_data) >= 30:
+                    daily_data['ma_30'] = daily_data['pass_rate'].rolling(window=30, min_periods=15).mean()
                 
-                self.logger.info(f"Updating production chart with {len(chart_data)} data points")
-                self.logger.debug(f"Chart data columns: {chart_data.columns.tolist()}")
-                self.logger.debug(f"First few rows: {chart_data.head()}")
+                # Clear and create custom chart with moving averages
+                self.production_chart.clear_chart()
+                ax = self.production_chart._get_or_create_axes()
                 
-                # Update the chart
-                self.production_chart.update_chart_data(chart_data)
+                # Plot daily pass rate
+                ax.plot(daily_data['date'], daily_data['pass_rate'], 
+                       'o-', markersize=4, linewidth=1, 
+                       color=self.production_chart.qa_colors['primary'], 
+                       label='Daily Pass Rate', alpha=0.6)
                 
-                # Add threshold line for target
-                self.production_chart.add_threshold_lines({'Target (95%)': 0.95}, orientation='horizontal')
-                self.logger.info("Production chart updated successfully")
+                # Add moving averages
+                if 'ma_7' in daily_data.columns:
+                    ax.plot(daily_data['date'], daily_data['ma_7'], 
+                           linewidth=2, color='blue', 
+                           label='7-day MA', alpha=0.8)
+                
+                if 'ma_30' in daily_data.columns:
+                    ax.plot(daily_data['date'], daily_data['ma_30'], 
+                           linewidth=2.5, color='purple', 
+                           label='30-day MA', alpha=0.9)
+                
+                # Add target line
+                ax.axhline(y=95, color='green', linestyle='--', linewidth=2, 
+                          label='Target: 95%', alpha=0.7)
+                
+                # Formatting
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Pass Rate (%)')
+                ax.set_title('Production Volume & Yield with Moving Averages', fontsize=14, fontweight='bold')
+                ax.set_ylim(0, 105)
+                
+                # Format dates with better spacing
+                import matplotlib.dates as mdates
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                
+                # Adjust locator based on date range
+                date_range = (daily_data['date'].max() - daily_data['date'].min()).days
+                if date_range > 60:
+                    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+                elif date_range > 30:
+                    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+                else:
+                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+                
+                # Rotate and align labels to prevent overlap
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+                
+                # Add extra padding at the bottom for date labels
+                plt.tight_layout(pad=1.5)
+                
+                # Add legend
+                ax.legend(loc='best')
+                ax.grid(True, alpha=0.3)
+                
+                # Add annotation
+                latest_rate = daily_data['pass_rate'].iloc[-1]
+                trend = "↗" if len(daily_data) > 1 and daily_data['pass_rate'].iloc[-1] > daily_data['pass_rate'].iloc[-7:].mean() else "↘"
+                annotation = f"Latest: {latest_rate:.1f}% {trend} | 7-day avg: {daily_data['ma_7'].iloc[-1]:.1f}%" if 'ma_7' in daily_data.columns else f"Latest: {latest_rate:.1f}%"
+                self.production_chart.add_chart_annotation(ax, annotation, position='top')
+                
+                self.production_chart.canvas.draw_idle()
+                self.logger.info("Production chart updated with moving averages")
             else:
                 self.production_chart.show_placeholder("No production data available", "Run a query to view trends")
             
@@ -1258,20 +1310,84 @@ class HistoricalPage(ctk.CTkFrame):
             daily_quality = daily_quality.sort_values('date')
             
             if len(daily_quality) > 0:
-                # Use quality index as the main metric
-                chart_data = pd.DataFrame({
-                    'trim_date': pd.to_datetime(daily_quality['date']),
-                    'sigma_gradient': daily_quality['quality_index'] / 100.0  # Convert to 0-1 scale
-                })
+                # Calculate control limits
+                mean_quality = daily_quality['quality_index'].mean()
+                std_quality = daily_quality['quality_index'].std()
+                ucl = min(100, mean_quality + 3 * std_quality)
+                lcl = max(0, mean_quality - 3 * std_quality)
                 
-                # Update the chart
-                self.quality_trends_chart.update_chart_data(chart_data)
+                # Add moving average
+                if len(daily_quality) >= 7:
+                    daily_quality['ma_7'] = daily_quality['quality_index'].rolling(window=7, min_periods=3).mean()
                 
-                # Add threshold lines
-                self.quality_trends_chart.add_threshold_lines({
-                    'Target': 0.95,
-                    'Warning': 0.90
-                }, orientation='horizontal')
+                # Clear and create control chart
+                self.quality_trends_chart.clear_chart()
+                ax = self.quality_trends_chart._get_or_create_axes()
+                
+                # Plot quality index
+                ax.plot(pd.to_datetime(daily_quality['date']), daily_quality['quality_index'], 
+                       'o-', markersize=4, linewidth=1, 
+                       color=self.quality_trends_chart.qa_colors['primary'], 
+                       label='Daily Quality Index', alpha=0.7)
+                
+                # Add moving average
+                if 'ma_7' in daily_quality.columns:
+                    ax.plot(pd.to_datetime(daily_quality['date']), daily_quality['ma_7'], 
+                           linewidth=2.5, color='blue', 
+                           label='7-day MA', alpha=0.8)
+                
+                # Add control limits
+                ax.axhline(y=ucl, color='red', linestyle='--', linewidth=2, 
+                          label=f'UCL: {ucl:.1f}', alpha=0.7)
+                ax.axhline(y=mean_quality, color='green', linestyle='-', linewidth=2, 
+                          label=f'Mean: {mean_quality:.1f}', alpha=0.8)
+                ax.axhline(y=lcl, color='red', linestyle='--', linewidth=2, 
+                          label=f'LCL: {lcl:.1f}', alpha=0.7)
+                ax.axhline(y=95, color='darkgreen', linestyle=':', linewidth=2, 
+                          label='Target: 95', alpha=0.6)
+                
+                # Highlight out-of-control points
+                ooc_points = daily_quality[(daily_quality['quality_index'] > ucl) | 
+                                         (daily_quality['quality_index'] < lcl)]
+                if len(ooc_points) > 0:
+                    ax.scatter(pd.to_datetime(ooc_points['date']), ooc_points['quality_index'], 
+                              color='red', s=100, marker='x', linewidth=3, 
+                              label='Out of Control', zorder=5)
+                
+                # Formatting
+                ax.set_xlabel('Date', fontsize=10)
+                ax.set_ylabel('Quality Index (%)', fontsize=10)
+                ax.set_title('Quality KPIs with Statistical Control Limits', fontsize=14, fontweight='bold', pad=20)
+                ax.set_ylim(0, 105)
+                
+                # Format dates with better spacing
+                import matplotlib.dates as mdates
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                
+                # Adjust date ticks based on range
+                date_range = (daily_quality['date'].max() - daily_quality['date'].min()).days
+                if date_range > 60:
+                    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+                elif date_range > 30:
+                    ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
+                else:
+                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+                
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+                
+                # Add legend with better positioning
+                ax.legend(loc='upper left', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.02, 0.98))
+                ax.grid(True, alpha=0.3)
+                
+                # Ensure proper layout
+                plt.tight_layout(pad=1.5)
+                
+                # Add annotation
+                process_capability = 'Stable' if len(ooc_points) == 0 else 'Unstable'
+                annotation = f"Process: {process_capability} | OOC Points: {len(ooc_points)}"
+                self.quality_trends_chart.add_chart_annotation(ax, annotation, position='top')
+                
+                self.quality_trends_chart.canvas.draw_idle()
             else:
                 self.quality_trends_chart.show_placeholder("No quality trend data", "Need more data points")
             
