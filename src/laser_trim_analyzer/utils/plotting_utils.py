@@ -154,17 +154,17 @@ def create_analysis_plot(
     ax_main = fig.add_subplot(gs[0:2, :])
     _plot_error_vs_position(ax_main, track_data)
 
-    # Histogram (bottom left)
-    ax_hist = fig.add_subplot(gs[2, 0])
-    _plot_error_histogram(ax_hist, track_data)
+    # Error range analysis (bottom left)
+    ax_range = fig.add_subplot(gs[2, 0])
+    _plot_error_range_analysis(ax_range, track_data)
 
     # Metrics summary (bottom middle)
     ax_metrics = fig.add_subplot(gs[2, 1])
     _plot_metrics_summary(ax_metrics, track_data)
 
-    # Pass/Fail indicator (bottom right)
+    # Professional status display (bottom right)
     ax_status = fig.add_subplot(gs[2, 2])
-    _plot_status_indicator(ax_status, track_data)
+    _plot_professional_status(ax_status, track_data)
 
     # Save plot
     output_path = output_dir / f"{filename_prefix}_analysis.png"
@@ -377,30 +377,107 @@ def _plot_error_vs_position(ax: plt.Axes, track_data: TrackData):
         ax.set_title(f'{current_title} (Offset: {offset:.6f} V)', fontsize=14, fontweight='bold')
 
 
-def _plot_error_histogram(ax: plt.Axes, track_data: TrackData):
-    """Plot histogram of errors."""
-    if not track_data.error_data:
+def _plot_error_range_analysis(ax: plt.Axes, track_data: TrackData):
+    """Plot error range analysis showing variation across position ranges."""
+    if not track_data.error_data or not track_data.position_data:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
                 transform=ax.transAxes)
         return
 
+    positions = np.array(track_data.position_data)
     errors = np.array(track_data.error_data)
+    
+    # Apply offset for display
+    offset = track_data.linearity_analysis.optimal_offset
+    errors_shifted = errors + offset
 
-    # Create histogram
-    n, bins, patches = ax.hist(errors, bins=20, edgecolor='black',
-                               alpha=0.7, color=QA_COLORS['info'])
-
-    # Add normal distribution overlay
-    mu, sigma = np.mean(errors), np.std(errors)
-    x = np.linspace(errors.min(), errors.max(), 100)
-    ax.plot(x, ((1 / (np.sqrt(2 * np.pi) * sigma)) *
-                np.exp(-0.5 * ((x - mu) / sigma) ** 2)) * len(errors) * (bins[1] - bins[0]),
-            'r--', linewidth=2, label=f'μ={mu:.3f}, σ={sigma:.3f}')
-
-    ax.set_xlabel('Error Value', fontsize=10)
-    ax.set_ylabel('Frequency', fontsize=10)
-    ax.set_title('Error Distribution', fontsize=12)
-    ax.legend(fontsize=8)
+    # Divide position range into 8 segments for analysis
+    pos_min, pos_max = positions.min(), positions.max()
+    n_segments = 8
+    segment_width = (pos_max - pos_min) / n_segments
+    
+    segment_centers = []
+    segment_variations = []
+    segment_colors = []
+    violation_counts = []
+    
+    for i in range(n_segments):
+        seg_start = pos_min + i * segment_width
+        seg_end = pos_min + (i + 1) * segment_width
+        seg_center = (seg_start + seg_end) / 2
+        
+        # Find points in this segment
+        mask = (positions >= seg_start) & (positions < seg_end)
+        if i == n_segments - 1:  # Include right boundary for last segment
+            mask = (positions >= seg_start) & (positions <= seg_end)
+            
+        segment_errors = errors_shifted[mask]
+        
+        if len(segment_errors) > 0:
+            # Calculate variation (range) in this segment
+            variation = np.max(segment_errors) - np.min(segment_errors)
+            segment_variations.append(variation)
+            segment_centers.append(seg_center)
+            
+            # Check for spec violations in this segment
+            violations = 0
+            if (hasattr(track_data, 'upper_limits') and hasattr(track_data, 'lower_limits') and
+                track_data.upper_limits and track_data.lower_limits):
+                segment_positions = positions[mask]
+                for j, pos_idx in enumerate(np.where(mask)[0]):
+                    if (pos_idx < len(track_data.upper_limits) and pos_idx < len(track_data.lower_limits) and
+                        track_data.upper_limits[pos_idx] is not None and track_data.lower_limits[pos_idx] is not None):
+                        if (segment_errors[j] > track_data.upper_limits[pos_idx] or 
+                            segment_errors[j] < track_data.lower_limits[pos_idx]):
+                            violations += 1
+            
+            violation_counts.append(violations)
+            
+            # Color based on violations
+            if violations > 0:
+                segment_colors.append(QA_COLORS['fail'])
+            elif variation > np.std(errors_shifted) * 1.5:  # High variation
+                segment_colors.append(QA_COLORS['warning'])
+            else:
+                segment_colors.append(QA_COLORS['pass'])
+    
+    if segment_centers:
+        # Create bar chart
+        bars = ax.bar(segment_centers, segment_variations, width=segment_width*0.8,
+                     color=segment_colors, edgecolor='black', alpha=0.7)
+        
+        # Add violation count labels on bars
+        for bar, violations in zip(bars, violation_counts):
+            if violations > 0:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + height*0.05,
+                       f'{violations}', ha='center', va='bottom', 
+                       fontweight='bold', color=QA_COLORS['fail'], fontsize=9)
+        
+        # Add average line
+        avg_variation = np.mean(segment_variations)
+        ax.axhline(y=avg_variation, color='black', linestyle='--', 
+                  alpha=0.6, linewidth=1, label=f'Avg: {avg_variation:.4f}')
+        
+        ax.set_xlabel('Position Range', fontsize=10)
+        ax.set_ylabel('Error Variation (V)', fontsize=10)
+        ax.set_title('Error Variation by Position', fontsize=12)
+        
+        # Format x-axis to show position ranges
+        ax.set_xlim(pos_min - segment_width/2, pos_max + segment_width/2)
+        
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=QA_COLORS['pass'], label='Good (Low Variation)'),
+            Patch(facecolor=QA_COLORS['warning'], label='High Variation'),
+            Patch(facecolor=QA_COLORS['fail'], label='Spec Violations')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+    else:
+        ax.text(0.5, 0.5, 'No valid segments', ha='center', va='center',
+               transform=ax.transAxes)
+    
     ax.grid(True, alpha=0.3)
 
 
@@ -438,47 +515,77 @@ def _plot_metrics_summary(ax: plt.Axes, track_data: TrackData):
     ax.set_title('Analysis Metrics', fontsize=12)
 
 
-def _plot_status_indicator(ax: plt.Axes, track_data: TrackData):
-    """Plot pass/fail status indicator."""
+def _plot_professional_status(ax: plt.Axes, track_data: TrackData):
+    """Plot clean, professional status display."""
     ax.axis('off')
-
+    
     # Determine status and color
     status = track_data.status.value
     if status == "Pass":
         color = QA_COLORS['pass']
-        symbol = "✓"
-        description = "PASS"
+        status_text = "PASS"
     elif status == "Fail":
         color = QA_COLORS['fail']
-        symbol = "✗"
-        description = "FAIL"
+        status_text = "FAIL"
     else:
         color = QA_COLORS['warning']
-        symbol = "⚠"
-        description = "WARNING"
-
-    # Draw status circle
-    circle = plt.Circle((0.5, 0.7), 0.25, color=color, alpha=0.8)
-    ax.add_patch(circle)
-
+        status_text = "WARNING"
+    
+    # Draw clean rectangular status box
+    from matplotlib.patches import Rectangle
+    status_box = Rectangle((0.1, 0.7), 0.8, 0.2, 
+                          linewidth=3, edgecolor=color, 
+                          facecolor='white', alpha=0.9)
+    ax.add_patch(status_box)
+    
     # Add status text
-    ax.text(0.5, 0.7, symbol, ha='center', va='center',
-            fontsize=40, color='white', fontweight='bold')
-    ax.text(0.5, 0.45, description, ha='center', va='center',
-            fontsize=16, color=color, fontweight='bold')
+    ax.text(0.5, 0.8, f'STATUS: {status_text}', ha='center', va='center',
+            fontsize=14, color=color, fontweight='bold')
     
-    # Add status reason if available
-    if hasattr(track_data, 'status_reason') and track_data.status_reason and status != "Pass":
-        # Wrap long text
-        import textwrap
-        wrapped_text = textwrap.fill(track_data.status_reason, width=30)
-        ax.text(0.5, 0.25, wrapped_text, ha='center', va='center',
-                fontsize=9, color=color, style='italic', wrap=True)
+    # Add key failure details
+    details = []
     
-    # Add small explanation text
-    ax.text(0.5, 0.05, 'Overall Status', ha='center', va='center',
-            fontsize=9, color='gray', style='italic')
-
+    # Add fail point count if applicable
+    if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
+        fail_points = track_data.linearity_analysis.linearity_fail_points
+        if fail_points > 0:
+            details.append(f'{fail_points} points out of spec')
+    
+    # Add primary failure type
+    if status == "Fail":
+        if (hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis and 
+            not track_data.linearity_analysis.linearity_pass):
+            details.append('Primary Issue: Linearity')
+        elif (hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis and 
+              not track_data.sigma_analysis.sigma_pass):
+            details.append('Primary Issue: Sigma Gradient')
+    
+    # Add risk category if available
+    if hasattr(track_data, 'failure_prediction') and track_data.failure_prediction:
+        risk = track_data.failure_prediction.risk_category.value
+        if risk != 'Low':
+            details.append(f'Risk: {risk}')
+    
+    # Display details
+    y_pos = 0.55
+    for detail in details[:3]:  # Show max 3 details to avoid crowding
+        ax.text(0.5, y_pos, detail, ha='center', va='center',
+               fontsize=10, color=color if status == "Fail" else 'black')
+        y_pos -= 0.12
+    
+    # Add test date/time if available in metadata
+    if hasattr(track_data, 'metadata') and track_data.metadata:
+        if hasattr(track_data.metadata, 'test_date') and track_data.metadata.test_date:
+            date_str = track_data.metadata.test_date.strftime('%m/%d/%Y %H:%M')
+            ax.text(0.5, 0.15, f'Test: {date_str}', ha='center', va='center',
+                   fontsize=8, color='gray', style='italic')
+    
+    # Add border frame for professional look
+    frame = Rectangle((0.05, 0.05), 0.9, 0.9, 
+                     linewidth=1, edgecolor='gray', 
+                     facecolor='none', alpha=0.3)
+    ax.add_patch(frame)
+    
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
 
