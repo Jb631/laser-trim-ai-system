@@ -219,19 +219,50 @@ class FastProcessor:
             logger.warning(f"Failed to initialize calculation validator: {e}")
             self.calculation_validator = None
         
-        # Performance settings - limit workers to prevent 100% CPU usage
-        # Even in turbo mode, leave some CPU capacity for the system
-        if turbo_mode:
-            # Use at most 75% of cores, minimum 1, maximum 4 to prevent overload
-            self.max_workers = min(max(mp.cpu_count() * 3 // 4, 1), 4)
-        else:
-            # Standard mode uses half the cores, max 2
-            self.max_workers = min(max(mp.cpu_count() // 2, 1), 2)
+        # Circuit breaker for handling failures
+        self.consecutive_failures = 0
+        self.max_failures = 50  # Stop after 50 consecutive failures
+        self.failure_reset_threshold = 10  # Reset after 10 successes
+        
+        # Performance settings - adaptive based on system resources
+        self._setup_adaptive_performance_settings()
+        
         # Adaptive chunk sizing - will be set based on total files in process_batch
         self.chunk_size = 20  # Default chunk size
         self.enable_plots = False if turbo_mode else config.processing.generate_plots
         
+        # Set large batch mode flag for memory management
+        self._large_batch_mode = False
+        
         logger.info(f"FastProcessor initialized - Turbo: {turbo_mode}, Workers: {self.max_workers}, Plots: {self.enable_plots}")
+    
+    def _setup_adaptive_performance_settings(self):
+        """Setup performance settings based on system resources and batch size."""
+        # Get system info
+        memory_gb = psutil.virtual_memory().total / (1024**3)
+        cpu_count = mp.cpu_count()
+        
+        logger.info(f"System resources: {memory_gb:.1f}GB RAM, {cpu_count} CPU cores")
+        
+        if self.turbo_mode:
+            # Turbo mode - more aggressive but safer limits for large batches
+            if memory_gb >= 16:
+                # High memory system
+                self.max_workers = min(max(cpu_count * 2 // 3, 1), 6)
+            elif memory_gb >= 8:
+                # Medium memory system
+                self.max_workers = min(max(cpu_count // 2, 1), 4)
+            else:
+                # Low memory system - very conservative
+                self.max_workers = min(max(cpu_count // 3, 1), 2)
+        else:
+            # Standard mode - conservative settings
+            if memory_gb >= 8:
+                self.max_workers = min(max(cpu_count // 2, 1), 3)
+            else:
+                self.max_workers = min(max(cpu_count // 3, 1), 2)
+        
+        logger.info(f"Adaptive performance: {self.max_workers} max workers for {memory_gb:.1f}GB RAM")
     
     def process_batch_fast(
         self,
@@ -243,35 +274,29 @@ class FastProcessor:
         total_files = len(file_paths)
         logger.info(f"Starting fast batch processing of {total_files} files")
         
-        # Check memory before starting
-        memory_available = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
-        logger.info(f"🔧 DEBUG: Available memory: {memory_available:.1f}GB")
-        logger.info(f"🔧 DEBUG: turbo_mode = {self.turbo_mode}, total_files = {total_files}")
-        logger.info(f"🔧 DEBUG: Checking turbo mode condition: {self.turbo_mode} and {total_files} > 200 = {self.turbo_mode and total_files > 200}")
+        # Enable large batch mode for 1000+ files
+        self._large_batch_mode = total_files >= 1000
+        if self._large_batch_mode:
+            logger.info("Large batch mode enabled - enhanced memory management active")
         
-        # Adaptive chunk sizing based on total files and available memory
-        # Reduced chunk sizes to prevent CPU overload
-        if self.turbo_mode and total_files > 200:
-            logger.info(f"🔧 DEBUG: Turbo mode activated for {total_files} files")
-            # For large batches in turbo mode, use smaller chunks to prevent CPU spikes
-            if memory_available >= 4:
-                self.chunk_size = 50   # Reduced from 200
-                logger.info(f"🔧 DEBUG: High memory (>=4GB): chunk_size = {self.chunk_size}")
-            elif memory_available >= 2:
-                self.chunk_size = 30   # Reduced from 100
-                logger.info(f"🔧 DEBUG: Medium memory (>=2GB): chunk_size = {self.chunk_size}")
-            else:
-                self.chunk_size = 20   # Reduced from 50
-                logger.info(f"🔧 DEBUG: Low memory (<2GB): chunk_size = {self.chunk_size}")
-            logger.info(f"✅ TURBO CHUNK SIZE: {self.chunk_size} files per chunk for {total_files} total files")
-        elif memory_available < 2 and total_files > 100:
-            logger.warning("Low memory detected - using conservative chunk size")
-            self.chunk_size = 10  # Reduced from 20
-        else:
-            # Default chunk size for smaller batches
-            self.chunk_size = 10  # Reduced from 20
+        # Enhanced memory and system check before starting
+        memory_info = psutil.virtual_memory()
+        memory_available = memory_info.available / (1024**3)  # GB
+        memory_total = memory_info.total / (1024**3)  # GB
+        cpu_percent = psutil.cpu_percent(interval=1)
         
+        logger.info(f"System status before batch: {memory_available:.1f}GB available / {memory_total:.1f}GB total ({memory_info.percent:.1f}% used), CPU: {cpu_percent:.1f}%")
+        
+        # Adaptive processing strategy based on batch size and resources
+        self._setup_batch_strategy(total_files, memory_available, memory_total)
+        
+        # Circuit breaker reset
+        self.consecutive_failures = 0
+        
+        # Initialize batch tracking
         results = []
+        failed_files = []
+        skipped_files = []
         processed = 0
         start_time = time.time()
         
@@ -299,18 +324,37 @@ class FastProcessor:
                     break
                 logger.info(f"🔧 DEBUG: Progress callback returned: {continue_processing}")
             
-            # Process chunk in parallel
-            chunk_results = self._process_chunk_parallel(chunk, output_dir)
+            # Circuit breaker check
+            if self.consecutive_failures >= self.max_failures:
+                logger.error(f"Circuit breaker triggered: {self.consecutive_failures} consecutive failures")
+                skipped_files.extend(chunk)
+                continue
+            
+            # Process chunk in parallel with error tracking
+            chunk_results, chunk_failures = self._process_chunk_parallel_safe(chunk, output_dir)
             results.extend(chunk_results)
+            failed_files.extend(chunk_failures)
+            
+            # Update failure tracking
+            if chunk_failures:
+                self.consecutive_failures += len(chunk_failures)
+            else:
+                # Reset failure counter on successful chunk
+                if self.consecutive_failures > 0:
+                    self.consecutive_failures = max(0, self.consecutive_failures - self.failure_reset_threshold)
             
             # Update processed count with actual results
             processed += len(chunk_results)
             chunk_time = time.time() - chunk_start
             rate = len(chunk_results) / chunk_time if chunk_time > 0 else 0
             
+            logger.info(f"Chunk {chunk_idx + 1}: {len(chunk_results)} success, {len(chunk_failures)} failed, {rate:.1f} files/sec")
+            
             # Update progress after chunk with accurate count
             if progress_callback:
                 progress = processed / total_files
+                # Ensure progress never exceeds 1.0 (100%)
+                progress = min(progress, 1.0)
                 continue_processing = progress_callback(f"Completed {processed} of {total_files} files", progress)
                 if continue_processing is False:
                     logger.info("Processing stopped after chunk completion")
@@ -318,37 +362,192 @@ class FastProcessor:
             
             logger.info(f"Chunk {chunk_idx + 1} completed: {len(chunk_results)} files in {chunk_time:.1f}s ({rate:.1f} files/sec)")
             
-            # Memory management between chunks
-            if chunk_idx % 5 == 0:
-                self._cleanup_memory()
+            # Adaptive memory and resource management
+            self._adaptive_resource_management(chunk_idx, total_files)
             
-            # CPU throttling - add delay between chunks to prevent 100% CPU
-            cpu_percent = psutil.cpu_percent(interval=0.1)
-            if cpu_percent > 80:
-                logger.info(f"High CPU usage ({cpu_percent:.1f}%), pausing for 2 seconds")
-                time.sleep(2.0)
-            elif cpu_percent > 60:
-                logger.debug(f"Moderate CPU usage ({cpu_percent:.1f}%), pausing for 1 second")
-                time.sleep(1.0)
-            else:
-                # Always add a small delay between chunks
-                time.sleep(0.5)
-            
-            # Check if we should continue
-            memory_percent = psutil.virtual_memory().percent
-            if memory_percent > 90:
-                logger.warning(f"Critical memory usage: {memory_percent}% - stopping batch")
+            # Check system health and decide whether to continue
+            if not self._system_health_check():
+                logger.warning("System health check failed - stopping batch processing")
+                skipped_files.extend([f for chunk in chunks[chunk_idx+1:] for f in chunk])
                 break
         
         total_time = time.time() - start_time
         overall_rate = processed / total_time if total_time > 0 else 0
         
-        logger.info(f"Batch processing complete: {processed} files in {total_time:.1f}s ({overall_rate:.1f} files/sec)")
+        # Final batch statistics
+        success_count = len(results)
+        failure_count = len(failed_files)
+        skipped_count = len(skipped_files)
+        
+        logger.info(f"Batch processing complete: {success_count} success, {failure_count} failed, {skipped_count} skipped")
+        logger.info(f"Total time: {total_time:.1f}s, Rate: {overall_rate:.1f} files/sec")
+        
+        if failed_files:
+            logger.warning(f"Failed files sample: {[str(f.name) for f in failed_files[:5]]}")
+        if skipped_files:
+            logger.warning(f"Skipped files sample: {[str(f.name) for f in skipped_files[:5]]}")
         
         # Final cleanup
         self._cleanup_memory()
         
         return results
+    
+    def _setup_batch_strategy(self, total_files: int, memory_available: float, memory_total: float):
+        """Setup adaptive processing strategy based on batch size and available resources."""
+        logger.info(f"Setting up batch strategy for {total_files} files")
+        
+        # For very large batches (2000+ files), use extra conservative settings
+        if total_files >= 2000:
+            logger.warning(f"Large batch detected: {total_files} files - using ultra-conservative settings")
+            
+            # Ultra-conservative chunk sizes for massive batches
+            if memory_available >= 8:
+                self.chunk_size = 15  # Very small chunks
+                self.max_workers = min(self.max_workers, 3)  # Reduce workers further
+            elif memory_available >= 4:
+                self.chunk_size = 10
+                self.max_workers = min(self.max_workers, 2)
+            else:
+                self.chunk_size = 5   # Tiny chunks for low memory
+                self.max_workers = 1  # Single threaded
+            
+            logger.warning(f"Ultra-conservative mode: chunk_size={self.chunk_size}, max_workers={self.max_workers}")
+            
+        elif total_files >= 1000:
+            logger.info(f"Large batch: {total_files} files - using conservative settings")
+            
+            if memory_available >= 6:
+                self.chunk_size = 25
+                self.max_workers = min(self.max_workers, 4)
+            elif memory_available >= 3:
+                self.chunk_size = 15
+                self.max_workers = min(self.max_workers, 3)
+            else:
+                self.chunk_size = 8
+                self.max_workers = min(self.max_workers, 2)
+            
+            logger.info(f"Conservative mode: chunk_size={self.chunk_size}, max_workers={self.max_workers}")
+            
+        elif total_files >= 500:
+            # Medium batches - balanced approach
+            if memory_available >= 4:
+                self.chunk_size = 40
+            elif memory_available >= 2:
+                self.chunk_size = 25
+            else:
+                self.chunk_size = 15
+            
+            logger.info(f"Balanced mode: chunk_size={self.chunk_size}")
+            
+        else:
+            # Small batches - standard settings
+            if memory_available >= 2:
+                self.chunk_size = 50
+            else:
+                self.chunk_size = 25
+            
+            logger.info(f"Standard mode: chunk_size={self.chunk_size}")
+        
+        # Memory usage warning
+        memory_percent = (memory_total - memory_available) / memory_total * 100
+        if memory_percent > 80:
+            logger.warning(f"High memory usage detected: {memory_percent:.1f}% - reducing performance settings")
+            self.chunk_size = max(5, self.chunk_size // 2)
+            self.max_workers = max(1, self.max_workers // 2)
+    
+    def _adaptive_resource_management(self, chunk_idx: int, total_files: int):
+        """Adaptive resource management between chunks."""
+        # More frequent cleanup for large batches
+        cleanup_frequency = 3 if total_files >= 2000 else 5
+        
+        if chunk_idx % cleanup_frequency == 0:
+            self._cleanup_memory()
+        
+        # Dynamic CPU and memory monitoring
+        memory_info = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        
+        # Adaptive delays based on system load
+        if memory_info.percent > 85:
+            logger.warning(f"High memory usage: {memory_info.percent:.1f}% - extended pause")
+            time.sleep(3.0)
+            self._cleanup_memory()  # Extra cleanup
+        elif memory_info.percent > 75:
+            logger.info(f"Moderate memory usage: {memory_info.percent:.1f}% - pause")
+            time.sleep(2.0)
+        elif cpu_percent > 90:
+            logger.warning(f"Very high CPU usage: {cpu_percent:.1f}% - extended pause")
+            time.sleep(2.5)
+        elif cpu_percent > 80:
+            logger.info(f"High CPU usage: {cpu_percent:.1f}% - pause")
+            time.sleep(1.5)
+        elif cpu_percent > 60:
+            time.sleep(1.0)
+        else:
+            # Always add a small delay between chunks for system stability
+            time.sleep(0.3)
+    
+    def _system_health_check(self) -> bool:
+        """Check if system is healthy enough to continue processing."""
+        memory_info = psutil.virtual_memory()
+        
+        # Critical memory check
+        if memory_info.percent > 95:
+            logger.error(f"Critical memory usage: {memory_info.percent:.1f}% - stopping processing")
+            return False
+        
+        # Available memory check
+        available_gb = memory_info.available / (1024**3)
+        if available_gb < 0.5:  # Less than 500MB available
+            logger.error(f"Critical low memory: {available_gb:.1f}GB available - stopping processing")
+            return False
+        
+        # Check for system responsiveness
+        try:
+            start_time = time.time()
+            cpu_percent = psutil.cpu_percent(interval=0.5)
+            response_time = time.time() - start_time
+            
+            if response_time > 2.0:  # System taking too long to respond
+                logger.warning(f"System slow response: {response_time:.1f}s - may be overloaded")
+                return False
+        except Exception as e:
+            logger.warning(f"System health check failed: {e}")
+            return False
+        
+        return True
+    
+    def _process_chunk_parallel_safe(self, file_paths: List[Path], output_dir: Optional[Path]) -> Tuple[List[AnalysisResult], List[Path]]:
+        """Process chunk with enhanced error tracking and recovery."""
+        results = []
+        failed_files = []
+        
+        # Use ThreadPoolExecutor for stability in large batches
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all files for processing
+            future_to_file = {
+                executor.submit(self._process_file_sequential, file_path, output_dir): file_path
+                for file_path in file_paths
+            }
+            
+            # Collect results with timeout and error handling
+            for future in as_completed(future_to_file):
+                file_path = future_to_file[future]
+                try:
+                    # Extended timeout for large batches
+                    timeout = 120 if len(file_paths) > 100 else 60
+                    result = future.result(timeout=timeout)
+                    
+                    if result:
+                        results.append(result)
+                    else:
+                        failed_files.append(file_path)
+                        
+                except Exception as e:
+                    logger.error(f"Failed to process {file_path.name}: {e}")
+                    failed_files.append(file_path)
+        
+        return results, failed_files
     
     def _process_chunk_parallel(self, file_paths: List[Path], output_dir: Optional[Path]) -> List[AnalysisResult]:
         """Process a chunk of files in parallel using threads (more stable than processes)."""
@@ -1240,9 +1439,12 @@ class FastProcessor:
             return ValidationStatus.VALIDATED
     
     def _cleanup_memory(self):
-        """Aggressive memory cleanup."""
+        """Enhanced memory cleanup for large batches."""
         self.reader.clear_cache()
-        gc.collect()
+        
+        # Multiple garbage collection passes for thoroughness
+        for _ in range(2):
+            gc.collect()
         
         # Close any matplotlib figures
         try:
@@ -1253,7 +1455,27 @@ class FastProcessor:
         
         # Log memory status
         memory_info = psutil.virtual_memory()
-        logger.info(f"Memory cleanup - Available: {memory_info.available / (1024**3):.1f}GB ({memory_info.percent}% used)")
+        logger.debug(f"Memory cleanup - Available: {memory_info.available / (1024**3):.1f}GB ({memory_info.percent:.1f}% used)")
+        
+        # For very large batches, do more aggressive cleanup
+        if hasattr(self, '_large_batch_mode') and self._large_batch_mode:
+            # Clear more caches
+            import sys
+            if hasattr(sys, 'modules'):
+                # Clear module caches for pandas/numpy if needed
+                for module_name in list(sys.modules.keys()):
+                    if 'pandas' in module_name or 'numpy' in module_name:
+                        if hasattr(sys.modules[module_name], '_cache'):
+                            try:
+                                sys.modules[module_name]._cache.clear()
+                            except:
+                                pass
+            
+            # Force more aggressive garbage collection
+            for _ in range(3):
+                gc.collect()
+            
+            logger.debug(f"Aggressive memory cleanup completed")
 
 
 # Convenience function for direct usage
