@@ -260,50 +260,83 @@ class DatabaseManager:
                 self.logger.info(f"Using development database at: {db_path}")
                 return database_url
         
-        # For non-development, check deployment.yaml for deployment mode
+        # For non-development, check for user overrides first, then deployment.yaml
         deployment_mode = 'single_user'
         deployment_config_path = Path("config/deployment.yaml")
         
-        try:
-            if deployment_config_path.exists():
-                with open(deployment_config_path, 'r') as f:
-                    deployment_config = yaml.safe_load(f)
-                    deployment_mode = deployment_config.get('deployment_mode', 'single_user')
+        # Check for user database path overrides (deployed version fallback)
+        user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
+        user_override_path = None
+        
+        if user_config_path.exists():
+            try:
+                with open(user_config_path, 'r') as f:
+                    user_config = yaml.safe_load(f)
                     
-                    # Get database config based on mode
-                    db_config = deployment_config.get('database', {})
-                    if deployment_mode == 'single_user':
-                        db_path = db_config.get('single_user', {}).get('path', './data/laser_trim.db')
-                    else:
-                        db_path = db_config.get('multi_user', {}).get('path', '//server/share/laser_trim/database.db')
-                    
-                    # Handle different path types
-                    if db_path.startswith('./'):
-                        # Relative to application directory
-                        app_dir = Path.cwd()
-                        db_path = str(app_dir / db_path[2:])
-                    elif ':' in db_path or db_path.startswith('/'):
-                        # Absolute path (Windows with drive letter or Unix-style)
-                        db_path = os.path.expandvars(db_path)
-                    else:
-                        # Expand environment variables for other paths
-                        db_path = os.path.expandvars(db_path)
-                    
-                    # Handle Windows paths
-                    if deployment_mode == 'multi_user' and (db_path.startswith('//') or db_path.startswith('\\\\')):
-                        db_path = db_path.replace('\\', '/')
-                        database_url = f"sqlite:///{db_path}"
-                        self.logger.info(f"Using multi-user network database at: {db_path}")
-                    else:
-                        # Single user or local path
-                        db_path = Path(db_path)
-                        db_path.parent.mkdir(parents=True, exist_ok=True)
-                        database_url = f"sqlite:///{db_path.absolute()}"
-                        self.logger.info(f"Using single-user local database at: {db_path}")
-                    
-                    return database_url
-        except Exception as e:
-            self.logger.warning(f"Could not read deployment.yaml: {e}, falling back to config object")
+                    # Check for both possible keys (network and local database paths)
+                    if 'network_database_path' in user_config:
+                        user_override_path = user_config['network_database_path']
+                        deployment_mode = 'multi_user'
+                        self.logger.info(f"Found user network database override: {user_override_path}")
+                    elif 'database_path' in user_config:
+                        user_override_path = user_config['database_path']
+                        deployment_mode = 'single_user'
+                        self.logger.info(f"Found user database path override: {user_override_path}")
+                        
+            except Exception as e:
+                self.logger.warning(f"Could not read user database config: {e}")
+        
+        # If user override exists, use it directly
+        if user_override_path:
+            db_path = user_override_path
+            self.logger.info(f"Using user override database path: {db_path}")
+        else:
+            # Otherwise read from deployment.yaml
+            try:
+                if deployment_config_path.exists():
+                    with open(deployment_config_path, 'r') as f:
+                        deployment_config = yaml.safe_load(f)
+                        deployment_mode = deployment_config.get('deployment_mode', 'single_user')
+                        
+                        # Get database config based on mode
+                        db_config = deployment_config.get('database', {})
+                        if deployment_mode == 'single_user':
+                            db_path = db_config.get('single_user', {}).get('path', './data/laser_trim.db')
+                        else:
+                            db_path = db_config.get('multi_user', {}).get('path', '//server/share/laser_trim/database.db')
+                            
+            except Exception as e:
+                self.logger.warning(f"Could not read deployment.yaml: {e}, using default")
+                db_path = './data/laser_trim.db'
+        
+        # Handle different path types (works for both user override and deployment paths)
+        if db_path.startswith('./'):
+            # Relative to application directory
+            app_dir = Path.cwd()
+            db_path = str(app_dir / db_path[2:])
+        elif ':' in db_path or db_path.startswith('/'):
+            # Absolute path (Windows with drive letter or Unix-style)
+            db_path = os.path.expandvars(db_path)
+        else:
+            # Expand environment variables for other paths
+            db_path = os.path.expandvars(db_path)
+        
+        # Handle Windows paths and create database URL
+        if deployment_mode == 'multi_user' and (db_path.startswith('//') or db_path.startswith('\\\\')):
+            db_path = db_path.replace('\\', '/')
+            database_url = f"sqlite:///{db_path}"
+            self.logger.info(f"Using multi-user network database at: {db_path}")
+        else:
+            # Single user or local path
+            db_path = Path(db_path)
+            try:
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.logger.warning(f"Could not create database directory: {e}")
+            database_url = f"sqlite:///{db_path.absolute()}"
+            self.logger.info(f"Using single-user local database at: {db_path}")
+        
+        return database_url
         
         # Fallback to config object if deployment.yaml not available
         if hasattr(config.database, 'url') and config.database.url:

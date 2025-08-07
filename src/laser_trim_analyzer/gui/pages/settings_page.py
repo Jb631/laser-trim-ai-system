@@ -563,9 +563,33 @@ class SettingsPage(ctk.CTkFrame):
             return "Single User (Local)"
     
     def _get_current_db_path(self):
-        """Get current database path based on deployment mode."""
+        """Get current database path based on deployment mode and user overrides."""
         try:
             mode = self._get_deployment_mode()
+            
+            # First check for user overrides (deployed version settings)
+            user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
+            if user_config_path.exists():
+                try:
+                    with open(user_config_path, 'r') as f:
+                        user_config = yaml.safe_load(f)
+                        
+                        # Check for both possible keys
+                        if mode == "Multi-User (Network)" and 'network_database_path' in user_config:
+                            path = user_config['network_database_path']
+                            self.logger.info(f"Using user network database override: {path}")
+                            return os.path.expandvars(path)
+                        elif mode == "Single User (Local)" and 'database_path' in user_config:
+                            path = user_config['database_path']
+                            self.logger.info(f"Using user database override: {path}")
+                            # Handle relative paths for portable deployment
+                            if path.startswith('./'):
+                                app_dir = Path.cwd()
+                                return str(app_dir / path[2:])
+                            else:
+                                return os.path.expandvars(path)
+                except Exception as e:
+                    self.logger.warning(f"Could not read user database config: {e}")
             
             # Check deployment.yaml
             deployment_config_path = Path("config/deployment.yaml")
@@ -751,34 +775,50 @@ class SettingsPage(ctk.CTkFrame):
         try:
             deployment_config_path = Path("config/deployment.yaml")
             
-            # Load existing config
-            if deployment_config_path.exists():
-                with open(deployment_config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-            else:
-                config = {}
-            
-            # Update network path
-            if 'database' not in config:
-                config['database'] = {}
-            if 'multi_user' not in config['database']:
-                config['database']['multi_user'] = {}
-            
-            # Convert backslashes to forward slashes for YAML
-            config['database']['multi_user']['path'] = new_path.replace('\\', '/')
-            
-            # Save config
-            with open(deployment_config_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-            
-            self.logger.info(f"Updated network database path to: {new_path}")
-            
-            # Show restart message
-            messagebox.showinfo(
-                "Restart Required",
-                "The database path has been changed. Please restart the application for the changes to take effect."
-            )
-            
+            # Check if we can write to the config file
+            try:
+                # Load existing config
+                if deployment_config_path.exists():
+                    with open(deployment_config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                else:
+                    config = {}
+                
+                # Update network path
+                if 'database' not in config:
+                    config['database'] = {}
+                if 'multi_user' not in config['database']:
+                    config['database']['multi_user'] = {}
+                
+                # Convert backslashes to forward slashes for YAML
+                config['database']['multi_user']['path'] = new_path.replace('\\', '/')
+                
+                # Try to save config
+                with open(deployment_config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False)
+                
+                self.logger.info(f"Updated network database path to: {new_path}")
+                
+                # Show restart message
+                messagebox.showinfo(
+                    "Restart Required",
+                    "The database path has been changed. Please restart the application for the changes to take effect."
+                )
+                
+            except (PermissionError, OSError) as e:
+                # If config is read-only (deployed package), save to user settings instead
+                self.logger.warning(f"Config file is read-only ({e}), saving to user settings")
+                user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
+                user_config_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(user_config_path, 'w') as f:
+                    yaml.dump({'network_database_path': new_path}, f, default_flow_style=False)
+                
+                messagebox.showinfo(
+                    "Settings Saved",
+                    f"Network database path saved to user settings.\nPath: {new_path}\n\nPlease restart the application."
+                )
+                
         except Exception as e:
             self.logger.error(f"Failed to update network database path: {e}")
             messagebox.showerror("Error", f"Failed to update database path: {e}")
@@ -985,33 +1025,49 @@ class SettingsPage(ctk.CTkFrame):
         try:
             deployment_config_path = Path("config/deployment.yaml")
             
-            # Load existing config
-            if deployment_config_path.exists():
-                with open(deployment_config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-            else:
-                config = {}
-            
-            # Update local path
-            if 'database' not in config:
-                config['database'] = {}
-            if 'single_user' not in config['database']:
-                config['database']['single_user'] = {}
-            
-            config['database']['single_user']['path'] = new_path
-            
-            # Save config
-            with open(deployment_config_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-            
-            self.logger.info(f"Updated local database path to: {new_path}")
-            
-            # Show restart message
-            messagebox.showinfo(
-                "Restart Required",
-                "The database location has been changed. Please restart the application for the changes to take effect."
-            )
-            
+            # Check if we can write to the config file
+            try:
+                # Load existing config
+                if deployment_config_path.exists():
+                    with open(deployment_config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                else:
+                    config = {}
+                
+                # Update local path
+                if 'database' not in config:
+                    config['database'] = {}
+                if 'single_user' not in config['database']:
+                    config['database']['single_user'] = {}
+                
+                config['database']['single_user']['path'] = new_path
+                
+                # Try to save config
+                with open(deployment_config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False)
+                
+                self.logger.info(f"Updated local database path to: {new_path}")
+                
+                # Show restart message
+                messagebox.showinfo(
+                    "Restart Required",
+                    "The database location has been changed. Please restart the application for the changes to take effect."
+                )
+                
+            except (PermissionError, OSError) as e:
+                # If config is read-only (deployed package), save to user settings instead
+                self.logger.warning(f"Config file is read-only ({e}), saving to user settings")
+                user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
+                user_config_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                with open(user_config_path, 'w') as f:
+                    yaml.dump({'database_path': new_path}, f, default_flow_style=False)
+                
+                messagebox.showinfo(
+                    "Settings Saved",
+                    f"Database path saved to user settings.\nPath: {new_path}\n\nPlease restart the application."
+                )
+                
         except Exception as e:
             self.logger.error(f"Failed to update local database path: {e}")
             messagebox.showerror("Error", f"Failed to update database path: {e}")
