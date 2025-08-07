@@ -16,6 +16,7 @@ matplotlib.use('TkAgg')  # Use TkAgg backend for better integration
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 from typing import (
     Any,
@@ -110,16 +111,36 @@ class ChartWidget(ctk.CTkFrame):
             plt.rcParams['legend.facecolor'] = 'white'
             plt.rcParams['legend.edgecolor'] = theme_colors["border"]["primary"]
 
-        # Colors for QA metrics
+        # Enhanced QA colors optimized for manufacturing/aerospace documentation
+        # Print-friendly colors with B&W compatibility
         self.qa_colors = {
-            'pass': '#27ae60',
-            'fail': '#e74c3c',
-            'warning': '#f39c12',
-            'primary': '#3498db',
-            'secondary': '#9b59b6',
-            'good': '#27ae60',  # Same as pass
-            'bad': '#e74c3c',   # Same as fail
-            'neutral': '#95a5a6'
+            # Status colors (primary indicators)
+            'pass': '#2E8B57',      # Sea Green - works in B&W as medium gray
+            'fail': '#CD5C5C',      # Indian Red - works in B&W as dark gray
+            'warning': '#FF8C00',   # Dark Orange - works in B&W as medium-dark gray
+            'critical': '#8B0000',  # Dark Red - works in B&W as very dark gray
+            
+            # Technical measurement colors
+            'primary': '#4169E1',   # Royal Blue - good B&W contrast
+            'secondary': '#663399', # Rebecca Purple - medium dark in B&W
+            'tertiary': '#708090',  # Slate Gray - consistent in B&W
+            
+            # Control chart specific colors
+            'control_center': '#2F4F4F',  # Dark Slate Gray - always visible
+            'control_limits': '#CD853F',  # Peru - distinct from other colors
+            'spec_limits': '#B22222',     # Fire Brick - critical boundaries
+            'trend_line': '#000080',      # Navy - strong contrast
+            
+            # Data point states
+            'in_control': '#228B22',      # Forest Green
+            'out_of_control': '#DC143C',  # Crimson
+            'warning_zone': '#DAA520',    # Goldenrod
+            
+            # Background and grid
+            'grid_major': '#D3D3D3',      # Light Gray
+            'grid_minor': '#F5F5F5',      # White Smoke
+            'background': '#FFFFFF',      # White
+            'background_alt': '#F8F8FF'   # Ghost White
         }
 
         self._setup_ui()
@@ -272,6 +293,15 @@ class ChartWidget(ctk.CTkFrame):
         ax.tick_params(axis='x', colors=text_color, labelcolor=text_color)
         ax.tick_params(axis='y', colors=text_color, labelcolor=text_color)
         
+        # Control tick density to prevent MAXTICKS warnings
+        # Use reasonable max ticks based on plot type and data density
+        max_ticks_x = 15 if self.figsize[0] > 10 else 10
+        max_ticks_y = 12 if self.figsize[1] > 8 else 8
+        
+        # Apply MaxNLocator to both axes
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=max_ticks_x, prune='both'))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=max_ticks_y, prune='both'))
+        
         for spine in ax.spines.values():
             spine.set_color(grid_color)
             spine.set_alpha(spine_alpha)
@@ -391,9 +421,11 @@ class ChartWidget(ctk.CTkFrame):
         
         # Initialize theme tracking
         self._current_theme = ctk.get_appearance_mode()
+        self._theme_check_scheduled = False
+        self._shutting_down = False
         
         # Start checking for theme changes
-        self.after(1000, self._check_theme_change)
+        self._schedule_theme_check()
 
     def update_chart_data(self, data: pd.DataFrame):
         """
@@ -1589,15 +1621,37 @@ class ChartWidget(ctk.CTkFrame):
             except:
                 pass
 
+    def _schedule_theme_check(self):
+        """Schedule theme change checking."""
+        if not self._shutting_down and not self._theme_check_scheduled:
+            self._theme_check_scheduled = True
+            try:
+                self.after(1000, self._check_theme_change)
+            except:
+                self._theme_check_scheduled = False
+
     def _check_theme_change(self):
         """Check if theme has changed and update if necessary."""
-        current_theme = ctk.get_appearance_mode()
-        if current_theme != self._current_theme:
-            self._current_theme = current_theme
-            self._on_theme_change()
+        self._theme_check_scheduled = False
+        
+        if self._shutting_down:
+            return
+            
+        try:
+            current_theme = ctk.get_appearance_mode()
+            if current_theme != self._current_theme:
+                self._current_theme = current_theme
+                self._on_theme_change()
+        except:
+            pass
         
         # Schedule next check
-        self.after(1000, self._check_theme_change)
+        self._schedule_theme_check()
+    
+    def cleanup(self):
+        """Cleanup method to prevent after() callback errors."""
+        self._shutting_down = True
+        self._theme_check_scheduled = False
     
     def _on_theme_change(self):
         """Handle theme change events."""
@@ -2034,13 +2088,13 @@ class ChartWidget(ctk.CTkFrame):
         # Format dates with better spacing
         date_range = (dates.max() - dates.min()).days if hasattr(dates.max() - dates.min(), 'days') else 30
         if date_range > 60:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
             ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
         elif date_range > 30:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
             ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
         else:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
             ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
         
@@ -2070,7 +2124,7 @@ class ChartWidget(ctk.CTkFrame):
         ax2.grid(True, alpha=0.3)
         
         # Format dates with better spacing
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
         
         # 3. CUSUM Indicator Bar
@@ -2620,7 +2674,7 @@ class ChartWidget(ctk.CTkFrame):
             ax3.grid(True, alpha=0.3)
             
             # Format dates
-            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
             plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
         else:
             ax3.text(0.5, 0.5, 'Insufficient data for projection analysis', 
@@ -2700,7 +2754,7 @@ class ChartWidget(ctk.CTkFrame):
         ax1.grid(True, alpha=0.3)
         
         # Format dates
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
         
         # Add score breakdown text
@@ -2759,7 +2813,7 @@ class ChartWidget(ctk.CTkFrame):
         ax2.grid(True, alpha=0.3, axis='y')
         
         # Format dates
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
         
         # 3. Comparative Performance Table (bottom)
@@ -2857,6 +2911,197 @@ class ChartWidget(ctk.CTkFrame):
                 ha='center', fontsize=10, color=text_color, alpha=0.7)
         
         # Layout is handled by constrained_layout
+        self.canvas.draw_idle()
+    
+    def plot_enhanced_control_chart(self, data: pd.DataFrame, value_column: str, 
+                                   date_column: str = 'trim_date',
+                                   spec_limits: Optional[Tuple[float, float]] = None,
+                                   target_value: Optional[float] = None,
+                                   title: str = "Control Chart"):
+        """
+        Simplified control chart with moving averages for trend smoothing.
+        
+        Args:
+            data: DataFrame with time series data
+            value_column: Column name containing measured values
+            date_column: Column name containing dates
+            spec_limits: Tuple of (LSL, USL) specification limits
+            target_value: Target/nominal value
+            title: Chart title
+        """
+        self.figure.clear()
+        self._has_data = True
+        
+        ax = self.figure.add_subplot(111)
+        self._apply_theme_to_axes(ax)
+        
+        # Prepare data
+        df = data.copy()
+        df[date_column] = pd.to_datetime(df[date_column])
+        df = df.sort_values(date_column)
+        
+        values = df[value_column].dropna()
+        dates = df[date_column]
+        
+        if len(values) < 3:
+            ax.text(0.5, 0.5, 'Need at least 3 data points',
+                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Group by date for daily averages if many points
+        if len(values) > 100:
+            df_daily = df.groupby(df[date_column].dt.date)[value_column].mean().reset_index()
+            df_daily['date'] = pd.to_datetime(df_daily[date_column])
+            dates = df_daily['date']
+            values = df_daily[value_column]
+        
+        # Calculate moving averages for smoothing
+        values_series = pd.Series(values.values, index=dates)
+        ma_7 = values_series.rolling(window=7, min_periods=3).mean()
+        ma_30 = values_series.rolling(window=30, min_periods=15).mean() if len(values) >= 30 else None
+        
+        # Simple control limits
+        mean_val = values.mean()
+        std_val = values.std()
+        ucl = mean_val + 2 * std_val  # Simplified to 2-sigma
+        lcl = mean_val - 2 * std_val
+        
+        # Plot raw data lightly
+        ax.plot(dates, values, '-', linewidth=0.5, color=self.qa_colors['primary'], 
+               alpha=0.3, label='Raw Data')
+        
+        # Plot moving averages for trend (main focus)
+        ax.plot(dates, ma_7, '-', linewidth=2, color=self.qa_colors['secondary'], 
+               alpha=0.9, label='7-day Trend')
+        
+        if ma_30 is not None:
+            ax.plot(dates, ma_30, '-', linewidth=3, color=self.qa_colors['tertiary'], 
+                   alpha=0.8, label='30-day Trend')
+        
+        # Add simple reference lines
+        ax.axhline(y=mean_val, color=self.qa_colors['control_center'], linestyle='-', 
+                  linewidth=2, alpha=0.8, label=f'Average ({mean_val:.3f})')
+        
+        # Only show control limits if they're meaningful
+        if ucl > mean_val * 1.05:  # Only if at least 5% above mean
+            ax.axhline(y=ucl, color=self.qa_colors['warning'], linestyle='--', 
+                      linewidth=1.5, alpha=0.6, label=f'Upper Limit')
+        if lcl < mean_val * 0.95:  # Only if at least 5% below mean
+            ax.axhline(y=lcl, color=self.qa_colors['warning'], linestyle='--', 
+                      linewidth=1.5, alpha=0.6, label=f'Lower Limit')
+        
+        # Add target line if provided
+        if target_value:
+            ax.axhline(y=target_value, color=self.qa_colors['pass'], linestyle=':', 
+                      linewidth=2, alpha=0.8, label=f'Target ({target_value:.3f})')
+        
+        # Clean formatting
+        ax.set_xlabel('Date', fontsize=10)
+        ax.set_ylabel(value_column.replace('_', ' ').title(), fontsize=10)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        
+        # Simple legend with max 4 items
+        handles, labels = ax.get_legend_handles_labels()
+        if len(handles) > 4:
+            handles = handles[:4]
+            labels = labels[:4]
+        
+        if handles:
+            ax.legend(handles, labels, loc='upper right', fontsize=9, framealpha=0.9)
+        
+        # Clean grid and layout
+        ax.grid(True, alpha=0.3)
+        
+        # Simple date formatting with full year
+        import matplotlib.dates as mdates
+        from matplotlib.ticker import MaxNLocator
+        if len(dates) > 30:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=10))
+        else:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+        
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+    
+    def plot_process_capability_histogram(self, data: pd.DataFrame, value_column: str,
+                                        spec_limits: Optional[Tuple[float, float]] = None,
+                                        target_value: Optional[float] = None,
+                                        title: str = "Process Distribution"):
+        """
+        Simplified histogram showing process distribution.
+        
+        Args:
+            data: DataFrame with process data
+            value_column: Column name containing measured values
+            spec_limits: Tuple of (LSL, USL) specification limits  
+            target_value: Target/nominal value
+            title: Chart title
+        """
+        self.figure.clear()
+        self._has_data = True
+        
+        ax = self.figure.add_subplot(111)
+        self._apply_theme_to_axes(ax)
+        
+        values = data[value_column].dropna()
+        
+        if len(values) < 10:
+            ax.text(0.5, 0.5, 'Need at least 10 data points',
+                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
+            return
+        
+        # Calculate basic statistics
+        mean_val = values.mean()
+        std_val = values.std()
+        
+        # Simple histogram
+        n_bins = min(20, int(np.sqrt(len(values))))
+        ax.hist(values, bins=n_bins, density=True, 
+               color=self.qa_colors['primary'], alpha=0.6,
+               edgecolor='white', linewidth=1)
+        
+        # Add normal curve for reference
+        x_range = np.linspace(values.min(), values.max(), 100)
+        normal_curve = (1 / (std_val * np.sqrt(2 * np.pi))) * \
+                      np.exp(-0.5 * ((x_range - mean_val) / std_val) ** 2)
+        ax.plot(x_range, normal_curve, color=self.qa_colors['secondary'],
+               linewidth=2, alpha=0.8, label='Normal Fit')
+        
+        # Add mean line
+        ax.axvline(mean_val, color=self.qa_colors['control_center'], 
+                  linestyle='-', linewidth=2, alpha=0.8, 
+                  label=f'Average ({mean_val:.3f})')
+        
+        # Add target if provided
+        if target_value:
+            ax.axvline(target_value, color=self.qa_colors['pass'], 
+                      linestyle='--', linewidth=2, alpha=0.8,
+                      label=f'Target ({target_value:.3f})')
+        
+        # Add spec limits if provided (simplified)
+        if spec_limits:
+            lsl, usl = spec_limits
+            ax.axvline(lsl, color=self.qa_colors['warning'], 
+                      linestyle=':', linewidth=2, alpha=0.7, label='Lower Limit')
+            ax.axvline(usl, color=self.qa_colors['warning'], 
+                      linestyle=':', linewidth=2, alpha=0.7, label='Upper Limit')
+        
+        # Formatting
+        ax.set_xlabel(value_column.replace('_', ' ').title(), fontsize=10)
+        ax.set_ylabel('Frequency', fontsize=10)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        
+        # Simple legend
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, loc='upper right', fontsize=9, framealpha=0.9)
+        
+        ax.grid(True, alpha=0.3)
+        
+        self.figure.tight_layout()
         self.canvas.draw_idle()
 
 

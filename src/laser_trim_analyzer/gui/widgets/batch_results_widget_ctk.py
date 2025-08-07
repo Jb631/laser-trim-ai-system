@@ -19,6 +19,7 @@ class BatchResultsWidget(ctk.CTkFrame):
         super().__init__(parent, **kwargs)
         self.logger = logging.getLogger(__name__)
         self.results = {}
+        self._shutting_down = False
         
         # Virtual scrolling parameters
         self.visible_rows = 20  # Number of rows to display at once
@@ -71,6 +72,9 @@ class BatchResultsWidget(ctk.CTkFrame):
         
     def display_results(self, results: Dict[str, AnalysisResult]):
         """Display batch processing results with lazy loading."""
+        if self._shutting_down:
+            return
+            
         self.results = results
         self.current_offset = 0
         
@@ -118,7 +122,11 @@ class BatchResultsWidget(ctk.CTkFrame):
             self._display_results_internal(results)
         elif retry_count < max_retries:
             self.logger.info(f"UI not ready, retry {retry_count + 1}/{max_retries}")
-            self.after(50, lambda: self._check_ui_ready_and_display(results, retry_count + 1))
+            try:
+                self.after(50, lambda: self._check_ui_ready_and_display(results, retry_count + 1))
+            except:
+                # Widget destroyed, stop retrying
+                pass
         else:
             self.logger.error(f"UI setup failed after {max_retries} retries - forcing setup")
             self._setup_ui()
@@ -191,10 +199,18 @@ class BatchResultsWidget(ctk.CTkFrame):
         # Status
         status = 'Unknown'
         status_color = "gray"
-        if hasattr(result, 'overall_status'):
+        if hasattr(result, 'overall_status') and result.overall_status is not None:
             status_value = getattr(result.overall_status, 'value', str(result.overall_status))
             status = status_value
-            status_color = "green" if status == "Pass" else "red"
+            # Proper color mapping for all status types
+            if status == "Pass":
+                status_color = "green"
+            elif status == "Warning":
+                status_color = "orange"
+            elif status in ["Fail", "Error"]:
+                status_color = "red"
+            else:
+                status_color = "gray"
             
         # Validation status
         validation = 'N/A'
@@ -218,6 +234,7 @@ class BatchResultsWidget(ctk.CTkFrame):
         track_count = 0
         pass_count = 0
         fail_count = 0
+        warning_count = 0
         
         if hasattr(result, 'tracks') and result.tracks:
             # Handle both dict (from analysis) and list (from DB) formats
@@ -234,19 +251,18 @@ class BatchResultsWidget(ctk.CTkFrame):
                     track_status = getattr(track.status, 'value', str(track.status))
                     if track_status in ['Pass', 'PASS']:
                         pass_count += 1
-                    elif track_status in ['Fail', 'FAIL', 'Warning', 'WARNING', 'Error', 'ERROR']:
-                        fail_count += 1
-                    # If status is not recognized, log it for debugging
-                    else:
-                        self.logger.debug(f"Unknown track status: {track_status}")
-                else:
-                    # Fallback - this shouldn't happen if data structure is correct
-                    self.logger.warning(f"Track object missing 'status' attribute: {type(track)}")
-                    track_status = 'Unknown'
-                    if track_status in ['Pass', 'PASS']:
+                    elif track_status in ['Warning', 'WARNING']:
+                        warning_count += 1
+                        # Count warnings as pass for Pass/Fail display
                         pass_count += 1
-                    elif track_status in ['Fail', 'FAIL', 'Warning', 'WARNING', 'Error', 'ERROR']:
+                    elif track_status in ['Fail', 'FAIL', 'Error', 'ERROR']:
                         fail_count += 1
+                    # If status is not recognized, count as fail for safety
+                    else:
+                        fail_count += 1
+                else:
+                    # Fallback - count missing status as fail for safety
+                    fail_count += 1
         
         # Create row widgets with fixed widths matching headers
         headers = ['File', 'Model', 'Serial', 'Status', 'Validation', 'Tracks', 'Pass/Fail']
@@ -305,20 +321,33 @@ class BatchResultsWidget(ctk.CTkFrame):
             label.grid(row=0, column=col, padx=5, pady=4, sticky='w')
             widgets.append(label)
         
-        # Add hover effect to row
+        # Add hover effect to row with error handling
         def on_enter(event):
-            row_frame.configure(fg_color=("gray85", "gray15"))
+            try:
+                if row_frame.winfo_exists():
+                    row_frame.configure(fg_color=("gray85", "gray15"))
+            except:
+                pass  # Widget destroyed, ignore
             
         def on_leave(event):
-            row_frame.configure(
-                fg_color=("gray90", "gray20") if row % 2 == 0 else ("gray95", "gray25")
-            )
+            try:
+                if row_frame.winfo_exists():
+                    row_frame.configure(
+                        fg_color=("gray90", "gray20") if row % 2 == 0 else ("gray95", "gray25")
+                    )
+            except:
+                pass  # Widget destroyed, ignore
+            
+        def on_click(event):
+            try:
+                if row_frame.winfo_exists():
+                    self._on_row_click(file_path, result)
+            except:
+                pass  # Widget destroyed, ignore
             
         row_frame.bind("<Enter>", on_enter)
         row_frame.bind("<Leave>", on_leave)
-        
-        # Make row clickable for potential future functionality
-        row_frame.bind("<Button-1>", lambda e: self._on_row_click(file_path, result))
+        row_frame.bind("<Button-1>", on_click)
             
     def clear(self):
         """Clear all results."""
@@ -359,6 +388,8 @@ class BatchResultsWidget(ctk.CTkFrame):
     
     def _update_pagination_info(self):
         """Update the pagination status label and controls."""
+        if self._shutting_down:
+            return
         if hasattr(self, 'results_list') and self.results_list:
             # Remove existing pagination controls if they exist
             if hasattr(self, 'pagination_frame') and self.pagination_frame:
@@ -409,6 +440,8 @@ class BatchResultsWidget(ctk.CTkFrame):
 
     def _update_visible_rows(self):
         """Update visible rows based on current offset."""
+        if self._shutting_down:
+            return
         # Ensure we have results to display
         if not hasattr(self, 'results_list') or not self.results_list:
             self.logger.warning("No results list available for display")
@@ -466,6 +499,8 @@ class BatchResultsWidget(ctk.CTkFrame):
 
     def _next_page(self):
         """Navigate to the next page of results."""
+        if self._shutting_down:
+            return
         if hasattr(self, 'results_list') and self.results_list:
             max_offset = len(self.results_list) - self.visible_rows
             if self.current_offset < max_offset:
@@ -476,6 +511,8 @@ class BatchResultsWidget(ctk.CTkFrame):
     
     def _previous_page(self):
         """Navigate to the previous page of results.""" 
+        if self._shutting_down:
+            return
         if self.current_offset > 0:
             self.current_offset -= self.visible_rows
             if self.current_offset < 0:
@@ -484,5 +521,15 @@ class BatchResultsWidget(ctk.CTkFrame):
     
     def _update_display(self):
         """Update both the pagination info and visible rows."""
+        if self._shutting_down:
+            return
         self._update_pagination_info()
         self._update_visible_rows()
+    
+    def cleanup(self):
+        """Cleanup method to prevent callback errors during shutdown."""
+        self._shutting_down = True
+        # Clear results to stop any ongoing operations
+        self.results = {}
+        if hasattr(self, 'results_list'):
+            self.results_list = []

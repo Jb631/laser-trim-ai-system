@@ -47,6 +47,13 @@ from laser_trim_analyzer.utils.excel_utils import (
 )
 from laser_trim_analyzer.utils.plotting_utils import create_analysis_plot
 from laser_trim_analyzer.utils.date_utils import extract_datetime_from_filename
+from laser_trim_analyzer.utils.calculation_validator import CalculationValidator, ValidationLevel, CalculationType
+# Import comprehensive validation utilities
+from laser_trim_analyzer.utils.validators import (
+    validate_excel_file, validate_analysis_data, validate_model_number,
+    validate_resistance_values, AnalysisValidator, 
+    ValidationResult as UtilsValidationResult
+)
 from laser_trim_analyzer.core.constants import (
     SYSTEM_A_COLUMNS, SYSTEM_B_COLUMNS,
     SYSTEM_A_CELLS, SYSTEM_B_CELLS
@@ -200,6 +207,18 @@ class FastProcessor:
         self.linearity_analyzer = LinearityAnalyzer(config, logger)
         self.resistance_analyzer = ResistanceAnalyzer(config, logger)
         
+        # Initialize validation components for data integrity
+        try:
+            validation_level = getattr(
+                getattr(config, 'validation_level', 'standard'),
+                ValidationLevel.STANDARD
+            )
+            self.calculation_validator = CalculationValidator(validation_level)
+            logger.info(f"Initialized calculation validator with {validation_level.value} validation level")
+        except Exception as e:
+            logger.warning(f"Failed to initialize calculation validator: {e}")
+            self.calculation_validator = None
+        
         # Performance settings - limit workers to prevent 100% CPU usage
         # Even in turbo mode, leave some CPU capacity for the system
         if turbo_mode:
@@ -226,19 +245,25 @@ class FastProcessor:
         
         # Check memory before starting
         memory_available = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
-        logger.info(f"Available memory: {memory_available:.1f}GB")
+        logger.info(f"🔧 DEBUG: Available memory: {memory_available:.1f}GB")
+        logger.info(f"🔧 DEBUG: turbo_mode = {self.turbo_mode}, total_files = {total_files}")
+        logger.info(f"🔧 DEBUG: Checking turbo mode condition: {self.turbo_mode} and {total_files} > 200 = {self.turbo_mode and total_files > 200}")
         
         # Adaptive chunk sizing based on total files and available memory
         # Reduced chunk sizes to prevent CPU overload
         if self.turbo_mode and total_files > 200:
+            logger.info(f"🔧 DEBUG: Turbo mode activated for {total_files} files")
             # For large batches in turbo mode, use smaller chunks to prevent CPU spikes
             if memory_available >= 4:
                 self.chunk_size = 50   # Reduced from 200
+                logger.info(f"🔧 DEBUG: High memory (>=4GB): chunk_size = {self.chunk_size}")
             elif memory_available >= 2:
                 self.chunk_size = 30   # Reduced from 100
+                logger.info(f"🔧 DEBUG: Medium memory (>=2GB): chunk_size = {self.chunk_size}")
             else:
                 self.chunk_size = 20   # Reduced from 50
-            logger.info(f"Turbo mode with {total_files} files: using chunk size {self.chunk_size}")
+                logger.info(f"🔧 DEBUG: Low memory (<2GB): chunk_size = {self.chunk_size}")
+            logger.info(f"✅ TURBO CHUNK SIZE: {self.chunk_size} files per chunk for {total_files} total files")
         elif memory_available < 2 and total_files > 100:
             logger.warning("Low memory detected - using conservative chunk size")
             self.chunk_size = 10  # Reduced from 20
@@ -252,9 +277,13 @@ class FastProcessor:
         
         # Process in chunks to manage memory
         chunks = [file_paths[i:i + self.chunk_size] for i in range(0, total_files, self.chunk_size)]
+        logger.info(f"🔧 DEBUG: Created {len(chunks)} chunks with size {self.chunk_size}")
+        logger.info(f"🔧 DEBUG: First chunk size: {len(chunks[0]) if chunks else 0}")
+        logger.info(f"🔧 DEBUG: Last chunk size: {len(chunks[-1]) if chunks else 0}")
         
         for chunk_idx, chunk in enumerate(chunks):
             chunk_start = time.time()
+            logger.info(f"🔧 DEBUG: Starting chunk {chunk_idx + 1}/{len(chunks)} with {len(chunk)} files")
             
             # Update progress at start of chunk with accurate file count
             if progress_callback:
@@ -262,11 +291,13 @@ class FastProcessor:
                 files_in_chunk = len(chunk)
                 start_file = processed + 1
                 end_file = min(processed + files_in_chunk, total_files)
+                logger.info(f"🔧 DEBUG: Progress update: files {start_file}-{end_file} of {total_files} ({progress:.1%})")
                 # Check if callback returns False to indicate stop
                 continue_processing = progress_callback(f"Processing files {start_file}-{end_file} of {total_files}", progress)
                 if continue_processing is False:
-                    logger.info("Processing stopped by user request")
+                    logger.info("⚠️ Processing stopped by user request")
                     break
+                logger.info(f"🔧 DEBUG: Progress callback returned: {continue_processing}")
             
             # Process chunk in parallel
             chunk_results = self._process_chunk_parallel(chunk, output_dir)
@@ -320,13 +351,15 @@ class FastProcessor:
         return results
     
     def _process_chunk_parallel(self, file_paths: List[Path], output_dir: Optional[Path]) -> List[AnalysisResult]:
-        """Process a chunk of files in parallel."""
+        """Process a chunk of files in parallel using threads (more stable than processes)."""
         results = []
         
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+        # Use ThreadPoolExecutor instead of ProcessPoolExecutor to avoid freeze issues
+        # ThreadPoolExecutor is more stable in GUI applications and PyInstaller executables
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all files for processing
             future_to_file = {
-                executor.submit(self._process_file_worker, file_path, output_dir): file_path
+                executor.submit(self._process_file_sequential, file_path, output_dir): file_path
                 for file_path in file_paths
             }
             
@@ -334,13 +367,17 @@ class FastProcessor:
             for future in as_completed(future_to_file):
                 file_path = future_to_file[future]
                 try:
-                    result = future.result(timeout=30)  # 30 second timeout per file
+                    result = future.result(timeout=60)  # Increased timeout for thread-based processing
                     if result:
                         results.append(result)
                 except Exception as e:
                     logger.error(f"Failed to process {file_path}: {e}")
         
         return results
+    
+    def _process_file_sequential(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
+        """Process a single file sequentially (thread-safe version)."""
+        return self._process_file_worker(file_path, output_dir)
     
     def _process_file_worker(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
         """Worker function to process a single file."""
@@ -374,18 +411,25 @@ class FastProcessor:
             # Determine overall status
             overall_status = self._determine_overall_status(tracks)
             
-            # Determine overall validation status using the same logic as the main processor
-            overall_validation_status = self._determine_overall_validation_status(tracks)
+            # Comprehensive validation and error tracking
+            validation_issues, processing_errors = self._perform_comprehensive_validation(
+                file_path, tracks, file_data, metadata
+            )
             
-            # Create result
+            # Determine overall validation status based on comprehensive validation
+            overall_validation_status = self._determine_comprehensive_validation_status(
+                tracks, validation_issues
+            )
+            
+            # Create result with comprehensive validation data
             result = AnalysisResult(
                 metadata=metadata,
                 tracks=tracks,
                 overall_status=overall_status,
                 overall_validation_status=overall_validation_status,
                 processing_time=(time.time() - time.time()),  # Simplified timing
-                validation_issues=[],  # Empty list for fast mode
-                processing_errors=[]   # Empty list for fast mode
+                validation_issues=validation_issues,  # Comprehensive validation results
+                processing_errors=processing_errors   # Actual processing errors
             )
             
             # Generate plot only if enabled and not in turbo mode
@@ -479,20 +523,25 @@ class FastProcessor:
                 sigma_result, linearity_result, unit_props
             )
             
-            # Determine status and reason
-            status = AnalysisStatus.PASS
-            status_reason = "All tests passed"
-            
+            # Determine status and reason - match single file processor logic
+            # Linearity is the PRIMARY goal of laser trimming
             if linearity_result and not linearity_result.linearity_pass:
+                # Primary requirement not met
                 status = AnalysisStatus.FAIL
-                status_reason = f"Linearity failed: {linearity_result.linearity_fail_points} points out of spec"
+                status_reason = f"Linearity failed: {linearity_result.linearity_fail_points} points out of spec (0 allowed)"
             elif sigma_result and not sigma_result.sigma_pass:
-                status = AnalysisStatus.FAIL
+                # Linearity OK but sigma failed - functional but quality concern
+                status = AnalysisStatus.WARNING
                 status_reason = f"Sigma gradient ({sigma_result.sigma_gradient:.4f}) exceeds threshold ({sigma_result.sigma_threshold:.4f})"
             elif sigma_result and hasattr(sigma_result, 'gradient_margin') and sigma_result.gradient_margin < 0.2 * sigma_result.sigma_threshold:
+                # Both pass but sigma margin is tight (less than 20% margin)
                 status = AnalysisStatus.WARNING
                 margin_percent = (sigma_result.gradient_margin / sigma_result.sigma_threshold) * 100
                 status_reason = f"Sigma margin tight: only {margin_percent:.1f}% margin to threshold"
+            else:
+                # Both linearity and sigma pass with good margin
+                status = AnalysisStatus.PASS
+                status_reason = "All tests passed with good margins"
             
             # Create track data
             track_data = TrackData(
@@ -773,15 +822,17 @@ class FastProcessor:
         if not tracks:
             return AnalysisStatus.ERROR
         
-        all_pass = all(track.status == AnalysisStatus.PASS for track in tracks.values())
-        any_fail = any(track.status == AnalysisStatus.FAIL for track in tracks.values())
+        statuses = [track.status for track in tracks.values()]
         
-        if all_pass:
-            return AnalysisStatus.PASS
-        elif any_fail:
+        # Use same logic as single file processor for consistency
+        if any(s == AnalysisStatus.FAIL for s in statuses):
             return AnalysisStatus.FAIL
-        else:
+        elif any(s == AnalysisStatus.WARNING for s in statuses):
             return AnalysisStatus.WARNING
+        elif all(s == AnalysisStatus.PASS for s in statuses):
+            return AnalysisStatus.PASS
+        else:
+            return AnalysisStatus.ERROR
     
     def _determine_overall_validation_status(self, tracks: Dict[str, TrackData]) -> ValidationStatus:
         """Determine overall validation status from all tracks - laser trimming focused."""
@@ -1050,6 +1101,143 @@ class FastProcessor:
                 gradient_margin=0.0,
                 contributing_factors={}
             )
+    
+    def _perform_comprehensive_validation(self, file_path: Path, tracks: Dict[str, TrackData], 
+                                         file_data: Dict[str, Any], metadata: FileMetadata) -> Tuple[List[Any], List[str]]:
+        """Perform comprehensive validation to ensure data integrity in fast mode."""
+        validation_issues = []
+        processing_errors = []
+        
+        try:
+            # 1. File-level validation
+            try:
+                file_validation = validate_excel_file(file_path)
+                if not file_validation.is_valid:
+                    validation_issues.extend(file_validation.errors)
+            except Exception as e:
+                processing_errors.append(f"File validation error: {str(e)}")
+            
+            # 2. Model validation
+            try:
+                if metadata.model:
+                    model_validation = validate_model_number(metadata.model)
+                    if not model_validation.is_valid:
+                        validation_issues.extend(model_validation.errors)
+            except Exception as e:
+                processing_errors.append(f"Model validation error: {str(e)}")
+            
+            # 3. Track-level comprehensive validation
+            for track_id, track_data in tracks.items():
+                try:
+                    # Validate analysis data structure - extract data from TrackData object
+                    track_data_dict = {
+                        'positions': track_data.position_data or [],
+                        'errors': track_data.error_data or [],
+                        'upper_limits': track_data.upper_limits or [],
+                        'lower_limits': track_data.lower_limits or []
+                    }
+                    analysis_validation = validate_analysis_data(track_data_dict)
+                    if not analysis_validation.is_valid:
+                        validation_issues.extend([f"Track {track_id}: {error}" for error in analysis_validation.errors])
+                    
+                    # Calculation validation using industry standards
+                    if self.calculation_validator:
+                        # Validate sigma calculation
+                        if track_data.sigma_analysis:
+                            try:
+                                sigma_validation = self.calculation_validator.validate_sigma_gradient(
+                                    calculated_sigma=track_data.sigma_analysis.sigma_gradient,
+                                    position_data=[],  # Would need raw data for full validation
+                                    error_data=[],
+                                    model_number=metadata.model or "Unknown"
+                                )
+                                if not sigma_validation.is_valid:
+                                    validation_issues.append(f"Track {track_id}: {sigma_validation.standard_reference}")
+                            except Exception as e:
+                                processing_errors.append(f"Track {track_id} sigma validation: {str(e)}")
+                        
+                        # Validate linearity calculation
+                        if track_data.linearity_analysis:
+                            try:
+                                linearity_validation = self.calculation_validator.validate_linearity_error(
+                                    calculated_error=track_data.linearity_analysis.linearity_error,
+                                    position_data=[],  # Would need raw data for full validation
+                                    resistance_data=[],
+                                    model_number=metadata.model or "Unknown"
+                                )
+                                if not linearity_validation.is_valid:
+                                    validation_issues.append(f"Track {track_id}: {linearity_validation.standard_reference}")
+                            except Exception as e:
+                                processing_errors.append(f"Track {track_id} linearity validation: {str(e)}")
+                    
+                    # Validate resistance values
+                    if track_data.resistance_analysis:
+                        try:
+                            resistance_validation = validate_resistance_values(
+                                track_data.resistance_analysis,
+                                metadata.model or "Unknown"
+                            )
+                            if not resistance_validation.is_valid:
+                                validation_issues.extend([f"Track {track_id}: {error}" for error in resistance_validation.errors])
+                        except Exception as e:
+                            processing_errors.append(f"Track {track_id} resistance validation: {str(e)}")
+                            
+                except Exception as e:
+                    processing_errors.append(f"Track {track_id} comprehensive validation error: {str(e)}")
+                    
+        except Exception as e:
+            processing_errors.append(f"Comprehensive validation failed: {str(e)}")
+        
+        return validation_issues, processing_errors
+    
+    def _determine_comprehensive_validation_status(self, tracks: Dict[str, TrackData], 
+                                                 validation_issues: List[Any]) -> ValidationStatus:
+        """Determine validation status based on comprehensive validation results."""
+        if not tracks:
+            return ValidationStatus.NOT_VALIDATED
+        
+        # If there are validation issues, determine severity
+        if validation_issues:
+            # Check for critical failures
+            critical_issues = [issue for issue in validation_issues 
+                             if any(critical in str(issue).lower() 
+                                   for critical in ['failed', 'invalid', 'error', 'critical'])]
+            
+            if critical_issues:
+                return ValidationStatus.FAILED
+            else:
+                return ValidationStatus.WARNING
+        
+        # Check track-level validation using the same logic but with more context
+        all_warnings = []
+        critical_failures = []
+        
+        for track_data in tracks.values():
+            # Check linearity - this is the PRIMARY goal of laser trimming
+            if hasattr(track_data, 'linearity_analysis') and track_data.linearity_analysis:
+                if not track_data.linearity_analysis.linearity_pass:
+                    critical_failures.append("Linearity specification not met")
+            
+            # Check sigma - should be reasonable
+            if hasattr(track_data, 'sigma_analysis') and track_data.sigma_analysis:
+                if track_data.sigma_analysis.sigma_gradient > 1.0:
+                    all_warnings.append("High sigma gradient - check process control")
+                elif not track_data.sigma_analysis.sigma_pass:
+                    all_warnings.append("Sigma slightly above threshold")
+            
+            # Check for extreme resistance changes (>75% is concerning)
+            if hasattr(track_data, 'resistance_analysis') and track_data.resistance_analysis:
+                if (track_data.resistance_analysis.resistance_change_percent and 
+                    abs(track_data.resistance_analysis.resistance_change_percent) > 75):
+                    all_warnings.append("Extreme resistance change - verify process")
+        
+        # Determine final status
+        if critical_failures:
+            return ValidationStatus.FAILED
+        elif all_warnings:
+            return ValidationStatus.WARNING
+        else:
+            return ValidationStatus.VALIDATED
     
     def _cleanup_memory(self):
         """Aggressive memory cleanup."""

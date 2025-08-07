@@ -484,61 +484,19 @@ class MLToolsPage(ctk.CTkFrame):
                         if len(df) >= 7:
                             df['ma_7'] = df['accuracy'].rolling(window=7, min_periods=3).mean()
                         
-                        # Clear and update chart with custom rendering
-                        self.quality_trend_chart.clear_chart()
-                        ax = self.quality_trend_chart._get_or_create_axes()
+                        # Use the enhanced control chart method for professional ML performance visualization
+                        # Define specification limits for ML accuracy (80-100% for ML models)
+                        spec_limits = (80.0, 100.0)  # Minimum acceptable accuracy and theoretical maximum
+                        target_value = 95.0  # Target accuracy for production ML models
                         
-                        # Plot accuracy trend with theme colors
-                        ax.plot(df['trim_date'], df['accuracy'], 
-                               'o-', markersize=5, linewidth=1.5,
-                               color=self.quality_trend_chart.qa_colors['primary'],
-                               label='Daily Accuracy', alpha=0.7)
-                        
-                        # Add moving average
-                        if 'ma_7' in df.columns:
-                            ax.plot(df['trim_date'], df['ma_7'], 
-                                   linewidth=2.5, color='blue',
-                                   label='7-day MA', alpha=0.9)
-                        
-                        # Add control limits based on historical performance
-                        mean_acc = df['accuracy'].mean()
-                        std_acc = df['accuracy'].std()
-                        ucl = min(100, mean_acc + 2 * std_acc)
-                        lcl = max(0, mean_acc - 2 * std_acc)
-                        
-                        ax.axhline(y=ucl, color='orange', linestyle=':', linewidth=1.5, 
-                                  label=f'UCL: {ucl:.1f}%', alpha=0.6)
-                        ax.axhline(y=mean_acc, color='green', linestyle='-', linewidth=2, 
-                                  label=f'Mean: {mean_acc:.1f}%', alpha=0.7)
-                        ax.axhline(y=lcl, color='orange', linestyle=':', linewidth=1.5, 
-                                  label=f'LCL: {lcl:.1f}%', alpha=0.6)
-                        ax.axhline(y=95, color='darkgreen', linestyle='--', linewidth=2, 
-                                  label='Target: 95%', alpha=0.7)
-                        
-                        # Labels and formatting
-                        ax.set_xlabel('Date')
-                        ax.set_ylabel('Accuracy (%)')
-                        ax.set_title('ML Model Performance Control Chart', fontweight='bold', fontsize=14)
-                        ax.set_ylim(0, 105)
-                        
-                        # Format dates
-                        import matplotlib.dates as mdates
-                        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-                        
-                        # Add informative annotation
-                        latest_acc = df['accuracy'].iloc[-1]
-                        ma_latest = df['ma_7'].iloc[-1] if 'ma_7' in df.columns else latest_acc
-                        in_control = lcl <= latest_acc <= ucl
-                        status = "In Control" if in_control else "Out of Control"
-                        annotation_text = f"Status: {status} | Latest: {latest_acc:.1f}% | 7-day MA: {ma_latest:.1f}%"
-                        self.quality_trend_chart.add_chart_annotation(ax, annotation_text, position='top')
-                        
-                        # Legend
-                        legend = ax.legend(loc='best', frameon=True, fancybox=True, shadow=True)
-                        self.quality_trend_chart._style_legend(legend)
-                        
-                        self.quality_trend_chart.canvas.draw_idle()
+                        self.quality_trend_chart.plot_enhanced_control_chart(
+                            data=df,
+                            value_column='accuracy',
+                            date_column='trim_date',
+                            spec_limits=spec_limits,
+                            target_value=target_value,
+                            title="ML Performance Trend"
+                        )
                     except Exception as e:
                         self.logger.error(f"Error updating quality trend chart: {e}")
                         self.quality_trend_chart.show_error(

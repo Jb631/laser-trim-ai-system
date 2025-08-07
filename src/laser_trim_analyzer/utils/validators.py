@@ -6,7 +6,7 @@ Provides comprehensive validation for files, data, and QA-specific requirements.
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Dict, List, Optional, Any, Union, Tuple, Callable
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
@@ -912,7 +912,8 @@ class BatchValidator:
     @staticmethod
     def validate_batch(
             file_paths: List[Path],
-            max_batch_size: int = 10000
+            max_batch_size: int = 10000,
+            progress_callback: Optional[Callable[[int], None]] = None
     ) -> ValidationResult:
         """
         Validate a batch of files.
@@ -959,7 +960,11 @@ class BatchValidator:
         models_found = set()
         total_size_mb = 0
 
-        for file_path in file_paths:
+        for i, file_path in enumerate(file_paths):
+            # Update progress callback if provided
+            if progress_callback:
+                progress_callback(i)
+                
             file_result = validate_excel_file(file_path)
 
             if not file_result.is_valid:

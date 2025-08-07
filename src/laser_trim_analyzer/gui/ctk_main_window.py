@@ -81,6 +81,10 @@ class CTkMainWindow(CTkMainWindowBase):
     def __init__(self, config=None):
         super().__init__()
         
+        # Initialize shutdown flag
+        self._shutting_down = False
+        self.after_ids = []
+        
         # Apply CustomTkinter styling if using TkinterDnD base
         if HAS_DND:
             # Apply dark theme manually since we're not using ctk.CTk as base
@@ -965,19 +969,97 @@ class CTkMainWindow(CTkMainWindowBase):
             except:
                 pass
         
-        # Clean up all pages before destroying window
+        # Cancel all scheduled after() callbacks to prevent errors
+        self._cancel_all_scheduled_callbacks()
+        
+        # Clean up all pages before destroying window (with timeout)
         try:
+            import threading
+            import time
+            
+            cleanup_start = time.time()
+            timeout = 2.0  # 2 second timeout
+            
             for page_name, page in self.pages.items():
+                if time.time() - cleanup_start > timeout:
+                    self.logger.warning("Cleanup timeout reached, forcing shutdown")
+                    break
+                    
                 if hasattr(page, 'cleanup'):
                     try:
                         page.cleanup()
                     except Exception as e:
                         self.logger.error(f"Error cleaning up {page_name} page: {e}")
+                        
         except Exception as e:
             self.logger.error(f"Error during page cleanup: {e}")
         
-        # Destroy window
-        self.destroy()
+        # Force destroy without further cleanup if needed
+        try:
+            self.destroy()
+        except Exception as e:
+            self.logger.error(f"Error destroying window: {e}")
+            # Force exit if destroy fails
+            import sys
+            sys.exit(0)
+    
+    def _cancel_all_scheduled_callbacks(self):
+        """Cancel all scheduled after() callbacks to prevent errors on shutdown."""
+        try:
+            self.logger.info("Cancelling all scheduled callbacks...")
+            
+            # Set shutdown flag to prevent new callbacks from being scheduled
+            self._shutting_down = True
+            
+            # Cancel any tracked after() calls
+            if hasattr(self, 'after_ids'):
+                for after_id in self.after_ids:
+                    try:
+                        self.after_cancel(after_id)
+                    except:
+                        pass
+                self.after_ids.clear()
+            
+            # Signal widgets to stop scheduling callbacks
+            self._signal_widget_shutdown(self)
+            
+            self.logger.info("All scheduled callbacks cancelled")
+        except Exception as e:
+            self.logger.error(f"Error cancelling callbacks: {e}")
+    
+    def _signal_widget_shutdown(self, widget):
+        """Recursively signal widgets to stop scheduling callbacks."""
+        try:
+            # Set shutdown flag on widget if it has one
+            if hasattr(widget, '_shutting_down'):
+                widget._shutting_down = True
+            
+            # Signal specific cleanup methods
+            if hasattr(widget, '_theme_check_scheduled'):
+                widget._theme_check_scheduled = False
+            
+            # Recursively handle children (but limit depth to prevent hanging)
+            if hasattr(widget, 'winfo_children'):
+                try:
+                    children = widget.winfo_children()
+                    for child in children:
+                        self._signal_widget_shutdown(child)
+                except:
+                    # If getting children fails, widget might be destroyed already
+                    pass
+        except Exception as e:
+            # Ignore errors during cleanup
+            pass
+    
+    def safe_after(self, delay, callback):
+        """Safely schedule an after callback that can be cancelled on shutdown."""
+        if self._shutting_down:
+            return None
+        
+        after_id = self.after(delay, callback)
+        if hasattr(self, 'after_ids'):
+            self.after_ids.append(after_id)
+        return after_id
     
     def subscribe_to_event(self, event_name: str, callback: Callable):
         """Subscribe to an event."""
@@ -1032,7 +1114,10 @@ class CTkMainWindow(CTkMainWindowBase):
             self.logger.error(f"Error in event callback: {e}")
         
         # Schedule processing of next event with minimal delay
-        self.after(1, self._process_event_queue)
+        try:
+            self.after(1, self._process_event_queue)
+        except:
+            self._event_processing = False
     
     def _schedule_event_cleanup(self):
         """Periodically clean up event listeners to prevent memory leaks."""
@@ -1056,4 +1141,8 @@ class CTkMainWindow(CTkMainWindowBase):
             self.logger.error(f"Error during event cleanup: {e}")
         
         # Schedule next cleanup in 60 seconds
-        self.after(60000, self._schedule_event_cleanup)
+        try:
+            self.after(60000, self._schedule_event_cleanup)
+        except:
+            # Window is being destroyed, stop scheduling
+            pass

@@ -170,17 +170,32 @@ Remember: Always think through the full implementation before starting any fix.
 3. User Documents folder
 4. Portable app folder
 
-#### Build Process
+#### Build Process (Automated)
 ```bash
-# 1. Install PyInstaller if not already installed
+# Simple deployment - run this from project root:
+deploy.bat
+
+# Or manually with Python:
+python scripts/deploy.py
+```
+
+The deployment script automatically:
+1. Updates version numbers in all files
+2. Builds executable with PyInstaller 
+3. Creates versioned deployment folder: `LaserTrimAnalyzer-v2.2.7-20250807`
+4. Includes all necessary config files and documentation
+5. Generates deployment instructions
+
+#### Manual Build Process
+```bash
+# 1. Update version in pyproject.toml first
+# 2. Install PyInstaller if not already installed
 pip install pyinstaller
 
-# 2. Create the executable using the spec file
+# 3. Create the executable using the spec file
 pyinstaller laser_trim_analyzer.spec --clean
 
-# 3. The executable will be in dist/LaserTrimAnalyzer/
-# 4. Copy config folder to dist/LaserTrimAnalyzer/
-# 5. Create a zip file for distribution
+# 4. The executable will be in dist/LaserTrimAnalyzer-v{VERSION}/
 ```
 
 #### Development and Update Workflow
@@ -188,21 +203,29 @@ pyinstaller laser_trim_analyzer.spec --clean
 **Development (Your PC):**
 1. Make changes in source code
 2. Test with `python src/__main__.py`
-3. Update version in `pyproject.toml`
-4. Build executable with PyInstaller
+3. Update version in `pyproject.toml` and `config/deployment.yaml`
+4. Run `deploy.bat` to create versioned package
 5. Test the executable locally
 
 **Deployment (Work):**
-1. Copy new .exe to work computer
-2. Replace old .exe (keep backup)
-3. Run - no installation needed
-4. Settings and database remain intact
+1. Extract new versioned package (e.g., `LaserTrimAnalyzer-v2.2.7-20250807`)
+2. Keep backup of previous version folder
+3. Run new `LaserTrimAnalyzer.exe` - no installation needed
+4. Settings and database automatically preserved
+
+#### Version Management Benefits
+1. **Clear Version Tracking**: Folder names include version (LaserTrimAnalyzer-v2.2.7-20250807)
+2. **Easy Rollback**: Keep previous version folders for quick rollback
+3. **IT Friendly**: Clear version identification for support and auditing
+4. **Side-by-Side**: Can run different versions simultaneously if needed
+5. **Update Safety**: Never overwrite previous installations
 
 #### Update Process for Production
-1. **Version Management**: Always increment version in `pyproject.toml`
-2. **Backup**: Keep previous .exe as backup (rename with version)
-3. **Database**: Never modify database schema without migration plan
+1. **Version Management**: Increment version in `pyproject.toml` and run `deploy.bat`
+2. **Backup Strategy**: Previous version folders serve as automatic backups
+3. **Database Safety**: Never modify database schema without migration plan
 4. **Testing**: Test with production data copy before deploying
+5. **Deployment**: Extract new version folder, update shortcuts if needed
 
 #### Important Paths for Deployment
 - **Development DB**: Uses local paths from development.yaml

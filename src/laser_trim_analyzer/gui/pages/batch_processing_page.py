@@ -80,6 +80,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         self.is_visible = False
         self.needs_refresh = True
         self._stop_requested = False
+        self._shutting_down = False  # Prevent callback errors during shutdown
         self.logger = logging.getLogger(self.__class__.__name__)
         
         # Add missing methods that are called
@@ -210,7 +211,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         self._setup_responsive_layout()
         
         # Apply hover fixes after page creation
-        self.after(100, self._apply_hover_fixes)
+        self._safe_after(100, self._apply_hover_fixes)
 
     def _create_header(self):
         """Create header section."""
@@ -497,11 +498,19 @@ class BatchProcessingPage(ctk.CTkFrame):
             variable=self.comprehensive_validation_var
         )
         
+        self.force_reprocess_var = ctk.BooleanVar(value=False)
+        self.force_reprocess_check = ctk.CTkCheckBox(
+            self.options_container,
+            text="Force Reprocess (Skip Duplicate Check)",
+            variable=self.force_reprocess_var
+        )
+        
         # Store options for responsive layout
         self.option_widgets = [
             self.generate_plots_check,
             self.save_to_db_check,
-            self.comprehensive_validation_check
+            self.comprehensive_validation_check,
+            self.force_reprocess_check
         ]
     
     def _create_resource_monitoring(self):
@@ -882,15 +891,15 @@ class BatchProcessingPage(ctk.CTkFrame):
                         # Update progress every 50 files
                         total_checked += 1
                         if total_checked % 50 == 0:
-                            self.after(0, lambda count=total_checked: 
+                            self._safe_after(0, lambda count=total_checked: 
                                      self._update_batch_status(f"Scanning... ({count} files found)", "orange"))
                 
                 # Update UI on main thread
-                self.after(0, self._handle_folder_discovery_complete, excel_files, folder_path)
+                self._safe_after(0, lambda: self._handle_folder_discovery_complete(excel_files, folder_path))
                 
             except Exception as e:
                 logger.error(f"Folder discovery failed: {e}")
-                self.after(0, self._handle_folder_discovery_error, str(e))
+                self._safe_after(0, lambda: self._handle_folder_discovery_error(str(e)))
         
         # Start discovery thread
         thread = threading.Thread(target=discover_files, daemon=True)
@@ -973,6 +982,40 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         self._update_batch_status("Validating Batch...", "orange")
         
+        # Add progress tracking for validation
+        self.validation_progress = 0
+        self.validation_total = len(self.selected_files)
+        
+        # Disable controls during validation
+        self._set_controls_state("disabled")
+        
+        # Show validation progress dialog
+        self.validation_progress_dialog = BatchProgressDialog(
+            self,
+            title="Batch Validation",
+            total_files=len(self.selected_files)
+        )
+        self.validation_progress_dialog.show()
+        
+        # Update progress bar during validation
+        def update_validation_progress():
+            if hasattr(self, 'validation_progress') and hasattr(self, 'validation_progress_dialog'):
+                progress = self.validation_progress / self.validation_total if self.validation_total > 0 else 0
+                status_text = f"Validating file {self.validation_progress} of {self.validation_total}"
+                
+                # Update both the main progress bar and the dialog
+                self.progress_bar.set(progress)
+                self._update_batch_status(status_text, "orange")
+                
+                if self.validation_progress_dialog:
+                    self.validation_progress_dialog.update_progress(status_text, progress)
+                
+                if self.validation_progress < self.validation_total:
+                    self._safe_after(500, update_validation_progress)  # Update every 500ms
+        
+        # Start progress updates
+        self._safe_after(100, update_validation_progress)
+        
         # Run validation in thread
         def validate():
             try:
@@ -982,9 +1025,14 @@ class BatchProcessingPage(ctk.CTkFrame):
                 # Validation is just checking files, not processing them
                 validation_max_size = max(10000, len(self.selected_files))
                 
+                # Create progress callback
+                def validation_progress_callback(current_file_index):
+                    self.validation_progress = current_file_index + 1
+                
                 validation_result = BatchValidator.validate_batch(
                     file_paths=self.selected_files,
-                    max_batch_size=validation_max_size
+                    max_batch_size=validation_max_size,
+                    progress_callback=validation_progress_callback
                 )
                 
                 # Store individual file validation results
@@ -996,7 +1044,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                     self.validation_results[str(file_path)] = is_valid
                 
                 # Update UI on main thread
-                self.after(0, self._handle_batch_validation_result, validation_result)
+                self._safe_after(0, lambda: self._handle_batch_validation_result(validation_result))
                 
             except Exception as e:
                 logger.error(f"Batch validation failed: {e}")
@@ -1005,13 +1053,21 @@ class BatchProcessingPage(ctk.CTkFrame):
                     error_msg = f"Missing dependency for validation: {error_msg}\nPlease ensure all required packages are installed."
                 elif "Config object has no attribute" in error_msg:
                     error_msg = f"Configuration error: {error_msg}\nPlease check your configuration settings."
-                self.after(0, self._handle_batch_validation_error, error_msg)
+                self._safe_after(0, lambda: self._handle_batch_validation_error(error_msg))
         
         thread = threading.Thread(target=validate, daemon=True)
         thread.start()
 
     def _handle_batch_validation_result(self, validation_result):
         """Handle batch validation result."""
+        # Hide validation progress dialog
+        if hasattr(self, 'validation_progress_dialog') and self.validation_progress_dialog:
+            self.validation_progress_dialog.hide()
+            self.validation_progress_dialog = None
+        
+        # Re-enable controls
+        self._set_controls_state("normal")
+        
         if validation_result.is_valid:
             self._update_batch_status("Batch Validation Passed", "green")
             
@@ -1063,6 +1119,14 @@ class BatchProcessingPage(ctk.CTkFrame):
 
     def _handle_batch_validation_error(self, error_message):
         """Handle batch validation error."""
+        # Hide validation progress dialog
+        if hasattr(self, 'validation_progress_dialog') and self.validation_progress_dialog:
+            self.validation_progress_dialog.hide()
+            self.validation_progress_dialog = None
+        
+        # Re-enable controls
+        self._set_controls_state("normal")
+        
         self._update_batch_status("Validation Error", "red")
         messagebox.showerror("Validation Error", f"Batch validation failed:\n{error_message}")
 
@@ -1216,11 +1280,11 @@ class BatchProcessingPage(ctk.CTkFrame):
                 if should_update:
                     last_progress_update = current_time
                     if self.progress_dialog:
-                        self.after(0, lambda m=message, p=progress: self.progress_dialog.update_progress(m, p))
+                        self._safe_after(0, lambda m=message, p=progress: self.progress_dialog.update_progress(m, p))
                     
                     # Don't force GUI updates for every file - let the main loop handle it
                     if processed_count % 50 == 0:  # Only force update every 50 files
-                        self.after(0, self.update)
+                        self._safe_after(0, self.update)
                     
                     # Yield CPU time less frequently for large batches
                     if processed_count % 100 == 0:
@@ -1238,9 +1302,17 @@ class BatchProcessingPage(ctk.CTkFrame):
                     
                 current_time = time.time()
                 
-                # Standard progress update
-                if not progress_callback(message, progress):
-                    return False
+                # Update processed count based on progress
+                processed_count = int(progress * len(file_paths))
+                
+                # Standard progress update with thread safety
+                try:
+                    if not progress_callback(message, progress):
+                        return False
+                except Exception as e:
+                    logger.debug(f"Progress callback error (continuing): {e}")
+                    # Continue processing even if UI update fails
+                    pass
                 
                 # Adaptive memory management based on batch size
                 # Clean up more frequently for large batches
@@ -1339,7 +1411,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                     # Show resource warnings if any
                     if optimized_params.get('resource_warnings'):
                         warnings_text = "\n".join(optimized_params['resource_warnings'])
-                        self.after(0, lambda: messagebox.showwarning(
+                        self._safe_after(0, lambda: messagebox.showwarning(
                             "Resource Warnings",
                             f"Resource constraints detected:\n\n{warnings_text}\n\n"
                             "Processing will continue with optimized settings."
@@ -1367,7 +1439,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                         user_response['value'] = response
                     
                     # Ask user on main thread
-                    self.after(0, ask_user)
+                    self._safe_after(0, ask_user)
                     
                     # Wait for response (with timeout)
                     timeout = 10  # seconds
@@ -1381,10 +1453,22 @@ class BatchProcessingPage(ctk.CTkFrame):
                         logger.info(f"Disabled plot generation for large batch ({file_count} files)")
                 
                 # Check if we should use turbo mode for batches >= 100 files
+                # Enhanced debug logging for deployment troubleshooting
+                logger.info(f"🔧 DEBUG: Starting turbo mode check for {file_count} files")
+                logger.info(f"🔧 DEBUG: analyzer_config exists: {hasattr(self, 'analyzer_config')}")
+                if hasattr(self, 'analyzer_config'):
+                    logger.info(f"🔧 DEBUG: processing config exists: {hasattr(self.analyzer_config, 'processing')}")
+                    if hasattr(self.analyzer_config, 'processing'):
+                        logger.info(f"🔧 DEBUG: processing config type: {type(self.analyzer_config.processing)}")
+                        logger.info(f"🔧 DEBUG: processing config attributes: {dir(self.analyzer_config.processing)}")
+                
                 turbo_threshold = getattr(self.analyzer_config.processing, 'turbo_mode_threshold', 100)
+                logger.info(f"🔧 DEBUG: Retrieved turbo_threshold = {turbo_threshold}")
+                logger.info(f"🔧 DEBUG: Comparison: {file_count} >= {turbo_threshold} = {file_count >= turbo_threshold}")
                 
                 if file_count >= turbo_threshold:
-                    logger.info(f"Using TURBO MODE for {file_count} files (threshold: {turbo_threshold})")
+                    logger.info(f"✅ TURBO MODE ACTIVATED for {file_count} files (threshold: {turbo_threshold})")
+                    logger.info(f"🔧 DEBUG: About to call _process_with_turbo_mode")
                     
                     # Disable plots for turbo mode
                     if self.generate_plots_var.get():
@@ -1398,6 +1482,8 @@ class BatchProcessingPage(ctk.CTkFrame):
                         progress_callback=enhanced_progress_callback
                     )
                 else:
+                    logger.info(f"❌ STANDARD MODE: {file_count} files below turbo threshold of {turbo_threshold}")
+                    logger.info(f"🔧 DEBUG: Using standard processing with memory management")
                     # Standard processing with memory management
                     results = self._process_with_memory_management(
                         file_paths=file_paths,
@@ -1424,7 +1510,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                 
             # Check for cancellation before database save
             if self._is_processing_cancelled():
-                self.after(0, self._handle_batch_cancelled, results)
+                self._safe_after(0, lambda: self._handle_batch_cancelled(results))
                 return
             
             # Save to database if requested
@@ -1436,20 +1522,20 @@ class BatchProcessingPage(ctk.CTkFrame):
             
             # Check for cancellation one final time
             if self._is_processing_cancelled():
-                self.after(0, self._handle_batch_cancelled, results)
+                self._safe_after(0, lambda: self._handle_batch_cancelled(results))
             else:
                 # Update UI on main thread
-                self.after(0, self._handle_batch_success, results, output_dir)
+                self._safe_after(0, lambda: self._handle_batch_success(results, output_dir))
                 
         except ValidationError as e:
             logger.error(f"Batch validation error: {e}")
             error_msg = f"Batch validation failed:\n\n{str(e)}\n\nPlease check that all selected files are valid Excel files."
-            self.after(0, self._handle_batch_error, error_msg)
+            self._safe_after(0, lambda: self._handle_batch_error(error_msg))
             
         except ProcessingError as e:
             logger.error(f"Batch processing error: {e}")
             # Error message is already formatted by the ProcessingError handler above
-            self.after(0, self._handle_batch_error, str(e))
+            self._safe_after(0, lambda: self._handle_batch_error(str(e)))
             
         except Exception as e:
             logger.error(f"Unexpected batch error: {e}")
@@ -1458,7 +1544,7 @@ class BatchProcessingPage(ctk.CTkFrame):
             error_msg += "Please check the log files for more details."
             if "MemoryError" in str(type(e).__name__):
                 error_msg = f"Out of memory error:\n\n{str(e)}\n\nTry processing fewer files at once or disable plot generation."
-            self.after(0, self._handle_batch_error, error_msg)
+            self._safe_after(0, lambda: self._handle_batch_error(error_msg))
         
         finally:
             with self._state_lock:
@@ -1611,7 +1697,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                                 if len(results) % update_interval == 0:
                                     # Update results widget on main thread
                                     partial_results = results.copy()
-                                    self.after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
+                                    self._safe_after(0, lambda r=partial_results: self.batch_results_widget.display_results(r))
                             else:
                                 self.failed_files.append((str(file_path), "Processing returned None"))
                                 # Log failure
@@ -1754,7 +1840,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                 if len(self.failed_files) > 10:
                     failure_summary += f"\n... and {len(self.failed_files) - 10} more files"
                 
-                self.after(0, lambda: messagebox.showwarning(
+                self._safe_after(0, lambda: messagebox.showwarning(
                     "Processing Failures",
                     failure_summary + "\n\nCheck the log files for complete details."
                 ))
@@ -1768,13 +1854,28 @@ class BatchProcessingPage(ctk.CTkFrame):
         progress_callback: Callable[[str, float], None]
     ) -> Dict[str, AnalysisResult]:
         """Process files using turbo mode with FastProcessor directly."""
-        logger.info(f"Initializing TURBO MODE processing for {len(file_paths)} files")
+        logger.info(f"🚀 TURBO MODE: Initializing processing for {len(file_paths)} files")
+        logger.info(f"🔧 DEBUG: output_dir = {output_dir}")
+        logger.info(f"🔧 DEBUG: About to import FastProcessor")
         
         # Import FastProcessor directly
-        from laser_trim_analyzer.core.fast_processor import FastProcessor
+        try:
+            from laser_trim_analyzer.core.fast_processor import FastProcessor
+            logger.info(f"🔧 DEBUG: FastProcessor imported successfully")
+        except ImportError as e:
+            logger.error(f"🚨 ERROR: Failed to import FastProcessor: {e}")
+            raise
         
         # Create fast processor with turbo mode enabled
-        fast_processor = FastProcessor(self.analyzer_config, turbo_mode=True)
+        logger.info(f"🔧 DEBUG: Creating FastProcessor with turbo_mode=True")
+        try:
+            fast_processor = FastProcessor(self.analyzer_config, turbo_mode=True)
+            logger.info(f"🔧 DEBUG: FastProcessor created successfully")
+            logger.info(f"🔧 DEBUG: FastProcessor turbo_mode: {fast_processor.turbo_mode}")
+            logger.info(f"🔧 DEBUG: FastProcessor max_workers: {fast_processor.max_workers}")
+        except Exception as e:
+            logger.error(f"🚨 ERROR: Failed to create FastProcessor: {e}")
+            raise
         
         # Track stats for UI updates
         self.stats = {
@@ -1795,8 +1896,15 @@ class BatchProcessingPage(ctk.CTkFrame):
             # Update stats based on progress
             self.stats['processed_files'] = int(progress * len(file_paths))
             
-            # Call the original progress callback
-            progress_callback(message, progress)
+            # Schedule UI update on main thread to prevent "main thread is not in main loop" error
+            def update_ui():
+                progress_callback(message, progress)
+            
+            try:
+                self._safe_after(0, update_ui)
+            except Exception as e:
+                logger.debug(f"Could not schedule UI update: {e}")
+                # Continue processing even if UI update fails
             
             return True  # Continue processing
         
@@ -1825,7 +1933,8 @@ class BatchProcessingPage(ctk.CTkFrame):
                     for i in range(0, len(all_results), batch_size):
                         batch = all_results[i:i + batch_size]
                         if hasattr(self._db_manager, 'save_analysis_batch'):
-                            self._db_manager.save_analysis_batch(batch)
+                            force_overwrite = self.force_reprocess_var.get()
+                            self._db_manager.save_analysis_batch(batch, force_overwrite=force_overwrite)
                         else:
                             # Fallback to individual saves
                             for result in batch:
@@ -1888,9 +1997,9 @@ class BatchProcessingPage(ctk.CTkFrame):
             
             self._file_error_count += 1
             if self._file_error_count <= 3:  # Only show first 3 file errors
-                self.after(0, lambda: messagebox.showerror("File Processing Error", error_msg))
+                self._safe_after(0, lambda: messagebox.showerror("File Processing Error", error_msg))
             elif self._file_error_count == 4:
-                self.after(0, lambda: messagebox.showwarning(
+                self._safe_after(0, lambda: messagebox.showwarning(
                     "Multiple File Errors",
                     "Multiple files have failed to process.\n\n"
                     "Further individual error dialogs will be suppressed.\n"
@@ -1944,7 +2053,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         """Save batch results to database with robust error handling."""
         if not self._db_manager:
             logger.error("Database manager is None - cannot save to database!")
-            self.after(0, lambda: messagebox.showerror(
+            self._safe_after(0, lambda: messagebox.showerror(
                 "Database Error",
                 "Database is not initialized. Results could not be saved.\n\n"
                 "Please check the database configuration and restart the application."
@@ -2008,28 +2117,49 @@ class BatchProcessingPage(ctk.CTkFrame):
                 unique_results = [result_list[i] for i in unique_indices]
                 
                 if unique_results:
-                    # Check for existing duplicates in database
-                    results_to_save = []
-                    db_duplicate_indices = []
+                    # Check Force Reprocess setting
+                    force_reprocess = self.force_reprocess_var.get()
                     
-                    for idx, result in zip(unique_indices, unique_results):
-                        existing_id = self._db_manager.check_duplicate_analysis(
-                            result.metadata.model,
-                            result.metadata.serial,
-                            result.metadata.file_date
-                        )
+                    if force_reprocess:
+                        # Skip duplicate checking - process all files
+                        results_to_save = [(unique_indices[i], result) for i, result in enumerate(unique_results)]
+                        logger.info(f"Force reprocess enabled - processing all {len(results_to_save)} files")
                         
-                        if existing_id:
-                            duplicate_count += 1
-                            result.db_id = existing_id
-                            # Update seen_combinations with the existing ID
-                            key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
-                            seen_combinations[key] = (idx, existing_id)
-                            db_duplicate_indices.append(idx)
-                            logger.info(f"Database duplicate: {Path(file_paths[idx]).name} already exists "
-                                      f"with ID {existing_id} ({key[0]}-{key[1]})")
-                        else:
-                            results_to_save.append((idx, result))
+                        # Update progress to show we're skipping duplicate checking
+                        if self.progress_dialog:
+                            self._safe_after(0, lambda: self.progress_dialog.update_progress(
+                                "Force reprocess - skipping duplicate check", 1.0))
+                    else:
+                        # Check for existing duplicates in database with progress tracking
+                        results_to_save = []
+                        db_duplicate_indices = []
+                        total_to_check = len(unique_results)
+                        
+                        for check_idx, (idx, result) in enumerate(zip(unique_indices, unique_results)):
+                            # Update progress during duplicate checking
+                            if self.progress_dialog:
+                                progress = check_idx / total_to_check if total_to_check > 0 else 0
+                                status_msg = f"Checking for duplicates: {check_idx + 1}/{total_to_check}"
+                                self._safe_after(0, lambda m=status_msg, p=progress: 
+                                         self.progress_dialog.update_progress(m, p))
+                            
+                            existing_id = self._db_manager.check_duplicate_analysis(
+                                result.metadata.model,
+                                result.metadata.serial,
+                                result.metadata.file_date
+                            )
+                            
+                            if existing_id:
+                                duplicate_count += 1
+                                result.db_id = existing_id
+                                # Update seen_combinations with the existing ID
+                                key = (result.metadata.model, result.metadata.serial, result.metadata.file_date)
+                                seen_combinations[key] = (idx, existing_id)
+                                db_duplicate_indices.append(idx)
+                                logger.info(f"Database duplicate: {Path(file_paths[idx]).name} already exists "
+                                          f"with ID {existing_id} ({key[0]}-{key[1]})")
+                            else:
+                                results_to_save.append((idx, result))
                     
                     if duplicate_count > 0:
                         logger.info(f"Found {duplicate_count} existing analyses in database")
@@ -2038,7 +2168,8 @@ class BatchProcessingPage(ctk.CTkFrame):
                     if results_to_save:
                         logger.info(f"Attempting batch save of {len(results_to_save)} new results...")
                         results_only = [r[1] for r in results_to_save]
-                        analysis_ids = self._db_manager.save_analysis_batch(results_only)
+                        force_overwrite = self.force_reprocess_var.get()
+                        analysis_ids = self._db_manager.save_analysis_batch(results_only, force_overwrite=force_overwrite)
                         
                         # Update saved results with database IDs
                         for (idx, result), db_id in zip(results_to_save, analysis_ids):
@@ -2065,7 +2196,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                 logger.error(f"Batch database save failed: {e}")
                 # Fall back to individual saves
                 logger.info("Falling back to individual saves")
-                self.after(0, lambda: messagebox.showwarning(
+                self._safe_after(0, lambda: messagebox.showwarning(
                     "Database Save Warning",
                     f"Batch database save failed:\n{str(e)}\n\n"
                     "Attempting to save files individually..."
@@ -2099,7 +2230,7 @@ class BatchProcessingPage(ctk.CTkFrame):
         
         if failed_count > 0:
             # Show warning about failed saves
-            self.after(0, lambda: messagebox.showwarning(
+            self._safe_after(0, lambda: messagebox.showwarning(
                 "Database Warning",
                 f"Some files failed to save to database:\n"
                 f"Saved: {saved_count}\n"
@@ -2332,7 +2463,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                 logger.debug(f"Failed to refresh home page: {e}")
         
         # Emit event after a short delay to ensure database operations are complete
-        self.after(500, emit_completion_event)
+        self._safe_after(500, emit_completion_event)
         
         logger.info(f"Batch processing completed: {successful_count} successful, {failed_count} failed")
     
@@ -2521,7 +2652,7 @@ class BatchProcessingPage(ctk.CTkFrame):
             return
             
         # Update UI on main thread
-        self.after(0, self._update_resource_display, status)
+        self._safe_after(0, lambda: self._update_resource_display(status))
     
     def _update_resource_display(self, status: Any):
         """Update resource monitoring display."""
@@ -2890,7 +3021,7 @@ class BatchProcessingPage(ctk.CTkFrame):
                         'Error': str(e)
                     })
                     # Show warning about specific file
-                    self.after(0, lambda fn=file_name, err=str(e): messagebox.showwarning(
+                    self._safe_after(0, lambda fn=file_name, err=str(e): messagebox.showwarning(
                         "Export Data Warning",
                         f"Could not export complete data for {fn}:\n{err}\n\n"
                         "Partial data will be included in the export."
@@ -3248,4 +3379,34 @@ class BatchProcessingPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=14),
             wraplength=600
         )
-        detail_label.pack(pady=10) 
+        detail_label.pack(pady=10)
+    
+    def _safe_after(self, delay, callback):
+        """Safely schedule an after callback with error handling."""
+        if self._shutting_down:
+            return
+        try:
+            if self.winfo_exists():
+                self.after(delay, callback)
+        except Exception:
+            pass  # Widget destroyed, ignore
+    
+    def cleanup(self):
+        """Cleanup method to prevent callback errors during shutdown."""
+        self._shutting_down = True
+        self._stop_requested = True
+        
+        # Signal processing threads to stop
+        if hasattr(self, '_stop_event'):
+            self._stop_event.set()
+        
+        # Clear batch results to stop operations
+        if hasattr(self, 'batch_results'):
+            self.batch_results.clear()
+            
+        # Cleanup batch results widget
+        if hasattr(self, 'batch_results_widget') and hasattr(self.batch_results_widget, 'cleanup'):
+            try:
+                self.batch_results_widget.cleanup()
+            except Exception:
+                pass 

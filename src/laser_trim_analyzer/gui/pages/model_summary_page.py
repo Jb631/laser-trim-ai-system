@@ -780,212 +780,75 @@ class ModelSummaryPage(ctk.CTkFrame):
             self.logger.warning(f"Error updating metric card colors: {e}")
 
     def _update_trend_chart(self):
-        """Update the sigma trend chart."""
+        """Update the sigma trend chart using enhanced SPC control chart."""
         if self.model_data is None or len(self.model_data) == 0:
             return
 
         df = self.model_data.copy()
         
-        # For now, just show basic trend information in the label
         try:
             # Ensure dates are datetime objects
             if 'trim_date' in df.columns:
                 df['trim_date'] = pd.to_datetime(df['trim_date'])
             
-            # Sort by date
-            df = df.sort_values('trim_date')
+            # Clean data - remove NaN values
+            chart_data = df[['trim_date', 'sigma_gradient']].copy()
+            chart_data = chart_data.dropna(subset=['trim_date', 'sigma_gradient'])
             
-            # Calculate basic trend statistics
-            sigma_values = df['sigma_gradient'].dropna()
-            if len(sigma_values) > 1:
-                # Calculate trend direction
-                first_half = sigma_values[:len(sigma_values)//2].mean()
-                second_half = sigma_values[len(sigma_values)//2:].mean()
-                trend_direction = "↗️ Increasing" if second_half > first_half else "↘️ Decreasing"
+            self.logger.info(f"Updating trend chart with {len(chart_data)} valid data points")
+            
+            if len(chart_data) > 0:
+                # Sort by date for proper display
+                chart_data = chart_data.sort_values('trim_date')
                 
-                trend_info = f"Trend: {trend_direction}\n"
-                trend_info += f"Data points: {len(sigma_values)}\n"
-                trend_info += f"Range: {sigma_values.min():.4f} - {sigma_values.max():.4f}\n"
-                trend_info += f"Average: {sigma_values.mean():.4f}"
+                # Define specification limits for sigma gradient (based on typical ranges: 0.0631-0.2121)
+                # Using process-centered limits with some margin for process variation
+                target_value = 0.1376  # Midpoint of typical range
+                spec_limits = (0.050, 0.250)  # Slightly wider than observed range for realistic limits
                 
-                # Ensure we have valid data
-                chart_data = df[['trim_date', 'sigma_gradient']].copy()
-                # Remove rows where either column is NaN
-                chart_data = chart_data.dropna(subset=['trim_date', 'sigma_gradient'])
+                # Get ML threshold if available for additional reference
+                ml_threshold = None
+                if self.db_manager and self.selected_model:
+                    ml_threshold = self.db_manager.get_latest_ml_threshold(self.selected_model)
+                    if ml_threshold:
+                        self.logger.info(f"Including ML threshold: {ml_threshold}")
                 
-                self.logger.info(f"Updating trend chart with {len(chart_data)} valid data points out of {len(df)} total")
-                
-                if len(chart_data) > 0:
-                    try:
-                        # Ensure trim_date is datetime
-                        chart_data['trim_date'] = pd.to_datetime(chart_data['trim_date'])
-                        # Sort by date for proper line chart display
-                        chart_data = chart_data.sort_values('trim_date')
-                        
-                        # Log sample data for debugging
-                        if len(chart_data) > 0:
-                            self.logger.debug(f"First data point: {chart_data.iloc[0]['trim_date']} -> {chart_data.iloc[0]['sigma_gradient']}")
-                            self.logger.debug(f"Last data point: {chart_data.iloc[-1]['trim_date']} -> {chart_data.iloc[-1]['sigma_gradient']}")
-                        
-                        # Aggregate multiple measurements per date to avoid erratic lines
-                        daily_data = chart_data.groupby(chart_data['trim_date'].dt.date).agg({
-                            'sigma_gradient': ['mean', 'std', 'count']
-                        }).reset_index()
-                        daily_data.columns = ['date', 'mean_sigma', 'std_sigma', 'count']
-                        daily_data['date'] = pd.to_datetime(daily_data['date'])
-                        
-                        # Add moving average for smoothing (using best practice window sizes)
-                        # For manufacturing data: 7-day for short-term, 30-day for long-term trends
-                        if len(daily_data) >= 7:
-                            daily_data['ma_7'] = daily_data['mean_sigma'].rolling(
-                                window=7, center=True, min_periods=3
-                            ).mean()
-                        
-                        if len(daily_data) >= 30:
-                            daily_data['ma_30'] = daily_data['mean_sigma'].rolling(
-                                window=30, center=True, min_periods=15
-                            ).mean()
-                        
-                        # Calculate control limits (3-sigma limits)
-                        mean_value = daily_data['mean_sigma'].mean()
-                        std_value = daily_data['mean_sigma'].std()
-                        ucl = mean_value + 3 * std_value  # Upper Control Limit
-                        lcl = mean_value - 3 * std_value  # Lower Control Limit
-                        uwl = mean_value + 2 * std_value  # Upper Warning Limit
-                        lwl = mean_value - 2 * std_value  # Lower Warning Limit
-                        
-                        # Update chart with enhanced data
-                        self.trend_chart.clear_chart()
-                        
-                        # Plot raw data
+                # Use the enhanced control chart method
+                try:
+                    self.trend_chart.plot_enhanced_control_chart(
+                        data=chart_data,
+                        value_column='sigma_gradient',
+                        date_column='trim_date',
+                        spec_limits=spec_limits,
+                        target_value=target_value,
+                        title="Sigma Gradient Trend"
+                    )
+                    
+                    # Add ML threshold as additional reference line if available
+                    if ml_threshold:
                         ax = self.trend_chart._get_or_create_axes()
-                        theme_colors = ThemeHelper.get_theme_colors()
+                        ax.axhline(y=ml_threshold, 
+                                  color=self.trend_chart.qa_colors['ml_threshold'], 
+                                  linestyle='-.', 
+                                  linewidth=2, 
+                                  alpha=0.8,
+                                  label=f'ML Threshold: {ml_threshold:.4f}')
                         
-                        # Plot data points with control chart style
-                        ax.plot(daily_data['date'], daily_data['mean_sigma'], 
-                               'o-', markersize=5, linewidth=1, 
-                               color=self.trend_chart.qa_colors['primary'], 
-                               label='Daily Average', alpha=0.8)
-                        
-                        # Add control limits
-                        ax.axhline(y=ucl, color='red', linestyle='--', linewidth=2, 
-                                  label=f'UCL: {ucl:.4f}', alpha=0.7)
-                        ax.axhline(y=uwl, color='orange', linestyle=':', linewidth=1.5, 
-                                  label=f'UWL: {uwl:.4f}', alpha=0.6)
-                        ax.axhline(y=mean_value, color='green', linestyle='-', linewidth=2, 
-                                  label=f'Mean: {mean_value:.4f}', alpha=0.8)
-                        ax.axhline(y=lwl, color='orange', linestyle=':', linewidth=1.5, 
-                                  label=f'LWL: {lwl:.4f}', alpha=0.6)
-                        ax.axhline(y=lcl, color='red', linestyle='--', linewidth=2, 
-                                  label=f'LCL: {lcl:.4f}', alpha=0.7)
-                        
-                        # Add moving averages if available
-                        if 'ma_7' in daily_data.columns:
-                            ax.plot(daily_data['date'], daily_data['ma_7'], 
-                                   linewidth=2, color='blue', 
-                                   label='7-day MA', alpha=0.6, linestyle='-.')
-                        
-                        if 'ma_30' in daily_data.columns:
-                            ax.plot(daily_data['date'], daily_data['ma_30'], 
-                                   linewidth=2.5, color='purple', 
-                                   label='30-day MA', alpha=0.7, linestyle='-')
-                        
-                        # Highlight out-of-control points
-                        ooc_points = daily_data[(daily_data['mean_sigma'] > ucl) | 
-                                               (daily_data['mean_sigma'] < lcl)]
-                        if len(ooc_points) > 0:
-                            ax.scatter(ooc_points['date'], ooc_points['mean_sigma'], 
-                                      color='red', s=100, marker='x', linewidth=3, 
-                                      label='Out of Control', zorder=5)
-                        
-                        # Note: Reference lines removed in favor of statistical control limits
-                        
-                        # Add ML-determined threshold if available
-                        if self.db_manager and self.selected_model:
-                            ml_threshold = self.db_manager.get_latest_ml_threshold(self.selected_model)
-                            if ml_threshold:
-                                ax.axhline(y=ml_threshold, color='green', linestyle='--', alpha=0.7, 
-                                          linewidth=2, label=f'ML Threshold: {ml_threshold:.3f}')
-                                self.logger.info(f"Displaying ML threshold: {ml_threshold}")
-                        
-                        # Add informative annotation for control chart
-                        out_of_control_count = len(ooc_points) if len(ooc_points) > 0 else 0
-                        annotation_text = (
-                            f"Control Chart: {len(daily_data)} daily averages | "
-                            f"Out of Control: {out_of_control_count} points | "
-                            f"Process Capability: {'Stable' if out_of_control_count == 0 else 'Unstable'}"
-                        )
-                        self.trend_chart.add_chart_annotation(ax, annotation_text, position='top')
-                        
-                        # Labels and formatting
-                        ax.set_xlabel('Date', fontsize=10)
-                        ax.set_ylabel('Sigma Gradient', fontsize=10)
-                        ax.set_title('Sigma Gradient Statistical Process Control Chart', fontweight='bold', fontsize=14, pad=20)
-                        
-                        # Format dates intelligently based on range
-                        date_range = (daily_data['date'].max() - daily_data['date'].min()).days
-                        if date_range <= 7:
-                            date_formatter = mdates.DateFormatter('%m/%d %H:%M')
-                            ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
-                        elif date_range <= 30:
-                            date_formatter = mdates.DateFormatter('%m/%d')
-                            ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
-                        elif date_range <= 90:
-                            date_formatter = mdates.DateFormatter('%m/%d')
-                            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
-                        elif date_range <= 365:
-                            date_formatter = mdates.DateFormatter('%m/%d')
-                            ax.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-                        else:
-                            date_formatter = mdates.DateFormatter('%Y-%m')
-                            ax.xaxis.set_major_locator(mdates.MonthLocator())
-                            
-                        ax.xaxis.set_major_formatter(date_formatter)
-                        
-                        # Rotate labels for better readability with smaller font
-                        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
-                        
-                        # Add proper layout spacing
-                        plt.tight_layout(pad=2.0)
-                        
-                        # Create comprehensive legend with better positioning
-                        try:
-                            handles, labels = ax.get_legend_handles_labels()
-                            if handles and labels:  # Only create legend if there are items
-                                # Position legend outside the plot area to avoid overlaps
-                                legend = ax.legend(handles, labels, 
-                                                 title='Legend',
-                                                 loc='upper left', 
-                                                 bbox_to_anchor=(0.02, 0.98),
-                                                 frameon=True,
-                                                 fancybox=True,
-                                                 shadow=True,
-                                                 fontsize=8,
-                                                 title_fontsize=9)
-                                self.trend_chart._style_legend(legend)
-                        except Exception as e:
-                            self.logger.warning(f"Could not create legend: {e}")
-                        
-                        # Apply theme styling (grid already set by _apply_theme_to_axes)
-                        
-                        # Force canvas update (layout handled by constrained_layout)
-                        self.trend_chart.canvas.draw_idle()
-                    except pd.errors.OutOfBoundsDatetime:
-                        self.logger.error("Invalid date values in data")
-                        self.trend_chart.show_error(
-                            "Date Error",
-                            "Some dates in the data are invalid or out of range"
-                        )
-                    except Exception as e:
-                        self.logger.error(f"Error processing chart data: {e}")
-                        self.trend_chart.show_error(
-                            "Data Processing Error",
-                            f"Unable to process the trend data: {str(e)}"
-                        )
-                else:
-                    self.trend_chart.show_placeholder("No valid sigma data", "All sigma gradient values are missing")
+                        # Update legend to include ML threshold
+                        handles, labels = ax.get_legend_handles_labels()
+                        if handles and labels:
+                            ax.legend(handles, labels, loc='upper right', fontsize=9)
+                    
+                    self.logger.info("Enhanced control chart created successfully")
+                    
+                except Exception as chart_error:
+                    self.logger.error(f"Error creating enhanced control chart: {chart_error}")
+                    self.trend_chart.show_error(
+                        "Control Chart Error",
+                        f"Failed to create statistical process control chart: {str(chart_error)}"
+                    )
             else:
-                self.trend_chart.show_placeholder("Insufficient data", "Need at least 2 data points for trend")
+                self.trend_chart.show_placeholder("No Valid Data", "No sigma gradient data available for analysis")
                 
         except Exception as e:
             self.logger.error(f"Error updating trend chart: {e}")
@@ -1085,8 +948,45 @@ class ModelSummaryPage(ctk.CTkFrame):
                     }
                 }
                 
-                # Update the chart with the quality dashboard
-                self.overview_chart.plot_quality_dashboard(dashboard_metrics)
+                # Create a simple quality metrics overview using bar chart
+                metrics_names = list(dashboard_metrics.keys())
+                metrics_values = [dashboard_metrics[name]['value'] for name in metrics_names]
+                metrics_targets = [dashboard_metrics[name]['target'] for name in metrics_names]
+                
+                self.overview_chart.clear_chart()
+                ax = self.overview_chart._get_or_create_axes()
+                
+                # Create bar chart with targets
+                x_pos = range(len(metrics_names))
+                bars = ax.bar(x_pos, metrics_values, 
+                             color=[self.overview_chart.qa_colors['pass'] if v >= t 
+                                   else self.overview_chart.qa_colors['warning'] if v >= t*0.8 
+                                   else self.overview_chart.qa_colors['fail']
+                                   for v, t in zip(metrics_values, metrics_targets)],
+                             alpha=0.8, edgecolor='black', linewidth=1)
+                
+                # Add target lines
+                for i, target in enumerate(metrics_targets):
+                    ax.axhline(y=target, xmin=(i-0.4)/len(metrics_names), xmax=(i+0.4)/len(metrics_names), 
+                              color='red', linestyle='--', linewidth=2, alpha=0.7)
+                
+                # Add value labels on bars
+                for bar, value in zip(bars, metrics_values):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height,
+                           f'{value:.1f}%', ha='center', va='bottom', fontsize=10, fontweight='bold')
+                
+                ax.set_xlabel('Quality Metrics', fontsize=12)
+                ax.set_ylabel('Percentage (%)', fontsize=12)
+                ax.set_title('Quality Metrics Overview', fontsize=14, fontweight='bold', pad=20)
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(metrics_names, rotation=45, ha='right')
+                ax.set_ylim(0, 105)
+                ax.grid(True, alpha=0.3)
+                
+                # Apply theme styling
+                self.overview_chart._apply_theme_to_axes(ax)
+                self.overview_chart.canvas.draw_idle()
                 
                 self.logger.info("Updated quality health dashboard")
                 
@@ -1107,8 +1007,67 @@ class ModelSummaryPage(ctk.CTkFrame):
                     # Get individual measurements (not daily averages) for better sensitivity
                     warning_data = df_sorted[['trim_date', 'sigma_gradient']].dropna()
                     
-                    # Update early warning system chart
-                    self.trend_analysis_chart.plot_early_warning_system(warning_data)
+                    # Create a simple early warning time series chart
+                    self.trend_analysis_chart.clear_chart()
+                    ax = self.trend_analysis_chart._get_or_create_axes()
+                    
+                    # Plot time series with warning zones
+                    dates = warning_data['trim_date']
+                    values = warning_data['sigma_gradient']
+                    
+                    ax.plot(dates, values, 'o-', markersize=4, linewidth=1, 
+                           color=self.trend_analysis_chart.qa_colors['primary'], 
+                           alpha=0.8, label='Sigma Gradient')
+                    
+                    # Add warning limits
+                    mean_val = values.mean()
+                    std_val = values.std()
+                    ucl = mean_val + 3 * std_val
+                    lcl = mean_val - 3 * std_val
+                    uwl = mean_val + 2 * std_val
+                    lwl = mean_val - 2 * std_val
+                    
+                    ax.axhline(y=ucl, color=self.trend_analysis_chart.qa_colors['fail'], 
+                              linestyle='--', linewidth=2, alpha=0.7, label=f'UCL: {ucl:.4f}')
+                    ax.axhline(y=uwl, color=self.trend_analysis_chart.qa_colors['warning'], 
+                              linestyle=':', linewidth=1.5, alpha=0.7, label=f'UWL: {uwl:.4f}')
+                    ax.axhline(y=mean_val, color=self.trend_analysis_chart.qa_colors['control_center'], 
+                              linestyle='-', linewidth=2, alpha=0.8, label=f'Mean: {mean_val:.4f}')
+                    ax.axhline(y=lwl, color=self.trend_analysis_chart.qa_colors['warning'], 
+                              linestyle=':', linewidth=1.5, alpha=0.7, label=f'LWL: {lwl:.4f}')
+                    ax.axhline(y=lcl, color=self.trend_analysis_chart.qa_colors['fail'], 
+                              linestyle='--', linewidth=2, alpha=0.7, label=f'LCL: {lcl:.4f}')
+                    
+                    # Highlight out-of-control points
+                    violations = (values > ucl) | (values < lcl)
+                    if violations.any():
+                        ax.scatter(dates[violations], values[violations], 
+                                  color='red', s=80, marker='x', linewidth=3, 
+                                  label='Violations', zorder=5)
+                    
+                    warnings_mask = ((values > uwl) & (values <= ucl)) | ((values < lwl) & (values >= lcl))
+                    if warnings_mask.any():
+                        ax.scatter(dates[warnings_mask], values[warnings_mask], 
+                                  color='orange', s=60, marker='^', linewidth=2, 
+                                  label='Warnings', zorder=4)
+                    
+                    ax.set_xlabel('Date', fontsize=10)
+                    ax.set_ylabel('Sigma Gradient', fontsize=10)
+                    ax.set_title('Early Warning Trend Analysis', fontsize=12, fontweight='bold')
+                    ax.legend(loc='upper right', fontsize=8)
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Apply theme styling and formatting
+                    self.trend_analysis_chart._apply_theme_to_axes(ax)
+                    
+                    # Format dates on x-axis
+                    import matplotlib.dates as mdates
+                    from matplotlib.ticker import MaxNLocator
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    ax.xaxis.set_major_locator(MaxNLocator(nbins=8))
+                    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                    
+                    self.trend_analysis_chart.canvas.draw_idle()
                     
                     # Calculate warning statistics
                     values = warning_data['sigma_gradient']
@@ -1140,21 +1099,59 @@ class ModelSummaryPage(ctk.CTkFrame):
                     f"Unable to calculate control limits: {str(e)}"
                 )
 
-            # 3. Failure Pattern Analysis - Heat map, Pareto, and projections
+            # 3. Failure Pattern Analysis - Simple pass/fail distribution
             try:
-                # Use the failure pattern analysis method
-                self.risk_chart.plot_failure_pattern_analysis(df)
+                # Create a simple failure analysis chart
+                self.risk_chart.clear_chart()
+                ax = self.risk_chart._get_or_create_axes()
                 
-                # Log summary statistics
-                fail_count = (df['track_status'] == 'Fail').sum()
-                total_count = len(df)
-                fail_rate = (fail_count / total_count * 100) if total_count > 0 else 0
+                # Count pass/fail status
+                status_counts = df['track_status'].value_counts()
                 
-                self.logger.info(f"Failure Pattern Analysis: {fail_count} failures out of {total_count} units ({fail_rate:.1f}%)")
+                if len(status_counts) > 0:
+                    # Create pie chart for pass/fail distribution
+                    colors = [self.risk_chart.qa_colors['pass'] if status == 'Pass' 
+                             else self.risk_chart.qa_colors['fail'] 
+                             for status in status_counts.index]
+                    
+                    wedges, texts, autotexts = ax.pie(status_counts.values, 
+                                                     labels=status_counts.index,
+                                                     colors=colors,
+                                                     autopct='%1.1f%%',
+                                                     startangle=90,
+                                                     textprops={'fontsize': 10})
+                    
+                    # Make percentage text bold
+                    for autotext in autotexts:
+                        autotext.set_color('white')
+                        autotext.set_fontweight('bold')
+                    
+                    ax.set_title('Pass/Fail Distribution', fontsize=12, fontweight='bold', pad=20)
+                    
+                    # Add summary statistics as text
+                    total_count = len(df)
+                    fail_count = status_counts.get('Fail', 0)
+                    pass_count = status_counts.get('Pass', 0)
+                    fail_rate = (fail_count / total_count * 100) if total_count > 0 else 0
+                    
+                    summary_text = f'Total Units: {total_count}\nPass: {pass_count}\nFail: {fail_count}\nFail Rate: {fail_rate:.1f}%'
+                    ax.text(1.2, 0.5, summary_text, transform=ax.transAxes, 
+                           fontsize=10, verticalalignment='center',
+                           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+                    
+                    self.logger.info(f"Failure Pattern Analysis: {fail_count} failures out of {total_count} units ({fail_rate:.1f}%)")
+                else:
+                    ax.text(0.5, 0.5, 'No status data available', 
+                           ha='center', va='center', transform=ax.transAxes, fontsize=12)
+                
+                self.risk_chart.canvas.draw_idle()
                     
             except Exception as e:
                 self.logger.error(f"Error creating risk assessment: {e}")
-                self.risk_chart.show_placeholder("Error displaying risk matrix", "Check data format")
+                self.risk_chart.show_error(
+                    "Risk Analysis Error", 
+                    f"Failed to create failure pattern analysis: {str(e)}"
+                )
 
         except Exception as e:
             self.logger.error(f"Error updating analysis charts: {e}")
@@ -1679,28 +1676,59 @@ class ModelSummaryPage(ctk.CTkFrame):
             self.history_data_frames.append(row_frame)
     
     def _update_cpk_chart(self):
-        """Update performance scorecard."""
+        """Update process capability analysis chart."""
         if self.model_data is None or len(self.model_data) == 0:
             return
         
         df = self.model_data
         
-        # Need at least some data for meaningful scorecard
-        if len(df) < 3:
-            self.cpk_chart.show_placeholder("Insufficient data", "Need at least 3 data points for performance analysis")
+        # Need at least some data for meaningful capability analysis
+        if len(df) < 10:
+            self.cpk_chart.show_placeholder("Insufficient Data", "Need at least 10 data points for capability analysis")
             return
         
         try:
-            # Use the performance scorecard visualization
-            self.cpk_chart.plot_performance_scorecard(df)
+            # Clean sigma gradient data
+            sigma_data = df['sigma_gradient'].dropna()
             
-            # Calculate and log summary statistics
-            pass_rate = (df['track_status'] == 'Pass').mean() * 100
-            in_spec_rate = ((df['sigma_gradient'] >= 0.3) & (df['sigma_gradient'] <= 0.7)).mean() * 100
-            avg_sigma = df['sigma_gradient'].mean()
+            if len(sigma_data) < 10:
+                self.cpk_chart.show_placeholder("Insufficient Valid Data", "Not enough valid sigma gradient values")
+                return
             
-            self.logger.info(f"Performance Scorecard: Pass Rate={pass_rate:.1f}%, In-Spec={in_spec_rate:.1f}%, Avg Sigma={avg_sigma:.3f}")
+            # Define specification limits for sigma gradient (based on observed ranges)
+            spec_limits = (0.050, 0.250)  # LSL, USL
+            target_value = 0.1376  # Target (midpoint of typical range)
+            
+            # Create DataFrame for the chart method
+            capability_df = pd.DataFrame({'sigma_gradient': sigma_data})
+            
+            # Use the enhanced process capability histogram method
+            self.cpk_chart.plot_process_capability_histogram(
+                data=capability_df,
+                value_column='sigma_gradient',
+                spec_limits=spec_limits,
+                target_value=target_value,
+                title="Sigma Distribution"
+            )
+            
+            # Calculate basic capability metrics for logging
+            mean_val = sigma_data.mean()
+            std_val = sigma_data.std()
+            
+            # Calculate Cp and Cpk
+            if std_val > 0:
+                cp = (spec_limits[1] - spec_limits[0]) / (6 * std_val)
+                cpu = (spec_limits[1] - mean_val) / (3 * std_val)
+                cpl = (mean_val - spec_limits[0]) / (3 * std_val)
+                cpk = min(cpu, cpl)
+                
+                self.logger.info(f"Process Capability: Cp={cp:.3f}, Cpk={cpk:.3f}, Mean={mean_val:.4f}, Std={std_val:.4f}")
+            else:
+                self.logger.warning("Cannot calculate capability indices: standard deviation is zero")
             
         except Exception as e:
-            self.logger.error(f"Error updating performance scorecard: {e}")
-            self.cpk_chart.show_placeholder("Error", "Failed to create performance scorecard")
+            self.logger.error(f"Error updating capability chart: {e}")
+            self.cpk_chart.show_error(
+                "Capability Analysis Error", 
+                f"Failed to create process capability analysis: {str(e)}"
+            )
