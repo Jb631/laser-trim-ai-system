@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laser-trim-analyzer"
-version = "2.2.7"
+version = "2.2.8"
 description = "Modern QA analysis platform for potentiometer laser trim data"
 readme = "README.md"
 requires-python = ">=3.10"

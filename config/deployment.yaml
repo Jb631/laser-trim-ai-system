@@ -85,4 +85,4 @@ security:
   secure_delete_temp_files: true
   use_windows_authentication: true
   verify_ssl_certificates: true
-version: 2.2.7
+version: 2.2.8

@@ -73,7 +73,12 @@
       "Bash(winget install:*)",
       "Bash(.venv/Scripts/pip.exe list:*)",
       "Bash(.venv/Scripts/pip.exe install:*)",
-      "Bash(.venv/Scripts/pyinstaller.exe laser_trim_analyzer.spec --clean)"
+      "Bash(.venv/Scripts/pyinstaller.exe laser_trim_analyzer.spec --clean)",
+      "Bash(gh:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(ssh:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }
