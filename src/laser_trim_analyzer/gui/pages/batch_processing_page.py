@@ -955,24 +955,32 @@ class BatchProcessingPage(ctk.CTkFrame):
 
     def _update_file_display(self):
         """Update file list display."""
-        self.file_list_label.configure(text=f"Selected Files ({len(self.selected_files)}):")
+        if self._shutting_down:
+            return
         
-        self.file_listbox.configure(state="normal")
-        self.file_listbox.delete("1.0", tk.END)
-        
-        for i, file_path in enumerate(self.selected_files, 1):
-            validation_status = ""
-            if str(file_path) in self.validation_results:
-                status = "✓" if self.validation_results[str(file_path)] else "✗"
-                validation_status = f" [{status}]"
+        try:
+            self.file_list_label.configure(text=f"Selected Files ({len(self.selected_files)}):")
+            self.file_listbox.configure(state="normal")
+        except tk.TclError:
+            return  # Widget destroyed
+        try:
+            self.file_listbox.delete("1.0", tk.END)
             
-            self.file_listbox.insert(tk.END, f"{i:3d}. {file_path.name}{validation_status}\n")
-        
-        self.file_listbox.configure(state="disabled")
-        
-        # Enable/disable buttons
-        has_files = len(self.selected_files) > 0
-        self.validate_batch_button.configure(state="normal" if has_files else "disabled")
+            for i, file_path in enumerate(self.selected_files, 1):
+                validation_status = ""
+                if str(file_path) in self.validation_results:
+                    status = "✓" if self.validation_results[str(file_path)] else "✗"
+                    validation_status = f" [{status}]"
+                
+                self.file_listbox.insert(tk.END, f"{i:3d}. {file_path.name}{validation_status}\n")
+            
+            self.file_listbox.configure(state="disabled")
+            
+            # Enable/disable buttons
+            has_files = len(self.selected_files) > 0
+            self.validate_batch_button.configure(state="normal" if has_files else "disabled")
+        except tk.TclError:
+            return  # Widget destroyed
 
     def _validate_batch(self):
         """Validate all selected files."""
@@ -1138,7 +1146,12 @@ class BatchProcessingPage(ctk.CTkFrame):
 
     def _update_batch_status(self, status: str, color: str):
         """Update batch status indicator."""
-        self.batch_status_label.configure(text=f"Batch Status: {status}")
+        if self._shutting_down:
+            return
+        try:
+            self.batch_status_label.configure(text=f"Batch Status: {status}")
+        except tk.TclError:
+            return  # Widget destroyed
         
         color_map = {
             "green": "#00ff00",
@@ -1147,7 +1160,10 @@ class BatchProcessingPage(ctk.CTkFrame):
             "gray": "#808080"
         }
         
-        self.batch_indicator.configure(text_color=color_map.get(color, "#808080"))
+        try:
+            self.batch_indicator.configure(text_color=color_map.get(color, "#808080"))
+        except tk.TclError:
+            return  # Widget destroyed
 
     def _start_processing(self):
         """Start batch processing."""
@@ -2480,13 +2496,31 @@ class BatchProcessingPage(ctk.CTkFrame):
     
     def _update_master_summary(self, **kwargs):
         """Update the master summary panel with batch processing statistics."""
-        # Clear the summary frame
-        for widget in self.summary_frame.winfo_children():
-            widget.destroy()
+        # Check if we're shutting down to prevent widget access errors
+        if self._shutting_down:
+            return
         
-        # Create a grid layout for the summary
-        summary_container = ctk.CTkFrame(self.summary_frame, fg_color="transparent")
-        summary_container.pack(fill='both', expand=True, padx=10, pady=10)
+        try:
+            # Clear the summary frame safely
+            for widget in self.summary_frame.winfo_children():
+                if widget.winfo_exists():
+                    widget.destroy()
+        except tk.TclError:
+            # Widget might already be destroyed, ignore
+            logger.debug("Widget already destroyed during summary update")
+            return
+        
+        # Check again before creating new widgets
+        if self._shutting_down:
+            return
+            
+        try:
+            # Create a grid layout for the summary
+            summary_container = ctk.CTkFrame(self.summary_frame, fg_color="transparent")
+            summary_container.pack(fill='both', expand=True, padx=10, pady=10)
+        except tk.TclError as e:
+            logger.debug(f"Error creating summary container: {e}")
+            return
         
         # Title
         title_label = ctk.CTkLabel(
@@ -2540,14 +2574,22 @@ class BatchProcessingPage(ctk.CTkFrame):
                 label_font = ctk.CTkFont(size=12)
                 value_font = ctk.CTkFont(size=12)
             
-            # Create label
-            label = ctk.CTkLabel(
-                summary_container,
-                text=label_text,
-                font=label_font,
-                anchor='w'
-            )
-            label.grid(row=row, column=0, sticky='w', padx=(0, 10), pady=2)
+            # Check if we're shutting down before creating widgets
+            if self._shutting_down:
+                return
+                
+            try:
+                # Create label
+                label = ctk.CTkLabel(
+                    summary_container,
+                    text=label_text,
+                    font=label_font,
+                    anchor='w'
+                )
+                label.grid(row=row, column=0, sticky='w', padx=(0, 10), pady=2)
+            except tk.TclError as e:
+                logger.debug(f"Error creating summary label: {e}")
+                return
             
             # Create value
             if value_text:
@@ -2574,35 +2616,50 @@ class BatchProcessingPage(ctk.CTkFrame):
                     elif "Validated" in label_text or "Passed" in label_text:
                         text_color = "green"
                 
-                value = ctk.CTkLabel(
-                    summary_container,
-                    text=value_text,
-                    font=value_font,
-                    text_color=text_color,
-                    anchor='w'
-                )
-                value.grid(row=row, column=1, sticky='w', pady=2)
+                try:
+                    value = ctk.CTkLabel(
+                        summary_container,
+                        text=value_text,
+                        font=value_font,
+                        text_color=text_color,
+                        anchor='w'
+                    )
+                    value.grid(row=row, column=1, sticky='w', pady=2)
+                except tk.TclError as e:
+                    logger.debug(f"Error creating summary value: {e}")
+                    return
             
             row += 1
         
         # Add a separator line
-        separator = ctk.CTkFrame(summary_container, height=2)
-        separator.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(15, 10))
-        row += 1
+        if not self._shutting_down:
+            try:
+                separator = ctk.CTkFrame(summary_container, height=2)
+                separator.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(15, 10))
+                row += 1
+            except tk.TclError as e:
+                logger.debug(f"Error creating separator: {e}")
+                return
         
         # Add error details section if there are failed files
         error_details = kwargs.get('error_details', [])
         if error_details:
             # Error section title
-            error_title = ctk.CTkLabel(
-                summary_container,
-                text="Processing Errors:",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="red",
-                anchor='w'
-            )
-            error_title.grid(row=row, column=0, columnspan=2, sticky='w', pady=(10, 5))
-            row += 1
+            if self._shutting_down:
+                return
+            try:
+                error_title = ctk.CTkLabel(
+                    summary_container,
+                    text="Processing Errors:",
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    text_color="red",
+                    anchor='w'
+                )
+                error_title.grid(row=row, column=0, columnspan=2, sticky='w', pady=(10, 5))
+                row += 1
+            except tk.TclError as e:
+                logger.debug(f"Error creating error title: {e}")
+                return
             
             # Create scrollable frame for errors if many
             if len(error_details) > 5:
@@ -2690,14 +2747,22 @@ class BatchProcessingPage(ctk.CTkFrame):
             color = "green"
             message = "Resources: Normal - Ready for batch processing"
         
-        self.resource_status_label.configure(text=message, text_color=color)
+        if not self._shutting_down:
+            try:
+                self.resource_status_label.configure(text=message, text_color=color)
+            except tk.TclError:
+                return  # Widget destroyed
         
         # Update optimization strategy
         if self.resource_optimizer and hasattr(self, 'selected_files'):
             strategy = self.resource_optimizer.get_processing_strategy(len(self.selected_files))
-            self.optimization_label.configure(
-                text=f"Optimization: {strategy['description']}"
-            )
+            if not self._shutting_down:
+                try:
+                    self.optimization_label.configure(
+                        text=f"Optimization: {strategy['description']}"
+                    )
+                except tk.TclError:
+                    pass  # Widget destroyed
 
     def _handle_batch_error(self, error_message: str):
         """Handle batch processing error."""
