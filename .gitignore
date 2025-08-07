@@ -149,3 +149,6 @@ Thumbs.db
 /cache/
 .laser_trim_analyzer/
 .aider*
+
+# Deployment packages (large binary distributions)
+LaserTrimAnalyzer-v*/
