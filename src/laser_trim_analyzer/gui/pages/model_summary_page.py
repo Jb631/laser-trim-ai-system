@@ -548,6 +548,13 @@ class ModelSummaryPage(ctk.CTkFrame):
                             timestamp = trim_date  # Use trim_date as fallback
                             self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
                         
+                        # Extract data from nested analysis objects
+                        sigma_analysis = getattr(track, 'sigma_analysis', None)
+                        linearity_analysis = getattr(track, 'linearity_analysis', None) 
+                        resistance_analysis = getattr(track, 'resistance_analysis', None)
+                        failure_prediction = getattr(track, 'failure_prediction', None)
+                        unit_properties = getattr(track, 'unit_properties', None)
+                        
                         row = {
                         'analysis_id': analysis.id,
                         'filename': analysis.filename,
@@ -559,25 +566,36 @@ class ModelSummaryPage(ctk.CTkFrame):
                         'overall_status': analysis.overall_status.value,
                         'track_id': track.track_id,
                         'track_status': track.status.value,
-                        # Direct track attributes (no nested objects)
-                        'sigma_gradient': getattr(track, 'sigma_gradient', None),
-                        'sigma_threshold': getattr(track, 'sigma_threshold', None),
-                        'sigma_pass': getattr(track, 'sigma_pass', False),
-                        'linearity_spec': getattr(track, 'linearity_spec', None),
-                        'linearity_error_raw': getattr(track, 'final_linearity_error_raw', None),
-                        'linearity_error_shifted': getattr(track, 'final_linearity_error_shifted', None),
-                        'linearity_pass': getattr(track, 'linearity_pass', False),
-                        'linearity_fail_points': getattr(track, 'linearity_fail_points', 0),
-                        'unit_length': getattr(track, 'unit_length', None),
-                        'untrimmed_resistance': getattr(track, 'untrimmed_resistance', None),
-                        'trimmed_resistance': getattr(track, 'trimmed_resistance', None),
-                        'resistance_change': getattr(track, 'resistance_change', None),
-                        'resistance_change_percent': getattr(track, 'resistance_change_percent', None),
-                        'failure_probability': getattr(track, 'failure_probability', None),
-                        'risk_category': track.risk_category.value if hasattr(track, 'risk_category') and track.risk_category else None,
-                        'optimal_offset': getattr(track, 'optimal_offset', None),
-                        'max_deviation': getattr(track, 'max_deviation', None),
-                        'processing_time': analysis.processing_time
+                        
+                        # Sigma analysis data
+                        'sigma_gradient': sigma_analysis.sigma_gradient if sigma_analysis else None,
+                        'sigma_threshold': sigma_analysis.sigma_threshold if sigma_analysis else None,
+                        'sigma_pass': sigma_analysis.sigma_pass if sigma_analysis else False,
+                        
+                        # Linearity analysis data
+                        'linearity_spec': linearity_analysis.linearity_spec if linearity_analysis else None,
+                        'linearity_error_raw': linearity_analysis.final_linearity_error_raw if linearity_analysis else None,
+                        'linearity_error_shifted': linearity_analysis.final_linearity_error_shifted if linearity_analysis else None,
+                        'linearity_pass': linearity_analysis.linearity_pass if linearity_analysis else False,
+                        'linearity_fail_points': linearity_analysis.linearity_fail_points if linearity_analysis else None,
+                        'optimal_offset': linearity_analysis.optimal_offset if linearity_analysis else None,
+                        'max_deviation': linearity_analysis.max_deviation if linearity_analysis else None,
+                        
+                        # Unit properties (from unit_properties object)
+                        'unit_length': unit_properties.unit_length if unit_properties else None,
+                        'untrimmed_resistance': unit_properties.untrimmed_resistance if unit_properties else None,
+                        'trimmed_resistance': unit_properties.trimmed_resistance if unit_properties else None,
+                        
+                        # Resistance analysis data
+                        'resistance_change': resistance_analysis.resistance_change if resistance_analysis else None,
+                        'resistance_change_percent': resistance_analysis.resistance_change_percent if resistance_analysis else None,
+                        
+                        # Failure prediction data
+                        'failure_probability': failure_prediction.failure_probability if failure_prediction else None,
+                        'risk_category': failure_prediction.risk_category.value if failure_prediction and failure_prediction.risk_category else None,
+                        
+                        # Processing time
+                        'processing_time': analysis.processing_time if hasattr(analysis, 'processing_time') else None
                         }
                         # Add computed linearity_error field (use shifted if available, else raw)
                         row['linearity_error'] = row['linearity_error_shifted'] or row['linearity_error_raw'] or 0

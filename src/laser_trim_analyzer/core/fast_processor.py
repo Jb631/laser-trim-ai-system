@@ -580,6 +580,7 @@ class FastProcessor:
     
     def _process_file_worker(self, file_path: Path, output_dir: Optional[Path]) -> Optional[AnalysisResult]:
         """Worker function to process a single file."""
+        start_time = time.time()
         try:
             # In extreme turbo mode, use minimal processing
             if self.turbo_mode and hasattr(self, '_process_file_minimal'):
@@ -626,7 +627,7 @@ class FastProcessor:
                 tracks=tracks,
                 overall_status=overall_status,
                 overall_validation_status=overall_validation_status,
-                processing_time=(time.time() - time.time()),  # Simplified timing
+                processing_time=(time.time() - start_time),  # Actual processing time
                 validation_issues=validation_issues,  # Comprehensive validation results
                 processing_errors=processing_errors   # Actual processing errors
             )
