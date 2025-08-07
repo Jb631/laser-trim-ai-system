@@ -152,3 +152,6 @@ Thumbs.db
 
 # Deployment packages (large binary distributions)
 LaserTrimAnalyzer-v*/
+
+# Test files (may contain sensitive data and are large)
+test_files/
