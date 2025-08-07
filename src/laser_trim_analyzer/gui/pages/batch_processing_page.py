@@ -1028,6 +1028,12 @@ class BatchProcessingPage(ctk.CTkFrame):
                 # Create progress callback
                 def validation_progress_callback(current_file_index):
                     self.validation_progress = current_file_index + 1
+                    # Update progress bar immediately during validation
+                    progress = self.validation_progress / self.validation_total if self.validation_total > 0 else 0
+                    progress = min(progress, 1.0)  # Ensure never exceeds 100%
+                    if hasattr(self, 'validation_progress_dialog') and self.validation_progress_dialog:
+                        self._safe_after(0, lambda: self.validation_progress_dialog.update_progress(
+                            f"Validating file {self.validation_progress} of {self.validation_total}", progress))
                 
                 validation_result = BatchValidator.validate_batch(
                     file_paths=self.selected_files,
@@ -1717,6 +1723,8 @@ class BatchProcessingPage(ctk.CTkFrame):
                         
                         # Update progress
                         progress_fraction = processed_files / total_files
+                        # Ensure progress never exceeds 1.0 (100%)
+                        progress_fraction = min(progress_fraction, 1.0)
                         progress_percent = progress_fraction * 100
                         message = f"Processing {file_path.name} ({processed_files}/{total_files})"
                         
@@ -1759,9 +1767,12 @@ class BatchProcessingPage(ctk.CTkFrame):
                     
                     # Update UI to show pause
                     if progress_callback:
+                        progress_fraction = processed_files / total_files
+                        # Ensure progress never exceeds 1.0 (100%)
+                        progress_fraction = min(progress_fraction, 1.0)
                         progress_callback(
                             "Pausing for memory recovery...",
-                            (processed_files / total_files) * 100
+                            progress_fraction
                         )
                     
                     # Wait for resources with cancellation check
