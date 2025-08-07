@@ -66,6 +66,9 @@ def create_deployment_package():
         ("README.md", "README.md"),
         ("CHANGELOG.md", "CHANGELOG.md"),
         ("config/deployment.yaml", "config/deployment.yaml"),
+        ("config/production.yaml", "config/production.yaml"),
+        ("config/development.yaml", "config/development.yaml"),
+        ("CLAUDE.md", "DEVELOPMENT.md"),  # Include development docs
     ]
     
     for src, dst in deployment_files:
@@ -93,27 +96,59 @@ def create_deployment_package():
 - **Package**: LaserTrimAnalyzer-v{version}-{timestamp}
 
 ## Features in This Version
-- Fixed batch processing validation errors
+- Fixed batch processing validation errors and widget callback issues
 - Fixed status inconsistencies between single file and batch processing
-- Fixed application shutdown and callback errors
-- Enhanced chart zoom functionality
-- Improved stability and error handling
+- Fixed application shutdown and callback errors preventing clean exit
+- Enhanced chart zoom functionality and professional visualizations
+- Fixed database path configuration errors in Settings page
+- Improved stability and error handling for large file batches
 
 ## System Requirements
 - Windows 10/11 (64-bit)
 - No Python installation required
-- 4GB RAM minimum, 8GB recommended
+- 4GB RAM minimum, 8GB recommended for large batch processing
 - 500MB disk space
+- Network access if using shared database
 
 ## Configuration
-The application includes a deployment configuration file at:
-`config/deployment.yaml`
+The application includes configuration files:
+- `config/deployment.yaml` - Main deployment configuration
+- `config/production.yaml` - Production environment settings  
+- `config/development.yaml` - Development environment settings
 
-This can be customized by IT for network deployments.
+These can be customized by IT for network deployments.
+
+## Database Configuration
+The application supports flexible database locations:
+1. **Portable**: Database travels with the application folder
+2. **Documents**: Stored in user's Documents folder (persistent)
+3. **Network**: Shared database on network drive (multi-user)
+4. **Custom**: Any user-specified location
+
+Use the Settings page in the application to configure database location.
+
+## Troubleshooting
+### Application won't start
+- Check Windows Event Viewer for errors
+- Ensure no antivirus blocking the executable
+- Try running as administrator (not normally required)
+
+### Database errors
+- Check file permissions on database location
+- Ensure network drives are accessible
+- Use Settings page to reconfigure database path
+
+### Batch processing issues
+- Reduce batch size if running out of memory
+- Close other applications to free up resources
+- Check log files for specific error details
 
 ## Support
-For issues or questions, check the CHANGELOG.md for recent fixes
-or refer to the README.md for detailed usage instructions.
+For issues or questions:
+1. Check the CHANGELOG.md for recent fixes
+2. Refer to the README.md for detailed usage instructions
+3. Check DEVELOPMENT.md for technical documentation
+4. Log files are stored in the application's logs directory
 
 ## File Structure
 ```
