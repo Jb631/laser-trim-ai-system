@@ -1171,11 +1171,26 @@ class HistoricalPage(ctk.CTkFrame):
                 self.production_chart.clear_chart()
                 ax = self.production_chart._get_or_create_axes()
                 
-                # Plot daily pass rate
-                ax.plot(daily_data['date'], daily_data['pass_rate'], 
-                       'o-', markersize=4, linewidth=1, 
-                       color=self.production_chart.qa_colors['primary'], 
-                       label='Daily Pass Rate', alpha=0.6)
+                # Plot daily pass rate - adjust style based on data density
+                num_points = len(daily_data)
+                if num_points > 100:
+                    # For many points, use line only without markers
+                    ax.plot(daily_data['date'], daily_data['pass_rate'], 
+                           '-', linewidth=1, 
+                           color=self.production_chart.qa_colors['primary'], 
+                           label='Daily Pass Rate', alpha=0.6)
+                elif num_points > 50:
+                    # For moderate points, use smaller markers
+                    ax.plot(daily_data['date'], daily_data['pass_rate'], 
+                           'o-', markersize=2, linewidth=1, 
+                           color=self.production_chart.qa_colors['primary'], 
+                           label='Daily Pass Rate', alpha=0.6)
+                else:
+                    # For few points, use normal markers
+                    ax.plot(daily_data['date'], daily_data['pass_rate'], 
+                           'o-', markersize=4, linewidth=1, 
+                           color=self.production_chart.qa_colors['primary'], 
+                           label='Daily Pass Rate', alpha=0.6)
                 
                 # Add moving averages
                 if 'ma_7' in daily_data.columns:
@@ -1256,13 +1271,23 @@ class HistoricalPage(ctk.CTkFrame):
             }).reset_index()
             
             if len(model_metrics) > 0:
-                # Prepare data for bar chart - use average of sigma and linearity pass rates
-                models = model_metrics['model'].tolist()
-                sigma_pass = model_metrics['sigma_pass'].tolist()
-                linearity_pass = model_metrics['linearity_pass'].tolist()
+                # Calculate overall pass rate for each model
+                model_metrics['overall_pass'] = (model_metrics['sigma_pass'] + model_metrics['linearity_pass']) / 2
                 
-                # Calculate overall pass rate
-                overall_pass = [(s + l) / 2 for s, l in zip(sigma_pass, linearity_pass)]
+                # Limit to top 20 models if there are too many
+                # Sort by pass rate to show best and worst performers
+                if len(model_metrics) > 20:
+                    # Get top 10 and bottom 10 performers
+                    model_metrics_sorted = model_metrics.sort_values('overall_pass', ascending=False)
+                    top_10 = model_metrics_sorted.head(10)
+                    bottom_10 = model_metrics_sorted.tail(10)
+                    model_metrics = pd.concat([top_10, bottom_10]).sort_values('overall_pass', ascending=False)
+                    
+                    self.logger.info(f"Limiting chart to top 10 and bottom 10 models out of {len(model_metrics_sorted)} total")
+                
+                # Prepare data for bar chart
+                models = model_metrics['model'].tolist()
+                overall_pass = model_metrics['overall_pass'].tolist()
                 
                 # Create data for bar chart
                 chart_data = pd.DataFrame({
@@ -1275,6 +1300,15 @@ class HistoricalPage(ctk.CTkFrame):
                 
                 # Add threshold line
                 self.model_comparison_chart.add_threshold_lines({'Target': 95}, orientation='horizontal')
+                
+                # Add annotation if we limited the models
+                if len(model_metrics_sorted if 'model_metrics_sorted' in locals() else model_metrics) > 20:
+                    ax = self.model_comparison_chart._get_or_create_axes()
+                    self.model_comparison_chart.add_chart_annotation(
+                        ax, 
+                        f"Showing top 10 and bottom 10 performers from {len(model_metrics_sorted)} models",
+                        position='top'
+                    )
             else:
                 self.model_comparison_chart.show_placeholder("No model data available", "Need data from multiple models")
             
@@ -1324,11 +1358,27 @@ class HistoricalPage(ctk.CTkFrame):
                 self.quality_trends_chart.clear_chart()
                 ax = self.quality_trends_chart._get_or_create_axes()
                 
-                # Plot quality index
-                ax.plot(pd.to_datetime(daily_quality['date']), daily_quality['quality_index'], 
-                       'o-', markersize=4, linewidth=1, 
-                       color=self.quality_trends_chart.qa_colors['primary'], 
-                       label='Daily Quality Index', alpha=0.7)
+                # Plot quality index - adjust style based on data density
+                dates = pd.to_datetime(daily_quality['date'])
+                num_points = len(daily_quality)
+                if num_points > 100:
+                    # For many points, use line only without markers
+                    ax.plot(dates, daily_quality['quality_index'], 
+                           '-', linewidth=1, 
+                           color=self.quality_trends_chart.qa_colors['primary'], 
+                           label='Daily Quality Index', alpha=0.7)
+                elif num_points > 50:
+                    # For moderate points, use smaller markers
+                    ax.plot(dates, daily_quality['quality_index'], 
+                           'o-', markersize=2, linewidth=1, 
+                           color=self.quality_trends_chart.qa_colors['primary'], 
+                           label='Daily Quality Index', alpha=0.7)
+                else:
+                    # For few points, use normal markers
+                    ax.plot(dates, daily_quality['quality_index'], 
+                           'o-', markersize=4, linewidth=1, 
+                           color=self.quality_trends_chart.qa_colors['primary'], 
+                           label='Daily Quality Index', alpha=0.7)
                 
                 # Add moving average
                 if 'ma_7' in daily_quality.columns:
@@ -3660,84 +3710,27 @@ TRACK DETAILS:
                 messagebox.showwarning("No Data", "No sigma gradient data available")
                 return
             
-            # Create control chart
+            # Create enhanced control chart using the new method
             df = pd.DataFrame(chart_data).sort_values('date')
             
-            self.control_chart.clear_chart()
-            fig = self.control_chart.figure
-            fig.clear()
-            ax = fig.add_subplot(111)
+            # Rename columns to match expected format
+            df = df.rename(columns={'date': 'trim_date', 'value': 'sigma_gradient'})
             
-            # Apply theme
-            self.control_chart._apply_theme_to_axes(ax)
+            # Define specification limits for sigma gradient
+            target_value = 0.1376  # Midpoint of typical range
+            spec_limits = (0.050, 0.250)  # Slightly wider than observed range
             
-            # Get theme colors
-            from laser_trim_analyzer.gui.theme_helper import ThemeHelper
-            theme_colors = ThemeHelper.get_theme_colors()
-            text_color = theme_colors["fg"]["primary"]
-            is_dark = ctk.get_appearance_mode().lower() == "dark"
-            bg_color = theme_colors["bg"]["secondary"] if is_dark else 'wheat'
-            
-            # Plot values with dates on x-axis
-            dates = pd.to_datetime(df['date'])
-            ax.plot(dates, df['value'], 'bo-', label='Sigma Gradient', markersize=6)
-            
-            # Calculate control limits
-            mean = df['value'].mean()
-            std = df['value'].std()
-            ucl = mean + 3 * std
-            lcl = mean - 3 * std
-            uwl = mean + 2 * std  # Upper warning limit
-            lwl = mean - 2 * std  # Lower warning limit
-            
-            # Add shaded zones
-            ax.axhspan(lcl, ucl, alpha=0.1, color='green', label='Control Zone (±3σ)')
-            ax.axhspan(lwl, uwl, alpha=0.1, color='yellow', label='Warning Zone (±2σ)')
-            
-            # Plot control limits
-            ax.axhline(y=mean, color='green', linestyle='-', linewidth=2, label=f'Center Line: {mean:.4f}')
-            ax.axhline(y=ucl, color='red', linestyle='--', linewidth=1.5, label=f'UCL (+3σ): {ucl:.4f}')
-            ax.axhline(y=lcl, color='red', linestyle='--', linewidth=1.5, label=f'LCL (-3σ): {lcl:.4f}')
-            ax.axhline(y=uwl, color='orange', linestyle=':', alpha=0.7)
-            ax.axhline(y=lwl, color='orange', linestyle=':', alpha=0.7)
-            
-            # Highlight out-of-control points
-            ooc_points = df[(df['value'] > ucl) | (df['value'] < lcl)]
-            if not ooc_points.empty:
-                ooc_dates = pd.to_datetime(ooc_points['date'])
-                ax.scatter(ooc_dates, ooc_points['value'], color='red', s=100, zorder=5, 
-                          label=f'Out of Control ({len(ooc_points)})')
-            
-            # Add explanation text
-            explanation = (
-                "Control Chart Interpretation:\n"
-                "• Points within green zone = Normal variation\n"
-                "• Points in yellow zone = Warning\n" 
-                "• Points outside red lines = Action required"
+            # Use the enhanced control chart method
+            self.control_chart.plot_enhanced_control_chart(
+                data=df,
+                value_column='sigma_gradient',
+                date_column='trim_date',
+                spec_limits=spec_limits,
+                target_value=target_value,
+                title="Historical Sigma Trends"
             )
-            ax.text(0.02, 0.98, explanation, transform=ax.transAxes,
-                   verticalalignment='top', fontsize=9, color=text_color,
-                   bbox=dict(boxstyle='round', facecolor=bg_color, alpha=0.8, edgecolor=text_color))
             
-            # Format x-axis for dates
-            import matplotlib.dates as mdates
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
-            if len(dates) > 10:
-                ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates)//10)))
-            
-            ax.set_xlabel('Date', color=text_color)
-            ax.set_ylabel('Sigma Gradient', color=text_color)
-            ax.set_title('Statistical Process Control Chart', fontsize=14, fontweight='bold', color=text_color)
-            
-            legend = ax.legend(loc='lower right', fontsize=9)
-            if legend:
-                self.control_chart._style_legend(legend)
-            
-            ax.grid(True, alpha=0.3)
-            fig.autofmt_xdate()
-            fig.tight_layout()
-            
-            self.control_chart.canvas.draw()
+            self.logger.info(f"Enhanced control chart created with {len(df)} data points")
             
         except Exception as e:
             self.logger.error(f"Error generating control charts: {e}")

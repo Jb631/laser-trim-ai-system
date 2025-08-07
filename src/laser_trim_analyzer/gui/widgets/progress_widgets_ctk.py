@@ -86,19 +86,30 @@ class ProgressDialog:
         """Update the progress bar and message (thread-safe)."""
         # Check if we're in the main thread
         if threading.current_thread() is not threading.main_thread():
-            # Schedule update in main thread
+            # Schedule update in main thread using a lambda to avoid recursion
             try:
-                self.parent.after(0, lambda: self.update_progress(message, progress))
+                self.parent.after(0, lambda m=message, p=progress: self._update_progress_main_thread(m, p))
                 return
             except Exception:
                 # Parent might not have after method, continue anyway
                 pass
+        
+        self._update_progress_main_thread(message, progress)
+    
+    def _update_progress_main_thread(self, message: str, progress: float):
+        """Internal method to update progress from main thread only."""
         
         try:
             if self.dialog and self.dialog.winfo_exists():
                 # Update message
                 if self.status_label:
                     self.status_label.configure(text=message)
+                
+                # Update file count based on progress
+                if self.file_label and self.total_files > 0:
+                    current_file = int(progress * self.total_files)
+                    self.current_file = current_file
+                    self.file_label.configure(text=f"Processing file {current_file} of {self.total_files}")
                 
                 # Update progress bar
                 if self.progress_bar:

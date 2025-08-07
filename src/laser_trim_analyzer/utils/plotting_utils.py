@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -101,6 +102,11 @@ def apply_theme_to_axes(ax, is_dark: bool = False):
     
     # Set tick colors
     ax.tick_params(colors=colors['text'], labelcolor=colors['text'])
+    
+    # Control tick density to prevent MAXTICKS warnings
+    # Apply reasonable limits to prevent overwhelming tick generation
+    ax.xaxis.set_major_locator(MaxNLocator(nbins='auto', max_nbins=12, prune='both'))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins='auto', max_nbins=10, prune='both'))
     
     # Set label colors
     ax.xaxis.label.set_color(colors['text'])

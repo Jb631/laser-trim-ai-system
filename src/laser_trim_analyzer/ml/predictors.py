@@ -357,11 +357,16 @@ class MLPredictor:
     def _load_existing_models(self):
         """Load existing trained models from disk if available."""
         try:
+            # Get model path from config with defensive checks
+            model_path = None
+            if hasattr(self.config, 'ml') and hasattr(self.config.ml, 'model_path'):
+                model_path = self.config.ml.model_path
+            
             # Handle relative paths
-            if self.model_path and self.model_path.startswith('./'):
-                model_dir = Path.cwd() / self.model_path[2:]
+            if model_path and model_path.startswith('./'):
+                model_dir = Path.cwd() / model_path[2:]
             else:
-                model_dir = Path(self.model_path) if self.model_path else None
+                model_dir = Path(model_path) if model_path else None
             
             if not model_dir or not model_dir.exists():
                 self._log_with_context('debug', "Model path does not exist, skipping model loading",

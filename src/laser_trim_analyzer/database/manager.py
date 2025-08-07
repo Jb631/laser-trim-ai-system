@@ -1548,12 +1548,13 @@ class DatabaseManager:
             self.logger.error(f"Error getting ML threshold: {e}")
             return None
     
-    def save_analysis_batch(self, analyses: List[PydanticAnalysisResult]) -> List[int]:
+    def save_analysis_batch(self, analyses: List[PydanticAnalysisResult], force_overwrite: bool = False) -> List[int]:
         """
         Save multiple analyses in a batch for performance.
         
         Args:
             analyses: List of analysis results to save
+            force_overwrite: If True, delete and replace existing records instead of skipping
             
         Returns:
             List of saved analysis IDs
@@ -1568,7 +1569,7 @@ class DatabaseManager:
         if len(analyses) > 1000:
             raise ValueError("Batch size too large (max 1000)")
         
-        self.logger.info(f"Starting batch save for {len(analyses)} analyses")
+        self.logger.info(f"Starting batch save for {len(analyses)} analyses (force_overwrite={force_overwrite})")
         
         # Validate all analyses first
         if HAS_SECURITY:
@@ -1629,15 +1630,28 @@ class DatabaseManager:
                         )
                         
                         if existing_id:
-                            # Check if we should update with missing raw data
-                            if self._should_update_raw_data(existing_id, analysis):
-                                self.logger.info(f"Updating existing record {existing_id} with missing raw data")
-                                self._update_raw_data(existing_id, analysis, session)
-                                saved_ids.append(existing_id)
+                            if force_overwrite:
+                                # Delete existing record and its tracks for force overwrite
+                                self.logger.info(f"Force overwrite: Deleting existing record {existing_id} for {analysis.metadata.model}-{analysis.metadata.serial}")
+                                # Delete tracks first (foreign key constraint)
+                                session.query(DBTrackResult).filter(
+                                    DBTrackResult.analysis_id == existing_id
+                                ).delete()
+                                # Delete the analysis record
+                                session.query(DBAnalysisResult).filter(
+                                    DBAnalysisResult.id == existing_id
+                                ).delete()
+                                # Continue to create new record
                             else:
-                                self.logger.info(f"Skipping duplicate: {analysis.metadata.model}-{analysis.metadata.serial}")
-                                saved_ids.append(existing_id)
-                            continue
+                                # Check if we should update with missing raw data
+                                if self._should_update_raw_data(existing_id, analysis):
+                                    self.logger.info(f"Updating existing record {existing_id} with missing raw data")
+                                    self._update_raw_data(existing_id, analysis, session)
+                                    saved_ids.append(existing_id)
+                                else:
+                                    self.logger.info(f"Skipping duplicate: {analysis.metadata.model}-{analysis.metadata.serial}")
+                                    saved_ids.append(existing_id)
+                                continue
                         
                         # Create database record but don't add to session yet
                         db_analysis = self._prepare_analysis_record(analysis)
