@@ -245,22 +245,13 @@ class DatabaseManager:
                 safe_path.parent.mkdir(parents=True, exist_ok=True)
                 return f"sqlite:///{safe_path.absolute()}"
         
-        # Check if we're in development mode - if so, use config directly
-        if os.environ.get('LTA_ENV', '').lower() == 'development':
-            self.logger.info("Development mode detected, using development configuration")
-            # Use the config object directly
-            if hasattr(config.database, 'path'):
-                db_path = Path(str(config.database.path))
-                # Path should already be expanded by config loader
-                try:
-                    db_path.parent.mkdir(parents=True, exist_ok=True)
-                except Exception as e:
-                    self.logger.warning(f"Could not create database directory: {e}")
-                database_url = f"sqlite:///{db_path.absolute()}"
-                self.logger.info(f"Using development database at: {db_path}")
-                return database_url
+        # DATABASE CONFIGURATION PRIORITY ORDER:
+        # 1. Settings Page Configuration (user_database.yaml) - PRIMARY SOURCE OF TRUTH
+        # 2. Deployment Configuration (deployment.yaml) - Fallback
+        # 3. Emergency Fallback (safe default path)
+        self.logger.info("Determining database path using Settings page as primary source of truth")
         
-        # For non-development, check for user overrides first, then deployment.yaml
+        # PRIORITY 1: Check for user database path overrides (Settings page configuration)
         deployment_mode = 'single_user'
         deployment_config_path = Path("config/deployment.yaml")
         
@@ -277,21 +268,34 @@ class DatabaseManager:
                     if 'network_database_path' in user_config:
                         user_override_path = user_config['network_database_path']
                         deployment_mode = 'multi_user'
-                        self.logger.info(f"Found user network database override: {user_override_path}")
+                        self.logger.info(f"[SETTINGS PAGE] Using user network database: {user_override_path}")
                     elif 'database_path' in user_config:
                         user_override_path = user_config['database_path']
                         deployment_mode = 'single_user'
-                        self.logger.info(f"Found user database path override: {user_override_path}")
+                        self.logger.info(f"[SETTINGS PAGE] Using user database: {user_override_path}")
+                    elif 'force_development_db' in user_config and user_config['force_development_db']:
+                        # Allow explicit development mode override via Settings
+                        self.logger.info("[SETTINGS PAGE] User explicitly enabled development database mode")
+                        if hasattr(config.database, 'path'):
+                            db_path = Path(str(config.database.path))
+                            try:
+                                db_path.parent.mkdir(parents=True, exist_ok=True)
+                            except Exception as e:
+                                self.logger.warning(f"Could not create database directory: {e}")
+                            database_url = f"sqlite:///{db_path.absolute()}"
+                            self.logger.info(f"[SETTINGS PAGE] Using development database: {db_path}")
+                            return database_url
                         
             except Exception as e:
                 self.logger.warning(f"Could not read user database config: {e}")
         
-        # If user override exists, use it directly
+        # PRIORITY 2: If user override exists, use it directly
         if user_override_path:
             db_path = user_override_path
-            self.logger.info(f"Using user override database path: {db_path}")
+            self.logger.info(f"[SETTINGS PAGE] Database path configured by user: {db_path}")
         else:
-            # Otherwise read from deployment.yaml
+            # PRIORITY 3: Fallback to deployment.yaml configuration
+            self.logger.info("[FALLBACK] No user database configuration found, using deployment.yaml")
             try:
                 if deployment_config_path.exists():
                     with open(deployment_config_path, 'r') as f:
@@ -459,6 +463,9 @@ class DatabaseManager:
                     conn.execute(text("SELECT 1"))
             self.logger.info("Database connection test successful")
             
+            # Validate database configuration consistency
+            self.validate_database_consistency()
+            
             # Update health status
             with self._health_check_lock:
                 self._connection_healthy = True
@@ -583,6 +590,86 @@ class DatabaseManager:
         if self._Session is None:
             raise DatabaseConnectionError("Database session not initialized")
         return self._Session
+
+    @property
+    def database_path_info(self) -> dict:
+        """Get detailed information about current database path configuration."""
+        try:
+            # Extract database path from engine URL
+            if self._engine:
+                db_url = str(self._engine.url)
+                if db_url.startswith("sqlite:///"):
+                    current_path = db_url[10:]  # Remove "sqlite:///"
+                else:
+                    current_path = db_url
+            else:
+                current_path = "Not initialized"
+            
+            # Check user configuration
+            user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
+            user_config = None
+            if user_config_path.exists():
+                try:
+                    with open(user_config_path, 'r') as f:
+                        user_config = yaml.safe_load(f)
+                except Exception:
+                    pass
+            
+            return {
+                'current_path': current_path,
+                'user_config_exists': user_config_path.exists(),
+                'user_config': user_config,
+                'settings_page_active': user_config is not None,
+                'using_settings_config': user_config is not None and (
+                    'database_path' in user_config or 'network_database_path' in user_config
+                )
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting database path info: {e}")
+            return {'error': str(e)}
+
+    def validate_database_consistency(self) -> bool:
+        """
+        Validate that all application components are using the same database.
+        
+        Returns:
+            bool: True if database configuration is consistent across all components
+        """
+        try:
+            db_info = self.database_path_info
+            self.logger.info("Validating database configuration consistency")
+            
+            if 'error' in db_info:
+                self.logger.error(f"Cannot validate database consistency: {db_info['error']}")
+                return False
+            
+            current_path = db_info['current_path']
+            self.logger.info(f"Current active database: {current_path}")
+            
+            if db_info['settings_page_active']:
+                user_config = db_info['user_config']
+                settings_path = user_config.get('database_path') or user_config.get('network_database_path')
+                
+                if settings_path:
+                    # Normalize paths for comparison
+                    current_normalized = Path(current_path).resolve()
+                    settings_normalized = Path(settings_path).resolve()
+                    
+                    if current_normalized == settings_normalized:
+                        self.logger.info("✅ Database configuration is consistent with Settings page")
+                        return True
+                    else:
+                        self.logger.warning(f"❌ Database inconsistency detected!")
+                        self.logger.warning(f"   Active database: {current_normalized}")
+                        self.logger.warning(f"   Settings page: {settings_normalized}")
+                        return False
+            else:
+                self.logger.warning("No Settings page configuration found, using fallback")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error validating database consistency: {e}")
+            return False
 
     @contextmanager
     def get_session(self) -> Iterator[Session]:
@@ -853,7 +940,8 @@ class DatabaseManager:
                     ).scalar()
                     
                     if result > 0:
-                        self.logger.info(
+                        # Log duplicates at DEBUG level to reduce log verbosity during large batch processing
+                        self.logger.debug(
                             f"Found duplicate analysis for {model}-{serial} from {file_date}: "
                             f"ID {existing.id}"
                         )
@@ -1105,40 +1193,74 @@ class DatabaseManager:
             raise e  # Re-raise validation errors as-is
             
         except OperationalError as e:
+            # Enhanced error reporting for OperationalError with detailed context
+            error_details = self._analyze_operational_error(e, analysis_data)
+            
+            self.logger.error(
+                f"Database operational error during save: {error_details['error_category']} - {str(e)}",
+                extra={
+                    'filename': analysis_data.metadata.filename,
+                    'model': analysis_data.metadata.model,
+                    'serial': analysis_data.metadata.serial,
+                    'error_category': error_details['error_category'],
+                    'retry_recommended': error_details['retry_recommended']
+                }
+            )
+            
             error_handler.handle_error(
                 error=e,
                 category=ErrorCategory.DATABASE,
                 severity=ErrorSeverity.ERROR,
                 code=ErrorCode.DB_QUERY_FAILED,
-                user_message="Failed to save analysis to database. Please try again.",
-                recovery_suggestions=[
-                    "Check database connection",
-                    "Verify database is not full",
-                    "Try again in a few moments"
-                ],
+                user_message=error_details['user_message'],
+                recovery_suggestions=error_details['recovery_suggestions'],
                 additional_data={
-                    'technical_details': str(e)
+                    'technical_details': str(e),
+                    'error_category': error_details['error_category'],
+                    'filename': analysis_data.metadata.filename,
+                    'file_size_estimate': len(str(analysis_data.dict())) if hasattr(analysis_data, 'dict') else 'unknown',
+                    'track_count': len(analysis_data.tracks) if analysis_data.tracks else 0,
+                    'retry_recommended': error_details['retry_recommended']
                 }
             )
-            raise DatabaseError(f"Database operation failed: {str(e)}") from e
+            raise DatabaseError(f"Database operation failed ({error_details['error_category']}): {str(e)}") from e
             
         except Exception as e:
-            self.logger.error(f"Failed to save analysis: {str(e)}")
+            # Enhanced error reporting for unexpected errors with comprehensive context
+            self.logger.error(
+                f"Unexpected error during analysis save: {type(e).__name__} - {str(e)}",
+                extra={
+                    'filename': analysis_data.metadata.filename if analysis_data.metadata else 'unknown',
+                    'model': analysis_data.metadata.model if analysis_data.metadata else 'unknown',
+                    'serial': analysis_data.metadata.serial if analysis_data.metadata else 'unknown',
+                    'error_type': type(e).__name__,
+                    'track_count': len(analysis_data.tracks) if analysis_data.tracks else 0,
+                    'has_ml_predictions': bool(hasattr(analysis_data, 'ml_predictions') and analysis_data.ml_predictions)
+                }
+            )
+            
+            # Provide specific guidance based on error type
+            recovery_suggestions = self._get_error_recovery_suggestions(e, analysis_data)
             
             error_handler.handle_error(
                 error=e,
                 category=ErrorCategory.DATABASE,
                 severity=ErrorSeverity.ERROR,
                 code=ErrorCode.UNKNOWN_ERROR,
-                user_message="An unexpected error occurred while saving analysis.",
+                user_message=f"An unexpected {type(e).__name__} error occurred while saving analysis.",
+                recovery_suggestions=recovery_suggestions,
                 additional_data={
                     'filename': analysis_data.metadata.filename if analysis_data.metadata else 'unknown',
+                    'model': analysis_data.metadata.model if analysis_data.metadata else 'unknown', 
+                    'serial': analysis_data.metadata.serial if analysis_data.metadata else 'unknown',
                     'error_type': type(e).__name__,
-                    'technical_details': str(e)
+                    'technical_details': str(e),
+                    'file_size_estimate': len(str(analysis_data.dict())) if hasattr(analysis_data, 'dict') else 'unknown',
+                    'track_count': len(analysis_data.track_results) if analysis_data.track_results else 0
                 }
             )
             
-            raise DatabaseError(f"Analysis save failed: {str(e)}") from e
+            raise DatabaseError(f"Analysis save failed ({type(e).__name__}): {str(e)}") from e
 
     @validate_inputs(
         model={'type': 'model_number', 'required': False},
@@ -2307,3 +2429,121 @@ class DatabaseManager:
             self.logger.error(f"Error updating raw data: {e}")
             session.rollback()
             raise
+            
+    def _analyze_operational_error(self, error: Exception, analysis_data: 'PydanticAnalysisResult') -> dict:
+        """
+        Analyze OperationalError to provide detailed context and retry recommendations.
+        
+        Returns:
+            Dictionary with error category, user message, recovery suggestions, and retry recommendation
+        """
+        error_str = str(error).lower()
+        
+        if "database is locked" in error_str or "locked" in error_str:
+            return {
+                'error_category': 'Database Lock',
+                'user_message': f'Database is locked. File: {analysis_data.metadata.filename}',
+                'recovery_suggestions': [
+                    'Wait a moment and try again - another process may be using the database',
+                    'Check if another instance of the application is running',
+                    'Restart the application if the lock persists'
+                ],
+                'retry_recommended': True
+            }
+        elif "disk" in error_str or "space" in error_str:
+            return {
+                'error_category': 'Disk Space',
+                'user_message': f'Insufficient disk space to save analysis for {analysis_data.metadata.filename}',
+                'recovery_suggestions': [
+                    'Free up disk space on the database drive',
+                    'Clean up old temporary files',
+                    'Contact IT if this is a network database'
+                ],
+                'retry_recommended': False
+            }
+        elif "timeout" in error_str or "connection" in error_str:
+            return {
+                'error_category': 'Connection Timeout',
+                'user_message': f'Database connection timeout while saving {analysis_data.metadata.filename}',
+                'recovery_suggestions': [
+                    'Check network connection (if using network database)',
+                    'Try again - the connection may be temporarily slow',
+                    'Contact IT if using a shared network database'
+                ],
+                'retry_recommended': True
+            }
+        elif "permission" in error_str or "access" in error_str:
+            return {
+                'error_category': 'Permission Denied',
+                'user_message': f'Permission denied accessing database for {analysis_data.metadata.filename}',
+                'recovery_suggestions': [
+                    'Check file permissions on the database directory',
+                    'Run the application as administrator',
+                    'Contact IT to verify database access permissions'
+                ],
+                'retry_recommended': False
+            }
+        else:
+            return {
+                'error_category': 'Unknown Operational',
+                'user_message': f'Database operational error while saving {analysis_data.metadata.filename}',
+                'recovery_suggestions': [
+                    'Try saving again in a few moments',
+                    'Check database integrity',
+                    'Contact support if error persists'
+                ],
+                'retry_recommended': True
+            }
+    
+    def _get_error_recovery_suggestions(self, error: Exception, analysis_data: 'PydanticAnalysisResult') -> list:
+        """
+        Provide specific recovery suggestions based on error type and context.
+        """
+        error_type = type(error).__name__
+        error_str = str(error).lower()
+        
+        if error_type == 'ValidationError':
+            return [
+                f'Check the data format in {analysis_data.metadata.filename}',
+                'Verify all required fields are present',
+                'Check for data type mismatches'
+            ]
+        elif error_type == 'AttributeError':
+            if 'nonetype' in error_str:
+                return [
+                    f'Missing required data in {analysis_data.metadata.filename}',
+                    'Check if the file was processed completely',
+                    'Verify file format is correct'
+                ]
+            else:
+                return [
+                    'Data structure issue detected',
+                    'Check for missing attributes in the analysis data',
+                    'Reprocess the file if necessary'
+                ]
+        elif error_type == 'KeyError':
+            return [
+                f'Missing expected data field in {analysis_data.metadata.filename}',
+                'Verify the file format matches expected structure',
+                'Check if analysis was complete before saving'
+            ]
+        elif error_type == 'TypeError':
+            return [
+                f'Data type mismatch in {analysis_data.metadata.filename}',
+                'Check numeric fields for invalid characters',
+                'Verify date/time formats are correct'
+            ]
+        elif error_type in ('MemoryError', 'OverflowError'):
+            return [
+                f'File {analysis_data.metadata.filename} may be too large',
+                'Try processing smaller batches',
+                'Check available system memory',
+                'Contact support for large file handling'
+            ]
+        else:
+            return [
+                f'Unexpected error processing {analysis_data.metadata.filename}',
+                'Try saving the file again',
+                'Check system resources and database status',
+                'Contact support if error persists'
+            ]
