@@ -16,6 +16,58 @@ This section tracks current known issues that need to be addressed. When fixing 
 - None currently tracked
 
 
+## [2.2.8] - 2025-08-08
+
+### Fixed
+- **Analysis Pipeline NULL Fields Issue - COMPREHENSIVE ROOT CAUSE FIX**:
+  - **User Report**: Model 6828 showing "No valid sigma gradient values found!" with 16 fields showing NULL values in Excel exports
+  - **Phase 1 - UI Data Access Fix**: Fixed Model Summary page data extraction from nested objects to direct database field access
+  - **Phase 2 - ROOT CAUSE DISCOVERY**: Found 16 fields were NULL in the database itself due to analysis pipeline failures
+  - **Root Cause Analysis**:
+    - Analysis objects WERE being created during file processing (zone_analysis, dynamic_range_analysis, trim_effectiveness, etc.)
+    - BUT attribute name mismatch prevented them from being assigned to TrackData model
+    - Processor created `dynamic_range_analysis` but TrackData model expected `dynamic_range`
+    - Result: Analysis objects became None during TrackData instantiation → NULL values in database
+  - **Comprehensive Solution**:
+    - **Fixed Processor Attribute Mapping** (`src/laser_trim_analyzer/core/processor.py:758`):
+      ```python
+      # OLD (BROKEN): dynamic_range_analysis=dynamic_range_analysis
+      # NEW (FIXED):  dynamic_range=dynamic_range_analysis
+      ```
+    - **Fixed Database Manager Attribute Mapping**: Changed `analysis_data.track_results` to `analysis_data.tracks`
+    - **Enhanced Model Summary Page**: Direct field access for all 35 database fields including 18 advanced analytics fields
+  - **Verification Results**:
+    - ✅ All 8 analysis objects now created: unit_properties, sigma_analysis, linearity_analysis, resistance_analysis, zone_analysis, dynamic_range, trim_effectiveness, failure_prediction
+    - ✅ Previously NULL fields now populated: failure_probability, range_utilization_percent, minimum_margin, margin_bias, worst_zone, num_zones, unit_length, improvement_percent
+    - ✅ Model Summary shows "valid sigma gradient values found" instead of error
+    - ✅ Excel exports contain actual data instead of NULL for 12-16 previously missing fields
+  - **Impact**: Resolves fundamental analysis pipeline issue affecting all advanced analytics features and data completeness
+
+- **Database Configuration Consistency Issue**:
+  - **User Report**: Settings page database configuration not being respected consistently across application components
+  - **Root Cause**: Development mode environment variable (`LTA_ENV=development`) was overriding Settings page configuration, causing different components to use different databases
+  - **Problem**: This caused confusion where:
+    - Settings page pointed to one database (with working advanced analytics)
+    - Processing used development database (with NULL advanced analytics)
+    - Excel exports showed NULL fields because they came from the wrong database
+  - **Solution**:
+    - **Removed Development Mode Database Override**: Environment variables no longer bypass Settings page configuration
+    - **Made Settings Page Primary Source of Truth**: Database path resolution now prioritizes user configuration above all else
+    - **Added Automatic Consistency Validation**: Database manager validates configuration consistency on initialization
+    - **Enhanced Logging**: Clear indicators show when Settings page configuration is active with `[SETTINGS PAGE]` prefixes
+  - **New Database Priority Order**:
+    1. Settings Page Configuration (`~/.laser_trim_analyzer/user_database.yaml`) - PRIMARY
+    2. Deployment Configuration (`config/deployment.yaml`) - Fallback
+    3. Emergency Safe Fallback - Last resort
+  - **Impact**: Ensures all application components (GUI, processing, exports) use the same database configured through Settings page
+
+### Enhanced  
+- **Large Batch Processing Performance**:
+  - **Duplicate Detection Logging**: Changed from INFO to DEBUG level to reduce log noise during large batch operations
+  - **Database Save Error Reporting**: Enhanced with detailed error categorization, specific recovery suggestions, and retry recommendations
+  - **Adaptive Progress Reporting**: Implemented intelligent progress intervals (10-500 items) based on batch size with processing rates and time estimates
+  - **Impact**: Cleaner logs and better user feedback during processing of 3000+ file batches
+
 ## [2.2.7] - 2025-08-07
 
 ### Fixed

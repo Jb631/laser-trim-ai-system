@@ -755,7 +755,7 @@ class LaserTrimProcessor:
             linearity_analysis=linearity_analysis,
             resistance_analysis=resistance_analysis,
             zone_analysis=zone_analysis,
-            dynamic_range_analysis=dynamic_range_analysis,
+            dynamic_range=dynamic_range_analysis,
             trim_effectiveness=trim_effectiveness,
             failure_prediction=failure_prediction
         )

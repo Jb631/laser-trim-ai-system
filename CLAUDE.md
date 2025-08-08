@@ -119,6 +119,7 @@ To switch environments, set the `LTA_ENV` environment variable:
 - ✓ Chart layout and overlapping issues fixed (2025-08-01)
 - ✓ Pareto analysis 'disabled' error fixed (2025-08-01)
 - ✓ Database path configuration made portable and user-configurable (2025-08-05)
+- ✓ Analysis pipeline NULL fields issue - comprehensive root cause fix (2025-08-08)
 
 ### Change Tracking
 

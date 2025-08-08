@@ -548,12 +548,8 @@ class ModelSummaryPage(ctk.CTkFrame):
                             timestamp = trim_date  # Use trim_date as fallback
                             self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
                         
-                        # Extract data from nested analysis objects
-                        sigma_analysis = getattr(track, 'sigma_analysis', None)
-                        linearity_analysis = getattr(track, 'linearity_analysis', None) 
-                        resistance_analysis = getattr(track, 'resistance_analysis', None)
-                        failure_prediction = getattr(track, 'failure_prediction', None)
-                        unit_properties = getattr(track, 'unit_properties', None)
+                        # Extract data directly from track database record
+                        # Note: sigma_gradient, sigma_threshold, etc. are stored directly on track record
                         
                         row = {
                         'analysis_id': analysis.id,
@@ -567,32 +563,60 @@ class ModelSummaryPage(ctk.CTkFrame):
                         'track_id': track.track_id,
                         'track_status': track.status.value,
                         
-                        # Sigma analysis data
-                        'sigma_gradient': sigma_analysis.sigma_gradient if sigma_analysis else None,
-                        'sigma_threshold': sigma_analysis.sigma_threshold if sigma_analysis else None,
-                        'sigma_pass': sigma_analysis.sigma_pass if sigma_analysis else False,
+                        # Sigma analysis data (stored directly on track)
+                        'sigma_gradient': track.sigma_gradient,
+                        'sigma_threshold': track.sigma_threshold,
+                        'sigma_pass': track.sigma_pass,
                         
-                        # Linearity analysis data
-                        'linearity_spec': linearity_analysis.linearity_spec if linearity_analysis else None,
-                        'linearity_error_raw': linearity_analysis.final_linearity_error_raw if linearity_analysis else None,
-                        'linearity_error_shifted': linearity_analysis.final_linearity_error_shifted if linearity_analysis else None,
-                        'linearity_pass': linearity_analysis.linearity_pass if linearity_analysis else False,
-                        'linearity_fail_points': linearity_analysis.linearity_fail_points if linearity_analysis else None,
-                        'optimal_offset': linearity_analysis.optimal_offset if linearity_analysis else None,
-                        'max_deviation': linearity_analysis.max_deviation if linearity_analysis else None,
+                        # Linearity analysis data (stored directly on track)
+                        'linearity_spec': track.linearity_spec,
+                        'linearity_error_raw': track.final_linearity_error_raw,
+                        'linearity_error_shifted': track.final_linearity_error_shifted,
+                        'linearity_pass': track.linearity_pass,
+                        'linearity_fail_points': track.linearity_fail_points,
+                        'optimal_offset': track.optimal_offset,
+                        'max_deviation': track.max_deviation,
                         
-                        # Unit properties (from unit_properties object)
-                        'unit_length': unit_properties.unit_length if unit_properties else None,
-                        'untrimmed_resistance': unit_properties.untrimmed_resistance if unit_properties else None,
-                        'trimmed_resistance': unit_properties.trimmed_resistance if unit_properties else None,
+                        # Unit properties (stored directly on track)
+                        'unit_length': track.unit_length,
+                        'untrimmed_resistance': track.untrimmed_resistance,
+                        'trimmed_resistance': track.trimmed_resistance,
                         
-                        # Resistance analysis data
-                        'resistance_change': resistance_analysis.resistance_change if resistance_analysis else None,
-                        'resistance_change_percent': resistance_analysis.resistance_change_percent if resistance_analysis else None,
+                        # Resistance analysis data (stored directly on track)
+                        'resistance_change': track.resistance_change,
+                        'resistance_change_percent': track.resistance_change_percent,
                         
-                        # Failure prediction data
-                        'failure_probability': failure_prediction.failure_probability if failure_prediction else None,
-                        'risk_category': failure_prediction.risk_category.value if failure_prediction and failure_prediction.risk_category else None,
+                        # Failure prediction data (stored directly on track)
+                        'failure_probability': track.failure_probability,
+                        'risk_category': track.risk_category.value if track.risk_category else None,
+                        'gradient_margin': track.gradient_margin,
+                        
+                        # Advanced analytics (stored directly on track)
+                        'travel_length': track.travel_length,
+                        'max_deviation_position': track.max_deviation_position,
+                        'deviation_uniformity': track.deviation_uniformity,
+                        
+                        # Trim effectiveness (stored directly on track)
+                        'trim_improvement_percent': track.trim_improvement_percent,
+                        'untrimmed_rms_error': track.untrimmed_rms_error,
+                        'trimmed_rms_error': track.trimmed_rms_error,
+                        'max_error_reduction_percent': track.max_error_reduction_percent,
+                        
+                        # Zone analysis (stored directly on track)
+                        'worst_zone': track.worst_zone,
+                        'worst_zone_position': track.worst_zone_position,
+                        'zone_details': track.zone_details,
+                        
+                        # Dynamic range analysis (stored directly on track)
+                        'range_utilization_percent': track.range_utilization_percent,
+                        'minimum_margin': track.minimum_margin,
+                        'minimum_margin_position': track.minimum_margin_position,
+                        'margin_bias': track.margin_bias,
+                        
+                        # Raw data and plots (stored directly on track)
+                        'position_data': track.position_data,
+                        'error_data': track.error_data,
+                        'plot_path': track.plot_path,
                         
                         # Processing time
                         'processing_time': analysis.processing_time if hasattr(analysis, 'processing_time') else None

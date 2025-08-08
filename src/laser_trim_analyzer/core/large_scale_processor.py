@@ -833,6 +833,8 @@ class LargeScaleProcessor:
                 )
                 saved_count = 0
                 duplicate_count = 0
+                batch_save_start_time = time.time()
+                last_progress_report_time = batch_save_start_time
                 
                 for idx, result in enumerate(batch_data):
                     try:
@@ -850,14 +852,32 @@ class LargeScaleProcessor:
                             result.db_id = self.db_manager.save_analysis(result)
                             saved_count += 1
                             
-                        # Log progress for large batches
-                        if idx > 0 and idx % 100 == 0:
-                            self._log_with_context('debug', f"Individual save progress: {idx}/{len(batch_data)}", context={
-                                    'progress': idx,
+                        # Adaptive progress reporting optimized for batch size
+                        progress_interval = self._get_progress_interval(len(batch_data), idx)
+                        current_time = time.time()
+                        
+                        if (idx > 0 and idx % progress_interval == 0) or (current_time - last_progress_report_time >= 30):
+                            elapsed_time = current_time - batch_save_start_time
+                            processing_rate = (idx + 1) / elapsed_time if elapsed_time > 0 else 0
+                            estimated_remaining = (len(batch_data) - idx - 1) / processing_rate if processing_rate > 0 else 0
+                            progress_percentage = round(((idx + 1) / len(batch_data)) * 100, 1)
+                            
+                            self._log_with_context('info', 
+                                f"Batch save progress: {idx + 1}/{len(batch_data)} ({progress_percentage}%) - {saved_count} new, {duplicate_count} duplicates - {processing_rate:.1f} saves/sec", 
+                                context={
+                                    'progress': idx + 1,
                                     'total': len(batch_data),
                                     'saved': saved_count,
-                                    'duplicates': duplicate_count
+                                    'duplicates': duplicate_count,
+                                    'duplicate_percentage': round((duplicate_count / (idx + 1)) * 100, 1) if idx >= 0 else 0,
+                                    'processing_rate_per_sec': round(processing_rate, 1),
+                                    'estimated_remaining_seconds': round(estimated_remaining),
+                                    'elapsed_seconds': round(elapsed_time),
+                                    'progress_percentage': progress_percentage,
+                                    'memory_usage_mb': round(psutil.Process().memory_info().rss / (1024 * 1024), 1) if psutil else None
                                 })
+                            
+                            last_progress_report_time = current_time
                     except Exception as e:
                         self._log_with_context('error', f"Failed to save result: {e}", context={
                                 'result_index': idx,
@@ -865,9 +885,15 @@ class LargeScaleProcessor:
                                 'serial': result.metadata.serial
                             })
                 
-                self._log_with_context('info', f"Individually saved {saved_count} results to database", context={
+                # Calculate duplicate percentage for summary
+                total_processed = saved_count + duplicate_count
+                duplicate_percentage = round((duplicate_count / total_processed) * 100, 1) if total_processed > 0 else 0
+                
+                self._log_with_context('info', f"Database commit complete: {saved_count} new analyses, {duplicate_count} duplicates ({duplicate_percentage}%) in {time.time() - commit_start_time:.2f}s", context={
                         'saved_count': saved_count,
                         'duplicate_count': duplicate_count,
+                        'total_processed': total_processed,
+                        'duplicate_percentage': duplicate_percentage,
                         'total_time_seconds': time.time() - commit_start_time
                     })
             
@@ -1081,6 +1107,42 @@ class LargeScaleProcessor:
         """Stop processing gracefully."""
         self.logger.info("Stopping large-scale processing...")
         self._should_stop = True
+
+    def _get_progress_interval(self, batch_size: int, current_index: int = 0) -> int:
+        """
+        Calculate adaptive progress reporting interval based on batch size and current progress.
+        
+        Args:
+            batch_size: Total number of items in the batch
+            current_index: Current index being processed (for adaptive scaling)
+            
+        Returns:
+            Progress reporting interval
+        """
+        if batch_size <= 50:
+            # Small batches: report every 10 items
+            return 10
+        elif batch_size <= 200:
+            # Medium batches: report every 25 items
+            return 25
+        elif batch_size <= 500:
+            # Large batches: report every 50 items
+            return 50
+        elif batch_size <= 1000:
+            # Very large batches: report every 100 items
+            return 100
+        elif batch_size <= 2000:
+            # Extremely large batches: report every 200 items
+            return 200
+        else:
+            # Massive batches (3000+): adaptive scaling
+            # Early phase: report more frequently to show initial progress
+            if current_index < batch_size * 0.1:  # First 10%
+                return 100
+            elif current_index < batch_size * 0.5:  # First 50%
+                return 250
+            else:  # Final 50%
+                return 500
 
     def get_stats(self) -> Dict:
         """Get current processing statistics."""
