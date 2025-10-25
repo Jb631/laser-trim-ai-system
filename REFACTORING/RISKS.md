@@ -14,6 +14,48 @@
 
 ## Active Risks
 
+### RISK-008: System Crash at 1000 Files (CRITICAL - DISCOVERED DAY 1)
+**Category**: 🔴 **HIGH - CRITICAL**
+**Probability**: High (confirmed - happened twice)
+**Impact**: **CRITICAL** - Full system crash, potential data loss
+
+**Description**: Processing 1000 files causes **complete system crash** (not just app crash).
+- First attempt: Exit code 139 (segfault)
+- Second attempt: **Entire computer crashed**
+- 100 files: Stable
+- 500 files: Stable
+- 1000 files: **System crash**
+
+**Root Cause** (Suspected):
+- Memory leak or excessive memory allocation
+- Possible Excel library (openpyxl/xlrd) memory issue
+- No chunking or memory management for large batches
+- Database operations accumulating in memory
+
+**Mitigation Strategies**:
+1. 🔴 **URGENT**: Document as critical baseline finding
+2. ⏸️ Phase 1: Implement incremental processing (avoid 1000-file batch)
+3. ⏸️ Phase 2: Add memory management to UnifiedProcessor
+4. ⏸️ Phase 4: Use streaming Excel readers (not load entire file)
+5. ⏸️ Phase 6: Fix root cause - comprehensive memory profiling
+6. ⏸️ Phase 6: Add batch chunking (process 100-200 at a time with memory cleanup)
+
+**Monitoring**:
+- Phase 6: Re-run 1000-file benchmark to verify fix
+- Memory usage tracking during large batches
+- System stability monitoring
+
+**Recovery Plan**:
+- **Immediate**: Avoid >500 file batches until Phase 6
+- **User workaround**: Process files in smaller batches (≤500)
+- **Phase 6**: Implement robust large-batch handling
+
+**Status**: 🔴 **CRITICAL ACTIVE** - Blocks reliable 1000+ file processing
+
+**Target Resolution**: Phase 6 (Performance & Stability) - Week 5-6
+
+---
+
 ### RISK-001: Breaking Existing Functionality
 **Category**: 🔴 High
 **Probability**: Medium
