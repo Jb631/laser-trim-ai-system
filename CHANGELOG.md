@@ -72,6 +72,34 @@ This section tracks current known issues that need to be addressed. When fixing 
   - **Result**: Charts now correctly display model-specific specification limits with proper one-sided thresholds
   - **M3 Compliance**: ✅ Now uses model-aware spec limits from database as required
 
+- **CRITICAL: ML-Learned Thresholds Not Being Used (2025-01-25)** - ML Integration Architecture Fix
+  - **Root Cause**: System was designed for ML-learned thresholds but sigma_analyzer was using hardcoded/formula-based values
+  - **Discovery**: User expected ML-based thresholds (this is an AI system!), but found hardcoded 0.4 for Model 8340-1
+  - **Architecture Gap**: ThresholdOptimizer (RandomForest ML model) existed but wasn't wired to sigma analysis pipeline
+  - **Impact**: ALL thresholds were formula-based or hardcoded, ignoring ML predictions stored in database
+  - **Fixed Locations**:
+    - `sigma_analyzer.py:273-346` - Completely rewrote `_calculate_threshold()` to prioritize ML
+    - `constants.py:102-107` - Removed hardcoded `SPECIAL_MODELS` dictionary (including 8340-1: 0.4)
+  - **New Threshold Priority**:
+    1. **ML-learned** from `ThresholdOptimizer` (retrieved via `db_manager.get_latest_ml_threshold(model)`)
+    2. **Formula-based** fallback (temporary until ML models trained for each model type)
+  - **ML Threshold System**:
+    - **Training (CLI)**: `lta ml train threshold --model all` - Uses RandomForestRegressor
+    - **Training (GUI)**: ML Tools page → Threshold Optimization (percentile-based, simpler)
+    - **Storage**: `MLPrediction` table with `prediction_type='threshold_optimization'`
+    - **Retrieval**: `DatabaseManager.get_latest_ml_threshold(model)` returns most recent prediction
+    - **Usage**: `sigma_analyzer` automatically checks ML first, logs which source used
+  - **Formula-Based Fallback** (used when ML threshold not available):
+    - Model 8340-1: `linearity_spec * scaling_factor * 0.5` (was: hardcoded 0.4)
+    - Model 8555: `0.0015 * spec_factor` (unchanged)
+    - Traditional: `(linearity_spec / effective_length) * (scaling_factor * 0.5)` (unchanged)
+  - **Result**: NO MORE HARDCODED THRESHOLDS - all models use ML when available, formula as fallback
+  - **Production Steps**:
+    1. Run `lta ml train threshold --model all --evaluate` to train ML models
+    2. Verify: `SELECT * FROM ml_predictions WHERE prediction_type='threshold_optimization'`
+    3. Process files - sigma_analyzer automatically uses ML thresholds
+    4. Charts display ML-learned specification limits
+
 ### Enhanced
 - **Chart Widget Data Validation (2025-01-08)** - Production Hardening Phase 1
   - **Added comprehensive data validation to 14 chart plotting methods** in `chart_widget.py`:
