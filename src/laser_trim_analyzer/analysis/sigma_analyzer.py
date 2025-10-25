@@ -273,7 +273,13 @@ class SigmaAnalyzer(BaseAnalyzer):
     def _calculate_threshold(self, model: str, linearity_spec: float,
                              travel_length: float, unit_length: Optional[float]) -> float:
         """
-        Calculate sigma threshold based on model and specifications.
+        Calculate sigma threshold - ML-based first, formula-based fallback.
+
+        Priority order:
+        1. ML-learned threshold from ThresholdOptimizer (if available)
+        2. Formula-based calculation as fallback
+
+        NO HARDCODED THRESHOLDS - even for 8340-1
 
         Args:
             model: Model identifier
@@ -284,21 +290,36 @@ class SigmaAnalyzer(BaseAnalyzer):
         Returns:
             Calculated threshold value
         """
-        # Check for model-specific fixed thresholds
-        if model in SPECIAL_MODELS:
-            if 'fixed_sigma_threshold' in SPECIAL_MODELS[model]:
-                return SPECIAL_MODELS[model]['fixed_sigma_threshold']
+        # PRIORITY 1: Try to get ML-learned threshold
+        try:
+            from laser_trim_analyzer.database.manager import DatabaseManager
+            db_manager = DatabaseManager(self.config)
+            ml_threshold = db_manager.get_latest_ml_threshold(model)
 
-        # Model-specific calculations with more realistic thresholds
+            if ml_threshold is not None:
+                self.logger.info(f"Using ML-learned threshold for {model}: {ml_threshold:.6f}")
+                return ml_threshold
+            else:
+                self.logger.info(f"No ML-learned threshold found for {model}, using formula-based calculation")
+        except Exception as e:
+            self.logger.warning(f"Could not retrieve ML threshold: {e}, using formula-based calculation")
+
+        # PRIORITY 2: Formula-based calculation (fallback only)
+        # NOTE: These formulas should be temporary until ML models are trained
+
+        # Model-specific calculations
         if model.startswith('8555'):
-            # Empirical threshold for 8555 models - more stringent
-            base_threshold = 0.0015  # Reduced from 0.0025
+            # Empirical formula for 8555 models
+            base_threshold = 0.0015
             spec_factor = linearity_spec / 0.01 if linearity_spec > 0 else 1.0
             threshold = base_threshold * spec_factor
+            self.logger.debug(f"Using 8555 formula-based threshold: {threshold:.6f}")
 
         elif model.startswith('8340-1'):
-            # Hard-coded for 8340-1 (redundant with SPECIAL_MODELS but kept for clarity)
-            threshold = 0.4
+            # Formula-based for 8340-1 (NO MORE HARDCODED 0.4!)
+            # Using conservative calculation until ML threshold available
+            threshold = linearity_spec * DEFAULT_SIGMA_SCALING_FACTOR * 0.5
+            self.logger.debug(f"Using 8340-1 formula-based threshold: {threshold:.6f}")
 
         else:
             # Traditional calculation with adjusted scaling
@@ -306,20 +327,19 @@ class SigmaAnalyzer(BaseAnalyzer):
 
             # Use unit length if available, otherwise travel length
             effective_length = unit_length if unit_length and unit_length > 0 else travel_length
-            
+
             self.logger.debug(f"Effective length for threshold calculation: {effective_length}, "
                             f"scaling_factor: {scaling_factor}")
 
             if effective_length and effective_length > 0:
-                # More stringent calculation
-                # Ensure we don't divide a very small spec by a large length
+                # Standard calculation
                 if linearity_spec < 0.001 and effective_length > 1:
                     self.logger.warning(f"Very small linearity spec ({linearity_spec:.6f}) with large length ({effective_length:.2f})")
-                    # Use a more reasonable calculation for this edge case
                     threshold = linearity_spec * scaling_factor * 0.1
-                    self.logger.info(f"Using alternative calculation for edge case: {linearity_spec} * {scaling_factor} * 0.1 = {threshold}")
+                    self.logger.debug(f"Using edge case calculation: {threshold:.6f}")
                 else:
-                    threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)  # Reduced by 50%
+                    threshold = (linearity_spec / effective_length) * (scaling_factor * 0.5)
+                    self.logger.debug(f"Using standard formula-based threshold: {threshold:.6f}")
                     self.logger.debug(f"Calculated threshold using formula: ({linearity_spec} / {effective_length}) * ({scaling_factor} * 0.5) = {threshold}")
             else:
                 # Fallback calculation - also more stringent

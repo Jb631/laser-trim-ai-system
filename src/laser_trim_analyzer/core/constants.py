@@ -99,11 +99,11 @@ MODEL_PATTERNS = {
 }
 
 # Special model handling
+# DEPRECATED: Hardcoded thresholds removed - now using ML-learned thresholds
+# See sigma_analyzer.py _calculate_threshold() for ML-first approach
+# Keeping dict structure for backward compatibility (empty)
 SPECIAL_MODELS = {
-    "8340-1": {
-        "fixed_sigma_threshold": 0.4,
-        "requires_calibration": True
-    }
+    # No more hardcoded thresholds - all models use ML or formula-based calculation
 }
 
 # Analysis constants - EXACT LOCKHEED MARTIN MATLAB SPECIFICATIONS
