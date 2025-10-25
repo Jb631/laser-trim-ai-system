@@ -260,7 +260,7 @@ class EnhancedExcelExporter:
                     ("Sigma Gradient", f"{primary_track.sigma_analysis.sigma_gradient:.6f}"),
                     ("Sigma Threshold", f"{primary_track.sigma_analysis.sigma_threshold:.6f}"),
                     ("Scaling Factor", f"{getattr(primary_track.sigma_analysis, 'scaling_factor', 24.0):.1f}"),
-                    ("Pass/Fail", "PASS" if primary_track.sigma_analysis.passed else "FAIL"),
+                    ("Pass/Fail", "PASS" if getattr(primary_track.sigma_analysis, 'sigma_pass', False) else "FAIL"),
                     ("Sigma Ratio", f"{getattr(primary_track.sigma_analysis, 'sigma_ratio', 'N/A'):.2f}" if hasattr(primary_track.sigma_analysis, 'sigma_ratio') else 'N/A'),
                     ("Industry Compliance", getattr(primary_track.sigma_analysis, 'industry_compliance', 'N/A')),
                 ]
@@ -282,7 +282,7 @@ class EnhancedExcelExporter:
                 
                 linearity_props = [
                     ("Linearity Spec", f"{primary_track.linearity_analysis.linearity_spec:.4f}"),
-                    ("Pass/Fail", "PASS" if primary_track.linearity_analysis.passed else "FAIL"),
+                    ("Pass/Fail", "PASS" if getattr(primary_track.linearity_analysis, 'linearity_pass', False) else "FAIL"),
                     ("Fail Points", primary_track.linearity_analysis.fail_points),
                     ("Optimal Offset", f"{primary_track.linearity_analysis.optimal_offset:.6f}"),
                     ("Final Linearity Error", f"{primary_track.linearity_analysis.final_linearity_error_shifted:.6f}"),
@@ -301,16 +301,17 @@ class EnhancedExcelExporter:
                 row += 1
             
             # ML Predictions
-            if hasattr(result, 'ml_prediction') and result.ml_prediction:
+            if getattr(primary_track, 'failure_prediction', None):
                 ws[f'A{row}'] = "ML Failure Prediction"
                 ws[f'A{row}'].font = Font(bold=True)
                 row += 1
                 
+                fp = primary_track.failure_prediction
+                risk_val = getattr(fp.risk_category, 'value', str(getattr(fp, 'risk_category', 'Unknown')))
                 ml_props = [
-                    ("Risk Category", result.ml_prediction.risk_category),
-                    ("Failure Probability", f"{result.ml_prediction.failure_probability:.2%}"),
-                    ("Gradient Margin", f"{result.ml_prediction.gradient_margin:.6f}"),
-                    ("Primary Factor", self._format_contributing_factors(result.ml_prediction.contributing_factors)),
+                    ("Risk Category", risk_val),
+                    ("Failure Probability", f"{getattr(fp, 'failure_probability', 0.0):.2%}"),
+                    ("Gradient Margin", f"{getattr(primary_track.sigma_analysis, 'gradient_margin', 0.0):.6f}"),
                 ]
                 
                 for label, value in ml_props:
@@ -357,33 +358,34 @@ class EnhancedExcelExporter:
         for track in result.tracks:
             # Basic track info
             ws.cell(row=row, column=1, value=track.track_id)
-            ws.cell(row=row, column=2, value=track.data_type.value)
-            ws.cell(row=row, column=3, value=track.data_points)
+            ws.cell(row=row, column=2, value="Track")
+            # Approximate data points as length of position_data if available
+            ws.cell(row=row, column=3, value=len(getattr(track, 'position_data', []) or []))
             ws.cell(row=row, column=4, value=getattr(track, 'travel_length', 'N/A'))
             
             # Unit properties
             if track.unit_properties:
                 ws.cell(row=row, column=5, value=track.unit_properties.unit_length)
-                ws.cell(row=row, column=6, value=track.unit_properties.min_resistance)
-                ws.cell(row=row, column=7, value=track.unit_properties.max_resistance)
-                ws.cell(row=row, column=8, value=track.unit_properties.resistance_range)
+                ws.cell(row=row, column=6, value=getattr(track.unit_properties, 'untrimmed_resistance', None))
+                ws.cell(row=row, column=7, value=getattr(track.unit_properties, 'trimmed_resistance', None))
+                ws.cell(row=row, column=8, value=getattr(track.unit_properties, 'resistance_change', None))
                 ws.cell(row=row, column=9, value=getattr(track.unit_properties, 'resistance_change', 'N/A'))
                 ws.cell(row=row, column=10, value=f"{getattr(track.unit_properties, 'resistance_change_percent', 'N/A'):.2f}%" if hasattr(track.unit_properties, 'resistance_change_percent') and track.unit_properties.resistance_change_percent != 'N/A' else 'N/A')
-                ws.cell(row=row, column=11, value=f"{track.unit_properties.normalized_range:.2f}%")
+                ws.cell(row=row, column=11, value=f"{getattr(track.unit_properties, 'resistance_change_percent', 0.0):.2f}%" if getattr(track.unit_properties, 'resistance_change_percent', None) is not None else 'N/A')
             
             # Sigma analysis
             if track.sigma_analysis:
                 ws.cell(row=row, column=12, value=track.sigma_analysis.sigma_gradient)
                 ws.cell(row=row, column=13, value=track.sigma_analysis.sigma_threshold)
-                ws.cell(row=row, column=14, value="PASS" if track.sigma_analysis.passed else "FAIL")
-                self._apply_status_formatting(ws.cell(row=row, column=14), "PASS" if track.sigma_analysis.passed else "FAIL")
+                ws.cell(row=row, column=14, value="PASS" if getattr(track.sigma_analysis, 'sigma_pass', False) else "FAIL")
+                self._apply_status_formatting(ws.cell(row=row, column=14), "PASS" if getattr(track.sigma_analysis, 'sigma_pass', False) else "FAIL")
                 ws.cell(row=row, column=15, value=getattr(track.sigma_analysis, 'sigma_ratio', 'N/A'))
             
             # Linearity analysis
             if track.linearity_analysis:
                 ws.cell(row=row, column=16, value=track.linearity_analysis.linearity_spec)
-                ws.cell(row=row, column=17, value="PASS" if track.linearity_analysis.passed else "FAIL")
-                self._apply_status_formatting(ws.cell(row=row, column=17), "PASS" if track.linearity_analysis.passed else "FAIL")
+                ws.cell(row=row, column=17, value="PASS" if getattr(track.linearity_analysis, 'linearity_pass', False) else "FAIL")
+                self._apply_status_formatting(ws.cell(row=row, column=17), "PASS" if getattr(track.linearity_analysis, 'linearity_pass', False) else "FAIL")
                 ws.cell(row=row, column=18, value=track.linearity_analysis.fail_points)
                 ws.cell(row=row, column=19, value=track.linearity_analysis.optimal_offset)
                 ws.cell(row=row, column=20, value=track.linearity_analysis.final_linearity_error_shifted)
@@ -537,17 +539,17 @@ class EnhancedExcelExporter:
         
         row = 2
         for track in result.tracks:
-            positions = track.positions if hasattr(track, 'positions') else []
-            errors = track.errors if hasattr(track, 'errors') else []
-            upper_limits = track.upper_limits if hasattr(track, 'upper_limits') else []
-            lower_limits = track.lower_limits if hasattr(track, 'lower_limits') else []
+            positions = getattr(track, 'position_data', []) or []
+            errors = getattr(track, 'error_data', []) or []
+            upper_limits = getattr(track, 'upper_limits', []) or []
+            lower_limits = getattr(track, 'lower_limits', []) or []
             
             # Ensure all arrays have the same length
             max_len = max(len(positions), len(errors))
             
             for i in range(max_len):
                 ws.cell(row=row, column=1, value=track.track_id)
-                ws.cell(row=row, column=2, value=track.data_type.value)
+                ws.cell(row=row, column=2, value="Error")
                 ws.cell(row=row, column=3, value=i)
                 
                 if i < len(positions):
@@ -595,7 +597,7 @@ class EnhancedExcelExporter:
             ("Serial", result.metadata.serial),
             ("System Type", result.metadata.system.value),
             ("Test Date", result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S') if hasattr(result.metadata, 'test_date') and result.metadata.test_date else 'N/A'),
-            ("File Modified Date", result.metadata.timestamp.strftime('%Y-%m-%d %H:%M:%S')),
+            ("File Modified Date", result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S') if hasattr(result.metadata, 'file_date') and result.metadata.file_date else 'N/A'),
             ("Analysis Date", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
             ("Has Multiple Tracks", "Yes" if getattr(result.metadata, 'has_multi_tracks', False) else "No"),
             ("Track Count", len(result.tracks)),
@@ -615,7 +617,7 @@ class EnhancedExcelExporter:
         row += 1
         
         processing_fields = [
-            ("Status", result.status.value),
+            ("Overall Status", getattr(result, 'overall_status', 'N/A').value if hasattr(result, 'overall_status') else 'N/A'),
             ("Processing Time (s)", f"{result.processing_time:.2f}"),
             ("Error Message", result.error_message or "None"),
             ("Analysis Mode", "Standard"),  # Could be enhanced with actual mode
@@ -728,8 +730,8 @@ class EnhancedExcelExporter:
                     # Check for ML prediction in track
                     if hasattr(result.primary_track, 'failure_prediction') and result.primary_track.failure_prediction:
                         risk_category = result.primary_track.failure_prediction.risk_category.value
-                    elif hasattr(result, 'ml_prediction') and result.ml_prediction:
-                        risk_category = result.ml_prediction.risk_category.value
+                    elif getattr(result.primary_track, 'failure_prediction', None):
+                        risk_category = result.primary_track.failure_prediction.risk_category.value
                     
                     # Determine primary failure mode
                     failures = []
@@ -860,8 +862,8 @@ class EnhancedExcelExporter:
                 # Unit properties
                 if primary_track.unit_properties:
                     ws.cell(row=row, column=22, value=primary_track.unit_properties.unit_length)
-                    ws.cell(row=row, column=23, value=primary_track.unit_properties.resistance_range if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'resistance_range') else None)
-                    ws.cell(row=row, column=24, value=f"{primary_track.unit_properties.normalized_range:.2f}%" if primary_track.unit_properties and hasattr(primary_track.unit_properties, 'normalized_range') and primary_track.unit_properties.normalized_range is not None else "N/A")
+                    ws.cell(row=row, column=23, value=getattr(primary_track.unit_properties, 'resistance_change', None) if primary_track.unit_properties else None)
+                    ws.cell(row=row, column=24, value=f"{getattr(primary_track.unit_properties, 'resistance_change_percent', 0.0):.2f}%" if primary_track.unit_properties and getattr(primary_track.unit_properties, 'resistance_change_percent', None) is not None else "N/A")
             
             # ML predictions (from primary track)
             risk_category = "Unknown"
@@ -870,10 +872,10 @@ class EnhancedExcelExporter:
                     risk_category = primary_track.failure_prediction.risk_category.value if hasattr(primary_track.failure_prediction, 'risk_category') else 'Unknown'
                     ws.cell(row=row, column=26, value=f"{primary_track.failure_prediction.failure_probability:.2%}" if hasattr(primary_track.failure_prediction, 'failure_probability') else 'N/A')
                     ws.cell(row=row, column=27, value=primary_track.sigma_analysis.gradient_margin if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'gradient_margin') else 'N/A')
-                elif hasattr(result, 'ml_prediction') and result.ml_prediction:
-                    risk_category = result.ml_prediction.risk_category if hasattr(result.ml_prediction, 'risk_category') else 'Unknown'
-                    ws.cell(row=row, column=26, value=f"{result.ml_prediction.failure_probability:.2%}" if hasattr(result.ml_prediction, 'failure_probability') else 'N/A')
-                    ws.cell(row=row, column=27, value=result.ml_prediction.gradient_margin if hasattr(result.ml_prediction, 'gradient_margin') else 'N/A')
+                elif getattr(result.primary_track, 'failure_prediction', None):
+                    risk_category = result.primary_track.failure_prediction.risk_category.value if hasattr(result.primary_track.failure_prediction, 'risk_category') else 'Unknown'
+                    ws.cell(row=row, column=26, value=f"{getattr(result.primary_track.failure_prediction, 'failure_probability', 0.0):.2%}")
+                    ws.cell(row=row, column=27, value=getattr(result.primary_track.sigma_analysis, 'gradient_margin', 'N/A'))
                 else:
                     ws.cell(row=row, column=26, value='N/A')
                     ws.cell(row=row, column=27, value='N/A')
@@ -973,9 +975,9 @@ class EnhancedExcelExporter:
                     if hasattr(track, 'failure_prediction') and track.failure_prediction:
                         risk_category = track.failure_prediction.risk_category.value if hasattr(track.failure_prediction, 'risk_category') else 'Unknown'
                         failure_prob = track.failure_prediction.failure_probability
-                    elif hasattr(result, 'ml_prediction') and result.ml_prediction:
-                        risk_category = result.ml_prediction.risk_category if hasattr(result.ml_prediction, 'risk_category') else 'Unknown'
-                        failure_prob = result.ml_prediction.failure_probability
+                    elif getattr(result.primary_track, 'failure_prediction', None):
+                        risk_category = result.primary_track.failure_prediction.risk_category.value if hasattr(result.primary_track.failure_prediction, 'risk_category') else 'Unknown'
+                        failure_prob = result.primary_track.failure_prediction.failure_probability
                     ws.cell(row=row, column=10, value=risk_category)
                     
                     # Unit properties
@@ -984,7 +986,7 @@ class EnhancedExcelExporter:
                         ws.cell(row=row, column=12, value=track.unit_properties.untrimmed_resistance if hasattr(track.unit_properties, 'untrimmed_resistance') else 'N/A')
                         ws.cell(row=row, column=13, value=track.unit_properties.trimmed_resistance if hasattr(track.unit_properties, 'trimmed_resistance') else 'N/A')
                         ws.cell(row=row, column=14, value=f"{track.unit_properties.resistance_change_percent:.2f}" if hasattr(track.unit_properties, 'resistance_change_percent') and track.unit_properties.resistance_change_percent is not None else 'N/A')
-                        ws.cell(row=row, column=15, value=f"{track.unit_properties.normalized_range:.2f}" if hasattr(track.unit_properties, 'normalized_range') else 'N/A')
+                        ws.cell(row=row, column=15, value=f"{getattr(track.unit_properties, 'resistance_change_percent', 0.0):.2f}" if hasattr(track.unit_properties, 'resistance_change_percent') and track.unit_properties.resistance_change_percent is not None else 'N/A')
                     
                     # Sigma analysis
                     if track.sigma_analysis:
@@ -1242,13 +1244,13 @@ class EnhancedExcelExporter:
             primary_cause = "Unknown"
             
             if result.primary_track:
-                if result.primary_track.sigma_analysis and not result.primary_track.sigma_analysis.passed:
+                if result.primary_track.sigma_analysis and not getattr(result.primary_track.sigma_analysis, 'sigma_pass', False):
                     failure_types.append("Sigma")
                     primary_cause = "Sigma gradient exceeds threshold"
                     ws.cell(row=row, column=6, value=result.primary_track.sigma_analysis.sigma_gradient)
                     ws.cell(row=row, column=7, value=result.primary_track.sigma_analysis.sigma_threshold)
                 
-                if result.primary_track.linearity_analysis and not result.primary_track.linearity_analysis.passed:
+                if result.primary_track.linearity_analysis and not getattr(result.primary_track.linearity_analysis, 'linearity_pass', False):
                     failure_types.append("Linearity")
                     if primary_cause == "Unknown":
                         primary_cause = f"{result.primary_track.linearity_analysis.fail_points} points exceed spec"
@@ -1257,7 +1259,8 @@ class EnhancedExcelExporter:
             
             ws.cell(row=row, column=4, value=", ".join(failure_types) if failure_types else "Processing Error")
             ws.cell(row=row, column=5, value=primary_cause)
-            ws.cell(row=row, column=10, value=result.error_message or "")
+            # No centralized error_message field; join processing_errors if present
+            ws.cell(row=row, column=10, value="; ".join(getattr(result, 'processing_errors', []) or []))
             
             # Add recommendations
             recommendations = []

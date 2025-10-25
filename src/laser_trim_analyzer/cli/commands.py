@@ -27,6 +27,7 @@ from rich.syntax import Syntax
 from rich import print as rprint
 
 from laser_trim_analyzer.core.config import Config, get_config
+from laser_trim_analyzer import __version__ as LTA_VERSION
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor, process_large_directory
 from laser_trim_analyzer.database.manager import DatabaseManager
@@ -130,8 +131,14 @@ def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, for
     db_manager = None
     if not no_db:
         try:
-            db_manager = DatabaseManager(str(config.database.path))
+            # Use full Config so Settings overrides are respected
+            db_manager = DatabaseManager(config)
             db_manager.init_db()
+            # Log/validate active database path
+            try:
+                db_manager.validate_database_consistency()
+            except Exception:
+                pass
         except Exception as e:
             console.print(f"[red]Warning: Database initialization failed: {e}[/red]")
 
@@ -215,14 +222,19 @@ async def _analyze_batch(processor, input_dir, output_dir, parallel):
     ) as progress:
         overall_task = progress.add_task("Overall progress", total=len(files))
 
-        def batch_progress(current, total, filename):
-            progress.update(overall_task, completed=current,
-                            description=f"Processing {filename}")
+        # Adapter for processor callback (message: str, progress: float [0..1])
+        def batch_progress_cb(message: str, frac: float):
+            try:
+                completed = max(0, min(len(files), int(frac * len(files))))
+                progress.update(overall_task, completed=completed, description=message)
+            except Exception:
+                # Fallback update to avoid breaking the progress UI
+                progress.update(overall_task, description=message)
 
         results = await processor.process_batch(
-            input_dir, output_dir,
+            files, output_dir,
             max_workers=processor.config.processing.max_workers if parallel else 1,
-            progress_callback=batch_progress
+            progress_callback=batch_progress_cb
         )
 
     return results
@@ -350,8 +362,8 @@ def train(ctx, model, days, output, evaluate):
     ))
 
     try:
-        # Initialize ML engine
-        db_manager = DatabaseManager(str(config.database.path))
+        # Initialize ML engine and database using full Config
+        db_manager = DatabaseManager(config)
         ml_engine = MLEngine(
             data_path=str(config.data_directory),
             models_path=str(output)
@@ -514,7 +526,8 @@ def report(ctx, type, input, output, format, days, model):
     ))
 
     try:
-        db_manager = DatabaseManager(str(config.database.path))
+        # Respect Settings overrides by using full Config
+        db_manager = DatabaseManager(config)
         generator = ReportGenerator()
 
         if type == 'summary':
@@ -603,7 +616,8 @@ def query(ctx, model, serial, days, status, risk, limit, export, stats):
     config = ctx.obj['config']
 
     try:
-        db_manager = DatabaseManager(str(config.database.path))
+        # Respect Settings overrides by using full Config
+        db_manager = DatabaseManager(config)
 
         # Build query parameters
         console.print("[bold]Querying database...[/bold]")
@@ -789,10 +803,22 @@ def info(ctx):
     """
     config = ctx.obj['config']
 
+    # Determine active database path via DatabaseManager to reflect Settings overrides
+    active_db_path = str(config.database.path)
+    settings_override = False
+    try:
+        dbm = DatabaseManager(config)
+        db_info = dbm.database_path_info
+        if isinstance(db_info, dict) and 'current_path' in db_info:
+            active_db_path = db_info['current_path']
+            settings_override = bool(db_info.get('using_settings_config', False))
+    except Exception:
+        pass
+
     info_text = f"""
 [bold]Laser Trim Analyzer Information[/bold]
 {'=' * 50}
-Version: 2.0.0
+Version: {LTA_VERSION}
 Python: {sys.version.split()[0]}
 
 [bold]Configuration:[/bold]
@@ -801,7 +827,8 @@ Python: {sys.version.split()[0]}
 
 [bold]Paths:[/bold]
   Data Directory: {config.data_directory}
-  Database: {config.database.path}
+  Database: {active_db_path}
+  Settings Override: {'Yes' if settings_override else 'No'}
   Models: {config.ml.model_path}
   Logs: {config.log_directory}
 
@@ -970,8 +997,7 @@ def batch(ctx, directory, output, max_workers, batch_size, high_performance, res
             db_manager = None
             if config.database.enabled:
                 try:
-                    db_path = f"sqlite:///{config.database.path.absolute()}"
-                    db_manager = DatabaseManager(db_path)
+                    db_manager = DatabaseManager(config)
                     console.print("✅ Database connected")
                 except Exception as e:
                     console.print(f"⚠️ Database initialization failed: {e}")

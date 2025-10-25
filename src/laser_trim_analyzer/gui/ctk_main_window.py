@@ -264,6 +264,15 @@ class CTkMainWindow(CTkMainWindowBase):
                 # Pass the config object directly to DatabaseManager
                 self.db_manager = DatabaseManager(self.config)
                 self.logger.info("Database connected")
+                # Log active database and validate consistency with Settings
+                try:
+                    info = self.db_manager.database_path_info
+                    active_db = info.get('current_path') if isinstance(info, dict) else None
+                    if active_db:
+                        self.logger.info(f"Active database: {active_db}")
+                    self.db_manager.validate_database_consistency()
+                except Exception:
+                    pass
             except Exception as e:
                 self.logger.error(f"Could not connect to database: {e}")
                 self.db_manager = None

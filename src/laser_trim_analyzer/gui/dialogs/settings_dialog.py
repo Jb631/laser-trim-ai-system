@@ -923,21 +923,41 @@ class SettingsDialog(tk.Toplevel):
             self.vars['db_path'].set(file_path)
 
     def _test_db_connection(self):
-        """Test database connection."""
+        """Test database connection using proper Config-based resolution."""
+        import logging
+
         self.db_test_label.configure(text="Testing...", foreground='orange')
         self.update()
 
         try:
             from laser_trim_analyzer.database.manager import DatabaseManager
+            from laser_trim_analyzer.config.base import load_config
 
-            # Try to connect
-            db = DatabaseManager(self.vars['db_path'].get())
+            # Load current config and temporarily update the database path
+            # This ensures we use the same Config-based resolution as the rest of the app
+            test_config = load_config()
+            test_config.database.path = Path(self.vars['db_path'].get())
+            test_config.database.enabled = self.vars['db_enabled'].get()
+
+            # Create DatabaseManager with Config object (not string path)
+            logger = logging.getLogger(__name__)
+            logger.info(f"Testing database connection to: {self.vars['db_path'].get()}")
+
+            db = DatabaseManager(test_config)
             db.init_db()
+
+            # Log the resolved path for verification
+            db_info = db.database_path_info
+            if isinstance(db_info, dict):
+                actual_path = db_info.get('current_path', 'Unknown')
+                logger.info(f"Database manager resolved path to: {actual_path}")
+
             db.close()
 
             self.db_test_label.configure(text="✓ Connection successful", foreground='green')
         except Exception as e:
             self.db_test_label.configure(text=f"✗ Failed: {str(e)[:50]}...", foreground='red')
+            logging.getLogger(__name__).error(f"Database connection test failed: {e}")
 
     def _test_api_connection(self):
         """Test API connection."""

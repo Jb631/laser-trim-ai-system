@@ -2312,7 +2312,10 @@ Metrics:
                     y_pred = slope * x_numeric + intercept
                     ss_res = ((y - y_pred) ** 2).sum()
                     ss_tot = ((y - y_mean) ** 2).sum()
-                    r_value = np.sqrt(1 - (ss_res / ss_tot)) if ss_tot != 0 else 0
+                    # FIXED: Protect against negative values in sqrt (can occur when model is poor)
+                    # Clamp R² to [0, 1] range before taking sqrt
+                    r_squared = max(0.0, min(1.0, 1 - (ss_res / ss_tot))) if ss_tot != 0 else 0
+                    r_value = np.sqrt(r_squared)
                     
                     p_value = 0.05  # Placeholder
                     std_err = 0.1  # Placeholder
@@ -3151,56 +3154,41 @@ Metrics:
             return
             
         try:
-            # Update control chart with sigma gradient data
-            chart_data = []
+            # Build dataset for control chart (date + sigma_gradient)
+            chart_rows = []
             for result in results:
                 if result.tracks:
                     for track in result.tracks:
-                        if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
-                            chart_data.append({
-                                'date': result.file_date or result.timestamp,
-                                'value': track.sigma_gradient,
-                                'model': result.model
+                        if getattr(track, 'sigma_gradient', None) is not None:
+                            chart_rows.append({
+                                'trim_date': result.file_date or result.timestamp,
+                                'sigma_gradient': track.sigma_gradient,
                             })
-            
-            if chart_data:
-                # Sort by date and prepare for line chart
-                df = pd.DataFrame(chart_data).sort_values('date')
-                
-                # Prepare data for control chart (line chart format)
-                control_chart_data = pd.DataFrame({
-                    'trim_date': df['date'],
-                    'sigma_gradient': df['value']
-                })
-                
-                # Update control chart
-                self.control_chart.update_chart_data(control_chart_data)
-                
-                # Add control limits to the chart
-                if self.control_chart.figure.axes:
-                    ax = self.control_chart.figure.axes[0]
-                    
-                    # Calculate control limits
-                    mean = df['value'].mean()
-                    std = df['value'].std()
-                    ucl = mean + 3 * std
-                    lcl = mean - 3 * std
-                    
-                    # Add control limit lines
-                    ax.axhline(y=mean, color='g', linestyle='-', alpha=0.7, label=f'Mean: {mean:.4f}')
-                    ax.axhline(y=ucl, color='r', linestyle='--', alpha=0.7, label=f'UCL: {ucl:.4f}')
-                    ax.axhline(y=lcl, color='r', linestyle='--', alpha=0.7, label=f'LCL: {lcl:.4f}')
-                    
-                    # Update labels and title
-                    ax.set_xlabel('Date')
-                    ax.set_ylabel('Sigma Gradient')
-                    ax.set_title('Sigma Gradient Control Chart')
-                    ax.legend(loc='upper right')
-                    
-                    self.control_chart.canvas.draw_idle()
-            else:
+
+            if not chart_rows:
                 self.control_chart.show_placeholder("No control chart data", "Run a query to view control charts")
-                
+                return
+
+            df = pd.DataFrame(chart_rows)
+            # Coerce dates and drop invalid rows
+            df['trim_date'] = pd.to_datetime(df['trim_date'], errors='coerce')
+            df = df.dropna(subset=['trim_date', 'sigma_gradient'])
+            if df.empty or len(df) < 3:
+                self.control_chart.show_placeholder("Insufficient Data", "Need at least 3 data points for control chart")
+                return
+
+            # Use enhanced control chart (centralized gating + styling)
+            target_value = 0.1376  # default; will be refined in SPC corrections (M3)
+            spec_limits = (0.050, 0.250)
+            self.control_chart.plot_enhanced_control_chart(
+                data=df.sort_values('trim_date'),
+                value_column='sigma_gradient',
+                date_column='trim_date',
+                spec_limits=spec_limits,
+                target_value=target_value,
+                title="Sigma Gradient Control Chart"
+            )
+            
             # Note: Pareto and drift charts remain on-demand since they require specific analysis
             
         except Exception as e:

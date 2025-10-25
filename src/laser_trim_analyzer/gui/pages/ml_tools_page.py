@@ -120,9 +120,9 @@ class MLToolsPage(ctk.CTkFrame):
         # ML System status
         self.status_label = ctk.CTkLabel(
             header_frame,
-            text="● ML System Ready",
+            text="● ML Status: Checking...",
             font=ctk.CTkFont(size=12),
-            text_color="green"
+            text_color="gray"
         )
         self.status_label.pack(side='right', padx=20)
         
@@ -348,12 +348,14 @@ class MLToolsPage(ctk.CTkFrame):
             predictions_per_sec = 0
             total_predictions = 0
             
+            any_trained = False
             if self.ml_manager:
                 # Get model performance metrics
                 try:
                     # Get failure predictor performance (primary model for accuracy)
                     predictor_info = self.ml_manager.get_model_info('failure_predictor')
                     if predictor_info and predictor_info.get('is_trained'):
+                        any_trained = True
                         # Use actual accuracy from performance metrics
                         perf = predictor_info.get('performance', {})
                         model_accuracy = perf.get('accuracy', 0) * 100
@@ -366,6 +368,7 @@ class MLToolsPage(ctk.CTkFrame):
                     # Get threshold optimizer performance
                     threshold_info = self.ml_manager.get_model_info('threshold_optimizer')
                     if threshold_info and threshold_info.get('is_trained') and model_accuracy == 0:
+                        any_trained = True
                         # Use R² score as accuracy proxy if failure predictor not available
                         r2_score = threshold_info.get('performance', {}).get('r2_score', 0)
                         model_accuracy = max(0, r2_score * 100)  # R² can be negative, clip at 0
@@ -373,6 +376,7 @@ class MLToolsPage(ctk.CTkFrame):
                     # Get drift detector status
                     drift_info = self.ml_manager.get_model_info('drift_detector')
                     if drift_info and drift_info.get('is_trained'):
+                        any_trained = True
                         # Use detection rate as a proxy for processing capability
                         detection_rate = drift_info.get('performance', {}).get('detection_rate', 0)
                         predictions_per_sec = detection_rate * 10  # Rough estimate
@@ -386,43 +390,17 @@ class MLToolsPage(ctk.CTkFrame):
                 except Exception as e:
                     self.logger.error(f"Error getting ML metrics: {e}")
             
-            # If no ML data, calculate from actual results
-            if model_accuracy == 0 and recent_results:
-                # Calculate accuracy from predictions vs actual
-                correct_predictions = 0
-                total_predictions = 0
-                false_positives = 0
-                confidence_sum = 0
-                
-                for result in recent_results:
-                    if hasattr(result, 'tracks') and result.tracks:
-                        for track in result.tracks:
-                            total_predictions += 1
-                            
-                            # Simulate ML predictions based on sigma
-                            if hasattr(track, 'sigma_gradient') and track.sigma_gradient is not None:
-                                predicted_pass = track.sigma_gradient < 0.05
-                                actual_pass = False
-                                
-                                if hasattr(track, 'status'):
-                                    status = track.status.value if hasattr(track.status, 'value') else str(track.status)
-                                    actual_pass = status == 'Pass'
-                                
-                                if predicted_pass == actual_pass:
-                                    correct_predictions += 1
-                                
-                                if predicted_pass and not actual_pass:
-                                    false_positives += 1
-                                
-                                # Simulate confidence based on sigma distance from threshold
-                                confidence = min(0.99, max(0.5, 1 - abs(track.sigma_gradient - 0.05) * 10))
-                                confidence_sum += confidence
-                
-                if total_predictions > 0:
-                    model_accuracy = (correct_predictions / total_predictions) * 100
-                    avg_confidence = (confidence_sum / total_predictions) * 100
-                    false_positive_rate = (false_positives / total_predictions) * 100
-                    predictions_per_sec = total_predictions / (7 * 24 * 3600)
+            # Update status label based on training state
+            try:
+                if any_trained:
+                    self.status_label.configure(text="● ML Status: Ready", text_color="green")
+                else:
+                    self.status_label.configure(text="● ML Status: Not Trained", text_color="orange")
+            except Exception:
+                pass
+
+            # Do not simulate ML metrics when models are not trained
+            # If no trained models or metrics, leave as Not Trained / --
             
             # Update ML metric cards
             self.metric_cards['model_accuracy'].update_value(
@@ -733,12 +711,8 @@ class MLToolsPage(ctk.CTkFrame):
                     models.append(model)
                     current = data['pass'] / data['total'] * 100
                     current_yields.append(current)
-                    
-                    # Simple prediction: trend-based
-                    # In real implementation, would use ML models
-                    trend = np.random.uniform(-2, 2)  # Simulate trend
-                    predicted = max(0, min(100, current + trend))
-                    predicted_yields.append(predicted)
+                    # If ML is not trained, do not simulate predictions; reuse current yields
+                    predicted_yields.append(current)
             
             # Update chart
             if models:

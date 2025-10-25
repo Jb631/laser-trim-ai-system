@@ -674,9 +674,8 @@ class LaserTrimProcessor:
 
         # Step 6: ML prediction (required per CLAUDE.md)
         if self.ml_predictor:
-            failure_prediction = await self._predict_failure(
-                sigma_analysis, linearity_analysis, unit_props
-            )
+            # Defer ML mapping to _add_ml_predictions at file level
+            failure_prediction = None
         else:
             # Create default failure prediction when ML is not available
             # Use simple heuristics based on analysis results
@@ -702,10 +701,11 @@ class LaserTrimProcessor:
             failure_prediction = FailurePrediction(
                 failure_probability=min(failure_prob, 1.0),
                 risk_category=risk_cat,
-                contributing_factors=[
-                    f"Sigma {'FAIL' if not sigma_analysis.sigma_pass else 'PASS'}",
-                    f"Linearity {'FAIL' if not linearity_analysis.linearity_pass else 'PASS'}"
-                ]
+                gradient_margin=sigma_analysis.gradient_margin,
+                contributing_factors={
+                    'sigma_pass': 1.0 if sigma_analysis.sigma_pass else 0.0,
+                    'linearity_pass': 1.0 if linearity_analysis.linearity_pass else 0.0
+                }
             )
 
         # Step 7: Determine track-level validation status
@@ -1345,7 +1345,7 @@ class LaserTrimProcessor:
 
         # Use trimmed data as primary if available, otherwise untrimmed
         data_source = trimmed_data if trimmed_data and trimmed_data.get('positions') else untrimmed_data
-        
+
         # Debug logging for data extraction
         self.logger.debug(f"Data source: {'trimmed' if data_source == trimmed_data else 'untrimmed'}")
         self.logger.debug(f"Positions count: {len(data_source.get('positions', []))}")
@@ -1455,27 +1455,62 @@ class LaserTrimProcessor:
                 self.logger.error(f"Plot generation failed for {track_id}: {e}")
 
     async def _add_ml_predictions(self, result: AnalysisResult) -> None:
-        """Add ML predictions to result."""
+        """Add ML predictions to result and map onto tracks for DB/UI."""
         if not self.ml_predictor:
             return
 
         try:
-            # Get predictions for primary track
             predictions = await self.ml_predictor.predict(result)
 
-            # Add predictions to result metadata
-            if predictions:
-                result.ml_predictions = predictions
+            if not predictions:
+                return
 
-                # Update risk categories based on ML
-                if 'risk_assessment' in predictions:
-                    for track_id, assessment in predictions['risk_assessment'].items():
-                        if track_id in result.tracks:
-                            track = result.tracks[track_id]
-                            if track.failure_prediction:
-                                track.failure_prediction.risk_category = RiskCategory(
-                                    assessment.get('risk_category', 'UNKNOWN')
-                                )
+            # Store raw predictions on result for reference
+            result.ml_predictions = predictions
+
+            # Map per-track predictions to FailurePrediction objects
+            from laser_trim_analyzer.core.models import FailurePrediction, RiskCategory as RiskCatEnum
+
+            for track_id, pred in predictions.items():
+                if track_id == 'overall':
+                    continue
+                if track_id not in result.tracks or pred is None:
+                    continue
+
+                track = result.tracks[track_id]
+
+                # Extract values from PredictionResult (dataclass) or dict fallback
+                try:
+                    failure_prob = float(getattr(pred, 'failure_probability', None) or pred.get('failure_probability'))
+                except Exception:
+                    failure_prob = None
+
+                rc_val = getattr(pred, 'risk_category', None) or (pred.get('risk_category') if isinstance(pred, dict) else None)
+                # Normalize risk category to enum
+                try:
+                    if rc_val is None:
+                        risk_enum = RiskCatEnum.UNKNOWN
+                    else:
+                        risk_str = str(rc_val).capitalize()
+                        risk_enum = RiskCatEnum(risk_str) if risk_str in RiskCatEnum._value2member_map_ else RiskCatEnum.UNKNOWN
+                except Exception:
+                    risk_enum = RiskCatEnum.UNKNOWN
+
+                # Contributing factors (optional)
+                feature_imp = getattr(pred, 'feature_importance', None) or (pred.get('feature_importance') if isinstance(pred, dict) else None)
+                if not isinstance(feature_imp, dict):
+                    feature_imp = {}
+
+                # Gradient margin from analysis results
+                grad_margin = getattr(track.sigma_analysis, 'gradient_margin', 0.0)
+
+                if failure_prob is not None:
+                    track.failure_prediction = FailurePrediction(
+                        failure_probability=max(0.0, min(1.0, failure_prob)),
+                        risk_category=risk_enum,
+                        gradient_margin=grad_margin,
+                        contributing_factors=feature_imp
+                    )
 
         except Exception as e:
             self.logger.error(f"ML prediction failed: {e}")
@@ -2031,7 +2066,6 @@ class LaserTrimProcessor:
                 if idx in error_series.index and pd.notna(error_series.loc[idx]):
                     errors.append(error_series.loc[idx])
                 else:
-                    # Missing error value - use 0 or interpolate
                     errors.append(0.0)
                     self.logger.debug(f"Missing error at index {idx} (row {idx+2}), using 0.0")
             
@@ -2060,6 +2094,8 @@ class LaserTrimProcessor:
                 # No limits available - use empty lists
                 upper_limits = []
                 lower_limits = []
+
+            
 
             # Calculate travel length and position range
             if positions:

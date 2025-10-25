@@ -539,14 +539,13 @@ class ModelSummaryPage(ctk.CTkFrame):
                         trim_date = safe_datetime_convert(analysis.file_date)
                         timestamp = safe_datetime_convert(analysis.timestamp)
                         
-                        # Ensure we have valid datetime objects (fallback to current time if needed)
+                        # Ensure we have valid datetime objects; if parsing fails, leave as None
+                        # so plotting logic can drop invalid rows without distorting timelines
                         if not trim_date:
-                            trim_date = datetime.now()
-                            self.logger.warning(f"Could not parse file_date for {analysis.filename}, using current time")
+                            self.logger.warning(f"Could not parse file_date for {analysis.filename}; row will be excluded from time-based charts")
                         
                         if not timestamp:
-                            timestamp = trim_date  # Use trim_date as fallback
-                            self.logger.warning(f"Could not parse timestamp for {analysis.filename}, using trim_date")
+                            self.logger.warning(f"Could not parse timestamp for {analysis.filename}; using file_date when available")
                         
                         # Extract data directly from track database record
                         # Note: sigma_gradient, sigma_threshold, etc. are stored directly on track record

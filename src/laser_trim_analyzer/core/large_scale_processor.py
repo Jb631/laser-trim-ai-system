@@ -1000,6 +1000,7 @@ class LargeScaleProcessor:
         """Enable turbo mode for maximum performance."""
         self.turbo_mode = True
         self.logger.info("TURBO MODE ENABLED - Maximum performance optimizations active")
+        self.logger.info("Note: ML predictions are disabled in turbo mode; using heuristic risk estimates.")
         
         # Initialize fast processor if not already done
         if not self.fast_processor:
@@ -1177,8 +1178,7 @@ async def process_large_directory(
     if config.database.enabled:
         try:
             from laser_trim_analyzer.database.manager import DatabaseManager
-            db_path = f"sqlite:///{config.database.path.absolute()}"
-            db_manager = DatabaseManager(db_path)
+            db_manager = DatabaseManager(config)
         except Exception as e:
             logging.getLogger(__name__).warning(f"Database initialization failed: {e}")
     

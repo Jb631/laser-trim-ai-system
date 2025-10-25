@@ -22,6 +22,7 @@ from rich.logging import RichHandler
 from laser_trim_analyzer.core.config import get_config
 from laser_trim_analyzer.core.utils import setup_logging
 from laser_trim_analyzer.core.constants import APP_NAME, APP_AUTHOR
+import laser_trim_analyzer as lta_pkg
 
 # Set up rich console for better output
 console = Console()
@@ -58,7 +59,7 @@ def cleanup_resources():
 
 @click.command()
 @click.option('--debug', is_flag=True, help='Enable debug mode with verbose logging')
-@click.version_option(version='2.0.0', prog_name='Laser Trim Analyzer')
+@click.version_option(version=lta_pkg.__version__, prog_name='Laser Trim Analyzer')
 def main(debug: bool):
     """Main entry point for the Laser Trim Analyzer."""
     global _shutdown_requested
