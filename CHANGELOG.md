@@ -50,6 +50,28 @@ This section tracks current known issues that need to be addressed. When fixing 
     - ✅ Log operations: Properly guarded (plotting_utils.py:314 checks range > 0)
     - ✅ Sqrt operations: 15 total analyzed, 14 safe by design (RMSE/RMS calculations), 1 fixed
 
+- **M3 Chart Correctness: Hardcoded Specification Limits (2025-01-25)** - SPC Corrections
+  - **Root Cause**: All control charts and capability charts used hardcoded spec limits `(0.050, 0.250)` and target value `0.1376` instead of model-specific sigma thresholds
+  - **M3 Violation**: Failed requirement "Use model-aware spec/targets from DB/config when available"
+  - **Impact**: Charts showed incorrect, generic specification limits that didn't match actual model requirements:
+    - Model 8340-1 should use threshold 0.4 (was showing 0.250)
+    - Model 8555 uses calculated threshold ~0.0015-0.050 range (was showing 0.250)
+    - Traditional models use formula-based thresholds (was showing 0.250)
+  - **Conceptual Error**: Sigma gradient is ONE-SIDED (must be < threshold), but charts showed BILATERAL limits (LSL, USL)
+  - **Locations Fixed** (5 total):
+    - `model_summary_page.py:845-860` - Trend chart
+    - `model_summary_page.py:1751-1762` - CPK/capability chart
+    - `historical_page.py:3181-3193` - SPC control charts
+    - `historical_page.py:3719-3730` - Historical trend analysis
+  - **Fix Implementation**:
+    - Extract `sigma_threshold` from database records (already model-specific and calculated)
+    - Use median of thresholds for consistent chart limits
+    - Set one-sided limits: LSL=0.0, USL=sigma_threshold (not bilateral)
+    - Target value = 50% of threshold (realistic, not arbitrary)
+    - Fallback to (0.0, 0.250) only if threshold missing, with warning logged
+  - **Result**: Charts now correctly display model-specific specification limits with proper one-sided thresholds
+  - **M3 Compliance**: ✅ Now uses model-aware spec limits from database as required
+
 ### Enhanced
 - **Chart Widget Data Validation (2025-01-08)** - Production Hardening Phase 1
   - **Added comprehensive data validation to 14 chart plotting methods** in `chart_widget.py`:
