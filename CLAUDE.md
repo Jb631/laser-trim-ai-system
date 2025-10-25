@@ -144,6 +144,94 @@ Remember: Always think through the full implementation before starting any fix.
 6. Document ALL changes in CHANGELOG.md immediately after implementation
 7. Update Known Issues sections as issues are discovered or fixed
 
+---
+
+## REFACTORING MODE (Active)
+
+**Status**: Phase 0 (Infrastructure) Complete - Ready for Phase 1
+
+**IMPORTANT**: When working on refactoring tasks, follow the strict rules and protocols in:
+- `REFACTORING/CLAUDE_REFACTOR_RULES.md` - **OVERRIDES normal development rules**
+- `REFACTORING/SESSION_PROTOCOL.md` - **MANDATORY start/end checklists**
+
+### Refactoring Overview
+
+**Goal**: Aggressive 6-phase refactoring to:
+- Unify 6 processors → 1 with strategy pattern
+- Wire ML models (FailurePredictor, DriftDetector) to processing pipeline
+- Implement incremental processing (10x faster for daily updates)
+- Remove dead code (AnalyticsEngine: -1,052 lines)
+- Split mega-files (4 files >3000 lines each)
+- Optimize for 1000+ file batches
+
+**Current Phase**: Phase 0 (Infrastructure) - ✅ Complete
+
+**Next Phase**: Phase 1 (Foundation & Quick Wins) - 5 days, 25 tasks
+
+### Refactoring Session Rules
+
+1. **ALWAYS start sessions with**:
+   - Read `REFACTORING/CLAUDE_REFACTOR_RULES.md`
+   - Check current phase checklist: `REFACTORING/PHASES/phase-X/CHECKLIST.md`
+   - Review last session log in `REFACTORING/SESSIONS/`
+   - Create new session log from template
+
+2. **ALWAYS end sessions with**:
+   - Complete session log (all sections)
+   - Update `REFACTORING/PROGRESS.md`
+   - Update current phase progress and checklist
+   - Update `REFACTORING/DECISIONS.md` if architectural decisions made
+   - Update `REFACTORING/RISKS.md` if new risks/issues discovered
+
+3. **Commit Format** (STRICT):
+   ```
+   [PHASE-X.Y] CATEGORY: Description
+
+   Examples:
+   [PHASE-1.2] PERF: Add incremental processing with database tracking
+   [PHASE-1.3] CLEANUP: Remove AnalyticsEngine (1,052 lines)
+   [PHASE-2.1] REFACTOR: Implement UnifiedProcessor with strategy pattern
+   ```
+
+4. **Feature Flags Required**:
+   - All major architectural changes MUST use feature flags (ADR-001)
+   - Default to OFF until proven stable
+   - Remove flags after 1 stable release
+
+5. **Backward Compatibility**:
+   - Old code paths must continue working
+   - Deprecate gracefully (not break)
+   - Migration path for users
+
+### Quick Links
+
+- **Master Plan**: `REFACTORING/README.md`
+- **Current Phase**: `REFACTORING/PHASES/phase-1-foundation/`
+- **Session Protocol**: `REFACTORING/SESSION_PROTOCOL.md`
+- **Strict Rules**: `REFACTORING/CLAUDE_REFACTOR_RULES.md`
+- **Progress Tracking**: `REFACTORING/PROGRESS.md`
+- **Performance Metrics**: `REFACTORING/MEASUREMENTS.md`
+- **Architectural Decisions**: `REFACTORING/DECISIONS.md`
+- **Risk Register**: `REFACTORING/RISKS.md`
+
+### Refactoring Phases
+
+| Phase | Name | Duration | Status |
+|-------|------|----------|--------|
+| 0 | Infrastructure Setup | 1 day | ✅ Complete |
+| 1 | Foundation & Quick Wins | 5 days | ⏸️ Not Started |
+| 2 | Processor Unification | 1 week | ⏸️ Not Started |
+| 3 | ML Integration | 1 week | ⏸️ Not Started |
+| 4 | File Splitting | 3 days | ⏸️ Not Started |
+| 5 | GUI Consolidation | 1 week | ⏸️ Not Started |
+| 6 | Testing & Performance | 3 days | ⏸️ Not Started |
+
+**Total Estimated Duration**: 5-6 weeks
+
+**Note**: This refactoring section will be removed after Phase 6 completion.
+
+---
+
 ### Deployment Strategy
 
 **Goal**: Create a portable executable that can be downloaded from GitHub and run without installation.
