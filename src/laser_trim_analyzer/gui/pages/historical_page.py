@@ -3154,7 +3154,7 @@ Metrics:
             return
             
         try:
-            # Build dataset for control chart (date + sigma_gradient)
+            # Build dataset for control chart (date + sigma_gradient + sigma_threshold)
             chart_rows = []
             for result in results:
                 if result.tracks:
@@ -3163,6 +3163,7 @@ Metrics:
                             chart_rows.append({
                                 'trim_date': result.file_date or result.timestamp,
                                 'sigma_gradient': track.sigma_gradient,
+                                'sigma_threshold': getattr(track, 'sigma_threshold', None),
                             })
 
             if not chart_rows:
@@ -3177,9 +3178,19 @@ Metrics:
                 self.control_chart.show_placeholder("Insufficient Data", "Need at least 3 data points for control chart")
                 return
 
-            # Use enhanced control chart (centralized gating + styling)
-            target_value = 0.1376  # default; will be refined in SPC corrections (M3)
-            spec_limits = (0.050, 0.250)
+            # M3: Use model-specific sigma threshold from data (not hardcoded)
+            # Sigma gradient is one-sided: must be < threshold (upper limit only)
+            sigma_thresholds = df['sigma_threshold'].dropna()
+            if len(sigma_thresholds) > 0:
+                sigma_threshold_usl = float(sigma_thresholds.median())
+                spec_limits = (0.0, sigma_threshold_usl)  # LSL=0, USL=threshold
+                target_value = sigma_threshold_usl * 0.5  # Target at 50% of threshold
+                self.logger.info(f"Historical SPC chart using model-specific threshold USL: {sigma_threshold_usl:.4f}")
+            else:
+                # Fallback only if threshold data is missing
+                self.logger.warning("No sigma_threshold in results, using fallback limits")
+                spec_limits = (0.0, 0.250)
+                target_value = 0.125
             self.control_chart.plot_enhanced_control_chart(
                 data=df.sort_values('trim_date'),
                 value_column='sigma_gradient',
@@ -3691,22 +3702,32 @@ TRACK DETAILS:
                             chart_data.append({
                                 'date': result.file_date or result.timestamp,
                                 'value': track.sigma_gradient,
+                                'threshold': getattr(track, 'sigma_threshold', None),
                                 'model': result.model
                             })
-            
+
             if not chart_data:
                 messagebox.showwarning("No Data", "No sigma gradient data available")
                 return
-            
+
             # Create enhanced control chart using the new method
             df = pd.DataFrame(chart_data).sort_values('date')
-            
+
             # Rename columns to match expected format
-            df = df.rename(columns={'date': 'trim_date', 'value': 'sigma_gradient'})
-            
-            # Define specification limits for sigma gradient
-            target_value = 0.1376  # Midpoint of typical range
-            spec_limits = (0.050, 0.250)  # Slightly wider than observed range
+            df = df.rename(columns={'date': 'trim_date', 'value': 'sigma_gradient', 'threshold': 'sigma_threshold'})
+
+            # M3: Use model-specific sigma threshold (one-sided: LSL=0, USL=threshold)
+            sigma_thresholds = df['sigma_threshold'].dropna()
+            if len(sigma_thresholds) > 0:
+                sigma_threshold_usl = float(sigma_thresholds.median())
+                spec_limits = (0.0, sigma_threshold_usl)
+                target_value = sigma_threshold_usl * 0.5
+                self.logger.info(f"Historical trends using model-specific threshold USL: {sigma_threshold_usl:.4f}")
+            else:
+                # Fallback if threshold missing
+                spec_limits = (0.0, 0.250)
+                target_value = 0.125
+                self.logger.warning("No sigma_threshold for historical trends, using fallback")
             
             # Use the enhanced control chart method
             self.control_chart.plot_enhanced_control_chart(

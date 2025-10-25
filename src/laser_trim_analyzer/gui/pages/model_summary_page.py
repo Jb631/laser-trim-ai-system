@@ -841,12 +841,24 @@ class ModelSummaryPage(ctk.CTkFrame):
             if len(chart_data) > 0:
                 # Sort by date for proper display
                 chart_data = chart_data.sort_values('trim_date')
-                
-                # Define specification limits for sigma gradient (based on typical ranges: 0.0631-0.2121)
-                # Using process-centered limits with some margin for process variation
-                target_value = 0.1376  # Midpoint of typical range
-                spec_limits = (0.050, 0.250)  # Slightly wider than observed range for realistic limits
-                
+
+                # Get model-specific sigma threshold from the data (should be consistent for same model)
+                # Use median in case there are slight variations across files
+                sigma_thresholds = df['sigma_threshold'].dropna()
+                if len(sigma_thresholds) > 0:
+                    sigma_threshold_usl = float(sigma_thresholds.median())
+                    self.logger.info(f"Using model-specific sigma threshold USL: {sigma_threshold_usl:.4f}")
+                    # Sigma gradient is one-sided: must be < threshold (upper limit only)
+                    # LSL is 0 (sigma gradient is always positive), USL is the calculated threshold
+                    spec_limits = (0.0, sigma_threshold_usl)
+                    # Target is typically 0 (perfect smoothness) but show realistic target at 50% of threshold
+                    target_value = sigma_threshold_usl * 0.5
+                else:
+                    # Fallback only if threshold data is missing (should not happen in normal operation)
+                    self.logger.warning("No sigma_threshold data available, using fallback limits")
+                    spec_limits = (0.0, 0.250)
+                    target_value = 0.125
+
                 # Get ML threshold if available for additional reference
                 ml_threshold = None
                 if self.db_manager and self.selected_model:
@@ -1731,14 +1743,23 @@ class ModelSummaryPage(ctk.CTkFrame):
         try:
             # Clean sigma gradient data
             sigma_data = df['sigma_gradient'].dropna()
-            
+
             if len(sigma_data) < 10:
                 self.cpk_chart.show_placeholder("Insufficient Valid Data", "Not enough valid sigma gradient values")
                 return
-            
-            # Define specification limits for sigma gradient (based on observed ranges)
-            spec_limits = (0.050, 0.250)  # LSL, USL
-            target_value = 0.1376  # Target (midpoint of typical range)
+
+            # M3: Use model-specific sigma threshold (one-sided: LSL=0, USL=threshold)
+            sigma_thresholds = df['sigma_threshold'].dropna()
+            if len(sigma_thresholds) > 0:
+                sigma_threshold_usl = float(sigma_thresholds.median())
+                spec_limits = (0.0, sigma_threshold_usl)
+                target_value = sigma_threshold_usl * 0.5
+                self.logger.info(f"CPK chart using model-specific threshold USL: {sigma_threshold_usl:.4f}")
+            else:
+                # Fallback if threshold missing
+                spec_limits = (0.0, 0.250)
+                target_value = 0.125
+                self.logger.warning("No sigma_threshold for CPK chart, using fallback")
             
             # Create DataFrame for the chart method
             capability_df = pd.DataFrame({'sigma_gradient': sigma_data})
