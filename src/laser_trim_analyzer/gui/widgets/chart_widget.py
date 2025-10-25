@@ -502,21 +502,78 @@ class ChartWidget(ctk.CTkFrame):
                 f"Unable to display the chart:\n{str(e)}\n\nTry refreshing the data."
             )
             
+    def _set_y_limits_with_padding(self, ax, y_values: Optional[np.ndarray] = None, pad_ratio: float = 0.08):
+        """Apply 5–10% y-axis padding for readability."""
+        try:
+            if y_values is None:
+                ymin, ymax = ax.get_ylim()
+            else:
+                if len(y_values) == 0 or not np.all(np.isfinite(y_values)):
+                    return
+                ymin = float(np.nanmin(y_values))
+                ymax = float(np.nanmax(y_values))
+            if not np.isfinite([ymin, ymax]).all():
+                return
+            if ymax == ymin:
+                # Expand a bit if flat line
+                delta = max(abs(ymin), 1.0) * pad_ratio
+                ax.set_ylim(ymin - delta, ymax + delta)
+                return
+            span = ymax - ymin
+            pad = span * pad_ratio
+            ax.set_ylim(ymin - pad, ymax + pad)
+        except Exception:
+            pass
+
     def _plot_line_from_data(self, data: pd.DataFrame):
-        """Plot line chart from DataFrame."""
+        """Plot line chart from DataFrame with validation."""
+        # VALIDATION: Check DataFrame is valid
+        if data is None or not isinstance(data, pd.DataFrame):
+            self.show_placeholder("Invalid Data", "Expected pandas DataFrame for line chart")
+            return
+
+        if len(data) == 0:
+            self.show_placeholder("No Data", "DataFrame is empty")
+            return
+
+        # VALIDATION: Check required columns exist
+        if 'trim_date' not in data.columns or 'sigma_gradient' not in data.columns:
+            self.show_placeholder(
+                "Missing Columns",
+                f"Line chart requires 'trim_date' and 'sigma_gradient' columns.\nFound: {list(data.columns)}"
+            )
+            return
+
+        # VALIDATION: Check columns have data
+        if data['trim_date'].isna().all() or data['sigma_gradient'].isna().all():
+            self.show_placeholder(
+                "Empty Columns",
+                "Required columns contain no valid data"
+            )
+            return
+
+        # VALIDATION: Check minimum data points
+        valid_data = data.dropna(subset=['trim_date', 'sigma_gradient'])
+        if len(valid_data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                f"Need at least 2 valid data points for line chart. Found: {len(valid_data)}"
+            )
+            return
+
         # Clear the figure first to prevent overlapping plots
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
+
         # Apply theme to axes
         self._apply_theme_to_axes(ax)
-        
+
         # Get theme colors for use in this method
         theme_colors = ThemeHelper.get_theme_colors()
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
-        
+
         if 'trim_date' in data.columns and 'sigma_gradient' in data.columns:
             # Ensure trim_date is datetime
             data['trim_date'] = pd.to_datetime(data['trim_date'])
@@ -560,6 +617,11 @@ class ChartWidget(ctk.CTkFrame):
             
             ax.set_xlabel('Date')
             ax.set_ylabel('Sigma Gradient')
+            # Apply y padding for readability
+            try:
+                self._set_y_limits_with_padding(ax, y_data.to_numpy())
+            except Exception:
+                pass
             
             # Format x-axis dates properly
             if len(x_data) > 0:
@@ -610,11 +672,45 @@ class ChartWidget(ctk.CTkFrame):
         self.canvas.flush_events()
         
     def _plot_bar_from_data(self, data: pd.DataFrame):
-        """Plot bar chart from DataFrame."""
+        """Plot bar chart from DataFrame with validation."""
+        # VALIDATION: Check DataFrame is valid
+        if data is None or not isinstance(data, pd.DataFrame):
+            self.show_placeholder("Invalid Data", "Expected pandas DataFrame for bar chart")
+            return
+
+        if len(data) == 0:
+            self.show_placeholder("No Data", "DataFrame is empty")
+            return
+
+        # VALIDATION: Check required columns exist
+        if 'month_year' not in data.columns or 'track_status' not in data.columns:
+            self.show_placeholder(
+                "Missing Columns",
+                f"Bar chart requires 'month_year' and 'track_status' columns.\nFound: {list(data.columns)}"
+            )
+            return
+
+        # VALIDATION: Check columns have data
+        if data['month_year'].isna().all() or data['track_status'].isna().all():
+            self.show_placeholder(
+                "Empty Columns",
+                "Required columns contain no valid data"
+            )
+            return
+
+        # VALIDATION: Check minimum data points
+        valid_data = data.dropna(subset=['month_year', 'track_status'])
+        if len(valid_data) < 1:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 1 valid data point for bar chart"
+            )
+            return
+
         # Clear the figure first to prevent overlapping plots
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
+
         # Use white background for better visibility
         # Apply theme background
         theme_colors = ThemeHelper.get_theme_colors()
@@ -625,11 +721,11 @@ class ChartWidget(ctk.CTkFrame):
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
-        
+
         ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
             spine.set_color(grid_color)
-        
+
         if 'month_year' in data.columns and 'track_status' in data.columns:
             categories = [str(m) for m in data['month_year']]
             values = data['track_status'].tolist()
@@ -675,10 +771,21 @@ class ChartWidget(ctk.CTkFrame):
                 ax.tick_params(axis='x', labelsize=8)
             elif len(categories) > 7:
                 ax.tick_params(axis='x', labelsize=9)
-                
+        else:
+            # Required columns missing; show placeholder rather than a blank chart
+            self.show_placeholder("No data available", "Expected columns: month_year, track_status")
+            return
         if self.title:
             ax.set_title(self.title, color=text_color)
         ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+        # Apply y padding
+        try:
+            ymin, ymax = ax.get_ylim()
+            span = ymax - ymin
+            pad = span * 0.08
+            ax.set_ylim(ymin, ymax + pad)
+        except Exception:
+            pass
         
         # Layout is handled by constrained_layout set in __init__
         # No need for manual adjustments
@@ -686,21 +793,56 @@ class ChartWidget(ctk.CTkFrame):
         self.canvas.draw()
         
     def _plot_scatter_from_data(self, data: pd.DataFrame):
-        """Plot scatter chart from DataFrame."""
+        """Plot scatter chart from DataFrame with validation."""
+        # VALIDATION: Check DataFrame is valid
+        if data is None or not isinstance(data, pd.DataFrame):
+            self.show_placeholder("Invalid Data", "Expected pandas DataFrame for scatter chart")
+            return
+
+        if len(data) == 0:
+            self.show_placeholder("No Data", "DataFrame is empty")
+            return
+
+        # VALIDATION: Check required columns exist
+        if 'x' not in data.columns or 'y' not in data.columns:
+            self.show_placeholder(
+                "Missing Columns",
+                f"Scatter chart requires 'x' and 'y' columns.\nFound: {list(data.columns)}"
+            )
+            return
+
+        # VALIDATION: Check columns have data
+        if data['x'].isna().all() or data['y'].isna().all():
+            self.show_placeholder(
+                "Empty Columns",
+                "Required columns contain no valid data"
+            )
+            return
+
+        # VALIDATION: Check minimum data points (after filtering NaN)
+        mask = ~(data['x'].isna() | data['y'].isna())
+        valid_count = mask.sum()
+        if valid_count < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                f"Need at least 2 valid data points for scatter chart. Found: {valid_count}"
+            )
+            return
+
         # Clear the figure first to prevent overlapping plots
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
+
         # Use white background for better visibility
         # Apply theme to axes
         self._apply_theme_to_axes(ax)
-        
+
         # Get theme colors for use in this method
         theme_colors = ThemeHelper.get_theme_colors()
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
-        
+
         if 'x' in data.columns and 'y' in data.columns:
             x_data = data['x']
             y_data = data['y']
@@ -726,9 +868,16 @@ class ChartWidget(ctk.CTkFrame):
                                transform=ax.transAxes, fontsize=10, color=text_color_inv,
                                bbox=dict(boxstyle="round,pad=0.3", facecolor=box_color, edgecolor=grid_color, alpha=0.9))
                 else:
-                    ax.text(0.5, 0.5, 'Insufficient data for correlation\n(minimum 5 points required)', 
-                           transform=ax.transAxes, fontsize=12, ha='center', va='center',
-                           color=text_color, alpha=0.7)
+                    self.show_placeholder("Insufficient Data", "Need at least 5 points for correlation")
+                    return
+                # Apply y padding for readability
+                try:
+                    self._set_y_limits_with_padding(ax, y_data.to_numpy())
+                except Exception:
+                    pass
+        else:
+            self.show_placeholder("No data available", "Expected columns: x, y")
+            return
                 
         if self.title:
             ax.set_title(self.title, color=text_color)
@@ -740,11 +889,45 @@ class ChartWidget(ctk.CTkFrame):
         self.canvas.draw()
         
     def _plot_histogram_from_data(self, data: pd.DataFrame):
-        """Plot histogram from DataFrame."""
+        """Plot histogram from DataFrame with validation."""
+        # VALIDATION: Check DataFrame is valid
+        if data is None or not isinstance(data, pd.DataFrame):
+            self.show_placeholder("Invalid Data", "Expected pandas DataFrame for histogram")
+            return
+
+        if len(data) == 0:
+            self.show_placeholder("No Data", "DataFrame is empty")
+            return
+
+        # VALIDATION: Check required columns exist
+        if 'sigma_gradient' not in data.columns:
+            self.show_placeholder(
+                "Missing Column",
+                f"Histogram requires 'sigma_gradient' column.\nFound: {list(data.columns)}"
+            )
+            return
+
+        # VALIDATION: Check column has data
+        if data['sigma_gradient'].isna().all():
+            self.show_placeholder(
+                "Empty Column",
+                "'sigma_gradient' column contains no valid data"
+            )
+            return
+
+        # VALIDATION: Check minimum data points
+        valid_data = data['sigma_gradient'].dropna()
+        if len(valid_data) < 5:
+            self.show_placeholder(
+                "Insufficient Data",
+                f"Need at least 5 valid data points for histogram. Found: {len(valid_data)}"
+            )
+            return
+
         # Clear the figure first to prevent overlapping plots
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
+
         # Use white background for better visibility
         # Apply theme background
         theme_colors = ThemeHelper.get_theme_colors()
@@ -755,11 +938,11 @@ class ChartWidget(ctk.CTkFrame):
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
-        
+
         ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
             spine.set_color(grid_color)
-        
+
         if 'sigma_gradient' in data.columns:
             sigma_data = data['sigma_gradient'].dropna()
             
@@ -818,14 +1001,60 @@ class ChartWidget(ctk.CTkFrame):
         # Layout is handled by constrained_layout set in __init__
         # No need for manual adjustments
         
+        # Apply a small y padding
+        try:
+            ymin, ymax = ax.get_ylim()
+            span = ymax - ymin
+            pad = span * 0.08
+            ax.set_ylim(ymin, ymax + pad)
+        except Exception:
+            pass
+        
         self.canvas.draw()
         
     def _plot_heatmap_from_data(self, data: pd.DataFrame):
-        """Plot heatmap from DataFrame."""
+        """Plot heatmap from DataFrame with validation."""
+        # VALIDATION: Check DataFrame is valid
+        if data is None or not isinstance(data, pd.DataFrame):
+            self.show_placeholder("Invalid Data", "Expected pandas DataFrame for heatmap")
+            return
+
+        if len(data) == 0:
+            self.show_placeholder("No Data", "DataFrame is empty")
+            return
+
+        # VALIDATION: Check required columns exist
+        required_cols = ['x_values', 'y_values', 'values']
+        missing_cols = [col for col in required_cols if col not in data.columns]
+        if missing_cols:
+            self.show_placeholder(
+                "Missing Columns",
+                f"Heatmap requires {required_cols} columns.\nMissing: {missing_cols}\nFound: {list(data.columns)}"
+            )
+            return
+
+        # VALIDATION: Check columns have data
+        if any(data[col].isna().all() for col in required_cols):
+            empty_cols = [col for col in required_cols if data[col].isna().all()]
+            self.show_placeholder(
+                "Empty Columns",
+                f"Required columns contain no valid data: {empty_cols}"
+            )
+            return
+
+        # VALIDATION: Check minimum data points
+        valid_data = data.dropna(subset=required_cols)
+        if len(valid_data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                f"Need at least 2 valid data points for heatmap. Found: {len(valid_data)}"
+            )
+            return
+
         # Clear the figure first to prevent overlapping plots
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        
+
         # Use white background for better visibility
         # Apply theme background
         theme_colors = ThemeHelper.get_theme_colors()
@@ -836,11 +1065,11 @@ class ChartWidget(ctk.CTkFrame):
         is_dark = ctk.get_appearance_mode().lower() == "dark"
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
-        
+
         ax.tick_params(colors=text_color, labelcolor=text_color)
         for spine in ax.spines.values():
             spine.set_color(grid_color)
-        
+
         # Check for required columns
         if 'x_values' in data.columns and 'y_values' in data.columns and 'values' in data.columns:
             try:
@@ -923,391 +1152,852 @@ class ChartWidget(ctk.CTkFrame):
     def plot_line(self, x_data: List, y_data: List, label: str = "",
                   color: Optional[str] = None, marker: Optional[str] = None,
                   xlabel: str = "", ylabel: str = "", **kwargs):
-        """Plot line chart."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot line chart with data validation and error handling.
 
-        # Use QA color if specified
-        if color and color in self.qa_colors:
-            color = self.qa_colors[color]
+        Args:
+            x_data: X-axis data points
+            y_data: Y-axis data points
+            label: Legend label for the line
+            color: Line color (can use QA color names)
+            marker: Marker style
+            xlabel: X-axis label
+            ylabel: Y-axis label
+            **kwargs: Additional plot arguments
 
-        # Plot data
-        line = ax.plot(x_data, y_data, label=label, color=color,
-                       marker=marker, **kwargs)[0]
+        Returns:
+            Line object if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if x_data is None or y_data is None:
+            self.show_placeholder("No Data", "Cannot plot without X and Y data")
+            return None
 
-        # Get theme colors for labels
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
+        if not x_data or not y_data:
+            self.show_placeholder("Empty Data", "X and Y data arrays are empty")
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        # Check matching lengths
+        if len(x_data) != len(y_data):
+            self.show_error(
+                "Data Mismatch",
+                f"X data has {len(x_data)} points but Y data has {len(y_data)} points. Arrays must have equal length."
+            )
+            return None
 
-        # Show legend if labels exist
-        if label:
-            ax.legend()
+        # Check minimum data points for a line
+        if len(x_data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 2 data points to plot a line"
+            )
+            return None
 
-        # Grid
-        ax.grid(True, alpha=0.3, color=grid_color)
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+            # Use QA color if specified
+            if color and color in self.qa_colors:
+                color = self.qa_colors[color]
 
-        return line
+            # Plot data
+            line = ax.plot(x_data, y_data, label=label, color=color,
+                           marker=marker, **kwargs)[0]
+
+            # Get theme colors for labels
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            grid_color = theme_colors["border"]["primary"]
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Show legend if labels exist
+            if label:
+                ax.legend()
+
+            # Grid
+            ax.grid(True, alpha=0.3, color=grid_color)
+
+            # Apply Y-axis padding for readability (M6 standard: 5-10%)
+            try:
+                y_array = np.array(y_data)
+                if len(y_array) > 0 and np.all(np.isfinite(y_array)):
+                    self._set_y_limits_with_padding(ax, y_array)
+            except:
+                pass  # If padding fails, continue with default limits
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return line
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Line Plot Error", f"Failed to create line chart: {str(e)}")
+            return None
 
     def plot_bar(self, categories: List[str], values: List[float],
                  colors: Optional[List[str]] = None, xlabel: str = "",
                  ylabel: str = "", **kwargs):
-        """Plot bar chart."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot bar chart with data validation and error handling.
 
-        # Map QA colors
-        if colors:
-            colors = [self.qa_colors.get(c, c) for c in colors]
-        else:
-            colors = self.qa_colors['primary']
+        Args:
+            categories: Category labels for x-axis
+            values: Values for bar heights
+            colors: Optional colors for bars (can use QA color names)
+            xlabel: X-axis label
+            ylabel: Y-axis label
+            **kwargs: Additional bar plot arguments
 
-        # Plot bars
-        bars = ax.bar(categories, values, color=colors, **kwargs)
+        Returns:
+            BarContainer object if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if categories is None or values is None:
+            self.show_placeholder("No Data", "Cannot plot without categories and values")
+            return None
 
-        # Get theme colors for text
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Add value labels on bars with theme-appropriate color
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2., height,
-                    f'{height:.2f}', ha='center', va='bottom', fontsize=9, color=text_color)
+        if not categories or not values:
+            self.show_placeholder("Empty Data", "Categories and values arrays are empty")
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        # Check matching lengths
+        if len(categories) != len(values):
+            self.show_error(
+                "Data Mismatch",
+                f"Categories has {len(categories)} items but values has {len(values)} items. Arrays must have equal length."
+            )
+            return None
 
-        # Rotate x labels if many categories
-        if len(categories) > 10:
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        # Check for at least one bar
+        if len(categories) < 1:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 1 data point to plot a bar chart"
+            )
+            return None
 
-        # Grid
-        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
 
-        # Layout is handled by constrained_layout set in __init__
-        # No need for manual adjustments
+            # Map QA colors
+            if colors:
+                colors = [self.qa_colors.get(c, c) for c in colors]
+            else:
+                colors = self.qa_colors['primary']
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+            # Plot bars
+            bars = ax.bar(categories, values, color=colors, **kwargs)
 
-        return bars
+            # Get theme colors for text
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Add value labels on bars with theme-appropriate color
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width() / 2., height,
+                        f'{height:.2f}', ha='center', va='bottom', fontsize=9, color=text_color)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+            # Get theme colors
+            grid_color = theme_colors["border"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Rotate x labels if many categories
+            if len(categories) > 10:
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # Grid
+            ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+
+            # Layout is handled by constrained_layout set in __init__
+            # No need for manual adjustments
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return bars
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Bar Chart Error", f"Failed to create bar chart: {str(e)}")
+            return None
 
     def plot_scatter(self, x_data: List, y_data: List,
                      colors: Optional[List] = None, sizes: Optional[List] = None,
                      labels: Optional[List[str]] = None, xlabel: str = "",
                      ylabel: str = "", alpha: float = 0.6, **kwargs):
-        """Plot scatter chart."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot scatter chart with data validation and error handling.
 
-        # Default size
-        if sizes is None:
-            sizes = 50
+        Args:
+            x_data: X-axis data points
+            y_data: Y-axis data points
+            colors: Optional colors for each point (can use QA color names)
+            sizes: Optional sizes for each point
+            labels: Optional labels for annotating points
+            xlabel: X-axis label
+            ylabel: Y-axis label
+            alpha: Transparency level
+            **kwargs: Additional scatter plot arguments
 
-        # Map colors
-        if colors and isinstance(colors[0], str):
-            colors = [self.qa_colors.get(c, c) for c in colors]
+        Returns:
+            PathCollection object if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if x_data is None or y_data is None:
+            self.show_placeholder("No Data", "Cannot plot without X and Y data")
+            return None
 
-        # Remove alpha from kwargs if it exists to avoid conflict
-        kwargs.pop('alpha', None)
+        if not x_data or not y_data:
+            self.show_placeholder("Empty Data", "X and Y data arrays are empty")
+            return None
 
-        # Plot scatter
-        scatter = ax.scatter(x_data, y_data, c=colors, s=sizes,
-                             alpha=alpha, **kwargs)
+        # Check matching lengths
+        if len(x_data) != len(y_data):
+            self.show_error(
+                "Data Mismatch",
+                f"X data has {len(x_data)} points but Y data has {len(y_data)} points. Arrays must have equal length."
+            )
+            return None
 
-        # Add annotations if labels provided
-        if labels:
-            for i, label in enumerate(labels):
-                ax.annotate(label, (x_data[i], y_data[i]),
-                            xytext=(5, 5), textcoords='offset points',
-                            fontsize=8, alpha=0.7)
+        # Check minimum data points for scatter
+        if len(x_data) < 1:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 1 data point to plot a scatter chart"
+            )
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        # Validate optional arrays if provided
+        if colors is not None and isinstance(colors, (list, tuple)):
+            if len(colors) != len(x_data):
+                self.show_error(
+                    "Color Array Mismatch",
+                    f"Colors array has {len(colors)} items but data has {len(x_data)} points"
+                )
+                return None
 
-        # Grid
-        ax.grid(True, alpha=0.3, color=grid_color)
+        if sizes is not None and isinstance(sizes, (list, tuple)):
+            if len(sizes) != len(x_data):
+                self.show_error(
+                    "Size Array Mismatch",
+                    f"Sizes array has {len(sizes)} items but data has {len(x_data)} points"
+                )
+                return None
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+        if labels is not None:
+            if len(labels) != len(x_data):
+                self.show_error(
+                    "Labels Array Mismatch",
+                    f"Labels array has {len(labels)} items but data has {len(x_data)} points"
+                )
+                return None
 
-        return scatter
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
+
+            # Default size
+            if sizes is None:
+                sizes = 50
+
+            # Map colors
+            if colors and isinstance(colors, (list, tuple)) and len(colors) > 0 and isinstance(colors[0], str):
+                colors = [self.qa_colors.get(c, c) for c in colors]
+
+            # Remove alpha from kwargs if it exists to avoid conflict
+            kwargs.pop('alpha', None)
+
+            # Plot scatter
+            scatter = ax.scatter(x_data, y_data, c=colors, s=sizes,
+                                 alpha=alpha, **kwargs)
+
+            # Add annotations if labels provided
+            if labels:
+                for i, label in enumerate(labels):
+                    ax.annotate(label, (x_data[i], y_data[i]),
+                                xytext=(5, 5), textcoords='offset points',
+                                fontsize=8, alpha=0.7)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            grid_color = theme_colors["border"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Grid
+            ax.grid(True, alpha=0.3, color=grid_color)
+
+            # Apply Y-axis padding for readability (M6 standard: 5-10%)
+            try:
+                y_array = np.array(y_data)
+                if len(y_array) > 0 and np.all(np.isfinite(y_array)):
+                    self._set_y_limits_with_padding(ax, y_array)
+            except:
+                pass  # If padding fails, continue with default limits
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return scatter
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Scatter Plot Error", f"Failed to create scatter chart: {str(e)}")
+            return None
 
     def plot_histogram(self, data: List[float], bins: int = 20,
                        color: Optional[str] = None, xlabel: str = "",
                        ylabel: str = "Frequency", **kwargs):
-        """Plot histogram."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot histogram with data validation and error handling.
 
-        # Use QA color if specified
-        if color and color in self.qa_colors:
-            color = self.qa_colors[color]
-        else:
-            color = self.qa_colors['primary']
+        Args:
+            data: Data values for histogram
+            bins: Number of bins (default 20)
+            color: Bar color (can use QA color name)
+            xlabel: X-axis label
+            ylabel: Y-axis label (default "Frequency")
+            **kwargs: Additional histogram arguments
 
-        # Plot histogram
-        n, bins, patches = ax.hist(data, bins=bins, color=color,
-                                   alpha=0.7, edgecolor='black', **kwargs)
+        Returns:
+            Tuple of (n, bins, patches) if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot plot histogram without data")
+            return None
 
-        # Add statistics
-        mean = np.mean(data)
-        std = np.std(data)
-        ax.axvline(mean, color='red', linestyle='--', linewidth=2,
-                   label=f'Mean: {mean:.3f}')
-        ax.axvline(mean + std, color='orange', linestyle='--', linewidth=1,
-                   label=f'±1σ: {std:.3f}')
-        ax.axvline(mean - std, color='orange', linestyle='--', linewidth=1)
+        if not data:
+            self.show_placeholder("Empty Data", "Data array is empty")
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        # Check minimum data points for meaningful histogram
+        if len(data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 2 data points for a histogram"
+            )
+            return None
 
-        # Legend
-        ax.legend()
+        # Validate bins parameter
+        if bins < 1:
+            self.show_error(
+                "Invalid Bins",
+                f"Number of bins must be at least 1, got {bins}"
+            )
+            return None
 
-        # Grid
-        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+            # Use QA color if specified
+            if color and color in self.qa_colors:
+                color = self.qa_colors[color]
+            else:
+                color = self.qa_colors['primary']
 
-        return n, bins, patches
+            # Plot histogram
+            n, bins_edges, patches = ax.hist(data, bins=bins, color=color,
+                                       alpha=0.7, edgecolor='black', **kwargs)
+
+            # Add statistics if we have enough data
+            mean = np.mean(data)
+            std = np.std(data)
+            ax.axvline(mean, color='red', linestyle='--', linewidth=2,
+                       label=f'Mean: {mean:.3f}')
+            ax.axvline(mean + std, color='orange', linestyle='--', linewidth=1,
+                       label=f'±1σ: {std:.3f}')
+            ax.axvline(mean - std, color='orange', linestyle='--', linewidth=1)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            grid_color = theme_colors["border"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Legend
+            ax.legend()
+
+            # Grid
+            ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+
+            # Apply Y-axis padding for readability (M6 standard: 5-10%)
+            try:
+                # For histogram, use the bin counts (n) for Y-axis padding
+                if len(n) > 0 and np.all(np.isfinite(n)):
+                    self._set_y_limits_with_padding(ax, n)
+            except:
+                pass  # If padding fails, continue with default limits
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return n, bins_edges, patches
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Histogram Error", f"Failed to create histogram: {str(e)}")
+            return None
 
     def plot_box(self, data: List[List[float]], labels: List[str] = None,
                  xlabel: str = "", ylabel: str = "", **kwargs):
-        """Plot box plot."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot box plot with data validation and error handling.
 
-        # Create box plot
-        bp = ax.boxplot(data, labels=labels, patch_artist=True, **kwargs)
+        Args:
+            data: List of data arrays, one per box
+            labels: Optional labels for each box
+            xlabel: X-axis label
+            ylabel: Y-axis label
+            **kwargs: Additional boxplot arguments
 
-        # Color the boxes
-        colors = [self.qa_colors['primary'], self.qa_colors['secondary'], 
-                  self.qa_colors['warning'], self.qa_colors['pass']]
-        
-        for patch, color in zip(bp['boxes'], colors * (len(bp['boxes']) // len(colors) + 1)):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
+        Returns:
+            Box plot dictionary if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot plot boxplot without data")
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        if not data:
+            self.show_placeholder("Empty Data", "Data array is empty")
+            return None
 
-        # Grid
-        ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+        # Check that we have at least one dataset
+        if len(data) < 1:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 1 dataset for a box plot"
+            )
+            return None
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+        # Validate each dataset has data
+        for i, dataset in enumerate(data):
+            if dataset is None or (hasattr(dataset, '__len__') and len(dataset) == 0):
+                self.show_error(
+                    "Empty Dataset",
+                    f"Dataset {i + 1} is empty. All datasets must contain at least 1 value."
+                )
+                return None
 
-        return bp
+        # Validate labels if provided
+        if labels is not None:
+            if len(labels) != len(data):
+                self.show_error(
+                    "Labels Mismatch",
+                    f"Labels has {len(labels)} items but data has {len(data)} datasets"
+                )
+                return None
+
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
+
+            # Create box plot
+            bp = ax.boxplot(data, labels=labels, patch_artist=True, **kwargs)
+
+            # Color the boxes
+            colors = [self.qa_colors['primary'], self.qa_colors['secondary'],
+                      self.qa_colors['warning'], self.qa_colors['pass']]
+
+            for patch, color in zip(bp['boxes'], colors * (len(bp['boxes']) // len(colors) + 1)):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            grid_color = theme_colors["border"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Grid
+            ax.grid(True, alpha=0.3, axis='y', color=grid_color)
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return bp
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Box Plot Error", f"Failed to create box plot: {str(e)}")
+            return None
 
     def plot_heatmap(self, data: np.ndarray, xlabels: List[str],
                      ylabels: List[str], cmap: str = 'RdYlGn',
                      xlabel: str = "", ylabel: str = "", **kwargs):
-        """Plot heatmap."""
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+        """
+        Plot heatmap with data validation and error handling.
 
-        # Create heatmap
-        im = ax.imshow(data, cmap=cmap, aspect='auto', **kwargs)
+        Args:
+            data: 2D numpy array of values
+            xlabels: Labels for x-axis (columns)
+            ylabels: Labels for y-axis (rows)
+            cmap: Colormap name (default 'RdYlGn')
+            xlabel: X-axis label
+            ylabel: Y-axis label
+            **kwargs: Additional imshow arguments
 
-        # Set ticks
-        ax.set_xticks(np.arange(len(xlabels)))
-        ax.set_yticks(np.arange(len(ylabels)))
-        ax.set_xticklabels(xlabels)
-        ax.set_yticklabels(ylabels)
+        Returns:
+            AxesImage object if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot plot heatmap without data")
+            return None
 
-        # Rotate x labels
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        if xlabels is None or ylabels is None:
+            self.show_placeholder("No Labels", "Cannot plot heatmap without axis labels")
+            return None
 
-        # Add colorbar
-        cbar = self.figure.colorbar(im, ax=ax)
+        # Check data is 2D
+        if not hasattr(data, 'shape') or len(data.shape) != 2:
+            self.show_error(
+                "Invalid Data",
+                "Heatmap requires 2D data array (matrix)"
+            )
+            return None
 
-        # Add text annotations
-        for i in range(len(ylabels)):
-            for j in range(len(xlabels)):
-                value = data[i, j]
-                # Choose text color based on background
-                text_color = 'black' if 0.3 < value < 0.7 else 'white'
-                text = ax.text(j, i, f'{value:.2f}',
-                               ha='center', va='center', color=text_color,
-                               fontsize=9)
+        # Check data is not empty
+        if data.shape[0] == 0 or data.shape[1] == 0:
+            self.show_placeholder("Empty Data", "Data array has no rows or columns")
+            return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+        # Validate labels match data dimensions
+        if len(ylabels) != data.shape[0]:
+            self.show_error(
+                "Y-Labels Mismatch",
+                f"Y-labels has {len(ylabels)} items but data has {data.shape[0]} rows"
+            )
+            return None
 
-        # Layout is handled by constrained_layout set in __init__
-        # No need for manual adjustments
+        if len(xlabels) != data.shape[1]:
+            self.show_error(
+                "X-Labels Mismatch",
+                f"X-labels has {len(xlabels)} items but data has {data.shape[1]} columns"
+            )
+            return None
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
 
-        return im
+            # Create heatmap
+            im = ax.imshow(data, cmap=cmap, aspect='auto', **kwargs)
+
+            # Set ticks
+            ax.set_xticks(np.arange(len(xlabels)))
+            ax.set_yticks(np.arange(len(ylabels)))
+            ax.set_xticklabels(xlabels)
+            ax.set_yticklabels(ylabels)
+
+            # Rotate x labels
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # Add colorbar
+            cbar = self.figure.colorbar(im, ax=ax)
+
+            # Add text annotations
+            for i in range(len(ylabels)):
+                for j in range(len(xlabels)):
+                    value = data[i, j]
+                    # Choose text color based on background
+                    text_color = 'black' if 0.3 < value < 0.7 else 'white'
+                    text = ax.text(j, i, f'{value:.2f}',
+                                   ha='center', va='center', color=text_color,
+                                   fontsize=9)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Layout is handled by constrained_layout set in __init__
+            # No need for manual adjustments
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return im
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Heatmap Error", f"Failed to create heatmap: {str(e)}")
+            return None
 
     def plot_multi_series(self, data_dict: Dict[str, Dict[str, List]],
                           xlabel: str = "", ylabel: str = ""):
         """
-        Plot multiple series on the same chart.
+        Plot multiple series on the same chart with data validation and error handling.
 
         Args:
             data_dict: Dictionary with series names as keys and
                       {'x': x_data, 'y': y_data, 'color': color} as values
-        """
-        ax = self._get_or_create_axes()
-        self._apply_theme_to_axes(ax)
-        self._has_data = True  # Mark that we have data
+            xlabel: X-axis label
+            ylabel: Y-axis label
 
-        # Plot each series
+        Returns:
+            True if successful, None if validation fails
+        """
+        # Data validation - check for empty or None data
+        if data_dict is None:
+            self.show_placeholder("No Data", "Cannot plot without data dictionary")
+            return None
+
+        if not data_dict:
+            self.show_placeholder("Empty Data", "Data dictionary is empty")
+            return None
+
+        # Validate each series in the dictionary
         for series_name, series_data in data_dict.items():
+            if not isinstance(series_data, dict):
+                self.show_error(
+                    "Invalid Series Data",
+                    f"Series '{series_name}' must be a dictionary with 'x' and 'y' keys"
+                )
+                return None
+
+            if 'x' not in series_data or 'y' not in series_data:
+                self.show_error(
+                    "Missing Data Keys",
+                    f"Series '{series_name}' must have 'x' and 'y' keys"
+                )
+                return None
+
             x_data = series_data['x']
             y_data = series_data['y']
-            color = series_data.get('color')
 
-            if color and color in self.qa_colors:
-                color = self.qa_colors[color]
+            if x_data is None or y_data is None:
+                self.show_error(
+                    "None Data",
+                    f"Series '{series_name}' has None data"
+                )
+                return None
 
-            ax.plot(x_data, y_data, label=series_name, color=color,
-                    marker='o', markersize=4)
+            if not x_data or not y_data:
+                self.show_error(
+                    "Empty Series",
+                    f"Series '{series_name}' has empty data arrays"
+                )
+                return None
 
-        # Set labels
-        if xlabel:
-            ax.set_xlabel(xlabel)
-        if ylabel:
-            ax.set_ylabel(ylabel)
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        grid_color = theme_colors["border"]["primary"]
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color)
+            if len(x_data) != len(y_data):
+                self.show_error(
+                    "Data Mismatch",
+                    f"Series '{series_name}': X has {len(x_data)} points but Y has {len(y_data)} points"
+                )
+                return None
 
-        # Legend
-        ax.legend()
+        try:
+            # Proceed with plotting
+            ax = self._get_or_create_axes()
+            self._apply_theme_to_axes(ax)
+            self._has_data = True  # Mark that we have data
 
-        # Grid
-        ax.grid(True, alpha=0.3, color=grid_color)
+            # Plot each series
+            for series_name, series_data in data_dict.items():
+                x_data = series_data['x']
+                y_data = series_data['y']
+                color = series_data.get('color')
 
-        # Refresh canvas with idle callback to prevent threading issues
-        self.canvas.draw_idle()
+                if color and color in self.qa_colors:
+                    color = self.qa_colors[color]
 
-    def plot_pie(self, values: List[float], labels: List[str], 
+                ax.plot(x_data, y_data, label=series_name, color=color,
+                        marker='o', markersize=4)
+
+            # Set labels
+            if xlabel:
+                ax.set_xlabel(xlabel)
+            if ylabel:
+                ax.set_ylabel(ylabel)
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            grid_color = theme_colors["border"]["primary"]
+
+            if self.title:
+                ax.set_title(self.title, color=text_color)
+
+            # Legend
+            ax.legend()
+
+            # Grid
+            ax.grid(True, alpha=0.3, color=grid_color)
+
+            # Refresh canvas with idle callback to prevent threading issues
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Multi-Series Plot Error", f"Failed to create multi-series chart: {str(e)}")
+            return None
+
+    def plot_pie(self, values: List[float], labels: List[str],
                  colors: List[str] = None, explode: List[float] = None):
         """
-        Plot a pie chart.
-        
+        Plot a pie chart with data validation and error handling.
+
         Args:
             values: List of values for each pie slice
             labels: List of labels for each slice
             colors: Optional list of colors for each slice
             explode: Optional list of values to explode slices
+
+        Returns:
+            Tuple of (wedges, texts, autotexts) if successful, None if validation fails
         """
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        self._has_data = True
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Use provided colors or default palette
-        if colors is None:
-            colors = [self.qa_colors['pass'], self.qa_colors['warning'], 
-                     self.qa_colors['fail'], self.qa_colors['primary']]
-        
-        # Create pie chart
-        wedges, texts, autotexts = ax.pie(values, labels=labels, colors=colors,
-                                         explode=explode, autopct='%1.1f%%',
-                                         shadow=True, startangle=90)
-        
-        # Style the text
-        for text in texts:
-            text.set_color(text_color)
-            text.set_fontsize(10)
-        
-        for autotext in autotexts:
-            autotext.set_color('white')
-            autotext.set_fontsize(9)
-            autotext.set_weight('bold')
-        
-        # Equal aspect ratio ensures that pie is drawn as a circle
-        ax.axis('equal')
-        
-        if self.title:
-            ax.set_title(self.title, color=text_color, pad=20)
-        
-        # Apply theme to figure background
-        self._update_figure_theme()
-        
-        self.canvas.draw_idle()
+        # Data validation - check for empty or None data
+        if values is None or labels is None:
+            self.show_placeholder("No Data", "Cannot plot pie chart without values and labels")
+            return None
+
+        if not values or not labels:
+            self.show_placeholder("Empty Data", "Values and labels arrays are empty")
+            return None
+
+        # Check matching lengths
+        if len(values) != len(labels):
+            self.show_error(
+                "Data Mismatch",
+                f"Values has {len(values)} items but labels has {len(labels)} items. Arrays must have equal length."
+            )
+            return None
+
+        # Check minimum slices
+        if len(values) < 1:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 1 slice for a pie chart"
+            )
+            return None
+
+        # Validate optional arrays if provided
+        if colors is not None:
+            if len(colors) < len(values):
+                self.show_error(
+                    "Insufficient Colors",
+                    f"Colors has {len(colors)} items but need at least {len(values)} for all slices"
+                )
+                return None
+
+        if explode is not None:
+            if len(explode) != len(values):
+                self.show_error(
+                    "Explode Array Mismatch",
+                    f"Explode has {len(explode)} items but values has {len(values)} items"
+                )
+                return None
+
+        try:
+            # Proceed with plotting
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Use provided colors or default palette
+            if colors is None:
+                colors = [self.qa_colors['pass'], self.qa_colors['warning'],
+                         self.qa_colors['fail'], self.qa_colors['primary']]
+
+            # Create pie chart
+            wedges, texts, autotexts = ax.pie(values, labels=labels, colors=colors,
+                                             explode=explode, autopct='%1.1f%%',
+                                             shadow=True, startangle=90)
+
+            # Style the text
+            for text in texts:
+                text.set_color(text_color)
+                text.set_fontsize(10)
+
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontsize(9)
+                autotext.set_weight('bold')
+
+            # Equal aspect ratio ensures that pie is drawn as a circle
+            ax.axis('equal')
+
+            if self.title:
+                ax.set_title(self.title, color=text_color, pad=20)
+
+            # Apply theme to figure background
+            self._update_figure_theme()
+
+            self.canvas.draw_idle()
+
+            return wedges, texts, autotexts
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Pie Chart Error", f"Failed to create pie chart: {str(e)}")
+            return None
 
     def add_threshold_lines(self, thresholds: Dict[str, float],
                             orientation: str = 'horizontal'):
@@ -1669,8 +2359,36 @@ class ChartWidget(ctk.CTkFrame):
 
     def _cleanup(self):
         """Clean up resources when widget is destroyed."""
-        # Currently no cleanup needed
-        pass
+        try:
+            # Close the matplotlib figure to free memory
+            if hasattr(self, 'figure') and self.figure is not None:
+                plt.close(self.figure)
+                self.figure = None
+
+            # Destroy canvas widget if it exists
+            if hasattr(self, 'canvas') and self.canvas is not None:
+                try:
+                    self.canvas.get_tk_widget().destroy()
+                except:
+                    pass  # Widget may already be destroyed
+                self.canvas = None
+
+            # Clear toolbar reference
+            if hasattr(self, 'toolbar'):
+                self.toolbar = None
+
+        except Exception as e:
+            # Cleanup should never raise - just log
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Error during chart widget cleanup: {e}")
+            pass
+
+    def destroy(self):
+        """Override destroy to ensure proper cleanup."""
+        # Call our cleanup first
+        self._cleanup()
+        # Then call parent destroy
+        super().destroy()
 
     def _export_chart(self):
         """Export chart to file."""
@@ -1715,7 +2433,7 @@ class ChartWidget(ctk.CTkFrame):
     def plot_quality_dashboard(self, metrics: Dict[str, Dict[str, Any]]):
         """
         Create a quality health dashboard with traffic lights, gauges, and sparklines.
-        
+
         Args:
             metrics: Dictionary with metric names as keys and values containing:
                     - 'value': Current value
@@ -1724,67 +2442,109 @@ class ChartWidget(ctk.CTkFrame):
                     - 'history': List of recent values for sparkline
                     - 'target': Target value (optional)
                     - 'label': Display label (optional)
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
+        # Data validation - check for empty or None data
+        if metrics is None:
+            self.show_placeholder("No Metrics", "Cannot create dashboard without metrics data")
+            return None
+
+        if not isinstance(metrics, dict):
+            self.show_error("Invalid Data Type", "Metrics must be a dictionary")
+            return None
+
+        if not metrics:
+            self.show_placeholder("Empty Metrics", "Metrics dictionary is empty")
+            return None
+
+        # Validate that each metric has required fields
+        for metric_name, metric_data in metrics.items():
+            if not isinstance(metric_data, dict):
+                self.show_error(
+                    "Invalid Metric Format",
+                    f"Metric '{metric_name}' must be a dictionary with 'value', 'status', etc."
+                )
+                return None
+
+            # Check for required 'value' key
+            if 'value' not in metric_data:
+                self.show_error(
+                    "Missing Value",
+                    f"Metric '{metric_name}' is missing required 'value' key"
+                )
+                return None
+
+        try:
+            # Proceed with plotting
+            self.figure.clear()
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            bg_color = theme_colors["bg"]["secondary"]
+
+            # Create single main axis for better layout control
+            ax = self.figure.add_subplot(111)
+            self._apply_theme_to_axes(ax)
+            ax.axis('off')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+
+            # Calculate card layout
+            n_metrics = len(metrics)
+            n_cols = 2  # Fixed 2 columns for 4 metrics
+            n_rows = 2  # Fixed 2 rows for 4 metrics
+
+            # Card dimensions and spacing
+            card_width = 0.42
+            card_height = 0.35
+            spacing_x = 0.06
+            spacing_y = 0.1
+
+            # Center the grid
+            total_width = n_cols * card_width + (n_cols - 1) * spacing_x
+            total_height = n_rows * card_height + (n_rows - 1) * spacing_y
+            start_x = (1 - total_width) / 2
+            start_y = (1 - total_height) / 2 - 0.05  # Shift up slightly for title
+
+            # Draw each metric card
+            for idx, (metric_name, metric_data) in enumerate(metrics.items()):
+                row = idx // n_cols
+                col = idx % n_cols
+
+                # Calculate card position
+                x = start_x + col * (card_width + spacing_x)
+                y = start_y + (n_rows - 1 - row) * (card_height + spacing_y)
+
+                # Draw card background
+                card_rect = plt.Rectangle((x, y), card_width, card_height,
+                                        facecolor=bg_color, edgecolor=theme_colors["border"]["primary"],
+                                        linewidth=1, alpha=0.3, transform=ax.transAxes)
+                ax.add_patch(card_rect)
+
+                # Create metric content
+                self._draw_metric_card(ax, x, y, card_width, card_height, metric_name, metric_data, theme_colors)
         
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        bg_color = theme_colors["bg"]["secondary"]
-        
-        # Create single main axis for better layout control
-        ax = self.figure.add_subplot(111)
-        self._apply_theme_to_axes(ax)
-        ax.axis('off')
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        
-        # Calculate card layout
-        n_metrics = len(metrics)
-        n_cols = 2  # Fixed 2 columns for 4 metrics
-        n_rows = 2  # Fixed 2 rows for 4 metrics
-        
-        # Card dimensions and spacing
-        card_width = 0.42
-        card_height = 0.35
-        spacing_x = 0.06
-        spacing_y = 0.1
-        
-        # Center the grid
-        total_width = n_cols * card_width + (n_cols - 1) * spacing_x
-        total_height = n_rows * card_height + (n_rows - 1) * spacing_y
-        start_x = (1 - total_width) / 2
-        start_y = (1 - total_height) / 2 - 0.05  # Shift up slightly for title
-        
-        # Draw each metric card
-        for idx, (metric_name, metric_data) in enumerate(metrics.items()):
-            row = idx // n_cols
-            col = idx % n_cols
-            
-            # Calculate card position
-            x = start_x + col * (card_width + spacing_x)
-            y = start_y + (n_rows - 1 - row) * (card_height + spacing_y)
-            
-            # Draw card background
-            card_rect = plt.Rectangle((x, y), card_width, card_height,
-                                    facecolor=bg_color, edgecolor=theme_colors["border"]["primary"],
-                                    linewidth=1, alpha=0.3, transform=ax.transAxes)
-            ax.add_patch(card_rect)
-            
-            # Create metric content
-            self._draw_metric_card(ax, x, y, card_width, card_height, metric_name, metric_data, theme_colors)
-        
-        # Add title
-        ax.text(0.5, 0.95, 'Quality Health Dashboard', 
-                ha='center', va='top', fontsize=14, weight='bold',
-                color=text_color, transform=ax.transAxes)
-        ax.text(0.5, 0.91, 'Real-time metrics with trend indicators', 
-                ha='center', va='top', fontsize=10,
-                color=text_color, alpha=0.7, transform=ax.transAxes)
-        
-        self.canvas.draw_idle()
-    
+            # Add title
+            ax.text(0.5, 0.95, 'Quality Health Dashboard',
+                    ha='center', va='top', fontsize=14, weight='bold',
+                    color=text_color, transform=ax.transAxes)
+            ax.text(0.5, 0.91, 'Real-time metrics with trend indicators',
+                    ha='center', va='top', fontsize=10,
+                    color=text_color, alpha=0.7, transform=ax.transAxes)
+
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Quality Dashboard Error", f"Failed to create quality dashboard: {str(e)}")
+            return None
+
     def _draw_metric_card(self, ax, x, y, width, height, metric_name, metric_data, theme_colors):
         """Draw a single metric card with value, status indicator, and trend."""
         # Extract data
@@ -1941,254 +2701,369 @@ class ChartWidget(ctk.CTkFrame):
                    target: Optional[float] = None, title: str = "",
                    zones: Optional[List[Tuple[float, float, str]]] = None):
         """
-        Create a gauge chart.
-        
+        Create a gauge chart with data validation and error handling.
+
         Args:
             value: Current value
             min_val: Minimum value
-            max_val: Maximum value  
+            max_val: Maximum value
             target: Target value (optional)
             title: Gauge title
             zones: List of (start, end, color) tuples for colored zones
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        ax = self.figure.add_subplot(111, projection='polar')
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Set up the gauge
-        theta_min = np.pi * 0.75  # Start at 135 degrees
-        theta_max = np.pi * 0.25  # End at 45 degrees
-        
-        # Draw colored zones if provided
-        if zones:
-            for start, end, color in zones:
-                # Normalize to gauge range
-                start_norm = (start - min_val) / (max_val - min_val)
-                end_norm = (end - min_val) / (max_val - min_val)
-                
-                # Convert to angles
-                start_angle = theta_min + start_norm * (theta_max - theta_min + 2*np.pi)
-                end_angle = theta_min + end_norm * (theta_max - theta_min + 2*np.pi)
-                
-                # Draw wedge
-                wedge = plt.matplotlib.patches.Wedge((0, 0), 1, 
-                                                    np.degrees(start_angle),
-                                                    np.degrees(end_angle),
-                                                    width=0.3, 
-                                                    facecolor=color,
-                                                    alpha=0.3)
-                ax.add_patch(wedge)
-        
-        # Draw the gauge outline
-        theta = np.linspace(theta_min, theta_max + 2*np.pi, 100)
-        ax.plot(theta, np.ones_like(theta), 'k-', linewidth=2)
-        ax.plot(theta, np.ones_like(theta) * 0.7, 'k-', linewidth=1)
-        
-        # Add value indicator
-        value_norm = (value - min_val) / (max_val - min_val)
-        value_angle = theta_min + value_norm * (theta_max - theta_min + 2*np.pi)
-        ax.plot([value_angle, value_angle], [0.6, 1.1], 'r-', linewidth=3)
-        
-        # Add target line if provided
+        # Data validation - check for None value
+        if value is None:
+            self.show_placeholder("No Value", "Cannot plot gauge without a value")
+            return None
+
+        # Validate min < max
+        if min_val >= max_val:
+            self.show_error(
+                "Invalid Range",
+                f"Minimum value ({min_val}) must be less than maximum value ({max_val})"
+            )
+            return None
+
+        # Check if value is numeric
+        try:
+            value = float(value)
+            min_val = float(min_val)
+            max_val = float(max_val)
+        except (TypeError, ValueError) as e:
+            self.show_error(
+                "Invalid Value Type",
+                f"Value, min_val, and max_val must be numeric: {str(e)}"
+            )
+            return None
+
+        # Validate target if provided
         if target is not None:
-            target_norm = (target - min_val) / (max_val - min_val)
-            target_angle = theta_min + target_norm * (theta_max - theta_min + 2*np.pi)
-            ax.plot([target_angle, target_angle], [0.7, 1], 'g--', linewidth=2, alpha=0.7)
-        
-        # Add scale labels
-        for i in range(0, 101, 20):
-            val = min_val + (max_val - min_val) * i / 100
-            angle = theta_min + i/100 * (theta_max - theta_min + 2*np.pi)
-            ax.text(angle, 1.15, f'{val:.0f}', ha='center', va='center',
-                   fontsize=8, color=text_color)
-        
-        # Clear default polar labels
-        ax.set_ylim(0, 1.3)
-        ax.set_yticklabels([])
-        ax.set_xticklabels([])
-        ax.grid(False)
-        ax.spines['polar'].set_visible(False)
-        
-        # Add title and value
-        ax.text(0, -0.2, title, ha='center', va='center', 
-                transform=ax.transAxes, fontsize=12, weight='bold',
-                color=text_color)
-        ax.text(0, -0.35, f'{value:.1f}', ha='center', va='center',
-                transform=ax.transAxes, fontsize=20, color=text_color)
-        
-        self.canvas.draw_idle()
+            try:
+                target = float(target)
+            except (TypeError, ValueError):
+                self.show_error(
+                    "Invalid Target",
+                    "Target value must be numeric"
+                )
+                return None
+
+        # Validate zones if provided
+        if zones is not None:
+            if not zones:
+                self.show_error("Empty Zones", "Zones list is empty")
+                return None
+
+            for i, zone in enumerate(zones):
+                if not isinstance(zone, (tuple, list)) or len(zone) != 3:
+                    self.show_error(
+                        "Invalid Zone Format",
+                        f"Zone {i+1} must be a tuple/list of (start, end, color)"
+                    )
+                    return None
+
+        try:
+            # Proceed with plotting
+            self.figure.clear()
+            self._has_data = True
+
+            ax = self.figure.add_subplot(111, projection='polar')
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Set up the gauge
+            theta_min = np.pi * 0.75  # Start at 135 degrees
+            theta_max = np.pi * 0.25  # End at 45 degrees
+
+            # Draw colored zones if provided
+            if zones:
+                for start, end, color in zones:
+                    # Normalize to gauge range
+                    start_norm = (start - min_val) / (max_val - min_val)
+                    end_norm = (end - min_val) / (max_val - min_val)
+
+                    # Convert to angles
+                    start_angle = theta_min + start_norm * (theta_max - theta_min + 2*np.pi)
+                    end_angle = theta_min + end_norm * (theta_max - theta_min + 2*np.pi)
+
+                    # Draw wedge
+                    wedge = plt.matplotlib.patches.Wedge((0, 0), 1,
+                                                        np.degrees(start_angle),
+                                                        np.degrees(end_angle),
+                                                        width=0.3,
+                                                        facecolor=color,
+                                                        alpha=0.3)
+                    ax.add_patch(wedge)
+
+            # Draw the gauge outline
+            theta = np.linspace(theta_min, theta_max + 2*np.pi, 100)
+            ax.plot(theta, np.ones_like(theta), 'k-', linewidth=2)
+            ax.plot(theta, np.ones_like(theta) * 0.7, 'k-', linewidth=1)
+
+            # Add value indicator
+            value_norm = (value - min_val) / (max_val - min_val)
+            value_angle = theta_min + value_norm * (theta_max - theta_min + 2*np.pi)
+            ax.plot([value_angle, value_angle], [0.6, 1.1], 'r-', linewidth=3)
+
+            # Add target line if provided
+            if target is not None:
+                target_norm = (target - min_val) / (max_val - min_val)
+                target_angle = theta_min + target_norm * (theta_max - theta_min + 2*np.pi)
+                ax.plot([target_angle, target_angle], [0.7, 1], 'g--', linewidth=2, alpha=0.7)
+
+            # Add scale labels
+            for i in range(0, 101, 20):
+                val = min_val + (max_val - min_val) * i / 100
+                angle = theta_min + i/100 * (theta_max - theta_min + 2*np.pi)
+                ax.text(angle, 1.15, f'{val:.0f}', ha='center', va='center',
+                       fontsize=8, color=text_color)
+
+            # Clear default polar labels
+            ax.set_ylim(0, 1.3)
+            ax.set_yticklabels([])
+            ax.set_xticklabels([])
+            ax.grid(False)
+            ax.spines['polar'].set_visible(False)
+
+            # Add title and value
+            ax.text(0, -0.2, title, ha='center', va='center',
+                    transform=ax.transAxes, fontsize=12, weight='bold',
+                    color=text_color)
+            ax.text(0, -0.35, f'{value:.1f}', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=20, color=text_color)
+
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Gauge Chart Error", f"Failed to create gauge chart: {str(e)}")
+            return None
     
     def plot_early_warning_system(self, data: pd.DataFrame):
         """
         Create an early warning system with moving range and CUSUM charts.
-        
+
+        Validates data and creates a comprehensive dashboard with:
+        - Control chart with violation detection
+        - Moving range chart for variation detection
+        - CUSUM shift detection indicator
+
         Args:
             data: DataFrame with 'trim_date' and 'sigma_gradient' columns
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Create subplots with better spacing
-        fig = self.figure
-        gs = fig.add_gridspec(3, 1, height_ratios=[2, 1.5, 0.5], hspace=0.4)
-        
-        # 1. Main control chart with violations
-        ax1 = fig.add_subplot(gs[0])
-        self._apply_theme_to_axes(ax1)
-        
-        # Plot sigma gradient with control limits
-        dates = data['trim_date']
-        values = data['sigma_gradient']
-        
-        # Calculate control limits
-        mean_val = values.mean()
-        std_val = values.std()
-        ucl = mean_val + 3 * std_val
-        lcl = mean_val - 3 * std_val
-        uwl = mean_val + 2 * std_val
-        lwl = mean_val - 2 * std_val
-        
-        # Plot main data
-        ax1.plot(dates, values, 'o-', color=self.qa_colors['primary'], 
-                markersize=4, linewidth=1.5, label='Sigma Gradient')
-        
-        # Plot control limits with shorter labels
-        ax1.axhline(ucl, color='red', linestyle='--', alpha=0.5, label=f'UCL: {ucl:.2f}')
-        ax1.axhline(uwl, color='orange', linestyle=':', alpha=0.5, label=f'UWL: {uwl:.2f}')
-        ax1.axhline(mean_val, color='green', linestyle='-', alpha=0.5, label=f'Mean: {mean_val:.2f}')
-        ax1.axhline(lwl, color='orange', linestyle=':', alpha=0.5, label=f'LWL: {lwl:.2f}')
-        ax1.axhline(lcl, color='red', linestyle='--', alpha=0.5, label=f'LCL: {lcl:.2f}')
-        
-        # Highlight violations
-        violations = ((values > ucl) | (values < lcl))
-        warnings = ((values > uwl) & (values <= ucl)) | ((values < lwl) & (values >= lcl))
-        
-        if violations.any():
-            ax1.scatter(dates[violations], values[violations], 
-                       color='red', s=100, marker='x', linewidth=3, label='Violations', zorder=5)
-        if warnings.any():
-            ax1.scatter(dates[warnings], values[warnings], 
-                       color='orange', s=80, marker='^', label='Warnings', zorder=5)
-        
-        ax1.set_ylabel('Sigma Gradient', fontsize=10)
-        ax1.set_title('Control Chart with Violation Detection', fontsize=12, color=text_color, pad=15)
-        # Place legend outside plot area to avoid overlap
-        ax1.legend(loc='center left', fontsize=6, ncol=2, bbox_to_anchor=(1.02, 0.5), framealpha=0.9)
-        ax1.grid(True, alpha=0.3)
-        
-        # Format dates with better spacing
-        date_range = (dates.max() - dates.min()).days if hasattr(dates.max() - dates.min(), 'days') else 30
-        if date_range > 60:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-        elif date_range > 30:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-            ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
-        else:
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-            ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
-        
-        # 2. Moving Range Chart
-        ax2 = fig.add_subplot(gs[1])
-        self._apply_theme_to_axes(ax2)
-        
-        # Calculate moving range
-        moving_range = np.abs(values.diff())
-        avg_mr = moving_range.mean()
-        ucl_mr = avg_mr * 3.267  # D4 constant for n=2
-        
-        ax2.plot(dates[1:], moving_range[1:], 'o-', color=self.qa_colors['secondary'], 
-                markersize=3, linewidth=1, label='Moving Range')
-        ax2.axhline(avg_mr, color='green', linestyle='-', alpha=0.5, label=f'Avg MR ({avg_mr:.3f})')
-        ax2.axhline(ucl_mr, color='red', linestyle='--', alpha=0.5, label=f'UCL ({ucl_mr:.3f})')
-        
-        # Highlight large variations
-        large_variations = moving_range > ucl_mr
-        if large_variations.any():
-            ax2.scatter(dates[large_variations], moving_range[large_variations],
-                       color='red', s=80, marker='x', linewidth=2, label='High Variation', zorder=5)
-        
-        ax2.set_ylabel('Moving Range', fontsize=9)
-        ax2.set_title('Moving Range Chart - Variation Detection', fontsize=11, color=text_color, pad=10)
-        ax2.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.02, 0.98))
-        ax2.grid(True, alpha=0.3)
-        
-        # Format dates with better spacing
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
-        
-        # 3. CUSUM Indicator Bar
-        ax3 = fig.add_subplot(gs[2])
-        self._apply_theme_to_axes(ax3)
-        
-        # Calculate CUSUM
-        target = 0.5  # Target sigma gradient
-        cusum_pos = np.zeros(len(values))
-        cusum_neg = np.zeros(len(values))
-        
-        for i in range(1, len(values)):
-            cusum_pos[i] = max(0, values.iloc[i] - target + cusum_pos[i-1])
-            cusum_neg[i] = min(0, values.iloc[i] - target + cusum_neg[i-1])
-        
-        # Detect shifts
-        h = 4 * std_val  # Decision interval
-        shift_up = cusum_pos > h
-        shift_down = cusum_neg < -h
-        
-        # Create status bar
-        status = np.zeros(len(dates))
-        status[shift_up] = 1  # Upward shift
-        status[shift_down] = -1  # Downward shift
-        
-        # Plot as colored bars
-        for i in range(len(dates)):
-            if status[i] == 1:
-                ax3.axvspan(i-0.5, i+0.5, color='red', alpha=0.7)
-            elif status[i] == -1:
-                ax3.axvspan(i-0.5, i+0.5, color='blue', alpha=0.7)
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot create early warning system without data")
+            return None
+
+        if not isinstance(data, pd.DataFrame):
+            self.show_error("Invalid Data Type", "Data must be a pandas DataFrame")
+            return None
+
+        if data.empty:
+            self.show_placeholder("Empty Data", "DataFrame has no rows")
+            return None
+
+        # Check for required columns
+        required_columns = ['trim_date', 'sigma_gradient']
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            self.show_error(
+                "Missing Columns",
+                f"DataFrame must have columns: {', '.join(required_columns)}\nMissing: {', '.join(missing_columns)}"
+            )
+            return None
+
+        # Check minimum data points for moving range (need at least 2)
+        if len(data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 2 data points for early warning system (moving range requires 2+ points)"
+            )
+            return None
+
+        try:
+            self.figure.clear()
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Create subplots with better spacing
+            fig = self.figure
+            gs = fig.add_gridspec(3, 1, height_ratios=[2, 1.5, 0.5], hspace=0.4)
+
+            # 1. Main control chart with violations
+            ax1 = fig.add_subplot(gs[0])
+            self._apply_theme_to_axes(ax1)
+
+            # Plot sigma gradient with control limits
+            dates = data['trim_date']
+            values = data['sigma_gradient']
+
+            # Calculate control limits
+            mean_val = values.mean()
+            std_val = values.std()
+            ucl = mean_val + 3 * std_val
+            lcl = mean_val - 3 * std_val
+            uwl = mean_val + 2 * std_val
+            lwl = mean_val - 2 * std_val
+
+            # Plot main data
+            ax1.plot(dates, values, 'o-', color=self.qa_colors['primary'],
+                    markersize=4, linewidth=1.5, label='Sigma Gradient')
+
+            # Plot control limits with shorter labels
+            ax1.axhline(ucl, color='red', linestyle='--', alpha=0.5, label=f'UCL: {ucl:.2f}')
+            ax1.axhline(uwl, color='orange', linestyle=':', alpha=0.5, label=f'UWL: {uwl:.2f}')
+            ax1.axhline(mean_val, color='green', linestyle='-', alpha=0.5, label=f'Mean: {mean_val:.2f}')
+            ax1.axhline(lwl, color='orange', linestyle=':', alpha=0.5, label=f'LWL: {lwl:.2f}')
+            ax1.axhline(lcl, color='red', linestyle='--', alpha=0.5, label=f'LCL: {lcl:.2f}')
+
+            # Highlight violations
+            violations = ((values > ucl) | (values < lcl))
+            warnings = ((values > uwl) & (values <= ucl)) | ((values < lwl) & (values >= lcl))
+
+            if violations.any():
+                ax1.scatter(dates[violations], values[violations],
+                           color='red', s=100, marker='x', linewidth=3, label='Violations', zorder=5)
+            if warnings.any():
+                ax1.scatter(dates[warnings], values[warnings],
+                           color='orange', s=80, marker='^', label='Warnings', zorder=5)
+
+            ax1.set_ylabel('Sigma Gradient', fontsize=10)
+            ax1.set_title('Control Chart with Violation Detection', fontsize=12, color=text_color, pad=15)
+            # Place legend outside plot area to avoid overlap
+            ax1.legend(loc='center left', fontsize=6, ncol=2, bbox_to_anchor=(1.02, 0.5), framealpha=0.9)
+            ax1.grid(True, alpha=0.3)
+
+            # Format dates with better spacing
+            date_range = (dates.max() - dates.min()).days if hasattr(dates.max() - dates.min(), 'days') else 30
+            if date_range > 60:
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+                ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+            elif date_range > 30:
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+                ax1.xaxis.set_major_locator(mdates.WeekdayLocator(interval=1))
             else:
-                ax3.axvspan(i-0.5, i+0.5, color='green', alpha=0.3)
-        
-        ax3.set_xlim(-0.5, len(dates)-0.5)
-        ax3.set_ylim(-0.1, 1.1)
-        ax3.set_xlabel('Time', fontsize=10)
-        ax3.set_title('CUSUM Shift Detection: Green=Normal, Red=Upward Shift, Blue=Downward Shift', 
-                     fontsize=10, color=text_color)
-        ax3.set_yticks([])
-        
-        # Add text indicators
-        if shift_up.any():
-            first_up = np.where(shift_up)[0][0]
-            ax3.text(first_up, 0.5, 'SHIFT UP', ha='center', va='center', 
-                    fontsize=8, color='white', weight='bold')
-        if shift_down.any():
-            first_down = np.where(shift_down)[0][0]
-            ax3.text(first_down, 0.5, 'SHIFT DOWN', ha='center', va='center',
-                    fontsize=8, color='white', weight='bold')
-        
-        # Main title (without overlapping subtitle due to layout constraints)
-        fig.suptitle('Early Warning System Dashboard', fontsize=14, color=text_color, y=0.98)
-        
-        # Apply tight layout to prevent overlaps
-        plt.tight_layout(rect=[0, 0, 0.85, 0.96])  # Leave space for legend on right and title on top
-        
-        # Layout is handled by constrained_layout
-        self.canvas.draw_idle()
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+                ax1.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+
+            # 2. Moving Range Chart
+            ax2 = fig.add_subplot(gs[1])
+            self._apply_theme_to_axes(ax2)
+
+            # Calculate moving range
+            moving_range = np.abs(values.diff())
+            avg_mr = moving_range.mean()
+            ucl_mr = avg_mr * 3.267  # D4 constant for n=2
+
+            ax2.plot(dates[1:], moving_range[1:], 'o-', color=self.qa_colors['secondary'],
+                    markersize=3, linewidth=1, label='Moving Range')
+            ax2.axhline(avg_mr, color='green', linestyle='-', alpha=0.5, label=f'Avg MR ({avg_mr:.3f})')
+            ax2.axhline(ucl_mr, color='red', linestyle='--', alpha=0.5, label=f'UCL ({ucl_mr:.3f})')
+
+            # Highlight large variations
+            large_variations = moving_range > ucl_mr
+            if large_variations.any():
+                ax2.scatter(dates[large_variations], moving_range[large_variations],
+                           color='red', s=80, marker='x', linewidth=2, label='High Variation', zorder=5)
+
+            ax2.set_ylabel('Moving Range', fontsize=9)
+            ax2.set_title('Moving Range Chart - Variation Detection', fontsize=11, color=text_color, pad=10)
+            ax2.legend(loc='upper left', fontsize=7, bbox_to_anchor=(0.02, 0.98))
+            ax2.grid(True, alpha=0.3)
+
+            # Format dates with better spacing
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+            plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+
+            # 3. CUSUM Indicator Bar
+            ax3 = fig.add_subplot(gs[2])
+            self._apply_theme_to_axes(ax3)
+
+            # Calculate CUSUM
+            target = 0.5  # Target sigma gradient
+            cusum_pos = np.zeros(len(values))
+            cusum_neg = np.zeros(len(values))
+
+            for i in range(1, len(values)):
+                cusum_pos[i] = max(0, values.iloc[i] - target + cusum_pos[i-1])
+                cusum_neg[i] = min(0, values.iloc[i] - target + cusum_neg[i-1])
+
+            # Detect shifts
+            h = 4 * std_val  # Decision interval
+            shift_up = cusum_pos > h
+            shift_down = cusum_neg < -h
+
+            # Create status bar
+            status = np.zeros(len(dates))
+            status[shift_up] = 1  # Upward shift
+            status[shift_down] = -1  # Downward shift
+
+            # Plot as colored bars
+            for i in range(len(dates)):
+                if status[i] == 1:
+                    ax3.axvspan(i-0.5, i+0.5, color='red', alpha=0.7)
+                elif status[i] == -1:
+                    ax3.axvspan(i-0.5, i+0.5, color='blue', alpha=0.7)
+                else:
+                    ax3.axvspan(i-0.5, i+0.5, color='green', alpha=0.3)
+
+            ax3.set_xlim(-0.5, len(dates)-0.5)
+            ax3.set_ylim(-0.1, 1.1)
+            ax3.set_xlabel('Time', fontsize=10)
+            ax3.set_title('CUSUM Shift Detection: Green=Normal, Red=Upward Shift, Blue=Downward Shift',
+                         fontsize=10, color=text_color)
+            ax3.set_yticks([])
+
+            # Add text indicators
+            if shift_up.any():
+                first_up = np.where(shift_up)[0][0]
+                ax3.text(first_up, 0.5, 'SHIFT UP', ha='center', va='center',
+                        fontsize=8, color='white', weight='bold')
+            if shift_down.any():
+                first_down = np.where(shift_down)[0][0]
+                ax3.text(first_down, 0.5, 'SHIFT DOWN', ha='center', va='center',
+                        fontsize=8, color='white', weight='bold')
+
+            # Main title (without overlapping subtitle due to layout constraints)
+            fig.suptitle('Early Warning System Dashboard', fontsize=14, color=text_color, y=0.98)
+
+            # Apply tight layout to prevent overlaps
+            plt.tight_layout(rect=[0, 0, 0.85, 0.96])  # Leave space for legend on right and title on top
+
+            # Layout is handled by constrained_layout
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Early Warning System Error", f"Failed to create early warning system: {str(e)}")
+            return None
     
     def plot_quality_dashboard_cards(self, metrics: Dict[str, Dict]):
         """
         Create a quality health dashboard with KPI cards and sparklines.
-        
+
+        Validates data and creates a card-based dashboard with:
+        - KPI cards with color-coded status
+        - Trend indicators
+        - Optional sparkline history
+        - Overall health summary
+
         Args:
             metrics: Dictionary of metrics with format:
                     {
@@ -2202,111 +3077,164 @@ class ChartWidget(ctk.CTkFrame):
                         },
                         ...
                     }
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        bg_color = theme_colors["bg"]["secondary"]
-        
-        # Create single axis for dashboard
-        ax = self.figure.add_subplot(111)
-        self._apply_theme_to_axes(ax)
-        ax.axis('off')
-        
-        # Calculate card positions
-        num_metrics = len(metrics)
-        cols = min(num_metrics, 2)  # Max 2 columns
-        rows = (num_metrics + 1) // 2
-        
-        # Card dimensions
-        card_width = 0.4
-        card_height = 0.35
-        spacing_x = 0.1
-        spacing_y = 0.15
-        
-        # Starting position
-        start_x = (1 - (cols * card_width + (cols - 1) * spacing_x)) / 2
-        start_y = (1 - (rows * card_height + (rows - 1) * spacing_y)) / 2
-        
-        # Status colors
-        status_colors = {
-            'green': self.qa_colors['good'],
-            'yellow': self.qa_colors['warning'],
-            'red': self.qa_colors['bad']
-        }
-        
-        # Draw each metric card
-        for idx, (metric_name, metric_data) in enumerate(metrics.items()):
-            row = idx // cols
-            col = idx % cols
-            
-            # Calculate card position
-            x = start_x + col * (card_width + spacing_x)
-            y = start_y + (rows - 1 - row) * (card_height + spacing_y)  # Top to bottom
-            
-            # Draw card background
-            card_bg = plt.Rectangle((x, y), card_width, card_height,
-                                  facecolor=bg_color, edgecolor=text_color,
-                                  linewidth=1, alpha=0.1, transform=ax.transAxes)
-            ax.add_patch(card_bg)
-            
-            # Metric label
-            ax.text(x + card_width/2, y + card_height - 0.05, metric_data['label'],
-                   ha='center', va='top', fontsize=11, weight='bold',
-                   color=text_color, transform=ax.transAxes)
-            
-            # Value with color based on status
-            value_color = status_colors.get(metric_data['status'], text_color)
-            ax.text(x + card_width/2, y + card_height/2, f"{metric_data['value']:.1f}%",
-                   ha='center', va='center', fontsize=24, weight='bold',
-                   color=value_color, transform=ax.transAxes)
-            
-            # Target line
-            if 'target' in metric_data:
-                ax.text(x + card_width/2, y + card_height/2 - 0.08, 
-                       f"Target: {metric_data['target']}%",
-                       ha='center', va='center', fontsize=9,
-                       color=text_color, alpha=0.7, transform=ax.transAxes)
-            
-            # Trend arrow
-            if 'trend' in metric_data:
-                trend_symbols = {'up': '↑', 'down': '↓', 'stable': '→'}
-                trend_colors = {'up': 'green', 'down': 'red', 'stable': 'gray'}
-                trend_symbol = trend_symbols.get(metric_data['trend'], '')
-                trend_color = trend_colors.get(metric_data['trend'], text_color)
-                
-                ax.text(x + card_width - 0.05, y + card_height - 0.05, trend_symbol,
-                       ha='right', va='top', fontsize=16, weight='bold',
-                       color=trend_color, transform=ax.transAxes)
-            
-            # Mini sparkline if history is provided
-            if 'history' in metric_data and len(metric_data['history']) > 1:
-                spark_ax = ax.inset_axes([x + 0.05, y + 0.05, card_width - 0.1, 0.15],
-                                       transform=ax.transAxes)
-                spark_ax.plot(metric_data['history'], color=value_color, linewidth=2)
-                spark_ax.axis('off')
-                spark_ax.set_xlim(0, len(metric_data['history']) - 1)
-                
-        # Title
-        self.figure.suptitle('Quality Health Dashboard', fontsize=14, color=text_color)
-        
-        # Update info text based on overall performance
-        avg_value = sum(m['value'] for m in metrics.values()) / len(metrics)
-        if avg_value >= 90:
-            info_text = "All systems operating within target parameters"
-        elif avg_value >= 75:
-            info_text = "Some metrics below target - monitoring required"
-        else:
-            info_text = "Multiple metrics below target - action needed"
-            
-        ax.text(0.5, 0.02, info_text, ha='center', va='bottom',
-               fontsize=10, color=text_color, alpha=0.7, transform=ax.transAxes)
-        
-        # Layout is handled by constrained_layout
-        self.canvas.draw_idle()
+        # Data validation - check for empty or None data
+        if metrics is None:
+            self.show_placeholder("No Metrics", "Cannot create quality dashboard without metrics")
+            return None
+
+        if not isinstance(metrics, dict):
+            self.show_error("Invalid Data Type", "Metrics must be a dictionary")
+            return None
+
+        if not metrics:
+            self.show_placeholder("Empty Metrics", "Metrics dictionary is empty")
+            return None
+
+        # Validate that each metric has required fields
+        required_keys = ['value', 'status', 'label']
+        for metric_name, metric_data in metrics.items():
+            if not isinstance(metric_data, dict):
+                self.show_error(
+                    "Invalid Metric Format",
+                    f"Metric '{metric_name}' must be a dictionary with required keys: {', '.join(required_keys)}"
+                )
+                return None
+
+            # Check for required keys
+            missing_keys = [key for key in required_keys if key not in metric_data]
+            if missing_keys:
+                self.show_error(
+                    "Missing Required Keys",
+                    f"Metric '{metric_name}' is missing required keys: {', '.join(missing_keys)}"
+                )
+                return None
+
+            # Validate value is numeric
+            try:
+                float(metric_data['value'])
+            except (TypeError, ValueError):
+                self.show_error(
+                    "Invalid Value",
+                    f"Metric '{metric_name}' has non-numeric value: {metric_data['value']}"
+                )
+                return None
+
+        try:
+            self.figure.clear()
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+            bg_color = theme_colors["bg"]["secondary"]
+
+            # Create single axis for dashboard
+            ax = self.figure.add_subplot(111)
+            self._apply_theme_to_axes(ax)
+            ax.axis('off')
+
+            # Calculate card positions
+            num_metrics = len(metrics)
+            cols = min(num_metrics, 2)  # Max 2 columns
+            rows = (num_metrics + 1) // 2
+
+            # Card dimensions
+            card_width = 0.4
+            card_height = 0.35
+            spacing_x = 0.1
+            spacing_y = 0.15
+
+            # Starting position
+            start_x = (1 - (cols * card_width + (cols - 1) * spacing_x)) / 2
+            start_y = (1 - (rows * card_height + (rows - 1) * spacing_y)) / 2
+
+            # Status colors
+            status_colors = {
+                'green': self.qa_colors['good'],
+                'yellow': self.qa_colors['warning'],
+                'red': self.qa_colors['bad']
+            }
+
+            # Draw each metric card
+            for idx, (metric_name, metric_data) in enumerate(metrics.items()):
+                row = idx // cols
+                col = idx % cols
+
+                # Calculate card position
+                x = start_x + col * (card_width + spacing_x)
+                y = start_y + (rows - 1 - row) * (card_height + spacing_y)  # Top to bottom
+
+                # Draw card background
+                card_bg = plt.Rectangle((x, y), card_width, card_height,
+                                      facecolor=bg_color, edgecolor=text_color,
+                                      linewidth=1, alpha=0.1, transform=ax.transAxes)
+                ax.add_patch(card_bg)
+
+                # Metric label
+                ax.text(x + card_width/2, y + card_height - 0.05, metric_data['label'],
+                       ha='center', va='top', fontsize=11, weight='bold',
+                       color=text_color, transform=ax.transAxes)
+
+                # Value with color based on status
+                value_color = status_colors.get(metric_data['status'], text_color)
+                ax.text(x + card_width/2, y + card_height/2, f"{metric_data['value']:.1f}%",
+                       ha='center', va='center', fontsize=24, weight='bold',
+                       color=value_color, transform=ax.transAxes)
+
+                # Target line
+                if 'target' in metric_data:
+                    ax.text(x + card_width/2, y + card_height/2 - 0.08,
+                           f"Target: {metric_data['target']}%",
+                           ha='center', va='center', fontsize=9,
+                           color=text_color, alpha=0.7, transform=ax.transAxes)
+
+                # Trend arrow
+                if 'trend' in metric_data:
+                    trend_symbols = {'up': '↑', 'down': '↓', 'stable': '→'}
+                    trend_colors = {'up': 'green', 'down': 'red', 'stable': 'gray'}
+                    trend_symbol = trend_symbols.get(metric_data['trend'], '')
+                    trend_color = trend_colors.get(metric_data['trend'], text_color)
+
+                    ax.text(x + card_width - 0.05, y + card_height - 0.05, trend_symbol,
+                           ha='right', va='top', fontsize=16, weight='bold',
+                           color=trend_color, transform=ax.transAxes)
+
+                # Mini sparkline if history is provided
+                if 'history' in metric_data and len(metric_data['history']) > 1:
+                    spark_ax = ax.inset_axes([x + 0.05, y + 0.05, card_width - 0.1, 0.15],
+                                           transform=ax.transAxes)
+                    spark_ax.plot(metric_data['history'], color=value_color, linewidth=2)
+                    spark_ax.axis('off')
+                    spark_ax.set_xlim(0, len(metric_data['history']) - 1)
+
+            # Title
+            self.figure.suptitle('Quality Health Dashboard', fontsize=14, color=text_color)
+
+            # Update info text based on overall performance
+            avg_value = sum(m['value'] for m in metrics.values()) / len(metrics)
+            if avg_value >= 90:
+                info_text = "All systems operating within target parameters"
+            elif avg_value >= 75:
+                info_text = "Some metrics below target - monitoring required"
+            else:
+                info_text = "Multiple metrics below target - action needed"
+
+            ax.text(0.5, 0.02, info_text, ha='center', va='bottom',
+                   fontsize=10, color=text_color, alpha=0.7, transform=ax.transAxes)
+
+            # Layout is handled by constrained_layout
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Quality Dashboard Cards Error", f"Failed to create quality dashboard: {str(e)}")
+            return None
     
     def plot_early_warning_system(self, data: pd.DataFrame):
         """
@@ -2493,431 +3421,525 @@ class ChartWidget(ctk.CTkFrame):
     def plot_failure_pattern_analysis(self, data: pd.DataFrame):
         """
         Create failure pattern analysis with heat map, Pareto chart, and projection.
-        
+
+        Validates data and creates comprehensive failure analysis with:
+        - Time-based heat map showing failure patterns by week
+        - Pareto chart identifying top failure types
+        - Failure rate trend with 7-day projection
+
         Args:
-            data: DataFrame with columns including 'trim_date', 'track_status', 
+            data: DataFrame with columns including 'trim_date', 'track_status',
                   'sigma_gradient', 'linearity_pass', etc.
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Create subplots with better spacing
-        fig = self.figure
-        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[2, 1], hspace=0.4, wspace=0.35)
-        
-        # 1. Time-based Heat Map (top left)
-        ax1 = fig.add_subplot(gs[0, 0])
-        self._apply_theme_to_axes(ax1)
-        
-        # Prepare heat map data
-        fail_data = data[data['track_status'] == 'Fail'].copy()
-        
-        if len(fail_data) > 0:
-            # Create failure categories
-            fail_data['failure_type'] = 'Other'
-            # Note: Without ML threshold context, we categorize based on failure status
-            # The actual threshold determination should come from ML models
-            if 'linearity_pass' in fail_data.columns:
-                fail_data.loc[fail_data['linearity_pass'] == False, 'failure_type'] = 'Linearity'
-            if 'risk_category' in fail_data.columns:
-                fail_data.loc[fail_data['risk_category'] == 'High', 'failure_type'] = 'High Risk'
-            
-            # Group by week and failure type
-            fail_data['week'] = fail_data['trim_date'].dt.to_period('W')
-            heatmap_data = fail_data.groupby(['week', 'failure_type']).size().unstack(fill_value=0)
-            
-            if len(heatmap_data) > 0:
-                # Create heat map
-                im = ax1.imshow(heatmap_data.T, aspect='auto', cmap='Reds', interpolation='nearest')
-                
-                # Set ticks
-                ax1.set_xticks(range(len(heatmap_data.index)))
-                ax1.set_xticklabels([str(w).split('/')[1] if '/' in str(w) else str(w) 
-                                    for w in heatmap_data.index], rotation=45, ha='right')
-                ax1.set_yticks(range(len(heatmap_data.columns)))
-                ax1.set_yticklabels(heatmap_data.columns)
-                
-                # Add text annotations
-                for i in range(len(heatmap_data.columns)):
-                    for j in range(len(heatmap_data.index)):
-                        value = heatmap_data.iloc[j, i]
-                        if value > 0:
-                            ax1.text(j, i, str(value), ha='center', va='center',
-                                    color='white' if value > heatmap_data.max().max()/2 else 'black',
-                                    fontsize=8)
-                
-                # Colorbar - use figure's colorbar method to avoid warning
-                cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
-                cbar.set_label('Failure Count', fontsize=8)
-                
-                ax1.set_title('Failure Pattern Heat Map (by Week)', fontsize=10, color=text_color, pad=10)
-                ax1.set_xlabel('Week', fontsize=9)
-                ax1.set_ylabel('Failure Type', fontsize=9)
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot create failure pattern analysis without data")
+            return None
+
+        if not isinstance(data, pd.DataFrame):
+            self.show_error("Invalid Data Type", "Data must be a pandas DataFrame")
+            return None
+
+        if data.empty:
+            self.show_placeholder("Empty Data", "DataFrame has no rows")
+            return None
+
+        # Check for required columns
+        required_columns = ['trim_date', 'track_status']
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            self.show_error(
+                "Missing Columns",
+                f"DataFrame must have columns: {', '.join(required_columns)}\nMissing: {', '.join(missing_columns)}"
+            )
+            return None
+
+        # Check minimum data points for meaningful analysis (need at least 4 for projection)
+        if len(data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 2 data points for failure pattern analysis"
+            )
+            return None
+
+        try:
+            self.figure.clear()
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Create subplots with better spacing
+            fig = self.figure
+            gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], width_ratios=[2, 1], hspace=0.4, wspace=0.35)
+
+            # 1. Time-based Heat Map (top left)
+            ax1 = fig.add_subplot(gs[0, 0])
+            self._apply_theme_to_axes(ax1)
+
+            # Prepare heat map data
+            fail_data = data[data['track_status'] == 'Fail'].copy()
+
+            if len(fail_data) > 0:
+                # Create failure categories
+                fail_data['failure_type'] = 'Other'
+                # Note: Without ML threshold context, we categorize based on failure status
+                # The actual threshold determination should come from ML models
+                if 'linearity_pass' in fail_data.columns:
+                    fail_data.loc[fail_data['linearity_pass'] == False, 'failure_type'] = 'Linearity'
+                if 'risk_category' in fail_data.columns:
+                    fail_data.loc[fail_data['risk_category'] == 'High', 'failure_type'] = 'High Risk'
+
+                # Group by week and failure type
+                fail_data['week'] = fail_data['trim_date'].dt.to_period('W')
+                heatmap_data = fail_data.groupby(['week', 'failure_type']).size().unstack(fill_value=0)
+
+                if len(heatmap_data) > 0:
+                    # Create heat map
+                    im = ax1.imshow(heatmap_data.T, aspect='auto', cmap='Reds', interpolation='nearest')
+
+                    # Set ticks
+                    ax1.set_xticks(range(len(heatmap_data.index)))
+                    ax1.set_xticklabels([str(w).split('/')[1] if '/' in str(w) else str(w)
+                                        for w in heatmap_data.index], rotation=45, ha='right')
+                    ax1.set_yticks(range(len(heatmap_data.columns)))
+                    ax1.set_yticklabels(heatmap_data.columns)
+
+                    # Add text annotations
+                    for i in range(len(heatmap_data.columns)):
+                        for j in range(len(heatmap_data.index)):
+                            value = heatmap_data.iloc[j, i]
+                            if value > 0:
+                                ax1.text(j, i, str(value), ha='center', va='center',
+                                        color='white' if value > heatmap_data.max().max()/2 else 'black',
+                                        fontsize=8)
+
+                    # Colorbar - use figure's colorbar method to avoid warning
+                    cbar = fig.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+                    cbar.set_label('Failure Count', fontsize=8)
+
+                    ax1.set_title('Failure Pattern Heat Map (by Week)', fontsize=10, color=text_color, pad=10)
+                    ax1.set_xlabel('Week', fontsize=9)
+                    ax1.set_ylabel('Failure Type', fontsize=9)
+                else:
+                    ax1.text(0.5, 0.5, 'No failure patterns to display',
+                            ha='center', va='center', transform=ax1.transAxes,
+                            fontsize=12, color=text_color)
+                    ax1.axis('off')
             else:
-                ax1.text(0.5, 0.5, 'No failure patterns to display', 
+                ax1.text(0.5, 0.5, 'No failures detected',
                         ha='center', va='center', transform=ax1.transAxes,
-                        fontsize=12, color=text_color)
+                        fontsize=12, color='green')
                 ax1.axis('off')
-        else:
-            ax1.text(0.5, 0.5, 'No failures detected', 
-                    ha='center', va='center', transform=ax1.transAxes,
-                    fontsize=12, color='green')
-            ax1.axis('off')
-        
-        # 2. Pareto Chart (top right)
-        ax2 = fig.add_subplot(gs[0, 1])
-        self._apply_theme_to_axes(ax2)
-        
-        if len(fail_data) > 0:
-            # Count failure causes
-            failure_counts = fail_data['failure_type'].value_counts()
-            
-            # Sort and calculate cumulative percentage
-            cumulative_percent = failure_counts.cumsum() / failure_counts.sum() * 100
-            
-            # Create bar chart
-            bars = ax2.bar(range(len(failure_counts)), failure_counts.values, 
-                           color=self.qa_colors['fail'], alpha=0.7)
-            
-            # Add value labels
-            for i, (bar, count) in enumerate(zip(bars, failure_counts.values)):
-                ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-                        str(count), ha='center', va='bottom', fontsize=8)
-            
-            # Add cumulative line
-            ax2_twin = ax2.twinx()
-            ax2_twin.plot(range(len(failure_counts)), cumulative_percent.values, 
-                         'o-', color=self.qa_colors['warning'], linewidth=2, markersize=6)
-            ax2_twin.set_ylabel('Cumulative %', fontsize=9)
-            ax2_twin.set_ylim(0, 105)
-            
-            # Add 80% reference line
-            ax2_twin.axhline(80, color='green', linestyle='--', alpha=0.5)
-            ax2_twin.text(len(failure_counts)-0.5, 80, '80%', ha='right', va='bottom', 
-                         fontsize=8, color='green')
-            
-            # Labels
-            ax2.set_xticks(range(len(failure_counts)))
-            ax2.set_xticklabels(failure_counts.index, rotation=45, ha='right', fontsize=8)
-            ax2.set_ylabel('Count', fontsize=9)
-            ax2.set_title('Failure Pareto Chart', fontsize=10, color=text_color, pad=10)
-        else:
-            ax2.text(0.5, 0.5, 'No failures\nto analyze', 
-                    ha='center', va='center', transform=ax2.transAxes,
-                    fontsize=12, color='green')
-            ax2.axis('off')
-        
-        # 3. Failure Rate Projection (bottom)
-        ax3 = fig.add_subplot(gs[1, :])
-        self._apply_theme_to_axes(ax3)
-        
-        # Calculate daily failure rates
-        daily_data = data.groupby(data['trim_date'].dt.date).agg({
-            'track_status': lambda x: (x == 'Fail').mean() * 100
-        })
-        
-        if len(daily_data) > 3:
-            # Plot historical failure rate
-            dates = pd.to_datetime(daily_data.index)
-            fail_rates = daily_data['track_status'].values
-            
-            ax3.plot(dates, fail_rates, 'o-', color=self.qa_colors['fail'], 
-                    linewidth=1.5, markersize=4, label='Actual Failure Rate')
-            
-            # Fit polynomial for projection
-            x_numeric = np.arange(len(dates))
-            
-            # Use 2nd degree polynomial for smooth projection
-            if len(dates) > 5:
-                z = np.polyfit(x_numeric, fail_rates, 2)
-                p = np.poly1d(z)
-                
-                # Project forward 7 days
-                future_days = 7
-                future_x = np.arange(len(dates), len(dates) + future_days)
-                future_dates = pd.date_range(start=dates[-1] + pd.Timedelta(days=1), 
-                                           periods=future_days)
-                
-                # Calculate projection with confidence bounds
-                projected_rates = np.maximum(0, p(future_x))  # Ensure no negative rates
-                
-                # Simple confidence bounds based on historical variability
-                std_error = np.std(fail_rates - p(x_numeric))
-                upper_bound = np.minimum(100, projected_rates + 2 * std_error)  # Cap at 100%
-                lower_bound = np.maximum(0, projected_rates - 2 * std_error)
-                
-                # Plot projection
-                ax3.plot(future_dates, projected_rates, '--', 
-                        color=self.qa_colors['warning'], linewidth=2, 
-                        label='Projected Rate')
-                ax3.fill_between(future_dates, lower_bound, upper_bound, 
-                               color=self.qa_colors['warning'], alpha=0.2, 
-                               label='Confidence Interval')
-                
-                # Add vertical line at today
-                ax3.axvline(dates[-1], color='gray', linestyle=':', alpha=0.5)
-                ax3.text(dates[-1], ax3.get_ylim()[1]*0.9, 'Today', 
-                        ha='center', fontsize=8, color='gray')
-            
-            # Target line
-            ax3.axhline(5, color='green', linestyle='--', alpha=0.5, label='Target (5%)')
-            
-            # Format
-            ax3.set_xlabel('Date', fontsize=10)
-            ax3.set_ylabel('Failure Rate (%)', fontsize=10)
-            ax3.set_title('Failure Rate Trend & 7-Day Projection', fontsize=10, color=text_color, pad=10)
-            ax3.legend(loc='upper left', fontsize=8)
-            ax3.grid(True, alpha=0.3)
-            
-            # Format dates
-            ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-            plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        else:
-            ax3.text(0.5, 0.5, 'Insufficient data for projection analysis', 
-                    ha='center', va='center', transform=ax3.transAxes,
-                    fontsize=12, color=text_color)
-            ax3.axis('off')
-        
-        # Main title with explanation
-        fig.suptitle('Failure Pattern Analysis Dashboard', fontsize=14, color=text_color, y=0.98)
-        fig.text(0.5, 0.94, 'Heat map shows when failures occur • Pareto identifies top issues • Projection forecasts future risk', 
-                ha='center', fontsize=10, color=text_color, alpha=0.7)
-        
-        # Layout is handled by constrained_layout
-        self.canvas.draw_idle()
+
+            # 2. Pareto Chart (top right)
+            ax2 = fig.add_subplot(gs[0, 1])
+            self._apply_theme_to_axes(ax2)
+
+            if len(fail_data) > 0:
+                # Count failure causes
+                failure_counts = fail_data['failure_type'].value_counts()
+
+                # Sort and calculate cumulative percentage
+                cumulative_percent = failure_counts.cumsum() / failure_counts.sum() * 100
+
+                # Create bar chart
+                bars = ax2.bar(range(len(failure_counts)), failure_counts.values,
+                               color=self.qa_colors['fail'], alpha=0.7)
+
+                # Add value labels
+                for i, (bar, count) in enumerate(zip(bars, failure_counts.values)):
+                    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                            str(count), ha='center', va='bottom', fontsize=8)
+
+                # Add cumulative line
+                ax2_twin = ax2.twinx()
+                ax2_twin.plot(range(len(failure_counts)), cumulative_percent.values,
+                             'o-', color=self.qa_colors['warning'], linewidth=2, markersize=6)
+                ax2_twin.set_ylabel('Cumulative %', fontsize=9)
+                ax2_twin.set_ylim(0, 105)
+
+                # Add 80% reference line
+                ax2_twin.axhline(80, color='green', linestyle='--', alpha=0.5)
+                ax2_twin.text(len(failure_counts)-0.5, 80, '80%', ha='right', va='bottom',
+                             fontsize=8, color='green')
+
+                # Labels
+                ax2.set_xticks(range(len(failure_counts)))
+                ax2.set_xticklabels(failure_counts.index, rotation=45, ha='right', fontsize=8)
+                ax2.set_ylabel('Count', fontsize=9)
+                ax2.set_title('Failure Pareto Chart', fontsize=10, color=text_color, pad=10)
+            else:
+                ax2.text(0.5, 0.5, 'No failures\nto analyze',
+                        ha='center', va='center', transform=ax2.transAxes,
+                        fontsize=12, color='green')
+                ax2.axis('off')
+
+            # 3. Failure Rate Projection (bottom)
+            ax3 = fig.add_subplot(gs[1, :])
+            self._apply_theme_to_axes(ax3)
+
+            # Calculate daily failure rates
+            daily_data = data.groupby(data['trim_date'].dt.date).agg({
+                'track_status': lambda x: (x == 'Fail').mean() * 100
+            })
+
+            if len(daily_data) > 3:
+                # Plot historical failure rate
+                dates = pd.to_datetime(daily_data.index)
+                fail_rates = daily_data['track_status'].values
+
+                ax3.plot(dates, fail_rates, 'o-', color=self.qa_colors['fail'],
+                        linewidth=1.5, markersize=4, label='Actual Failure Rate')
+
+                # Fit polynomial for projection
+                x_numeric = np.arange(len(dates))
+
+                # Use 2nd degree polynomial for smooth projection
+                if len(dates) > 5:
+                    z = np.polyfit(x_numeric, fail_rates, 2)
+                    p = np.poly1d(z)
+
+                    # Project forward 7 days
+                    future_days = 7
+                    future_x = np.arange(len(dates), len(dates) + future_days)
+                    future_dates = pd.date_range(start=dates[-1] + pd.Timedelta(days=1),
+                                               periods=future_days)
+
+                    # Calculate projection with confidence bounds
+                    projected_rates = np.maximum(0, p(future_x))  # Ensure no negative rates
+
+                    # Simple confidence bounds based on historical variability
+                    std_error = np.std(fail_rates - p(x_numeric))
+                    upper_bound = np.minimum(100, projected_rates + 2 * std_error)  # Cap at 100%
+                    lower_bound = np.maximum(0, projected_rates - 2 * std_error)
+
+                    # Plot projection
+                    ax3.plot(future_dates, projected_rates, '--',
+                            color=self.qa_colors['warning'], linewidth=2,
+                            label='Projected Rate')
+                    ax3.fill_between(future_dates, lower_bound, upper_bound,
+                                   color=self.qa_colors['warning'], alpha=0.2,
+                                   label='Confidence Interval')
+
+                    # Add vertical line at today
+                    ax3.axvline(dates[-1], color='gray', linestyle=':', alpha=0.5)
+                    ax3.text(dates[-1], ax3.get_ylim()[1]*0.9, 'Today',
+                            ha='center', fontsize=8, color='gray')
+
+                # Target line
+                ax3.axhline(5, color='green', linestyle='--', alpha=0.5, label='Target (5%)')
+
+                # Format
+                ax3.set_xlabel('Date', fontsize=10)
+                ax3.set_ylabel('Failure Rate (%)', fontsize=10)
+                ax3.set_title('Failure Rate Trend & 7-Day Projection', fontsize=10, color=text_color, pad=10)
+                ax3.legend(loc='upper left', fontsize=8)
+                ax3.grid(True, alpha=0.3)
+
+                # Format dates
+                ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+                plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            else:
+                ax3.text(0.5, 0.5, 'Insufficient data for projection analysis',
+                        ha='center', va='center', transform=ax3.transAxes,
+                        fontsize=12, color=text_color)
+                ax3.axis('off')
+
+            # Main title with explanation
+            fig.suptitle('Failure Pattern Analysis Dashboard', fontsize=14, color=text_color, y=0.98)
+            fig.text(0.5, 0.94, 'Heat map shows when failures occur • Pareto identifies top issues • Projection forecasts future risk',
+                    ha='center', fontsize=10, color=text_color, alpha=0.7)
+
+            # Layout is handled by constrained_layout
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Failure Pattern Analysis Error", f"Failed to create failure pattern analysis: {str(e)}")
+            return None
     
     def plot_performance_scorecard(self, data: pd.DataFrame):
         """
         Create a performance scorecard with quality score, yield/efficiency, and comparisons.
-        
+
+        Validates data and creates comprehensive performance dashboard with:
+        - Quality score timeline with trending
+        - Yield and efficiency dual-axis chart
+        - Comparative performance table across time periods
+
         Args:
             data: DataFrame with performance data including dates, pass rates, sigma values, etc.
+
+        Returns:
+            True if successful, None if validation fails
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        # Get theme colors
-        theme_colors = ThemeHelper.get_theme_colors()
-        text_color = theme_colors["fg"]["primary"]
-        
-        # Create subplots
-        fig = self.figure
-        gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 0.8], hspace=0.3, wspace=0.3)
-        
-        # 1. Quality Score Timeline (top left)
-        ax1 = fig.add_subplot(gs[0, 0])
-        self._apply_theme_to_axes(ax1)
-        
-        # Calculate daily quality scores
-        daily_scores = data.groupby(data['trim_date'].dt.date).agg({
-            'track_status': lambda x: (x == 'Pass').mean() * 100,
-            'sigma_gradient': lambda x: ((x >= 0.3) & (x <= 0.7)).mean() * 100 if len(x) > 0 else 0,
-            'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 100
-        })
-        
-        # Calculate composite quality score (weighted average)
-        weights = {'pass': 0.5, 'sigma': 0.3, 'linearity': 0.2}
-        daily_scores['quality_score'] = (
-            daily_scores['track_status'] * weights['pass'] +
-            daily_scores['sigma_gradient'] * weights['sigma'] +
-            daily_scores['linearity_pass'] * weights['linearity']
-        )
-        
-        # Plot quality score
-        dates = pd.to_datetime(daily_scores.index)
-        scores = daily_scores['quality_score'].values
-        
-        ax1.plot(dates, scores, 'o-', color=self.qa_colors['primary'], 
-                linewidth=2, markersize=5)
-        
-        # Add color zones
-        ax1.axhspan(90, 100, color='green', alpha=0.1, label='Excellent')
-        ax1.axhspan(80, 90, color='yellow', alpha=0.1, label='Good')
-        ax1.axhspan(70, 80, color='orange', alpha=0.1, label='Fair')
-        ax1.axhspan(0, 70, color='red', alpha=0.1, label='Poor')
-        
-        # Add moving average
-        if len(scores) > 7:
-            ma = pd.Series(scores).rolling(window=7, center=True).mean()
-            ax1.plot(dates, ma, '--', color=self.qa_colors['secondary'], 
-                    linewidth=2, alpha=0.7, label='7-day MA')
-        
-        ax1.set_ylim(0, 105)
-        ax1.set_xlabel('Date', fontsize=10)
-        ax1.set_ylabel('Quality Score (%)', fontsize=10)
-        ax1.set_title('Composite Quality Score Timeline', fontsize=11, color=text_color)
-        ax1.legend(loc='lower left', fontsize=8, ncol=2)
-        ax1.grid(True, alpha=0.3)
-        
-        # Format dates
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
-        # Add score breakdown text
-        if len(daily_scores) > 0:
-            latest = daily_scores.iloc[-1]
-            breakdown = f"Latest: Pass={latest['track_status']:.1f}%, Sigma={latest['sigma_gradient']:.1f}%, Lin={latest['linearity_pass']:.1f}%"
-            ax1.text(0.02, 0.98, breakdown, transform=ax1.transAxes, 
-                    fontsize=8, va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        # 2. Yield & Efficiency Chart (top right)
-        ax2 = fig.add_subplot(gs[0, 1])
-        self._apply_theme_to_axes(ax2)
-        
-        # Calculate yield and efficiency metrics
-        daily_metrics = data.groupby(data['trim_date'].dt.date).agg({
-            'track_status': lambda x: (x == 'Pass').mean() * 100,  # Yield
-            'sigma_gradient': lambda x: ((x >= 0.4) & (x <= 0.6)).mean() * 100 if len(x) > 0 else 0  # Efficiency (tight spec)
-        })
-        
-        # Plot dual axis
-        dates = pd.to_datetime(daily_metrics.index)
-        yield_line = ax2.plot(dates, daily_metrics['track_status'], 'o-', 
-                             color=self.qa_colors['pass'], linewidth=2, 
-                             markersize=4, label='Yield %')
-        
-        # Add target lines
-        ax2.axhline(95, color=self.qa_colors['pass'], linestyle='--', 
-                   alpha=0.5, linewidth=1)
-        ax2.text(dates[0], 95.5, 'Yield Target', fontsize=8, 
-                color=self.qa_colors['pass'])
-        
-        ax2.set_xlabel('Date', fontsize=10)
-        ax2.set_ylabel('Yield (%)', fontsize=10, color=self.qa_colors['pass'])
-        ax2.tick_params(axis='y', labelcolor=self.qa_colors['pass'])
-        
-        # Second y-axis for efficiency
-        ax2_twin = ax2.twinx()
-        eff_line = ax2_twin.plot(dates, daily_metrics['sigma_gradient'], 's-', 
-                                color=self.qa_colors['warning'], linewidth=2, 
-                                markersize=4, label='Efficiency %')
-        
-        ax2_twin.axhline(80, color=self.qa_colors['warning'], linestyle='--', 
-                        alpha=0.5, linewidth=1)
-        ax2_twin.text(dates[-1], 80.5, 'Eff Target', fontsize=8, 
-                     color=self.qa_colors['warning'], ha='right')
-        
-        ax2_twin.set_ylabel('Efficiency (%)', fontsize=10, color=self.qa_colors['warning'])
-        ax2_twin.tick_params(axis='y', labelcolor=self.qa_colors['warning'])
-        
-        # Combined legend
-        lines = yield_line + eff_line
-        labels = [l.get_label() for l in lines]
-        ax2.legend(lines, labels, loc='lower left', fontsize=8)
-        
-        ax2.set_title('Yield & Process Efficiency', fontsize=11, color=text_color)
-        ax2.grid(True, alpha=0.3, axis='y')
-        
-        # Format dates
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
-        # 3. Comparative Performance Table (bottom)
-        ax3 = fig.add_subplot(gs[1, :])
-        ax3.axis('tight')
-        ax3.axis('off')
-        
-        # Calculate period comparisons
-        if len(data) > 0:
-            # Define periods
-            now = data['trim_date'].max()
-            week_ago = now - pd.Timedelta(days=7)
-            month_ago = now - pd.Timedelta(days=30)
-            
-            # Current week
-            current_week = data[data['trim_date'] > week_ago]
-            # Previous week
-            prev_week = data[(data['trim_date'] > week_ago - pd.Timedelta(days=7)) & 
-                           (data['trim_date'] <= week_ago)]
-            # Current month
-            current_month = data[data['trim_date'] > month_ago]
-            
-            # Calculate metrics for each period
-            def calc_metrics(df_period):
-                if len(df_period) == 0:
-                    return {'Pass Rate': 0, 'Avg Sigma': 0, 'In Spec': 0, 'Units': 0}
-                return {
-                    'Pass Rate': f"{(df_period['track_status'] == 'Pass').mean() * 100:.1f}%",
-                    'Avg Sigma': f"{df_period['sigma_gradient'].mean():.3f}",
-                    'In Spec': f"{((df_period['sigma_gradient'] >= 0.3) & (df_period['sigma_gradient'] <= 0.7)).mean() * 100:.1f}%",
-                    'Units': len(df_period)
+        # Data validation - check for empty or None data
+        if data is None:
+            self.show_placeholder("No Data", "Cannot create performance scorecard without data")
+            return None
+
+        if not isinstance(data, pd.DataFrame):
+            self.show_error("Invalid Data Type", "Data must be a pandas DataFrame")
+            return None
+
+        if data.empty:
+            self.show_placeholder("Empty Data", "DataFrame has no rows")
+            return None
+
+        # Check for required columns
+        required_columns = ['trim_date', 'track_status', 'sigma_gradient', 'linearity_pass']
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        if missing_columns:
+            self.show_error(
+                "Missing Columns",
+                f"DataFrame must have columns: {', '.join(required_columns)}\nMissing: {', '.join(missing_columns)}"
+            )
+            return None
+
+        # Check minimum data points for meaningful analysis
+        if len(data) < 2:
+            self.show_placeholder(
+                "Insufficient Data",
+                "Need at least 2 data points for performance scorecard"
+            )
+            return None
+
+        try:
+            self.figure.clear()
+            self._has_data = True
+
+            # Get theme colors
+            theme_colors = ThemeHelper.get_theme_colors()
+            text_color = theme_colors["fg"]["primary"]
+
+            # Create subplots
+            fig = self.figure
+            gs = fig.add_gridspec(2, 2, height_ratios=[1.2, 0.8], hspace=0.3, wspace=0.3)
+
+            # 1. Quality Score Timeline (top left)
+            ax1 = fig.add_subplot(gs[0, 0])
+            self._apply_theme_to_axes(ax1)
+
+            # Calculate daily quality scores
+            daily_scores = data.groupby(data['trim_date'].dt.date).agg({
+                'track_status': lambda x: (x == 'Pass').mean() * 100,
+                'sigma_gradient': lambda x: ((x >= 0.3) & (x <= 0.7)).mean() * 100 if len(x) > 0 else 0,
+                'linearity_pass': lambda x: x.mean() * 100 if x.notna().any() else 100
+            })
+
+            # Calculate composite quality score (weighted average)
+            weights = {'pass': 0.5, 'sigma': 0.3, 'linearity': 0.2}
+            daily_scores['quality_score'] = (
+                daily_scores['track_status'] * weights['pass'] +
+                daily_scores['sigma_gradient'] * weights['sigma'] +
+                daily_scores['linearity_pass'] * weights['linearity']
+            )
+
+            # Plot quality score
+            dates = pd.to_datetime(daily_scores.index)
+            scores = daily_scores['quality_score'].values
+
+            ax1.plot(dates, scores, 'o-', color=self.qa_colors['primary'],
+                    linewidth=2, markersize=5)
+
+            # Add color zones
+            ax1.axhspan(90, 100, color='green', alpha=0.1, label='Excellent')
+            ax1.axhspan(80, 90, color='yellow', alpha=0.1, label='Good')
+            ax1.axhspan(70, 80, color='orange', alpha=0.1, label='Fair')
+            ax1.axhspan(0, 70, color='red', alpha=0.1, label='Poor')
+
+            # Add moving average
+            if len(scores) > 7:
+                ma = pd.Series(scores).rolling(window=7, center=True).mean()
+                ax1.plot(dates, ma, '--', color=self.qa_colors['secondary'],
+                        linewidth=2, alpha=0.7, label='7-day MA')
+
+            ax1.set_ylim(0, 105)
+            ax1.set_xlabel('Date', fontsize=10)
+            ax1.set_ylabel('Quality Score (%)', fontsize=10)
+            ax1.set_title('Composite Quality Score Timeline', fontsize=11, color=text_color)
+            ax1.legend(loc='lower left', fontsize=8, ncol=2)
+            ax1.grid(True, alpha=0.3)
+
+            # Format dates
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # Add score breakdown text
+            if len(daily_scores) > 0:
+                latest = daily_scores.iloc[-1]
+                breakdown = f"Latest: Pass={latest['track_status']:.1f}%, Sigma={latest['sigma_gradient']:.1f}%, Lin={latest['linearity_pass']:.1f}%"
+                ax1.text(0.02, 0.98, breakdown, transform=ax1.transAxes,
+                        fontsize=8, va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            # 2. Yield & Efficiency Chart (top right)
+            ax2 = fig.add_subplot(gs[0, 1])
+            self._apply_theme_to_axes(ax2)
+
+            # Calculate yield and efficiency metrics
+            daily_metrics = data.groupby(data['trim_date'].dt.date).agg({
+                'track_status': lambda x: (x == 'Pass').mean() * 100,  # Yield
+                'sigma_gradient': lambda x: ((x >= 0.4) & (x <= 0.6)).mean() * 100 if len(x) > 0 else 0  # Efficiency (tight spec)
+            })
+
+            # Plot dual axis
+            dates = pd.to_datetime(daily_metrics.index)
+            yield_line = ax2.plot(dates, daily_metrics['track_status'], 'o-',
+                                 color=self.qa_colors['pass'], linewidth=2,
+                                 markersize=4, label='Yield %')
+
+            # Add target lines
+            ax2.axhline(95, color=self.qa_colors['pass'], linestyle='--',
+                       alpha=0.5, linewidth=1)
+            ax2.text(dates[0], 95.5, 'Yield Target', fontsize=8,
+                    color=self.qa_colors['pass'])
+
+            ax2.set_xlabel('Date', fontsize=10)
+            ax2.set_ylabel('Yield (%)', fontsize=10, color=self.qa_colors['pass'])
+            ax2.tick_params(axis='y', labelcolor=self.qa_colors['pass'])
+
+            # Second y-axis for efficiency
+            ax2_twin = ax2.twinx()
+            eff_line = ax2_twin.plot(dates, daily_metrics['sigma_gradient'], 's-',
+                                    color=self.qa_colors['warning'], linewidth=2,
+                                    markersize=4, label='Efficiency %')
+
+            ax2_twin.axhline(80, color=self.qa_colors['warning'], linestyle='--',
+                            alpha=0.5, linewidth=1)
+            ax2_twin.text(dates[-1], 80.5, 'Eff Target', fontsize=8,
+                         color=self.qa_colors['warning'], ha='right')
+
+            ax2_twin.set_ylabel('Efficiency (%)', fontsize=10, color=self.qa_colors['warning'])
+            ax2_twin.tick_params(axis='y', labelcolor=self.qa_colors['warning'])
+
+            # Combined legend
+            lines = yield_line + eff_line
+            labels = [l.get_label() for l in lines]
+            ax2.legend(lines, labels, loc='lower left', fontsize=8)
+
+            ax2.set_title('Yield & Process Efficiency', fontsize=11, color=text_color)
+            ax2.grid(True, alpha=0.3, axis='y')
+
+            # Format dates
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+            plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+            # 3. Comparative Performance Table (bottom)
+            ax3 = fig.add_subplot(gs[1, :])
+            ax3.axis('tight')
+            ax3.axis('off')
+
+            # Calculate period comparisons
+            if len(data) > 0:
+                # Define periods
+                now = data['trim_date'].max()
+                week_ago = now - pd.Timedelta(days=7)
+                month_ago = now - pd.Timedelta(days=30)
+
+                # Current week
+                current_week = data[data['trim_date'] > week_ago]
+                # Previous week
+                prev_week = data[(data['trim_date'] > week_ago - pd.Timedelta(days=7)) &
+                               (data['trim_date'] <= week_ago)]
+                # Current month
+                current_month = data[data['trim_date'] > month_ago]
+
+                # Calculate metrics for each period
+                def calc_metrics(df_period):
+                    if len(df_period) == 0:
+                        return {'Pass Rate': 0, 'Avg Sigma': 0, 'In Spec': 0, 'Units': 0}
+                    return {
+                        'Pass Rate': f"{(df_period['track_status'] == 'Pass').mean() * 100:.1f}%",
+                        'Avg Sigma': f"{df_period['sigma_gradient'].mean():.3f}",
+                        'In Spec': f"{((df_period['sigma_gradient'] >= 0.3) & (df_period['sigma_gradient'] <= 0.7)).mean() * 100:.1f}%",
+                        'Units': len(df_period)
+                    }
+
+                # Create comparison data
+                comparison_data = {
+                    'Metric': ['Pass Rate', 'Avg Sigma', 'In Spec %', 'Units Tested'],
+                    'This Week': list(calc_metrics(current_week).values()),
+                    'Last Week': list(calc_metrics(prev_week).values()),
+                    'Month Total': list(calc_metrics(current_month).values()),
+                    'All Time': [
+                        f"{(data['track_status'] == 'Pass').mean() * 100:.1f}%",
+                        f"{data['sigma_gradient'].mean():.3f}",
+                        f"{((data['sigma_gradient'] >= 0.3) & (data['sigma_gradient'] <= 0.7)).mean() * 100:.1f}%",
+                        len(data)
+                    ]
                 }
-            
-            # Create comparison data
-            comparison_data = {
-                'Metric': ['Pass Rate', 'Avg Sigma', 'In Spec %', 'Units Tested'],
-                'This Week': list(calc_metrics(current_week).values()),
-                'Last Week': list(calc_metrics(prev_week).values()),
-                'Month Total': list(calc_metrics(current_month).values()),
-                'All Time': [
-                    f"{(data['track_status'] == 'Pass').mean() * 100:.1f}%",
-                    f"{data['sigma_gradient'].mean():.3f}",
-                    f"{((data['sigma_gradient'] >= 0.3) & (data['sigma_gradient'] <= 0.7)).mean() * 100:.1f}%",
-                    len(data)
-                ]
-            }
-            
-            # Create table
-            table_data = []
-            for i in range(len(comparison_data['Metric'])):
-                row = [comparison_data[col][i] for col in comparison_data.keys()]
-                table_data.append(row)
-            
-            # Create table with styling
-            table = ax3.table(cellText=table_data,
-                            colLabels=list(comparison_data.keys()),
-                            cellLoc='center',
-                            loc='center',
-                            bbox=[0, 0, 1, 1])
-            
-            # Style the table
-            table.auto_set_font_size(False)
-            table.set_fontsize(9)
-            table.scale(1, 2)
-            
-            # Color code cells based on performance
-            for i in range(1, len(table_data)):  # Skip header row
-                for j in range(1, len(comparison_data.keys())):  # Skip metric column
-                    cell = table[(i, j)]
-                    if comparison_data['Metric'][i-1] == 'Pass Rate':
-                        # Color based on pass rate
-                        value = float(table_data[i-1][j].rstrip('%')) if '%' in str(table_data[i-1][j]) else 0
-                        if value >= 95:
-                            cell.set_facecolor('#90EE90')  # Light green
-                        elif value >= 85:
-                            cell.set_facecolor('#FFFFE0')  # Light yellow
-                        else:
-                            cell.set_facecolor('#FFB6C1')  # Light red
-            
-            # Header styling
-            for j in range(len(comparison_data.keys())):
-                table[(0, j)].set_facecolor('#4CAF50')
-                table[(0, j)].set_text_props(weight='bold', color='white')
-            
-            ax3.set_title('Performance Comparison Table', fontsize=12, 
-                         color=text_color, pad=20)
-        else:
-            ax3.text(0.5, 0.5, 'No data available for comparison', 
-                    ha='center', va='center', transform=ax3.transAxes,
-                    fontsize=12, color=text_color)
+
+                # Create table
+                table_data = []
+                for i in range(len(comparison_data['Metric'])):
+                    row = [comparison_data[col][i] for col in comparison_data.keys()]
+                    table_data.append(row)
+
+                # Create table with styling
+                table = ax3.table(cellText=table_data,
+                                colLabels=list(comparison_data.keys()),
+                                cellLoc='center',
+                                loc='center',
+                                bbox=[0, 0, 1, 1])
+
+                # Style the table
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1, 2)
+
+                # Color code cells based on performance
+                for i in range(1, len(table_data)):  # Skip header row
+                    for j in range(1, len(comparison_data.keys())):  # Skip metric column
+                        cell = table[(i, j)]
+                        if comparison_data['Metric'][i-1] == 'Pass Rate':
+                            # Color based on pass rate
+                            value = float(table_data[i-1][j].rstrip('%')) if '%' in str(table_data[i-1][j]) else 0
+                            if value >= 95:
+                                cell.set_facecolor('#90EE90')  # Light green
+                            elif value >= 85:
+                                cell.set_facecolor('#FFFFE0')  # Light yellow
+                            else:
+                                cell.set_facecolor('#FFB6C1')  # Light red
+
+                # Header styling
+                for j in range(len(comparison_data.keys())):
+                    table[(0, j)].set_facecolor('#4CAF50')
+                    table[(0, j)].set_text_props(weight='bold', color='white')
+
+                ax3.set_title('Performance Comparison Table', fontsize=12,
+                             color=text_color, pad=20)
+            else:
+                ax3.text(0.5, 0.5, 'No data available for comparison',
+                        ha='center', va='center', transform=ax3.transAxes,
+                        fontsize=12, color=text_color)
         
-        # Main title with explanation
-        fig.suptitle('Performance Scorecard Dashboard', fontsize=14, color=text_color, y=0.98)
-        fig.text(0.5, 0.94, 'Quality score combines multiple metrics • Dual-axis shows yield vs efficiency • Table compares time periods', 
-                ha='center', fontsize=10, color=text_color, alpha=0.7)
-        
-        # Layout is handled by constrained_layout
-        self.canvas.draw_idle()
-    
+            # Main title with explanation
+            fig.suptitle('Performance Scorecard Dashboard', fontsize=14, color=text_color, y=0.98)
+            fig.text(0.5, 0.94, 'Quality score combines multiple metrics • Dual-axis shows yield vs efficiency • Table compares time periods',
+                    ha='center', fontsize=10, color=text_color, alpha=0.7)
+
+            # Layout is handled by constrained_layout
+            self.canvas.draw_idle()
+
+            return True
+
+        except Exception as e:
+            # Surface any plotting errors with clear message
+            self.show_error("Performance Scorecard Error", f"Failed to create performance scorecard: {str(e)}")
+            return None
+
     def plot_enhanced_control_chart(self, data: pd.DataFrame, value_column: str, 
-                                   date_column: str = 'trim_date',
-                                   spec_limits: Optional[Tuple[float, float]] = None,
-                                   target_value: Optional[float] = None,
-                                   title: str = "Control Chart"):
+                                    date_column: str = 'trim_date',
+                                    spec_limits: Optional[Tuple[float, float]] = None,
+                                    target_value: Optional[float] = None,
+                                    title: str = "Control Chart"):
         """
         Simplified control chart with moving averages for trend smoothing.
         
@@ -2929,102 +3951,136 @@ class ChartWidget(ctk.CTkFrame):
             target_value: Target/nominal value
             title: Chart title
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        ax = self.figure.add_subplot(111)
-        self._apply_theme_to_axes(ax)
-        
-        # Prepare data
-        df = data.copy()
-        df[date_column] = pd.to_datetime(df[date_column])
-        df = df.sort_values(date_column)
-        
-        values = df[value_column].dropna()
-        dates = df[date_column]
-        
-        if len(values) < 3:
-            ax.text(0.5, 0.5, 'Need at least 3 data points',
-                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
-            return
-        
-        # Group by date for daily averages if many points
-        if len(values) > 100:
-            df_daily = df.groupby(df[date_column].dt.date)[value_column].mean().reset_index()
-            df_daily['date'] = pd.to_datetime(df_daily[date_column])
-            dates = df_daily['date']
-            values = df_daily[value_column]
-        
-        # Calculate moving averages for smoothing
-        values_series = pd.Series(values.values, index=dates)
-        ma_7 = values_series.rolling(window=7, min_periods=3).mean()
-        ma_30 = values_series.rolling(window=30, min_periods=15).mean() if len(values) >= 30 else None
-        
-        # Simple control limits
-        mean_val = values.mean()
-        std_val = values.std()
-        ucl = mean_val + 2 * std_val  # Simplified to 2-sigma
-        lcl = mean_val - 2 * std_val
-        
-        # Plot raw data lightly
-        ax.plot(dates, values, '-', linewidth=0.5, color=self.qa_colors['primary'], 
-               alpha=0.3, label='Raw Data')
-        
-        # Plot moving averages for trend (main focus)
-        ax.plot(dates, ma_7, '-', linewidth=2, color=self.qa_colors['secondary'], 
-               alpha=0.9, label='7-day Trend')
-        
-        if ma_30 is not None:
-            ax.plot(dates, ma_30, '-', linewidth=3, color=self.qa_colors['tertiary'], 
-                   alpha=0.8, label='30-day Trend')
-        
-        # Add simple reference lines
-        ax.axhline(y=mean_val, color=self.qa_colors['control_center'], linestyle='-', 
-                  linewidth=2, alpha=0.8, label=f'Average ({mean_val:.3f})')
-        
-        # Only show control limits if they're meaningful
-        if ucl > mean_val * 1.05:  # Only if at least 5% above mean
-            ax.axhline(y=ucl, color=self.qa_colors['warning'], linestyle='--', 
-                      linewidth=1.5, alpha=0.6, label=f'Upper Limit')
-        if lcl < mean_val * 0.95:  # Only if at least 5% below mean
-            ax.axhline(y=lcl, color=self.qa_colors['warning'], linestyle='--', 
-                      linewidth=1.5, alpha=0.6, label=f'Lower Limit')
-        
-        # Add target line if provided
-        if target_value:
-            ax.axhline(y=target_value, color=self.qa_colors['pass'], linestyle=':', 
-                      linewidth=2, alpha=0.8, label=f'Target ({target_value:.3f})')
-        
-        # Clean formatting
-        ax.set_xlabel('Date', fontsize=10)
-        ax.set_ylabel(value_column.replace('_', ' ').title(), fontsize=10)
-        ax.set_title(title, fontsize=12, fontweight='bold')
-        
-        # Simple legend with max 4 items
-        handles, labels = ax.get_legend_handles_labels()
-        if len(handles) > 4:
-            handles = handles[:4]
-            labels = labels[:4]
-        
-        if handles:
-            ax.legend(handles, labels, loc='upper right', fontsize=9, framealpha=0.9)
-        
-        # Clean grid and layout
-        ax.grid(True, alpha=0.3)
-        
-        # Simple date formatting with full year
-        import matplotlib.dates as mdates
-        from matplotlib.ticker import MaxNLocator
-        if len(dates) > 30:
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=10))
-        else:
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
-        
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        # Defensive gating and error surfaces
+        try:
+            if data is None or (hasattr(data, 'empty') and data.empty):
+                self.show_placeholder("No Data", "No rows available for control chart")
+                return
+
+            df = data.copy()
+            missing_cols = [c for c in (value_column, date_column) if c not in df.columns]
+            if missing_cols:
+                self.show_error("Missing Columns", f"Required columns not found: {', '.join(missing_cols)}")
+                return
+
+            # Prepare data
+            # Convert and drop invalid rows without substituting current time
+            df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
+            df = df[[date_column, value_column]].dropna()
+            if df.empty or len(df) < 3:
+                self.show_placeholder("Insufficient Data", "Need at least 3 data points for control chart")
+                return
+
+            df = df.sort_values(date_column)
+            values = df[value_column]
+            dates = df[date_column]
+
+            # Ready to draw
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            self._apply_theme_to_axes(ax)
+            self._has_data = True
+
+            # Group by date for daily averages if many points
+            if len(values) > 100:
+                df_daily = df.groupby(df[date_column].dt.date)[value_column].mean().reset_index()
+                df_daily['date'] = pd.to_datetime(df_daily[date_column])
+                dates = df_daily['date']
+                values = df_daily[value_column]
+            
+            # Calculate moving averages for smoothing
+            values_series = pd.Series(values.values, index=dates)
+            ma_7 = values_series.rolling(window=7, min_periods=3).mean()
+            ma_30 = values_series.rolling(window=30, min_periods=15).mean() if len(values) >= 30 else None
+            
+            # Individuals chart control limits (3-sigma) using MR-based sigma estimate when possible
+            mean_val = values.mean()
+            vals = values.values.astype(float)
+            sigma_est = values.std(ddof=1) if len(vals) >= 2 else 0.0
+            if len(vals) >= 2:
+                mr = np.abs(np.diff(vals))
+                if len(mr) > 0 and np.isfinite(mr).all():
+                    mrbar = float(np.mean(mr))
+                    d2 = 1.128  # for n=2 in moving range
+                    if mrbar > 0:
+                        sigma_est = mrbar / d2
+            # 3-sigma limits
+            ucl = mean_val + 3 * sigma_est
+            lcl = mean_val - 3 * sigma_est
+            
+            # Plot raw data lightly
+            ax.plot(dates, values, '-', linewidth=0.5, color=self.qa_colors['primary'], 
+                   alpha=0.3, label='Raw Data')
+            
+            # Plot moving averages for trend (main focus)
+            ax.plot(dates, ma_7, '-', linewidth=2, color=self.qa_colors['secondary'], 
+                   alpha=0.9, label='7-day Trend')
+            
+            if ma_30 is not None:
+                ax.plot(dates, ma_30, '-', linewidth=3, color=self.qa_colors['tertiary'], 
+                       alpha=0.8, label='30-day Trend')
+            
+            # Add reference lines: mean and control limits (3σ)
+            ax.axhline(y=mean_val, color=self.qa_colors['control_center'], linestyle='-', 
+                      linewidth=2, alpha=0.9, label=f'Mean (X̄): {mean_val:.3f}')
+            # Show control limits if variance non-zero
+            if sigma_est and np.isfinite(sigma_est):
+                ax.axhline(y=ucl, color=self.qa_colors.get('control_limits', self.qa_colors['warning']), linestyle='--', 
+                          linewidth=1.8, alpha=0.8, label=f'UCL (3σ): {ucl:.3f}')
+                ax.axhline(y=lcl, color=self.qa_colors.get('control_limits', self.qa_colors['warning']), linestyle='--', 
+                          linewidth=1.8, alpha=0.8, label=f'LCL (3σ): {lcl:.3f}')
+            
+            # Add target line if provided (engineering target)
+            if target_value is not None:
+                ax.axhline(y=target_value, color=self.qa_colors['pass'], linestyle=':', 
+                          linewidth=2, alpha=0.8, label=f'Target: {target_value:.3f}')
+            
+            # Add specification limits if provided (engineering spec), visually distinct from control limits
+            if spec_limits is not None:
+                try:
+                    lsl, usl = spec_limits
+                    ax.axhline(y=lsl, color=self.qa_colors.get('spec_limits', '#B22222'), linestyle='-.',
+                              linewidth=1.6, alpha=0.9, label=f'LSL: {lsl:.3f}')
+                    ax.axhline(y=usl, color=self.qa_colors.get('spec_limits', '#B22222'), linestyle='-.',
+                              linewidth=1.6, alpha=0.9, label=f'USL: {usl:.3f}')
+                except Exception:
+                    pass
+            
+            # Clean formatting
+            ax.set_xlabel('Date', fontsize=10)
+            ax.set_ylabel(value_column.replace('_', ' ').title(), fontsize=10)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            
+            # Simple legend with capped items to prevent clutter
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                # Keep unique labels in order and cap at 6
+                uniq = []
+                for h, l in zip(handles, labels):
+                    if l not in [ul for _, ul in uniq]:
+                        uniq.append((h, l))
+                uniq = uniq[:6]
+                ax.legend([h for h, _ in uniq], [l for _, l in uniq], loc='upper right', fontsize=9, framealpha=0.9)
+            
+            # Clean grid and layout
+            ax.grid(True, alpha=0.3)
+            
+            # Simple date formatting with full year
+            import matplotlib.dates as mdates
+            from matplotlib.ticker import MaxNLocator
+            if len(dates) > 30:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=10))
+            else:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+            
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            
+            self.figure.tight_layout()
+            self.canvas.draw_idle()
+        except Exception as e:
+            # Surface any unexpected error as a chart error instead of blank canvas
+            self.show_error("Control Chart Error", str(e))
     
     def plot_process_capability_histogram(self, data: pd.DataFrame, value_column: str,
                                         spec_limits: Optional[Tuple[float, float]] = None,
@@ -3040,69 +4096,80 @@ class ChartWidget(ctk.CTkFrame):
             target_value: Target/nominal value
             title: Chart title
         """
-        self.figure.clear()
-        self._has_data = True
-        
-        ax = self.figure.add_subplot(111)
-        self._apply_theme_to_axes(ax)
-        
-        values = data[value_column].dropna()
-        
-        if len(values) < 10:
-            ax.text(0.5, 0.5, 'Need at least 10 data points',
-                   ha='center', va='center', transform=ax.transAxes, fontsize=12)
-            return
-        
-        # Calculate basic statistics
-        mean_val = values.mean()
-        std_val = values.std()
-        
-        # Simple histogram
-        n_bins = min(20, int(np.sqrt(len(values))))
-        ax.hist(values, bins=n_bins, density=True, 
-               color=self.qa_colors['primary'], alpha=0.6,
-               edgecolor='white', linewidth=1)
-        
-        # Add normal curve for reference
-        x_range = np.linspace(values.min(), values.max(), 100)
-        normal_curve = (1 / (std_val * np.sqrt(2 * np.pi))) * \
-                      np.exp(-0.5 * ((x_range - mean_val) / std_val) ** 2)
-        ax.plot(x_range, normal_curve, color=self.qa_colors['secondary'],
-               linewidth=2, alpha=0.8, label='Normal Fit')
-        
-        # Add mean line
-        ax.axvline(mean_val, color=self.qa_colors['control_center'], 
-                  linestyle='-', linewidth=2, alpha=0.8, 
-                  label=f'Average ({mean_val:.3f})')
-        
-        # Add target if provided
-        if target_value:
-            ax.axvline(target_value, color=self.qa_colors['pass'], 
-                      linestyle='--', linewidth=2, alpha=0.8,
-                      label=f'Target ({target_value:.3f})')
-        
-        # Add spec limits if provided (simplified)
-        if spec_limits:
-            lsl, usl = spec_limits
-            ax.axvline(lsl, color=self.qa_colors['warning'], 
-                      linestyle=':', linewidth=2, alpha=0.7, label='Lower Limit')
-            ax.axvline(usl, color=self.qa_colors['warning'], 
-                      linestyle=':', linewidth=2, alpha=0.7, label='Upper Limit')
-        
-        # Formatting
-        ax.set_xlabel(value_column.replace('_', ' ').title(), fontsize=10)
-        ax.set_ylabel('Frequency', fontsize=10)
-        ax.set_title(title, fontsize=12, fontweight='bold')
-        
-        # Simple legend
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(handles, labels, loc='upper right', fontsize=9, framealpha=0.9)
-        
-        ax.grid(True, alpha=0.3)
-        
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        # Defensive gating and error surfaces
+        try:
+            if data is None or (hasattr(data, 'empty') and data.empty):
+                self.show_placeholder("No Data", "No rows available for histogram")
+                return
+
+            df = data.copy()
+            if value_column not in df.columns:
+                self.show_error("Missing Column", f"Required column not found: {value_column}")
+                return
+
+            values = df[value_column].dropna()
+            if len(values) < 10:
+                self.show_placeholder("Insufficient Data", "Need at least 10 data points for capability histogram")
+                return
+
+            # Ready to draw
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            self._apply_theme_to_axes(ax)
+            self._has_data = True
+            
+            # Calculate basic statistics
+            mean_val = values.mean()
+            std_val = values.std()
+            
+            # Simple histogram
+            n_bins = min(20, int(np.sqrt(len(values))))
+            ax.hist(values, bins=n_bins, density=True, 
+                   color=self.qa_colors['primary'], alpha=0.6,
+                   edgecolor='white', linewidth=1)
+            
+            # Add normal curve for reference
+            x_range = np.linspace(values.min(), values.max(), 100)
+            normal_curve = (1 / (std_val * np.sqrt(2 * np.pi))) * \
+                          np.exp(-0.5 * ((x_range - mean_val) / std_val) ** 2)
+            ax.plot(x_range, normal_curve, color=self.qa_colors['secondary'],
+                   linewidth=2, alpha=0.8, label='Normal Fit')
+            
+            # Add mean line
+            ax.axvline(mean_val, color=self.qa_colors['control_center'], 
+                      linestyle='-', linewidth=2, alpha=0.8, 
+                      label=f'Average ({mean_val:.3f})')
+            
+            # Add target if provided
+            if target_value:
+                ax.axvline(target_value, color=self.qa_colors['pass'], 
+                          linestyle='--', linewidth=2, alpha=0.8,
+                          label=f'Target ({target_value:.3f})')
+            
+            # Add spec limits if provided (simplified)
+            if spec_limits:
+                lsl, usl = spec_limits
+                ax.axvline(lsl, color=self.qa_colors['warning'], 
+                          linestyle=':', linewidth=2, alpha=0.7, label='Lower Limit')
+                ax.axvline(usl, color=self.qa_colors['warning'], 
+                          linestyle=':', linewidth=2, alpha=0.7, label='Upper Limit')
+            
+            # Formatting
+            ax.set_xlabel(value_column.replace('_', ' ').title(), fontsize=10)
+            ax.set_ylabel('Density', fontsize=10)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            
+            # Simple legend
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(handles, labels, loc='upper right', fontsize=9, framealpha=0.9)
+            
+            ax.grid(True, alpha=0.3)
+            
+            self.figure.tight_layout()
+            self.canvas.draw_idle()
+        except Exception as e:
+            self.show_error("Capability Chart Error", str(e))
 
 
 # Example usage and testing

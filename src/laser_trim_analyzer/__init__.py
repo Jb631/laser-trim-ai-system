@@ -5,7 +5,7 @@ A comprehensive analysis tool for laser trim data with advanced validation,
 machine learning capabilities, and database integration.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.2.9"
 __author__ = "Laser Trim Analysis Team"
 __email__ = "support@lasertrimanalyzer.com"
 

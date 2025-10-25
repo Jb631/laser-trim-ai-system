@@ -1497,6 +1497,16 @@ class BatchProcessingPage(ctk.CTkFrame):
                         self.generate_plots_var.set(False)
                         logger.info("Plots automatically disabled for turbo mode")
                     
+                    # Inform the user ML predictions are disabled in turbo mode
+                    try:
+                        self._safe_after(0, lambda: messagebox.showinfo(
+                            "Turbo Mode",
+                            "Turbo mode enabled for large batch.\n\n"
+                            "For performance, ML predictions are disabled and heuristic risk estimates are used."
+                        ))
+                    except Exception:
+                        pass
+                    
                     # Use FastProcessor with turbo mode directly
                     results = self._process_with_turbo_mode(
                         file_paths=file_paths,

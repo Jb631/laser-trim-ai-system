@@ -3,12 +3,13 @@
 Strategy implementations for different system types.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import logging
 
 from .interfaces import (
     TrackResult, TrimData, SystemType, Status,
-    DataExtractor, MetricsCalculator, RiskCategory
+    DataExtractor, MetricsCalculator, RiskCategory,
+    SigmaMetrics, LinearityMetrics
 )
 
 
@@ -114,7 +115,8 @@ class SystemStrategy(ABC):
                 sigma_metrics=sigma_metrics,
                 linearity_metrics=linearity_metrics,
                 trim_effectiveness=trim_effectiveness,
-                zone_analysis=None,  # TODO: Add zone analysis
+                # Zone analysis is computed in the main processors; not used here
+                zone_analysis=None,
                 failure_probability=failure_prob,
                 risk_category=risk_category
             )
