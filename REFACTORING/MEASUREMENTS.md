@@ -6,34 +6,39 @@
 
 ## Baseline Measurements
 
-**Date**: TBD (Phase 1, Day 1)
+**Date**: 2025-01-25 (Phase 1, Day 1)
 **Version**: v2.2.9 (pre-refactoring)
 **Environment**: Development PC
+**Commit**: 7916a323b421d75a719813adda7953e7019094de
 
 ### Processing Performance
 
 #### Small Batch (100 files)
-- **Time**: TBD seconds
+- **Time**: TBD seconds (benchmark pending)
 - **Per File**: TBD ms/file
 - **Memory Peak**: TBD MB
 - **CPU Usage**: TBD%
 
 #### Medium Batch (500 files)
-- **Time**: TBD seconds
+- **Time**: TBD seconds (benchmark pending)
 - **Per File**: TBD ms/file
 - **Memory Peak**: TBD MB
 - **CPU Usage**: TBD%
 
 #### Large Batch (1000 files)
-- **Time**: TBD seconds
+- **Time**: TBD seconds (benchmark pending)
 - **Per File**: TBD ms/file
 - **Memory Peak**: TBD MB
 - **CPU Usage**: TBD%
 
 ### Test Suite Performance
-- **Total Tests**: 53
-- **Execution Time**: TBD seconds
-- **Slowest Test**: TBD (TBD seconds)
+- **Total Tests**: 53 (53 passing, 0 failing)
+- **Execution Time**: 1.83 seconds
+- **Breakdown**:
+  - test_calculations.py: 17 tests
+  - test_data_validation.py: 29 tests
+  - test_r_value.py: 7 tests
+- **Warnings**: 10 warnings (Pydantic deprecation, SQLAlchemy deprecation, NumPy runtime)
 
 ### Database Operations
 - **Insert (single)**: TBD ms
