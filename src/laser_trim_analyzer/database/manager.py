@@ -10,6 +10,7 @@ Production-ready implementation with proper error handling and real data operati
 
 import os
 import logging
+import hashlib
 from datetime import datetime, timedelta
 from typing import (
     Any,
@@ -37,7 +38,7 @@ from sqlalchemy.engine import Engine
 from .models import (
     Base, AnalysisResult as DBAnalysisResult, TrackResult as DBTrackResult,
     MLPrediction as DBMLPrediction, QAAlert as DBQAAlert, BatchInfo as DBBatchInfo,
-    AnalysisBatch as DBAnalysisBatch,
+    AnalysisBatch as DBAnalysisBatch, ProcessedFile as DBProcessedFile,
     SystemType as DBSystemType, StatusType as DBStatusType,
     RiskCategory as DBRiskCategory, AlertType as DBAlertType
 )
@@ -770,8 +771,8 @@ class DatabaseManager:
                 raise DatabaseError("No tables were created")
 
             expected_tables = {
-                'analysis_results', 'track_results', 'ml_predictions', 
-                'qa_alerts', 'batch_info', 'analysis_batch'
+                'analysis_results', 'track_results', 'ml_predictions',
+                'qa_alerts', 'batch_info', 'analysis_batch', 'processed_files'
             }
             
             missing_tables = expected_tables - set(tables)
@@ -2547,3 +2548,354 @@ class DatabaseManager:
                 'Check system resources and database status',
                 'Contact support if error persists'
             ]
+
+    # =========================================================================
+    # ProcessedFile Methods - Incremental Processing Support (Phase 1, Day 2)
+    # Related: ADR-002 (Incremental Processing via Database Tracking)
+    # =========================================================================
+
+    @staticmethod
+    def compute_file_hash(file_path: Union[str, Path]) -> str:
+        """
+        Compute SHA-256 hash of a file for duplicate detection.
+
+        Args:
+            file_path: Path to the file to hash
+
+        Returns:
+            64-character lowercase hexadecimal SHA-256 hash
+
+        Raises:
+            FileNotFoundError: If file does not exist
+            IOError: If file cannot be read
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        hasher = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            # Read in 64KB chunks for memory efficiency with large files
+            for chunk in iter(lambda: f.read(65536), b''):
+                hasher.update(chunk)
+        return hasher.hexdigest().lower()
+
+    def is_file_processed(self, file_path: Union[str, Path]) -> bool:
+        """
+        Check if a file has already been processed (by hash).
+
+        This method computes the file's SHA-256 hash and checks if it exists
+        in the processed_files table. This ensures that even if a file is moved
+        or renamed, it won't be reprocessed if the content is the same.
+
+        Args:
+            file_path: Path to the file to check
+
+        Returns:
+            True if file has been processed, False otherwise
+
+        Raises:
+            FileNotFoundError: If file does not exist
+            DatabaseError: If database operation fails
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        try:
+            file_hash = self.compute_file_hash(file_path)
+
+            with self.get_session() as session:
+                existing = session.query(DBProcessedFile).filter(
+                    DBProcessedFile.file_hash == file_hash
+                ).first()
+
+                return existing is not None
+
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error checking if file is processed: {e}")
+            raise DatabaseError(f"Failed to check processed status: {str(e)}") from e
+
+    def get_processed_file(self, file_path: Union[str, Path]) -> Optional[DBProcessedFile]:
+        """
+        Get the ProcessedFile record for a file (by hash).
+
+        Args:
+            file_path: Path to the file to lookup
+
+        Returns:
+            ProcessedFile record if found, None otherwise
+
+        Raises:
+            FileNotFoundError: If file does not exist
+            DatabaseError: If database operation fails
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        try:
+            file_hash = self.compute_file_hash(file_path)
+
+            with self.get_session() as session:
+                return session.query(DBProcessedFile).filter(
+                    DBProcessedFile.file_hash == file_hash
+                ).first()
+
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error getting processed file record: {e}")
+            raise DatabaseError(f"Failed to get processed file: {str(e)}") from e
+
+    def mark_file_processed(
+        self,
+        file_path: Union[str, Path],
+        success: bool = True,
+        error_message: Optional[str] = None,
+        processing_time_ms: Optional[int] = None,
+        analysis_id: Optional[int] = None
+    ) -> int:
+        """
+        Mark a file as processed in the database.
+
+        This method creates a ProcessedFile record with the file's hash,
+        allowing the system to skip it during future incremental processing.
+
+        Args:
+            file_path: Path to the processed file
+            success: Whether processing was successful
+            error_message: Error message if processing failed
+            processing_time_ms: Processing time in milliseconds
+            analysis_id: ID of the created analysis record (if any)
+
+        Returns:
+            ID of the created ProcessedFile record
+
+        Raises:
+            FileNotFoundError: If file does not exist
+            DatabaseError: If database operation fails
+            DatabaseIntegrityError: If file was already processed (duplicate hash)
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        try:
+            file_hash = self.compute_file_hash(file_path)
+            file_stat = file_path.stat()
+
+            # Get software version
+            try:
+                from ..version import __version__
+            except ImportError:
+                __version__ = "unknown"
+
+            with self.get_session() as session:
+                # Check if already exists (should be caught by unique constraint, but be safe)
+                existing = session.query(DBProcessedFile).filter(
+                    DBProcessedFile.file_hash == file_hash
+                ).first()
+
+                if existing:
+                    self.logger.debug(f"File already marked as processed: {file_path.name}")
+                    return existing.id
+
+                processed_file = DBProcessedFile(
+                    filename=file_path.name,
+                    file_path=str(file_path.absolute()),
+                    file_hash=file_hash,
+                    file_size=file_stat.st_size,
+                    file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
+                    processed_date=datetime.utcnow(),
+                    processing_time_ms=processing_time_ms,
+                    software_version=__version__,
+                    success=success,
+                    error_message=error_message,
+                    analysis_id=analysis_id
+                )
+
+                session.add(processed_file)
+                session.commit()
+
+                self.logger.debug(f"Marked file as processed: {file_path.name} (ID: {processed_file.id})")
+                return processed_file.id
+
+        except FileNotFoundError:
+            raise
+        except IntegrityError as e:
+            # Duplicate hash - file already processed
+            self.logger.debug(f"File already processed (duplicate hash): {file_path.name}")
+            raise DatabaseIntegrityError(f"File already processed: {str(e)}") from e
+        except Exception as e:
+            self.logger.error(f"Error marking file as processed: {e}")
+            raise DatabaseError(f"Failed to mark file as processed: {str(e)}") from e
+
+    def get_unprocessed_files(self, file_paths: List[Union[str, Path]]) -> List[Path]:
+        """
+        Filter a list of files to return only those not yet processed.
+
+        This is the main method for incremental processing. Given a list of files,
+        it returns only those that haven't been processed yet (based on file hash).
+
+        Args:
+            file_paths: List of file paths to check
+
+        Returns:
+            List of Path objects for files that haven't been processed
+
+        Raises:
+            DatabaseError: If database operation fails
+        """
+        if not file_paths:
+            return []
+
+        try:
+            # Get hashes for all existing files
+            file_hash_map = {}  # hash -> Path
+            for file_path in file_paths:
+                path = Path(file_path)
+                if path.exists():
+                    try:
+                        file_hash = self.compute_file_hash(path)
+                        file_hash_map[file_hash] = path
+                    except Exception as e:
+                        self.logger.warning(f"Could not hash file {path}: {e}")
+                        # Include files we can't hash - they'll be processed normally
+                        file_hash_map[f"unknown_{path.name}_{path.stat().st_size}"] = path
+                else:
+                    self.logger.warning(f"File does not exist: {path}")
+
+            if not file_hash_map:
+                return []
+
+            # Query for existing hashes in database
+            with self.get_session() as session:
+                # Get all hashes that are in the database
+                hashes_to_check = list(file_hash_map.keys())
+
+                # Query in batches to avoid SQL limits
+                existing_hashes = set()
+                batch_size = 500
+                for i in range(0, len(hashes_to_check), batch_size):
+                    batch = hashes_to_check[i:i + batch_size]
+                    results = session.query(DBProcessedFile.file_hash).filter(
+                        DBProcessedFile.file_hash.in_(batch)
+                    ).all()
+                    existing_hashes.update(h[0] for h in results)
+
+            # Return files whose hashes are NOT in the database
+            unprocessed = []
+            skipped_count = 0
+            for file_hash, path in file_hash_map.items():
+                if file_hash not in existing_hashes:
+                    unprocessed.append(path)
+                else:
+                    skipped_count += 1
+
+            if skipped_count > 0:
+                self.logger.info(f"Incremental processing: Skipping {skipped_count} already-processed files")
+
+            self.logger.info(f"Incremental processing: {len(unprocessed)} new files to process out of {len(file_paths)} total")
+            return unprocessed
+
+        except Exception as e:
+            self.logger.error(f"Error filtering unprocessed files: {e}")
+            raise DatabaseError(f"Failed to filter unprocessed files: {str(e)}") from e
+
+    def get_processed_files_count(self) -> int:
+        """
+        Get the total count of processed files.
+
+        Returns:
+            Total number of processed file records
+
+        Raises:
+            DatabaseError: If database operation fails
+        """
+        try:
+            with self.get_session() as session:
+                return session.query(func.count(DBProcessedFile.id)).scalar() or 0
+        except Exception as e:
+            self.logger.error(f"Error getting processed files count: {e}")
+            raise DatabaseError(f"Failed to get processed files count: {str(e)}") from e
+
+    def get_processed_files_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about processed files.
+
+        Returns:
+            Dictionary with statistics:
+            - total_count: Total processed files
+            - success_count: Files processed successfully
+            - failed_count: Files that failed processing
+            - earliest_date: Earliest processing date
+            - latest_date: Latest processing date
+
+        Raises:
+            DatabaseError: If database operation fails
+        """
+        try:
+            with self.get_session() as session:
+                total = session.query(func.count(DBProcessedFile.id)).scalar() or 0
+                success = session.query(func.count(DBProcessedFile.id)).filter(
+                    DBProcessedFile.success == True
+                ).scalar() or 0
+                failed = session.query(func.count(DBProcessedFile.id)).filter(
+                    DBProcessedFile.success == False
+                ).scalar() or 0
+
+                dates = session.query(
+                    func.min(DBProcessedFile.processed_date),
+                    func.max(DBProcessedFile.processed_date)
+                ).first()
+
+                return {
+                    'total_count': total,
+                    'success_count': success,
+                    'failed_count': failed,
+                    'earliest_date': dates[0] if dates else None,
+                    'latest_date': dates[1] if dates else None
+                }
+        except Exception as e:
+            self.logger.error(f"Error getting processed files stats: {e}")
+            raise DatabaseError(f"Failed to get processed files stats: {str(e)}") from e
+
+    def clear_processed_files(self, older_than_days: Optional[int] = None) -> int:
+        """
+        Clear processed files records (for reprocessing).
+
+        WARNING: This will cause files to be reprocessed. Use with caution.
+
+        Args:
+            older_than_days: If specified, only clear records older than this many days.
+                           If None, clear ALL records.
+
+        Returns:
+            Number of records deleted
+
+        Raises:
+            DatabaseError: If database operation fails
+        """
+        try:
+            with self.get_session() as session:
+                query = session.query(DBProcessedFile)
+
+                if older_than_days is not None:
+                    cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+                    query = query.filter(DBProcessedFile.processed_date < cutoff_date)
+                    self.logger.warning(f"Clearing processed files older than {older_than_days} days (before {cutoff_date})")
+                else:
+                    self.logger.warning("Clearing ALL processed files records - all files will be reprocessed!")
+
+                count = query.delete()
+                session.commit()
+
+                self.logger.info(f"Cleared {count} processed file records")
+                return count
+
+        except Exception as e:
+            self.logger.error(f"Error clearing processed files: {e}")
+            raise DatabaseError(f"Failed to clear processed files: {str(e)}") from e

@@ -837,3 +837,112 @@ def validate_batch_units_consistency(mapper, connection, target):
     if target.total_units is not None and target.passed_units is not None and target.failed_units is not None:
         if target.passed_units + target.failed_units > target.total_units:
             raise ValueError("Sum of passed and failed units cannot exceed total units")
+
+
+class ProcessedFile(Base):
+    """
+    Tracks files that have been processed to enable incremental processing.
+
+    This table allows the system to skip already-processed files, resulting in
+    10x faster processing for daily incremental updates (100 new files vs 1000 total).
+
+    Production-ready with proper validation, indexes, and duplicate detection.
+
+    Related: ADR-002 (Incremental Processing via Database Tracking)
+    Phase: 1, Day 2 (Refactoring)
+    """
+    __tablename__ = 'processed_files'
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # File identification - required fields
+    filename = Column(String(255), nullable=False)
+    file_path = Column(Text, nullable=False)
+    file_hash = Column(String(64), nullable=False)  # SHA-256 hash for duplicate detection
+
+    # File metadata
+    file_size = Column(Integer)  # File size in bytes
+    file_modified_date = Column(DateTime)  # Original file modification date
+
+    # Processing metadata
+    processed_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    processing_time_ms = Column(Integer)  # How long processing took in milliseconds
+    software_version = Column(String(20))  # Version that processed the file
+
+    # Processing result summary (for quick filtering without joining analysis_results)
+    success = Column(Boolean, default=True, nullable=False)
+    error_message = Column(Text)  # Only populated if success=False
+
+    # Link to analysis result (optional - for files that created analysis records)
+    analysis_id = Column(Integer, ForeignKey('analysis_results.id', ondelete='SET NULL'), nullable=True)
+
+    # Production-ready indexes for performance
+    __table_args__ = (
+        # Fast lookups by filename (most common query)
+        Index('idx_processed_filename', 'filename'),
+        # Fast duplicate detection by hash
+        Index('idx_processed_hash', 'file_hash'),
+        # Fast path lookups
+        Index('idx_processed_path', 'file_path'),
+        # Combined index for common query pattern
+        Index('idx_processed_filename_hash', 'filename', 'file_hash'),
+        # Date-based filtering
+        Index('idx_processed_date', 'processed_date'),
+        # Success filtering
+        Index('idx_processed_success', 'success'),
+        # Unique constraint: same file (by hash) should only be processed once
+        UniqueConstraint('file_hash', name='uq_processed_file_hash'),
+        # Data validation constraints
+        CheckConstraint("LENGTH(TRIM(filename)) > 0", name='check_pf_filename_not_empty'),
+        CheckConstraint("LENGTH(TRIM(file_path)) > 0", name='check_pf_file_path_not_empty'),
+        CheckConstraint("LENGTH(file_hash) = 64", name='check_pf_hash_length'),
+        CheckConstraint('file_size >= 0 OR file_size IS NULL', name='check_pf_file_size_positive'),
+        CheckConstraint('processing_time_ms >= 0 OR processing_time_ms IS NULL', name='check_pf_processing_time_positive'),
+    )
+
+    # Relationship to analysis result
+    analysis = relationship("AnalysisResult", backref="processed_file_record", foreign_keys=[analysis_id])
+
+    @validates('filename')
+    def validate_filename(self, key, filename):
+        """Validate filename is not empty."""
+        if not filename or not filename.strip():
+            raise ValueError("Filename cannot be empty")
+        return filename.strip()
+
+    @validates('file_path')
+    def validate_file_path(self, key, file_path):
+        """Validate file_path is not empty."""
+        if not file_path or not file_path.strip():
+            raise ValueError("File path cannot be empty")
+        return file_path.strip()
+
+    @validates('file_hash')
+    def validate_file_hash(self, key, file_hash):
+        """Validate file_hash is a valid SHA-256 hash (64 hex characters)."""
+        if not file_hash or len(file_hash) != 64:
+            raise ValueError("File hash must be a 64-character SHA-256 hash")
+        # Validate it's hexadecimal
+        try:
+            int(file_hash, 16)
+        except ValueError:
+            raise ValueError("File hash must be a valid hexadecimal string")
+        return file_hash.lower()  # Normalize to lowercase
+
+    @validates('file_size')
+    def validate_file_size(self, key, file_size):
+        """Validate file_size is non-negative."""
+        if file_size is not None and file_size < 0:
+            raise ValueError("File size cannot be negative")
+        return file_size
+
+    @validates('processing_time_ms')
+    def validate_processing_time_ms(self, key, processing_time_ms):
+        """Validate processing_time_ms is non-negative."""
+        if processing_time_ms is not None and processing_time_ms < 0:
+            raise ValueError("Processing time cannot be negative")
+        return processing_time_ms
+
+    def __repr__(self):
+        return f"<ProcessedFile(id={self.id}, filename='{self.filename}', hash='{self.file_hash[:8]}...', success={self.success})>"
