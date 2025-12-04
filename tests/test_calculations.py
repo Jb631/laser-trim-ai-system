@@ -6,7 +6,6 @@ used throughout the application.
 """
 import pytest
 import numpy as np
-from laser_trim_analyzer.analysis.analytics_engine import AnalyticsEngine
 from laser_trim_analyzer.core.constants import (
     DEFAULT_SIGMA_SCALING_FACTOR,
     HIGH_RISK_THRESHOLD,
