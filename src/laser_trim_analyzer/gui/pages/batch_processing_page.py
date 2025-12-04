@@ -504,13 +504,22 @@ class BatchProcessingPage(ctk.CTkFrame):
             text="Force Reprocess (Skip Duplicate Check)",
             variable=self.force_reprocess_var
         )
-        
+
+        # Incremental processing option - skip already-processed files (Phase 1 Day 2)
+        self.skip_processed_var = ctk.BooleanVar(value=True)  # Default ON for faster processing
+        self.skip_processed_check = ctk.CTkCheckBox(
+            self.options_container,
+            text="Skip Already Processed (Incremental Mode)",
+            variable=self.skip_processed_var
+        )
+
         # Store options for responsive layout
         self.option_widgets = [
             self.generate_plots_check,
             self.save_to_db_check,
             self.comprehensive_validation_check,
-            self.force_reprocess_check
+            self.force_reprocess_check,
+            self.skip_processed_check
         ]
     
     def _create_resource_monitoring(self):
@@ -1207,11 +1216,36 @@ class BatchProcessingPage(ctk.CTkFrame):
                     processable_files.append(file_path)
         else:
             processable_files = self.selected_files.copy()
-        
+
         if not processable_files:
             messagebox.showerror("Error", "No valid files to process")
             return
-        
+
+        # Incremental processing: Skip already-processed files (Phase 1 Day 2)
+        skipped_count = 0
+        if self.skip_processed_var.get() and self._db_manager:
+            try:
+                original_count = len(processable_files)
+                processable_files = self._db_manager.get_unprocessed_files(processable_files)
+                skipped_count = original_count - len(processable_files)
+                if skipped_count > 0:
+                    logger.info(f"Incremental mode: Skipping {skipped_count} already-processed files")
+                    # Show info message if all files already processed
+                    if len(processable_files) == 0:
+                        messagebox.showinfo(
+                            "All Files Already Processed",
+                            f"All {original_count} selected files have already been processed.\n\n"
+                            "Uncheck 'Skip Already Processed' to reprocess them."
+                        )
+                        return
+            except Exception as e:
+                logger.warning(f"Could not filter already-processed files: {e}")
+                # Continue with all files if filter fails
+
+        if not processable_files:
+            messagebox.showerror("Error", "No valid files to process")
+            return
+
         # Clear previous results
         self._clear_results()
         
@@ -1221,29 +1255,37 @@ class BatchProcessingPage(ctk.CTkFrame):
         # Disable controls
         self._set_controls_state("disabled")
         
-        # Show progress dialog
+        # Show progress dialog with skipped count info
+        title = "Batch Processing"
+        if skipped_count > 0:
+            title = f"Batch Processing ({skipped_count} skipped)"
         self.progress_dialog = BatchProgressDialog(
             self,
-            title="Batch Processing",
+            title=title,
             total_files=len(processable_files)
         )
         self.progress_dialog.show()
-        
+
         # Start processing in thread (thread-safe)
         with self._state_lock:
             self.is_processing = True
-        
+
         # Track processing start time for summary
         self.processing_start_time = time.time()
-        
+        # Store skipped count for summary
+        self._skipped_processed_count = skipped_count
+
         self.processing_thread = threading.Thread(
             target=self._run_batch_processing,
             args=(processable_files,),
             daemon=True
         )
         self.processing_thread.start()
-        
-        logger.info(f"Started batch processing of {len(processable_files)} files")
+
+        if skipped_count > 0:
+            logger.info(f"Started batch processing of {len(processable_files)} files ({skipped_count} already-processed files skipped)")
+        else:
+            logger.info(f"Started batch processing of {len(processable_files)} files")
 
     def _run_batch_processing(self, file_paths: List[Path]):
         """Run batch processing in background thread with performance optimizations and stop handling."""
@@ -2264,7 +2306,25 @@ class BatchProcessingPage(ctk.CTkFrame):
                     # Don't show individual save errors - they'll be summarized
         
         logger.info(f"Database save complete: {saved_count} saved, {failed_count} failed")
-        
+
+        # Mark successfully processed files for incremental processing (Phase 1 Day 2)
+        if self._db_manager and hasattr(self._db_manager, 'mark_file_processed'):
+            marked_count = 0
+            for file_path, result in results.items():
+                try:
+                    if result and result.db_id:
+                        self._db_manager.mark_file_processed(
+                            file_path=file_path,
+                            success=True,
+                            analysis_id=result.db_id
+                        )
+                        marked_count += 1
+                except Exception as e:
+                    # Non-critical - log and continue
+                    logger.debug(f"Could not mark file as processed: {e}")
+            if marked_count > 0:
+                logger.info(f"Marked {marked_count} files as processed for incremental mode")
+
         if failed_count > 0:
             # Show warning about failed saves
             self._safe_after(0, lambda: messagebox.showwarning(
