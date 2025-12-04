@@ -19,6 +19,11 @@ processing:
   file_extensions: [".xlsx", ".xls"]
   skip_patterns: ["~$*", ".*", "_backup_*"]  # Don't skip test files in dev
 
+  # Phase 2: Unified Processor Feature Flag (ADR-001, ADR-004)
+  # Enable for testing in development environment
+  use_unified_processor: true  # Enable in dev for testing
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+
 analysis:
   sigma_scaling_factor: 24.0
   matlab_gradient_step: 3

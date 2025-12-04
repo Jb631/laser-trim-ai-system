@@ -16,6 +16,11 @@ processing:
   cache_ttl: 3600
   file_extensions: [".xlsx", ".xls"]
   skip_patterns: ["~$*", ".*", "_backup_*", "*_test_*", "*_sample_*"]
+
+  # Phase 2: Unified Processor Feature Flag (ADR-001, ADR-004)
+  # Set to true to use new UnifiedProcessor instead of legacy processors
+  use_unified_processor: false  # Default OFF until stable
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
   
   # Large-scale processing optimizations
   max_batch_size: 1000
