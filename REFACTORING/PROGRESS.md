@@ -3,7 +3,7 @@
 **Project Start**: 2025-01-25
 **Target Completion**: 2025-03-07 (6 weeks, 30 working days)
 **Current Phase**: 1 - Foundation & Quick Wins
-**Overall Progress**: 3% (Day 1 of 30)
+**Overall Progress**: 8% (Day 2 of 30)
 **Status**: 🔄 In Progress
 
 ---
@@ -12,7 +12,7 @@
 
 | Phase | Name | Status | Progress | Start | End | Days | Completed |
 |-------|------|--------|----------|-------|-----|------|-----------|
-| 1 | Foundation & Quick Wins | 🔄 In Progress | 20% | 2025-01-25 | TBD | 5 | 1/5 |
+| 1 | Foundation & Quick Wins | 🔄 In Progress | 40% | 2025-01-25 | TBD | 5 | 2/5 |
 | 2 | Processor Unification | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 3 | ML Integration | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 4 | File Splitting & Modularization | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
@@ -29,10 +29,14 @@
 
 ## Metrics Tracking
 
-### Code Reduction
-- **Target**: -6,000 lines (-8% of total)
-- **Current**: 0 lines (0%)
-- **Remaining**: 6,000 lines
+### Code Changes
+- **Lines Added**: ~460 lines
+  - ProcessedFile model: ~110 lines
+  - DatabaseManager helper methods: ~350 lines
+
+- **Target Reduction**: -6,000 lines (-8% of total)
+- **Current**: +460 lines (net, infrastructure for savings)
+- **Remaining**: Phase 1 Day 3 will remove AnalyticsEngine (-1,052 lines)
 
 **Breakdown by Phase:**
 - Phase 1: -1,052 lines (AnalyticsEngine removal)
@@ -47,14 +51,17 @@
 - 1000 files: **SYSTEM CRASH** ❌ (extrapolated: ~625s if stable)
 
 **Current:**
-- Same as baseline (no changes yet)
+- Same as baseline for full processing
+- **NEW**: Incremental processing infrastructure complete (Day 2)
 
 **Target:**
 - 1000 files: <5 minutes (300 seconds, 300 ms/file)
 - **Fix critical stability issue** (1000-file crash)
 
-**Incremental Processing (new feature):**
+**Incremental Processing (Phase 1, Day 2 - COMPLETE):**
 - Target: 10x faster for daily incremental updates
+- Status: ✅ Infrastructure complete, GUI integration complete
+- Pending: CLI integration, benchmarking
 
 ### ML Integration Status
 - ✅ **ThresholdOptimizer**: Wired to sigma_analyzer (2025-01-25)
@@ -70,6 +77,23 @@
 ---
 
 ## Recent Activity
+
+### 2025-12-04 - Phase 1, Day 2 (Incremental Processing) - In Progress
+- **ProcessedFile model added**: Full schema with validators, indexes, constraints
+- **DatabaseManager methods added**:
+  - `compute_file_hash()` - SHA-256 file hashing
+  - `is_file_processed()` - Check if file already processed
+  - `get_processed_file()` - Get ProcessedFile record
+  - `mark_file_processed()` - Mark file as processed
+  - `get_unprocessed_files()` - KEY: Filter to new files only
+  - `get_processed_files_count()` - Count statistics
+  - `get_processed_files_stats()` - Detailed statistics
+  - `clear_processed_files()` - Clear for reprocessing
+- **GUI integration**: "Skip Already Processed" checkbox (default: ON)
+- **Batch processor modified**: Filters files before processing, marks after save
+- **Commits**: 2 commits ([PHASE-1.2])
+- **Tests**: 53/53 passing (100%)
+- **Progress**: Phase 1 Day 2 ~80% complete (CLI pending)
 
 ### 2025-01-25 - Phase 1, Day 1 Complete ✅
 - **Baseline established**: 100 files (66s), 500 files (314s)
@@ -98,39 +122,60 @@
 - [x] Refactoring rules documented
 - [x] Todo system initialized
 
+**Phase 1, Day 1 (2025-01-25)**:
+- [x] Baseline performance established
+- [x] Test baseline established (53/53)
+- [x] Architecture documented
+- [x] Benchmark script created
+- [x] RISK-008 identified (1000-file crash)
+
+**Phase 1, Day 2 (2025-12-04 - In Progress)**:
+- [x] ProcessedFile model schema design (Task 2.1)
+- [x] ProcessedFile model implementation (Task 2.3)
+- [x] DatabaseManager helper methods (Task 2.4)
+- [x] Batch processor integration (Task 2.5)
+- [x] GUI checkbox integration (Task 2.7)
+- [ ] CLI flag integration (Task 2.6)
+- [ ] Benchmark incremental improvement (Task 2.9)
+
 ---
 
 ## Next Steps
 
-1. **Establish baseline** (Phase 1, Day 1)
-   - Run comprehensive test suite
-   - Benchmark performance (100/500/1000 files)
-   - Document current architecture
+1. **Complete Phase 1, Day 2** (Incremental Processing)
+   - Add `--skip-existing` CLI flag
+   - Benchmark incremental processing improvement
 
-2. **Begin Phase 1** (Week 1)
-   - Implement incremental processing
-   - Remove dead code
+2. **Phase 1, Day 3** (Dead Code Removal)
+   - Remove AnalyticsEngine (-1,052 lines)
+   - Remove other unused code
+
+3. **Phase 1, Days 4-5** (Processor Analysis)
    - Analyze processor chaos
+   - Prepare for Phase 2 unification
 
 ---
 
 ## Session Summary
 
-**Total Sessions**: 0
-**Total Hours**: 0
-**Productivity**: N/A (not started)
+**Total Sessions**: 3
+**Total Commits**: 5
+**Tests Status**: 53/53 passing (100%)
 
-**Latest Session**: [None yet]
+**Latest Session**: Session #3 (2025-12-04)
+- Completed: Tasks 2.1, 2.3, 2.4, 2.5, 2.7
+- Pending: Tasks 2.6, 2.8, 2.9, 2.10
 
 ---
 
 ## Notes
 
-- Refactoring officially begins with Phase 1, Day 1
-- All tracking systems in place
-- Following strict protocols from SESSION_PROTOCOL.md
-- All rules from CLAUDE_REFACTOR_RULES.md apply
+- Incremental processing infrastructure is complete
+- GUI checkbox defaults to ON for better daily workflow
+- CLI integration still needed for automated/scripted use
+- Safety tag `pre-refactor-stable` created on main branch
+- Working in isolated worktree (keen-poincare)
 
 ---
 
-**Last Updated**: 2025-01-25 (Project Setup)
+**Last Updated**: 2025-12-04 (Session #3)
