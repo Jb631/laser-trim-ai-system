@@ -97,8 +97,10 @@ def cli(ctx, config, debug):
               help='Enable/disable ML predictions')
 @click.option('--format', '-f', type=click.Choice(['table', 'json', 'csv']),
               default='table', help='Output format')
+@click.option('--skip-existing/--no-skip-existing', default=True,
+              help='Skip already-processed files (incremental mode, default: enabled)')
 @click.pass_context
-def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, format):
+def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, format, skip_existing):
     """
     Analyze laser trim data from Excel files.
 
@@ -108,6 +110,8 @@ def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, for
         lta analyze data/8340_A12345.xlsx
         lta analyze data/ --parallel --workers 8
         lta analyze data/ --no-plots --format csv > results.csv
+        lta analyze data/ --skip-existing      # Skip already-processed files (default)
+        lta analyze data/ --no-skip-existing   # Reprocess all files
     """
     config = ctx.obj['config']
     input_path = Path(input_path)
@@ -148,7 +152,8 @@ def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, for
         f"Input: {input_path}\n"
         f"Output: {output}\n"
         f"Mode: {'Parallel' if parallel else 'Sequential'}\n"
-        f"ML: {'Enabled' if ml and HAS_ML else 'Disabled'}",
+        f"ML: {'Enabled' if ml and HAS_ML else 'Disabled'}\n"
+        f"Incremental: {'Skip processed' if skip_existing and not no_db else 'Reprocess all'}",
         title="Analysis Configuration"
     ))
 
@@ -160,7 +165,11 @@ def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, for
         if input_path.is_file():
             results = asyncio.run(_analyze_single_file(processor, input_path, output))
         else:
-            results = asyncio.run(_analyze_batch(processor, input_path, output, parallel))
+            results = asyncio.run(_analyze_batch(
+                processor, input_path, output, parallel,
+                skip_existing=skip_existing and not no_db,
+                db_manager=db_manager
+            ))
 
         # Display results
         _display_results(results, format)
@@ -200,8 +209,8 @@ async def _analyze_single_file(processor, file_path, output_dir):
     return [result]
 
 
-async def _analyze_batch(processor, input_dir, output_dir, parallel):
-    """Analyze multiple files."""
+async def _analyze_batch(processor, input_dir, output_dir, parallel, skip_existing=True, db_manager=None):
+    """Analyze multiple files with optional incremental processing."""
     # Find Excel files
     files = list(input_dir.glob("*.xlsx")) + list(input_dir.glob("*.xls"))
     files = [f for f in files if not f.name.startswith('~')]
@@ -209,7 +218,25 @@ async def _analyze_batch(processor, input_dir, output_dir, parallel):
     if not files:
         raise click.ClickException(f"No Excel files found in {input_dir}")
 
-    console.print(f"Found {len(files)} files to process")
+    original_count = len(files)
+    console.print(f"Found {original_count} files to process")
+
+    # Incremental processing: Filter already-processed files (Phase 1 Day 2)
+    skipped_count = 0
+    if skip_existing and db_manager and hasattr(db_manager, 'get_unprocessed_files'):
+        try:
+            files = db_manager.get_unprocessed_files(files)
+            skipped_count = original_count - len(files)
+            if skipped_count > 0:
+                console.print(f"[yellow]Incremental mode:[/yellow] Skipping {skipped_count} already-processed files")
+            if not files:
+                console.print("[green]All files have already been processed. Nothing to do.[/green]")
+                return []
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not filter processed files: {e}[/yellow]")
+            # Continue with all files if filter fails
+
+    console.print(f"Processing {len(files)} files" + (f" ({skipped_count} skipped)" if skipped_count > 0 else ""))
 
     with Progress(
             SpinnerColumn(),
