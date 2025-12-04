@@ -92,43 +92,295 @@ grep -r "AnalyticsEngine" src/ --include="*.py"
 
 ## ADR-004: Unify 6 Processors Using Strategy Pattern
 
-**Date**: TBD (Phase 2)
-**Status**: Proposed
-**Context**: 6 different processor classes with 40-60% duplicated logic. Confusing which to use when.
+**Date**: 2025-12-04
+**Status**: Accepted (Design Complete)
+**Context**: 6 different processor classes with 36% duplicated logic (2,100 lines). Users confused about which processor to use. Maintenance burden: fixes must be applied to multiple places.
+
 **Decision**: Create UnifiedProcessor with pluggable strategies for different scenarios.
 
-**Processor Analysis**:
-1. `LaserTrimProcessor` (2,682 lines) - Main, standard processing
-2. `FastProcessor` (1,499 lines) - Turbo mode (parallel processing)
-3. `LargeScaleProcessor` (1,189 lines) - Large batches (chunking)
-4. `CachedFileProcessor` (383 lines) - File-level caching
-5. `CachedBatchProcessor` (383 lines) - Batch-level caching
-6. `SecureFileProcessor` (unknown) - Security validation
+**Processor Analysis** (Day 4 findings):
 
-**Proposed Design**:
+| Processor | Lines | Duplicated | Unique | Primary Purpose |
+|-----------|-------|------------|--------|-----------------|
+| LaserTrimProcessor | 2,682 | ~800 | ~1,882 | Core analysis logic |
+| FastProcessor | 1,499 | ~800 | ~699 | Parallel processing |
+| LargeScaleProcessor | 1,189 | ~200 | ~989 | Memory/chunking |
+| CachedFileProcessor | 383 | ~300 | ~83 | File caching |
+| CachedBatchProcessor | (same file) | - | - | Batch caching |
+| SecureFileProcessor | ~234 | ~50 | ~184 | Security wrapper |
+| **Total** | **5,753** | **~2,100** | **~3,653** | |
+
+**Key Duplicated Methods** (1,280 lines):
+- `_analyze_sigma()` / `_analyze_sigma_fast()` (~80 lines x2)
+- `_analyze_linearity()` / `_analyze_linearity_fast()` (~70 lines x2)
+- `_extract_trim_data()` / `_extract_trim_data_fast()` (~180 lines x2)
+- `_determine_overall_status()` (~20 lines x2)
+- `_calculate_failure_prediction()` (~70 lines x2)
+- Plus 5 more duplicated methods...
+
+**Detailed Design**:
+
 ```python
+# Base processor with all shared logic
 class UnifiedProcessor:
-    def __init__(self, config, strategy='auto'):
-        self.strategy = self._select_strategy(strategy, config)
+    """Single processor that replaces all 6 existing processors."""
 
-    def process(self, files):
-        return self.strategy.process(files)
+    def __init__(
+        self,
+        config: Config,
+        strategy: str = 'auto',  # 'auto', 'standard', 'turbo', 'memory_safe'
+        enable_caching: bool = False,
+        enable_security: bool = True,
+        incremental: bool = True,  # Skip already-processed files
+    ):
+        self.config = config
+        self.strategy = self._create_strategy(strategy, config)
+        self.caching = CachingLayer() if enable_caching else None
+        self.security = SecurityLayer() if enable_security else None
+        self.incremental = incremental
 
-class StandardStrategy:  # Default
-class TurboStrategy:     # Parallel processing
-class LargeScaleStrategy:  # Chunking for 1000+ files
-class CachedStrategy:    # Caching layer
+        # Shared components (initialized once)
+        self.sigma_analyzer = SigmaAnalyzer()
+        self.linearity_analyzer = LinearityAnalyzer()
+        self.resistance_analyzer = ResistanceAnalyzer()
+        self.ml_engine = MLEngine(config)
+        self.db_manager = DatabaseManager(config)
+
+    async def process_file(self, file_path: str) -> AnalysisResult:
+        """Process a single file through the pipeline."""
+        # 1. Security validation (optional layer)
+        if self.security:
+            self.security.validate(file_path)
+
+        # 2. Check incremental (skip if already processed)
+        if self.incremental and self.db_manager.is_file_processed(file_path):
+            return self.db_manager.get_cached_result(file_path)
+
+        # 3. Check cache (optional layer)
+        if self.caching and (cached := self.caching.get(file_path)):
+            return cached
+
+        # 4. Delegate to strategy for actual processing
+        result = await self.strategy.process(file_path, self)
+
+        # 5. Store result
+        if self.caching:
+            self.caching.set(file_path, result)
+        await self.db_manager.save_result(result)
+        await self.db_manager.mark_file_processed(file_path)
+
+        return result
+
+    async def process_batch(
+        self,
+        files: List[str],
+        progress_callback: Optional[Callable] = None,
+    ) -> AsyncGenerator[AnalysisResult, None]:
+        """Process multiple files with progress tracking."""
+        # Filter already-processed if incremental
+        if self.incremental:
+            files = self.db_manager.get_unprocessed_files(files)
+
+        # Delegate to strategy
+        async for result in self.strategy.process_batch(files, self, progress_callback):
+            yield result
+
+    # Shared analysis methods (used by all strategies)
+    def _analyze_sigma(self, data: TrackData) -> SigmaResult:
+        return self.sigma_analyzer.analyze(data)
+
+    def _analyze_linearity(self, data: TrackData) -> LinearityResult:
+        return self.linearity_analyzer.analyze(data)
+
+    def _analyze_resistance(self, data: TrackData) -> ResistanceResult:
+        return self.resistance_analyzer.analyze(data)
+
+    def _determine_overall_status(self, analyses: Dict) -> str:
+        # Single implementation (not duplicated)
+        ...
+
+    def _create_strategy(self, strategy: str, config: Config) -> ProcessingStrategy:
+        if strategy == 'auto':
+            return AutoStrategy(config)
+        elif strategy == 'turbo':
+            return TurboStrategy(config)
+        elif strategy == 'memory_safe':
+            return MemorySafeStrategy(config)
+        else:
+            return StandardStrategy(config)
+
+
+# Strategy interface
+class ProcessingStrategy(ABC):
+    """Base class for all processing strategies."""
+
+    @abstractmethod
+    async def process(self, file_path: str, processor: UnifiedProcessor) -> AnalysisResult:
+        """Process a single file."""
+        pass
+
+    @abstractmethod
+    async def process_batch(
+        self,
+        files: List[str],
+        processor: UnifiedProcessor,
+        progress_callback: Optional[Callable],
+    ) -> AsyncGenerator[AnalysisResult, None]:
+        """Process multiple files."""
+        pass
+
+
+# Concrete strategies
+class StandardStrategy(ProcessingStrategy):
+    """Default sequential processing. Replaces LaserTrimProcessor."""
+
+    async def process(self, file_path: str, processor: UnifiedProcessor) -> AnalysisResult:
+        # Extract data
+        data = await self._extract_data(file_path)
+
+        # Run analyses using shared methods
+        sigma = processor._analyze_sigma(data)
+        linearity = processor._analyze_linearity(data)
+        resistance = processor._analyze_resistance(data)
+
+        # Aggregate results
+        return self._create_result(file_path, sigma, linearity, resistance)
+
+
+class TurboStrategy(ProcessingStrategy):
+    """Parallel processing with ProcessPoolExecutor. Replaces FastProcessor."""
+
+    def __init__(self, config: Config):
+        self.max_workers = config.get('turbo_workers', 4)
+        self.executor = ProcessPoolExecutor(max_workers=self.max_workers)
+
+    async def process_batch(self, files, processor, progress_callback):
+        # Submit all files to process pool
+        futures = [self.executor.submit(self._process_single, f) for f in files]
+
+        for future in as_completed(futures):
+            result = future.result()
+            if progress_callback:
+                progress_callback(result)
+            yield result
+
+
+class MemorySafeStrategy(ProcessingStrategy):
+    """Memory-managed chunked processing. Replaces LargeScaleProcessor."""
+
+    def __init__(self, config: Config):
+        self.chunk_size = config.get('chunk_size', 100)
+        self.memory_threshold = config.get('memory_threshold_mb', 1000)
+
+    async def process_batch(self, files, processor, progress_callback):
+        # Process in chunks with memory monitoring
+        for chunk in self._chunk_files(files, self.chunk_size):
+            # Check memory before each chunk
+            self._enforce_memory_limit()
+
+            for file_path in chunk:
+                yield await processor.strategy.process(file_path, processor)
+
+            # GC after each chunk
+            gc.collect()
+
+
+class AutoStrategy(ProcessingStrategy):
+    """Auto-select strategy based on file count and system resources."""
+
+    def __init__(self, config: Config):
+        self.standard = StandardStrategy(config)
+        self.turbo = TurboStrategy(config)
+        self.memory_safe = MemorySafeStrategy(config)
+
+    async def process_batch(self, files, processor, progress_callback):
+        file_count = len(files)
+        available_memory = psutil.virtual_memory().available / (1024**2)
+
+        # Select strategy based on conditions
+        if file_count > 1000 or available_memory < 500:
+            strategy = self.memory_safe
+        elif file_count > 10:
+            strategy = self.turbo
+        else:
+            strategy = self.standard
+
+        async for result in strategy.process_batch(files, processor, progress_callback):
+            yield result
 ```
+
+**Migration Path** (Phase 2 Implementation):
+
+1. **Day 1-2**: Create UnifiedProcessor with StandardStrategy
+   - Extract shared methods from LaserTrimProcessor
+   - Create ProcessingStrategy interface
+   - Implement StandardStrategy
+
+2. **Day 3**: Add TurboStrategy
+   - Extract parallel logic from FastProcessor
+   - Implement ProcessPoolExecutor integration
+   - Test with 100, 500, 1000 files
+
+3. **Day 4**: Add MemorySafeStrategy
+   - Extract chunking from LargeScaleProcessor
+   - Implement memory monitoring
+   - Add progress/recovery support
+
+4. **Day 5**: Add layers and migration
+   - Implement CachingLayer (from Cached*Processor)
+   - Implement SecurityLayer (from SecureFileProcessor)
+   - Update GUI pages to use UnifiedProcessor
+   - Add feature flag for rollback
+
+**Caller Migration**:
+
+```python
+# Before (6 different entry points)
+if turbo_mode:
+    processor = FastProcessor(config)
+elif file_count > 1000:
+    processor = LargeScaleProcessor(config)
+else:
+    processor = LaserTrimProcessor(config)
+
+# After (single entry point)
+processor = UnifiedProcessor(
+    config,
+    strategy='auto',  # Auto-selects best strategy
+    enable_caching=True,
+    incremental=True,
+)
+```
+
+**Expected Results**:
+- **Lines Removed**: ~2,000 (36% duplication eliminated)
+- **Code Complexity**: 6 classes → 1 class + 4 strategies
+- **Testing**: Simpler (test shared base + each strategy)
+- **Maintenance**: Single place for bug fixes
 
 **Consequences**:
 - **Positive**: Single entry point (clear API)
-- **Positive**: -40% code duplication
+- **Positive**: -36% code duplication (~2,000 lines)
 - **Positive**: Easier testing (test strategies independently)
-- **Positive**: Composable (can combine strategies)
-- **Negative**: Requires refactor of all callers
-- **Mitigation**: Feature flag for gradual rollout
+- **Positive**: Composable (layers can wrap any strategy)
+- **Positive**: Auto-selection removes user confusion
+- **Negative**: Requires refactor of all callers (7 GUI pages, CLI)
+- **Mitigation**: Feature flag for gradual rollout (ADR-001)
+- **Mitigation**: Keep old processors during transition
 
-**Related**: Phase 2
+**Verification**:
+```bash
+# After Phase 2, verify:
+pytest tests/                           # All tests pass
+python scripts/benchmark_processing.py --files 1000  # No regression
+grep -r "LaserTrimProcessor" src/gui/   # Should be 0 (migrated)
+wc -l src/laser_trim_analyzer/core/*.py # Should be ~3,500 lines (down from 5,753)
+```
+
+**Related**:
+- Phase 1, Day 4 (this analysis)
+- Phase 2 (implementation)
+- ADR-001 (feature flags)
 
 ---
 
@@ -235,11 +487,11 @@ charts/
 | ADR-001 | Feature Flags for Major Changes | Accepted | All | 2025-01-25 |
 | ADR-002 | Incremental Processing via DB | Accepted | 1 | 2025-01-25 |
 | ADR-003 | Remove AnalyticsEngine | Accepted | 1 | 2025-01-25 |
-| ADR-004 | Unify Processors (Strategy Pattern) | Proposed | 2 | TBD |
+| ADR-004 | Unify Processors (Strategy Pattern) | **Accepted (Design Complete)** | 2 | 2025-12-04 |
 | ADR-005 | Wire ML Models to Pipeline | Proposed | 3 | TBD |
 | ADR-006 | Split Large Files by Modules | Proposed | 4 | TBD |
 
 ---
 
-**Last Updated**: 2025-01-25 (Initial ADRs)
+**Last Updated**: 2025-12-04 (ADR-004 Design Complete)
 **Next Review**: After each phase completion
