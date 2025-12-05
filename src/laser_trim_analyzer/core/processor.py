@@ -107,6 +107,11 @@ class LaserTrimProcessor:
     Main processing engine for laser trim analysis.
 
     Coordinates all aspects of file processing, analysis, and result generation.
+
+    .. deprecated:: 2.3.0
+        This class is deprecated and will be removed in a future version.
+        Use :class:`laser_trim_analyzer.core.unified_processor.UnifiedProcessor` instead.
+        Enable via config: ``processing.use_unified_processor: true``
     """
 
     def __init__(

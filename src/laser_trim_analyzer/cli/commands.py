@@ -30,6 +30,15 @@ from laser_trim_analyzer.core.config import Config, get_config
 from laser_trim_analyzer import __version__ as LTA_VERSION
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor, process_large_directory
+
+# Phase 2: UnifiedProcessor import (ADR-004)
+try:
+    from laser_trim_analyzer.core.unified_processor import UnifiedProcessor, create_processor
+    HAS_UNIFIED_PROCESSOR = True
+except ImportError:
+    HAS_UNIFIED_PROCESSOR = False
+    UnifiedProcessor = None
+    create_processor = None
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.utils.report_generator import ReportGenerator
 from laser_trim_analyzer.cli.cache_commands import register_cache_commands
@@ -158,8 +167,22 @@ def analyze(ctx, input_path, output, parallel, workers, no_plots, no_db, ml, for
     ))
 
     try:
-        # Create processor
-        processor = LaserTrimProcessor(config, db_manager)
+        # Create processor (Phase 2: UnifiedProcessor with feature flag)
+        use_unified = getattr(config.processing, 'use_unified_processor', False)
+        strategy = getattr(config.processing, 'unified_processor_strategy', 'auto')
+
+        if use_unified and HAS_UNIFIED_PROCESSOR:
+            console.print(f"[dim]Using UnifiedProcessor with strategy='{strategy}'[/dim]")
+            processor = UnifiedProcessor(
+                config=config,
+                db_manager=db_manager,
+                strategy=strategy,
+                enable_caching=True,
+                enable_security=True,
+                incremental=skip_existing and not no_db
+            )
+        else:
+            processor = LaserTrimProcessor(config, db_manager)
 
         # Determine if single file or batch
         if input_path.is_file():
