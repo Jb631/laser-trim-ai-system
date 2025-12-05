@@ -1,0 +1,264 @@
+# Phase 3: ML Integration - Checklist
+
+**Duration**: 5 days
+**Goal**: Wire ML models (FailurePredictor, DriftDetector) to processing pipeline
+**Status**: 🔄 In Progress
+**Progress**: 20% (Day 1 complete)
+
+---
+
+## Overview
+
+Per ADR-005, ML models exist but need to be wired to the processing pipeline:
+- ✅ **ThresholdOptimizer**: Already wired to sigma_analyzer (lines 294-305)
+- ⏸️ **FailurePredictor**: Not wired - needs integration with UnifiedProcessor
+- ⏸️ **DriftDetector**: Not wired - needs integration with historical analysis
+
+**Priority Pattern** (following ThresholdOptimizer):
+1. Check feature flag first
+2. Try ML prediction if model is trained
+3. Fall back to formula if ML not available
+4. Log which method used for debugging
+
+---
+
+## Day 1: ML Infrastructure Analysis ✅ COMPLETE
+
+**Goal**: Understand current ML architecture and plan integration points
+**Status**: ✅ Complete
+
+### Tasks
+
+- [x] **1.1** Analyze existing ML components
+  - ✅ MLPredictor class in predictors.py (1,175 lines)
+  - ✅ FailurePredictor in models.py:233-466 (RandomForestClassifier)
+  - ✅ DriftDetector in models.py:468-886 (IsolationForest)
+  - ✅ ThresholdOptimizer in models.py:28-231 (RandomForestRegressor)
+
+- [x] **1.2** Identify integration points
+  - ✅ UnifiedProcessor._process_file_internal() → FailurePredictor
+  - ✅ Historical page batch analysis → DriftDetector
+  - ✅ Documented in ADR-005
+
+- [x] **1.3** Review existing ML wiring pattern
+  - ✅ ThresholdOptimizer wired in sigma_analyzer.py:273-372
+  - ✅ Pattern: ML-first with formula fallback, logging which method used
+  - ✅ Documented in ADR-005 as reference implementation
+
+- [x] **1.4** Create ML integration design
+  - ✅ Interface documented in ADR-005
+  - ✅ Fallback behavior defined
+  - ✅ Logging strategy established
+
+- [x] **1.5** Add feature flags for ML integration
+  - ✅ `use_ml_failure_predictor: false` (config.py:275-278)
+  - ✅ `use_ml_drift_detector: false` (config.py:279-282)
+
+**Key Findings**:
+- MLPredictor._impl_predictor is always None (bug to fix)
+- Models are registered but not automatically trained
+- No training trigger from GUI
+
+**Completion Criteria**: ✅ All met
+- ✅ ML architecture documented (session-7.md)
+- ✅ Integration points identified (ADR-005)
+- ✅ Design pattern established (following ThresholdOptimizer)
+- ✅ Feature flags added (config.py)
+
+**Actual Time**: ~2 hours
+
+---
+
+## Day 2: FailurePredictor Integration
+
+**Goal**: Wire FailurePredictor to UnifiedProcessor
+**Status**: ⏸️ Not Started
+
+### Tasks
+
+- [ ] **2.1** Create ML prediction interface in UnifiedProcessor
+  - Add `_predict_failure()` method
+  - ML-first with formula fallback
+  - Proper logging of method used
+
+- [ ] **2.2** Integrate FailurePredictor with analysis flow
+  - Call after track analysis
+  - Add prediction to AnalysisResult
+  - Store prediction in database
+
+- [ ] **2.3** Add FailurePrediction to result models
+  - Ensure model compatibility
+  - Add serialization support
+
+- [ ] **2.4** Test FailurePredictor integration
+  - Test with trained model
+  - Test fallback when no model
+  - Verify prediction accuracy
+
+- [ ] **2.5** Update GUI to display predictions
+  - Show prediction on results page
+  - Add confidence indicator
+
+**Completion Criteria**:
+- FailurePredictor wired to processing
+- Fallback working correctly
+- GUI displays predictions
+- Tests passing
+
+**Estimated Time**: 6-8 hours
+
+---
+
+## Day 3: DriftDetector Integration
+
+**Goal**: Wire DriftDetector to historical analysis
+**Status**: ⏸️ Not Started
+
+### Tasks
+
+- [ ] **3.1** Create drift detection interface
+  - Add `_detect_drift()` method
+  - Define drift detection triggers
+  - Implement batch analysis
+
+- [ ] **3.2** Integrate DriftDetector with historical page
+  - Add drift alerts to historical view
+  - Create drift visualization
+  - Add trend indicators
+
+- [ ] **3.3** Add drift alerts to QA system
+  - Create drift alert model
+  - Store alerts in database
+  - Configure alert thresholds
+
+- [ ] **3.4** Test DriftDetector integration
+  - Test with historical data
+  - Verify drift detection accuracy
+  - Test alert generation
+
+- [ ] **3.5** Update GUI for drift visualization
+  - Add drift chart to historical page
+  - Show alert status
+  - Add drill-down capability
+
+**Completion Criteria**:
+- DriftDetector wired to historical analysis
+- Alerts generating correctly
+- GUI displays drift information
+- Tests passing
+
+**Estimated Time**: 6-8 hours
+
+---
+
+## Day 4: ML Pipeline Optimization
+
+**Goal**: Optimize ML predictions for batch processing
+**Status**: ⏸️ Not Started
+
+### Tasks
+
+- [ ] **4.1** Implement batch predictions
+  - Batch FailurePredictor calls
+  - Batch DriftDetector calls
+  - Reduce overhead per file
+
+- [ ] **4.2** Add ML model caching
+  - Cache loaded models
+  - Lazy model loading
+  - Model version tracking
+
+- [ ] **4.3** Add prediction caching
+  - Cache predictions by file hash
+  - Invalidation strategy
+  - Cache hit rate monitoring
+
+- [ ] **4.4** Performance benchmarks
+  - Measure ML overhead
+  - Compare batch vs individual
+  - Document performance impact
+
+- [ ] **4.5** Handle ML errors gracefully
+  - Timeout handling
+  - Memory limit handling
+  - Graceful degradation
+
+**Completion Criteria**:
+- Batch predictions working
+- ML caching implemented
+- Performance acceptable (<10% overhead)
+- Error handling robust
+
+**Estimated Time**: 6-8 hours
+
+---
+
+## Day 5: Testing, Documentation & Cleanup
+
+**Goal**: Complete testing and documentation
+**Status**: ⏸️ Not Started
+
+### Tasks
+
+- [ ] **5.1** Run full test suite
+  - Unit tests for ML integration
+  - Integration tests
+  - Performance tests
+
+- [ ] **5.2** Test ML fallback behavior
+  - Test with no models
+  - Test with failed models
+  - Verify formula fallback
+
+- [ ] **5.3** Update documentation
+  - ARCHITECTURE.md with ML flow
+  - Update ADR-005 status
+  - PROGRESS.md updates
+
+- [ ] **5.4** Add ML configuration docs
+  - Document feature flags
+  - Document model training
+  - Document prediction interpretation
+
+- [ ] **5.5** Commit and tag Phase 3 completion
+  - Commit: `[PHASE-3.5] COMPLETE: ML Integration`
+  - Tag: `phase-3-complete`
+
+**Completion Criteria**:
+- All tests passing
+- Documentation complete
+- Feature flags working
+- Phase 3 complete
+
+**Estimated Time**: 4-6 hours
+
+---
+
+## Phase 3 Summary
+
+**Total Tasks**: 25
+**Estimated Total Time**: 26-36 hours (5 days)
+
+**Deliverables**:
+1. FailurePredictor wired to processing pipeline
+2. DriftDetector wired to historical analysis
+3. Batch prediction optimization
+4. Prediction caching
+5. Updated documentation
+
+**Success Metrics**:
+- All tests passing: 100%
+- ML overhead: <10% per file
+- Fallback working: 100% coverage
+- Feature flags: All working
+
+---
+
+## Notes
+
+- Feature flags default to OFF (ADR-001)
+- Formula fallback always available
+- Log which prediction method used
+- Test thoroughly before enabling by default
+
+**Phase 3 starts when Day 1, Task 1.1 is checked**

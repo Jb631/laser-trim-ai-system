@@ -2,9 +2,9 @@
 
 **Project Start**: 2025-01-25
 **Target Completion**: 2025-03-07 (6 weeks, 30 working days)
-**Current Phase**: 2 - Processor Unification (COMPLETE)
-**Overall Progress**: 100% (Phase 2 Complete)
-**Status**: ✅ Phase 2 COMPLETE
+**Current Phase**: 3 - ML Integration
+**Overall Progress**: 40% (Phase 3 Day 1 Complete)
+**Status**: 🔄 Phase 3 In Progress
 
 ---
 
@@ -14,7 +14,7 @@
 |-------|------|--------|----------|-------|-----|------|-----------|
 | 1 | Foundation & Quick Wins | ✅ COMPLETE | 100% | 2025-01-25 | 2025-12-04 | 5 | 5/5 |
 | 2 | Processor Unification | ✅ COMPLETE | 100% | 2025-12-04 | 2025-12-05 | 5 | 5/5 |
-| 3 | ML Integration | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
+| 3 | ML Integration | 🔄 In Progress | 20% | 2025-12-05 | TBD | 5 | 1/5 |
 | 4 | File Splitting & Modularization | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 5 | GUI Consolidation & Features | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 6 | Testing, Performance & Docs | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
@@ -84,6 +84,24 @@
 ---
 
 ## Recent Activity
+
+### 2025-12-05 - Phase 3, Day 1 (ML Infrastructure Analysis) - ✅ COMPLETE
+- **ML components analyzed**:
+  - FailurePredictor (ml/models.py:233-466) - RandomForestClassifier, not wired
+  - DriftDetector (ml/models.py:468-886) - IsolationForest, not wired
+  - ThresholdOptimizer (ml/models.py:28-231) - RandomForestRegressor, already wired
+- **ThresholdOptimizer pattern documented**: ML-first with formula fallback (sigma_analyzer.py:273-372)
+- **Integration points identified**:
+  - FailurePredictor → UnifiedProcessor._process_file_internal()
+  - DriftDetector → Historical page batch analysis
+- **Feature flags added** (config.py:274-282):
+  - `use_ml_failure_predictor: false`
+  - `use_ml_drift_detector: false`
+- **ADR-005 updated**: Full implementation design documented
+- **Key findings**:
+  - MLPredictor._impl_predictor is always None (bug to fix in Day 2)
+  - Models registered but not trained automatically
+- **Ready for**: Day 2 (FailurePredictor wiring)
 
 ### 2025-12-05 - Phase 2, Day 5 (Layers, Migration & Cleanup) - ✅ COMPLETE
 - **CachingLayer verified**: 50% hit rate on re-processing same file

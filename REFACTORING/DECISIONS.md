@@ -386,38 +386,96 @@ wc -l src/laser_trim_analyzer/core/*.py # Should be ~3,500 lines (down from 5,75
 
 ## ADR-005: Wire ML Models to Processing Pipeline
 
-**Date**: TBD (Phase 3)
-**Status**: Proposed
+**Date**: 2025-12-05
+**Status**: Accepted (In Implementation - Phase 3)
 **Context**: ML models (FailurePredictor, DriftDetector) exist but processing uses hardcoded formulas.
 **Decision**: Replace hardcoded formulas with ML predictions, with formula as fallback.
 
-**Priority Order**:
-1. Check for ML prediction
+**Current ML Status**:
+| Model | Status | Location | Wired To |
+|-------|--------|----------|----------|
+| ThresholdOptimizer | ✅ Wired | ml/models.py:28-231 | sigma_analyzer.py:294-305 |
+| FailurePredictor | ⏸️ Not Wired | ml/models.py:233-466 | UnifiedProcessor (Phase 3) |
+| DriftDetector | ⏸️ Not Wired | ml/models.py:468-886 | Historical Page (Phase 3) |
+
+**Priority Order (ADR-001 Compliant)**:
+1. Check for ML prediction (if model trained and feature flag enabled)
 2. Fall back to formula if ML not available
-3. Log which method used for debugging
+3. Log which method used for debugging/auditing
 
-**Implementation Pattern**:
-```python
-def _predict_failure(self, ...):
-    # Try ML first
-    if self.ml_engine and self.ml_engine.has_model('failure_predictor'):
-        prediction = self.ml_engine.predict_failure(data)
-        logger.info("Using ML failure prediction")
-        return prediction
-
-    # Fallback to formula
-    logger.info("Using formula-based failure prediction (ML not available)")
-    return self._calculate_failure_prediction(...)
+**Feature Flags** (added to ProcessingConfig):
+```yaml
+# config/development.yaml
+processing:
+  use_ml_failure_predictor: false  # Default OFF until tested
+  use_ml_drift_detector: false     # Default OFF until tested
 ```
+
+**Integration Points Identified**:
+
+1. **FailurePredictor → UnifiedProcessor**
+   - Location: `UnifiedProcessor._process_file_internal()` after track analysis
+   - Trigger: After sigma, linearity, resistance analyses complete
+   - Fallback: `LaserTrimProcessor._calculate_failure_prediction()`
+
+2. **DriftDetector → Historical Page**
+   - Location: `historical_page.py` batch analysis
+   - Trigger: After loading historical data
+   - Display: Drift alerts section on historical page
+
+**Implementation Pattern** (following ThresholdOptimizer):
+```python
+def _predict_failure(self, track_data: TrackData) -> Optional[FailurePrediction]:
+    """ML-first failure prediction with formula fallback."""
+    # Check feature flag first
+    if not self.config.processing.use_ml_failure_predictor:
+        self.logger.debug("ML failure predictor disabled by feature flag")
+        return self._calculate_formula_failure(track_data)
+
+    # Try ML prediction
+    if self.ml_predictor and self.ml_predictor._models_loaded:
+        try:
+            model = self.ml_predictor.ml_engine.models.get('failure_predictor')
+            if model and model.is_trained:
+                features = self._extract_ml_features(track_data)
+                prob = model.predict_proba(features)[0]
+                self.logger.info(f"Using ML failure prediction: {prob:.3f}")
+                return FailurePrediction(
+                    failure_probability=prob,
+                    risk_category=self._risk_from_prob(prob),
+                    prediction_method='ml'
+                )
+        except Exception as e:
+            self.logger.warning(f"ML prediction failed, using fallback: {e}")
+
+    # Formula fallback
+    self.logger.info("Using formula-based failure prediction (ML unavailable)")
+    return self._calculate_formula_failure(track_data)
+```
+
+**Known Issues to Fix**:
+1. `MLPredictor._impl_predictor` is always None (predictors.py:121)
+2. Models registered but never trained automatically
+3. No training trigger from GUI
 
 **Consequences**:
 - **Positive**: Better accuracy (ML learns from data)
 - **Positive**: Graceful degradation (formula fallback)
 - **Positive**: Clear logging of which method used
-- **Negative**: Slight performance overhead for ML
-- **Mitigation**: Batch predictions to reduce overhead
+- **Positive**: Feature flags allow safe rollout
+- **Negative**: Slight performance overhead for ML inference
+- **Mitigation**: Batch predictions in TurboStrategy, lazy model loading
 
-**Related**: Phase 3
+**Verification**:
+```bash
+# After Phase 3, verify:
+pytest tests/                           # All tests pass
+# Check logs for:
+grep "Using ML failure prediction" logs/     # Should appear when enabled
+grep "Using formula-based" logs/             # Should appear as fallback
+```
+
+**Related**: Phase 3, ADR-001 (feature flags)
 
 ---
 
@@ -487,11 +545,11 @@ charts/
 | ADR-001 | Feature Flags for Major Changes | Accepted | All | 2025-01-25 |
 | ADR-002 | Incremental Processing via DB | Accepted | 1 | 2025-01-25 |
 | ADR-003 | Remove AnalyticsEngine | Accepted | 1 | 2025-01-25 |
-| ADR-004 | Unify Processors (Strategy Pattern) | **Accepted (Design Complete)** | 2 | 2025-12-04 |
-| ADR-005 | Wire ML Models to Pipeline | Proposed | 3 | TBD |
+| ADR-004 | Unify Processors (Strategy Pattern) | **✅ Implemented** | 2 | 2025-12-04 |
+| ADR-005 | Wire ML Models to Pipeline | **In Implementation** | 3 | 2025-12-05 |
 | ADR-006 | Split Large Files by Modules | Proposed | 4 | TBD |
 
 ---
 
-**Last Updated**: 2025-12-04 (ADR-004 Design Complete)
+**Last Updated**: 2025-12-05 (ADR-005 Implementation Started)
 **Next Review**: After each phase completion

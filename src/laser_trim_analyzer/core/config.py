@@ -271,6 +271,16 @@ class ProcessingConfig(BaseSettings):
         description="UnifiedProcessor strategy: 'auto', 'standard', 'turbo', 'memory_safe'"
     )
 
+    # Phase 3: ML Integration Feature Flags (ADR-001, ADR-005)
+    use_ml_failure_predictor: bool = Field(
+        default=False,
+        description="Use ML-based failure prediction instead of formula (Phase 3)"
+    )
+    use_ml_drift_detector: bool = Field(
+        default=False,
+        description="Use ML-based drift detection for historical analysis (Phase 3)"
+    )
+
 
 class AnalysisConfig(BaseSettings):
     """Analysis parameters configuration."""
