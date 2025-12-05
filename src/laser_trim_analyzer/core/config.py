@@ -261,6 +261,16 @@ class ProcessingConfig(BaseSettings):
         description="Clear file cache every N files to free memory"
     )
 
+    # Phase 2: UnifiedProcessor Feature Flags (ADR-001, ADR-004)
+    use_unified_processor: bool = Field(
+        default=False,
+        description="Use UnifiedProcessor instead of legacy processors (Phase 2)"
+    )
+    unified_processor_strategy: str = Field(
+        default="auto",
+        description="UnifiedProcessor strategy: 'auto', 'standard', 'turbo', 'memory_safe'"
+    )
+
 
 class AnalysisConfig(BaseSettings):
     """Analysis parameters configuration."""

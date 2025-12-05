@@ -27,6 +27,15 @@ from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, Vali
 from laser_trim_analyzer.core.processor import LaserTrimProcessor
 from laser_trim_analyzer.core.large_scale_processor import LargeScaleProcessor
 from laser_trim_analyzer.database.manager import DatabaseManager
+
+# Phase 2: UnifiedProcessor import (ADR-004)
+try:
+    from laser_trim_analyzer.core.unified_processor import UnifiedProcessor, create_processor
+    HAS_UNIFIED_PROCESSOR = True
+except ImportError:
+    HAS_UNIFIED_PROCESSOR = False
+    UnifiedProcessor = None
+    create_processor = None
 from laser_trim_analyzer.utils.file_utils import ensure_directory
 from laser_trim_analyzer.utils.report_generator import ReportGenerator
 from laser_trim_analyzer.utils.batch_logging import setup_batch_logging, BatchProcessingLogger
@@ -130,8 +139,28 @@ class BatchProcessingPage(ctk.CTkFrame):
                         "Processing will continue without database features."
                     )
         
+        # Initialize processor - use UnifiedProcessor if feature flag is enabled (Phase 2)
         try:
-            self.processor = LaserTrimProcessor(self.analyzer_config, db_manager=self._db_manager)
+            use_unified = getattr(self.analyzer_config.processing, 'use_unified_processor', False)
+            strategy = getattr(self.analyzer_config.processing, 'unified_processor_strategy', 'auto')
+
+            if use_unified and HAS_UNIFIED_PROCESSOR:
+                logger.info(f"Using UnifiedProcessor with strategy='{strategy}' (Phase 2)")
+                self.processor = UnifiedProcessor(
+                    config=self.analyzer_config,
+                    db_manager=self._db_manager,
+                    strategy=strategy,
+                    enable_caching=True,
+                    enable_security=True,
+                    incremental=True  # Use incremental processing (skip already-processed)
+                )
+                self._using_unified_processor = True
+            else:
+                if use_unified and not HAS_UNIFIED_PROCESSOR:
+                    logger.warning("UnifiedProcessor requested but not available, falling back to LaserTrimProcessor")
+                logger.info("Using LaserTrimProcessor (legacy)")
+                self.processor = LaserTrimProcessor(self.analyzer_config, db_manager=self._db_manager)
+                self._using_unified_processor = False
         except Exception as e:
             self._show_processor_error(str(e))
             messagebox.showerror(

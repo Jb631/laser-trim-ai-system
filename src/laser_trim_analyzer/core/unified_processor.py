@@ -814,6 +814,47 @@ class UnifiedProcessor:
             self._stats['files_processed'] += 1
             yield result
 
+    def process_file_sync(
+        self,
+        file_path: Union[str, Path],
+        output_dir: Optional[Path] = None,
+        progress_callback: Optional[Callable[[str, float], None]] = None
+    ) -> AnalysisResult:
+        """
+        Synchronous wrapper for process_file method.
+
+        This provides API compatibility with LaserTrimProcessor for use
+        in thread pools and non-async contexts.
+
+        Args:
+            file_path: Path to Excel file
+            output_dir: Optional directory for outputs
+            progress_callback: Optional progress callback
+
+        Returns:
+            AnalysisResult object
+        """
+        file_path = Path(file_path)
+
+        # Get or create event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # We're already in an async context, create a new loop
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        self.process_file(file_path, output_dir, progress_callback)
+                    )
+                    return future.result()
+        except RuntimeError:
+            # No event loop exists, use asyncio.run
+            pass
+
+        # Run the async method
+        return asyncio.run(self.process_file(file_path, output_dir, progress_callback))
+
     # -------------------------------------------------------------------------
     # Internal Processing (used by strategies)
     # -------------------------------------------------------------------------
