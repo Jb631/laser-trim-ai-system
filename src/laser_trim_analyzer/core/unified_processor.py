@@ -242,43 +242,46 @@ class TurboStrategy(ProcessingStrategy):
 
         # Use ThreadPoolExecutor for async compatibility
         # (ProcessPoolExecutor doesn't work well with async)
+        loop = asyncio.get_event_loop()
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Create futures for all files
-            loop = asyncio.get_event_loop()
-            futures = {
-                loop.run_in_executor(
+            # Create futures with file path tracking
+            future_to_file: Dict[int, Path] = {}
+            pending_futures: set = set()
+
+            for file_path in files:
+                future = loop.run_in_executor(
                     executor,
                     self._process_file_sync,
                     file_path,
                     processor
-                ): file_path
-                for file_path in files
-            }
+                )
+                future_to_file[id(future)] = file_path
+                pending_futures.add(future)
 
-            # Process as completed
-            for future in asyncio.as_completed(futures.keys()):
-                file_path = futures[await asyncio.wrap_future(asyncio.ensure_future(self._get_future_file(future, futures)))]
-                try:
-                    result = await future
-                    completed += 1
+            # Process as completed using asyncio.wait
+            while pending_futures:
+                done, pending_futures = await asyncio.wait(
+                    pending_futures,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-                    if progress_callback:
-                        progress = (completed / total) * 100
-                        progress_callback(f"Completed {file_path.name}", progress, completed, total)
+                for future in done:
+                    file_path = future_to_file.get(id(future), Path("unknown"))
+                    try:
+                        result = future.result()
+                        completed += 1
 
-                    yield result
+                        if progress_callback:
+                            progress = (completed / total) * 100
+                            progress_callback(f"Completed {file_path.name}", progress, completed, total)
 
-                except Exception as e:
-                    self.logger.error(f"Parallel processing failed for {file_path}: {e}")
-                    completed += 1
-                    yield processor._create_error_result(file_path, str(e))
+                        yield result
 
-    async def _get_future_file(self, future, futures_dict):
-        """Helper to get file path from future."""
-        for f, path in futures_dict.items():
-            if f == future:
-                return path
-        return Path("unknown")
+                    except Exception as e:
+                        self.logger.error(f"Parallel processing failed for {file_path}: {e}")
+                        completed += 1
+                        yield processor._create_error_result(file_path, str(e))
 
     def _process_file_sync(self, file_path: Path, processor: 'UnifiedProcessor') -> AnalysisResult:
         """Synchronous wrapper for file processing."""
@@ -886,21 +889,20 @@ class UnifiedProcessor:
 
     def _create_error_result(self, file_path: Path, error_message: str) -> AnalysisResult:
         """Create an error result for failed processing."""
-        # Create minimal error result
+        # Create minimal error result with correct field names
         return AnalysisResult(
             metadata=FileMetadata(
                 filename=file_path.name,
-                file_path=str(file_path),
+                file_path=file_path,
+                file_date=datetime.now(),
                 model='Unknown',
                 serial='Unknown',
-                timestamp=datetime.now(),
-                system_type=SystemType.SYSTEM_A,
-                file_size_mb=0,
+                system=SystemType.SYSTEM_A,
                 has_multi_tracks=False
             ),
             tracks={},
             processing_time=0,
-            status=AnalysisStatus.FAILED,
+            overall_status=AnalysisStatus.ERROR,
             validation_status=ValidationStatus.FAILED,
             error_message=error_message
         )
