@@ -994,6 +994,283 @@ class UnifiedProcessor:
         return ValidationStatus.UNKNOWN
 
     # -------------------------------------------------------------------------
+    # ML Failure Prediction (Phase 3 - ADR-005)
+    # -------------------------------------------------------------------------
+
+    def predict_failure(
+        self,
+        sigma_analysis: SigmaAnalysis,
+        linearity_analysis: LinearityAnalysis,
+        resistance_analysis: Optional[ResistanceAnalysis] = None
+    ) -> FailurePrediction:
+        """
+        ML-first failure prediction with formula fallback.
+
+        Following the ThresholdOptimizer pattern (ADR-005):
+        1. Check feature flag
+        2. Try ML prediction if model is trained
+        3. Fall back to formula if ML unavailable
+        4. Log which method was used
+
+        Args:
+            sigma_analysis: Results from sigma analysis
+            linearity_analysis: Results from linearity analysis
+            resistance_analysis: Optional resistance analysis results
+
+        Returns:
+            FailurePrediction with probability, risk category, and contributing factors
+        """
+        # Check feature flag first
+        use_ml = getattr(self.config.processing, 'use_ml_failure_predictor', False)
+
+        if not use_ml:
+            self.logger.debug("ML failure predictor disabled by feature flag")
+            return self._calculate_formula_failure(
+                sigma_analysis, linearity_analysis, resistance_analysis
+            )
+
+        # Try ML prediction
+        if self._can_use_ml_failure_predictor():
+            try:
+                prediction = self._predict_failure_ml(
+                    sigma_analysis, linearity_analysis, resistance_analysis
+                )
+                if prediction:
+                    self._stats['ml_predictions'] += 1
+                    return prediction
+            except Exception as e:
+                self.logger.warning(f"ML failure prediction failed, using fallback: {e}")
+
+        # Formula fallback
+        self.logger.info("Using formula-based failure prediction (ML unavailable)")
+        return self._calculate_formula_failure(
+            sigma_analysis, linearity_analysis, resistance_analysis
+        )
+
+    def _can_use_ml_failure_predictor(self) -> bool:
+        """Check if ML failure predictor is available and trained."""
+        if not HAS_ML:
+            return False
+
+        if not self.ml_predictor:
+            return False
+
+        # Check if failure_predictor model is registered and trained
+        try:
+            if hasattr(self.ml_predictor, 'ml_engine'):
+                engine = self.ml_predictor.ml_engine
+                if hasattr(engine, 'models') and 'failure_predictor' in engine.models:
+                    model = engine.models['failure_predictor']
+                    return getattr(model, 'is_trained', False)
+        except Exception as e:
+            self.logger.debug(f"Error checking ML predictor availability: {e}")
+
+        return False
+
+    def _predict_failure_ml(
+        self,
+        sigma_analysis: SigmaAnalysis,
+        linearity_analysis: LinearityAnalysis,
+        resistance_analysis: Optional[ResistanceAnalysis] = None
+    ) -> Optional[FailurePrediction]:
+        """
+        Perform ML-based failure prediction.
+
+        Args:
+            sigma_analysis: Sigma analysis results
+            linearity_analysis: Linearity analysis results
+            resistance_analysis: Optional resistance analysis
+
+        Returns:
+            FailurePrediction if successful, None otherwise
+        """
+        try:
+            # Extract features for ML model
+            features = self._extract_failure_features(
+                sigma_analysis, linearity_analysis, resistance_analysis
+            )
+
+            # Get the failure predictor model
+            engine = self.ml_predictor.ml_engine
+            model = engine.models['failure_predictor']
+
+            # Create DataFrame for prediction
+            feature_df = pd.DataFrame([features])
+
+            # Get prediction probability
+            failure_prob = float(model.predict_proba(feature_df)[0])
+
+            # Determine risk category from probability
+            risk_category = self._risk_from_probability(failure_prob)
+
+            # Get feature importance as contributing factors
+            contributing_factors = self._get_contributing_factors(
+                features, model
+            )
+
+            self.logger.info(
+                f"ML failure prediction: prob={failure_prob:.3f}, "
+                f"risk={risk_category.value}"
+            )
+
+            return FailurePrediction(
+                failure_probability=failure_prob,
+                risk_category=risk_category,
+                gradient_margin=sigma_analysis.gradient_margin,
+                contributing_factors=contributing_factors
+            )
+
+        except Exception as e:
+            self.logger.error(f"ML failure prediction error: {e}")
+            return None
+
+    def _calculate_formula_failure(
+        self,
+        sigma_analysis: SigmaAnalysis,
+        linearity_analysis: LinearityAnalysis,
+        resistance_analysis: Optional[ResistanceAnalysis] = None
+    ) -> FailurePrediction:
+        """
+        Formula-based failure prediction (fallback method).
+
+        This replicates the logic from LaserTrimProcessor._analyze_track_data()
+        for when ML is not available.
+        """
+        # Base probability
+        failure_prob = 0.1
+
+        # Increase probability based on failures
+        if not sigma_analysis.sigma_pass:
+            failure_prob += 0.3
+
+        if not linearity_analysis.linearity_pass:
+            failure_prob += 0.3
+
+        if resistance_analysis and hasattr(resistance_analysis, 'resistance_change_percent'):
+            if abs(resistance_analysis.resistance_change_percent) > 50:
+                failure_prob += 0.2
+
+        # Cap at 1.0
+        failure_prob = min(failure_prob, 1.0)
+
+        # Determine risk category
+        risk_category = self._risk_from_probability(failure_prob)
+
+        # Build contributing factors
+        contributing_factors = {
+            'sigma_pass': 1.0 if sigma_analysis.sigma_pass else 0.0,
+            'linearity_pass': 1.0 if linearity_analysis.linearity_pass else 0.0
+        }
+
+        if resistance_analysis and hasattr(resistance_analysis, 'resistance_change_percent'):
+            contributing_factors['resistance_stable'] = (
+                1.0 if abs(resistance_analysis.resistance_change_percent) <= 50 else 0.0
+            )
+
+        self.logger.debug(
+            f"Formula failure prediction: prob={failure_prob:.3f}, "
+            f"risk={risk_category.value}"
+        )
+
+        return FailurePrediction(
+            failure_probability=failure_prob,
+            risk_category=risk_category,
+            gradient_margin=sigma_analysis.gradient_margin,
+            contributing_factors=contributing_factors
+        )
+
+    def _extract_failure_features(
+        self,
+        sigma_analysis: SigmaAnalysis,
+        linearity_analysis: LinearityAnalysis,
+        resistance_analysis: Optional[ResistanceAnalysis] = None
+    ) -> Dict[str, float]:
+        """
+        Extract features for ML failure prediction.
+
+        Returns a dictionary of feature names to values matching the
+        FailurePredictor's expected input features.
+        """
+        features = {
+            'sigma_gradient': sigma_analysis.sigma_gradient,
+            'sigma_threshold': sigma_analysis.sigma_threshold,
+            'sigma_pass': 1.0 if sigma_analysis.sigma_pass else 0.0,
+            'gradient_margin': sigma_analysis.gradient_margin,
+            'linearity_pass': 1.0 if linearity_analysis.linearity_pass else 0.0,
+        }
+
+        # Add linearity-specific features if available
+        if hasattr(linearity_analysis, 'final_linearity_error_shifted'):
+            features['final_linearity_error_shifted'] = (
+                linearity_analysis.final_linearity_error_shifted or 0.0
+            )
+        if hasattr(linearity_analysis, 'linearity_spec'):
+            features['linearity_spec'] = linearity_analysis.linearity_spec or 0.0
+
+        # Add resistance features if available
+        if resistance_analysis:
+            if hasattr(resistance_analysis, 'resistance_change_percent'):
+                features['resistance_change_percent'] = (
+                    resistance_analysis.resistance_change_percent or 0.0
+                )
+            if hasattr(resistance_analysis, 'untrimmed_resistance'):
+                features['untrimmed_resistance'] = (
+                    resistance_analysis.untrimmed_resistance or 0.0
+                )
+            if hasattr(resistance_analysis, 'trimmed_resistance'):
+                features['trimmed_resistance'] = (
+                    resistance_analysis.trimmed_resistance or 0.0
+                )
+
+        return features
+
+    def _risk_from_probability(self, probability: float) -> RiskCategory:
+        """Convert failure probability to risk category."""
+        if probability >= 0.7:
+            return RiskCategory.HIGH
+        elif probability >= 0.4:
+            return RiskCategory.MEDIUM
+        else:
+            return RiskCategory.LOW
+
+    def _get_contributing_factors(
+        self,
+        features: Dict[str, float],
+        model
+    ) -> Dict[str, float]:
+        """
+        Get contributing factors from ML model feature importances.
+
+        Args:
+            features: Input features dictionary
+            model: Trained ML model with feature_importances_
+
+        Returns:
+            Dictionary of feature name to importance contribution
+        """
+        contributing_factors = {}
+
+        try:
+            if hasattr(model, 'model') and hasattr(model.model, 'feature_importances_'):
+                importances = model.model.feature_importances_
+                feature_names = list(features.keys())
+
+                # Match importances to feature names
+                for i, (name, value) in enumerate(features.items()):
+                    if i < len(importances):
+                        # Weighted contribution = feature value * importance
+                        contributing_factors[name] = float(value * importances[i])
+        except Exception as e:
+            self.logger.debug(f"Could not calculate contributing factors: {e}")
+            # Fall back to simple pass/fail indicators
+            contributing_factors = {
+                k: v for k, v in features.items()
+                if k in ('sigma_pass', 'linearity_pass')
+            }
+
+        return contributing_factors
+
+    # -------------------------------------------------------------------------
     # Properties and Statistics
     # -------------------------------------------------------------------------
 

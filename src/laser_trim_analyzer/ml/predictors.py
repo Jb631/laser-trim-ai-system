@@ -361,12 +361,16 @@ class MLPredictor:
             model_path = None
             if hasattr(self.config, 'ml') and hasattr(self.config.ml, 'model_path'):
                 model_path = self.config.ml.model_path
-            
-            # Handle relative paths
-            if model_path and model_path.startswith('./'):
-                model_dir = Path.cwd() / model_path[2:]
+
+            # Handle relative paths - convert Path to string first
+            if model_path:
+                model_path_str = str(model_path)
+                if model_path_str.startswith('./'):
+                    model_dir = Path.cwd() / model_path_str[2:]
+                else:
+                    model_dir = Path(model_path)
             else:
-                model_dir = Path(model_path) if model_path else None
+                model_dir = None
             
             if not model_dir or not model_dir.exists():
                 self._log_with_context('debug', "Model path does not exist, skipping model loading",
