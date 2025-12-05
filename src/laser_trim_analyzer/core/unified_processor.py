@@ -1179,6 +1179,435 @@ class UnifiedProcessor:
             contributing_factors=contributing_factors
         )
 
+    # -------------------------------------------------------------------------
+    # Batch Predictions (Phase 3, Day 4 - Optimization)
+    # -------------------------------------------------------------------------
+
+    def predict_failures_batch(
+        self,
+        analyses: List[Tuple[SigmaAnalysis, LinearityAnalysis, Optional[ResistanceAnalysis]]]
+    ) -> List[FailurePrediction]:
+        """
+        Batch failure prediction for multiple samples.
+
+        This is more efficient than calling predict_failure() individually
+        because:
+        1. Single feature flag check
+        2. Single ML model availability check
+        3. Batch ML inference (if model supports it)
+        4. Reduced logging overhead
+
+        Args:
+            analyses: List of tuples (sigma_analysis, linearity_analysis, resistance_analysis)
+
+        Returns:
+            List of FailurePrediction objects in same order as input
+        """
+        if not analyses:
+            return []
+
+        # Check feature flag once
+        use_ml = getattr(self.config.processing, 'use_ml_failure_predictor', False)
+
+        if not use_ml:
+            self.logger.debug(f"Batch failure prediction (formula): {len(analyses)} samples")
+            return [
+                self._calculate_formula_failure(sigma, linearity, resistance)
+                for sigma, linearity, resistance in analyses
+            ]
+
+        # Check ML availability once
+        if self._can_use_ml_failure_predictor():
+            try:
+                predictions = self._predict_failures_batch_ml(analyses)
+                if predictions:
+                    self._stats['ml_predictions'] = (
+                        self._stats.get('ml_predictions', 0) + len(predictions)
+                    )
+                    self.logger.info(
+                        f"Batch ML failure prediction: {len(predictions)} samples"
+                    )
+                    return predictions
+            except Exception as e:
+                self.logger.warning(
+                    f"Batch ML prediction failed, using formula fallback: {e}"
+                )
+
+        # Formula fallback for batch
+        self.logger.info(
+            f"Using formula-based batch failure prediction: {len(analyses)} samples"
+        )
+        return [
+            self._calculate_formula_failure(sigma, linearity, resistance)
+            for sigma, linearity, resistance in analyses
+        ]
+
+    def _predict_failures_batch_ml(
+        self,
+        analyses: List[Tuple[SigmaAnalysis, LinearityAnalysis, Optional[ResistanceAnalysis]]]
+    ) -> Optional[List[FailurePrediction]]:
+        """
+        Batch ML failure prediction.
+
+        Extracts all features at once and runs batch inference.
+        """
+        try:
+            # Extract features for all samples
+            all_features = []
+            for sigma, linearity, resistance in analyses:
+                features = self._extract_failure_features(sigma, linearity, resistance)
+                all_features.append(features)
+
+            # Create batch DataFrame
+            feature_df = pd.DataFrame(all_features)
+
+            # Get model and run batch prediction
+            engine = self.ml_predictor.ml_engine
+            model = engine.models['failure_predictor']
+
+            # Batch predict_proba (returns array of probabilities)
+            failure_probs = model.predict_proba(feature_df)
+
+            # Handle different return shapes
+            if hasattr(failure_probs, 'shape') and len(failure_probs.shape) > 1:
+                # Multi-class output, get positive class probability
+                failure_probs = failure_probs[:, 1] if failure_probs.shape[1] > 1 else failure_probs.flatten()
+            else:
+                failure_probs = np.array(failure_probs).flatten()
+
+            # Build predictions
+            predictions = []
+            for i, (sigma, linearity, resistance) in enumerate(analyses):
+                prob = float(failure_probs[i])
+                risk_category = self._risk_from_probability(prob)
+
+                # Contributing factors from features
+                contributing_factors = self._get_contributing_factors(
+                    all_features[i], model
+                )
+
+                predictions.append(FailurePrediction(
+                    failure_probability=prob,
+                    risk_category=risk_category,
+                    gradient_margin=sigma.gradient_margin,
+                    contributing_factors=contributing_factors
+                ))
+
+            return predictions
+
+        except Exception as e:
+            self.logger.error(f"Batch ML prediction error: {e}")
+            return None
+
+    # -------------------------------------------------------------------------
+    # Prediction Caching (Phase 3, Day 4 - Optimization)
+    # -------------------------------------------------------------------------
+
+    def get_cached_prediction(
+        self,
+        file_hash: str
+    ) -> Optional[FailurePrediction]:
+        """
+        Get cached failure prediction by file hash.
+
+        Args:
+            file_hash: SHA256 hash of the file
+
+        Returns:
+            Cached FailurePrediction or None if not cached
+        """
+        if not hasattr(self, '_prediction_cache'):
+            self._prediction_cache = {}
+
+        return self._prediction_cache.get(file_hash)
+
+    def cache_prediction(
+        self,
+        file_hash: str,
+        prediction: FailurePrediction,
+        max_cache_size: int = 1000
+    ):
+        """
+        Cache failure prediction by file hash.
+
+        Args:
+            file_hash: SHA256 hash of the file
+            prediction: FailurePrediction to cache
+            max_cache_size: Maximum cache entries (LRU eviction)
+        """
+        if not hasattr(self, '_prediction_cache'):
+            self._prediction_cache = {}
+
+        # Simple LRU: if cache full, remove oldest entry
+        if len(self._prediction_cache) >= max_cache_size:
+            oldest_key = next(iter(self._prediction_cache))
+            del self._prediction_cache[oldest_key]
+
+        self._prediction_cache[file_hash] = prediction
+
+    def clear_prediction_cache(self):
+        """Clear the prediction cache."""
+        if hasattr(self, '_prediction_cache'):
+            self._prediction_cache.clear()
+            self.logger.info("Cleared prediction cache")
+
+    @property
+    def prediction_cache_stats(self) -> Dict[str, int]:
+        """Get prediction cache statistics."""
+        if not hasattr(self, '_prediction_cache'):
+            return {'size': 0, 'max_size': 1000}
+
+        return {
+            'size': len(self._prediction_cache),
+            'max_size': 1000
+        }
+
+    # -------------------------------------------------------------------------
+    # ML Error Handling & Timeout (Phase 3, Day 4 - Task 4.5)
+    # -------------------------------------------------------------------------
+
+    def _run_ml_with_timeout(
+        self,
+        func: Callable,
+        args: tuple = (),
+        kwargs: dict = None,
+        timeout_seconds: float = 5.0,
+        description: str = "ML operation"
+    ) -> Tuple[bool, Any]:
+        """
+        Run an ML function with timeout protection.
+
+        Args:
+            func: Function to call
+            args: Positional arguments
+            kwargs: Keyword arguments
+            timeout_seconds: Maximum time to wait
+            description: Description for logging
+
+        Returns:
+            Tuple of (success: bool, result: Any)
+            If timeout or error, success=False and result=None
+        """
+        if kwargs is None:
+            kwargs = {}
+
+        result = [None]
+        error = [None]
+
+        def worker():
+            try:
+                result[0] = func(*args, **kwargs)
+            except Exception as e:
+                error[0] = e
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+
+        if thread.is_alive():
+            self.logger.warning(
+                f"{description} timed out after {timeout_seconds}s"
+            )
+            self._stats['ml_timeouts'] = self._stats.get('ml_timeouts', 0) + 1
+            return False, None
+
+        if error[0]:
+            self.logger.warning(f"{description} failed: {error[0]}")
+            self._stats['ml_errors'] = self._stats.get('ml_errors', 0) + 1
+            return False, None
+
+        return True, result[0]
+
+    def _check_memory_available(self, min_mb: int = 100) -> bool:
+        """
+        Check if sufficient memory is available for ML operations.
+
+        Args:
+            min_mb: Minimum required memory in MB
+
+        Returns:
+            True if sufficient memory available
+        """
+        if not HAS_PSUTIL:
+            # Can't check, assume OK
+            return True
+
+        try:
+            memory = psutil.virtual_memory()
+            available_mb = memory.available / (1024 * 1024)
+
+            if available_mb < min_mb:
+                self.logger.warning(
+                    f"Low memory for ML: {available_mb:.0f}MB available, "
+                    f"{min_mb}MB required"
+                )
+                self._stats['ml_memory_warnings'] = (
+                    self._stats.get('ml_memory_warnings', 0) + 1
+                )
+                return False
+
+            return True
+        except Exception as e:
+            self.logger.debug(f"Memory check failed: {e}")
+            return True  # Assume OK if check fails
+
+    def predict_failure_safe(
+        self,
+        sigma_analysis: SigmaAnalysis,
+        linearity_analysis: LinearityAnalysis,
+        resistance_analysis: Optional[ResistanceAnalysis] = None,
+        timeout_seconds: float = 5.0
+    ) -> FailurePrediction:
+        """
+        Safe failure prediction with timeout and memory check.
+
+        This is a safer wrapper around predict_failure() that:
+        1. Checks memory availability before ML
+        2. Applies timeout to ML operations
+        3. Always returns a valid prediction (formula fallback)
+
+        Args:
+            sigma_analysis: Sigma analysis results
+            linearity_analysis: Linearity analysis results
+            resistance_analysis: Optional resistance analysis
+            timeout_seconds: Maximum time for ML prediction
+
+        Returns:
+            FailurePrediction (never raises, always returns valid result)
+        """
+        # Check feature flag
+        use_ml = getattr(self.config.processing, 'use_ml_failure_predictor', False)
+
+        if not use_ml:
+            return self._calculate_formula_failure(
+                sigma_analysis, linearity_analysis, resistance_analysis
+            )
+
+        # Check memory before ML
+        if not self._check_memory_available(min_mb=100):
+            self.logger.info("Skipping ML due to low memory, using formula")
+            return self._calculate_formula_failure(
+                sigma_analysis, linearity_analysis, resistance_analysis
+            )
+
+        # Check ML availability
+        if not self._can_use_ml_failure_predictor():
+            return self._calculate_formula_failure(
+                sigma_analysis, linearity_analysis, resistance_analysis
+            )
+
+        # Run ML with timeout
+        success, prediction = self._run_ml_with_timeout(
+            func=self._predict_failure_ml,
+            args=(sigma_analysis, linearity_analysis, resistance_analysis),
+            timeout_seconds=timeout_seconds,
+            description="ML failure prediction"
+        )
+
+        if success and prediction:
+            self._stats['ml_predictions'] = self._stats.get('ml_predictions', 0) + 1
+            return prediction
+
+        # Fallback to formula
+        self.logger.info("Using formula fallback after ML timeout/error")
+        return self._calculate_formula_failure(
+            sigma_analysis, linearity_analysis, resistance_analysis
+        )
+
+    def detect_drift_safe(
+        self,
+        results: List[AnalysisResult],
+        window_size: int = 100,
+        timeout_seconds: float = 10.0
+    ) -> Dict[str, Any]:
+        """
+        Safe drift detection with timeout and memory check.
+
+        This is a safer wrapper around detect_drift() that:
+        1. Checks memory availability before ML
+        2. Applies timeout to ML operations
+        3. Always returns a valid result (formula fallback)
+
+        Args:
+            results: Analysis results for drift detection
+            window_size: Window size for rolling analysis
+            timeout_seconds: Maximum time for ML prediction
+
+        Returns:
+            Drift detection results (never raises)
+        """
+        # Check feature flag
+        use_ml = getattr(self.config.processing, 'use_ml_drift_detector', False)
+
+        if not use_ml:
+            return self._detect_drift_formula(results, window_size)
+
+        # Check memory before ML (drift detection can be memory-intensive)
+        if not self._check_memory_available(min_mb=200):
+            self.logger.info("Skipping ML drift detection due to low memory")
+            return self._detect_drift_formula(results, window_size)
+
+        # Check ML availability
+        if not self._can_use_ml_drift_detector():
+            return self._detect_drift_formula(results, window_size)
+
+        # Run ML with timeout
+        success, report = self._run_ml_with_timeout(
+            func=self._detect_drift_ml,
+            args=(results, window_size),
+            timeout_seconds=timeout_seconds,
+            description="ML drift detection"
+        )
+
+        if success and report:
+            self._stats['ml_predictions'] = self._stats.get('ml_predictions', 0) + 1
+            return report
+
+        # Fallback to formula
+        self.logger.info("Using formula fallback after ML timeout/error")
+        return self._detect_drift_formula(results, window_size)
+
+    @property
+    def ml_health_stats(self) -> Dict[str, Any]:
+        """
+        Get ML health statistics.
+
+        Returns:
+            Dictionary with ML health metrics
+        """
+        stats = {
+            'ml_predictions': self._stats.get('ml_predictions', 0),
+            'ml_timeouts': self._stats.get('ml_timeouts', 0),
+            'ml_errors': self._stats.get('ml_errors', 0),
+            'ml_memory_warnings': self._stats.get('ml_memory_warnings', 0),
+            'ml_available': HAS_ML,
+            'ml_predictor_ready': self.ml_predictor is not None,
+        }
+
+        # Check model status
+        if self.ml_predictor and hasattr(self.ml_predictor, 'ml_engine'):
+            engine = self.ml_predictor.ml_engine
+            if hasattr(engine, 'models'):
+                stats['models'] = {}
+                for name, model in engine.models.items():
+                    stats['models'][name] = {
+                        'trained': getattr(model, 'is_trained', False),
+                        'version': getattr(model, 'version', 'unknown')
+                    }
+
+        # Calculate success rate
+        total_attempts = (
+            stats['ml_predictions'] +
+            stats['ml_timeouts'] +
+            stats['ml_errors']
+        )
+        if total_attempts > 0:
+            stats['success_rate'] = stats['ml_predictions'] / total_attempts
+        else:
+            stats['success_rate'] = 1.0
+
+        return stats
+
     def _extract_failure_features(
         self,
         sigma_analysis: SigmaAnalysis,
