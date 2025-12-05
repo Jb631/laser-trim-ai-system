@@ -43,7 +43,16 @@ from matplotlib.figure import Figure
 
 from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, AnalysisStatus
 from laser_trim_analyzer.database.manager import DatabaseManager
+from laser_trim_analyzer.core.config import get_config
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
+
+# Import UnifiedProcessor for ML drift detection (Phase 3)
+try:
+    from laser_trim_analyzer.core.unified_processor import UnifiedProcessor
+    HAS_UNIFIED_PROCESSOR = True
+except ImportError:
+    HAS_UNIFIED_PROCESSOR = False
+    logger.warning("UnifiedProcessor not available - using formula-based drift detection")
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 # from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
@@ -3985,16 +3994,37 @@ INTERPRETATION:
             messagebox.showerror("Error", f"Failed to run Pareto analysis:\n{str(e)}")
     
     def _detect_process_drift(self):
-        """Detect process drift using statistical methods."""
+        """
+        Detect process drift using ML-first approach with formula fallback.
+
+        Phase 3 ML Integration: Uses UnifiedProcessor.detect_drift() which
+        follows the ThresholdOptimizer pattern (ADR-005):
+        1. Check feature flag first
+        2. Try ML prediction if model trained
+        3. Fall back to statistical CUSUM method if ML not available
+        4. Log which method used
+        """
         if not self.current_data:
             messagebox.showwarning("No Data", "Please run a query first to load data")
             return
-        
+
         try:
             # Switch to drift detection tab
             self.spc_tabview.set("Drift Detection")
-            
-            # Prepare time series data
+
+            # Use UnifiedProcessor for drift detection (ML-first with formula fallback)
+            drift_report = self._run_drift_detection()
+
+            if drift_report is None:
+                messagebox.showwarning("Insufficient Data",
+                                     "Need at least 20 samples for drift detection.")
+                return
+
+            # Get method used for logging
+            method_used = drift_report.get('method_used', 'formula')
+            self.logger.info(f"Drift detection using {method_used} method")
+
+            # Prepare visualization data (extract sigma values for chart)
             drift_data = []
             for result in self.current_data:
                 if result.tracks:
@@ -4005,98 +4035,90 @@ INTERPRETATION:
                                 'value': track.sigma_gradient,
                                 'model': result.model
                             })
-            
-            if len(drift_data) < 20:
-                messagebox.showwarning("Insufficient Data", 
-                                     f"Need at least 20 samples for drift detection. Found: {len(drift_data)}")
-                return
-            
+
             # Convert to DataFrame and sort by date
-            df = pd.DataFrame(drift_data).sort_values('date')
-            
-            # Calculate moving averages
+            df = pd.DataFrame(drift_data).sort_values('date').reset_index(drop=True)
+
+            # Calculate moving averages for visualization
             window_size = min(10, len(df) // 4)
+            if window_size < 3:
+                window_size = min(3, len(df))
             df['ma'] = df['value'].rolling(window=window_size).mean()
             df['ma_std'] = df['value'].rolling(window=window_size).std()
-            
-            # Detect drift using CUSUM or similar
-            target = df['value'].iloc[:window_size].mean()
-            k = 0.5  # Slack parameter
-            h = 4    # Decision interval
-            
-            cusum_pos = []
-            cusum_neg = []
-            c_pos = 0
-            c_neg = 0
-            
-            for value in df['value']:
-                c_pos = max(0, c_pos + value - target - k)
-                c_neg = max(0, c_neg + target - value - k)
-                cusum_pos.append(c_pos)
-                cusum_neg.append(c_neg)
-            
-            df['cusum_pos'] = cusum_pos
-            df['cusum_neg'] = cusum_neg
-            
-            # Plot drift analysis with simpler visualization
+
+            # Get target from drift report or calculate
+            target = drift_report.get('target_value', df['value'].iloc[:window_size].mean())
+            h = drift_report.get('cusum_threshold', 4.0)
+
+            # Plot drift analysis with visualization
             self.drift_chart.clear_chart()
             fig = self.drift_chart.figure
             ax = fig.add_subplot(111)
-            
+
             # Apply theme to axes
             self.drift_chart._apply_theme_to_axes(ax)
-            
+
             # Get theme colors
             from laser_trim_analyzer.gui.theme_helper import ThemeHelper
             theme_colors = ThemeHelper.get_theme_colors()
             text_color = theme_colors["fg"]["primary"]
-            
-            # Calculate drift severity based on CUSUM
-            df['drift_severity'] = np.maximum(df['cusum_pos'], df['cusum_neg']) / h
-            
+
+            # Map drift severity to color intensity
+            severity = drift_report.get('drift_severity', 'negligible')
+            severity_map = {
+                'negligible': 0.0, 'low': 0.3, 'moderate': 0.6,
+                'high': 0.8, 'critical': 1.0, 'insufficient_data': 0.0
+            }
+            drift_intensity = severity_map.get(severity, 0.0)
+
             # Plot individual values as gray dots
             ax.scatter(df.index, df['value'], color='gray', alpha=0.3, s=30, label='Individual Values')
-            
-            # Plot moving average with color based on drift severity
-            # Color transitions: green (stable) -> yellow (warning) -> red (drift)
+
+            # Plot moving average with color based on drift severity from report
             for i in range(1, len(df)):
                 if pd.notna(df['ma'].iloc[i]) and pd.notna(df['ma'].iloc[i-1]):
-                    severity = df['drift_severity'].iloc[i]
-                    if severity < 0.5:
+                    # Color based on overall drift severity
+                    if drift_intensity < 0.3:
                         color = 'green'
-                    elif severity < 1.0:
+                    elif drift_intensity < 0.6:
                         color = 'orange'
                     else:
                         color = 'red'
-                    
-                    ax.plot([i-1, i], [df['ma'].iloc[i-1], df['ma'].iloc[i]], 
+
+                    ax.plot([i-1, i], [df['ma'].iloc[i-1], df['ma'].iloc[i]],
                            color=color, linewidth=3, alpha=0.8)
-            
+
             # Add reference lines
             ax.axhline(y=target, color='blue', linestyle='--', alpha=0.5, label=f'Target: {target:.3f}')
             ax.axhline(y=target + 2*df['value'].std(), color='orange', linestyle=':', alpha=0.5)
             ax.axhline(y=target - 2*df['value'].std(), color='orange', linestyle=':', alpha=0.5)
-            
+
             # Add drift zones
-            ax.fill_between([0, len(df)], [target - 3*df['value'].std()]*2, [target - 2*df['value'].std()]*2, 
+            ax.fill_between([0, len(df)], [target - 3*df['value'].std()]*2, [target - 2*df['value'].std()]*2,
                            color='yellow', alpha=0.1, label='Warning Zone')
-            ax.fill_between([0, len(df)], [target + 2*df['value'].std()]*2, [target + 3*df['value'].std()]*2, 
+            ax.fill_between([0, len(df)], [target + 2*df['value'].std()]*2, [target + 3*df['value'].std()]*2,
                            color='yellow', alpha=0.1)
-            ax.fill_between([0, len(df)], [ax.get_ylim()[0]]*2, [target - 3*df['value'].std()]*2, 
+            ax.fill_between([0, len(df)], [ax.get_ylim()[0]]*2, [target - 3*df['value'].std()]*2,
                            color='red', alpha=0.1, label='Drift Zone')
-            ax.fill_between([0, len(df)], [target + 3*df['value'].std()]*2, [ax.get_ylim()[1]]*2, 
+            ax.fill_between([0, len(df)], [target + 3*df['value'].std()]*2, [ax.get_ylim()[1]]*2,
                            color='red', alpha=0.1)
-            
-            # Mark drift points
-            drift_points = df[(df['cusum_pos'] > h) | (df['cusum_neg'] > h)]
-            if not drift_points.empty:
-                ax.scatter(drift_points.index, drift_points['value'], 
-                          color='red', s=100, marker='v', label=f'Drift Detected ({len(drift_points)} points)')
-            
+
+            # Mark drift points from the report
+            drift_point_indices = [p['index'] for p in drift_report.get('drift_points', [])]
+            if drift_point_indices:
+                drift_df = df.iloc[drift_point_indices]
+                ax.scatter(drift_df.index, drift_df['value'],
+                          color='red', s=100, marker='v',
+                          label=f'Drift Detected ({len(drift_point_indices)} points)')
+
             ax.set_xlabel('Sample Number', fontsize=12)
             ax.set_ylabel('Sigma Gradient', fontsize=12)
-            ax.set_title('Process Drift Detection - Moving Average Colored by Stability', fontsize=14, fontweight='bold')
-            
+
+            # Update title to show method used
+            method_label = "ML" if method_used == 'ml' else "Statistical"
+            ax.set_title(f'Process Drift Detection ({method_label} Method)',
+                        fontsize=14, fontweight='bold')
+
             # Create custom legend
             from matplotlib.patches import Patch
             from matplotlib.lines import Line2D
@@ -4109,55 +4131,183 @@ INTERPRETATION:
                 Patch(facecolor='yellow', alpha=0.3, label='Warning Zone'),
                 Patch(facecolor='red', alpha=0.3, label='Drift Zone')
             ]
-            
+
             legend = ax.legend(handles=legend_elements, loc='best', framealpha=0.9)
             if legend:
                 self.drift_chart._style_legend(legend)
-            
+
             ax.grid(True, alpha=0.3)
-            
-            # Add explanation text box
+
+            # Add explanation text box with recommendations
+            recommendations = drift_report.get('recommendations', [])
+            rec_text = "\n".join(f"• {r}" for r in recommendations[:3]) if recommendations else "No recommendations"
+
             explanation = (
-                "This chart shows process stability over time:\n"
-                "• Gray dots: Individual measurements\n"
-                "• Colored line: Moving average (green=stable, orange=warning, red=drift)\n"
-                "• Blue dashed line: Target value\n"
-                "• Yellow zones: ±2-3σ warning zones\n"
-                "• Red zones: >±3σ drift zones\n"
-                "• Red triangles: Points where drift was detected"
+                f"Drift Analysis ({method_label}):\n"
+                f"• Severity: {severity.upper()}\n"
+                f"• Drift Rate: {drift_report.get('drift_rate', 0):.1%}\n"
+                f"• Trend: {drift_report.get('drift_trend', 'unknown')}\n"
+                f"• Samples: {drift_report.get('samples_analyzed', len(df))}\n\n"
+                f"Recommendations:\n{rec_text}"
             )
-            
-            ax.text(0.02, 0.98, explanation, transform=ax.transAxes, 
+
+            ax.text(0.02, 0.98, explanation, transform=ax.transAxes,
                    fontsize=9, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white' if ctk.get_appearance_mode().lower() == "light" else '#2b2b2b', 
+                   bbox=dict(boxstyle='round,pad=0.5',
+                            facecolor='white' if ctk.get_appearance_mode().lower() == "light" else '#2b2b2b',
                             alpha=0.8, edgecolor=text_color),
                    color=text_color)
-            
+
             fig.tight_layout()
             self.drift_chart.canvas.draw()
-            
-            # Update drift alert metric based on previously detected drift points
-            if not drift_points.empty:
-                self._drift_alerts = len(drift_points)  # Store for metric update
-                self.drift_alert_card.update_value(str(len(drift_points)))
+
+            # Update drift alert metric
+            drift_detected = drift_report.get('drift_detected', False)
+            drift_points_count = len(drift_report.get('drift_points', []))
+
+            if drift_detected:
+                self._drift_alerts = drift_points_count
+                self.drift_alert_card.update_value(str(drift_points_count))
                 self.drift_alert_card.set_color_scheme("error")
-                
-                # Show drift details
-                messagebox.showinfo("Drift Detected", 
-                                  f"Process drift detected at {len(drift_points)} points.\n"
-                                  f"Review the CUSUM chart for details.")
+
+                # Show drift details with recommendations
+                rec_text_msg = "\n".join(f"• {r}" for r in recommendations[:3])
+                messagebox.showinfo("Drift Detected",
+                                  f"Process drift detected!\n\n"
+                                  f"Severity: {severity.upper()}\n"
+                                  f"Drift Rate: {drift_report.get('drift_rate', 0):.1%}\n"
+                                  f"Points: {drift_points_count}\n"
+                                  f"Method: {method_label}\n\n"
+                                  f"Recommendations:\n{rec_text_msg}")
             else:
                 self._drift_alerts = 0
                 self.drift_alert_card.update_value("0")
                 self.drift_alert_card.set_color_scheme("success")
-                
-                messagebox.showinfo("No Drift", 
-                                  "No significant process drift detected.\n"
-                                  "Process appears to be stable.")
-            
+
+                messagebox.showinfo("No Drift",
+                                  f"No significant process drift detected.\n"
+                                  f"Severity: {severity}\n"
+                                  f"Method: {method_label}\n\n"
+                                  f"Process appears to be stable.")
+
         except Exception as e:
             self.logger.error(f"Error detecting process drift: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             messagebox.showerror("Error", f"Failed to detect process drift:\n{str(e)}")
+
+    def _run_drift_detection(self) -> Optional[Dict[str, Any]]:
+        """
+        Run drift detection using UnifiedProcessor with ML-first approach.
+
+        Returns:
+            Drift report dictionary or None if insufficient data
+        """
+        try:
+            # Get config for UnifiedProcessor
+            config = get_config()
+
+            # Create UnifiedProcessor for drift detection
+            if HAS_UNIFIED_PROCESSOR:
+                processor = UnifiedProcessor(config=config)
+                drift_report = processor.detect_drift(self.current_data)
+
+                # Check for insufficient data
+                if drift_report.get('drift_severity') == 'insufficient_data':
+                    return None
+
+                return drift_report
+            else:
+                # Fallback to manual formula-based detection if UnifiedProcessor unavailable
+                self.logger.warning("UnifiedProcessor not available, using inline formula")
+                return self._detect_drift_inline_fallback()
+
+        except Exception as e:
+            self.logger.error(f"Error in drift detection: {e}")
+            return self._detect_drift_inline_fallback()
+
+    def _detect_drift_inline_fallback(self) -> Optional[Dict[str, Any]]:
+        """
+        Inline fallback drift detection when UnifiedProcessor is not available.
+
+        Uses CUSUM statistical method similar to original implementation.
+        """
+        # Extract time series data
+        drift_data = []
+        for result in self.current_data:
+            if result.tracks:
+                for track in result.tracks:
+                    sigma_val = getattr(track, 'sigma_gradient', None)
+                    if sigma_val is not None:
+                        drift_data.append({
+                            'date': result.file_date or result.timestamp,
+                            'sigma_gradient': sigma_val
+                        })
+
+        if len(drift_data) < 20:
+            return None
+
+        # Convert to DataFrame and sort by date
+        df = pd.DataFrame(drift_data).sort_values('date').reset_index(drop=True)
+
+        # Calculate CUSUM
+        window = min(10, len(df) // 4)
+        if window < 3:
+            window = min(3, len(df))
+
+        target = df['sigma_gradient'].iloc[:window].mean()
+        std = df['sigma_gradient'].std()
+
+        k = 0.5
+        h = 4.0
+
+        cusum_pos = []
+        cusum_neg = []
+        c_pos = 0.0
+        c_neg = 0.0
+
+        for value in df['sigma_gradient']:
+            c_pos = max(0, c_pos + (value - target) / (std + 1e-6) - k)
+            c_neg = max(0, c_neg + (target - value) / (std + 1e-6) - k)
+            cusum_pos.append(c_pos)
+            cusum_neg.append(c_neg)
+
+        df['cusum_max'] = np.maximum(cusum_pos, cusum_neg)
+
+        drift_mask = df['cusum_max'] > h
+        drift_rate = drift_mask.sum() / len(df)
+
+        # Classify severity
+        if drift_rate < 0.05:
+            severity = 'negligible'
+        elif drift_rate < 0.10:
+            severity = 'low'
+        elif drift_rate < 0.15:
+            severity = 'moderate'
+        elif drift_rate < 0.25:
+            severity = 'high'
+        else:
+            severity = 'critical'
+
+        # Extract drift points
+        drift_points = [
+            {'index': int(idx), 'value': float(df.loc[idx, 'sigma_gradient'])}
+            for idx in df[drift_mask].index
+        ]
+
+        return {
+            'drift_detected': drift_rate > 0.1,
+            'drift_severity': severity,
+            'drift_rate': float(drift_rate),
+            'drift_trend': 'stable',
+            'drift_points': drift_points,
+            'recommendations': ['Process appears stable. Continue standard monitoring.'],
+            'feature_drift': {},
+            'method_used': 'formula',
+            'cusum_threshold': float(h),
+            'target_value': float(target),
+            'samples_analyzed': len(df)
+        }
     
     def _analyze_failure_modes(self):
         """Analyze failure modes and patterns."""

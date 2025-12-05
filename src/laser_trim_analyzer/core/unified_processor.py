@@ -1271,6 +1271,398 @@ class UnifiedProcessor:
         return contributing_factors
 
     # -------------------------------------------------------------------------
+    # Drift Detection (Phase 3 - ML Integration)
+    # -------------------------------------------------------------------------
+
+    def detect_drift(
+        self,
+        results: List[AnalysisResult],
+        window_size: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Detect manufacturing drift using ML-first with formula fallback.
+
+        This follows the ThresholdOptimizer pattern (ADR-005):
+        1. Check feature flag first
+        2. Try ML prediction if model trained
+        3. Fall back to statistical CUSUM method if ML not available
+        4. Log which method used
+
+        Args:
+            results: List of AnalysisResult objects from historical query
+            window_size: Window size for rolling analysis
+
+        Returns:
+            Dictionary containing drift analysis results:
+            - drift_detected: bool
+            - drift_severity: str (negligible, low, moderate, high, critical)
+            - drift_rate: float (0.0 to 1.0)
+            - drift_trend: str (stable, increasing, decreasing)
+            - drift_points: List[Dict] (indices and values where drift detected)
+            - recommendations: List[str]
+            - feature_drift: Dict[str, Dict] (per-feature drift info)
+            - method_used: str ('ml' or 'formula')
+        """
+        # Check feature flag first
+        use_ml = getattr(self.config.processing, 'use_ml_drift_detector', False)
+
+        if not use_ml:
+            self.logger.debug("ML drift detector disabled by feature flag")
+            return self._detect_drift_formula(results, window_size)
+
+        # Try ML prediction
+        if self._can_use_ml_drift_detector():
+            try:
+                report = self._detect_drift_ml(results, window_size)
+                if report:
+                    self._stats['ml_predictions'] = self._stats.get('ml_predictions', 0) + 1
+                    return report
+            except Exception as e:
+                self.logger.warning(f"ML drift detection failed, using fallback: {e}")
+
+        # Formula fallback (statistical CUSUM method)
+        self.logger.info("Using formula-based drift detection (ML unavailable)")
+        return self._detect_drift_formula(results, window_size)
+
+    def _can_use_ml_drift_detector(self) -> bool:
+        """Check if ML drift detector is available and trained."""
+        try:
+            if not self.ml_predictor:
+                return False
+
+            # Check if drift_detector model exists and is trained
+            if hasattr(self.ml_predictor, 'ml_engine'):
+                models = getattr(self.ml_predictor.ml_engine, 'models', {})
+                drift_model = models.get('drift_detector')
+                if drift_model and getattr(drift_model, 'is_trained', False):
+                    return True
+
+            return False
+        except Exception as e:
+            self.logger.debug(f"Error checking ML drift detector: {e}")
+            return False
+
+    def _detect_drift_ml(
+        self,
+        results: List[AnalysisResult],
+        window_size: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        ML-based drift detection using the trained DriftDetector model.
+
+        Args:
+            results: List of AnalysisResult objects
+            window_size: Window size for rolling analysis
+
+        Returns:
+            Drift report dictionary or None if ML fails
+        """
+        try:
+            # Extract features from results for ML model
+            features_df = self._extract_drift_features(results)
+
+            if features_df.empty or len(features_df) < 20:
+                self.logger.warning(
+                    f"Insufficient data for ML drift detection: {len(features_df)} samples"
+                )
+                return None
+
+            # Get the drift detector model
+            drift_model = self.ml_predictor.ml_engine.models['drift_detector']
+
+            # Get comprehensive drift report from model
+            report = drift_model.get_drift_report(features_df)
+
+            # Enhance report with method info
+            result = {
+                'drift_detected': report['summary']['drift_detected'],
+                'drift_severity': report['summary']['drift_severity'],
+                'drift_rate': report['details']['overall_drift_rate'],
+                'drift_trend': report['details']['drift_trend'],
+                'drift_points': self._extract_drift_points(
+                    features_df,
+                    drift_model.predict(features_df)
+                ),
+                'recommendations': report['recommendations'],
+                'feature_drift': report['details'].get('feature_drift', {}),
+                'affected_features': report.get('affected_features', []),
+                'method_used': 'ml',
+                'action_required': report['summary'].get('action_required', False)
+            }
+
+            self.logger.info(
+                f"ML drift detection: {result['drift_severity']} severity, "
+                f"{result['drift_rate']:.1%} drift rate"
+            )
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"ML drift detection error: {e}")
+            return None
+
+    def _detect_drift_formula(
+        self,
+        results: List[AnalysisResult],
+        window_size: int
+    ) -> Dict[str, Any]:
+        """
+        Formula-based drift detection using CUSUM statistical method.
+
+        This is the fallback when ML is not available.
+
+        Args:
+            results: List of AnalysisResult objects
+            window_size: Window size for rolling analysis
+
+        Returns:
+            Drift report dictionary
+        """
+        # Extract time series data
+        drift_data = []
+        for result in results:
+            if result.tracks:
+                for track in result.tracks:
+                    sigma_val = getattr(track, 'sigma_gradient', None)
+                    if sigma_val is not None:
+                        drift_data.append({
+                            'date': result.file_date or result.timestamp,
+                            'sigma_gradient': sigma_val,
+                            'sigma_pass': 1 if getattr(track, 'sigma_pass', True) else 0,
+                            'linearity_pass': 1 if getattr(track, 'linearity_pass', True) else 0,
+                            'model': result.model
+                        })
+
+        if len(drift_data) < 20:
+            return {
+                'drift_detected': False,
+                'drift_severity': 'insufficient_data',
+                'drift_rate': 0.0,
+                'drift_trend': 'insufficient_data',
+                'drift_points': [],
+                'recommendations': ['Need at least 20 samples for drift detection'],
+                'feature_drift': {},
+                'method_used': 'formula'
+            }
+
+        # Convert to DataFrame and sort by date
+        df = pd.DataFrame(drift_data).sort_values('date').reset_index(drop=True)
+
+        # Calculate CUSUM for drift detection
+        window = min(window_size, len(df) // 4, 10)
+        if window < 3:
+            window = min(3, len(df))
+
+        target = df['sigma_gradient'].iloc[:window].mean()
+        std = df['sigma_gradient'].std()
+
+        k = 0.5  # Slack parameter
+        h = 4.0  # Decision interval
+
+        cusum_pos = []
+        cusum_neg = []
+        c_pos = 0.0
+        c_neg = 0.0
+
+        for value in df['sigma_gradient']:
+            c_pos = max(0, c_pos + (value - target) / (std + 1e-6) - k)
+            c_neg = max(0, c_neg + (target - value) / (std + 1e-6) - k)
+            cusum_pos.append(c_pos)
+            cusum_neg.append(c_neg)
+
+        df['cusum_pos'] = cusum_pos
+        df['cusum_neg'] = cusum_neg
+        df['cusum_max'] = np.maximum(df['cusum_pos'], df['cusum_neg'])
+
+        # Detect drift points (where CUSUM exceeds threshold)
+        drift_mask = df['cusum_max'] > h
+        drift_count = drift_mask.sum()
+        drift_rate = drift_count / len(df)
+
+        # Extract drift points info
+        drift_points = []
+        for idx in df[drift_mask].index:
+            drift_points.append({
+                'index': int(idx),
+                'date': str(df.loc[idx, 'date']),
+                'value': float(df.loc[idx, 'sigma_gradient']),
+                'cusum': float(df.loc[idx, 'cusum_max'])
+            })
+
+        # Classify severity
+        severity = self._classify_drift_severity_formula(drift_rate)
+
+        # Determine trend
+        if len(df) >= 10:
+            recent = df['cusum_max'].tail(len(df) // 4).mean()
+            early = df['cusum_max'].head(len(df) // 4).mean()
+            if recent > early * 1.2:
+                trend = 'increasing'
+            elif recent < early * 0.8:
+                trend = 'decreasing'
+            else:
+                trend = 'stable'
+        else:
+            trend = 'insufficient_data'
+
+        # Generate recommendations
+        recommendations = self._generate_drift_recommendations_formula(
+            drift_rate, severity, trend, df
+        )
+
+        # Calculate feature-level drift
+        feature_drift = {}
+        for col in ['sigma_gradient', 'sigma_pass', 'linearity_pass']:
+            if col in df.columns:
+                if len(df) >= window * 2:
+                    early_mean = df[col].head(window).mean()
+                    late_mean = df[col].tail(window).mean()
+                    change_pct = ((late_mean - early_mean) / (early_mean + 1e-6)) * 100
+
+                    feature_drift[col] = {
+                        'mean_change_percent': float(change_pct),
+                        'is_drifting': abs(change_pct) > 10,
+                        'direction': 'increasing' if change_pct > 0 else 'decreasing'
+                    }
+
+        result = {
+            'drift_detected': drift_rate > 0.1,
+            'drift_severity': severity,
+            'drift_rate': float(drift_rate),
+            'drift_trend': trend,
+            'drift_points': drift_points,
+            'recommendations': recommendations,
+            'feature_drift': feature_drift,
+            'method_used': 'formula',
+            'cusum_threshold': float(h),
+            'target_value': float(target),
+            'samples_analyzed': len(df)
+        }
+
+        self.logger.info(
+            f"Formula drift detection: {severity} severity, "
+            f"{drift_rate:.1%} drift rate ({len(drift_points)} points)"
+        )
+
+        return result
+
+    def _extract_drift_features(
+        self,
+        results: List[AnalysisResult]
+    ) -> pd.DataFrame:
+        """
+        Extract features from AnalysisResult objects for ML drift detection.
+
+        Args:
+            results: List of AnalysisResult objects
+
+        Returns:
+            DataFrame with features for each sample
+        """
+        records = []
+        for result in results:
+            if result.tracks:
+                for track in result.tracks:
+                    record = {
+                        'sigma_gradient': getattr(track, 'sigma_gradient', None),
+                        'linearity_spec': getattr(track, 'linearity_spec', None),
+                        'resistance_change_percent': getattr(
+                            track, 'resistance_change_percent', None
+                        ),
+                        'travel_length': getattr(track, 'travel_length', None),
+                        'unit_length': getattr(track, 'unit_length', None),
+                    }
+                    # Filter out None values
+                    record = {k: v for k, v in record.items() if v is not None}
+                    if record:  # Only add if we have some features
+                        records.append(record)
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        # Fill NaN with column means for ML
+        df = df.fillna(df.mean())
+        return df
+
+    def _extract_drift_points(
+        self,
+        features_df: pd.DataFrame,
+        drift_indicators: np.ndarray
+    ) -> List[Dict]:
+        """
+        Extract drift point details from ML predictions.
+
+        Args:
+            features_df: DataFrame with features
+            drift_indicators: Array of 0/1 drift indicators from ML
+
+        Returns:
+            List of drift point dictionaries
+        """
+        drift_points = []
+        for idx in np.where(drift_indicators == 1)[0]:
+            point = {
+                'index': int(idx),
+                'value': float(features_df.iloc[idx].get('sigma_gradient', 0))
+            }
+            drift_points.append(point)
+        return drift_points
+
+    def _classify_drift_severity_formula(self, drift_rate: float) -> str:
+        """Classify drift severity based on drift rate."""
+        if drift_rate < 0.05:
+            return 'negligible'
+        elif drift_rate < 0.10:
+            return 'low'
+        elif drift_rate < 0.15:
+            return 'moderate'
+        elif drift_rate < 0.25:
+            return 'high'
+        else:
+            return 'critical'
+
+    def _generate_drift_recommendations_formula(
+        self,
+        drift_rate: float,
+        severity: str,
+        trend: str,
+        df: pd.DataFrame
+    ) -> List[str]:
+        """Generate recommendations based on formula drift analysis."""
+        recommendations = []
+
+        if severity in ('critical', 'high'):
+            recommendations.append(
+                "URGENT: Significant manufacturing drift detected. "
+                "Immediate investigation required."
+            )
+            recommendations.append(
+                "Consider halting production until root cause is identified."
+            )
+        elif severity == 'moderate':
+            recommendations.append(
+                "WARNING: Moderate drift detected. Schedule maintenance check."
+            )
+            recommendations.append("Increase monitoring frequency.")
+
+        if trend == 'increasing':
+            recommendations.append(
+                "Drift is increasing over time. Implement corrective actions soon."
+            )
+        elif trend == 'decreasing':
+            recommendations.append(
+                "Drift is decreasing. Continue monitoring to ensure trend continues."
+            )
+
+        if not recommendations:
+            recommendations.append(
+                "Process appears stable. Continue standard monitoring."
+            )
+
+        return recommendations
+
+    # -------------------------------------------------------------------------
     # Properties and Statistics
     # -------------------------------------------------------------------------
 

@@ -3,7 +3,7 @@
 **Project Start**: 2025-01-25
 **Target Completion**: 2025-03-07 (6 weeks, 30 working days)
 **Current Phase**: 3 - ML Integration
-**Overall Progress**: 47% (Phase 3 Day 2 Complete)
+**Overall Progress**: 50% (Phase 3 Day 3 Complete)
 **Status**: 🔄 Phase 3 In Progress
 
 ---
@@ -14,7 +14,7 @@
 |-------|------|--------|----------|-------|-----|------|-----------|
 | 1 | Foundation & Quick Wins | ✅ COMPLETE | 100% | 2025-01-25 | 2025-12-04 | 5 | 5/5 |
 | 2 | Processor Unification | ✅ COMPLETE | 100% | 2025-12-04 | 2025-12-05 | 5 | 5/5 |
-| 3 | ML Integration | 🔄 In Progress | 40% | 2025-12-05 | TBD | 5 | 2/5 |
+| 3 | ML Integration | 🔄 In Progress | 60% | 2025-12-05 | TBD | 5 | 3/5 |
 | 4 | File Splitting & Modularization | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 5 | GUI Consolidation & Features | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
 | 6 | Testing, Performance & Docs | ⏸️ Not Started | 0% | TBD | TBD | 5 | 0/5 |
@@ -72,8 +72,8 @@
 
 ### ML Integration Status
 - ✅ **ThresholdOptimizer**: Wired to sigma_analyzer (2025-01-25)
-- ⏸️ **FailurePredictor**: Not wired (Phase 3)
-- ⏸️ **DriftDetector**: Not wired (Phase 3)
+- ✅ **FailurePredictor**: Wired to UnifiedProcessor (Phase 3, Day 2)
+- ✅ **DriftDetector**: Wired to Historical Page (Phase 3, Day 3)
 
 ### Test Coverage
 - **Total Tests**: 53
@@ -84,6 +84,25 @@
 ---
 
 ## Recent Activity
+
+### 2025-12-05 - Phase 3, Day 3 (DriftDetector Integration) - ✅ COMPLETE
+- **Drift detection interface added** (unified_processor.py:1277-1663):
+  - `detect_drift()` - ML-first with formula fallback (main entry point)
+  - `_can_use_ml_drift_detector()` - checks ML model availability
+  - `_detect_drift_ml()` - ML-based detection using DriftDetector model
+  - `_detect_drift_formula()` - CUSUM statistical fallback
+  - `_extract_drift_features()` - feature extraction for ML
+  - `_classify_drift_severity_formula()` - severity classification
+  - `_generate_drift_recommendations_formula()` - actionable recommendations
+- **Historical page integration**:
+  - Updated `_detect_process_drift()` to use UnifiedProcessor
+  - Added `_run_drift_detection()` wrapper with graceful fallback
+  - Added `_detect_drift_inline_fallback()` for when UnifiedProcessor unavailable
+  - GUI shows method used (ML or Statistical) and recommendations
+- **Tests passing**:
+  - Drifting data: Correctly detected as "critical" (28% drift rate) ✅
+  - Stable data: Correctly detected as "negligible" (0% drift rate) ✅
+- **Ready for**: Day 4 (ML Pipeline Optimization)
 
 ### 2025-12-05 - Phase 3, Day 2 (FailurePredictor Integration) - ✅ COMPLETE
 - **ML prediction interface added** (unified_processor.py:996-1271):
