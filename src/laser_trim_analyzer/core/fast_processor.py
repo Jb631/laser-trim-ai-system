@@ -195,7 +195,15 @@ class FastExcelReader:
 
 
 class FastProcessor:
-    """High-performance processor for large batch operations."""
+    """
+    High-performance processor for large batch operations.
+
+    .. deprecated:: 2.3.0
+        This class is deprecated and will be removed in a future version.
+        Use :class:`laser_trim_analyzer.core.unified_processor.UnifiedProcessor`
+        with strategy='turbo' instead.
+        Enable via config: ``processing.use_unified_processor: true``
+    """
     
     def __init__(self, config: Config, turbo_mode: bool = False):
         self.config = config

@@ -66,13 +66,19 @@ except ImportError:
 class LargeScaleProcessor:
     """
     Specialized processor for handling thousands of files efficiently.
-    
+
     Features:
     - Chunked batch processing
     - Memory management and cleanup
     - Progress tracking and recovery
     - Performance monitoring
     - Database batch operations
+
+    .. deprecated:: 2.3.0
+        This class is deprecated and will be removed in a future version.
+        Use :class:`laser_trim_analyzer.core.unified_processor.UnifiedProcessor`
+        with strategy='memory_safe' instead.
+        Enable via config: ``processing.use_unified_processor: true``
     """
     
     def __init__(
