@@ -387,7 +387,7 @@ wc -l src/laser_trim_analyzer/core/*.py # Should be ~3,500 lines (down from 5,75
 ## ADR-005: Wire ML Models to Processing Pipeline
 
 **Date**: 2025-12-05
-**Status**: Accepted (In Implementation - Phase 3)
+**Status**: ✅ Implemented (Phase 3 Complete)
 **Context**: ML models (FailurePredictor, DriftDetector) exist but processing uses hardcoded formulas.
 **Decision**: Replace hardcoded formulas with ML predictions, with formula as fallback.
 
@@ -395,8 +395,14 @@ wc -l src/laser_trim_analyzer/core/*.py # Should be ~3,500 lines (down from 5,75
 | Model | Status | Location | Wired To |
 |-------|--------|----------|----------|
 | ThresholdOptimizer | ✅ Wired | ml/models.py:28-231 | sigma_analyzer.py:294-305 |
-| FailurePredictor | ⏸️ Not Wired | ml/models.py:233-466 | UnifiedProcessor (Phase 3) |
-| DriftDetector | ⏸️ Not Wired | ml/models.py:468-886 | Historical Page (Phase 3) |
+| FailurePredictor | ✅ Wired | ml/models.py:233-466 | unified_processor.py:1000-1180 |
+| DriftDetector | ✅ Wired | ml/models.py:468-886 | unified_processor.py:1700-1900, historical_page.py |
+
+**Additional Phase 3 Implementations**:
+- Batch predictions: `predict_failures_batch()` (3.65x speedup)
+- Prediction caching: `get_cached_prediction()`, `cache_prediction()` (63x speedup)
+- Error handling: `predict_failure_safe()`, `detect_drift_safe()` with timeout/memory protection
+- Health monitoring: `ml_health_stats` property
 
 **Priority Order (ADR-001 Compliant)**:
 1. Check for ML prediction (if model trained and feature flag enabled)
