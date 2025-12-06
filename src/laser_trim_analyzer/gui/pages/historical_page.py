@@ -3,6 +3,11 @@ Historical Data Page for Laser Trim Analyzer
 
 Provides interface for querying and analyzing historical QA data
 with advanced analytics, charts, and export functionality.
+
+REFACTORED: This module now uses mixins from the historical/ package.
+The implementation has been split into smaller, maintainable modules:
+- historical/analytics_mixin.py: Trend analysis, correlation, prediction, anomalies
+- historical/spc_mixin.py: Control charts, capability, Pareto, drift detection
 """
 
 import tkinter as tk
@@ -35,8 +40,6 @@ except ImportError:
     HAS_SKLEARN = False
     logger.warning("sklearn not available - ML features will be disabled")
 
-# import seaborn as sns  # Not used, removed
-
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -44,7 +47,6 @@ from matplotlib.figure import Figure
 from laser_trim_analyzer.core.models import AnalysisResult, FileMetadata, AnalysisStatus
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.core.config import get_config
-# from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 
 # Import UnifiedProcessor for ML drift detection (Phase 3)
 try:
@@ -55,12 +57,21 @@ except ImportError:
     logger.warning("UnifiedProcessor not available - using formula-based drift detection")
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
-# from laser_trim_analyzer.gui.widgets import add_mousewheel_support  # Not used
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
 
-class HistoricalPage(ctk.CTkFrame):
-    """QA-focused historical data analysis page with manufacturing insights."""
+# Import mixins for modular functionality
+from laser_trim_analyzer.gui.pages.historical.analytics_mixin import AnalyticsMixin
+from laser_trim_analyzer.gui.pages.historical.spc_mixin import SPCMixin
+
+
+class HistoricalPage(SPCMixin, AnalyticsMixin, ctk.CTkFrame):
+    """QA-focused historical data analysis page with manufacturing insights.
+
+    Combines functionality through mixins:
+    - SPCMixin: SPC charts, capability, Pareto, drift detection
+    - AnalyticsMixin: Trend analysis, correlation, prediction, anomalies
+    """
 
     def __init__(self, parent, main_window):
         super().__init__(parent)
