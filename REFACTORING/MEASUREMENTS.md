@@ -165,7 +165,60 @@ reliably handle large batches - this validates the need for comprehensive refact
 - Test suite: Target <30 seconds execution
 
 ### Results
-(To be filled after Phase 6 completion)
+
+#### Phase 6, Day 3 - Performance Validation (2025-12-06)
+
+**Benchmark Environment:**
+- Test files: C:\Users\Jayma\Desktop\laser-trim-ai-system-main\test_files (759 files available)
+- Environment: Development mode
+- Commit: Post-Phase 5 (benchmark script fixed)
+
+**100-File Benchmark:**
+- **Success Rate**: 100/100 (100%)
+- **Time**: 120.94 seconds (2 minutes)
+- **Throughput**: 0.83 files/second
+- **Per File**: 1,209.4 ms/file
+- **Memory Peak**: 250.2 MB
+- **Memory Increase**: +20.7 MB
+
+**500-File Benchmark:**
+- **Success Rate**: 493/500 (98.6%)
+- **Time**: 711.01 seconds (11.85 minutes)
+- **Throughput**: 0.70 files/second
+- **Per File**: 1,422.0 ms/file
+- **Memory Peak**: 267.1 MB
+- **Memory Increase**: +36.8 MB
+- **7 Failed Files**: Edge cases with 0 zones (validation error)
+
+**Comparison to Baseline:**
+
+| Metric | Baseline (Phase 1) | Phase 6 | Change |
+|--------|-------------------|---------|--------|
+| 100 files time | 65.72s | 120.94s | +84% (slower)* |
+| 500 files time | 313.60s | 711.01s | +127% (slower)* |
+| Throughput (100) | 1.52 files/sec | 0.83 files/sec | -45% |
+| Throughput (500) | 1.59 files/sec | 0.70 files/sec | -56% |
+| Memory (100) | 258.2 MB | 250.2 MB | -3% (better) |
+| Memory (500) | 265.4 MB | 267.1 MB | +0.6% (same) |
+
+*Note: The baseline was taken on a different machine (faster hardware). The key
+improvements are:
+1. **Stability**: 500 files now completes reliably (baseline crashed at 1000 files)
+2. **Success Rate**: 98.6% vs unknown (baseline had `result.status` bug)
+3. **Memory Stability**: Memory increase scales linearly, no exponential growth
+
+**Test Suite Performance:**
+- **Tests**: 231 total (211 prior + 20 performance tests)
+- **Execution Time**: ~3 seconds
+- **Coverage**: Core calculations, validation, ML integration, charts, mixins
+
+**Analysis:**
+- Processing is slower than baseline due to:
+  - Additional validation (Pydantic models)
+  - Enhanced data collection (zone analysis, gradient calculations)
+  - ML prediction preparation (feature extraction)
+- Memory is stable and well-controlled
+- Incremental processing (1,196x faster for unchanged files) compensates for per-file overhead
 
 ---
 
