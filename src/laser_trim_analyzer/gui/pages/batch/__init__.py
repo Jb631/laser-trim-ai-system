@@ -1,13 +1,14 @@
 """
 Batch Processing Page Module
 
-This module contains the BatchProcessingPage and its supporting mixins.
+This module contains supporting mixins for BatchProcessingPage.
 The implementation is split into manageable modules:
-- batch_processing_page.py: Main page class with UI creation
 - export_mixin.py: Export functionality (Excel, CSV, HTML)
-- processing_mixin.py: Batch processing logic (future)
+
+NOTE: BatchProcessingPage is imported from batch_processing_page.py,
+not from this module, to avoid circular imports.
 """
 
-from laser_trim_analyzer.gui.pages.batch_processing_page import BatchProcessingPage
+from laser_trim_analyzer.gui.pages.batch.export_mixin import ExportMixin
 
-__all__ = ['BatchProcessingPage']
+__all__ = ['ExportMixin']
