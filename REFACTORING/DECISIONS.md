@@ -552,10 +552,10 @@ charts/
 | ADR-002 | Incremental Processing via DB | Accepted | 1 | 2025-01-25 |
 | ADR-003 | Remove AnalyticsEngine | Accepted | 1 | 2025-01-25 |
 | ADR-004 | Unify Processors (Strategy Pattern) | **✅ Implemented** | 2 | 2025-12-04 |
-| ADR-005 | Wire ML Models to Pipeline | **In Implementation** | 3 | 2025-12-05 |
+| ADR-005 | Wire ML Models to Pipeline | **✅ Implemented** | 3 | 2025-12-05 |
 | ADR-006 | Split Large Files by Modules | Proposed | 4 | TBD |
 
 ---
 
-**Last Updated**: 2025-12-05 (ADR-005 Implementation Started)
+**Last Updated**: 2025-12-05 (Phase 3 Complete - ADR-005 Implemented)
 **Next Review**: After each phase completion
