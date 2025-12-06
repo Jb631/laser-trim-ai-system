@@ -111,11 +111,22 @@ async def run_benchmark(file_count: int, test_dir: Path, config: Config) -> Dict
             # Process file
             result = await processor.process_file(str(file_path))
 
-            if result and result.status == "success":
-                successful += 1
+            # Check if result is valid (has overall_status or is not None)
+            if result is not None:
+                # Check if it has overall_status attribute (pydantic AnalysisResult)
+                if hasattr(result, 'overall_status'):
+                    status = str(result.overall_status.value) if hasattr(result.overall_status, 'value') else str(result.overall_status)
+                    if status.lower() in ['pass', 'passed', 'success']:
+                        successful += 1
+                    else:
+                        # Even if status is 'fail', the processing succeeded
+                        successful += 1
+                else:
+                    # Result exists but no status - count as success
+                    successful += 1
             else:
                 failed += 1
-                errors.append(f"{file_path.name}: No result or failed status")
+                errors.append(f"{file_path.name}: No result returned")
 
         except Exception as e:
             failed += 1

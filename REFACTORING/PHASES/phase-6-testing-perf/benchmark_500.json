@@ -1,0 +1,13 @@
+{
+  "file_count": 500,
+  "successful": 493,
+  "failed": 7,
+  "total_time_seconds": 711.01,
+  "throughput_files_per_second": 0.7,
+  "time_per_file_ms": 1422.0,
+  "memory_before_mb": 230.3,
+  "memory_after_mb": 267.1,
+  "memory_peak_mb": 267.1,
+  "memory_increase_mb": 36.8,
+  "cpu_percent": 0.0
+}
