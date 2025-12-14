@@ -34,6 +34,7 @@ except ImportError:
 
 # from laser_trim_analyzer.gui.pages.base_page_ctk import BasePage  # Using CTkFrame instead
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets.simple_chart import SimpleChartWidget
 from laser_trim_analyzer.gui.widgets.stat_card import StatCard
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.gui.theme_helper import ThemeHelper
@@ -251,11 +252,10 @@ class ModelSummaryPage(ctk.CTkFrame):
         self.trend_container.pack(fill='both', expand=True, padx=15, pady=(0, 15))
         self.trend_container.pack_propagate(False)  # Prevent container from shrinking
 
-        # Create matplotlib chart widget with proper sizing for control chart
-        self.trend_chart = ChartWidget(
+        # Create SimpleChartWidget for clean, industry-standard control chart
+        self.trend_chart = SimpleChartWidget(
             self.trend_container,
             title="Sigma Gradient Control Chart",
-            chart_type="line",
             figsize=(10, 6)  # Standard control chart size
         )
         self.trend_chart.pack(fill='both', expand=True, padx=10, pady=10)
@@ -866,39 +866,23 @@ class ModelSummaryPage(ctk.CTkFrame):
                     if ml_threshold:
                         self.logger.info(f"Including ML threshold: {ml_threshold}")
                 
-                # Use the enhanced control chart method
+                # Use SimpleChartWidget's plot_control_chart method
                 try:
-                    self.trend_chart.plot_enhanced_control_chart(
+                    self.trend_chart.plot_control_chart(
                         data=chart_data,
-                        value_column='sigma_gradient',
-                        date_column='trim_date',
+                        value_col='sigma_gradient',
+                        date_col='trim_date',
                         spec_limits=spec_limits,
                         target_value=target_value,
                         title="Sigma Gradient Trend"
                     )
-                    
-                    # Add ML threshold as additional reference line if available
-                    if ml_threshold:
-                        ax = self.trend_chart._get_or_create_axes()
-                        ax.axhline(y=ml_threshold, 
-                                  color=self.trend_chart.qa_colors['ml_threshold'], 
-                                  linestyle='-.', 
-                                  linewidth=2, 
-                                  alpha=0.8,
-                                  label=f'ML Threshold: {ml_threshold:.4f}')
-                        
-                        # Update legend to include ML threshold
-                        handles, labels = ax.get_legend_handles_labels()
-                        if handles and labels:
-                            ax.legend(handles, labels, loc='upper right', fontsize=9)
-                    
-                    self.logger.info("Enhanced control chart created successfully")
-                    
+                    self.logger.info("Control chart created successfully")
+
                 except Exception as chart_error:
-                    self.logger.error(f"Error creating enhanced control chart: {chart_error}")
-                    self.trend_chart.show_error(
+                    self.logger.error(f"Error creating control chart: {chart_error}")
+                    self.trend_chart.show_placeholder(
                         "Control Chart Error",
-                        f"Failed to create statistical process control chart: {str(chart_error)}"
+                        f"Failed to create chart: {str(chart_error)}"
                     )
             else:
                 self.trend_chart.show_placeholder("No Valid Data", "No sigma gradient data available for analysis")
