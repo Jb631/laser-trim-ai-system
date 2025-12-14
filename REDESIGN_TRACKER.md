@@ -544,7 +544,19 @@ Instead of rewriting 3,000+ lines, we will:
 
 3. ✅ Added SimpleChartWidget to widgets `__init__.py`
 
-**Next Step**: Update historical_page.py and model_summary_page.py to use SimpleChartWidget
+4. ✅ Updated `historical_page.py` to use SimpleChartWidget for control charts
+
+5. ✅ Updated `model_summary_page.py` to use SimpleChartWidget for trend chart
+   - Simplified chart update code from 25+ lines to ~10 lines
+   - Removed direct matplotlib access
+
+**Phase 2 Status**: Core chart redesign COMPLETE. New SimpleChartWidget provides:
+- Clean, industry-standard SPC control charts
+- Automatic column detection
+- Proper statistical limits (3-sigma with moving range)
+- Compatible API with existing code
+
+**Next Phase**: Phase 3 - ML Integration Testing
 
 ---
 
