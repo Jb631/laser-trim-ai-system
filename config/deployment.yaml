@@ -73,6 +73,12 @@ processing:
   max_workers: 4
   # Threshold for activating turbo mode (high-speed batch processing)
   turbo_mode_threshold: 100
+  # Feature Flags for Enhanced Processing (ADR-001, ADR-004)
+  use_unified_processor: true  # Enable incremental processing
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+  # ML Feature Flags (ADR-005)
+  use_ml_failure_predictor: true  # Enable ML-based failure prediction
+  use_ml_drift_detector: true  # Enable ML-based drift detection
 security:
   allowed_file_paths:
   - //fileserver/QA_Data

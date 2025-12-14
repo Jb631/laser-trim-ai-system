@@ -98,26 +98,33 @@ class ProgressDialog:
     
     def _update_progress_main_thread(self, message: str, progress: float):
         """Internal method to update progress from main thread only."""
-        
+
         try:
             if self.dialog and self.dialog.winfo_exists():
                 # Update message
                 if self.status_label:
                     self.status_label.configure(text=message)
-                
+
+                # Normalize progress to 0-1 range and clamp to valid bounds
+                progress_normalized = min(max(progress, 0.0), 1.0)
+
                 # Update file count based on progress
                 if self.file_label and self.total_files > 0:
-                    current_file = int(progress * self.total_files)
+                    # Ensure current_file never exceeds total_files
+                    current_file = min(
+                        int(progress_normalized * self.total_files),
+                        self.total_files
+                    )
                     self.current_file = current_file
                     self.file_label.configure(text=f"Processing file {current_file} of {self.total_files}")
-                
+
                 # Update progress bar
                 if self.progress_bar:
                     # Stop indeterminate mode if running
                     self.progress_bar.stop()
                     # Set determinate progress (0.0 to 1.0)
-                    self.progress_bar.set(progress)
-                
+                    self.progress_bar.set(progress_normalized)
+
                 # Force update
                 self.dialog.update()
         except Exception as e:
@@ -214,30 +221,34 @@ class BatchProgressDialog:
                 # Update labels
                 if self.status_label:
                     self.status_label.configure(text=message)
-                    
+
                 # Update file counter
-                # Progress can be either 0-1 or 0-100, handle both
-                if progress <= 1.0:
-                    # Progress is 0-1
-                    self.current_file = int(progress * self.total_files)
-                    progress_normalized = progress
+                # Normalize progress to 0-1 range and clamp to valid bounds
+                if progress > 1.0:
+                    # Progress is 0-100 percentage, convert to 0-1
+                    progress_normalized = min(progress / 100.0, 1.0)
                 else:
-                    # Progress is 0-100
-                    self.current_file = int(progress * self.total_files / 100)
-                    progress_normalized = progress / 100.0
-                    
+                    # Progress is already 0-1
+                    progress_normalized = min(max(progress, 0.0), 1.0)
+
+                # Calculate current file, ensuring it never exceeds total
+                self.current_file = min(
+                    int(progress_normalized * self.total_files),
+                    self.total_files
+                )
+
                 if self.file_label:
                     self.file_label.configure(
                         text=f"Processing file {self.current_file} of {self.total_files}"
                     )
-                    
+
                 # Update progress bar
                 if self.progress_bar:
                     self.progress_bar.set(progress_normalized)
-                    
+
                 # Force update
                 self.dialog.update()
-                
+
         except Exception as e:
             self.logger.debug(f"Error updating progress: {e}")
             
