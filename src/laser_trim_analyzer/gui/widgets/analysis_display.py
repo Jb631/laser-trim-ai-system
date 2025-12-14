@@ -383,14 +383,15 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
             serial = getattr(result.metadata, 'serial', 'Unknown')
             self.serial_card.update_value(serial, "info")
             
-            # System type
+            # System type (attribute is 'system', not 'system_type')
             system_type = 'Unknown'
-            if hasattr(result.metadata, 'system_type'):
-                system_type = getattr(result.metadata.system_type, 'value', 
-                                    str(result.metadata.system_type))
-            elif hasattr(result.metadata, 'system'):
-                system_type = getattr(result.metadata.system, 'value', 
+            if hasattr(result.metadata, 'system'):
+                system_type = getattr(result.metadata.system, 'value',
                                     str(result.metadata.system))
+            elif hasattr(result.metadata, 'system_type'):
+                # Legacy fallback
+                system_type = getattr(result.metadata.system_type, 'value',
+                                    str(result.metadata.system_type))
             self.system_card.update_value(system_type, "info")
             
             # Date

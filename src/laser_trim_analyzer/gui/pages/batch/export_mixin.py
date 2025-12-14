@@ -177,18 +177,32 @@ class ExportMixin:
                     model = getattr(result.metadata, 'model', 'Unknown')
                     serial = getattr(result.metadata, 'serial', 'Unknown')
 
-                    # Handle system_type safely
+                    # Handle system safely (attribute is 'system', not 'system_type')
                     system_type = 'Unknown'
-                    if hasattr(result.metadata, 'system_type'):
+                    if hasattr(result.metadata, 'system'):
+                        system_type = getattr(result.metadata.system, 'value', str(result.metadata.system))
+                    elif hasattr(result.metadata, 'system_type'):
+                        # Fallback for legacy attribute name
                         system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
 
-                    # Handle analysis_date safely
-                    analysis_date = 'Unknown'
-                    if hasattr(result.metadata, 'analysis_date'):
-                        if hasattr(result.metadata.analysis_date, 'strftime'):
-                            analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                    # Handle trim/test date (prefer test_date, fallback to file_date)
+                    trim_date = 'Unknown'
+                    if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
+                        if hasattr(result.metadata.test_date, 'strftime'):
+                            trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
                         else:
-                            analysis_date = str(result.metadata.analysis_date)
+                            trim_date = str(result.metadata.test_date)
+                    elif hasattr(result.metadata, 'file_date') and result.metadata.file_date:
+                        if hasattr(result.metadata.file_date, 'strftime'):
+                            trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            trim_date = str(result.metadata.file_date)
+                    elif hasattr(result.metadata, 'analysis_date'):
+                        # Legacy fallback
+                        if hasattr(result.metadata.analysis_date, 'strftime'):
+                            trim_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            trim_date = str(result.metadata.analysis_date)
 
                     # Handle overall_status safely
                     overall_status = 'Unknown'
@@ -236,7 +250,7 @@ class ExportMixin:
                         'Model': model,
                         'Serial': serial,
                         'System_Type': system_type,
-                        'Analysis_Date': analysis_date,
+                        'Trim_Date': trim_date,
                         'Overall_Status': overall_status,
                         'Validation_Status': validation_status,
                         'Processing_Time': f"{getattr(result, 'processing_time', 0):.2f}",
@@ -418,18 +432,33 @@ class ExportMixin:
                 model = getattr(result.metadata, 'model', 'Unknown') if hasattr(result, 'metadata') else 'Unknown'
                 serial = getattr(result.metadata, 'serial', 'Unknown') if hasattr(result, 'metadata') else 'Unknown'
 
-                # Handle system_type safely
+                # Handle system safely (attribute is 'system', not 'system_type')
                 system_type = 'Unknown'
-                if hasattr(result, 'metadata') and hasattr(result.metadata, 'system_type'):
+                if hasattr(result, 'metadata') and hasattr(result.metadata, 'system'):
+                    system_type = getattr(result.metadata.system, 'value', str(result.metadata.system))
+                elif hasattr(result, 'metadata') and hasattr(result.metadata, 'system_type'):
+                    # Legacy fallback
                     system_type = getattr(result.metadata.system_type, 'value', str(result.metadata.system_type))
 
-                # Handle analysis_date safely
-                analysis_date = 'Unknown'
-                if hasattr(result, 'metadata') and hasattr(result.metadata, 'analysis_date'):
-                    if hasattr(result.metadata.analysis_date, 'strftime'):
-                        analysis_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        analysis_date = str(result.metadata.analysis_date)
+                # Handle trim/test date (prefer test_date, fallback to file_date)
+                trim_date = 'Unknown'
+                if hasattr(result, 'metadata'):
+                    if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
+                        if hasattr(result.metadata.test_date, 'strftime'):
+                            trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            trim_date = str(result.metadata.test_date)
+                    elif hasattr(result.metadata, 'file_date') and result.metadata.file_date:
+                        if hasattr(result.metadata.file_date, 'strftime'):
+                            trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            trim_date = str(result.metadata.file_date)
+                    elif hasattr(result.metadata, 'analysis_date'):
+                        # Legacy fallback
+                        if hasattr(result.metadata.analysis_date, 'strftime'):
+                            trim_date = result.metadata.analysis_date.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            trim_date = str(result.metadata.analysis_date)
 
                 # Handle overall_status safely
                 overall_status = getattr(result.overall_status, 'value', 'Unknown') if hasattr(result, 'overall_status') else 'Unknown'
@@ -451,7 +480,7 @@ class ExportMixin:
                                 'Model': model,
                                 'Serial': serial,
                                 'System_Type': system_type,
-                                'Analysis_Date': analysis_date,
+                                'Trim_Date': trim_date,
                                 'Track_ID': str(track_id),
                                 'Overall_Status': overall_status,
                                 'Track_Status': getattr(track.overall_status, 'value', 'Unknown') if hasattr(track, 'overall_status') else getattr(track.status, 'value', 'Unknown') if hasattr(track, 'status') else 'Unknown',
@@ -504,7 +533,7 @@ class ExportMixin:
                         'Model': model,
                         'Serial': serial,
                         'System_Type': system_type,
-                        'Analysis_Date': analysis_date,
+                        'Trim_Date': trim_date,
                         'Overall_Status': overall_status,
                         'Processing_Time': processing_time,
                         'Validation_Status': validation_status,
