@@ -56,6 +56,7 @@ except ImportError:
     HAS_UNIFIED_PROCESSOR = False
     logger.warning("UnifiedProcessor not available - using formula-based drift detection")
 from laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget
+from laser_trim_analyzer.gui.widgets.simple_chart import SimpleChartWidget
 from laser_trim_analyzer.gui.widgets.metric_card_ctk import MetricCard
 from laser_trim_analyzer.utils.date_utils import safe_datetime_convert
 from laser_trim_analyzer.gui.widgets import add_mousewheel_support
@@ -353,12 +354,11 @@ class HistoricalPage(SPCMixin, AnalyticsMixin, ctk.CTkFrame):
         self.spc_tabview.add("Drift Detection")
         self.spc_tabview.add("Failure Modes")
 
-        # Control charts tab
-        self.control_chart = ChartWidget(
+        # Control charts tab - using new SimpleChartWidget for cleaner SPC charts
+        self.control_chart = SimpleChartWidget(
             self.spc_tabview.tab("Control Charts"),
-            chart_type='line',
-            title="X-bar & R Statistical Process Control Chart",
-            figsize=(14, 7)  # Larger for SPC chart with dual axes
+            title="Sigma Gradient Control Chart",
+            figsize=(12, 6)
         )
         self.control_chart.pack(fill='both', expand=True, padx=5, pady=5)
 
@@ -2434,10 +2434,11 @@ Metrics:
                 self.logger.warning("No sigma_threshold in results, using fallback limits")
                 spec_limits = (0.0, 0.250)
                 target_value = 0.125
-            self.control_chart.plot_enhanced_control_chart(
+            # Use SimpleChartWidget's plot_control_chart method
+            self.control_chart.plot_control_chart(
                 data=df.sort_values('trim_date'),
-                value_column='sigma_gradient',
-                date_column='trim_date',
+                value_col='sigma_gradient',
+                date_col='trim_date',
                 spec_limits=spec_limits,
                 target_value=target_value,
                 title="Sigma Gradient Control Chart"
