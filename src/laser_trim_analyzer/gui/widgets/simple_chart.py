@@ -122,6 +122,10 @@ class SimpleChartWidget(ctk.CTkFrame):
         self._has_data = False
         self.canvas.draw_idle()
 
+    def show_error(self, title: str, message: str):
+        """Display an error message (public method for compatibility)."""
+        self._show_error(title, message)
+
     def _show_error(self, title: str, message: str):
         """Display an error message."""
         self.figure.clear()
