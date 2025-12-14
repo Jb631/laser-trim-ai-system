@@ -453,6 +453,28 @@ This means we may not need to rewrite these features - just enable and test them
   - Resume capability: Can resume from specific file
   - Auto-disable plots: For batches > 500 files
 
+### Session 3 (2025-12-14 - continued)
+**Focus**: Fix attribute naming bugs in export
+**Completed**:
+- ✅ Fixed `system_type` vs `system` attribute bug in legacy export:
+  - `export_mixin.py`: Changed `hasattr(result.metadata, 'system_type')` → `hasattr(result.metadata, 'system')`
+  - Fixed in 3 locations in export_mixin.py
+  - Fixed in 1 location in analysis_display.py
+- ✅ Fixed `analysis_date` vs `test_date`/`file_date` attribute bug:
+  - Export now correctly uses `test_date` (trim date from Excel) with `file_date` fallback
+  - Column renamed from `Analysis_Date` to `Trim_Date` for clarity
+- ✅ Verified imports work (no syntax errors)
+
+**Root Cause of "Unknown" System Type**:
+The FileMetadata model uses `system` attribute (not `system_type`), but export code was looking for `system_type`.
+- Model: `system: SystemType = Field(...)`
+- Export was: `if hasattr(result.metadata, 'system_type')` - WRONG
+- Fixed to: `if hasattr(result.metadata, 'system')` - CORRECT
+
+**Files Modified**:
+- `src/laser_trim_analyzer/gui/pages/batch/export_mixin.py` (3 fixes)
+- `src/laser_trim_analyzer/gui/widgets/analysis_display.py` (1 fix)
+
 **Next Session Should**:
 1. Test the application with actual test files to verify:
    - System type detection works correctly
