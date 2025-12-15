@@ -5,8 +5,9 @@ This module provides batch export methods:
 - _export_batch_results: Main export dispatcher
 - _export_batch_excel: Excel export with comprehensive report
 - _export_batch_excel_legacy: Legacy Excel export fallback
-- _export_batch_html: HTML report export
-- _export_batch_csv: CSV export
+
+Note (v3 Redesign): CSV and HTML exports are deprecated but retained for
+backwards compatibility. The UI now only shows Excel export for simplicity.
 
 Extracted from batch_processing_page.py during Phase 4 file splitting.
 """

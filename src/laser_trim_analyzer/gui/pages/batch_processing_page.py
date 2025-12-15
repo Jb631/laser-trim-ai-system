@@ -706,7 +706,7 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
         export_buttons_frame = ctk.CTkFrame(export_controls_frame, fg_color="transparent")
         export_buttons_frame.pack(side='left')
         
-        # Export Excel button
+        # Export Excel button (v3: Excel-only export for simplicity)
         self.export_excel_button = ctk.CTkButton(
             export_buttons_frame,
             text="Export to Excel",
@@ -714,24 +714,6 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
             state="disabled"
         )
         self.export_excel_button.pack(side='left', padx=5)
-        
-        # Export HTML button
-        self.export_html_button = ctk.CTkButton(
-            export_buttons_frame,
-            text="Export to HTML",
-            command=lambda: self._export_batch_results('html'),
-            state="disabled"
-        )
-        self.export_html_button.pack(side='left', padx=5)
-        
-        # Export CSV button (legacy)
-        self.export_csv_button = ctk.CTkButton(
-            export_buttons_frame,
-            text="Export to CSV",
-            command=lambda: self._export_batch_results('csv'),
-            state="disabled"
-        )
-        self.export_csv_button.pack(side='left', padx=5)
         
         # Output folder button
         self.output_folder_button = ctk.CTkButton(
@@ -1594,10 +1576,8 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
         # Re-enable controls first (this won't affect export buttons anymore)
         self._set_controls_state("normal")
         
-        # Enable export buttons
+        # Enable export button (v3: Excel-only)
         self.export_excel_button.configure(state="normal")
-        self.export_html_button.configure(state="normal")
-        self.export_csv_button.configure(state="normal")
         
         # Enable output folder button and store the output directory
         if output_dir:
@@ -2043,8 +2023,6 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
         self.failed_files = []  # Clear failed files tracking
         self.batch_results_widget.clear()
         self.export_excel_button.configure(state="disabled")
-        self.export_html_button.configure(state="disabled")
-        self.export_csv_button.configure(state="disabled")
         self.output_folder_button.configure(state="disabled")
         self.last_output_dir = None
         
