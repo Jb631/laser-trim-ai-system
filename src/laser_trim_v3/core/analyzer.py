@@ -3,9 +3,13 @@ Analysis module for Laser Trim Analyzer v3.
 
 Combines sigma, linearity, and resistance analysis into one clean module.
 Simplified from v2's multiple analyzer classes (~800 lines -> ~400 lines).
+
+ML Integration:
+- ThresholdOptimizer: Predicts optimal sigma thresholds per model
+- DriftDetector: Detects manufacturing drift (optional, per-batch)
 """
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 import logging
 import numpy as np
 from scipy.signal import butter, filtfilt
@@ -22,6 +26,11 @@ from laser_trim_v3.utils.constants import (
 )
 from laser_trim_v3.core.models import TrackData, AnalysisStatus, RiskCategory
 
+# Lazy import ML to avoid circular imports
+if TYPE_CHECKING:
+    from laser_trim_v3.ml.threshold import ThresholdOptimizer
+    from laser_trim_v3.ml.drift import DriftDetector
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,12 +43,28 @@ class Analyzer:
     - Linearity analysis (optimal offset, fail points)
     - Resistance analysis (change percentage)
     - Risk assessment (failure probability)
+
+    Optional ML integration:
+    - ThresholdOptimizer for model-specific thresholds
+    - DriftDetector for process monitoring
     """
 
-    def __init__(self, scaling_factor: float = DEFAULT_SIGMA_SCALING_FACTOR):
+    def __init__(
+        self,
+        scaling_factor: float = DEFAULT_SIGMA_SCALING_FACTOR,
+        threshold_optimizer: Optional["ThresholdOptimizer"] = None,
+    ):
         self.scaling_factor = scaling_factor
+        self.threshold_optimizer = threshold_optimizer
 
-    def analyze_track(self, track_data: Dict[str, Any]) -> TrackData:
+        # Cache for ML threshold lookups (model -> threshold)
+        self._threshold_cache: Dict[str, float] = {}
+
+    def analyze_track(
+        self,
+        track_data: Dict[str, Any],
+        model: Optional[str] = None,
+    ) -> TrackData:
         """
         Perform complete analysis on a track.
 
@@ -48,6 +73,7 @@ class Analyzer:
                 - track_id, positions, errors, upper_limits, lower_limits
                 - travel_length, linearity_spec, unit_length
                 - untrimmed_resistance, trimmed_resistance
+            model: Model number (for ML threshold lookup)
 
         Returns:
             TrackData object with all analysis results
@@ -70,9 +96,10 @@ class Analyzer:
             logger.warning(f"Insufficient data points for track {track_id}")
             return self._create_failed_track(track_id, "Insufficient data points")
 
-        # Sigma analysis
+        # Sigma analysis (with optional ML threshold)
         sigma_gradient, sigma_threshold = self._calculate_sigma(
-            positions, errors, linearity_spec, travel_length, unit_length
+            positions, errors, linearity_spec, travel_length, unit_length,
+            model=model
         )
         sigma_pass = sigma_gradient <= sigma_threshold
 
@@ -130,13 +157,18 @@ class Analyzer:
         errors: List[float],
         linearity_spec: float,
         travel_length: float,
-        unit_length: Optional[float]
+        unit_length: Optional[float],
+        model: Optional[str] = None,
     ) -> Tuple[float, float]:
         """
         Calculate sigma gradient and threshold.
 
         The sigma gradient measures the standard deviation of error gradients,
         indicating trim quality and stability.
+
+        Threshold is determined by:
+        1. ML-based prediction (if ThresholdOptimizer available and trained)
+        2. Formula-based calculation (fallback)
         """
         # Apply Butterworth filter to smooth errors
         filtered_errors = self._apply_butterworth_filter(errors)
@@ -166,8 +198,59 @@ class Analyzer:
         else:
             sigma_gradient = float(np.std(gradients, ddof=1))
 
-        # Calculate threshold using formula
-        # threshold = linearity_spec / (scaling_factor * travel_factor)
+        # Determine threshold
+        sigma_threshold = self._get_threshold(
+            model, unit_length, linearity_spec, travel_length
+        )
+
+        logger.debug(f"Sigma: gradient={sigma_gradient:.6f}, threshold={sigma_threshold:.6f}")
+
+        return sigma_gradient, sigma_threshold
+
+    def _get_threshold(
+        self,
+        model: Optional[str],
+        unit_length: Optional[float],
+        linearity_spec: float,
+        travel_length: float,
+    ) -> float:
+        """
+        Get sigma threshold, using ML if available.
+
+        Priority:
+        1. Cached ML threshold for model
+        2. ML prediction (if optimizer available)
+        3. Formula-based calculation
+        """
+        # Try cache first
+        if model and model in self._threshold_cache:
+            return self._threshold_cache[model]
+
+        # Try ML prediction
+        if model and self.threshold_optimizer is not None:
+            try:
+                if self.threshold_optimizer.is_trained:
+                    ml_threshold = self.threshold_optimizer.predict(
+                        model=model,
+                        unit_length=unit_length or travel_length,
+                        linearity_spec=linearity_spec
+                    )
+                    # Cache for future lookups
+                    self._threshold_cache[model] = ml_threshold
+                    logger.debug(f"Using ML threshold for {model}: {ml_threshold:.6f}")
+                    return ml_threshold
+            except Exception as e:
+                logger.warning(f"ML threshold prediction failed: {e}")
+
+        # Fall back to formula-based calculation
+        return self._formula_threshold(linearity_spec, travel_length)
+
+    def _formula_threshold(self, linearity_spec: float, travel_length: float) -> float:
+        """
+        Calculate threshold using formula (fallback).
+
+        Formula: threshold = linearity_spec / (scaling_factor * travel_factor)
+        """
         if travel_length > 0 and linearity_spec > 0:
             travel_factor = max(1.0, travel_length / 100.0)  # Normalize to 100 degrees
             sigma_threshold = linearity_spec / (self.scaling_factor * travel_factor)
@@ -175,11 +258,7 @@ class Analyzer:
             sigma_threshold = 0.001  # Fallback
 
         # Ensure threshold is reasonable
-        sigma_threshold = max(sigma_threshold, 0.0001)
-
-        logger.debug(f"Sigma: gradient={sigma_gradient:.6f}, threshold={sigma_threshold:.6f}")
-
-        return sigma_gradient, sigma_threshold
+        return max(sigma_threshold, 0.0001)
 
     def _apply_butterworth_filter(self, errors: List[float]) -> List[float]:
         """Apply Butterworth low-pass filter to smooth errors."""

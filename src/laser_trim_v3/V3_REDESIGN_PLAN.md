@@ -476,7 +476,17 @@ Phase 2: Core Processing [=====] COMPLETE
   - Explicit GC between batches
   - Falls back to sequential if memory critical
 
-Phase 3: ML Integration  [ ] Not Started
+Phase 3: ML Integration  [=====] COMPLETE
+  - [x] ml/threshold.py (~310 lines) - RandomForest threshold optimization
+  - [x] ml/drift.py (~340 lines) - Hybrid drift detection (CUSUM + EWMA + IsolationForest)
+  - [x] Wired ML to analyzer with automatic formula fallback
+  - [x] Processor loads ML models on startup (if available)
+
+  ML Approach:
+  - ThresholdOptimizer: RandomForest for model-specific thresholds
+  - DriftDetector: CUSUM (gradual shifts) + EWMA (trends) + IsolationForest (anomalies)
+  - Automatic fallback to formula-based calculation when ML unavailable
+
 Phase 4: GUI Pages       [====] 80% (placeholder implementations done)
 Phase 5: Export & Polish [ ] Not Started
 Phase 6: Testing & Docs  [ ] Not Started
@@ -491,6 +501,7 @@ Phase 6: Testing & Docs  [ ] Not Started
 | 2025-12-15 | Phase 1 Cont. | Created app.py with sidebar navigation and 5 placeholder pages (Dashboard, Process, Analyze, Trends, Settings). App structure is complete - launches with placeholder UI. Total v3 code: ~940 lines across 12 files. | Port database models, then implement core processing |
 | 2025-12-15 | Phase 1 Complete | Ported database models from v2 (well-designed, reused as-is). Created simplified Pydantic models (~270 lines vs v2's 600+). Phase 1 COMPLETE. Total v3 code: ~2,200 lines across 15 files. | Start Phase 2: Core Processing |
 | 2025-12-15 | Phase 2 Complete | Created core processing modules: parser.py (~380 lines), analyzer.py (~350 lines), processor.py (~470 lines with memory-safe design), database/manager.py (~620 lines). Total Phase 2: ~1,900 lines. Total v3 code: ~4,100 lines across 19 files. | Start Phase 3: ML Integration |
+| 2025-12-15 | Phase 3 Complete | Created ML modules: threshold.py (~310 lines), drift.py (~340 lines). Wired ML to analyzer/processor with automatic fallback. Total Phase 3: ~650 lines. Total v3 code: ~4,750 lines across 21 files. | Phase 4: Wire GUI pages to processing |
 
 ---
 
