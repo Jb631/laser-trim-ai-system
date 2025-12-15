@@ -9,6 +9,10 @@ Memory-safe design for 8GB RAM systems:
 - Uses generators to avoid accumulating results in memory
 - Explicit garbage collection between batches
 - Monitors memory and throttles if needed
+
+ML Integration:
+- Optional ThresholdOptimizer for ML-based thresholds
+- Automatic fallback to formula when ML unavailable
 """
 
 import gc
@@ -16,7 +20,7 @@ import time
 import hashlib
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Callable, Generator
+from typing import List, Optional, Callable, Generator, TYPE_CHECKING
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -38,6 +42,10 @@ from laser_trim_v3.core.models import (
 )
 from laser_trim_v3.config import Config, get_config
 
+# Lazy import ML to avoid circular imports
+if TYPE_CHECKING:
+    from laser_trim_v3.ml.threshold import ThresholdOptimizer
+
 logger = logging.getLogger(__name__)
 
 # Memory thresholds for 8GB systems
@@ -55,13 +63,56 @@ class Processor:
     - Incremental mode (skip already processed files)
     - Progress callbacks for UI integration
     - Auto-strategy based on file count
+    - ML-based threshold optimization (optional)
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        use_ml: bool = True,
+    ):
+        """
+        Initialize processor.
+
+        Args:
+            config: Configuration object
+            use_ml: Whether to attempt loading ML models
+        """
         self.config = config or get_config()
         self.parser = ExcelParser()
-        self.analyzer = Analyzer()
         self._processed_hashes: set = set()
+
+        # Try to load ML threshold optimizer
+        self.threshold_optimizer: Optional["ThresholdOptimizer"] = None
+        if use_ml:
+            self._load_ml_models()
+
+        # Create analyzer with optional ML
+        self.analyzer = Analyzer(
+            threshold_optimizer=self.threshold_optimizer
+        )
+
+    def _load_ml_models(self) -> None:
+        """Attempt to load trained ML models."""
+        try:
+            from laser_trim_v3.ml.threshold import ThresholdOptimizer
+
+            # Get model path from config
+            model_path = self.config.models.path / "threshold_optimizer.pkl"
+
+            if model_path.exists():
+                self.threshold_optimizer = ThresholdOptimizer()
+                if self.threshold_optimizer.load(model_path):
+                    logger.info("Loaded threshold optimizer from disk")
+                else:
+                    self.threshold_optimizer = None
+                    logger.info("Failed to load threshold optimizer, using formula")
+            else:
+                logger.debug("No threshold optimizer model found, using formula")
+
+        except Exception as e:
+            logger.warning(f"Could not load ML models: {e}")
+            self.threshold_optimizer = None
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> AnalysisResult:
         """
@@ -91,10 +142,13 @@ class Processor:
                     metadata, "No valid track data found", start_time
                 )
 
-            # Analyze each track
+            # Analyze each track (pass model for ML threshold lookup)
             analyzed_tracks: List[TrackData] = []
             for track_data in tracks_data:
-                track_result = self.analyzer.analyze_track(track_data)
+                track_result = self.analyzer.analyze_track(
+                    track_data,
+                    model=metadata.model  # For ML threshold lookup
+                )
                 analyzed_tracks.append(track_result)
 
             # Determine overall status
