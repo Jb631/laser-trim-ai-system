@@ -856,7 +856,8 @@ class HistoricalPage(SPCMixin, AnalyticsMixin, ctk.CTkFrame):
             self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
 
         except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Query Error", f"Failed to query database:\n{str(e)}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: messagebox.showerror("Query Error", f"Failed to query database:\n{msg}"))
             self.after(0, lambda: self.query_btn.configure(state='normal', text='Run Query'))
 
     def _display_results(self, results):
@@ -1898,8 +1899,9 @@ class HistoricalPage(SPCMixin, AnalyticsMixin, ctk.CTkFrame):
                 try:
                     self._perform_export(filename, export_df, progress_dialog)
                 except Exception as e:
+                    error_msg = str(e)
                     self.after(0, lambda: progress_dialog.hide() if progress_dialog else None)
-                    self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export data:\n{str(e)}"))
+                    self.after(0, lambda msg=error_msg: messagebox.showerror("Export Error", f"Failed to export data:\n{msg}"))
                     
             threading.Thread(target=export_thread, daemon=True).start()
         else:
