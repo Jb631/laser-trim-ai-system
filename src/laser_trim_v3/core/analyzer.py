@@ -135,8 +135,8 @@ class Analyzer:
             linearity_error=linearity_error,
             linearity_pass=linearity_pass,
             linearity_fail_points=fail_points,
-            # Unit properties
-            unit_length=unit_length,
+            # Unit properties (sanitize invalid values)
+            unit_length=unit_length if unit_length and unit_length >= 0 else None,
             untrimmed_resistance=untrimmed_resistance,
             trimmed_resistance=trimmed_resistance,
             # Risk

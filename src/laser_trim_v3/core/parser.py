@@ -279,7 +279,12 @@ class ExcelParser:
             sheet_lower = sheet.lower()
             if sheet_lower == "test":
                 untrimmed_sheet = sheet
-            elif "trim" in sheet_lower:
+            # More specific matching for trimmed sheet:
+            # "Lin Error" or "Trim 1" (but NOT "Trim Parameters", "TRIMDATA", "TrimVolts1")
+            elif sheet_lower == "lin error":
+                trimmed_sheet = sheet
+            elif sheet_lower.startswith("trim ") and sheet_lower[5:].isdigit():
+                # Matches "Trim 1", "Trim 2", etc.
                 trimmed_sheet = sheet
 
         if trimmed_sheet:

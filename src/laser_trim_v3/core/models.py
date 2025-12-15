@@ -174,16 +174,20 @@ class AnalysisResult(BaseAnalysisModel):
 
     @field_validator('tracks')
     @classmethod
-    def validate_tracks(cls, v: List[TrackData]) -> List[TrackData]:
-        """Ensure at least one track exists."""
+    def validate_tracks(cls, v: List[TrackData], info) -> List[TrackData]:
+        """Ensure at least one track exists (except for ERROR status)."""
+        # Allow empty tracks only for ERROR status
+        # info.data contains the other field values being validated
         if not v:
-            raise ValueError("Analysis must contain at least one track")
+            status = info.data.get('overall_status')
+            if status != AnalysisStatus.ERROR:
+                raise ValueError("Analysis must contain at least one track")
         return v
 
     @property
-    def primary_track(self) -> TrackData:
-        """Get the primary track (first one)."""
-        return self.tracks[0]
+    def primary_track(self) -> Optional[TrackData]:
+        """Get the primary track (first one), or None if no tracks."""
+        return self.tracks[0] if self.tracks else None
 
     @property
     def all_tracks_pass(self) -> bool:
@@ -210,23 +214,41 @@ class AnalysisResult(BaseAnalysisModel):
     def to_summary_dict(self) -> Dict[str, Any]:
         """Convert to summary dictionary for display/export."""
         primary = self.primary_track
-        return {
+        result = {
             "filename": self.metadata.filename,
             "model": self.metadata.model,
             "serial": self.metadata.serial,
             "system": self.metadata.system.value,
             "status": self.overall_status.value,
-            "sigma_gradient": primary.sigma_gradient,
-            "sigma_threshold": primary.sigma_threshold,
-            "sigma_pass": primary.sigma_pass,
-            "linearity_error": primary.linearity_error,
-            "linearity_pass": primary.linearity_pass,
-            "risk_category": primary.risk_category.value,
-            "failure_probability": primary.failure_probability,
             "processing_time": self.processing_time,
             "track_count": self.track_count,
             "test_date": self.metadata.test_date.isoformat() if self.metadata.test_date else None,
         }
+
+        # Add track data if available
+        if primary:
+            result.update({
+                "sigma_gradient": primary.sigma_gradient,
+                "sigma_threshold": primary.sigma_threshold,
+                "sigma_pass": primary.sigma_pass,
+                "linearity_error": primary.linearity_error,
+                "linearity_pass": primary.linearity_pass,
+                "risk_category": primary.risk_category.value,
+                "failure_probability": primary.failure_probability,
+            })
+        else:
+            # Default values for error results
+            result.update({
+                "sigma_gradient": None,
+                "sigma_threshold": None,
+                "sigma_pass": None,
+                "linearity_error": None,
+                "linearity_pass": None,
+                "risk_category": RiskCategory.UNKNOWN.value,
+                "failure_probability": None,
+            })
+
+        return result
 
 
 # ============================================================================
