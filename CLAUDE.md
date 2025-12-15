@@ -103,7 +103,17 @@ To switch environments, set the `LTA_ENV` environment variable:
 
 ### Current Known Issues
 
-- None currently tracked
+**CRITICAL - Identified 2025-12-14:**
+- Excel Export: System type shows "Unknown" instead of A/B
+- Excel Export: Trim date missing or showing incorrect values
+- Excel Export: Some metrics not being exported
+- Charts: Not rendering correctly across all pages
+- Charts: Spacing and layout issues
+- Charts: "No data to display" errors when data should exist
+- ML Features: Not working (failure prediction, drift detection)
+- Single Analysis: Chart displays too small after analysis
+
+**See `REDESIGN_TRACKER.md` for comprehensive fix plan**
 
 ### Previously Fixed Issues
 - ✓ Range utilization percent calculation now properly capped at 100%
@@ -136,13 +146,15 @@ Remember: Always think through the full implementation before starting any fix.
 
 ### Session Start Checklist
 **EVERY session MUST begin with these steps:**
-1. Read CHANGELOG.md to understand recent changes and current state
-2. Check the Known Issues sections in both CLAUDE.md and CHANGELOG.md
-3. Use TodoWrite to plan the session tasks
-4. Fix existing code - do NOT create new test files
-5. Use parallel tool operations when possible
-6. Document ALL changes in CHANGELOG.md immediately after implementation
-7. Update Known Issues sections as issues are discovered or fixed
+1. Read `REDESIGN_TRACKER.md` to understand current phase and progress
+2. Read CHANGELOG.md to understand recent changes and current state
+3. Check the Known Issues sections in both CLAUDE.md and CHANGELOG.md
+4. Use TodoWrite to plan the session tasks
+5. Fix existing code - do NOT create new test files
+6. Use parallel tool operations when possible
+7. Document ALL changes in CHANGELOG.md immediately after implementation
+8. Update `REDESIGN_TRACKER.md` session log at end of each session
+9. Update Known Issues sections as issues are discovered or fixed
 
 ---
 

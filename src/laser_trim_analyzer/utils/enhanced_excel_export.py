@@ -774,15 +774,32 @@ class EnhancedExcelExporter:
         """Create detailed results sheet for all files in batch."""
         ws = wb.create_sheet("Detailed Results")
         
-        # Create comprehensive headers
+        # Create comprehensive headers with ALL important fields
         headers = [
+            # Basic Info (1-6)
             "Filename", "Model", "Serial", "System Type", "File Date", "Trim Date",
-            "Status", "Processing Time", "Tracks", "Primary Track ID", "Data Points", 
-            "Sigma Gradient", "Sigma Threshold", "Sigma Pass", "Sigma Ratio",
+            # Status (7-9)
+            "Status", "Processing Time", "Tracks",
+            # Track Info (10-12)
+            "Primary Track ID", "Track Identifier", "Data Points",
+            # Sigma Analysis (13-17)
+            "Sigma Gradient", "Sigma Threshold", "Sigma Pass", "Sigma Ratio", "Sigma Margin",
+            # Linearity Analysis (18-23)
             "Linearity Spec", "Linearity Pass", "Fail Points", "Optimal Offset",
             "Final Linearity Error", "Max Deviation",
-            "Unit Length", "Resistance Range", "Normalized Range %",
+            # Unit Properties (24-27)
+            "Unit Length", "Resistance Before", "Resistance After", "Resistance Change %",
+            # Trim Effectiveness (28-31)
+            "Improvement %", "Untrimmed RMS Error", "Trimmed RMS Error", "Trim Quality Grade",
+            # Zone Analysis (32-34)
+            "Worst Zone", "Worst Zone Position", "Num Zones",
+            # Dynamic Range (35-38)
+            "Range Utilization %", "Minimum Margin", "Min Margin Position", "Margin Bias",
+            # ML Predictions (39-41)
             "ML Risk Category", "ML Failure Probability", "ML Gradient Margin",
+            # Industry Grades (42-44)
+            "Sigma Compliance", "Linearity Grade", "Resistance Stability",
+            # Validation (45-47)
             "Validation Status", "Validation Grade", "Error Message"
         ]
         
@@ -804,93 +821,130 @@ class EnhancedExcelExporter:
                     if result.primary_track.position_data and len(result.primary_track.position_data) > 0:
                         self.logger.debug(f"  First 5 position values: {result.primary_track.position_data[:5]}")
                 
-            # Basic info
+            # Basic info (columns 1-6)
             ws.cell(row=row, column=1, value=result.metadata.filename)
             ws.cell(row=row, column=2, value=result.metadata.model)
             ws.cell(row=row, column=3, value=result.metadata.serial)
             ws.cell(row=row, column=4, value=result.metadata.system.value)
-            
-            # File date
             ws.cell(row=row, column=5, value=result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S'))
-            
+
             # Trim date (original test date from the Excel file)
             trim_date = "Unknown"
             if hasattr(result.metadata, 'test_date') and result.metadata.test_date:
                 trim_date = result.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')
             elif hasattr(result.metadata, 'file_date'):
-                # Fallback to file date if test_date not available
                 trim_date = result.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')
             ws.cell(row=row, column=6, value=trim_date)
-            
+
+            # Status (columns 7-9)
             ws.cell(row=row, column=7, value=result.overall_status.value)
             self._apply_status_formatting(ws.cell(row=row, column=7), result.overall_status.value)
-            ws.cell(row=row, column=8, value=result.processing_time)
+            ws.cell(row=row, column=8, value=f"{result.processing_time:.2f}")
             ws.cell(row=row, column=9, value=len(result.tracks))
-            
+
             # Primary track analysis
             primary_track = result.primary_track
             if primary_track:
+                # Track Info (columns 10-12)
                 ws.cell(row=row, column=10, value=primary_track.track_id)
-                ws.cell(row=row, column=11, value=len(primary_track.position_data) if primary_track.position_data else 0)
-                
-                # Sigma analysis
+                # Track identifier for multi-track System B files (TA, TB, etc.)
+                track_identifier = getattr(result.metadata, 'track_identifier', None) or 'N/A'
+                ws.cell(row=row, column=11, value=track_identifier)
+                ws.cell(row=row, column=12, value=len(primary_track.position_data) if primary_track.position_data else 0)
+
+                # Sigma analysis (columns 13-17)
                 if primary_track.sigma_analysis:
-                    # Add safe value extraction with logging for debugging
-                    sigma_gradient = getattr(primary_track.sigma_analysis, 'sigma_gradient', None)
-                    sigma_threshold = getattr(primary_track.sigma_analysis, 'sigma_threshold', None)
-                    sigma_pass = getattr(primary_track.sigma_analysis, 'sigma_pass', None)
-                    sigma_ratio = getattr(primary_track.sigma_analysis, 'sigma_ratio', None)
-                    
-                    # Log if model 8340 has zero values
-                    if "8340" in str(result.metadata.model) and (sigma_gradient == 0 or sigma_gradient is None):
-                        self.logger.warning(f"Model 8340 file {result.metadata.filename} has sigma_gradient: {sigma_gradient}")
-                    
-                    ws.cell(row=row, column=12, value=sigma_gradient if sigma_gradient is not None else 'N/A')
-                    ws.cell(row=row, column=13, value=sigma_threshold if sigma_threshold is not None else 'N/A')
-                    ws.cell(row=row, column=14, value="PASS" if sigma_pass else "FAIL")
-                    ws.cell(row=row, column=15, value=sigma_ratio if sigma_ratio is not None else 'N/A')
-                
-                # Linearity analysis
+                    sigma = primary_track.sigma_analysis
+                    ws.cell(row=row, column=13, value=getattr(sigma, 'sigma_gradient', None) or 'N/A')
+                    ws.cell(row=row, column=14, value=getattr(sigma, 'sigma_threshold', None) or 'N/A')
+                    ws.cell(row=row, column=15, value="PASS" if getattr(sigma, 'sigma_pass', False) else "FAIL")
+                    self._apply_status_formatting(ws.cell(row=row, column=15), "PASS" if sigma.sigma_pass else "FAIL")
+                    ws.cell(row=row, column=16, value=getattr(sigma, 'sigma_ratio', None) or 'N/A')
+                    ws.cell(row=row, column=17, value=getattr(sigma, 'gradient_margin', None) or 'N/A')
+
+                # Linearity analysis (columns 18-23)
                 if primary_track.linearity_analysis:
-                    ws.cell(row=row, column=16, value=primary_track.linearity_analysis.linearity_spec)
-                    ws.cell(row=row, column=17, value="PASS" if primary_track.linearity_analysis.linearity_pass else "FAIL")
-                    ws.cell(row=row, column=18, value=primary_track.linearity_analysis.linearity_fail_points)
-                    ws.cell(row=row, column=19, value=primary_track.linearity_analysis.optimal_offset)
-                    ws.cell(row=row, column=20, value=primary_track.linearity_analysis.final_linearity_error_shifted)
-                    ws.cell(row=row, column=21, value=getattr(primary_track.linearity_analysis, 'max_deviation', 'N/A'))
-                
-                # Unit properties
+                    lin = primary_track.linearity_analysis
+                    ws.cell(row=row, column=18, value=lin.linearity_spec)
+                    ws.cell(row=row, column=19, value="PASS" if lin.linearity_pass else "FAIL")
+                    self._apply_status_formatting(ws.cell(row=row, column=19), "PASS" if lin.linearity_pass else "FAIL")
+                    ws.cell(row=row, column=20, value=lin.linearity_fail_points)
+                    ws.cell(row=row, column=21, value=lin.optimal_offset)
+                    ws.cell(row=row, column=22, value=lin.final_linearity_error_shifted)
+                    ws.cell(row=row, column=23, value=getattr(lin, 'max_deviation', None) or 'N/A')
+
+                # Unit properties (columns 24-27)
                 if primary_track.unit_properties:
-                    ws.cell(row=row, column=22, value=primary_track.unit_properties.unit_length)
-                    ws.cell(row=row, column=23, value=getattr(primary_track.unit_properties, 'resistance_change', None) if primary_track.unit_properties else None)
-                    ws.cell(row=row, column=24, value=f"{getattr(primary_track.unit_properties, 'resistance_change_percent', 0.0):.2f}%" if primary_track.unit_properties and getattr(primary_track.unit_properties, 'resistance_change_percent', None) is not None else "N/A")
-            
-            # ML predictions (from primary track)
-            risk_category = "Unknown"
-            if primary_track:
-                if hasattr(primary_track, 'failure_prediction') and primary_track.failure_prediction:
-                    risk_category = primary_track.failure_prediction.risk_category.value if hasattr(primary_track.failure_prediction, 'risk_category') else 'Unknown'
-                    ws.cell(row=row, column=26, value=f"{primary_track.failure_prediction.failure_probability:.2%}" if hasattr(primary_track.failure_prediction, 'failure_probability') else 'N/A')
-                    ws.cell(row=row, column=27, value=primary_track.sigma_analysis.gradient_margin if primary_track.sigma_analysis and hasattr(primary_track.sigma_analysis, 'gradient_margin') else 'N/A')
-                elif getattr(result.primary_track, 'failure_prediction', None):
-                    risk_category = result.primary_track.failure_prediction.risk_category.value if hasattr(result.primary_track.failure_prediction, 'risk_category') else 'Unknown'
-                    ws.cell(row=row, column=26, value=f"{getattr(result.primary_track.failure_prediction, 'failure_probability', 0.0):.2%}")
-                    ws.cell(row=row, column=27, value=getattr(result.primary_track.sigma_analysis, 'gradient_margin', 'N/A'))
+                    unit = primary_track.unit_properties
+                    ws.cell(row=row, column=24, value=unit.unit_length)
+                    ws.cell(row=row, column=25, value=getattr(unit, 'untrimmed_resistance', None) or 'N/A')
+                    ws.cell(row=row, column=26, value=getattr(unit, 'trimmed_resistance', None) or 'N/A')
+                    res_pct = getattr(unit, 'resistance_change_percent', None)
+                    ws.cell(row=row, column=27, value=f"{res_pct:.2f}" if res_pct is not None else 'N/A')
+
+                # Trim Effectiveness (columns 28-31) - NEW
+                if hasattr(primary_track, 'trim_effectiveness') and primary_track.trim_effectiveness:
+                    trim_eff = primary_track.trim_effectiveness
+                    ws.cell(row=row, column=28, value=getattr(trim_eff, 'improvement_percent', None) or 'N/A')
+                    ws.cell(row=row, column=29, value=getattr(trim_eff, 'untrimmed_rms_error', None) or 'N/A')
+                    ws.cell(row=row, column=30, value=getattr(trim_eff, 'trimmed_rms_error', None) or 'N/A')
+                    ws.cell(row=row, column=31, value=getattr(trim_eff, 'trim_quality_grade', None) or 'N/A')
                 else:
-                    ws.cell(row=row, column=26, value='N/A')
-                    ws.cell(row=row, column=27, value='N/A')
-            else:
-                ws.cell(row=row, column=26, value='N/A')
-                ws.cell(row=row, column=27, value='N/A')
-            
-            ws.cell(row=row, column=25, value=risk_category)
-            
-            # Validation
-            ws.cell(row=row, column=28, value=result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A')
-            ws.cell(row=row, column=29, value=result.validation_grade if hasattr(result, 'validation_grade') else 'N/A')
-            
-            # Processing errors/issues
-            ws.cell(row=row, column=30, value="; ".join(result.processing_errors) if hasattr(result, 'processing_errors') and result.processing_errors else "")
+                    for col in range(28, 32):
+                        ws.cell(row=row, column=col, value='N/A')
+
+                # Zone Analysis (columns 32-34) - NEW
+                if hasattr(primary_track, 'zone_analysis') and primary_track.zone_analysis:
+                    zone = primary_track.zone_analysis
+                    ws.cell(row=row, column=32, value=getattr(zone, 'worst_zone', None) or 'N/A')
+                    worst_pos = getattr(zone, 'worst_zone_position', None)
+                    ws.cell(row=row, column=33, value=f"{worst_pos[0]:.1f}-{worst_pos[1]:.1f}" if worst_pos else 'N/A')
+                    ws.cell(row=row, column=34, value=getattr(zone, 'num_zones', None) or 'N/A')
+                else:
+                    for col in range(32, 35):
+                        ws.cell(row=row, column=col, value='N/A')
+
+                # Dynamic Range Analysis (columns 35-38) - NEW
+                if hasattr(primary_track, 'dynamic_range') and primary_track.dynamic_range:
+                    dr = primary_track.dynamic_range
+                    ws.cell(row=row, column=35, value=getattr(dr, 'range_utilization_percent', None) or 'N/A')
+                    ws.cell(row=row, column=36, value=getattr(dr, 'minimum_margin', None) or 'N/A')
+                    ws.cell(row=row, column=37, value=getattr(dr, 'minimum_margin_position', None) or 'N/A')
+                    ws.cell(row=row, column=38, value=getattr(dr, 'margin_bias', None) or 'N/A')
+                else:
+                    for col in range(35, 39):
+                        ws.cell(row=row, column=col, value='N/A')
+
+                # ML Predictions (columns 39-41)
+                risk_category = "Unknown"
+                if hasattr(primary_track, 'failure_prediction') and primary_track.failure_prediction:
+                    fp = primary_track.failure_prediction
+                    risk_category = getattr(fp.risk_category, 'value', 'Unknown') if hasattr(fp, 'risk_category') else 'Unknown'
+                    ws.cell(row=row, column=40, value=f"{fp.failure_probability:.2%}" if hasattr(fp, 'failure_probability') else 'N/A')
+                    ws.cell(row=row, column=41, value=getattr(fp, 'gradient_margin', None) or 'N/A')
+                else:
+                    ws.cell(row=row, column=40, value='N/A')
+                    ws.cell(row=row, column=41, value='N/A')
+                ws.cell(row=row, column=39, value=risk_category)
+
+                # Industry Grades (columns 42-44) - NEW
+                if primary_track.sigma_analysis:
+                    ws.cell(row=row, column=42, value=getattr(primary_track.sigma_analysis, 'industry_compliance', 'N/A'))
+                else:
+                    ws.cell(row=row, column=42, value='N/A')
+                if primary_track.linearity_analysis:
+                    ws.cell(row=row, column=43, value=getattr(primary_track.linearity_analysis, 'industry_grade', 'N/A'))
+                else:
+                    ws.cell(row=row, column=43, value='N/A')
+                if primary_track.resistance_analysis:
+                    ws.cell(row=row, column=44, value=getattr(primary_track.resistance_analysis, 'resistance_stability_grade', 'N/A'))
+                else:
+                    ws.cell(row=row, column=44, value='N/A')
+
+            # Validation (columns 45-47)
+            ws.cell(row=row, column=45, value=result.overall_validation_status.value if hasattr(result, 'overall_validation_status') else 'N/A')
+            ws.cell(row=row, column=46, value=getattr(result, 'validation_grade', 'N/A'))
+            ws.cell(row=row, column=47, value="; ".join(result.processing_errors) if hasattr(result, 'processing_errors') and result.processing_errors else "")
             
             row += 1
         
