@@ -182,7 +182,13 @@ class Analyzer:
         gradients = []
         step_size = MATLAB_GRADIENT_STEP
 
-        for i in range(len(positions) - step_size):
+        # Use the minimum length to avoid index errors
+        min_len = min(len(positions), len(filtered_errors))
+        if min_len <= step_size:
+            logger.warning(f"Array too short for gradient: {min_len} points")
+            return 0.0, self._get_threshold(model, unit_length, linearity_spec, travel_length)
+
+        for i in range(min_len - step_size):
             dx = positions[i + step_size] - positions[i]
             dy = filtered_errors[i + step_size] - filtered_errors[i]
 

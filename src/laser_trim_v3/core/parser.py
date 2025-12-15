@@ -256,9 +256,12 @@ class ExcelParser:
                     elif "TRM" in sheet_upper:
                         trimmed_sheet = sheet
 
-            if trimmed_sheet:
+            # Use trimmed sheet if available, otherwise use untrimmed
+            # (allows processing of files where trimming was aborted/incomplete)
+            data_sheet = trimmed_sheet or untrimmed_sheet
+            if data_sheet:
                 track_data = self._extract_track_data(
-                    file_path, trimmed_sheet, untrimmed_sheet,
+                    file_path, data_sheet, untrimmed_sheet if trimmed_sheet else None,
                     SystemType.A, track_id
                 )
                 if track_data:
