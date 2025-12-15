@@ -84,12 +84,24 @@ class GUIConfig:
 
 
 @dataclass
+class ModelsConfig:
+    """ML models configuration."""
+    path: Path = field(default_factory=lambda: get_app_directory() / "data" / "models")
+
+    def ensure_directory(self) -> Path:
+        """Ensure models directory exists."""
+        self.path.mkdir(parents=True, exist_ok=True)
+        return self.path
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     gui: GUIConfig = field(default_factory=GUIConfig)
+    models: ModelsConfig = field(default_factory=ModelsConfig)
 
     # Version info
     version: str = "3.0.0"
