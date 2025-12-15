@@ -3,9 +3,15 @@ Configuration management for v3.
 
 Simplified from v2's complex config system.
 Single source of truth for all configuration.
+
+DESIGN DECISION: Self-contained deployment
+- Database lives in ./data/ relative to app
+- All data in one folder for easy backup/migration
+- No scattered config locations across system
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -15,10 +21,31 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def get_app_directory() -> Path:
+    """
+    Get the application directory.
+
+    For deployed app: directory containing the executable
+    For development: project root (src/laser_trim_v3/..)
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable (PyInstaller)
+        return Path(sys.executable).parent
+    else:
+        # Running from source - use project root
+        # Go up from laser_trim_v3 to src to project root
+        return Path(__file__).parent.parent.parent.parent
+
+
 @dataclass
 class DatabaseConfig:
-    """Database configuration."""
-    path: Path = field(default_factory=lambda: Path.home() / ".laser_trim_v3" / "analysis.db")
+    """
+    Database configuration.
+
+    Default: ./data/analysis.db (relative to app directory)
+    This keeps everything self-contained for easy deployment.
+    """
+    path: Path = field(default_factory=lambda: get_app_directory() / "data" / "analysis.db")
     echo: bool = False
 
     def ensure_directory(self) -> Path:
