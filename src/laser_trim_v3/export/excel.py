@@ -243,7 +243,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             f"{track.linearity_error:.6f}",
             "PASS" if track.linearity_pass else "FAIL",
             track.risk_category.value,
-            f"{track.failure_probability:.1%}" if track.failure_probability else "N/A",
+            f"{track.failure_probability:.1%}" if track.failure_probability is not None else "N/A",
         ]
 
         for col, value in enumerate(cells, 1):
@@ -334,7 +334,7 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
         row += 1
 
         risk_data = [
-            ("Failure Probability:", f"{track.failure_probability:.1%}"),
+            ("Failure Probability:", f"{track.failure_probability:.1%}" if track.failure_probability is not None else "N/A"),
             ("Risk Category:", track.risk_category.value),
         ]
 

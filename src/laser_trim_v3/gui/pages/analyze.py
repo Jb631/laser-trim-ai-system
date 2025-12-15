@@ -414,7 +414,7 @@ class AnalyzePage(ctk.CTkFrame):
             lines.append(f"  Pass: {'✓' if track.linearity_pass else '✗'}")
             lines.append("")
             lines.append("Risk Assessment:")
-            lines.append(f"  Probability: {track.failure_probability:.1%}")
+            lines.append(f"  Probability: {track.failure_probability:.1%}" if track.failure_probability is not None else "  Probability: N/A")
             lines.append(f"  Category: {track.risk_category.value}")
             lines.append("")
 
