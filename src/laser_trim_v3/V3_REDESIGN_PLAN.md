@@ -463,10 +463,18 @@ Phase 1: Foundation      [=====] COMPLETE
   - [x] database/models.py (ported from v2, ~950 lines)
   - [x] core/models.py (simplified Pydantic models, ~270 lines)
 
-Phase 2: Core Processing [ ] Not Started
-  - [ ] parser.py (extract from excel_utils)
-  - [ ] analyzer.py (sigma + linearity)
-  - [ ] processor.py (unified)
+Phase 2: Core Processing [=====] COMPLETE
+  - [x] utils/constants.py (~80 lines) - shared constants
+  - [x] core/parser.py (~380 lines) - Excel file parsing, System A/B detection
+  - [x] core/analyzer.py (~350 lines) - Sigma, linearity, risk analysis
+  - [x] core/processor.py (~470 lines) - Memory-safe unified processor
+  - [x] database/manager.py (~620 lines) - Simplified database operations
+
+  Memory-safe design for 8GB systems:
+  - Limits concurrent workers based on available RAM
+  - Uses generators to avoid memory accumulation
+  - Explicit GC between batches
+  - Falls back to sequential if memory critical
 
 Phase 3: ML Integration  [ ] Not Started
 Phase 4: GUI Pages       [====] 80% (placeholder implementations done)
@@ -482,6 +490,7 @@ Phase 6: Testing & Docs  [ ] Not Started
 | 2025-12-15 | Phase 1 Start | Created folder structure, __init__.py files, config.py, __main__.py. Updated CLAUDE.md to clearly indicate v3 is in separate folder. | Continue with app.py, port database models |
 | 2025-12-15 | Phase 1 Cont. | Created app.py with sidebar navigation and 5 placeholder pages (Dashboard, Process, Analyze, Trends, Settings). App structure is complete - launches with placeholder UI. Total v3 code: ~940 lines across 12 files. | Port database models, then implement core processing |
 | 2025-12-15 | Phase 1 Complete | Ported database models from v2 (well-designed, reused as-is). Created simplified Pydantic models (~270 lines vs v2's 600+). Phase 1 COMPLETE. Total v3 code: ~2,200 lines across 15 files. | Start Phase 2: Core Processing |
+| 2025-12-15 | Phase 2 Complete | Created core processing modules: parser.py (~380 lines), analyzer.py (~350 lines), processor.py (~470 lines with memory-safe design), database/manager.py (~620 lines). Total Phase 2: ~1,900 lines. Total v3 code: ~4,100 lines across 19 files. | Start Phase 3: ML Integration |
 
 ---
 
