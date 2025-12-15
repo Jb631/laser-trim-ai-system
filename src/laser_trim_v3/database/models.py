@@ -353,12 +353,12 @@ class TrackResult(Base):
     # Production-ready indexes and constraints
     __table_args__ = (
         Index('idx_track_analysis', 'analysis_id', 'track_id'),
-        Index('idx_sigma_gradient', 'sigma_gradient'),
-        Index('idx_sigma_pass', 'sigma_pass'),
-        Index('idx_linearity_pass', 'linearity_pass'),
-        Index('idx_risk_category', 'risk_category'),
-        Index('idx_failure_probability', 'failure_probability'),
-        Index('idx_status', 'status'),
+        Index('idx_track_sigma_gradient', 'sigma_gradient'),
+        Index('idx_track_sigma_pass', 'sigma_pass'),
+        Index('idx_track_linearity_pass', 'linearity_pass'),
+        Index('idx_track_risk_category', 'risk_category'),
+        Index('idx_track_failure_probability', 'failure_probability'),
+        Index('idx_track_status', 'status'),
         # Ensure unique track per analysis
         UniqueConstraint('analysis_id', 'track_id', name='uq_analysis_track'),
         # Data validation constraints for production
