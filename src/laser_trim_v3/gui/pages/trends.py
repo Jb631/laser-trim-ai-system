@@ -246,9 +246,38 @@ class TrendsPage(ctk.CTkFrame):
             ml_recommendations = None
             try:
                 from laser_trim_v3.ml.threshold import ThresholdOptimizer
+                from laser_trim_v3.config import get_config
+                config = get_config()
+                model_path = config.models.path / "threshold_optimizer.pkl"
+
                 optimizer = ThresholdOptimizer()
+                if model_path.exists():
+                    optimizer.load(model_path)
+
                 if optimizer.is_trained and self.selected_model != "All Models":
-                    ml_recommendations = optimizer.get_recommendation(self.selected_model)
+                    # Get a recommendation using predict_with_confidence
+                    # Use average values from trend data as inputs
+                    avg_unit_length = 100.0  # Default
+                    avg_linearity_spec = 0.01  # Default
+
+                    if trend_data:
+                        unit_lengths = [d.get("unit_length", 100.0) for d in trend_data if d.get("unit_length")]
+                        linearity_specs = [d.get("linearity_spec", 0.01) for d in trend_data if d.get("linearity_spec")]
+                        if unit_lengths:
+                            avg_unit_length = sum(unit_lengths) / len(unit_lengths)
+                        if linearity_specs:
+                            avg_linearity_spec = sum(linearity_specs) / len(linearity_specs)
+
+                    threshold, lower, upper = optimizer.predict_with_confidence(
+                        model=self.selected_model,
+                        unit_length=avg_unit_length,
+                        linearity_spec=avg_linearity_spec
+                    )
+                    ml_recommendations = {
+                        "recommended_threshold": threshold,
+                        "confidence": 1.0 - (upper - lower) / threshold if threshold > 0 else 0.5,
+                        "basis": f"{optimizer.training_metadata.get('n_samples', 'unknown')} historical samples"
+                    }
             except Exception as e:
                 logger.debug(f"ML recommendations not available: {e}")
 
@@ -258,8 +287,9 @@ class TrendsPage(ctk.CTkFrame):
                 from laser_trim_v3.ml.drift import DriftDetector
                 detector = DriftDetector()
                 if trend_data and len(trend_data) > 10:
-                    sigma_values = [d.get("sigma_gradient", 0) for d in trend_data]
-                    drift_result = detector.detect(sigma_values)
+                    sigma_values = [d.get("sigma_gradient", 0) for d in trend_data if d.get("sigma_gradient") is not None]
+                    if len(sigma_values) > 10:
+                        drift_result = detector.detect_batch(np.array(sigma_values))
             except Exception as e:
                 logger.debug(f"Drift detection not available: {e}")
 
@@ -434,7 +464,7 @@ class TrendsPage(ctk.CTkFrame):
 
         if drift_result is None:
             self.drift_text.insert("end", "Drift detection not available.\n\nProcess more data to enable drift detection.")
-        elif hasattr(drift_result, 'is_drifting') and drift_result.is_drifting:
+        elif hasattr(drift_result, 'drift_detected') and drift_result.drift_detected:
             severity = drift_result.severity if hasattr(drift_result, 'severity') else "Unknown"
             direction = drift_result.direction if hasattr(drift_result, 'direction') else "Unknown"
             confidence = drift_result.confidence if hasattr(drift_result, 'confidence') else 0

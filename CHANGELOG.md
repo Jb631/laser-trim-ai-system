@@ -57,6 +57,28 @@ This section tracks current known issues that need to be addressed. When fixing 
   - **Impact**: Improved maintainability, cleaner separation of concerns, consistent mixin inheritance pattern
 
 ### Fixed
+- **V3 GUI Edge Case Fixes (2025-12-15)** - Critical Bug Fixes
+  - **Excel Export None Handling**
+    - **Location**: `export/excel.py:246, 337`
+    - **Root Cause**: `failure_probability` field can be None, causing `f"{track.failure_probability:.1%}"` to crash with "unsupported format string passed to NoneType.__format__"
+    - **Fix**: Added `is not None` checks before formatting, displays "N/A" when None
+  - **Analyze Page None Handling**
+    - **Location**: `gui/pages/analyze.py:417`
+    - **Root Cause**: Same None handling issue for failure_probability in metrics display
+    - **Fix**: Conditional check before formatting, displays "N/A" when None
+  - **Trends Page DriftDetector Method Fix**
+    - **Location**: `gui/pages/trends.py:262`
+    - **Root Cause**: Called `detector.detect(sigma_values)` with list, but `detect()` expects single float. For batch, should use `detect_batch()`
+    - **Fix**: Changed to `detector.detect_batch(np.array(sigma_values))`
+  - **Trends Page DriftResult Field Fix**
+    - **Location**: `gui/pages/trends.py:437`
+    - **Root Cause**: Checked `drift_result.is_drifting` but DriftResult uses `drift_detected` field
+    - **Fix**: Changed to `drift_result.drift_detected`
+  - **Trends Page ThresholdOptimizer Method Fix**
+    - **Location**: `gui/pages/trends.py:251`
+    - **Root Cause**: Called `optimizer.get_recommendation()` which doesn't exist
+    - **Fix**: Replaced with proper `predict_with_confidence()` call with averaged trend data inputs
+
 - **ARCH-001: Chart Data Validation Bypass (2025-01-08)** - Production Hardening
   - **Root Cause**: Internal wrapper methods (`_plot_*_from_data`) in chart_widget.py were called by `update_chart_data()` flow but lacked data validation. Only 2 direct API calls benefited from validation, while 14+ page-level methods bypassed it.
   - **Impact**: Most chart rendering lacked validation → blank charts, confusing errors, no user feedback
