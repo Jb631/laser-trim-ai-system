@@ -1683,8 +1683,49 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
             font=ctk.CTkFont(size=16, weight="bold")
         )
         title_label.grid(row=0, column=0, columnspan=3, pady=(0, 15), sticky='w')
-        
-        # Create summary items in a grid layout
+
+        # PROMINENT STATUS BANNER - Shows overall batch result at a glance
+        processed = kwargs.get('processed', 0)
+        failed = kwargs.get('failed', 0)
+        tracks_passed = kwargs.get('tracks_passed', 0)
+        tracks_failed = kwargs.get('tracks_failed', 0)
+        warnings = kwargs.get('warnings', 0)
+
+        # Determine overall batch status
+        if failed > 0 or tracks_failed > 0:
+            banner_text = "ISSUES DETECTED"
+            banner_color = "#cf222e"  # Red
+            detail_text = f"{failed} file(s) failed, {tracks_failed} track(s) failed"
+        elif warnings > 0:
+            banner_text = "COMPLETED WITH WARNINGS"
+            banner_color = "#bf8700"  # Orange/Amber
+            detail_text = f"{processed} files processed, {warnings} warning(s)"
+        else:
+            banner_text = "ALL PASSED"
+            banner_color = "#1a7f37"  # Green
+            detail_text = f"{processed} files processed successfully"
+
+        # Create banner frame
+        banner_frame = ctk.CTkFrame(summary_container, fg_color=banner_color, corner_radius=8)
+        banner_frame.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(0, 15))
+
+        banner_label = ctk.CTkLabel(
+            banner_frame,
+            text=banner_text,
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color="white"
+        )
+        banner_label.pack(pady=(10, 2))
+
+        banner_detail = ctk.CTkLabel(
+            banner_frame,
+            text=detail_text,
+            font=ctk.CTkFont(size=12),
+            text_color="white"
+        )
+        banner_detail.pack(pady=(0, 10))
+
+        # Create summary items in a grid layout (starting at row 2 now)
         summary_items = [
             ("Processing Time:", kwargs.get('processing_time', 'N/A')),
             ("Total Files:", f"{kwargs.get('total_files', 0)}"),
@@ -1706,8 +1747,8 @@ class BatchProcessingPage(ProcessingMixin, ExportMixin, ctk.CTkFrame):
             ("Unique Serials:", f"{kwargs.get('unique_serials', 0)}")
         ]
         
-        # Add summary items to grid
-        row = 1
+        # Add summary items to grid (starting at row 2 due to banner)
+        row = 2
         for label_text, value_text in summary_items:
             if label_text == "" and value_text == "":
                 # Empty row for spacing

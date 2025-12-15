@@ -38,19 +38,37 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         """Create analysis display widgets."""
         # Header frame
         self.header_frame = ctk.CTkFrame(self)
-        
+
         self.title_label = ctk.CTkLabel(
             self.header_frame,
             text="Analysis Results",
             font=ctk.CTkFont(size=18, weight="bold")
         )
-        
+
         self.subtitle_label = ctk.CTkLabel(
             self.header_frame,
             text="No analysis completed",
             font=ctk.CTkFont(size=12)
         )
-        
+
+        # PROMINENT STATUS BANNER - Large, clear PASS/FAIL/WARNING indicator
+        # This banner is designed for quick visual identification of results
+        self.status_banner_frame = ctk.CTkFrame(self, fg_color="gray30", corner_radius=10)
+
+        self.status_banner_label = ctk.CTkLabel(
+            self.status_banner_frame,
+            text="AWAITING ANALYSIS",
+            font=ctk.CTkFont(size=28, weight="bold"),
+            text_color="gray60"
+        )
+
+        self.status_banner_detail = ctk.CTkLabel(
+            self.status_banner_frame,
+            text="Select a file and run analysis to see results",
+            font=ctk.CTkFont(size=12),
+            text_color="gray50"
+        )
+
         # Status indicators frame
         self.status_frame = ctk.CTkFrame(self)
         
@@ -225,18 +243,23 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
 
     def _setup_layout(self):
         """Setup widget layout."""
-        self.grid_rowconfigure([1, 2, 3, 4, 5, 6], weight=1)
+        self.grid_rowconfigure([2, 3, 4, 5, 6, 7], weight=1)
         self.grid_columnconfigure(0, weight=1)
-        
+
         # Header
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         self.header_frame.grid_columnconfigure(0, weight=1)
-        
+
         self.title_label.grid(row=0, column=0, sticky="w", padx=10, pady=5)
         self.subtitle_label.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 5))
-        
+
+        # PROMINENT STATUS BANNER - Row 1 (high visibility position)
+        self.status_banner_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=10)
+        self.status_banner_label.pack(pady=(15, 5))
+        self.status_banner_detail.pack(pady=(0, 15))
+
         # Status indicators
-        self.status_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.status_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         self.status_frame.grid_columnconfigure([0, 1, 2, 3], weight=1)
         
         self.status_label.grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
@@ -248,9 +271,9 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         
         # Status reason label spans across columns
         self.status_reason_label.grid(row=2, column=0, columnspan=4, sticky="ew", padx=15, pady=(0, 5))
-        
+
         # Metadata
-        self.metadata_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        self.metadata_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         self.metadata_frame.grid_columnconfigure([0, 1, 2, 3], weight=1)
         
         self.metadata_label.grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
@@ -261,7 +284,7 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.date_card.grid(row=1, column=3, sticky="ew", padx=5, pady=5)
         
         # Tracks
-        self.tracks_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        self.tracks_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
         self.tracks_frame.grid_columnconfigure(0, weight=1)
         
         self.tracks_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
@@ -283,7 +306,7 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.linearity_pass_card.grid(row=0, column=3, sticky="ew", padx=5, pady=5)
         
         # Validation details
-        self.validation_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.validation_frame.grid(row=5, column=0, sticky="nsew", padx=10, pady=(5, 10))
         self.validation_frame.grid_rowconfigure(1, weight=1)
         self.validation_frame.grid_columnconfigure(0, weight=1)
         
@@ -291,7 +314,7 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         self.validation_text.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         
         # Plot viewer
-        self.plot_frame.grid(row=5, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.plot_frame.grid(row=6, column=0, sticky="nsew", padx=10, pady=(5, 10))
         self.plot_frame.grid_rowconfigure(1, weight=1)
         self.plot_frame.grid_columnconfigure(0, weight=1)
         
@@ -326,6 +349,9 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
 
     def _update_status_cards(self, result: AnalysisResult):
         """Update status indicator cards."""
+        # Update the prominent status banner first
+        self._update_status_banner(result)
+
         # Overall status
         status_value = getattr(result.overall_status, 'value', str(result.overall_status))
         status_color = self._get_status_color_scheme(result.overall_status)
@@ -371,6 +397,48 @@ class AnalysisDisplayWidget(ctk.CTkFrame):
         # Processing time
         processing_time = getattr(result, 'processing_time', 0)
         self.processing_time_card.update_value(f"{processing_time:.2f}s", "info")
+
+    def _update_status_banner(self, result: AnalysisResult):
+        """Update the prominent status banner with clear PASS/FAIL/WARNING indication.
+
+        This banner provides instant visual feedback using:
+        - Large text: PASS, FAIL, or WARNING
+        - Color coding: Green for pass, Red for fail, Orange for warning
+        - Detail text: Brief explanation of the result
+        """
+        # Determine status
+        status = result.overall_status
+        if hasattr(status, 'value'):
+            status_str = status.value.upper()
+        else:
+            status_str = str(status).upper()
+
+        # Set banner appearance based on status
+        if 'PASS' in status_str:
+            banner_text = "PASS"
+            banner_color = "#1a7f37"  # Green
+            text_color = "white"
+            detail_text = "All tests passed - Part meets specifications"
+        elif 'FAIL' in status_str:
+            banner_text = "FAIL"
+            banner_color = "#cf222e"  # Red
+            text_color = "white"
+            detail_text = "One or more tests failed - Review details below"
+        elif 'WARNING' in status_str:
+            banner_text = "WARNING"
+            banner_color = "#bf8700"  # Orange/Amber
+            text_color = "white"
+            detail_text = "Results within limits but approaching thresholds"
+        else:
+            banner_text = status_str
+            banner_color = "gray30"
+            text_color = "gray60"
+            detail_text = "Analysis complete - Review details below"
+
+        # Update banner widgets
+        self.status_banner_frame.configure(fg_color=banner_color)
+        self.status_banner_label.configure(text=banner_text, text_color=text_color)
+        self.status_banner_detail.configure(text=detail_text, text_color=text_color)
 
     def _update_metadata_cards(self, result: AnalysisResult):
         """Update metadata cards."""
