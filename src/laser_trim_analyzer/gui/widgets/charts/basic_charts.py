@@ -118,8 +118,60 @@ class BasicChartMixin:
         except Exception:
             pass
 
+    def _detect_columns(self, data: pd.DataFrame, preferred_x: list = None, preferred_y: list = None):
+        """
+        Auto-detect appropriate X (date/index) and Y (value) columns.
+
+        Args:
+            data: DataFrame to analyze
+            preferred_x: List of preferred column names for X axis (in order of preference)
+            preferred_y: List of preferred column names for Y axis (in order of preference)
+
+        Returns:
+            Tuple of (x_col, y_col) or (None, None) if not found
+        """
+        if preferred_x is None:
+            preferred_x = ['trim_date', 'date', 'Date', 'timestamp', 'time', 'x', 'index']
+        if preferred_y is None:
+            preferred_y = ['sigma_gradient', 'value', 'y', 'values', 'measurement', 'data']
+
+        x_col = None
+        y_col = None
+
+        # Find X column (prefer date-like columns)
+        for col in preferred_x:
+            if col in data.columns:
+                x_col = col
+                break
+
+        # If no preferred X column found, look for datetime columns
+        if x_col is None:
+            for col in data.columns:
+                if data[col].dtype == 'datetime64[ns]' or 'date' in col.lower():
+                    x_col = col
+                    break
+
+        # If still no X column, use first column or index
+        if x_col is None and len(data.columns) > 0:
+            x_col = data.columns[0]
+
+        # Find Y column (prefer numeric columns)
+        for col in preferred_y:
+            if col in data.columns and pd.api.types.is_numeric_dtype(data[col]):
+                y_col = col
+                break
+
+        # If no preferred Y column found, look for any numeric column
+        if y_col is None:
+            for col in data.columns:
+                if col != x_col and pd.api.types.is_numeric_dtype(data[col]):
+                    y_col = col
+                    break
+
+        return x_col, y_col
+
     def _plot_line_from_data(self, data: pd.DataFrame):
-        """Plot line chart from DataFrame with validation."""
+        """Plot line chart from DataFrame with flexible column detection."""
         if data is None or not isinstance(data, pd.DataFrame):
             self.show_placeholder("Invalid Data", "Expected pandas DataFrame for line chart")
             return
@@ -128,16 +180,22 @@ class BasicChartMixin:
             self.show_placeholder("No Data", "DataFrame is empty")
             return
 
-        if 'trim_date' not in data.columns or 'sigma_gradient' not in data.columns:
-            self.show_placeholder("Missing Columns",
-                f"Line chart requires 'trim_date' and 'sigma_gradient' columns.\nFound: {list(data.columns)}")
+        # Auto-detect columns if specific ones aren't present
+        x_col, y_col = self._detect_columns(data)
+
+        # Log what we found for debugging
+        logger.debug(f"Line chart: detected x_col={x_col}, y_col={y_col} from columns: {list(data.columns)}")
+
+        if x_col is None or y_col is None:
+            self.show_placeholder("Column Detection Failed",
+                f"Could not find suitable X/Y columns.\nAvailable: {list(data.columns)}")
             return
 
-        if data['trim_date'].isna().all() or data['sigma_gradient'].isna().all():
-            self.show_placeholder("Empty Columns", "Required columns contain no valid data")
+        if data[y_col].isna().all():
+            self.show_placeholder("Empty Y Column", f"Column '{y_col}' contains no valid data")
             return
 
-        valid_data = data.dropna(subset=['trim_date', 'sigma_gradient'])
+        valid_data = data.dropna(subset=[y_col])
         if len(valid_data) < 2:
             self.show_placeholder("Insufficient Data",
                 f"Need at least 2 valid data points for line chart. Found: {len(valid_data)}")
@@ -152,73 +210,100 @@ class BasicChartMixin:
         text_color = theme_colors["fg"]["primary"]
         grid_color = theme_colors["border"]["primary"]
 
-        data['trim_date'] = pd.to_datetime(data['trim_date'])
+        # Work with detected columns (use valid_data which already has NaN dropped)
+        work_data = valid_data.copy()
 
-        if len(data) > 1:
-            data_agg = data.groupby(data['trim_date'].dt.date).agg({
-                'sigma_gradient': 'mean'
-            }).reset_index()
-            data_agg.columns = ['trim_date', 'sigma_gradient']
-            data_agg['trim_date'] = pd.to_datetime(data_agg['trim_date'])
-            data_sorted = data_agg.sort_values('trim_date')
+        # Check if x_col is datetime-like and convert if needed
+        is_datetime = False
+        try:
+            work_data[x_col] = pd.to_datetime(work_data[x_col], errors='coerce')
+            if work_data[x_col].notna().any():
+                is_datetime = True
+        except (TypeError, ValueError):
+            pass
+
+        # Aggregate by date if datetime and multiple points
+        if is_datetime and len(work_data) > 1:
+            try:
+                data_agg = work_data.groupby(work_data[x_col].dt.date).agg({
+                    y_col: 'mean'
+                }).reset_index()
+                data_agg.columns = [x_col, y_col]
+                data_agg[x_col] = pd.to_datetime(data_agg[x_col])
+                data_sorted = data_agg.sort_values(x_col)
+            except Exception:
+                data_sorted = work_data.sort_values(x_col) if x_col else work_data
         else:
-            data_sorted = data.sort_values('trim_date')
+            data_sorted = work_data.sort_values(x_col) if x_col else work_data
 
-        x_data = data_sorted['trim_date']
-        y_data = data_sorted['sigma_gradient']
+        x_data = data_sorted[x_col]
+        y_data = data_sorted[y_col]
 
-        x_numeric = mdates.date2num(pd.to_datetime(x_data))
+        # Create y_label from column name (format nicely)
+        y_label = y_col.replace('_', ' ').title() if y_col else 'Value'
+        x_label = 'Date' if is_datetime else (x_col.replace('_', ' ').title() if x_col else 'Index')
 
+        # Plot main data
         ax.plot(x_data, y_data, marker='o', linewidth=2, markersize=4,
-               color=self.qa_colors['primary'], label='Sigma Gradient', alpha=0.8)
+               color=self.qa_colors['primary'], label=y_label, alpha=0.8)
 
-        if len(x_data) >= 3:
-            z = np.polyfit(x_numeric, y_data, 1)
-            p = np.poly1d(z)
-            trend_y = p(x_numeric)
+        # Add trend line for datetime data with enough points
+        if is_datetime and len(x_data) >= 3:
+            try:
+                x_numeric = mdates.date2num(pd.to_datetime(x_data))
+                z = np.polyfit(x_numeric, y_data, 1)
+                p = np.poly1d(z)
+                trend_y = p(x_numeric)
 
-            ax.plot(x_data, trend_y, "--", color=self.qa_colors['warning'],
-                   linewidth=2, alpha=0.7, label=f'Trend (slope: {z[0]:.6f})')
+                ax.plot(x_data, trend_y, "--", color=self.qa_colors['warning'],
+                       linewidth=2, alpha=0.7, label=f'Trend (slope: {z[0]:.6f})')
 
-            legend = ax.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True)
-            self._style_legend(legend)
+                legend = ax.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True)
+                self._style_legend(legend)
+            except Exception as e:
+                logger.debug(f"Could not add trend line: {e}")
 
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Sigma Gradient')
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
 
         try:
             self._set_y_limits_with_padding(ax, y_data.to_numpy())
         except Exception:
             pass
 
-        if len(x_data) > 0:
-            date_range = (x_data.max() - x_data.min()).days if hasattr(x_data.max() - x_data.min(), 'days') else 0
+        # Format dates if applicable
+        if is_datetime and len(x_data) > 0:
+            try:
+                date_range = (x_data.max() - x_data.min()).days if hasattr(x_data.max() - x_data.min(), 'days') else 0
 
-            if date_range <= 7:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-                ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
-            elif date_range <= 31:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
-            elif date_range <= 365:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                ax.xaxis.set_major_locator(mdates.MonthLocator())
-            else:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-                ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+                if date_range <= 7:
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+                    ax.xaxis.set_major_locator(mdates.HourLocator(interval=12))
+                elif date_range <= 31:
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, date_range // 10)))
+                elif date_range <= 365:
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                    ax.xaxis.set_major_locator(mdates.MonthLocator())
+                else:
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
 
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-            ax.tick_params(axis='x', pad=5)
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                ax.tick_params(axis='x', pad=5)
+            except Exception as e:
+                logger.debug(f"Date formatting skipped: {e}")
 
         if self.title:
             ax.set_title(self.title, color=text_color)
         ax.grid(True, alpha=0.3, color=grid_color)
 
+        self._has_data = True
         self.canvas.draw()
         self.canvas.flush_events()
 
     def _plot_bar_from_data(self, data: pd.DataFrame):
-        """Plot bar chart from DataFrame with validation."""
+        """Plot bar chart from DataFrame with flexible column detection."""
         if data is None or not isinstance(data, pd.DataFrame):
             self.show_placeholder("Invalid Data", "Expected pandas DataFrame for bar chart")
             return
@@ -227,13 +312,42 @@ class BasicChartMixin:
             self.show_placeholder("No Data", "DataFrame is empty")
             return
 
-        if 'month_year' not in data.columns or 'track_status' not in data.columns:
-            self.show_placeholder("Missing Columns",
-                f"Bar chart requires 'month_year' and 'track_status' columns.\nFound: {list(data.columns)}")
+        # Auto-detect columns for bar chart
+        # For category column, prefer: month_year, category, name, label, x
+        # For value column, prefer: track_status, value, count, y, rate
+        cat_cols = ['month_year', 'category', 'name', 'label', 'model', 'x']
+        val_cols = ['track_status', 'value', 'count', 'rate', 'y', 'pass_rate']
+
+        cat_col = None
+        val_col = None
+
+        for col in cat_cols:
+            if col in data.columns:
+                cat_col = col
+                break
+        if cat_col is None and len(data.columns) >= 1:
+            cat_col = data.columns[0]  # Use first column as category
+
+        for col in val_cols:
+            if col in data.columns and pd.api.types.is_numeric_dtype(data[col]):
+                val_col = col
+                break
+        if val_col is None:
+            # Find first numeric column that isn't the category
+            for col in data.columns:
+                if col != cat_col and pd.api.types.is_numeric_dtype(data[col]):
+                    val_col = col
+                    break
+
+        logger.debug(f"Bar chart: detected cat_col={cat_col}, val_col={val_col} from columns: {list(data.columns)}")
+
+        if cat_col is None or val_col is None:
+            self.show_placeholder("Column Detection Failed",
+                f"Could not find suitable category/value columns.\nAvailable: {list(data.columns)}")
             return
 
-        if data['month_year'].isna().all() or data['track_status'].isna().all():
-            self.show_placeholder("Empty Columns", "Required columns contain no valid data")
+        if data[val_col].isna().all():
+            self.show_placeholder("Empty Values", f"Column '{val_col}' contains no valid data")
             return
 
         self.figure.clear()
@@ -249,29 +363,47 @@ class BasicChartMixin:
         for spine in ax.spines.values():
             spine.set_color(grid_color)
 
-        categories = [str(m) for m in data['month_year']]
-        values = data['track_status'].tolist()
+        categories = [str(m) for m in data[cat_col]]
+        values = data[val_col].tolist()
 
+        # Determine if this looks like percentage data (0-100 range)
+        max_val = max(values) if values else 0
+        is_percentage = 'rate' in val_col.lower() or 'percent' in val_col.lower() or (0 <= min(values) and max_val <= 100)
+
+        # Color bars based on values (for percentage data, color by thresholds)
         colors = []
-        for rate in values:
-            if rate >= 95:
-                colors.append(self.qa_colors['pass'])
-            elif rate >= 90:
-                colors.append(self.qa_colors['warning'])
+        for val in values:
+            if is_percentage:
+                if val >= 95:
+                    colors.append(self.qa_colors['pass'])
+                elif val >= 90:
+                    colors.append(self.qa_colors['warning'])
+                else:
+                    colors.append(self.qa_colors['fail'])
             else:
-                colors.append(self.qa_colors['fail'])
+                colors.append(self.qa_colors['primary'])
 
         bars = ax.bar(categories, values, color=colors)
 
+        # Add value labels on bars
         for bar in bars:
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2., height + 1,
-                   f'{height:.1f}%', ha='center', va='bottom', fontsize=9,
+            label_fmt = f'{height:.1f}%' if is_percentage else f'{height:.1f}'
+            ax.text(bar.get_x() + bar.get_width() / 2., height + max_val * 0.02,
+                   label_fmt, ha='center', va='bottom', fontsize=9,
                    color=text_color, fontweight='bold')
 
-        ax.set_xlabel('Month')
-        ax.set_ylabel('Pass Rate (%)')
-        ax.set_ylim(0, 100)
+        # Use detected column names for labels
+        x_label = cat_col.replace('_', ' ').title() if cat_col else 'Category'
+        y_label = val_col.replace('_', ' ').title() if val_col else 'Value'
+        if is_percentage and '%' not in y_label:
+            y_label += ' (%)'
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+
+        if is_percentage:
+            ax.set_ylim(0, max(105, max_val * 1.1))  # Leave room for labels
 
         if len(categories) > 3:
             plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
@@ -280,6 +412,7 @@ class BasicChartMixin:
             ax.set_title(self.title, color=text_color)
         ax.grid(True, alpha=0.3, axis='y', color=grid_color)
 
+        self._has_data = True
         self.canvas.draw()
 
     def _plot_scatter_from_data(self, data: pd.DataFrame):
@@ -534,8 +667,8 @@ class BasicChartMixin:
                 y_array = np.array(y_data)
                 if len(y_array) > 0 and np.all(np.isfinite(y_array)):
                     self._set_y_limits_with_padding(ax, y_array)
-            except:
-                pass
+            except (ValueError, TypeError) as e:
+                self.logger.debug(f"Y-axis padding skipped: {e}")
 
             self.canvas.draw_idle()
             return line

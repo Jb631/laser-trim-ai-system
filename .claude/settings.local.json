@@ -6,7 +6,13 @@
       "Bash(PYTHONPATH=\"./src\" \".venv/Scripts/python.exe\" -c:*)",
       "Bash(.venv/Scripts/python.exe -c \"\nimport sys\nsys.path.insert(0, ''./src'')\nfrom laser_trim_analyzer.gui.widgets.chart_widget import ChartWidget\nfrom laser_trim_analyzer.gui.widgets.charts import ChartWidget as CW2\nprint(''ChartWidget imported successfully'')\nprint(f''ChartWidget class: {ChartWidget}'')\nprint(f''Both imports match: {ChartWidget is CW2}'')\nprint(f''Methods available: plot_line={hasattr(ChartWidget, \"\"plot_line\"\")}, plot_gauge={hasattr(ChartWidget, \"\"plot_gauge\"\")}, plot_early_warning_system={hasattr(ChartWidget, \"\"plot_early_warning_system\"\")}'')\n\")",
       "Bash(\"D:/UserFolders/Desktop/laser_trim_analyzer_v2/.venv/Scripts/python.exe\" -c:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git fetch:*)",
+      "Bash(dir \"C:\\Users\\Jayma\\Desktop\\laser-trim-ai-system-main\\test_files\\System A test files\")",
+      "Bash(dir \"C:\\Users\\Jayma\\Desktop\\laser-trim-ai-system-main\\test_files\\System B test files\")",
+      "Bash(dir \"C:\\Users\\Jayma\\Desktop\\laser-trim-ai-system-main\")",
+      "Bash(findstr:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

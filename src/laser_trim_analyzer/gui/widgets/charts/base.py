@@ -641,8 +641,8 @@ class ChartWidgetBase(ctk.CTkFrame):
         try:
             self.toolbar.configure(bg=toolbar_bg)
             self.toolbar._message_label.configure(bg=toolbar_bg, fg=toolbar_fg)
-        except:
-            pass
+        except (AttributeError, tk.TclError) as e:
+            self.logger.debug(f"Toolbar styling skipped: {e}")
 
         for widget in self.toolbar.winfo_children():
             try:
@@ -662,8 +662,8 @@ class ChartWidgetBase(ctk.CTkFrame):
                     widget.configure(bg=toolbar_bg)
                 elif widget_class == 'Label':
                     widget.configure(bg=toolbar_bg, fg=toolbar_fg)
-            except:
-                pass
+            except (AttributeError, tk.TclError) as e:
+                self.logger.debug(f"Widget styling skipped for {widget_class}: {e}")
 
     def _schedule_theme_check(self):
         """Schedule theme change checking."""
@@ -671,8 +671,9 @@ class ChartWidgetBase(ctk.CTkFrame):
             self._theme_check_scheduled = True
             try:
                 self.after(1000, self._check_theme_change)
-            except:
+            except (RuntimeError, tk.TclError) as e:
                 self._theme_check_scheduled = False
+                self.logger.debug(f"Theme check scheduling failed: {e}")
 
     def _check_theme_change(self):
         """Check if theme has changed and update if necessary."""
@@ -686,8 +687,8 @@ class ChartWidgetBase(ctk.CTkFrame):
             if current_theme != self._current_theme:
                 self._current_theme = current_theme
                 self._on_theme_change()
-        except:
-            pass
+        except (RuntimeError, tk.TclError) as e:
+            self.logger.debug(f"Theme check failed: {e}")
 
         self._schedule_theme_check()
 
@@ -716,8 +717,8 @@ class ChartWidgetBase(ctk.CTkFrame):
             if hasattr(self, 'canvas') and self.canvas is not None:
                 try:
                     self.canvas.get_tk_widget().destroy()
-                except:
-                    pass
+                except (AttributeError, tk.TclError) as e:
+                    self.logger.debug(f"Canvas cleanup skipped: {e}")
                 self.canvas = None
 
             if hasattr(self, 'toolbar'):
@@ -726,7 +727,6 @@ class ChartWidgetBase(ctk.CTkFrame):
         except Exception as e:
             if hasattr(self, 'logger'):
                 self.logger.warning(f"Error during chart widget cleanup: {e}")
-            pass
 
     def destroy(self):
         """Override destroy to ensure proper cleanup."""
