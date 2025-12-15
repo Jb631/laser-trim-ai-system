@@ -16,6 +16,7 @@ from laser_trim_v3.core.processor import Processor
 from laser_trim_v3.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_v3.gui.widgets.chart import ChartWidget, ChartStyle
 from laser_trim_v3.database import get_database
+from laser_trim_v3.export import export_single_result, generate_export_filename, ExcelExportError
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,16 @@ class AnalyzePage(ctk.CTkFrame):
             text_color="gray"
         )
         self.status_label.pack(side="right", padx=15, pady=15)
+
+        # Export button
+        self.export_btn = ctk.CTkButton(
+            select_frame,
+            text="📄 Export",
+            command=self._export_result,
+            state="disabled",
+            width=100
+        )
+        self.export_btn.pack(side="right", padx=5, pady=15)
 
         # Results panel (left side)
         results_frame = ctk.CTkFrame(tab)
@@ -331,6 +342,7 @@ class AnalyzePage(ctk.CTkFrame):
     def _display_result(self, result: AnalysisResult):
         """Display analysis results."""
         self.analyze_btn.configure(state="normal")
+        self.export_btn.configure(state="normal")
 
         # Update status banner
         if result.overall_status == AnalysisStatus.PASS:
@@ -540,6 +552,34 @@ class AnalyzePage(ctk.CTkFrame):
         """Show comparison error."""
         self.chart_a.show_placeholder(f"Error: {error}")
         self.chart_b.show_placeholder(f"Error: {error}")
+
+    def _export_result(self):
+        """Export the current analysis result to Excel."""
+        if not self.current_result:
+            return
+
+        # Generate default filename
+        default_name = generate_export_filename(self.current_result)
+
+        # Ask for save location
+        file_path = filedialog.asksaveasfilename(
+            title="Export Analysis to Excel",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        try:
+            self.status_label.configure(text="Exporting...")
+            output_path = export_single_result(self.current_result, file_path)
+            self.status_label.configure(text=f"Exported: {output_path.name}")
+            logger.info(f"Exported analysis to: {output_path}")
+        except ExcelExportError as e:
+            self.status_label.configure(text=f"Export failed: {str(e)[:30]}")
+            logger.error(f"Export failed: {e}")
 
     def on_show(self):
         """Called when the page is shown."""

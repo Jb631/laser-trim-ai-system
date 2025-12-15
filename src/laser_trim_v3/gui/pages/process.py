@@ -16,6 +16,7 @@ from datetime import datetime
 from laser_trim_v3.core.processor import Processor
 from laser_trim_v3.core.models import AnalysisResult, ProcessingStatus, AnalysisStatus
 from laser_trim_v3.database import get_database
+from laser_trim_v3.export import export_batch_results, generate_batch_export_filename, ExcelExportError
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,16 @@ class ProcessPage(ctk.CTkFrame):
             hover_color="darkred"
         )
         self.cancel_btn.pack(side="right", padx=5, pady=15)
+
+        # Export button
+        self.export_btn = ctk.CTkButton(
+            file_frame,
+            text="📄 Export",
+            command=self._export_results,
+            state="disabled",
+            width=100
+        )
+        self.export_btn.pack(side="right", padx=5, pady=15)
 
         # Content frame
         content = ctk.CTkFrame(self)
@@ -328,6 +339,7 @@ class ProcessPage(ctk.CTkFrame):
         # Update UI state
         self.process_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
+        self.export_btn.configure(state="normal" if self.results else "disabled")
         self.progress_bar.set(1)
         self.progress_label.configure(text="Processing complete!")
 
@@ -368,6 +380,36 @@ class ProcessPage(ctk.CTkFrame):
             self.is_processing = False
             self.progress_label.configure(text="Cancelling...")
             self._append_result("\n[CANCELLED] Processing cancelled by user.\n")
+
+    def _export_results(self):
+        """Export batch results to Excel."""
+        if not self.results:
+            return
+
+        # Generate default filename
+        default_name = generate_batch_export_filename(self.results)
+
+        # Ask for save location
+        file_path = filedialog.asksaveasfilename(
+            title="Export Batch Results to Excel",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        try:
+            self.progress_label.configure(text="Exporting...")
+            output_path = export_batch_results(self.results, file_path)
+            self.progress_label.configure(text=f"Exported: {output_path.name}")
+            self._append_result(f"\n[EXPORT] Saved to: {output_path}\n")
+            logger.info(f"Exported batch results to: {output_path}")
+        except ExcelExportError as e:
+            self.progress_label.configure(text=f"Export failed")
+            self._append_result(f"\n[ERROR] Export failed: {e}\n")
+            logger.error(f"Batch export failed: {e}")
 
     def on_show(self):
         """Called when the page is shown."""
