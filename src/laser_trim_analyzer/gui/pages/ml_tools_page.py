@@ -1359,7 +1359,8 @@ class MLToolsPage(ctk.CTkFrame):
             
         except Exception as e:
             self.logger.error(f"Error training models: {e}")
-            self.after(0, lambda: messagebox.showerror("Error", f"Training failed: {str(e)}"))
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: messagebox.showerror("Error", f"Training failed: {msg}"))
         finally:
             # Re-enable button
             self.after(0, lambda: self.train_btn.configure(state="normal", text="Train All Models"))

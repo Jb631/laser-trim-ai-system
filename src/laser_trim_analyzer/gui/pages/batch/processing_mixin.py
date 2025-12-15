@@ -425,7 +425,8 @@ class ProcessingMixin:
 
         except ProcessingError as e:
             logger.error(f"Batch processing error: {e}")
-            self._safe_after(0, lambda: self._handle_batch_error(str(e)))
+            error_msg = str(e)
+            self._safe_after(0, lambda msg=error_msg: self._handle_batch_error(msg))
 
         except Exception as e:
             logger.error(f"Unexpected batch error: {e}")
