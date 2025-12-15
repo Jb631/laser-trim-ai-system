@@ -91,7 +91,7 @@ class TrackData(BaseAnalysisModel):
     status: AnalysisStatus = Field(..., description="Track status")
 
     # Core measurements
-    travel_length: float = Field(..., gt=0, description="Travel length")
+    travel_length: float = Field(..., ge=0, description="Travel length")
     linearity_spec: float = Field(..., ge=0, description="Linearity spec")
 
     # Sigma analysis (required)
