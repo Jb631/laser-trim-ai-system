@@ -26,6 +26,7 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
 from laser_trim_v3.config import get_config
+from laser_trim_v3.utils.constants import DEFAULT_SIGMA_SCALING_FACTOR
 
 logger = logging.getLogger(__name__)
 
@@ -330,8 +331,7 @@ class ThresholdOptimizer:
 
         Formula: threshold = linearity_spec / (scaling_factor * travel_factor)
         """
-        config = get_config()
-        scaling_factor = config.analysis.sigma_scaling_factor
+        scaling_factor = DEFAULT_SIGMA_SCALING_FACTOR
 
         # Travel factor normalized to 100 degrees
         travel_factor = max(1.0, (unit_length or 100) / 100.0)

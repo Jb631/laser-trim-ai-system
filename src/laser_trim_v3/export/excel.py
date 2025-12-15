@@ -181,6 +181,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
         ("Serial:", result.metadata.serial),
         ("System:", result.metadata.system.value),
         ("File Date:", result.metadata.file_date.strftime("%Y-%m-%d %H:%M") if result.metadata.file_date else "N/A"),
+        ("Trim Date:", result.metadata.test_date.strftime("%Y-%m-%d %H:%M") if result.metadata.test_date else "N/A"),
         ("Analysis Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         ("Processing Time:", f"{result.processing_time:.2f} seconds"),
     ]
@@ -219,7 +220,8 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
     row += 1
 
     # Track summary headers
-    headers = ["Track", "Status", "Sigma Gradient", "Threshold", "Sigma Pass", "Linearity Pass", "Risk"]
+    headers = ["Track", "Status", "Sigma Gradient", "Threshold", "Sigma Pass",
+               "Linearity Error", "Linearity Pass", "Risk", "Failure Prob"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=row, column=col)
         cell.value = header
@@ -238,8 +240,10 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             f"{track.sigma_gradient:.6f}",
             f"{track.sigma_threshold:.6f}",
             "PASS" if track.sigma_pass else "FAIL",
+            f"{track.linearity_error:.6f}",
             "PASS" if track.linearity_pass else "FAIL",
             track.risk_category.value,
+            f"{track.failure_probability:.1%}" if track.failure_probability else "N/A",
         ]
 
         for col, value in enumerate(cells, 1):
@@ -258,7 +262,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
         row += 1
 
     # Adjust column widths
-    for col in range(1, 8):
+    for col in range(1, 10):
         ws.column_dimensions[get_column_letter(col)].width = 15
 
 
@@ -454,8 +458,9 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
     # Headers
     headers = [
-        "Filename", "Model", "Serial", "System", "File Date",
-        "Status", "Tracks", "Processing Time", "Avg Sigma", "Sigma Pass", "Linearity Pass"
+        "Filename", "Model", "Serial", "System", "File Date", "Trim Date",
+        "Status", "Tracks", "Processing Time", "Avg Sigma", "Threshold",
+        "Sigma Pass", "Lin Error", "Linearity Pass", "Risk", "Fail Prob"
     ]
 
     for col, header in enumerate(headers, 1):
@@ -468,15 +473,27 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
     # Data rows
     for row_idx, result in enumerate(results, 2):
-        # Calculate averages
+        # Calculate averages and aggregates
         avg_sigma = 0
+        avg_threshold = 0
+        avg_lin_error = 0
         sigma_pass = True
         linearity_pass = True
+        risk = "Unknown"
+        fail_prob = None
 
         if result.tracks:
             avg_sigma = sum(t.sigma_gradient for t in result.tracks) / len(result.tracks)
+            avg_threshold = sum(t.sigma_threshold for t in result.tracks) / len(result.tracks)
+            avg_lin_error = sum(t.linearity_error for t in result.tracks) / len(result.tracks)
             sigma_pass = all(t.sigma_pass for t in result.tracks)
             linearity_pass = all(t.linearity_pass for t in result.tracks)
+            # Use worst risk category
+            risk_order = {"Low": 0, "Medium": 1, "High": 2, "Unknown": -1}
+            risk = max([t.risk_category.value for t in result.tracks], key=lambda x: risk_order.get(x, -1))
+            # Average failure probability
+            probs = [t.failure_probability for t in result.tracks if t.failure_probability is not None]
+            fail_prob = sum(probs) / len(probs) if probs else None
 
         values = [
             result.metadata.filename,
@@ -484,12 +501,17 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             result.metadata.serial,
             result.metadata.system.value,
             result.metadata.file_date.strftime("%Y-%m-%d") if result.metadata.file_date else "",
+            result.metadata.test_date.strftime("%Y-%m-%d") if result.metadata.test_date else "",
             result.overall_status.value,
             len(result.tracks),
             f"{result.processing_time:.2f}s",
             f"{avg_sigma:.6f}",
+            f"{avg_threshold:.6f}",
             "PASS" if sigma_pass else "FAIL",
+            f"{avg_lin_error:.6f}",
             "PASS" if linearity_pass else "FAIL",
+            risk,
+            f"{fail_prob:.1%}" if fail_prob is not None else "N/A",
         ]
 
         for col, value in enumerate(values, 1):
@@ -498,17 +520,17 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             cell.border = THIN_BORDER
 
             # Color status column
-            if col == 6:  # Status column
+            if col == 7:  # Status column
                 if value == "PASS":
                     cell.fill = PASS_FILL
                 elif value == "FAIL":
                     cell.fill = FAIL_FILL
 
     # Auto-filter
-    ws.auto_filter.ref = f"A1:K{len(results) + 1}"
+    ws.auto_filter.ref = f"A1:P{len(results) + 1}"
 
     # Adjust column widths
-    widths = [30, 15, 15, 10, 12, 10, 8, 15, 15, 12, 12]
+    widths = [30, 12, 12, 8, 12, 12, 8, 6, 10, 12, 12, 10, 12, 10, 8, 10]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
