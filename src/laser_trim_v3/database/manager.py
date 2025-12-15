@@ -107,7 +107,7 @@ class DatabaseManager:
     def _init_database(self) -> None:
         """Create all tables if they don't exist."""
         try:
-            Base.metadata.create_all(self._engine)
+            Base.metadata.create_all(self._engine, checkfirst=True)
             logger.info("Database initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
