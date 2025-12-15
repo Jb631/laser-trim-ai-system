@@ -1,5 +1,36 @@
 # Claude Code Configuration for Laser Trim Analyzer
 
+---
+
+## ACTIVE DEVELOPMENT: V3 COMPLETE REDESIGN
+
+**IMPORTANT: V3 is a complete redesign in a SEPARATE folder. DO NOT modify v2 code.**
+
+### v3 Location
+- **Source Code**: `src/laser_trim_v3/`
+- **Design Plan**: `src/laser_trim_v3/V3_REDESIGN_PLAN.md`
+
+### v3 Design Goals
+- **30 files** instead of 110 (73% reduction)
+- **~15,000 lines** instead of 144,000 (90% reduction)
+- **5 pages** instead of 11 (Dashboard, Process, Analyze, Trends, Settings)
+- **1 chart widget** instead of 5 files
+- **ML-integrated** (not bolted on)
+- **Excel-only export** (no CSV/HTML)
+
+### v3 Session Protocol
+1. **FIRST**: Read `src/laser_trim_v3/V3_REDESIGN_PLAN.md`
+2. Check the "Current Status" section for phase progress
+3. Work ONLY in `src/laser_trim_v3/` folder
+4. Update session log in the plan document
+
+### v2 is FROZEN
+- Do NOT modify files in `src/laser_trim_analyzer/`
+- v2 remains intact for rollback if needed
+- v3 can read existing v2 database (same schema)
+
+---
+
 ## Project Rules and Guidelines
 
 ### PRODUCTION READINESS FOCUS
