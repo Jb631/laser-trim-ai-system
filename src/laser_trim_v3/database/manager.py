@@ -616,15 +616,218 @@ class DatabaseManager:
 
             pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
 
+            # Total files (all time)
+            total_files = (
+                session.query(func.count(DBAnalysisResult.id))
+                .scalar()
+            ) or 0
+
+            # Today's count
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_count = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.timestamp >= today)
+                .scalar()
+            ) or 0
+
+            # This week's count
+            week_start = today - timedelta(days=today.weekday())
+            week_count = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.timestamp >= week_start)
+                .scalar()
+            ) or 0
+
+            # Daily trend for the past N days
+            daily_trend = []
+            for i in range(days_back):
+                day_start = (today - timedelta(days=days_back - 1 - i))
+                day_end = day_start + timedelta(days=1)
+
+                day_total = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.timestamp >= day_start,
+                        DBAnalysisResult.timestamp < day_end
+                    )
+                    .scalar()
+                ) or 0
+
+                day_passed = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.timestamp >= day_start,
+                        DBAnalysisResult.timestamp < day_end,
+                        DBAnalysisResult.overall_status == DBStatusType.PASS
+                    )
+                    .scalar()
+                ) or 0
+
+                day_pass_rate = (day_passed / day_total * 100) if day_total > 0 else 0.0
+                daily_trend.append({
+                    "date": day_start.strftime("%m/%d"),
+                    "total": day_total,
+                    "passed": day_passed,
+                    "pass_rate": day_pass_rate,
+                })
+
             return {
                 "total_analyses": total_analyses,
+                "total_files": total_files,
                 "passed": passed,
                 "failed": failed,
                 "pass_rate": pass_rate,
                 "unresolved_alerts": unresolved_alerts,
                 "high_risk_count": high_risk,
                 "period_days": days_back,
+                "today_count": today_count,
+                "week_count": week_count,
+                "daily_trend": daily_trend,
             }
+
+    def get_alerts(self, limit: int = 10, include_resolved: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get recent alerts.
+
+        Args:
+            limit: Maximum number of alerts to return
+            include_resolved: Whether to include resolved alerts
+
+        Returns:
+            List of alert dictionaries
+        """
+        with self.session() as session:
+            query = session.query(DBQAAlert)
+
+            if not include_resolved:
+                query = query.filter(DBQAAlert.resolved == False)
+
+            alerts = (
+                query
+                .order_by(DBQAAlert.created_date.desc())
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                {
+                    "id": a.id,
+                    "analysis_id": a.analysis_id,
+                    "alert_type": a.alert_type.value if a.alert_type else "INFO",
+                    "severity": a.severity,
+                    "message": a.message,
+                    "model": a.model,
+                    "created_at": a.created_date.strftime("%Y-%m-%d %H:%M") if a.created_date else "",
+                    "acknowledged": a.acknowledged,
+                    "resolved": a.resolved,
+                }
+                for a in alerts
+            ]
+
+    def get_model_stats(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get statistics by model number.
+
+        Args:
+            limit: Maximum number of models to return
+
+        Returns:
+            List of model statistics dictionaries
+        """
+        with self.session() as session:
+            # Get counts by model
+            model_counts = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBAnalysisResult.id).label('count')
+                )
+                .group_by(DBAnalysisResult.model)
+                .order_by(func.count(DBAnalysisResult.id).desc())
+                .limit(limit)
+                .all()
+            )
+
+            result = []
+            for model, count in model_counts:
+                if not model:
+                    continue
+
+                # Get pass rate for this model
+                passed = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        DBAnalysisResult.overall_status == DBStatusType.PASS
+                    )
+                    .scalar()
+                ) or 0
+
+                pass_rate = (passed / count * 100) if count > 0 else 0.0
+
+                result.append({
+                    "model": model,
+                    "count": count,
+                    "passed": passed,
+                    "failed": count - passed,
+                    "pass_rate": pass_rate,
+                })
+
+            return result
+
+    def get_trend_data(
+        self,
+        model: Optional[str] = None,
+        days_back: int = 30,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Get trend data for analysis.
+
+        Args:
+            model: Filter by model number (None for all)
+            days_back: Number of days to include
+            limit: Maximum number of records
+
+        Returns:
+            List of trend data dictionaries
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            query = (
+                session.query(
+                    DBAnalysisResult.timestamp,
+                    DBAnalysisResult.model,
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.sigma_threshold,
+                    DBTrackResult.sigma_pass,
+                    DBTrackResult.status,
+                )
+                .join(DBTrackResult)
+                .filter(DBAnalysisResult.timestamp >= cutoff_date)
+            )
+
+            if model:
+                query = query.filter(DBAnalysisResult.model == model)
+
+            results = (
+                query
+                .order_by(DBAnalysisResult.timestamp.asc())
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                {
+                    "date": r.timestamp.strftime("%Y-%m-%d") if r.timestamp else "",
+                    "model": r.model,
+                    "sigma_gradient": r.sigma_gradient,
+                    "sigma_threshold": r.sigma_threshold,
+                    "sigma_pass": r.sigma_pass,
+                    "status": r.status.value if r.status else "UNKNOWN",
+                }
+                for r in results
+            ]
 
     def get_models_list(self) -> List[str]:
         """Get list of all unique model numbers in database."""
