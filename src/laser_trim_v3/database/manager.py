@@ -915,6 +915,10 @@ class DatabaseManager:
             risk_category=risk_category,
             position_data=track.position_data,
             error_data=track.error_data,
+            upper_limits=track.upper_limits,  # Store position-dependent spec limits
+            lower_limits=track.lower_limits,  # Store position-dependent spec limits
+            untrimmed_positions=track.untrimmed_positions,  # Store untrimmed data for charts
+            untrimmed_errors=track.untrimmed_errors,  # Store untrimmed data for charts
         )
 
     def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> AnalysisResult:
@@ -991,6 +995,10 @@ class DatabaseManager:
             risk_category=risk_category,
             position_data=db_track.position_data,
             error_data=db_track.error_data,
+            upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
+            lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
+            untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
+            untrimmed_errors=db_track.untrimmed_errors,  # Retrieve untrimmed data for charts
         )
 
     def _update_existing_analysis(
@@ -999,21 +1007,31 @@ class DatabaseManager:
         analysis: AnalysisResult
     ) -> int:
         """Update an existing analysis record."""
-        # Find existing record
+        # Find existing record by filename only (model/serial may have changed due to parsing fixes)
         existing = (
             session.query(DBAnalysisResult)
-            .filter(
-                DBAnalysisResult.filename == analysis.metadata.filename,
-                DBAnalysisResult.model == analysis.metadata.model,
-                DBAnalysisResult.serial == analysis.metadata.serial,
-            )
+            .filter(DBAnalysisResult.filename == analysis.metadata.filename)
             .first()
         )
 
         if existing:
-            # Update fields
+            # Update ALL fields including model/serial (parsing may have changed)
+            existing.model = analysis.metadata.model
+            existing.serial = analysis.metadata.serial
+            existing.system = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+            existing.file_date = analysis.metadata.file_date
+            existing.has_multi_tracks = analysis.metadata.has_multi_tracks
             existing.processing_time = analysis.processing_time
             existing.timestamp = datetime.now()
+
+            # Map overall status
+            status_map = {
+                AnalysisStatus.PASS: DBStatusType.PASS,
+                AnalysisStatus.FAIL: DBStatusType.FAIL,
+                AnalysisStatus.WARNING: DBStatusType.WARNING,
+                AnalysisStatus.ERROR: DBStatusType.ERROR,
+            }
+            existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
 
             # Clear old tracks and add new ones
             existing.tracks.clear()
@@ -1052,6 +1070,23 @@ class DatabaseManager:
                 "processed_files": session.query(func.count(DBProcessedFile.id)).scalar() or 0,
                 "alerts": session.query(func.count(DBQAAlert.id)).scalar() or 0,
             }
+
+    def get_models_list(self) -> List[str]:
+        """
+        Get a list of all unique model numbers in the database.
+
+        Returns:
+            List of model strings, sorted alphabetically
+        """
+        with self.session() as session:
+            models = (
+                session.query(DBAnalysisResult.model)
+                .filter(DBAnalysisResult.model.isnot(None))
+                .distinct()
+                .order_by(DBAnalysisResult.model)
+                .all()
+            )
+            return [m[0] for m in models if m[0]]
 
 
 # Global instance for convenience

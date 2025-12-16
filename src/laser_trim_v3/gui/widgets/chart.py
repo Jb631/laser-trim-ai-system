@@ -77,8 +77,12 @@ class ChartWidget(ctk.CTkFrame):
         self.style = style or ChartStyle()
         self.figure: Optional[Figure] = None
         self.canvas: Optional[FigureCanvasTkAgg] = None
+        self._resize_job = None  # For debouncing resize events
 
         self._setup_figure()
+
+        # Bind to resize events for dynamic resizing
+        self.bind("<Configure>", self._on_resize)
 
     def _setup_figure(self) -> None:
         """Initialize matplotlib figure with proper styling."""
@@ -95,6 +99,39 @@ class ChartWidget(ctk.CTkFrame):
         # Create canvas
         self.canvas = FigureCanvasTkAgg(self.figure, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def _on_resize(self, event) -> None:
+        """Handle widget resize - update figure size to match."""
+        # Debounce resize events to avoid excessive redraws
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(100, self._do_resize)
+
+    def _do_resize(self) -> None:
+        """Actually perform the resize after debounce."""
+        if not self.figure or not self.canvas:
+            return
+
+        # Get the widget's current size
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        # Avoid tiny sizes during initialization
+        if width < 50 or height < 50:
+            return
+
+        # Convert pixels to inches for matplotlib
+        dpi = self.style.dpi
+        fig_width = width / dpi
+        fig_height = height / dpi
+
+        # Update figure size and redraw
+        self.figure.set_size_inches(fig_width, fig_height, forward=True)
+        try:
+            self.figure.tight_layout()
+        except Exception:
+            pass  # tight_layout can fail with certain axes configurations
+        self.canvas.draw_idle()
 
     def clear(self) -> None:
         """Clear the chart."""
@@ -441,6 +478,10 @@ class ChartWidget(ctk.CTkFrame):
 
     def destroy(self):
         """Clean up matplotlib resources."""
+        # Cancel any pending resize jobs
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+            self._resize_job = None
         if self.canvas:
             self.canvas.get_tk_widget().destroy()
         if self.figure:

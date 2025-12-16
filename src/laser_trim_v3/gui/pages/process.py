@@ -139,8 +139,10 @@ class ProcessPage(ctk.CTkFrame):
         # Content frame
         content = ctk.CTkFrame(self)
         content.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        content.grid_columnconfigure((0, 1), weight=1)
-        content.grid_rowconfigure(1, weight=1)
+        content.grid_columnconfigure(0, weight=1, uniform="col")  # File list
+        content.grid_columnconfigure(1, weight=1, uniform="col")  # Results
+        content.grid_rowconfigure(0, weight=0)  # Progress bar row
+        content.grid_rowconfigure(1, weight=1)  # Main content row
 
         # Progress frame
         progress_frame = ctk.CTkFrame(content)
@@ -168,7 +170,7 @@ class ProcessPage(ctk.CTkFrame):
         )
         list_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.file_list = ctk.CTkTextbox(list_frame, height=200)
+        self.file_list = ctk.CTkTextbox(list_frame, height=150)
         self.file_list.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.file_list.configure(state="disabled")
 
@@ -183,7 +185,7 @@ class ProcessPage(ctk.CTkFrame):
         )
         results_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.results_text = ctk.CTkTextbox(results_frame, height=200)
+        self.results_text = ctk.CTkTextbox(results_frame, height=150)
         self.results_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.results_text.configure(state="disabled")
         self._update_results("Ready to process files.\n\nSelect files and click 'Start Processing' to begin.")
@@ -346,7 +348,9 @@ class ProcessPage(ctk.CTkFrame):
         # Calculate summary
         total = len(self.results)
         passed = sum(1 for r in self.results if r.overall_status == AnalysisStatus.PASS)
-        failed = total - passed
+        warnings = sum(1 for r in self.results if r.overall_status == AnalysisStatus.WARNING)
+        failed = sum(1 for r in self.results if r.overall_status == AnalysisStatus.FAIL)
+        errors = sum(1 for r in self.results if r.overall_status == AnalysisStatus.ERROR)
         pass_rate = (passed / total * 100) if total > 0 else 0
 
         # Append summary
@@ -355,12 +359,14 @@ class ProcessPage(ctk.CTkFrame):
             f"SUMMARY:\n"
             f"  Total processed: {total}\n"
             f"  Passed: {passed}\n"
+            f"  Warnings: {warnings} (partial pass)\n"
             f"  Failed: {failed}\n"
+            f"  Errors: {errors}\n"
             f"  Pass rate: {pass_rate:.1f}%\n"
             f"Completed: {datetime.now().strftime('%H:%M:%S')}\n"
         )
 
-        logger.info(f"Processing complete: {total} files, {passed} passed, {failed} failed")
+        logger.info(f"Processing complete: {total} files, {passed} passed, {warnings} warnings, {failed} failed")
 
     def _on_processing_error(self, error: str):
         """Handle processing error."""

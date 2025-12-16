@@ -123,12 +123,16 @@ class ExcelParser:
         # Parse filename for model and serial
         model, serial = self._parse_filename(file_path.name)
 
-        # Get file dates
+        # Get file modification time as fallback
         file_stat = file_path.stat()
-        file_date = datetime.fromtimestamp(file_stat.st_mtime)
+        file_mod_date = datetime.fromtimestamp(file_stat.st_mtime)
 
-        # Try to extract test date from Excel file
+        # Try to extract test/trim date (from filename first, then Excel file)
         test_date = self._extract_test_date(file_path, system_type)
+
+        # Use test_date as primary file_date, fall back to file modification date
+        # This ensures the date shown in the app reflects when the test was done, not when the file was copied/modified
+        file_date = test_date if test_date else file_mod_date
 
         # Detect multi-track
         has_multi_tracks = self._has_multiple_tracks(file_path, system_type)
@@ -150,44 +154,62 @@ class ExcelParser:
 
         Common patterns:
         - "8340-1_SN12345.xls"
+        - "8340-3_AB12345.xls"
         - "Model_Serial_Date.xlsx"
         - "12345_8340-1.xls"
+
+        Model numbers can have suffixes like 8340-1, 8340-3, etc.
         """
         name = Path(filename).stem
 
-        # Try pattern: Model_Serial or Serial_Model
-        parts = re.split(r'[_\-\s]+', name)
+        # Split only on underscores and spaces, NOT hyphens (to preserve model suffixes like 8340-1)
+        parts = re.split(r'[_\s]+', name)
 
         if len(parts) >= 2:
-            # Look for model pattern (usually starts with numbers like 8340, 6845)
             model = "Unknown"
             serial = "Unknown"
 
             for part in parts:
-                # Model typically starts with 4+ digits
-                if re.match(r'^\d{4}', part):
+                # Model pattern: starts with 4+ digits, may have hyphen suffix (8340, 8340-1, 8340-3)
+                if re.match(r'^\d{4,}(-\d+)?$', part):
                     if model == "Unknown":
                         model = part
-                    else:
+                    elif serial == "Unknown":
                         serial = part
-                elif re.match(r'^[A-Z]{2}\d+', part, re.IGNORECASE):
-                    # Serial often has letter prefix
+                # Serial pattern: letter prefix + digits (SN12345, AB12345)
+                elif re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
                     serial = part
+                # Also check for pure numeric serial
+                elif re.match(r'^\d+$', part) and model != "Unknown":
+                    if serial == "Unknown":
+                        serial = part
 
             if serial == "Unknown" and len(parts) > 1:
-                # Use second part as serial if not found
-                serial = parts[1] if parts[0] == model else parts[0]
+                # Use the part that isn't the model as serial
+                for part in parts:
+                    if part != model:
+                        serial = part
+                        break
 
             return model, serial
 
         return name, "Unknown"
 
     def _extract_test_date(self, file_path: Path, system_type: SystemType) -> Optional[datetime]:
-        """Try to extract the test/trim date from the Excel file."""
-        try:
-            # Common date cell locations
-            date_cells = ["A1", "B1", "A2", "B2"]
+        """
+        Try to extract the test/trim date.
 
+        Priority:
+        1. Date from filename (most reliable for System B files: MODEL_SERIAL_TA_Test Data_M-D-YYYY_...)
+        2. Date from Excel cell (for files that store it inside)
+        """
+        # First, try to extract from filename (most common for System B)
+        filename_date = self._extract_date_from_filename(file_path.name)
+        if filename_date:
+            return filename_date
+
+        # Fall back to searching Excel file
+        try:
             xl = pd.ExcelFile(file_path)
             first_sheet = xl.sheet_names[0]
 
@@ -209,8 +231,36 @@ class ExcelParser:
             return None
 
         except Exception as e:
-            logger.debug(f"Could not extract test date: {e}")
+            logger.debug(f"Could not extract test date from Excel: {e}")
             return None
+
+    def _extract_date_from_filename(self, filename: str) -> Optional[datetime]:
+        """
+        Extract date from filename.
+
+        Handles patterns like:
+        - 1844202_10_TA_Test Data_11-22-2024_9-08 AMTrimmed Correct.xls
+        - 8887_14_TA_Test Data_5-5-2025_9-58 AMScrap_Cut in wiper path.xls
+        """
+        # Look for date pattern M-D-YYYY or MM-DD-YYYY
+        date_match = re.search(r'(\d{1,2})-(\d{1,2})-(\d{4})', filename)
+        if date_match:
+            month, day, year = date_match.groups()
+            try:
+                return datetime.strptime(f'{month}-{day}-{year}', '%m-%d-%Y')
+            except ValueError:
+                pass
+
+        # Also try YYYY-MM-DD format
+        date_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', filename)
+        if date_match:
+            year, month, day = date_match.groups()
+            try:
+                return datetime.strptime(f'{year}-{month}-{day}', '%Y-%m-%d')
+            except ValueError:
+                pass
+
+        return None
 
     def _has_multiple_tracks(self, file_path: Path, system_type: SystemType) -> bool:
         """Check if file has multiple tracks."""

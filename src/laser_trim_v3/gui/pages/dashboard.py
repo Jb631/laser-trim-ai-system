@@ -68,11 +68,13 @@ class DashboardPage(ctk.CTkFrame):
         )
         self.last_update_label.grid(row=0, column=2, sticky="e", padx=(10, 0))
 
-        # Content frame
-        content = ctk.CTkFrame(self)
+        # Content frame - use scrollable for smaller screens
+        content = ctk.CTkScrollableFrame(self)
         content.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        content.grid_columnconfigure((0, 1, 2), weight=1)
-        content.grid_rowconfigure((0, 1), weight=1)
+        content.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
+        content.grid_rowconfigure(0, weight=0, minsize=120)  # Metric cards - fixed height
+        content.grid_rowconfigure(1, weight=1, minsize=200)  # Main row - expandable
+        content.grid_rowconfigure(2, weight=0, minsize=100)  # Model breakdown - fixed
 
         # Health Score Card
         self.health_card = self._create_metric_card(content)
@@ -120,7 +122,7 @@ class DashboardPage(ctk.CTkFrame):
         )
         alerts_label.grid(row=0, column=0, padx=15, pady=15, sticky="w")
 
-        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=150)
+        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=120)
         self.alerts_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 15))
         self.alerts_list.configure(state="disabled")
         self._update_alerts_display([])
@@ -138,7 +140,7 @@ class DashboardPage(ctk.CTkFrame):
 
         self.trend_chart = ChartWidget(
             chart_frame,
-            style=ChartStyle(figure_size=(5, 3), dpi=80)
+            style=ChartStyle(figure_size=(4, 2.5), dpi=80)
         )
         self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.trend_chart.show_placeholder("Loading trend data...")
@@ -198,7 +200,7 @@ class DashboardPage(ctk.CTkFrame):
         )
         model_label.pack(padx=15, pady=15, anchor="w")
 
-        self.model_text = ctk.CTkTextbox(self.model_frame, height=100)
+        self.model_text = ctk.CTkTextbox(self.model_frame, height=80)
         self.model_text.pack(fill="x", padx=15, pady=(0, 15))
         self.model_text.configure(state="disabled")
 

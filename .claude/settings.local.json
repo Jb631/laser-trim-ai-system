@@ -12,7 +12,12 @@
       "Bash(dir \"C:\\Users\\Jayma\\Desktop\\laser-trim-ai-system-main\\test_files\\System B test files\")",
       "Bash(dir \"C:\\Users\\Jayma\\Desktop\\laser-trim-ai-system-main\")",
       "Bash(findstr:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\n[V3] Major fixes: parsing, dates, batch summary, charts\n\nFixes:\n- Model parsing: preserve suffixes (8340-1 not truncated to 8340)\n- Serial parsing: extract correct serial (not year from date)\n- Date extraction: parse trim date from filename (M-D-YYYY pattern)\n- Batch summary: properly count WARNING status separately\n- Charts: dynamic resizing, spec limits from file, untrimmed data\n- Database: store/retrieve spec limits and untrimmed data\n- Excel export: single Trim Date column, correct status counts\n- Window: reduced minimum size to 800x600 for laptops\n\nFiles changed:\n- parser.py: filename parsing for model/serial/date\n- processor.py: batch summary counting\n- models.py: added warnings field to BatchSummary\n- manager.py: update logic finds by filename, stores untrimmed data\n- excel.py: simplified dates, proper status breakdown\n- chart.py: debounced resize handling\n- analyze.py: database browser with spec limits on charts\n- process.py: display warnings in summary\n- app.py: reduced minsize\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

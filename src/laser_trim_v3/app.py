@@ -54,7 +54,7 @@ class LaserTrimApp(ctk.CTk):
         """Configure the main window."""
         self.title("Laser Trim Analyzer v3")
         self.geometry(f"{self.config.gui.window_width}x{self.config.gui.window_height}")
-        self.minsize(1000, 700)
+        self.minsize(800, 600)
 
         # Configure grid
         self.grid_rowconfigure(0, weight=1)

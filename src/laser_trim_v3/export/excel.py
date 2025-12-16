@@ -175,13 +175,15 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
     ws["A3"] = "File Information"
     ws["A3"].font = Font(bold=True, size=12)
 
+    # Use file_date which is the trim date (we set file_date = test_date in parser)
+    trim_date = result.metadata.file_date or result.metadata.test_date
+
     info_rows = [
         ("Filename:", result.metadata.filename),
         ("Model:", result.metadata.model),
         ("Serial:", result.metadata.serial),
         ("System:", result.metadata.system.value),
-        ("File Date:", result.metadata.file_date.strftime("%Y-%m-%d %H:%M") if result.metadata.file_date else "N/A"),
-        ("Trim Date:", result.metadata.test_date.strftime("%Y-%m-%d %H:%M") if result.metadata.test_date else "N/A"),
+        ("Trim Date:", trim_date.strftime("%Y-%m-%d %H:%M") if trim_date else "N/A"),
         ("Analysis Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         ("Processing Time:", f"{result.processing_time:.2f} seconds"),
     ]
@@ -426,16 +428,20 @@ def _create_batch_summary_sheet(wb: "Workbook", results: List[AnalysisResult]) -
     ws["A1"].font = TITLE_FONT
     ws.merge_cells("A1:D1")
 
-    # Summary stats
+    # Summary stats - properly count each status type
     total = len(results)
     passed = sum(1 for r in results if r.overall_status == AnalysisStatus.PASS)
-    failed = total - passed
+    warnings = sum(1 for r in results if r.overall_status == AnalysisStatus.WARNING)
+    failed = sum(1 for r in results if r.overall_status == AnalysisStatus.FAIL)
+    errors = sum(1 for r in results if r.overall_status == AnalysisStatus.ERROR)
     pass_rate = (passed / total * 100) if total > 0 else 0
 
     stats = [
         ("Total Files:", total),
         ("Passed:", passed),
+        ("Warnings:", f"{warnings} (partial pass - e.g., pass linearity but fail sigma)"),
         ("Failed:", failed),
+        ("Errors:", errors),
         ("Pass Rate:", f"{pass_rate:.1f}%"),
         ("Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
@@ -449,7 +455,7 @@ def _create_batch_summary_sheet(wb: "Workbook", results: List[AnalysisResult]) -
 
     # Adjust widths
     ws.column_dimensions["A"].width = 15
-    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["B"].width = 50
 
 
 def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> None:
@@ -458,7 +464,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
     # Headers
     headers = [
-        "Filename", "Model", "Serial", "System", "File Date", "Trim Date",
+        "Filename", "Model", "Serial", "System", "Trim Date",
         "Status", "Tracks", "Processing Time", "Avg Sigma", "Threshold",
         "Sigma Pass", "Lin Error", "Linearity Pass", "Risk", "Fail Prob"
     ]
@@ -495,13 +501,15 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             probs = [t.failure_probability for t in result.tracks if t.failure_probability is not None]
             fail_prob = sum(probs) / len(probs) if probs else None
 
+        # Use file_date which is the trim date (we set file_date = test_date in parser)
+        trim_date = result.metadata.file_date or result.metadata.test_date
+
         values = [
             result.metadata.filename,
             result.metadata.model,
             result.metadata.serial,
             result.metadata.system.value,
-            result.metadata.file_date.strftime("%Y-%m-%d") if result.metadata.file_date else "",
-            result.metadata.test_date.strftime("%Y-%m-%d") if result.metadata.test_date else "",
+            trim_date.strftime("%Y-%m-%d") if trim_date else "",
             result.overall_status.value,
             len(result.tracks),
             f"{result.processing_time:.2f}s",
@@ -519,18 +527,20 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             cell.value = value
             cell.border = THIN_BORDER
 
-            # Color status column
-            if col == 7:  # Status column
-                if value == "PASS":
+            # Color status column (column 6 now after removing file_date)
+            if col == 6:  # Status column
+                if value == "Pass":
                     cell.fill = PASS_FILL
-                elif value == "FAIL":
+                elif value == "Fail" or value == "Error":
                     cell.fill = FAIL_FILL
+                elif value == "Warning":
+                    cell.fill = WARNING_FILL
 
     # Auto-filter
-    ws.auto_filter.ref = f"A1:P{len(results) + 1}"
+    ws.auto_filter.ref = f"A1:O{len(results) + 1}"
 
-    # Adjust column widths
-    widths = [30, 12, 12, 8, 12, 12, 8, 6, 10, 12, 12, 10, 12, 10, 8, 10]
+    # Adjust column widths (15 columns now)
+    widths = [30, 12, 12, 8, 12, 8, 6, 10, 12, 12, 10, 12, 10, 8, 10]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
