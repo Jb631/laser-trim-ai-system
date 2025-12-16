@@ -476,6 +476,11 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw()
 
+    def save_figure(self, filepath: str, dpi: int = 300) -> None:
+        """Save the current figure to a file."""
+        if self.figure:
+            self.figure.savefig(filepath, dpi=dpi, bbox_inches='tight', facecolor='white')
+
     def destroy(self):
         """Clean up matplotlib resources."""
         # Cancel any pending resize jobs

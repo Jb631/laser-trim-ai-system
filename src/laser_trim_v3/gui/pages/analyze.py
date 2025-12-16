@@ -13,6 +13,7 @@ from tkinter import filedialog
 from typing import Optional, List, Dict, Any
 
 from laser_trim_v3.core.models import AnalysisResult, AnalysisStatus, TrackData
+from laser_trim_v3.core.processor import Processor
 from laser_trim_v3.gui.widgets.chart import ChartWidget, ChartStyle
 from laser_trim_v3.database import get_database
 from laser_trim_v3.export import export_single_result, generate_export_filename, ExcelExportError
@@ -163,6 +164,27 @@ class AnalyzePage(ctk.CTkFrame):
         # Action buttons row
         actions_frame = ctk.CTkFrame(details_frame, fg_color="transparent")
         actions_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=5)
+
+        # Process file button (analyze new file)
+        self.process_file_btn = ctk.CTkButton(
+            actions_frame,
+            text="📂 Analyze File",
+            command=self._process_single_file,
+            width=130,
+            fg_color="green",
+            hover_color="darkgreen"
+        )
+        self.process_file_btn.pack(side="left", padx=5)
+
+        # Export chart button
+        self.export_chart_btn = ctk.CTkButton(
+            actions_frame,
+            text="📊 Export Chart",
+            command=self._export_chart,
+            state="disabled",
+            width=120
+        )
+        self.export_chart_btn.pack(side="right", padx=5)
 
         # Export button
         self.export_btn = ctk.CTkButton(
@@ -406,8 +428,9 @@ class AnalyzePage(ctk.CTkFrame):
             self.status_text.configure(text=analysis.overall_status.value.upper(), text_color="#f39c12")
             self.status_banner.configure(fg_color="#4d3d1e")
 
-        # Enable export
+        # Enable export buttons
         self.export_btn.configure(state="normal")
+        self.export_chart_btn.configure(state="normal")
 
         # Update track selector
         if analysis.tracks:
@@ -438,17 +461,26 @@ class AnalyzePage(ctk.CTkFrame):
                 upper_limits = [track.linearity_spec] * len(track.position_data)
                 lower_limits = [-track.linearity_spec] * len(track.position_data)
 
-        # Get fail point indices
-        fail_indices = None
-        if track.linearity_fail_points > 0 and upper_limits and lower_limits:
-            fail_indices = []
+        # ALWAYS recalculate fail point indices (old DB data may have incorrect fail_points=0)
+        fail_indices = []
+        actual_fail_count = 0
+        if upper_limits and lower_limits:
             shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     if e > upper_limits[i] or e < lower_limits[i]:
                         fail_indices.append(i)
+                        actual_fail_count += 1
 
-        status_str = "PASS" if track.status == AnalysisStatus.PASS else track.status.value
+        # Determine actual status based on recalculated fail points
+        if actual_fail_count > 0:
+            status_str = "FAIL (Lin)"
+        elif not track.sigma_pass:
+            status_str = "FAIL (Sigma)"
+        elif track.status == AnalysisStatus.PASS:
+            status_str = "PASS"
+        else:
+            status_str = track.status.value
         title = f"Track {track.track_id} - {status_str}"
 
         self.chart.plot_error_vs_position(
@@ -490,11 +522,51 @@ class AnalyzePage(ctk.CTkFrame):
 
             # Linearity Analysis
             lines.append("  LINEARITY ANALYSIS:")
-            lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
+
+            # Recalculate fail points using actual spec limits
+            actual_upper = track.upper_limits
+            actual_lower = track.lower_limits
+
+            # Fall back to linearity_spec if limits not stored
+            if not actual_upper or not actual_lower:
+                if track.linearity_spec and track.linearity_spec > 0:
+                    actual_upper = [track.linearity_spec] * len(track.error_data) if track.error_data else []
+                    actual_lower = [-track.linearity_spec] * len(track.error_data) if track.error_data else []
+
+            # Calculate actual fail points
+            actual_fail_count = 0
+            if actual_upper and actual_lower and track.error_data:
+                shifted_errors = [e + track.optimal_offset for e in track.error_data]
+                for i, e in enumerate(shifted_errors):
+                    if i < len(actual_upper) and i < len(actual_lower):
+                        if e > actual_upper[i] or e < actual_lower[i]:
+                            actual_fail_count += 1
+
+            # Show spec limits
+            if actual_upper and actual_lower:
+                max_upper = max(actual_upper)
+                min_lower = min(actual_lower)
+                lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
+                if max_upper != track.linearity_spec or min_lower != -track.linearity_spec:
+                    lines.append(f"    (Limits vary: +{max_upper:.6f} / {min_lower:.6f})")
+            else:
+                lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
+
             lines.append(f"    Max Error:  {track.linearity_error:.6f}")
             lines.append(f"    Offset:     {track.optimal_offset:.6f}")
-            lines.append(f"    Fail Pts:   {track.linearity_fail_points}")
-            lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
+
+            # Show both stored and recalculated fail points if they differ
+            if actual_fail_count != track.linearity_fail_points:
+                lines.append(f"    Fail Pts:   {actual_fail_count} (DB stored: {track.linearity_fail_points})")
+            else:
+                lines.append(f"    Fail Pts:   {track.linearity_fail_points}")
+
+            # Show actual result based on recalculation
+            actual_pass = actual_fail_count == 0
+            if actual_pass != track.linearity_pass:
+                lines.append(f"    Result:     {'✓ PASS' if actual_pass else '✗ FAIL'} (DB: {'PASS' if track.linearity_pass else 'FAIL'})")
+            else:
+                lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
             lines.append("")
 
             # Risk Assessment
@@ -599,6 +671,66 @@ class AnalyzePage(ctk.CTkFrame):
         self.info_text.insert("end", text)
         self.info_text.configure(state="disabled")
 
+    def _process_single_file(self):
+        """Process a single file and display results."""
+        # Open file dialog
+        file_path = filedialog.askopenfilename(
+            title="Select Excel File to Analyze",
+            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        # Update UI to show processing
+        self.status_text.configure(text="Processing...", text_color="orange")
+        self.status_banner.configure(fg_color="orange")
+        self.process_file_btn.configure(state="disabled")
+        self.update_idletasks()
+
+        # Process in background thread
+        def process():
+            try:
+                processor = Processor()
+                result = processor.process_file(Path(file_path))
+
+                # Save to database
+                try:
+                    db = get_database()
+                    db.save_analysis(result)
+                except Exception as e:
+                    logger.error(f"Failed to save to database: {e}")
+
+                # Update UI on main thread
+                self.after(0, lambda: self._on_single_file_processed(result))
+
+            except Exception as e:
+                logger.exception(f"Processing error: {e}")
+                self.after(0, lambda: self._on_single_file_error(str(e)))
+
+        thread = threading.Thread(target=process, daemon=True)
+        thread.start()
+
+    def _on_single_file_processed(self, result: AnalysisResult):
+        """Handle single file processing completion."""
+        self.process_file_btn.configure(state="normal")
+        self.current_result = result
+
+        # Show the result
+        self._show_analysis_details(result)
+
+        # Refresh the list to include the new result
+        self._load_recent_analyses()
+
+        logger.info(f"Processed single file: {result.metadata.filename}")
+
+    def _on_single_file_error(self, error: str):
+        """Handle single file processing error."""
+        self.process_file_btn.configure(state="normal")
+        self.status_text.configure(text=f"Error: {error}", text_color="red")
+        self.status_banner.configure(fg_color="red")
+        logger.error(f"Single file processing failed: {error}")
+
     def _export_result(self):
         """Export the current analysis result to Excel."""
         if not self.current_result:
@@ -623,6 +755,38 @@ class AnalyzePage(ctk.CTkFrame):
             logger.info(f"Exported analysis to: {output_path}")
         except ExcelExportError as e:
             logger.error(f"Export failed: {e}")
+
+    def _export_chart(self):
+        """Export the current chart to an image file."""
+        if not self.current_result:
+            return
+
+        # Generate default filename
+        model = self.current_result.metadata.model
+        serial = self.current_result.metadata.serial
+        default_name = f"{model}_{serial}_chart.png"
+
+        # Ask for save location
+        file_path = filedialog.asksaveasfilename(
+            title="Export Chart",
+            defaultextension=".png",
+            initialfile=default_name,
+            filetypes=[
+                ("PNG Image", "*.png"),
+                ("PDF Document", "*.pdf"),
+                ("JPEG Image", "*.jpg"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        try:
+            self.chart.save_figure(file_path, dpi=300)
+            logger.info(f"Exported chart to: {file_path}")
+        except Exception as e:
+            logger.error(f"Chart export failed: {e}")
 
     # =========================================================================
     # Page Lifecycle
