@@ -16,7 +16,11 @@ from laser_trim_v3.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_v3.core.processor import Processor
 from laser_trim_v3.gui.widgets.chart import ChartWidget, ChartStyle
 from laser_trim_v3.database import get_database
-from laser_trim_v3.export import export_single_result, generate_export_filename, ExcelExportError
+from laser_trim_v3.export import (
+    export_single_result, export_batch_results,
+    generate_export_filename, generate_batch_export_filename, ExcelExportError
+)
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +150,7 @@ class AnalyzePage(ctk.CTkFrame):
         # Right panel - details view
         details_frame = ctk.CTkFrame(content)
         details_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
-        details_frame.grid_rowconfigure(3, weight=1)
+        details_frame.grid_rowconfigure(2, weight=1)  # Row 2 = tabview with chart
         details_frame.grid_columnconfigure(0, weight=1)
 
         # Status banner
@@ -176,6 +180,18 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.process_file_btn.pack(side="left", padx=5)
 
+        # Re-analyze button (re-process selected file from original path)
+        self.reanalyze_btn = ctk.CTkButton(
+            actions_frame,
+            text="🔄 Re-analyze",
+            command=self._reanalyze_current,
+            state="disabled",
+            width=110,
+            fg_color="orange",
+            hover_color="darkorange"
+        )
+        self.reanalyze_btn.pack(side="left", padx=5)
+
         # Export chart button
         self.export_chart_btn = ctk.CTkButton(
             actions_frame,
@@ -186,13 +202,23 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.export_chart_btn.pack(side="right", padx=5)
 
-        # Export button
+        # Export model button (all SNs for selected model)
+        self.export_model_btn = ctk.CTkButton(
+            actions_frame,
+            text="📋 Export Model",
+            command=self._export_model_results,
+            state="disabled",
+            width=130
+        )
+        self.export_model_btn.pack(side="right", padx=5)
+
+        # Export single result button
         self.export_btn = ctk.CTkButton(
             actions_frame,
-            text="📄 Export to Excel",
+            text="📄 Export SN",
             command=self._export_result,
             state="disabled",
-            width=150
+            width=100
         )
         self.export_btn.pack(side="right", padx=5)
 
@@ -215,16 +241,17 @@ class AnalyzePage(ctk.CTkFrame):
         self.details_tabview.add("Metrics")
         self.details_tabview.add("File Info")
 
-        # Chart tab
+        # Chart tab - responsive sizing
         chart_tab = self.details_tabview.tab("Chart")
         chart_tab.grid_columnconfigure(0, weight=1)
         chart_tab.grid_rowconfigure(0, weight=1)
 
+        # Start with small figure, let dynamic resizing handle actual size
         self.chart = ChartWidget(
             chart_tab,
             style=ChartStyle(figure_size=(6, 4), dpi=100)
         )
-        self.chart.pack(fill="both", expand=True, padx=10, pady=10)
+        self.chart.pack(fill="both", expand=True)
         self.chart.show_placeholder("Select an analysis to view chart")
 
         # Metrics tab
@@ -431,15 +458,25 @@ class AnalyzePage(ctk.CTkFrame):
         # Enable export buttons
         self.export_btn.configure(state="normal")
         self.export_chart_btn.configure(state="normal")
+        self.export_model_btn.configure(state="normal")
+        self.reanalyze_btn.configure(state="normal")
 
         # Update track selector
         if analysis.tracks:
+            # Add "Compare All" option if multiple tracks exist
             track_values = [f"Track {t.track_id}" for t in analysis.tracks]
+            if len(analysis.tracks) > 1:
+                track_values.insert(0, "📊 Compare All Tracks")
             self.track_selector.configure(values=track_values, state="normal")
             self.track_selector.set(track_values[0])
 
-            # Show chart for first track
-            self._display_track_chart(analysis.tracks[0])
+            # Show appropriate chart
+            if len(analysis.tracks) > 1:
+                # If multiple tracks, show comparison by default
+                self._display_comparison_chart(analysis.tracks)
+            else:
+                # Single track
+                self._display_track_chart(analysis.tracks[0])
 
         # Update metrics and info
         self._display_metrics(analysis)
@@ -629,11 +666,26 @@ class AnalyzePage(ctk.CTkFrame):
         if not self.current_result or not self.current_result.tracks:
             return
 
+        # Check if "Compare All" was selected
+        if "Compare All" in selection:
+            self._display_comparison_chart(self.current_result.tracks)
+            return
+
+        # Individual track selection
         track_id = selection.replace("Track ", "")
         for track in self.current_result.tracks:
             if track.track_id == track_id:
                 self._display_track_chart(track)
                 break
+
+    def _display_comparison_chart(self, tracks: List[TrackData]):
+        """Display comparison chart overlaying all tracks."""
+        if not tracks or len(tracks) < 2:
+            self._display_track_chart(tracks[0] if tracks else None)
+            return
+
+        # Use ChartWidget's comparison method
+        self.chart.plot_track_comparison(tracks)
 
     def _on_filter_change(self, *args):
         """Handle filter change."""
@@ -727,9 +779,74 @@ class AnalyzePage(ctk.CTkFrame):
     def _on_single_file_error(self, error: str):
         """Handle single file processing error."""
         self.process_file_btn.configure(state="normal")
+        self.reanalyze_btn.configure(state="normal")
         self.status_text.configure(text=f"Error: {error}", text_color="red")
         self.status_banner.configure(fg_color="red")
         logger.error(f"Single file processing failed: {error}")
+
+    def _reanalyze_current(self):
+        """Re-analyze the current file from its original path (updates DB with corrected values)."""
+        if not self.current_result:
+            return
+
+        file_path = self.current_result.metadata.file_path
+        if not file_path or not Path(file_path).exists():
+            self.status_text.configure(
+                text=f"Original file not found: {file_path}",
+                text_color="red"
+            )
+            self.status_banner.configure(fg_color="red")
+            logger.error(f"Cannot re-analyze - file not found: {file_path}")
+            return
+
+        logger.info(f"Re-analyzing file: {file_path}")
+        self.reanalyze_btn.configure(state="disabled")
+        self.status_text.configure(text="Re-analyzing...", text_color="#3498db")
+        self.status_banner.configure(fg_color="#1e3d4d")
+
+        # Process in background thread
+        def process():
+            try:
+                processor = Processor()
+                result = processor.process_file(Path(file_path))
+
+                # Save to database (will update existing record)
+                try:
+                    db = get_database()
+                    db.save_analysis(result)
+                    logger.info(f"Re-analyzed and updated DB: {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save to database: {e}")
+
+                # Update UI on main thread
+                self.after(0, lambda: self._on_reanalyze_complete(result))
+
+            except Exception as e:
+                logger.exception(f"Re-analysis error: {e}")
+                self.after(0, lambda: self._on_reanalyze_error(str(e)))
+
+        thread = threading.Thread(target=process, daemon=True)
+        thread.start()
+
+    def _on_reanalyze_complete(self, result: AnalysisResult):
+        """Handle re-analysis completion."""
+        self.reanalyze_btn.configure(state="normal")
+        self.current_result = result
+
+        # Show the updated result
+        self._show_analysis_details(result)
+
+        # Refresh the list
+        self._load_recent_analyses()
+
+        logger.info(f"Re-analysis complete: {result.metadata.filename}")
+
+    def _on_reanalyze_error(self, error: str):
+        """Handle re-analysis error."""
+        self.reanalyze_btn.configure(state="normal")
+        self.status_text.configure(text=f"Re-analysis error: {error}", text_color="red")
+        self.status_banner.configure(fg_color="red")
+        logger.error(f"Re-analysis failed: {error}")
 
     def _export_result(self):
         """Export the current analysis result to Excel."""
@@ -756,8 +873,44 @@ class AnalyzePage(ctk.CTkFrame):
         except ExcelExportError as e:
             logger.error(f"Export failed: {e}")
 
+    def _export_model_results(self):
+        """Export all analysis results for the selected model to Excel."""
+        if not self.current_result:
+            return
+
+        model = self.current_result.metadata.model
+
+        try:
+            # Get all analyses for this model from database
+            db = get_database()
+            model_results = db.get_historical_data(model=model, days_back=36500, limit=10000)
+
+            if not model_results:
+                logger.warning(f"No results found for model: {model}")
+                return
+
+            # Generate default filename
+            default_name = generate_batch_export_filename(model_results, prefix=f"model_{model}")
+
+            # Ask for save location
+            file_path = filedialog.asksaveasfilename(
+                title=f"Export All {model} Results to Excel",
+                defaultextension=".xlsx",
+                initialfile=default_name,
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+            )
+
+            if not file_path:
+                return  # User cancelled
+
+            output_path = export_batch_results(model_results, file_path)
+            logger.info(f"Exported {len(model_results)} results for model {model} to: {output_path}")
+
+        except Exception as e:
+            logger.error(f"Model export failed: {e}")
+
     def _export_chart(self):
-        """Export the current chart to an image file."""
+        """Export the current chart to an image file with analysis info like V2."""
         if not self.current_result:
             return
 
@@ -783,10 +936,272 @@ class AnalyzePage(ctk.CTkFrame):
             return  # User cancelled
 
         try:
-            self.chart.save_figure(file_path, dpi=300)
+            # Export comprehensive chart with analysis info (like V2)
+            self._export_comprehensive_chart(file_path)
             logger.info(f"Exported chart to: {file_path}")
         except Exception as e:
             logger.error(f"Chart export failed: {e}")
+
+    def _export_comprehensive_chart(self, output_path: str):
+        """
+        Export chart with comprehensive analysis info, matching V2 format.
+
+        Creates a multi-panel figure with:
+        - Main error vs position chart
+        - Analysis metrics summary
+        - Status display
+        - Unit information
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.patches import Rectangle
+        import numpy as np
+
+        # Use light mode for export (matches Excel export style)
+        plt.style.use('default')
+
+        result = self.current_result
+        if not result or not result.tracks:
+            raise ValueError("No analysis data to export")
+
+        # Get the currently selected track
+        track_name = self.track_selector.get()
+        track = None
+        for t in result.tracks:
+            if f"Track {t.track_id}" == track_name:
+                track = t
+                break
+
+        if not track:
+            track = result.tracks[0]
+
+        # Create figure with subplots (larger for detailed export) - LIGHT mode
+        fig = plt.figure(figsize=(14, 10), dpi=150, facecolor='white')
+
+        # Title - black text for light mode
+        title = f'Laser Trim Analysis - {result.metadata.model} / {result.metadata.serial}'
+        fig.suptitle(title, fontsize=16, fontweight='bold', color='black')
+
+        # Grid spec for layout
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3,
+                              left=0.08, right=0.95, top=0.92, bottom=0.08)
+
+        # ===== Main error plot (top 2/3) =====
+        ax_main = fig.add_subplot(gs[0:2, :])
+        self._plot_error_vs_position_export(ax_main, track)
+
+        # ===== Unit Info (bottom left) =====
+        ax_info = fig.add_subplot(gs[2, 0])
+        self._plot_unit_info(ax_info, result, track)
+
+        # ===== Metrics summary (bottom middle) =====
+        ax_metrics = fig.add_subplot(gs[2, 1])
+        self._plot_metrics_summary(ax_metrics, track)
+
+        # ===== Status display (bottom right) =====
+        ax_status = fig.add_subplot(gs[2, 2])
+        self._plot_status_display(ax_status, track, result)
+
+        # Save
+        fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+
+    def _plot_error_vs_position_export(self, ax, track: TrackData):
+        """Plot error vs position for export (light mode)."""
+        import numpy as np
+
+        # Colors for light mode export
+        QA_COLORS = {
+            'pass': '#27ae60',
+            'fail': '#e74c3c',
+            'warning': '#f39c12',
+            'trimmed': '#27ae60',
+            'untrimmed': '#3498db',
+            'spec_limit': '#e74c3c',
+        }
+
+        positions = np.array(track.position_data)
+        errors = np.array(track.error_data)
+
+        # Apply offset
+        offset = track.optimal_offset
+        errors_shifted = errors + offset
+
+        # Plot untrimmed data if available
+        if track.untrimmed_positions and track.untrimmed_errors:
+            ax.plot(track.untrimmed_positions, track.untrimmed_errors,
+                   'b--', linewidth=1.5, label='Untrimmed',
+                   color=QA_COLORS['untrimmed'], alpha=0.6)
+
+        # Plot trimmed/shifted data
+        ax.plot(positions, errors_shifted, 'g-', linewidth=2,
+               label='Trimmed (Offset Applied)', color=QA_COLORS['trimmed'])
+
+        # Get spec limits - use stored limits or calculate from linearity_spec
+        upper_limits = track.upper_limits
+        lower_limits = track.lower_limits
+
+        # Fallback: if limits not stored, use flat linearity_spec
+        if (not upper_limits or not lower_limits or len(upper_limits) != len(positions)):
+            if track.linearity_spec and track.linearity_spec > 0:
+                upper_limits = [track.linearity_spec] * len(positions)
+                lower_limits = [-track.linearity_spec] * len(positions)
+                logger.debug(f"Using flat spec limits: +/-{track.linearity_spec}")
+
+        # Plot spec limits
+        if upper_limits and lower_limits and len(upper_limits) == len(positions):
+            ax.plot(positions, upper_limits, 'r--', linewidth=1.5,
+                   label=f'Spec Limits (+/-{track.linearity_spec:.4f})', color=QA_COLORS['spec_limit'])
+            ax.plot(positions, lower_limits, 'r--', linewidth=1.5,
+                   color=QA_COLORS['spec_limit'])
+            ax.fill_between(positions, lower_limits, upper_limits,
+                           alpha=0.15, color=QA_COLORS['spec_limit'])
+
+        # Find and mark fail points
+        fail_indices = []
+        if upper_limits and lower_limits:
+            for i, e in enumerate(errors_shifted):
+                if i < len(upper_limits) and i < len(lower_limits):
+                    if e > upper_limits[i] or e < lower_limits[i]:
+                        fail_indices.append(i)
+
+        if fail_indices:
+            fail_pos = [positions[i] for i in fail_indices]
+            fail_err = [errors_shifted[i] for i in fail_indices]
+            ax.scatter(fail_pos, fail_err, color=QA_COLORS['fail'],
+                      s=100, marker='x', linewidth=3,
+                      label=f'Fail Points ({len(fail_indices)})', zorder=5)
+
+        # Zero line
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+
+        # Labels
+        ax.set_xlabel('Position', fontsize=12)
+        ax.set_ylabel('Error (Volts)', fontsize=12)
+
+        status_str = "PASS" if track.linearity_pass and track.sigma_pass else "FAIL"
+        ax.set_title(f'Track {track.track_id} - {status_str}', fontsize=14, fontweight='bold')
+
+        ax.legend(loc='best', fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+        # Add offset info
+        if offset != 0:
+            ax.text(0.02, 0.98, f'Optimal Offset: {offset:.6f} V',
+                   transform=ax.transAxes, fontsize=10, va='top',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.8))
+
+    def _plot_unit_info(self, ax, result: AnalysisResult, track: TrackData):
+        """Plot unit information panel (light mode)."""
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        # File/unit info
+        info_lines = [
+            f"Model: {result.metadata.model}",
+            f"Serial: {result.metadata.serial}",
+            f"System: {result.metadata.system.value}",
+            f"",
+            f"Track: {track.track_id}",
+            f"Travel Length: {track.travel_length:.3f}" if track.travel_length else "Travel Length: N/A",
+            f"Unit Length: {track.unit_length}" if track.unit_length else "Unit Length: N/A",
+        ]
+
+        # Trim date
+        trim_date = result.metadata.file_date or result.metadata.test_date
+        if trim_date:
+            info_lines.append(f"Trim Date: {trim_date.strftime('%m/%d/%Y')}")
+
+        # Resistance values
+        if track.untrimmed_resistance:
+            info_lines.append(f"Untrimmed R: {track.untrimmed_resistance}")
+        if track.trimmed_resistance:
+            info_lines.append(f"Trimmed R: {track.trimmed_resistance}")
+
+        y_pos = 0.95
+        ax.text(0.05, 0.98, "Unit Information", fontsize=11, fontweight='bold',
+               transform=ax.transAxes, va='top', color='black')
+
+        for line in info_lines:
+            y_pos -= 0.09
+            ax.text(0.05, y_pos, line, fontsize=10, transform=ax.transAxes, va='top', color='black')
+
+    def _plot_metrics_summary(self, ax, track: TrackData):
+        """Plot analysis metrics summary (light mode)."""
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        metrics = [
+            f"Sigma Gradient: {track.sigma_gradient:.6f}",
+            f"Sigma Threshold: {track.sigma_threshold:.6f}",
+            f"Sigma Pass: {'✓ YES' if track.sigma_pass else '✗ NO'}",
+            "",
+            f"Optimal Offset: {track.optimal_offset:.6f}",
+            f"Linearity Error: {track.linearity_error:.6f}",
+            f"Fail Points: {track.linearity_fail_points}",
+            f"Linearity Pass: {'✓ YES' if track.linearity_pass else '✗ NO'}",
+            "",
+            f"Risk Category: {track.risk_category.value}",
+            f"Failure Prob: {track.failure_probability:.1%}" if track.failure_probability else "Failure Prob: N/A"
+        ]
+
+        y_pos = 0.95
+        ax.text(0.05, 0.98, "Analysis Metrics", fontsize=11, fontweight='bold',
+               transform=ax.transAxes, va='top', color='black')
+
+        for metric in metrics:
+            y_pos -= 0.085
+            color = 'black'
+            if '✗' in metric:
+                color = '#e74c3c'
+            elif '✓' in metric:
+                color = '#27ae60'
+
+            ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes,
+                   va='top', color=color)
+
+    def _plot_status_display(self, ax, track: TrackData, result: AnalysisResult):
+        """Plot status display panel (light mode)."""
+        from matplotlib.patches import Rectangle
+
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        # Determine overall status
+        if track.sigma_pass and track.linearity_pass:
+            status = "PASS"
+            color = '#27ae60'
+        else:
+            status = "FAIL"
+            color = '#e74c3c'
+
+        # Draw status box
+        rect = Rectangle((0.1, 0.6), 0.8, 0.25,
+                         linewidth=3, edgecolor=color,
+                         facecolor='white', alpha=0.9)
+        ax.add_patch(rect)
+
+        ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
+               fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
+
+        # Add failure details
+        details = []
+        if not track.sigma_pass:
+            details.append("Sigma: FAIL")
+        if not track.linearity_pass:
+            details.append(f"Linearity: FAIL ({track.linearity_fail_points} pts)")
+
+        if details:
+            ax.text(0.5, 0.45, "\n".join(details), ha='center', va='center',
+                   fontsize=11, color=color, transform=ax.transAxes)
+
+        # Analysis timestamp
+        ax.text(0.5, 0.15, f"Analysis: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+               ha='center', va='center', fontsize=9, color='gray',
+               style='italic', transform=ax.transAxes)
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
 
     # =========================================================================
     # Page Lifecycle

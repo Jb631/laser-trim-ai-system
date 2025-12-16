@@ -18,6 +18,20 @@ This section tracks current known issues that need to be addressed. When fixing 
 
 ## [Unreleased]
 
+### Added - V3 Analyze Page Enhancements (2025-12-15)
+- **Export Model Button**: New "📋 Export Model" button that exports ALL serial numbers for the selected model to a single Excel file
+- **Re-analyze Button**: New "🔄 Re-analyze" button that re-processes the current file from its original path and updates DB with corrected values (useful for fixing old records with linearity calculation bugs)
+- **Track Comparison**: Multi-track units now show "📊 Compare All Tracks" option in the track selector dropdown, displaying side-by-side track comparison with individual status for each track
+- **Comprehensive Chart Export**: Chart export now creates a multi-panel figure like V2, including:
+  - Main error vs position chart
+  - Unit information panel (model, serial, system, track, trim date, resistance values)
+  - Analysis metrics panel (sigma, linearity, risk)
+  - Status display panel with pass/fail indicator
+
+### Fixed - V3 Analyze Page Issues (2025-12-15)
+- **Chart Cutoff**: Increased default chart figure size from (6, 4) to (10, 6) to prevent chart cutoff on the Analyze page
+- **Export Scope**: Clarified export button text to "📄 Export SN" vs "📋 Export Model" to make it clear what each exports
+
 ### Changed
 - **Phase 6: Testing, Performance & Documentation (2025-12-06)** - In Progress (60%)
   - **Day 1-2: Test Expansion** - 178 new tests added
