@@ -54,6 +54,28 @@
 - **Offset applied correctly** - Trimmed data shifted by optimal offset
 - **Dynamic resizing** - Charts resize with window
 
+### 9. Analyze Page Enhancements (Session 2)
+- **Added "Analyze File" button** - Process single file directly from Analyze page
+- **Added detailed linearity diagnostics** - Shows limit at max error position
+- **Warning status in process results** - `[WARN]` shown instead of just `[PASS]/[FAIL]`
+- **Export button** - Already existed, exports current result to Excel
+
+### 10. Process Page Fixes (Session 2)
+- **Warning status display** - Per-file results now show `[WARN]` for partial pass
+- **Summary breakdown** - Shows Pass/Warnings/Failed/Errors in completion summary
+
+### 11. Linearity Pass/Fail Recalculation (Session 2)
+- **Root cause identified**: Old database records have `upper_limits = NULL`
+- **The old processing didn't store position-dependent limits**
+- **Fix**: Now recalculates fail points at display time using `linearity_spec`
+- **Display shows discrepancy**: If stored `fail_points` differs from recalculated, both shown
+- **Chart shows correct fail points**: Red X markers on out-of-spec points
+
+### 12. Chart Export (Session 2)
+- **Added "Export Chart" button** - Saves current chart as PNG, PDF, or JPG
+- **High resolution export** - 300 DPI for print quality
+- **Default filename** - `MODEL_SERIAL_chart.png`
+
 ---
 
 ## KNOWN ISSUES
@@ -61,6 +83,11 @@
 ### Critical
 - [ ] **ML Features not working** - Failure prediction and drift detection not wired up
 - [ ] **System type detection** - May show "Unknown" in some cases
+- [x] **Linearity Pass/Fail Confusion** - FIXED: Now recalculates fail points on display
+  - **Root cause was**: Old DB records had `upper_limits = NULL`
+  - **Fix**: Falls back to `linearity_spec` and recalculates fail points
+  - **Shows discrepancy**: If DB stored value differs from recalculated
+  - **Chart now highlights**: Red X markers on out-of-spec points
 
 ### High Priority
 - [ ] **Process vs Analyze page clarity** - Need clear documentation of workflow

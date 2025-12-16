@@ -323,7 +323,15 @@ class ProcessPage(ctk.CTkFrame):
         # Update results
         if status.status == "completed" and status.result:
             result = status.result
-            status_str = "PASS" if result.overall_status == AnalysisStatus.PASS else "FAIL"
+            # Map status to display string
+            if result.overall_status == AnalysisStatus.PASS:
+                status_str = "PASS"
+            elif result.overall_status == AnalysisStatus.WARNING:
+                status_str = "WARN"
+            elif result.overall_status == AnalysisStatus.FAIL:
+                status_str = "FAIL"
+            else:
+                status_str = "ERROR"
             self._append_result(
                 f"[{status_str}] {status.filename} - "
                 f"{len(result.tracks)} track(s), "
