@@ -356,28 +356,159 @@ class ChartWidget(ctk.CTkFrame):
 
     def plot_track_comparison(
         self,
-        track1_positions: List[float],
-        track1_errors: List[float],
-        track2_positions: List[float],
-        track2_errors: List[float],
+        tracks,  # List[TrackData] or raw data args
+        track1_positions: List[float] = None,
+        track1_errors: List[float] = None,
+        track2_positions: List[float] = None,
+        track2_errors: List[float] = None,
         track1_label: str = "Track A",
         track2_label: str = "Track B",
         title: str = "Track Comparison",
     ) -> None:
         """
-        Plot side-by-side track comparison.
+        Plot track comparison - either from TrackData objects or raw arrays.
 
         Args:
-            track1_positions: Track 1 positions
-            track1_errors: Track 1 errors
-            track2_positions: Track 2 positions
-            track2_errors: Track 2 errors
+            tracks: List of TrackData objects (if provided, ignores other args)
+            track1_positions: Track 1 positions (for raw data mode)
+            track1_errors: Track 1 errors (for raw data mode)
+            track2_positions: Track 2 positions (for raw data mode)
+            track2_errors: Track 2 errors (for raw data mode)
             track1_label: Label for track 1
             track2_label: Label for track 2
             title: Chart title
         """
         self.clear()
 
+        # Detect if tracks is a list of TrackData objects
+        is_track_data = (hasattr(tracks, '__iter__') and
+                         len(tracks) > 0 and
+                         hasattr(tracks[0], 'position_data'))
+
+        if is_track_data:
+            # TrackData mode - comprehensive comparison
+            self._plot_track_data_comparison(tracks)
+        else:
+            # Raw data mode - simple comparison
+            self._plot_raw_track_comparison(
+                tracks, track1_errors,  # track1_positions, track1_errors
+                track2_positions, track2_errors,
+                track1_label, track2_label, title
+            )
+
+    def _plot_track_data_comparison(self, tracks) -> None:
+        """Plot comprehensive track comparison from TrackData objects."""
+        # Create side-by-side subplots
+        n_tracks = len(tracks)
+        if n_tracks == 1:
+            # Single track, just show it
+            self.plot_error_vs_position(
+                positions=tracks[0].position_data,
+                trimmed_errors=tracks[0].error_data,
+                upper_limits=tracks[0].upper_limits,
+                lower_limits=tracks[0].lower_limits,
+                offset=tracks[0].optimal_offset,
+                title=f"Track {tracks[0].track_id}"
+            )
+            return
+
+        # Multiple tracks - create subplots
+        fig = self.figure
+        fig.clear()
+
+        # Determine status string for each track
+        def get_status_str(track):
+            fail_count = 0
+            if track.upper_limits and track.lower_limits:
+                shifted = [e + track.optimal_offset for e in track.error_data]
+                for i, e in enumerate(shifted):
+                    if i < len(track.upper_limits) and i < len(track.lower_limits):
+                        if e > track.upper_limits[i] or e < track.lower_limits[i]:
+                            fail_count += 1
+            if fail_count > 0:
+                return f"FAIL ({fail_count} pts)"
+            elif not track.sigma_pass:
+                return "FAIL (Sigma)"
+            else:
+                return "PASS"
+
+        # Create subplot for each track
+        track_colors = [COLORS['info'], COLORS['pass'], COLORS['warning'], COLORS['secondary']]
+
+        for idx, track in enumerate(tracks):
+            ax = fig.add_subplot(1, n_tracks, idx + 1)
+            color = track_colors[idx % len(track_colors)]
+
+            if not track.position_data or not track.error_data:
+                ax.text(0.5, 0.5, "No data", ha='center', va='center')
+                ax.set_title(f"Track {track.track_id}")
+                continue
+
+            positions = np.array(track.position_data)
+            errors = np.array(track.error_data) + track.optimal_offset
+
+            # Plot trimmed data
+            ax.plot(positions, errors, color=color, linewidth=self.style.line_width,
+                   label='Trimmed (Shifted)')
+
+            # Plot untrimmed if available
+            if track.untrimmed_positions and track.untrimmed_errors:
+                ax.plot(track.untrimmed_positions, track.untrimmed_errors,
+                       '--', color='gray', alpha=0.6, linewidth=1, label='Untrimmed')
+
+            # Plot spec limits
+            if track.upper_limits and track.lower_limits and len(track.upper_limits) == len(positions):
+                ax.plot(positions, track.upper_limits, 'r--', linewidth=1.5, alpha=0.7)
+                ax.plot(positions, track.lower_limits, 'r--', linewidth=1.5, alpha=0.7)
+                ax.fill_between(positions, track.lower_limits, track.upper_limits,
+                               alpha=0.1, color=COLORS['spec_limit'])
+
+            # Mark fail points
+            fail_indices = []
+            if track.upper_limits and track.lower_limits:
+                for i, e in enumerate(errors):
+                    if i < len(track.upper_limits) and i < len(track.lower_limits):
+                        if e > track.upper_limits[i] or e < track.lower_limits[i]:
+                            fail_indices.append(i)
+            if fail_indices:
+                fail_pos = [positions[i] for i in fail_indices]
+                fail_err = [errors[i] for i in fail_indices]
+                ax.scatter(fail_pos, fail_err, color=COLORS['fail'], s=50, marker='x',
+                          linewidth=2, zorder=5)
+
+            # Zero line
+            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+
+            # Styling
+            status_str = get_status_str(track)
+            status_color = COLORS['pass'] if 'PASS' in status_str else COLORS['fail']
+            ax.set_title(f"Track {track.track_id}: {status_str}",
+                        fontsize=self.style.title_size, color=status_color)
+            ax.set_xlabel('Position', fontsize=self.style.font_size)
+            if idx == 0:
+                ax.set_ylabel('Error (V)', fontsize=self.style.font_size)
+            ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+            # Add offset annotation
+            ax.text(0.02, 0.98, f"Offset: {track.optimal_offset:.6f}",
+                   transform=ax.transAxes, fontsize=8, va='top',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.8))
+
+        fig.suptitle("Track Comparison", fontsize=self.style.title_size + 2)
+        fig.tight_layout()
+        self.canvas.draw()
+
+    def _plot_raw_track_comparison(
+        self,
+        track1_positions: List[float],
+        track1_errors: List[float],
+        track2_positions: List[float],
+        track2_errors: List[float],
+        track1_label: str,
+        track2_label: str,
+        title: str,
+    ) -> None:
+        """Plot simple side-by-side comparison from raw data."""
         # Create two subplots
         ax1 = self.figure.add_subplot(121)
         ax2 = self.figure.add_subplot(122)
