@@ -327,6 +327,10 @@ class TrackResult(Base):
     # Raw data for detailed analysis and comparison
     position_data = Column(SafeJSON, nullable=True)  # Array of position values
     error_data = Column(SafeJSON, nullable=True)     # Array of error values
+    upper_limits = Column(SafeJSON, nullable=True)   # Array of upper spec limits (position-dependent)
+    lower_limits = Column(SafeJSON, nullable=True)   # Array of lower spec limits (position-dependent)
+    untrimmed_positions = Column(SafeJSON, nullable=True)  # Array of untrimmed position values
+    untrimmed_errors = Column(SafeJSON, nullable=True)     # Array of untrimmed error values
     
     # Zone analysis
     worst_zone = Column(Integer)

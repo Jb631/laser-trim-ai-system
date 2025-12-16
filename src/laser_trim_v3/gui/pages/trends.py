@@ -103,9 +103,10 @@ class TrendsPage(ctk.CTkFrame):
         # Main content area
         content = ctk.CTkFrame(self)
         content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        content.grid_columnconfigure(0, weight=3)
-        content.grid_columnconfigure(1, weight=1)
-        content.grid_rowconfigure(0, weight=1)
+        content.grid_columnconfigure(0, weight=4)  # Charts get more space
+        content.grid_columnconfigure(1, weight=1, minsize=200)  # Stats panel - narrower
+        content.grid_rowconfigure(0, weight=2)  # SPC chart - taller
+        content.grid_rowconfigure(1, weight=1)  # Distribution - shorter
 
         # Chart area (left side)
         chart_frame = ctk.CTkFrame(content)
@@ -120,7 +121,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self.chart = ChartWidget(
             chart_frame,
-            style=ChartStyle(figure_size=(10, 5), dpi=100)
+            style=ChartStyle(figure_size=(8, 4), dpi=100)
         )
         self.chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.chart.show_placeholder("Select a model and date range to view trends")
@@ -138,13 +139,13 @@ class TrendsPage(ctk.CTkFrame):
 
         self.dist_chart = ChartWidget(
             dist_frame,
-            style=ChartStyle(figure_size=(10, 3), dpi=100)
+            style=ChartStyle(figure_size=(8, 2.5), dpi=100)
         )
         self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.dist_chart.show_placeholder("Distribution will appear here")
 
-        # Stats panel (right side)
-        stats_frame = ctk.CTkFrame(content)
+        # Stats panel (right side) - use scrollable for smaller screens
+        stats_frame = ctk.CTkScrollableFrame(content)
         stats_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(5, 10), pady=10)
 
         stats_label = ctk.CTkLabel(
@@ -186,7 +187,7 @@ class TrendsPage(ctk.CTkFrame):
         )
         drift_label.pack(padx=15, pady=(20, 10), anchor="w")
 
-        self.drift_text = ctk.CTkTextbox(stats_frame, height=100)
+        self.drift_text = ctk.CTkTextbox(stats_frame, height=80)
         self.drift_text.pack(fill="x", padx=15, pady=5)
         self.drift_text.configure(state="disabled")
         self._update_drift_display(None)
@@ -199,7 +200,7 @@ class TrendsPage(ctk.CTkFrame):
         )
         ml_label.pack(padx=15, pady=(20, 10), anchor="w")
 
-        self.ml_text = ctk.CTkTextbox(stats_frame, height=100)
+        self.ml_text = ctk.CTkTextbox(stats_frame, height=80)
         self.ml_text.pack(fill="x", padx=15, pady=(5, 15))
         self.ml_text.configure(state="disabled")
         self._update_ml_display(None)

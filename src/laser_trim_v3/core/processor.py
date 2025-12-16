@@ -453,7 +453,11 @@ class Processor:
 
         if result.overall_status == AnalysisStatus.PASS:
             summary.passed += 1
-        elif result.overall_status in (AnalysisStatus.FAIL, AnalysisStatus.ERROR):
+        elif result.overall_status == AnalysisStatus.WARNING:
+            summary.warnings += 1
+        elif result.overall_status == AnalysisStatus.ERROR:
+            summary.errors += 1
+        elif result.overall_status == AnalysisStatus.FAIL:
             summary.failed += 1
 
         # Update average sigma

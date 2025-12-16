@@ -1,8 +1,8 @@
 """
-Analyze Page - View and compare results.
+Analyze Page - Browse and view analysis results from database.
 
-Supports single file analysis, track comparison, and final line comparison.
-Wired to the actual Processor and ChartWidget for real analysis.
+This page is for reviewing already-processed files.
+Use the Process Files page to process new files.
 """
 
 import threading
@@ -10,9 +10,8 @@ import customtkinter as ctk
 import logging
 from pathlib import Path
 from tkinter import filedialog
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
-from laser_trim_v3.core.processor import Processor
 from laser_trim_v3.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_v3.gui.widgets.chart import ChartWidget, ChartStyle
 from laser_trim_v3.database import get_database
@@ -23,19 +22,20 @@ logger = logging.getLogger(__name__)
 
 class AnalyzePage(ctk.CTkFrame):
     """
-    Analyze page for viewing and comparing results.
+    Analyze page for browsing and viewing results from database.
 
-    Sub-modes:
-    - Single File: Detailed analysis with charts
-    - Track Compare: Side-by-side TA vs TB
-    - Final Line: Compare to final test data
+    Features:
+    - Browse recent analyses from database
+    - Filter by model, date, and status
+    - View detailed metrics and charts
+    - Export individual results
     """
 
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
         self.current_result: Optional[AnalysisResult] = None
-        self.processor: Optional[Processor] = None
+        self.recent_analyses: List[AnalysisResult] = []
 
         self._create_ui()
 
@@ -43,407 +43,409 @@ class AnalyzePage(ctk.CTkFrame):
         """Create the analyze page UI."""
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
+        header_frame.grid_columnconfigure(1, weight=1)
+
         header = ctk.CTkLabel(
-            self,
+            header_frame,
             text="Analyze Results",
             font=ctk.CTkFont(size=24, weight="bold")
         )
-        header.grid(row=0, column=0, padx=20, pady=20, sticky="w")
+        header.grid(row=0, column=0, sticky="w")
 
-        # Tab view for different analysis modes
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-
-        # Create tabs
-        self.tabview.add("Single File")
-        self.tabview.add("Track Compare")
-        self.tabview.add("Final Line")
-
-        # Single File tab content
-        self._create_single_file_tab()
-
-        # Track Compare tab content
-        self._create_track_compare_tab()
-
-        # Final Line tab content
-        self._create_final_line_tab()
-
-    def _create_single_file_tab(self):
-        """Create the single file analysis tab."""
-        tab = self.tabview.tab("Single File")
-        tab.grid_columnconfigure(0, weight=1)
-        tab.grid_columnconfigure(1, weight=2)
-        tab.grid_rowconfigure(1, weight=1)
-
-        # File selection row
-        select_frame = ctk.CTkFrame(tab)
-        select_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
-
-        select_btn = ctk.CTkButton(
-            select_frame,
-            text="Select File",
-            command=self._select_single_file
+        subtitle = ctk.CTkLabel(
+            header_frame,
+            text="Browse and analyze results from the database",
+            text_color="gray",
+            font=ctk.CTkFont(size=12)
         )
-        select_btn.pack(side="left", padx=15, pady=15)
+        subtitle.grid(row=1, column=0, sticky="w")
 
-        self.single_file_label = ctk.CTkLabel(
-            select_frame,
-            text="No file selected",
-            text_color="gray"
+        # Filter controls row
+        filter_frame = ctk.CTkFrame(self)
+        filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
+
+        # Model filter
+        ctk.CTkLabel(filter_frame, text="Model:").pack(side="left", padx=(15, 5), pady=15)
+        self.model_filter = ctk.CTkOptionMenu(
+            filter_frame,
+            values=["All Models"],
+            command=self._on_filter_change,
+            width=150
         )
-        self.single_file_label.pack(side="left", padx=15, pady=15)
+        self.model_filter.pack(side="left", padx=5, pady=15)
 
-        # Analyze button
-        self.analyze_btn = ctk.CTkButton(
-            select_frame,
-            text="Analyze",
-            command=self._analyze_file,
-            state="disabled",
-            fg_color="green",
-            hover_color="darkgreen"
+        # Days filter
+        ctk.CTkLabel(filter_frame, text="Period:").pack(side="left", padx=(20, 5), pady=15)
+        self.days_filter = ctk.CTkOptionMenu(
+            filter_frame,
+            values=["Today", "Last 7 Days", "Last 30 Days", "All Time"],
+            command=self._on_filter_change,
+            width=120
         )
-        self.analyze_btn.pack(side="left", padx=15, pady=15)
+        self.days_filter.set("Last 7 Days")
+        self.days_filter.pack(side="left", padx=5, pady=15)
 
-        # Save to database checkbox
-        self.save_db_var = ctk.BooleanVar(value=True)
-        save_db_check = ctk.CTkCheckBox(
-            select_frame,
-            text="Save to Database",
-            variable=self.save_db_var
+        # Status filter
+        ctk.CTkLabel(filter_frame, text="Status:").pack(side="left", padx=(20, 5), pady=15)
+        self.status_filter = ctk.CTkOptionMenu(
+            filter_frame,
+            values=["All", "Pass", "Fail"],
+            command=self._on_filter_change,
+            width=100
         )
-        save_db_check.pack(side="left", padx=15, pady=15)
+        self.status_filter.pack(side="left", padx=5, pady=15)
 
-        # Status label
-        self.status_label = ctk.CTkLabel(
-            select_frame,
+        # Refresh button
+        refresh_btn = ctk.CTkButton(
+            filter_frame,
+            text="⟳ Refresh",
+            command=self._load_recent_analyses,
+            width=100
+        )
+        refresh_btn.pack(side="right", padx=15, pady=15)
+
+        # Results count label
+        self.count_label = ctk.CTkLabel(
+            filter_frame,
             text="",
             text_color="gray"
         )
-        self.status_label.pack(side="right", padx=15, pady=15)
+        self.count_label.pack(side="right", padx=10, pady=15)
 
-        # Export button
-        self.export_btn = ctk.CTkButton(
-            select_frame,
-            text="📄 Export",
-            command=self._export_result,
-            state="disabled",
-            width=100
-        )
-        self.export_btn.pack(side="right", padx=5, pady=15)
+        # Main content area
+        content = ctk.CTkFrame(self)
+        content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        content.grid_columnconfigure(0, weight=1, minsize=300)  # List panel
+        content.grid_columnconfigure(1, weight=2)  # Details panel
+        content.grid_rowconfigure(0, weight=1)
 
-        # Results panel (left side)
-        results_frame = ctk.CTkFrame(tab)
-        results_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-        results_frame.grid_columnconfigure(0, weight=1)
-        results_frame.grid_rowconfigure(1, weight=1)
+        # Left panel - analysis list
+        list_frame = ctk.CTkFrame(content)
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        list_frame.grid_rowconfigure(1, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
 
-        results_label = ctk.CTkLabel(
-            results_frame,
-            text="Analysis Results",
+        list_label = ctk.CTkLabel(
+            list_frame,
+            text="Recent Analyses",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        results_label.pack(padx=15, pady=(15, 5), anchor="w")
+        list_label.grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+
+        # Scrollable list of analyses
+        self.analysis_list_frame = ctk.CTkScrollableFrame(list_frame)
+        self.analysis_list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.analysis_list_frame.grid_columnconfigure(0, weight=1)
+
+        # Right panel - details view
+        details_frame = ctk.CTkFrame(content)
+        details_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        details_frame.grid_rowconfigure(3, weight=1)
+        details_frame.grid_columnconfigure(0, weight=1)
 
         # Status banner
-        self.status_banner = ctk.CTkFrame(results_frame, height=60)
-        self.status_banner.pack(fill="x", padx=15, pady=5)
+        self.status_banner = ctk.CTkFrame(details_frame, height=60)
+        self.status_banner.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
 
         self.status_text = ctk.CTkLabel(
             self.status_banner,
-            text="READY",
+            text="Select an analysis",
             font=ctk.CTkFont(size=24, weight="bold"),
             text_color="gray"
         )
-        self.status_text.pack(expand=True, pady=10)
+        self.status_text.pack(expand=True, pady=15)
 
-        # Metrics display
-        self.metrics_text = ctk.CTkTextbox(results_frame, height=300, font=ctk.CTkFont(size=12))
-        self.metrics_text.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.metrics_text.configure(state="disabled")
-        self._update_metrics("Select a file and click 'Analyze' to begin.")
+        # Action buttons row
+        actions_frame = ctk.CTkFrame(details_frame, fg_color="transparent")
+        actions_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=5)
 
-        # Track selector (for multi-track files)
-        track_select_frame = ctk.CTkFrame(results_frame)
-        track_select_frame.pack(fill="x", padx=15, pady=(0, 15))
+        # Export button
+        self.export_btn = ctk.CTkButton(
+            actions_frame,
+            text="📄 Export to Excel",
+            command=self._export_result,
+            state="disabled",
+            width=150
+        )
+        self.export_btn.pack(side="right", padx=5)
 
-        ctk.CTkLabel(track_select_frame, text="Track:").pack(side="left", padx=5)
+        # Track selector
+        ctk.CTkLabel(actions_frame, text="Track:").pack(side="left", padx=(0, 5))
         self.track_selector = ctk.CTkComboBox(
-            track_select_frame,
+            actions_frame,
             values=["All Tracks"],
             command=self._on_track_selected,
-            state="disabled"
+            state="disabled",
+            width=120
         )
-        self.track_selector.pack(side="left", padx=5, fill="x", expand=True)
+        self.track_selector.pack(side="left", padx=5)
 
-        # Chart panel (right side)
-        chart_frame = ctk.CTkFrame(tab)
-        chart_frame.grid(row=1, column=1, sticky="nsew", padx=10, pady=(0, 10))
+        # Details tabview (Chart / Metrics)
+        self.details_tabview = ctk.CTkTabview(details_frame)
+        self.details_tabview.grid(row=2, column=0, sticky="nsew", padx=10, pady=(5, 5))
 
-        chart_label = ctk.CTkLabel(
-            chart_frame,
-            text="Error vs Position Chart",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+        self.details_tabview.add("Chart")
+        self.details_tabview.add("Metrics")
+        self.details_tabview.add("File Info")
 
-        # Chart widget
+        # Chart tab
+        chart_tab = self.details_tabview.tab("Chart")
+        chart_tab.grid_columnconfigure(0, weight=1)
+        chart_tab.grid_rowconfigure(0, weight=1)
+
         self.chart = ChartWidget(
-            chart_frame,
-            style=ChartStyle(figure_size=(8, 5), dpi=100)
-        )
-        self.chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.chart.show_placeholder("Select a file to analyze")
-
-        # Store selected file path
-        self.selected_file: Optional[Path] = None
-
-    def _create_track_compare_tab(self):
-        """Create the track comparison tab."""
-        tab = self.tabview.tab("Track Compare")
-        tab.grid_columnconfigure((0, 1), weight=1)
-        tab.grid_rowconfigure(1, weight=1)
-
-        # File selection
-        select_frame = ctk.CTkFrame(tab)
-        select_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
-
-        select_btn = ctk.CTkButton(
-            select_frame,
-            text="Select File for Comparison",
-            command=self._select_compare_file
-        )
-        select_btn.pack(side="left", padx=15, pady=15)
-
-        self.compare_file_label = ctk.CTkLabel(
-            select_frame,
-            text="No file selected",
-            text_color="gray"
-        )
-        self.compare_file_label.pack(side="left", padx=15, pady=15)
-
-        # Track A chart
-        chart_a_frame = ctk.CTkFrame(tab)
-        chart_a_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
-
-        ctk.CTkLabel(
-            chart_a_frame,
-            text="Track A",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(padx=15, pady=(15, 5), anchor="w")
-
-        self.chart_a = ChartWidget(
-            chart_a_frame,
+            chart_tab,
             style=ChartStyle(figure_size=(6, 4), dpi=100)
         )
-        self.chart_a.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.chart_a.show_placeholder("Track A data")
+        self.chart.pack(fill="both", expand=True, padx=10, pady=10)
+        self.chart.show_placeholder("Select an analysis to view chart")
 
-        # Track B chart
-        chart_b_frame = ctk.CTkFrame(tab)
-        chart_b_frame.grid(row=1, column=1, sticky="nsew", padx=10, pady=(0, 10))
+        # Metrics tab
+        metrics_tab = self.details_tabview.tab("Metrics")
+        self.metrics_text = ctk.CTkTextbox(metrics_tab, font=ctk.CTkFont(size=11, family="Consolas"))
+        self.metrics_text.pack(fill="both", expand=True, padx=10, pady=10)
+        self.metrics_text.configure(state="disabled")
+        self._update_metrics("Select an analysis from the list to view details.")
 
-        ctk.CTkLabel(
-            chart_b_frame,
-            text="Track B",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(padx=15, pady=(15, 5), anchor="w")
+        # File Info tab
+        info_tab = self.details_tabview.tab("File Info")
+        self.info_text = ctk.CTkTextbox(info_tab, font=ctk.CTkFont(size=11, family="Consolas"))
+        self.info_text.pack(fill="both", expand=True, padx=10, pady=10)
+        self.info_text.configure(state="disabled")
+        self._update_info("Select an analysis from the list.")
 
-        self.chart_b = ChartWidget(
-            chart_b_frame,
-            style=ChartStyle(figure_size=(6, 4), dpi=100)
-        )
-        self.chart_b.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.chart_b.show_placeholder("Track B data")
+        # Database info footer
+        db_info_frame = ctk.CTkFrame(details_frame, fg_color="transparent")
+        db_info_frame.grid(row=3, column=0, sticky="sew", padx=15, pady=(5, 10))
 
-        self.compare_file: Optional[Path] = None
-
-    def _create_final_line_tab(self):
-        """Create the final line comparison tab."""
-        tab = self.tabview.tab("Final Line")
-        tab.grid_columnconfigure(0, weight=1)
-        tab.grid_rowconfigure(0, weight=1)
-
-        placeholder = ctk.CTkLabel(
-            tab,
-            text="Final Line Comparison\n\nCompare trim data to final test data.\n\nComing soon in v3.",
+        self.db_info_label = ctk.CTkLabel(
+            db_info_frame,
+            text="",
             text_color="gray",
-            justify="center"
+            font=ctk.CTkFont(size=10)
         )
-        placeholder.grid(row=0, column=0, padx=20, pady=20)
+        self.db_info_label.pack(side="left")
 
-    def _select_single_file(self):
-        """Select a single file for analysis."""
-        file = filedialog.askopenfilename(
-            title="Select Excel File",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
-        )
-        if file:
-            self.selected_file = Path(file)
-            self.single_file_label.configure(text=self.selected_file.name)
-            self.analyze_btn.configure(state="normal")
-            self.status_label.configure(text="Ready to analyze")
-            logger.info(f"Selected file: {file}")
+    # =========================================================================
+    # Data Loading
+    # =========================================================================
 
-    def _select_compare_file(self):
-        """Select a file for track comparison."""
-        file = filedialog.askopenfilename(
-            title="Select Excel File for Comparison",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
-        )
-        if file:
-            self.compare_file = Path(file)
-            self.compare_file_label.configure(text=self.compare_file.name)
-            self._analyze_for_comparison()
+    def _load_recent_analyses(self):
+        """Load recent analyses from database."""
+        self.count_label.configure(text="Loading...")
 
-    def _analyze_file(self):
-        """Analyze the selected file in a background thread."""
-        if not self.selected_file:
-            return
-
-        # Update UI
-        self.analyze_btn.configure(state="disabled")
-        self.status_label.configure(text="Analyzing...")
-        self.status_text.configure(text="ANALYZING...", text_color="orange")
-
-        # Run analysis in background thread
-        thread = threading.Thread(target=self._run_analysis, daemon=True)
+        thread = threading.Thread(target=self._fetch_analyses, daemon=True)
         thread.start()
 
-    def _run_analysis(self):
-        """Run analysis in background thread."""
+    def _fetch_analyses(self):
+        """Fetch analyses in background thread."""
         try:
-            # Initialize processor if needed
-            if self.processor is None:
-                self.processor = Processor()
+            db = get_database()
 
-            # Process file
-            result = self.processor.process_file(self.selected_file)
-            self.current_result = result
+            # Get filter values
+            model = self.model_filter.get()
+            days_str = self.days_filter.get()
+            status = self.status_filter.get()
 
-            # Save to database if enabled
-            if self.save_db_var.get():
-                try:
-                    db = get_database()
-                    db.save_analysis(result)
-                    logger.info(f"Saved analysis to database: {result.metadata.filename}")
-                except Exception as e:
-                    logger.error(f"Failed to save to database: {e}")
+            # Parse days
+            days_map = {
+                "Today": 1,
+                "Last 7 Days": 7,
+                "Last 30 Days": 30,
+                "All Time": 3650,
+            }
+            days_back = days_map.get(days_str, 7)
+
+            # Get historical data
+            analyses = db.get_historical_data(
+                model=None if model == "All Models" else model,
+                days_back=days_back,
+                limit=100
+            )
+
+            # Filter by status if needed
+            if status == "Pass":
+                analyses = [a for a in analyses if a.overall_status == AnalysisStatus.PASS]
+            elif status == "Fail":
+                analyses = [a for a in analyses if a.overall_status == AnalysisStatus.FAIL]
+
+            # Get models list for dropdown
+            models = db.get_models_list()
+
+            # Get database info
+            db_path = db.get_database_path()
+            record_count = db.get_record_count()
 
             # Update UI on main thread
-            self.after(0, lambda: self._display_result(result))
+            self.after(0, lambda: self._display_analyses(analyses, models, db_path, record_count))
 
         except Exception as e:
-            logger.exception(f"Analysis error: {e}")
-            self.after(0, lambda: self._on_analysis_error(str(e)))
+            logger.error(f"Failed to fetch analyses: {e}")
+            self.after(0, lambda: self._show_fetch_error(str(e)))
 
-    def _display_result(self, result: AnalysisResult):
-        """Display analysis results."""
-        self.analyze_btn.configure(state="normal")
-        self.export_btn.configure(state="normal")
+    def _display_analyses(self, analyses: List[AnalysisResult], models: List[str],
+                          db_path: Path, record_count: Dict[str, int]):
+        """Display fetched analyses."""
+        self.recent_analyses = analyses
 
-        # Update status banner
-        if result.overall_status == AnalysisStatus.PASS:
-            self.status_text.configure(text="PASS", text_color="#27ae60")
-            self.status_banner.configure(fg_color="#1e4d2b")
-        elif result.overall_status == AnalysisStatus.FAIL:
-            self.status_text.configure(text="FAIL", text_color="#e74c3c")
-            self.status_banner.configure(fg_color="#4d1e1e")
-        elif result.overall_status == AnalysisStatus.WARNING:
-            self.status_text.configure(text="WARNING", text_color="#f39c12")
-            self.status_banner.configure(fg_color="#4d3d1e")
-        else:
-            self.status_text.configure(text="ERROR", text_color="#e74c3c")
-            self.status_banner.configure(fg_color="#4d1e1e")
+        # Update model dropdown
+        model_values = ["All Models"] + models
+        current = self.model_filter.get()
+        self.model_filter.configure(values=model_values)
+        if current in model_values:
+            self.model_filter.set(current)
 
-        self.status_label.configure(
-            text=f"Completed in {result.processing_time:.2f}s"
+        # Update count
+        self.count_label.configure(text=f"{len(analyses)} results")
+
+        # Update database info
+        self.db_info_label.configure(
+            text=f"Database: {db_path.name} | {record_count.get('analyses', 0)} analyses, {record_count.get('tracks', 0)} tracks"
         )
 
-        # Update metrics display
-        self._display_metrics(result)
+        # Clear existing list
+        for widget in self.analysis_list_frame.winfo_children():
+            widget.destroy()
+
+        if not analyses:
+            no_data_label = ctk.CTkLabel(
+                self.analysis_list_frame,
+                text="No analyses found.\n\nUse 'Process Files' to\nprocess some files first!",
+                text_color="gray",
+                justify="center"
+            )
+            no_data_label.pack(pady=40)
+            return
+
+        # Create list items
+        for i, analysis in enumerate(analyses):
+            self._create_analysis_list_item(analysis, i)
+
+    def _create_analysis_list_item(self, analysis: AnalysisResult, index: int):
+        """Create a clickable item for an analysis."""
+        # Determine status color
+        if analysis.overall_status == AnalysisStatus.PASS:
+            status_color = "#27ae60"
+            status_text = "PASS"
+        elif analysis.overall_status == AnalysisStatus.FAIL:
+            status_color = "#e74c3c"
+            status_text = "FAIL"
+        else:
+            status_color = "#f39c12"
+            status_text = analysis.overall_status.value.upper()
+
+        item_frame = ctk.CTkFrame(self.analysis_list_frame, cursor="hand2")
+        item_frame.pack(fill="x", pady=2)
+
+        # Status indicator
+        status_indicator = ctk.CTkLabel(
+            item_frame,
+            text=status_text,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=status_color,
+            width=40
+        )
+        status_indicator.pack(side="left", padx=(10, 5), pady=8)
+
+        # Info section
+        info_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
+        info_frame.pack(side="left", fill="x", expand=True, padx=5, pady=5)
+
+        filename_label = ctk.CTkLabel(
+            info_frame,
+            text=analysis.metadata.filename[:35] + ("..." if len(analysis.metadata.filename) > 35 else ""),
+            font=ctk.CTkFont(size=12),
+            anchor="w"
+        )
+        filename_label.pack(anchor="w")
+
+        details_text = f"{analysis.metadata.model} | {analysis.metadata.system.value}"
+        if analysis.metadata.file_date:
+            details_text += f" | {analysis.metadata.file_date.strftime('%m/%d %H:%M')}"
+
+        details_label = ctk.CTkLabel(
+            info_frame,
+            text=details_text,
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w"
+        )
+        details_label.pack(anchor="w")
+
+        # Bind click event
+        def on_click(event, a=analysis):
+            self._show_analysis_details(a)
+
+        item_frame.bind("<Button-1>", on_click)
+        status_indicator.bind("<Button-1>", on_click)
+        info_frame.bind("<Button-1>", on_click)
+        filename_label.bind("<Button-1>", on_click)
+        details_label.bind("<Button-1>", on_click)
+
+    # =========================================================================
+    # Details Display
+    # =========================================================================
+
+    def _show_analysis_details(self, analysis: AnalysisResult):
+        """Show details for selected analysis."""
+        self.current_result = analysis
+
+        # Update status banner
+        if analysis.overall_status == AnalysisStatus.PASS:
+            self.status_text.configure(text="PASS", text_color="#27ae60")
+            self.status_banner.configure(fg_color="#1e4d2b")
+        elif analysis.overall_status == AnalysisStatus.FAIL:
+            self.status_text.configure(text="FAIL", text_color="#e74c3c")
+            self.status_banner.configure(fg_color="#4d1e1e")
+        else:
+            self.status_text.configure(text=analysis.overall_status.value.upper(), text_color="#f39c12")
+            self.status_banner.configure(fg_color="#4d3d1e")
+
+        # Enable export
+        self.export_btn.configure(state="normal")
 
         # Update track selector
-        if result.tracks:
-            track_values = ["All Tracks"] + [f"Track {t.track_id}" for t in result.tracks]
+        if analysis.tracks:
+            track_values = [f"Track {t.track_id}" for t in analysis.tracks]
             self.track_selector.configure(values=track_values, state="normal")
-            self.track_selector.set("All Tracks")
+            self.track_selector.set(track_values[0])
 
-        # Display chart for first track
-        if result.tracks:
-            self._display_track_chart(result.tracks[0])
+            # Show chart for first track
+            self._display_track_chart(analysis.tracks[0])
 
-        logger.info(f"Analysis complete: {result.overall_status.value}")
-
-    def _display_metrics(self, result: AnalysisResult):
-        """Display analysis metrics."""
-        lines = []
-
-        # File info
-        lines.append("═══ FILE INFORMATION ═══")
-        lines.append(f"Filename: {result.metadata.filename}")
-        lines.append(f"Model: {result.metadata.model}")
-        lines.append(f"Serial: {result.metadata.serial}")
-        lines.append(f"System: {result.metadata.system.value}")
-        lines.append(f"Date: {result.metadata.file_date.strftime('%Y-%m-%d %H:%M')}")
-        lines.append("")
-
-        # Overall status
-        lines.append("═══ OVERALL STATUS ═══")
-        lines.append(f"Status: {result.overall_status.value}")
-        lines.append(f"Tracks: {len(result.tracks)}")
-        lines.append(f"Processing Time: {result.processing_time:.2f}s")
-        lines.append("")
-
-        # Track details
-        for track in result.tracks:
-            lines.append(f"═══ TRACK {track.track_id} ═══")
-            lines.append(f"Status: {track.status.value}")
-            lines.append("")
-            lines.append("Sigma Analysis:")
-            lines.append(f"  Gradient: {track.sigma_gradient:.6f}")
-            lines.append(f"  Threshold: {track.sigma_threshold:.6f}")
-            lines.append(f"  Pass: {'✓' if track.sigma_pass else '✗'}")
-            lines.append("")
-            lines.append("Linearity Analysis:")
-            lines.append(f"  Optimal Offset: {track.optimal_offset:.6f}")
-            lines.append(f"  Max Error: {track.linearity_error:.6f}")
-            lines.append(f"  Fail Points: {track.linearity_fail_points}")
-            lines.append(f"  Pass: {'✓' if track.linearity_pass else '✗'}")
-            lines.append("")
-            lines.append("Risk Assessment:")
-            lines.append(f"  Probability: {track.failure_probability:.1%}" if track.failure_probability is not None else "  Probability: N/A")
-            lines.append(f"  Category: {track.risk_category.value}")
-            lines.append("")
-
-            if track.unit_length:
-                lines.append(f"Unit Length: {track.unit_length}")
-            if track.travel_length:
-                lines.append(f"Travel Length: {track.travel_length}")
-            if track.untrimmed_resistance:
-                lines.append(f"Untrimmed R: {track.untrimmed_resistance}")
-            if track.trimmed_resistance:
-                lines.append(f"Trimmed R: {track.trimmed_resistance}")
-            lines.append("")
-
-        self._update_metrics("\n".join(lines))
+        # Update metrics and info
+        self._display_metrics(analysis)
+        self._display_file_info(analysis)
 
     def _display_track_chart(self, track: TrackData):
-        """Display chart for a single track."""
+        """Display chart for a track."""
         if not track.position_data or not track.error_data:
-            self.chart.show_placeholder("No data available for chart")
+            self.chart.show_placeholder("No chart data available\n\n(Position/error data not stored)")
             return
+
+        # Use stored spec limits (position-dependent) from database
+        upper_limits = track.upper_limits
+        lower_limits = track.lower_limits
+
+        # If limits not stored (old data), fall back to flat calculation
+        if not upper_limits or not lower_limits:
+            if track.linearity_spec and track.linearity_spec > 0:
+                upper_limits = [track.linearity_spec] * len(track.position_data)
+                lower_limits = [-track.linearity_spec] * len(track.position_data)
 
         # Get fail point indices
         fail_indices = None
-        if track.linearity_fail_points > 0 and track.upper_limits and track.lower_limits:
+        if track.linearity_fail_points > 0 and upper_limits and lower_limits:
             fail_indices = []
             shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
-                if i < len(track.upper_limits) and i < len(track.lower_limits):
-                    if e > track.upper_limits[i] or e < track.lower_limits[i]:
+                if i < len(upper_limits) and i < len(lower_limits):
+                    if e > upper_limits[i] or e < lower_limits[i]:
                         fail_indices.append(i)
 
         status_str = "PASS" if track.status == AnalysisStatus.PASS else track.status.value
@@ -452,8 +454,8 @@ class AnalyzePage(ctk.CTkFrame):
         self.chart.plot_error_vs_position(
             positions=track.position_data,
             trimmed_errors=track.error_data,
-            upper_limits=track.upper_limits,
-            lower_limits=track.lower_limits,
+            upper_limits=upper_limits,
+            lower_limits=lower_limits,
             untrimmed_positions=track.untrimmed_positions,
             untrimmed_errors=track.untrimmed_errors,
             offset=track.optimal_offset,
@@ -461,30 +463,127 @@ class AnalyzePage(ctk.CTkFrame):
             fail_points=fail_indices
         )
 
+    def _display_metrics(self, analysis: AnalysisResult):
+        """Display analysis metrics."""
+        lines = []
+
+        # Overall status
+        lines.append("═══════════════════════════════════════")
+        lines.append(f"  OVERALL STATUS: {analysis.overall_status.value.upper()}")
+        lines.append("═══════════════════════════════════════")
+        lines.append("")
+
+        # Track details
+        for track in analysis.tracks:
+            lines.append(f"━━━ TRACK {track.track_id} ━━━")
+            lines.append(f"  Status: {track.status.value}")
+            lines.append("")
+
+            # Sigma Analysis
+            lines.append("  SIGMA ANALYSIS:")
+            lines.append(f"    Gradient:  {track.sigma_gradient:.6f}")
+            lines.append(f"    Threshold: {track.sigma_threshold:.6f}")
+            margin = track.sigma_threshold - track.sigma_gradient
+            lines.append(f"    Margin:    {margin:.6f}")
+            lines.append(f"    Result:    {'✓ PASS' if track.sigma_pass else '✗ FAIL'}")
+            lines.append("")
+
+            # Linearity Analysis
+            lines.append("  LINEARITY ANALYSIS:")
+            lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
+            lines.append(f"    Max Error:  {track.linearity_error:.6f}")
+            lines.append(f"    Offset:     {track.optimal_offset:.6f}")
+            lines.append(f"    Fail Pts:   {track.linearity_fail_points}")
+            lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
+            lines.append("")
+
+            # Risk Assessment
+            lines.append("  RISK ASSESSMENT:")
+            if track.failure_probability is not None:
+                lines.append(f"    Probability: {track.failure_probability:.1%}")
+            else:
+                lines.append(f"    Probability: N/A")
+            lines.append(f"    Category:    {track.risk_category.value}")
+            lines.append("")
+
+            # Unit Properties (if available)
+            if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance:
+                lines.append("  UNIT PROPERTIES:")
+                if track.unit_length:
+                    lines.append(f"    Unit Length: {track.unit_length:.4f}")
+                if track.untrimmed_resistance:
+                    lines.append(f"    Untrimmed R: {track.untrimmed_resistance:.2f}")
+                if track.trimmed_resistance:
+                    lines.append(f"    Trimmed R:   {track.trimmed_resistance:.2f}")
+                lines.append("")
+
+        self._update_metrics("\n".join(lines))
+
+    def _display_file_info(self, analysis: AnalysisResult):
+        """Display file information."""
+        lines = []
+
+        lines.append("═══════════════════════════════════════")
+        lines.append("  FILE INFORMATION")
+        lines.append("═══════════════════════════════════════")
+        lines.append("")
+
+        lines.append(f"  Filename:    {analysis.metadata.filename}")
+        lines.append(f"  Model:       {analysis.metadata.model}")
+        lines.append(f"  Serial:      {analysis.metadata.serial}")
+        lines.append(f"  System:      {analysis.metadata.system.value}")
+        lines.append("")
+
+        lines.append(f"  File Date:   {analysis.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        if analysis.metadata.test_date:
+            lines.append(f"  Test Date:   {analysis.metadata.test_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+
+        lines.append(f"  Multi-Track: {'Yes' if analysis.metadata.has_multi_tracks else 'No'}")
+        lines.append(f"  Track Count: {len(analysis.tracks)}")
+        lines.append("")
+
+        lines.append("───────────────────────────────────────")
+        lines.append("  PROCESSING INFO")
+        lines.append("───────────────────────────────────────")
+        lines.append("")
+        lines.append(f"  Processing Time: {analysis.processing_time:.2f}s")
+        lines.append(f"  File Path: {analysis.metadata.file_path}")
+
+        self._update_info("\n".join(lines))
+
     def _on_track_selected(self, selection: str):
         """Handle track selection change."""
         if not self.current_result or not self.current_result.tracks:
             return
 
-        if selection == "All Tracks":
-            # Show first track
-            self._display_track_chart(self.current_result.tracks[0])
-        else:
-            # Find selected track
-            track_id = selection.replace("Track ", "")
-            for track in self.current_result.tracks:
-                if track.track_id == track_id:
-                    self._display_track_chart(track)
-                    break
+        track_id = selection.replace("Track ", "")
+        for track in self.current_result.tracks:
+            if track.track_id == track_id:
+                self._display_track_chart(track)
+                break
 
-    def _on_analysis_error(self, error: str):
-        """Handle analysis error."""
-        self.analyze_btn.configure(state="normal")
-        self.status_text.configure(text="ERROR", text_color="#e74c3c")
-        self.status_banner.configure(fg_color="#4d1e1e")
-        self.status_label.configure(text="Analysis failed")
-        self._update_metrics(f"Analysis failed:\n\n{error}")
-        self.chart.show_placeholder(f"Error: {error}")
+    def _on_filter_change(self, *args):
+        """Handle filter change."""
+        self._load_recent_analyses()
+
+    def _show_fetch_error(self, error: str):
+        """Show fetch error."""
+        self.count_label.configure(text="Error")
+
+        for widget in self.analysis_list_frame.winfo_children():
+            widget.destroy()
+
+        error_label = ctk.CTkLabel(
+            self.analysis_list_frame,
+            text=f"Error loading data:\n{error}",
+            text_color="red"
+        )
+        error_label.pack(pady=20)
+
+    # =========================================================================
+    # Helper Methods
+    # =========================================================================
 
     def _update_metrics(self, text: str):
         """Update metrics display."""
@@ -493,65 +592,12 @@ class AnalyzePage(ctk.CTkFrame):
         self.metrics_text.insert("end", text)
         self.metrics_text.configure(state="disabled")
 
-    def _analyze_for_comparison(self):
-        """Analyze file for track comparison."""
-        if not self.compare_file:
-            return
-
-        def run():
-            try:
-                if self.processor is None:
-                    self.processor = Processor()
-
-                result = self.processor.process_file(self.compare_file)
-                self.after(0, lambda: self._display_comparison(result))
-            except Exception as e:
-                logger.error(f"Comparison analysis error: {e}")
-                self.after(0, lambda: self._show_comparison_error(str(e)))
-
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-
-    def _display_comparison(self, result: AnalysisResult):
-        """Display track comparison."""
-        tracks = result.tracks
-
-        if len(tracks) >= 1:
-            track_a = tracks[0]
-            if track_a.position_data and track_a.error_data:
-                self.chart_a.plot_error_vs_position(
-                    positions=track_a.position_data,
-                    trimmed_errors=track_a.error_data,
-                    upper_limits=track_a.upper_limits,
-                    lower_limits=track_a.lower_limits,
-                    offset=track_a.optimal_offset,
-                    title=f"Track A - {'PASS' if track_a.sigma_pass and track_a.linearity_pass else 'FAIL'}"
-                )
-            else:
-                self.chart_a.show_placeholder("No data for Track A")
-        else:
-            self.chart_a.show_placeholder("No Track A found")
-
-        if len(tracks) >= 2:
-            track_b = tracks[1]
-            if track_b.position_data and track_b.error_data:
-                self.chart_b.plot_error_vs_position(
-                    positions=track_b.position_data,
-                    trimmed_errors=track_b.error_data,
-                    upper_limits=track_b.upper_limits,
-                    lower_limits=track_b.lower_limits,
-                    offset=track_b.optimal_offset,
-                    title=f"Track B - {'PASS' if track_b.sigma_pass and track_b.linearity_pass else 'FAIL'}"
-                )
-            else:
-                self.chart_b.show_placeholder("No data for Track B")
-        else:
-            self.chart_b.show_placeholder("No Track B found")
-
-    def _show_comparison_error(self, error: str):
-        """Show comparison error."""
-        self.chart_a.show_placeholder(f"Error: {error}")
-        self.chart_b.show_placeholder(f"Error: {error}")
+    def _update_info(self, text: str):
+        """Update info display."""
+        self.info_text.configure(state="normal")
+        self.info_text.delete("1.0", "end")
+        self.info_text.insert("end", text)
+        self.info_text.configure(state="disabled")
 
     def _export_result(self):
         """Export the current analysis result to Excel."""
@@ -573,21 +619,22 @@ class AnalyzePage(ctk.CTkFrame):
             return  # User cancelled
 
         try:
-            self.status_label.configure(text="Exporting...")
             output_path = export_single_result(self.current_result, file_path)
-            self.status_label.configure(text=f"Exported: {output_path.name}")
             logger.info(f"Exported analysis to: {output_path}")
         except ExcelExportError as e:
-            self.status_label.configure(text=f"Export failed: {str(e)[:30]}")
             logger.error(f"Export failed: {e}")
+
+    # =========================================================================
+    # Page Lifecycle
+    # =========================================================================
 
     def on_show(self):
         """Called when the page is shown."""
         logger.debug("Analyze page shown")
+        # Load recent analyses when page is shown
+        self._load_recent_analyses()
 
     def load_result(self, result: AnalysisResult):
         """Load an analysis result from another page (e.g., Process page)."""
         self.current_result = result
-        self.single_file_label.configure(text=result.metadata.filename)
-        self.tabview.set("Single File")
-        self._display_result(result)
+        self._show_analysis_details(result)

@@ -277,6 +277,7 @@ class BatchSummary(BaseAnalysisModel):
     processed: int = 0
     passed: int = 0
     failed: int = 0
+    warnings: int = 0  # Pass linearity but fail sigma (or vice versa)
     skipped: int = 0
     errors: int = 0
 
