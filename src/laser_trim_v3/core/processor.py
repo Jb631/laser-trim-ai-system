@@ -477,30 +477,53 @@ class Processor:
             summary.high_risk_count += 1
 
     def _is_processed(self, file_path: Path) -> bool:
-        """Check if file has already been processed."""
-        # Quick check using cached hashes
+        """Check if file has already been processed.
+
+        Uses cached hashes if loaded (faster for batch), otherwise queries database.
+        """
         try:
-            file_hash = self._quick_hash(file_path)
-            return file_hash in self._processed_hashes
-        except Exception:
+            # If we have cached hashes, use them (faster for batch processing)
+            if self._processed_hashes:
+                file_hash = self._calculate_file_hash(file_path)
+                return file_hash in self._processed_hashes
+
+            # Otherwise query database directly
+            from laser_trim_v3.database import get_database
+            db = get_database()
+            return db.is_file_processed(file_path)
+        except Exception as e:
+            logger.warning(f"Could not check if file is processed: {e}")
             return False
 
-    def _quick_hash(self, file_path: Path) -> str:
-        """Calculate quick hash using file metadata + partial content."""
-        stat = file_path.stat()
-        # Combine size, mtime, and first 1KB
-        hasher = hashlib.md5()
-        hasher.update(str(stat.st_size).encode())
-        hasher.update(str(stat.st_mtime).encode())
+    def _calculate_file_hash(self, file_path: Path) -> str:
+        """Calculate SHA-256 hash of a file (matches database format)."""
+        sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
-            hasher.update(f.read(1024))
-        return hasher.hexdigest()
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
 
     def _load_processed_hashes(self) -> None:
-        """Load processed file hashes from database."""
-        # TODO: Implement database lookup
-        # For now, start fresh each session
+        """Load processed file hashes from database into memory cache.
+
+        This pre-loads hashes for faster checking during batch processing.
+        Uses SHA-256 hashes stored in the ProcessedFile table.
+        """
         self._processed_hashes = set()
+        try:
+            from laser_trim_v3.database import get_database
+            from laser_trim_v3.database.models import ProcessedFile as DBProcessedFile
+
+            db = get_database()
+            with db.session() as session:
+                # Load all processed file hashes into memory for fast lookup
+                hashes = session.query(DBProcessedFile.file_hash).all()
+                self._processed_hashes = set(row.file_hash for row in hashes)
+
+            logger.info(f"Loaded {len(self._processed_hashes)} processed file hashes from database")
+        except Exception as e:
+            logger.warning(f"Could not load processed hashes from database: {e}")
+            self._processed_hashes = set()
 
     def _create_error_result(
         self, metadata: FileMetadata, error_msg: str, start_time: float

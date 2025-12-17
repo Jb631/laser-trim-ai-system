@@ -282,11 +282,18 @@ class AnalyzePage(ctk.CTkFrame):
     # =========================================================================
 
     def _bind_mousewheel_scroll(self, combobox):
-        """Bind mousewheel events to scroll through combobox values."""
-        def on_mousewheel(event):
+        """
+        Bind mousewheel events to CTkComboBox dropdown.
+
+        CTkComboBox creates a dropdown window dynamically. We need to:
+        1. Bind to the combobox itself for scrolling when dropdown is closed
+        2. Hook into dropdown creation to enable mousewheel scrolling in the list
+        """
+        def on_mousewheel_closed(event):
+            """Scroll through values when dropdown is closed."""
             values = combobox.cget("values")
             if not values:
-                return
+                return "break"
 
             current = combobox.get()
             try:
@@ -296,25 +303,96 @@ class AnalyzePage(ctk.CTkFrame):
 
             # Scroll direction (Windows: event.delta, Linux: event.num)
             if hasattr(event, 'delta'):
-                # Windows
                 direction = -1 if event.delta > 0 else 1
             else:
-                # Linux
                 direction = -1 if event.num == 4 else 1
 
             new_idx = current_idx + direction
             if 0 <= new_idx < len(values):
                 combobox.set(values[new_idx])
-                # Trigger command callback if defined
                 command = combobox.cget("command")
                 if command:
                     command(values[new_idx])
+            return "break"
 
-        # Bind for Windows
-        combobox.bind("<MouseWheel>", on_mousewheel)
-        # Bind for Linux
-        combobox.bind("<Button-4>", on_mousewheel)
-        combobox.bind("<Button-5>", on_mousewheel)
+        # Bind for scrolling when dropdown is closed (hover over combobox)
+        combobox.bind("<MouseWheel>", on_mousewheel_closed)
+        combobox.bind("<Button-4>", on_mousewheel_closed)
+        combobox.bind("<Button-5>", on_mousewheel_closed)
+
+        # Patch the dropdown open method to add mousewheel scrolling
+        if hasattr(combobox, '_open_dropdown_menu'):
+            original_open = combobox._open_dropdown_menu
+
+            def patched_open(*args, **kwargs):
+                result = original_open(*args, **kwargs)
+                # After dropdown opens, bind mousewheel to it
+                combobox.after(10, lambda: self._enable_dropdown_scroll(combobox))
+                return result
+
+            combobox._open_dropdown_menu = patched_open
+
+    def _enable_dropdown_scroll(self, combobox):
+        """Enable mousewheel scrolling on the open dropdown."""
+        try:
+            # CTkComboBox stores dropdown in _dropdown_menu
+            if hasattr(combobox, '_dropdown_menu') and combobox._dropdown_menu:
+                dropdown = combobox._dropdown_menu
+
+                # Find the scrollable frame's canvas - CTkScrollableDropdownFrame structure
+                canvas = None
+
+                # Try different attribute names used by CTkScrollableDropdownFrame
+                if hasattr(dropdown, '_scrollable_frame'):
+                    sf = dropdown._scrollable_frame
+                    if hasattr(sf, '_parent_canvas'):
+                        canvas = sf._parent_canvas
+                    elif hasattr(sf, '_canvas'):
+                        canvas = sf._canvas
+                elif hasattr(dropdown, '_canvas'):
+                    canvas = dropdown._canvas
+
+                # Search children if not found
+                if not canvas:
+                    def find_canvas(widget):
+                        for child in widget.winfo_children():
+                            child_type = str(type(child)).lower()
+                            if 'canvas' in child_type:
+                                return child
+                            found = find_canvas(child)
+                            if found:
+                                return found
+                        return None
+                    canvas = find_canvas(dropdown)
+
+                if canvas:
+                    def scroll_dropdown(event):
+                        """Handle mousewheel in dropdown."""
+                        try:
+                            # Scroll direction
+                            delta = -1 * (event.delta // 120) if event.delta else (-1 if event.num == 4 else 1)
+                            canvas.yview_scroll(delta, "units")
+                        except Exception:
+                            pass
+                        return "break"
+
+                    # Bind globally on the dropdown toplevel window
+                    dropdown.bind_all("<MouseWheel>", scroll_dropdown)
+                    dropdown.bind_all("<Button-4>", scroll_dropdown)
+                    dropdown.bind_all("<Button-5>", scroll_dropdown)
+
+                    # Clean up when dropdown closes
+                    def on_destroy(event):
+                        try:
+                            dropdown.unbind_all("<MouseWheel>")
+                            dropdown.unbind_all("<Button-4>")
+                            dropdown.unbind_all("<Button-5>")
+                        except Exception:
+                            pass
+
+                    dropdown.bind("<Destroy>", on_destroy)
+        except Exception as e:
+            logger.debug(f"Could not enable dropdown scroll: {e}")
 
     # =========================================================================
     # Data Loading

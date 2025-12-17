@@ -673,6 +673,245 @@ class ChartWidget(ctk.CTkFrame):
         if self.figure:
             self.figure.savefig(filepath, dpi=dpi, bbox_inches='tight', facecolor='white')
 
+    def plot_pass_rate_bars(
+        self,
+        models: List[str],
+        pass_rates: List[float],
+        sample_counts: List[int],
+        title: str = "Model Pass Rates",
+        highlight_threshold: float = 80.0,
+    ) -> None:
+        """
+        Plot horizontal bar chart for model pass rates.
+
+        Args:
+            models: List of model names
+            pass_rates: Pass rate percentages
+            sample_counts: Number of samples per model
+            title: Chart title
+            highlight_threshold: Pass rate below this is highlighted in red
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not models:
+            self.show_placeholder("No models to display")
+            return
+
+        # Limit to top 15 models for readability
+        max_models = 15
+        if len(models) > max_models:
+            models = models[:max_models]
+            pass_rates = pass_rates[:max_models]
+            sample_counts = sample_counts[:max_models]
+
+        y_pos = np.arange(len(models))
+
+        # Color bars based on pass rate threshold
+        colors = [
+            COLORS['pass'] if pr >= highlight_threshold else COLORS['fail']
+            for pr in pass_rates
+        ]
+
+        # Create horizontal bar chart
+        bars = ax.barh(y_pos, pass_rates, color=colors, alpha=0.8, edgecolor='white')
+
+        # Add sample count labels at end of bars
+        for i, (bar, count, rate) in enumerate(zip(bars, sample_counts, pass_rates)):
+            width = bar.get_width()
+            label_x = width + 1 if width < 90 else width - 10
+            h_align = 'left' if width < 90 else 'right'
+            label_color = COLORS['text'] if self.style.dark_mode else 'black'
+
+            # Show pass rate and sample count
+            ax.text(label_x, bar.get_y() + bar.get_height() / 2,
+                   f'{rate:.0f}% (n={count})',
+                   va='center', ha=h_align,
+                   fontsize=self.style.font_size - 1,
+                   color=label_color if width < 90 else 'white')
+
+        # Add threshold line
+        ax.axvline(x=highlight_threshold, color=COLORS['warning'],
+                  linestyle='--', linewidth=2, label=f'{highlight_threshold}% threshold')
+
+        # Styling
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(models, fontsize=self.style.font_size - 1)
+        ax.set_xlabel('Pass Rate (%)', fontsize=self.style.font_size)
+        ax.set_xlim(0, 105)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
+        ax.legend(loc='lower right', fontsize=self.style.font_size - 2)
+
+        # Invert y-axis so highest pass rate is at top
+        ax.invert_yaxis()
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_sigma_scatter(
+        self,
+        dates: List[Any],
+        sigma_values: List[float],
+        pass_flags: List[bool],
+        threshold: Optional[float] = None,
+        rolling_avg: Optional[List[float]] = None,
+        rolling_dates: Optional[List[Any]] = None,
+        title: str = "Sigma Gradient Trend",
+        ylabel: str = "Sigma Gradient",
+    ) -> None:
+        """
+        Plot sigma gradient scatter with threshold line and rolling average.
+
+        Args:
+            dates: X-axis dates
+            sigma_values: Sigma gradient values
+            pass_flags: Boolean pass/fail for each point
+            threshold: Threshold line to show
+            rolling_avg: Rolling average values (optional)
+            rolling_dates: Dates for rolling average (optional)
+            title: Chart title
+            ylabel: Y-axis label
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not sigma_values or len(sigma_values) < 2:
+            self.show_placeholder("Insufficient data for scatter plot")
+            return
+
+        x = list(range(len(sigma_values)))
+
+        # Separate pass/fail points
+        pass_x = [i for i, p in enumerate(pass_flags) if p]
+        pass_y = [sigma_values[i] for i in pass_x]
+        fail_x = [i for i, p in enumerate(pass_flags) if not p]
+        fail_y = [sigma_values[i] for i in fail_x]
+
+        # Plot points
+        if pass_x:
+            ax.scatter(pass_x, pass_y, color=COLORS['pass'], s=30, alpha=0.7,
+                      label='Pass', zorder=3)
+        if fail_x:
+            ax.scatter(fail_x, fail_y, color=COLORS['fail'], s=30, alpha=0.7,
+                      label='Fail', zorder=3)
+
+        # Plot threshold line
+        if threshold is not None:
+            ax.axhline(y=threshold, color=COLORS['warning'], linestyle='--',
+                      linewidth=2, label=f'Threshold: {threshold:.4f}', zorder=2)
+
+        # Plot rolling average line
+        if rolling_avg and len(rolling_avg) > 1:
+            rolling_x = list(range(len(rolling_avg)))
+            ax.plot(rolling_x, rolling_avg, color=COLORS['info'], linewidth=2,
+                   alpha=0.9, label='Rolling Avg', zorder=4)
+
+        # X-axis labels - show dates if available
+        if dates and len(dates) == len(sigma_values):
+            # Show subset of date labels to avoid crowding
+            n_labels = min(10, len(dates))
+            step = max(1, len(dates) // n_labels)
+            tick_positions = list(range(0, len(dates), step))
+            tick_labels = [str(dates[i]) if i < len(dates) else '' for i in tick_positions]
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels, rotation=45, ha='right',
+                              fontsize=self.style.font_size - 2)
+
+        # Styling
+        ax.set_xlabel('Sample', fontsize=self.style.font_size)
+        ax.set_ylabel(ylabel, fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.legend(loc='best', fontsize=self.style.font_size - 2)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        # Set y-axis minimum to 0
+        ax.set_ylim(bottom=0)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_alert_summary(
+        self,
+        models: List[str],
+        alerts: List[Dict[str, Any]],
+        title: str = "Models Requiring Attention",
+    ) -> None:
+        """
+        Plot alert summary for models requiring attention.
+
+        Args:
+            models: List of model names with alerts
+            alerts: List of alert details per model
+            title: Chart title
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not models:
+            self.show_placeholder("No alerts - all models performing well!")
+            return
+
+        # Limit to top 10 models
+        max_models = 10
+        if len(models) > max_models:
+            models = models[:max_models]
+            alerts = alerts[:max_models]
+
+        y_pos = np.arange(len(models))
+
+        # Extract pass rates for bar width
+        pass_rates = [a.get('pass_rate', 0) for a in alerts]
+
+        # Color based on severity
+        colors = []
+        for a in alerts:
+            severity = a.get('severity', 'Medium')
+            if severity == 'High':
+                colors.append(COLORS['fail'])
+            else:
+                colors.append(COLORS['warning'])
+
+        # Create horizontal bar chart
+        bars = ax.barh(y_pos, pass_rates, color=colors, alpha=0.8, edgecolor='white')
+
+        # Add alert count indicators
+        for i, (bar, alert) in enumerate(zip(bars, alerts)):
+            width = bar.get_width()
+            alert_count = len(alert.get('alerts', []))
+            severity = alert.get('severity', 'Medium')
+
+            # Alert icon based on severity
+            icon = '!!' if severity == 'High' else '!'
+
+            # Show alert info
+            label_x = width + 2
+            ax.text(label_x, bar.get_y() + bar.get_height() / 2,
+                   f'{icon} {alert_count} alert(s)',
+                   va='center', ha='left',
+                   fontsize=self.style.font_size - 1,
+                   color=COLORS['fail'] if severity == 'High' else COLORS['warning'])
+
+        # Add 80% threshold line
+        ax.axvline(x=80, color=COLORS['info'], linestyle='--',
+                  linewidth=2, alpha=0.7, label='80% threshold')
+
+        # Styling
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(models, fontsize=self.style.font_size - 1)
+        ax.set_xlabel('Pass Rate (%)', fontsize=self.style.font_size)
+        ax.set_xlim(0, 105)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
+        ax.legend(loc='lower right', fontsize=self.style.font_size - 2)
+        ax.invert_yaxis()
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
     def destroy(self):
         """Clean up matplotlib resources."""
         # Cancel any pending resize jobs

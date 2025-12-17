@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, func, and_, or_, desc, text
+from sqlalchemy import create_engine, func, and_, or_, desc, text, case
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -1130,6 +1130,367 @@ class DatabaseManager:
                 .all()
             )
             return [m[0] for m in models if m[0]]
+
+    # =========================================================================
+    # Trends Page Methods (Active Models Summary)
+    # =========================================================================
+
+    def get_active_models_summary(
+        self,
+        days_back: int = 90,
+        min_samples: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Get summary statistics for all models with recent activity.
+
+        Args:
+            days_back: Only include models with files in this period
+            min_samples: Minimum samples required for inclusion
+
+        Returns:
+            List of model summaries sorted by sample count descending
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all models with recent activity
+            model_data = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBAnalysisResult.id).label('total'),
+                    func.sum(
+                        case(
+                            (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                            else_=0
+                        )
+                    ).label('passed'),
+                    func.min(DBAnalysisResult.file_date).label('first_date'),
+                    func.max(DBAnalysisResult.file_date).label('last_date'),
+                )
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    or_(
+                        DBAnalysisResult.file_date >= cutoff_date,
+                        DBAnalysisResult.timestamp >= cutoff_date
+                    )
+                )
+                .group_by(DBAnalysisResult.model)
+                .having(func.count(DBAnalysisResult.id) >= min_samples)
+                .all()
+            )
+
+            results = []
+            for model, total, passed, first_date, last_date in model_data:
+                if not model or total == 0:
+                    continue
+
+                passed = passed or 0
+                pass_rate = (passed / total * 100)
+
+                # Get average sigma gradient for this model
+                sigma_data = (
+                    session.query(
+                        func.avg(DBTrackResult.sigma_gradient),
+                        func.avg(DBTrackResult.sigma_threshold),
+                    )
+                    .join(DBAnalysisResult)
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= cutoff_date,
+                            DBAnalysisResult.timestamp >= cutoff_date
+                        ),
+                        DBTrackResult.sigma_gradient.isnot(None),
+                    )
+                    .first()
+                )
+
+                avg_sigma = sigma_data[0] if sigma_data and sigma_data[0] else 0
+                avg_threshold = sigma_data[1] if sigma_data and sigma_data[1] else 0
+
+                results.append({
+                    "model": model,
+                    "total": total,
+                    "passed": passed,
+                    "failed": total - passed,
+                    "pass_rate": pass_rate,
+                    "avg_sigma": avg_sigma,
+                    "avg_threshold": avg_threshold,
+                    "first_date": first_date,
+                    "last_date": last_date,
+                })
+
+            # Sort by sample count descending
+            results.sort(key=lambda x: x["total"], reverse=True)
+            return results
+
+    def get_models_requiring_attention(
+        self,
+        days_back: int = 90,
+        min_samples: int = 5,
+        pass_rate_threshold: float = 80.0,
+        trend_threshold: float = 10.0,
+        rolling_days: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Get models that require attention based on alert criteria.
+
+        Alert criteria:
+        - Pass rate below threshold (default 80%)
+        - Trending worse by threshold% over rolling period
+        - High variance in recent samples
+
+        Args:
+            days_back: Period to analyze
+            min_samples: Minimum samples for inclusion
+            pass_rate_threshold: Alert if pass rate below this
+            trend_threshold: Alert if trend worse by this %
+            rolling_days: Rolling window for trend calculation
+
+        Returns:
+            List of models requiring attention with alert details
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+            rolling_cutoff = datetime.now() - timedelta(days=rolling_days)
+
+            # Get active models
+            active_models = self.get_active_models_summary(days_back, min_samples)
+
+            alerts = []
+            for model_data in active_models:
+                model = model_data["model"]
+                alert_reasons = []
+
+                # Check 1: Low pass rate
+                if model_data["pass_rate"] < pass_rate_threshold:
+                    alert_reasons.append({
+                        "type": "LOW_PASS_RATE",
+                        "message": f"Pass rate {model_data['pass_rate']:.1f}% is below {pass_rate_threshold}%",
+                        "severity": "High" if model_data["pass_rate"] < 70 else "Medium"
+                    })
+
+                # Check 2: Trending worse
+                # Compare older period vs rolling period
+                older_cutoff = cutoff_date
+                older_end = rolling_cutoff
+
+                older_pass_rate = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            and_(DBAnalysisResult.file_date >= older_cutoff, DBAnalysisResult.file_date < older_end),
+                            and_(DBAnalysisResult.timestamp >= older_cutoff, DBAnalysisResult.timestamp < older_end)
+                        )
+                    )
+                    .first()
+                )
+
+                recent_pass_rate = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= rolling_cutoff,
+                            DBAnalysisResult.timestamp >= rolling_cutoff
+                        )
+                    )
+                    .first()
+                )
+
+                older_count, older_passed = older_pass_rate
+                recent_count, recent_passed = recent_pass_rate
+
+                if older_count and older_count >= min_samples and recent_count and recent_count >= min_samples:
+                    older_pct = (older_passed or 0) / older_count * 100
+                    recent_pct = (recent_passed or 0) / recent_count * 100
+
+                    if recent_pct < older_pct - trend_threshold:
+                        alert_reasons.append({
+                            "type": "TRENDING_WORSE",
+                            "message": f"Pass rate dropped from {older_pct:.1f}% to {recent_pct:.1f}% ({older_pct - recent_pct:.1f}% decline)",
+                            "severity": "High" if (older_pct - recent_pct) > 20 else "Medium"
+                        })
+
+                # Check 3: High variance (use coefficient of variation)
+                sigma_values = (
+                    session.query(DBTrackResult.sigma_gradient)
+                    .join(DBAnalysisResult)
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= rolling_cutoff,
+                            DBAnalysisResult.timestamp >= rolling_cutoff
+                        ),
+                        DBTrackResult.sigma_gradient.isnot(None),
+                    )
+                    .all()
+                )
+
+                if len(sigma_values) >= min_samples:
+                    values = [v[0] for v in sigma_values if v[0] is not None]
+                    if values:
+                        import numpy as np
+                        mean_val = np.mean(values)
+                        std_val = np.std(values, ddof=1)
+                        cv = (std_val / mean_val * 100) if mean_val > 0 else 0
+
+                        # CV > 50% is high variance for sigma gradient
+                        if cv > 50:
+                            alert_reasons.append({
+                                "type": "HIGH_VARIANCE",
+                                "message": f"High variance in sigma gradient (CV={cv:.1f}%)",
+                                "severity": "Medium"
+                            })
+
+                if alert_reasons:
+                    alerts.append({
+                        "model": model,
+                        "pass_rate": model_data["pass_rate"],
+                        "total_samples": model_data["total"],
+                        "alerts": alert_reasons,
+                        "severity": max(a["severity"] for a in alert_reasons)
+                    })
+
+            # Sort by severity (High first) then by pass rate (lowest first)
+            severity_order = {"High": 0, "Medium": 1, "Low": 2}
+            alerts.sort(key=lambda x: (severity_order.get(x["severity"], 3), x["pass_rate"]))
+
+            return alerts
+
+    def get_model_trend_data(
+        self,
+        model: str,
+        days_back: int = 90,
+        rolling_window: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Get detailed trend data for a specific model.
+
+        Args:
+            model: Model number
+            days_back: Total days to include
+            rolling_window: Days for rolling average
+
+        Returns:
+            Dict with trend data for charts
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all track results for this model
+            results = (
+                session.query(
+                    DBAnalysisResult.file_date,
+                    DBAnalysisResult.timestamp,
+                    DBAnalysisResult.overall_status,
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.sigma_threshold,
+                    DBTrackResult.sigma_pass,
+                )
+                .join(DBTrackResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    or_(
+                        DBAnalysisResult.file_date >= cutoff_date,
+                        DBAnalysisResult.timestamp >= cutoff_date
+                    ),
+                )
+                .order_by(DBAnalysisResult.file_date.asc())
+                .all()
+            )
+
+            if not results:
+                return {
+                    "model": model,
+                    "data_points": [],
+                    "rolling_averages": [],
+                    "pass_rates_by_day": [],
+                    "threshold": None,
+                }
+
+            # Extract data points
+            data_points = []
+            for file_date, timestamp, status, sigma_gradient, sigma_threshold, sigma_pass in results:
+                date = file_date or timestamp
+                if date and sigma_gradient is not None:
+                    data_points.append({
+                        "date": date,
+                        "sigma_gradient": sigma_gradient,
+                        "sigma_threshold": sigma_threshold,
+                        "sigma_pass": sigma_pass,
+                        "status": status.value if status else "UNKNOWN",
+                    })
+
+            # Calculate threshold (use mode of thresholds)
+            thresholds = [d["sigma_threshold"] for d in data_points if d["sigma_threshold"]]
+            threshold = max(set(thresholds), key=thresholds.count) if thresholds else None
+
+            # Calculate daily pass rates for rolling average
+            from collections import defaultdict
+            daily_data = defaultdict(lambda: {"passed": 0, "total": 0})
+
+            for dp in data_points:
+                day_key = dp["date"].strftime("%Y-%m-%d")
+                daily_data[day_key]["total"] += 1
+                if dp["sigma_pass"]:
+                    daily_data[day_key]["passed"] += 1
+
+            # Sort by date and calculate pass rates
+            sorted_days = sorted(daily_data.keys())
+            pass_rates_by_day = []
+            for day in sorted_days:
+                d = daily_data[day]
+                pass_rates_by_day.append({
+                    "date": day,
+                    "pass_rate": (d["passed"] / d["total"] * 100) if d["total"] > 0 else 0,
+                    "total": d["total"],
+                })
+
+            # Calculate rolling averages
+            rolling_averages = []
+            if len(pass_rates_by_day) >= 2:
+                # Use the specified rolling window
+                window_size = min(rolling_window, len(pass_rates_by_day))
+                for i in range(len(pass_rates_by_day)):
+                    start_idx = max(0, i - window_size + 1)
+                    window = pass_rates_by_day[start_idx:i + 1]
+
+                    total_passed = sum(d["pass_rate"] * d["total"] for d in window)
+                    total_count = sum(d["total"] for d in window)
+                    rolling_avg = total_passed / total_count if total_count > 0 else 0
+
+                    rolling_averages.append({
+                        "date": pass_rates_by_day[i]["date"],
+                        "rolling_avg": rolling_avg,
+                        "window_size": len(window),
+                    })
+
+            return {
+                "model": model,
+                "data_points": data_points,
+                "rolling_averages": rolling_averages,
+                "pass_rates_by_day": pass_rates_by_day,
+                "threshold": threshold,
+                "total_samples": len(data_points),
+            }
 
 
 # Global instance for convenience
