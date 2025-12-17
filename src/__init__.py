@@ -1,21 +1,20 @@
-# src/laser_trim_analyzer/__init__.py
+# src/__init__.py
 """
-Laser Trim Analyzer v2 - Modern QA Analysis Platform
+Laser Trim Analyzer - Production QA Analysis Platform
 
-A comprehensive potentiometer quality analysis system with AI integration.
+A comprehensive potentiometer quality analysis system with ML integration.
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 __author__ = "JB"
 
-from laser_trim_analyzer.core.config import Config, get_config
+# Re-export from the main package
+from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.models import (
     AnalysisResult,
     TrackData,
     FileMetadata,
-    SigmaAnalysis,
-    LinearityAnalysis,
-    ResistanceAnalysis
+    AnalysisStatus,
 )
 
 __all__ = [
@@ -24,7 +23,5 @@ __all__ = [
     "AnalysisResult",
     "TrackData",
     "FileMetadata",
-    "SigmaAnalysis",
-    "LinearityAnalysis",
-    "ResistanceAnalysis",
+    "AnalysisStatus",
 ]

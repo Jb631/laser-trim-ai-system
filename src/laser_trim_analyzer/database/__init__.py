@@ -1,12 +1,50 @@
-# src/laser_trim_analyzer/database/__init__.py
-"""Database management for historical analysis."""
+"""
+Database modules for v3.
 
-from laser_trim_analyzer.database.manager import DatabaseManager
-from laser_trim_analyzer.database.models import Base, AnalysisResult, TrackResult
+Reuses v2's well-designed database schema.
+
+Modules:
+- models: SQLAlchemy ORM models
+- manager: Simplified database operations (~600 lines vs v2's 2,900+)
+"""
+
+from laser_trim_analyzer.database.models import (
+    Base,
+    SystemType,
+    StatusType,
+    RiskCategory,
+    AlertType,
+    AnalysisResult,
+    TrackResult,
+    MLPrediction,
+    QAAlert,
+    BatchInfo,
+    ProcessedFile,
+)
+
+from laser_trim_analyzer.database.manager import (
+    DatabaseManager,
+    DatabaseError,
+    get_database,
+    reset_database,
+)
 
 __all__ = [
-    "DatabaseManager",
+    # Models
     "Base",
-    "AnalysisRecord",
-    "TrackRecord",
+    "SystemType",
+    "StatusType",
+    "RiskCategory",
+    "AlertType",
+    "AnalysisResult",
+    "TrackResult",
+    "MLPrediction",
+    "QAAlert",
+    "BatchInfo",
+    "ProcessedFile",
+    # Manager
+    "DatabaseManager",
+    "DatabaseError",
+    "get_database",
+    "reset_database",
 ]

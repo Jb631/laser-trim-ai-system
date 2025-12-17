@@ -1,10 +1,12 @@
 """
-GUI Package for Laser Trim Analyzer
-Place this file at: src/laser_trim_analyzer/gui/__init__.py
+GUI modules for v3.
+
+5 focused pages (down from 11 in v2):
+- Dashboard: Overview, alerts, quick stats
+- Process: Import files, batch processing
+- Analyze: Single file, track compare, results
+- Trends: Model trends, drift, ML insights
+- Settings: Configuration
 """
 
-from laser_trim_analyzer.gui.main_window import MainWindow, main
-
-__all__ = ['MainWindow', 'main']
-
-__version__ = '2.0.0'
+__all__ = []

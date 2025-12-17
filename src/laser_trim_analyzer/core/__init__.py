@@ -1,17 +1,35 @@
-# src/laser_trim_analyzer/core/__init__.py
-"""Core components for the Laser Trim Analyzer."""
+"""
+Core processing modules for v3.
 
-from laser_trim_analyzer.core.config import Config, get_config
+Modules:
+- parser: Excel file parsing
+- analyzer: Sigma and linearity analysis
+- processor: Unified processing with auto-strategy
+- models: Pydantic data models
+"""
+
 from laser_trim_analyzer.core.models import (
-    AnalysisResult,
-    TrackData,
+    # Enums
+    SystemType,
+    AnalysisStatus,
+    RiskCategory,
+    # Data models
     FileMetadata,
+    TrackData,
+    AnalysisResult,
+    ProcessingStatus,
+    BatchSummary,
 )
 
 __all__ = [
-    "Config",
-    "get_config",
-    "AnalysisResult",
-    "TrackData",
+    # Enums
+    "SystemType",
+    "AnalysisStatus",
+    "RiskCategory",
+    # Data models
     "FileMetadata",
+    "TrackData",
+    "AnalysisResult",
+    "ProcessingStatus",
+    "BatchSummary",
 ]

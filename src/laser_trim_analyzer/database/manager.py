@@ -1,2901 +1,1513 @@
 """
-Database Manager for Laser Trim Analyzer v2.
+Database Manager for Laser Trim Analyzer v3.
 
-Handles all database operations with connection pooling, error handling,
-and migration support. Designed for QA specialists to easily store and
-retrieve potentiometer test results.
+Simplified from v2's 2,900+ line manager to ~600 lines.
+Focuses on essential operations with clean session management.
 
-Production-ready implementation with proper error handling and real data operations only.
+Operations:
+- Save/retrieve analysis results
+- Incremental processing tracking
+- Historical data queries
+- Model statistics
+- QA alerts management
 """
 
-import os
-import logging
 import hashlib
-from datetime import datetime, timedelta
-from typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Type,
-    Union,
-    Iterator
-)
-from contextlib import contextmanager
-from pathlib import Path
-import time
+import logging
 import threading
-from queue import Queue
-import yaml
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Union, Iterator
+from contextlib import contextmanager
 
-from sqlalchemy import create_engine, func, and_, or_, desc, inspect, text, event, Integer
-from sqlalchemy.orm import sessionmaker, Session, scoped_session
-from sqlalchemy.pool import QueuePool, NullPool, StaticPool
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError, DatabaseError as SQLDatabaseError
-from sqlalchemy.engine import Engine
+from sqlalchemy import create_engine, func, and_, or_, desc, text, case
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.exc import IntegrityError, OperationalError
 
-# Import our database models
-from .models import (
-    Base, AnalysisResult as DBAnalysisResult, TrackResult as DBTrackResult,
-    MLPrediction as DBMLPrediction, QAAlert as DBQAAlert, BatchInfo as DBBatchInfo,
-    AnalysisBatch as DBAnalysisBatch, ProcessedFile as DBProcessedFile,
-    SystemType as DBSystemType, StatusType as DBStatusType,
-    RiskCategory as DBRiskCategory, AlertType as DBAlertType
+from laser_trim_analyzer.database.models import (
+    Base,
+    AnalysisResult as DBAnalysisResult,
+    TrackResult as DBTrackResult,
+    MLPrediction as DBMLPrediction,
+    QAAlert as DBQAAlert,
+    BatchInfo as DBBatchInfo,
+    ProcessedFile as DBProcessedFile,
+    SystemType as DBSystemType,
+    StatusType as DBStatusType,
+    RiskCategory as DBRiskCategory,
+    AlertType as DBAlertType,
 )
-
-# Import Pydantic models from core
-from ..core.models import (
-    AnalysisResult as PydanticAnalysisResult,
-    TrackData, AnalysisStatus, SystemType, RiskCategory
+from laser_trim_analyzer.core.models import (
+    AnalysisResult,
+    TrackData,
+    AnalysisStatus,
+    SystemType,
+    RiskCategory,
 )
+from laser_trim_analyzer.config import get_config
 
-# Define a simple no-op decorator first
-def no_op_decorator(*args, **kwargs):
-    """No-op decorator for when modules are not available."""
-    def decorator(func):
-        return func
-    return decorator
-
-# Import error handling utilities
-try:
-    from ..core.error_handlers import (
-        ErrorCode, ErrorCategory, ErrorSeverity,
-        error_handler, handle_errors, ErrorContext
-    )
-    HAS_ERROR_HANDLERS = True
-except ImportError:
-    HAS_ERROR_HANDLERS = False
-    handle_errors = no_op_decorator
-    error_handler = None
-
-# Import security utilities
-try:
-    from ..core.security import (
-        SecurityValidator, SecurityLevel, ThreatType,
-        validate_inputs, get_security_validator
-    )
-    HAS_SECURITY = True
-except ImportError:
-    HAS_SECURITY = False
-    validate_inputs = no_op_decorator
-
-# Import performance optimizer
-try:
-    from .performance_optimizer import (
-        PerformanceOptimizer, cached_query
-    )
-    HAS_PERFORMANCE_OPTIMIZER = True
-except ImportError:
-    HAS_PERFORMANCE_OPTIMIZER = False
-    cached_query = no_op_decorator  # Use no-op decorator when optimizer not available
-
-# Import secure logging if available
-try:
-    from ..core.secure_logging import (
-        get_logger, logged_function, LogLevel
-    )
-    HAS_SECURE_LOGGING = True
-except ImportError:
-    HAS_SECURE_LOGGING = False
+logger = logging.getLogger(__name__)
 
 
 class DatabaseError(Exception):
-    """Custom exception for database operations."""
-    pass
-
-
-class DatabaseConnectionError(DatabaseError):
-    """Exception for database connection issues."""
-    pass
-
-
-class DatabaseIntegrityError(DatabaseError):
-    """Exception for database integrity violations."""
+    """Base exception for database operations."""
     pass
 
 
 class DatabaseManager:
     """
-    Production-ready database manager for the Laser Trim Analyzer.
+    Simplified database manager for v3.
 
     Features:
-    - Connection pooling for better performance
-    - Context managers for safe transaction handling
-    - Comprehensive error handling and logging
-    - Migration support ready
-    - Optimized queries with proper indexing
-    - Production-ready CRUD operations
-    - Proper empty database handling
-    - Automatic retry mechanisms for transient errors
-    - Connection health monitoring and recovery
+    - Single-file SQLite database (self-contained)
+    - Context manager for safe transactions
+    - Incremental processing support
+    - Memory-efficient queries
     """
-    
-    # Retry configuration
-    MAX_RETRIES = 3
-    RETRY_DELAY_BASE = 0.5  # seconds
-    CONNECTION_CHECK_INTERVAL = 60  # seconds
-    
-    # Connection pool monitoring
-    _connection_healthy = True
-    _last_health_check = 0
-    _health_check_lock = threading.Lock()
 
-    def __init__(
-            self,
-            database_url_or_config: Optional[Union[str, Any]] = None,
-            echo: bool = False,
-            pool_size: int = 5,
-            max_overflow: int = 10,
-            pool_timeout: int = 30,
-            logger: Optional[logging.Logger] = None,
-            enable_performance_optimization: bool = True,
-            cache_size: int = 1000,
-            cache_ttl: int = 300
-    ):
+    def __init__(self, database_path: Optional[Path] = None):
         """
         Initialize the database manager.
 
         Args:
-            database_url_or_config: SQLAlchemy database URL string or Config object. If None, uses SQLite default.
-            echo: If True, log all SQL statements (useful for debugging)
-            pool_size: Number of connections to maintain in pool
-            max_overflow: Maximum overflow connections allowed
-            pool_timeout: Timeout in seconds for getting connection from pool
-            logger: Logger instance for database operations
-            enable_performance_optimization: Enable performance optimization features
-            cache_size: Maximum number of cached queries
-            cache_ttl: Default cache TTL in seconds
-
-        Raises:
-            DatabaseConnectionError: If database connection cannot be established
+            database_path: Path to SQLite database. If None, uses config default.
         """
-        # Use secure logger if available
-        if HAS_SECURE_LOGGING:
-            self.logger = logger or get_logger(__name__)
-        else:
-            self.logger = logger or logging.getLogger(__name__)
-        self._engine = None
-        self._session_factory = None
-        self._Session = None
+        config = get_config()
 
-        try:
-            # Handle Config object or string URL
-            if database_url_or_config is None:
-                # Default to SQLite in user's home directory
-                db_dir = Path.home() / ".laser_trim_analyzer"
-                db_dir.mkdir(exist_ok=True)
-                db_path = db_dir / "analyzer_v2.db"
-                database_url = f"sqlite:///{db_path}"
-                self.logger.info(f"Using SQLite database at: {db_path}")
-            elif hasattr(database_url_or_config, 'database'):
-                # It's a Config object
-                config = database_url_or_config
-                database_url = self._get_database_url_from_config(config)
-            else:
-                # It's a string URL
-                database_url = database_url_or_config
+        if database_path is None:
+            database_path = config.database.path
 
-            self.database_url = database_url
-            
-            # Extract database path for logging
-            if database_url.startswith('sqlite:///'):
-                self.db_path = database_url.replace('sqlite:///', '')
-            else:
-                self.db_path = database_url
-            
-            self._initialize_engine(database_url, echo, pool_size, max_overflow, pool_timeout)
-            self._test_connection()
-            
-            # CRITICAL: Initialize the database tables if they don't exist
-            self.logger.info("Checking/creating database tables...")
-            self.init_db(drop_existing=False)
-            
-            # Initialize performance optimizer if enabled
-            self.performance_optimizer = None
-            if enable_performance_optimization and HAS_PERFORMANCE_OPTIMIZER:
-                try:
-                    self.performance_optimizer = PerformanceOptimizer(
-                        self._engine,
-                        enable_profiling=True,
-                        enable_caching=True,
-                        cache_size=cache_size,
-                        cache_ttl=cache_ttl
-                    )
-                    self.logger.info("Performance optimization enabled")
-                except Exception as e:
-                    self.logger.warning(f"Failed to initialize performance optimizer: {e}")
+        # Ensure parent directory exists
+        database_path = Path(database_path)
+        database_path.parent.mkdir(parents=True, exist_ok=True)
 
-        except Exception as e:
-            self.logger.error(f"Failed to initialize database manager: {str(e)}")
-            raise DatabaseConnectionError(f"Database initialization failed: {str(e)}") from e
+        self.database_path = database_path
+        self.database_url = f"sqlite:///{database_path}"
 
-    def _get_database_url_from_config(self, config: Any) -> str:
-        """Get database URL from config, checking deployment.yaml for mode."""
-        # Log the raw database path for debugging
-        if hasattr(config.database, 'path'):
-            raw_path = str(config.database.path)
-            self.logger.debug(f"Raw database path from config: {raw_path}")
-            
-            # Check if the path looks like the Windows PATH environment variable
-            if ';' in raw_path and len(raw_path) > 500:
-                self.logger.error(f"Database path appears to be the Windows PATH environment variable!")
-                self.logger.error(f"First 200 chars: {raw_path[:200]}...")
-                # Use a safe default
-                safe_path = Path.home() / ".laser_trim_analyzer" / "analyzer_v2.db"
-                self.logger.info(f"Using safe fallback path: {safe_path}")
-                safe_path.parent.mkdir(parents=True, exist_ok=True)
-                return f"sqlite:///{safe_path.absolute()}"
-        
-        # DATABASE CONFIGURATION PRIORITY ORDER:
-        # 1. Settings Page Configuration (user_database.yaml) - PRIMARY SOURCE OF TRUTH
-        # 2. Deployment Configuration (deployment.yaml) - Fallback
-        # 3. Emergency Fallback (safe default path)
-        self.logger.info("Determining database path using Settings page as primary source of truth")
-        
-        # PRIORITY 1: Check for user database path overrides (Settings page configuration)
-        deployment_mode = 'single_user'
-        deployment_config_path = Path("config/deployment.yaml")
-        
-        # Check for user database path overrides (deployed version fallback)
-        user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
-        user_override_path = None
-        
-        if user_config_path.exists():
-            try:
-                with open(user_config_path, 'r') as f:
-                    user_config = yaml.safe_load(f)
-                    
-                    # Check for both possible keys (network and local database paths)
-                    if 'network_database_path' in user_config:
-                        user_override_path = user_config['network_database_path']
-                        deployment_mode = 'multi_user'
-                        self.logger.info(f"[SETTINGS PAGE] Using user network database: {user_override_path}")
-                    elif 'database_path' in user_config:
-                        user_override_path = user_config['database_path']
-                        deployment_mode = 'single_user'
-                        self.logger.info(f"[SETTINGS PAGE] Using user database: {user_override_path}")
-                    elif 'force_development_db' in user_config and user_config['force_development_db']:
-                        # Allow explicit development mode override via Settings
-                        self.logger.info("[SETTINGS PAGE] User explicitly enabled development database mode")
-                        if hasattr(config.database, 'path'):
-                            db_path = Path(str(config.database.path))
-                            try:
-                                db_path.parent.mkdir(parents=True, exist_ok=True)
-                            except Exception as e:
-                                self.logger.warning(f"Could not create database directory: {e}")
-                            database_url = f"sqlite:///{db_path.absolute()}"
-                            self.logger.info(f"[SETTINGS PAGE] Using development database: {db_path}")
-                            return database_url
-                        
-            except Exception as e:
-                self.logger.warning(f"Could not read user database config: {e}")
-        
-        # PRIORITY 2: If user override exists, use it directly
-        if user_override_path:
-            db_path = user_override_path
-            self.logger.info(f"[SETTINGS PAGE] Database path configured by user: {db_path}")
-        else:
-            # PRIORITY 3: Fallback to deployment.yaml configuration
-            self.logger.info("[FALLBACK] No user database configuration found, using deployment.yaml")
-            try:
-                if deployment_config_path.exists():
-                    with open(deployment_config_path, 'r') as f:
-                        deployment_config = yaml.safe_load(f)
-                        deployment_mode = deployment_config.get('deployment_mode', 'single_user')
-                        
-                        # Get database config based on mode
-                        db_config = deployment_config.get('database', {})
-                        if deployment_mode == 'single_user':
-                            db_path = db_config.get('single_user', {}).get('path', './data/laser_trim.db')
-                        else:
-                            db_path = db_config.get('multi_user', {}).get('path', '//server/share/laser_trim/database.db')
-                            
-            except Exception as e:
-                self.logger.warning(f"Could not read deployment.yaml: {e}, using default")
-                db_path = './data/laser_trim.db'
-        
-        # Handle different path types (works for both user override and deployment paths)
-        if db_path.startswith('./'):
-            # Relative to application directory
-            app_dir = Path.cwd()
-            db_path = str(app_dir / db_path[2:])
-        elif ':' in db_path or db_path.startswith('/'):
-            # Absolute path (Windows with drive letter or Unix-style)
-            db_path = os.path.expandvars(db_path)
-        else:
-            # Expand environment variables for other paths
-            db_path = os.path.expandvars(db_path)
-        
-        # Handle Windows paths and create database URL
-        if deployment_mode == 'multi_user' and (db_path.startswith('//') or db_path.startswith('\\\\')):
-            db_path = db_path.replace('\\', '/')
-            database_url = f"sqlite:///{db_path}"
-            self.logger.info(f"Using multi-user network database at: {db_path}")
-        else:
-            # Single user or local path
-            db_path = Path(db_path)
-            try:
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                self.logger.warning(f"Could not create database directory: {e}")
-            database_url = f"sqlite:///{db_path.absolute()}"
-            self.logger.info(f"Using single-user local database at: {db_path}")
-        
-        return database_url
-        
-        # Fallback to config object if deployment.yaml not available
-        if hasattr(config.database, 'url') and config.database.url:
-            return config.database.url
-        else:
-            # Check for shared mode in config
-            if hasattr(config.database, 'mode') and config.database.mode == 'shared' and hasattr(config.database, 'shared_path') and config.database.shared_path:
-                # Use shared network path
-                shared_path = config.database.shared_path
-                # Handle Windows UNC paths
-                if shared_path.startswith('//') or shared_path.startswith('\\\\'):
-                    shared_path = shared_path.replace('\\', '/')
-                    database_url = f"sqlite:///{shared_path}"
-                    self.logger.info(f"Using shared network database at: {shared_path}")
-                else:
-                    database_url = f"sqlite:///{shared_path}"
-            else:
-                # Use local file path from config
-                db_path_str = str(config.database.path)
-                # Expand environment variables
-                db_path_str = os.path.expandvars(db_path_str)
-                
-                # Check if this looks like a corrupted PATH environment variable
-                if ';' in db_path_str and ('Program Files' in db_path_str or 'Windows' in db_path_str):
-                    self.logger.error(f"Database path appears to be corrupted with PATH variable: {db_path_str[:200]}...")
-                    # Fall back to default
-                    db_path = Path.home() / ".laser_trim_analyzer" / "analyzer_v2.db"
-                    self.logger.info(f"Using fallback database path: {db_path}")
-                else:
-                    db_path = Path(db_path_str)
-                
-                # Create parent directories if they don't exist
-                try:
-                    db_path.parent.mkdir(parents=True, exist_ok=True)
-                except Exception as e:
-                    self.logger.warning(f"Could not create database directory: {e}")
-                
-                database_url = f"sqlite:///{db_path.absolute()}"
-                self.logger.info(f"Using local SQLite database from config at: {db_path}")
-            
-            return database_url
+        logger.info(f"Using database: {database_path}")
 
-    def _initialize_engine(self, database_url: str, echo: bool, pool_size: int, 
-                          max_overflow: int, pool_timeout: int) -> None:
-        """Initialize the database engine with proper configuration."""
-        engine_kwargs = {
-            "echo": echo,
-            "future": True,  # Use SQLAlchemy 2.0 style
-        }
-        
-        # Check deployment mode for WAL settings
-        enable_wal = False
-        deployment_config_path = Path("config/deployment.yaml")
-        if deployment_config_path.exists():
-            try:
-                with open(deployment_config_path, 'r') as f:
-                    deployment_config = yaml.safe_load(f)
-                    deployment_mode = deployment_config.get('deployment_mode', 'single_user')
-                    if deployment_mode == 'multi_user':
-                        enable_wal = True
-            except Exception:
-                pass
-
-        # Configure pooling based on database type
-        if database_url.startswith("sqlite"):
-            # SQLite doesn't benefit from connection pooling
-            engine_kwargs["connect_args"] = {
-                "check_same_thread": False,
-                "timeout": 30  # 30 second timeout for SQLite operations
-            }
-            # Use StaticPool for SQLite to avoid connection issues
-            engine_kwargs["poolclass"] = StaticPool
-        else:
-            # Use connection pooling for other databases
-            engine_kwargs["poolclass"] = QueuePool
-            engine_kwargs["pool_size"] = pool_size
-            engine_kwargs["max_overflow"] = max_overflow
-            engine_kwargs["pool_timeout"] = pool_timeout
-            engine_kwargs["pool_pre_ping"] = True  # Verify connections before use
-
-        self._engine = create_engine(database_url, **engine_kwargs)
-        
-        # Enable WAL mode for SQLite shared databases
-        if database_url.startswith("sqlite"):
-            @event.listens_for(self._engine, "connect")
-            def set_sqlite_pragma(dbapi_connection, connection_record):
-                cursor = dbapi_connection.cursor()
-                # Enable WAL mode for multi-user databases
-                if enable_wal:
-                    cursor.execute("PRAGMA journal_mode=WAL")
-                    # Set busy timeout (30 seconds)
-                    cursor.execute("PRAGMA busy_timeout=30000")
-                else:
-                    # Single user mode - use default DELETE mode
-                    cursor.execute("PRAGMA journal_mode=DELETE")
-                    cursor.execute("PRAGMA busy_timeout=10000")
-                # Increase cache size for better performance
-                cursor.execute("PRAGMA cache_size=10000")
-                cursor.close()
+        # Create engine with SQLite-appropriate settings
+        self._engine = create_engine(
+            self.database_url,
+            echo=False,
+            poolclass=StaticPool,  # Good for SQLite
+            connect_args={"check_same_thread": False},
+        )
 
         # Create session factory
-        self._session_factory = sessionmaker(
-            bind=self._engine,
-            expire_on_commit=False,
-            autoflush=True,  # Changed to True to ensure data is flushed before queries
-            autocommit=False  # Explicit transaction control
-        )
+        self._SessionFactory = sessionmaker(bind=self._engine)
 
-        # Create scoped session for thread safety
-        self._Session = scoped_session(self._session_factory)
+        # Thread-local session storage
+        self._thread_local = threading.local()
 
-    def _test_connection(self) -> None:
-        """Test database connection and raise error if it fails."""
+        # Initialize database
+        self._init_database()
+
+    def _init_database(self) -> None:
+        """Create all tables if they don't exist."""
         try:
-            with self._engine.connect() as conn:
-                # Simple test query
-                if self.database_url.startswith("sqlite"):
-                    conn.execute(text("SELECT 1"))
-                else:
-                    conn.execute(text("SELECT 1"))
-            self.logger.info("Database connection test successful")
-            
-            # Validate database configuration consistency
-            self.validate_database_consistency()
-            
-            # Update health status
-            with self._health_check_lock:
-                self._connection_healthy = True
-                self._last_health_check = time.time()
-                
+            Base.metadata.create_all(self._engine, checkfirst=True)
+            logger.info("Database initialized successfully")
         except Exception as e:
-            with self._health_check_lock:
-                self._connection_healthy = False
-            raise DatabaseConnectionError(f"Database connection test failed: {str(e)}") from e
-    
-    def _is_connection_healthy(self) -> bool:
-        """Check if database connection is healthy."""
-        with self._health_check_lock:
-            # Check if we need to perform a health check
-            current_time = time.time()
-            if current_time - self._last_health_check > self.CONNECTION_CHECK_INTERVAL:
-                # Perform health check
-                try:
-                    with self._engine.connect() as conn:
-                        conn.execute(text("SELECT 1"))
-                    self._connection_healthy = True
-                except Exception:
-                    self._connection_healthy = False
-                self._last_health_check = current_time
-            
-            return self._connection_healthy
-    
-    def _reconnect(self) -> None:
-        """Attempt to reconnect to the database."""
-        self.logger.info("Attempting to reconnect to database...")
-        
-        try:
-            # Dispose of the current engine
-            if self._engine:
-                self._engine.dispose()
-            
-            # Reinitialize the engine
-            self._initialize_engine(
-                self.database_url, 
-                self._engine.echo if self._engine else False,
-                5, 10, 30  # Use default pool settings
-            )
-            
-            # Test the new connection
-            self._test_connection()
-            
-            self.logger.info("Database reconnection successful")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to reconnect to database: {e}")
-            raise DatabaseConnectionError(f"Database reconnection failed: {str(e)}") from e
-    
-    def _execute_with_retry(self, func, *args, **kwargs):
-        """Execute a function with retry logic for transient errors."""
-        last_error = None
-        
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                return func(*args, **kwargs)
-            except (OperationalError, SQLDatabaseError) as e:
-                last_error = e
-                
-                # Check if error is retryable
-                error_str = str(e).lower()
-                retryable_errors = ['timeout', 'connection', 'locked', 'busy', 'deadlock']
-                
-                if any(err in error_str for err in retryable_errors):
-                    if attempt < self.MAX_RETRIES - 1:
-                        delay = self.RETRY_DELAY_BASE * (2 ** attempt)  # Exponential backoff
-                        self.logger.warning(
-                            f"Retryable database error on attempt {attempt + 1}/{self.MAX_RETRIES}: {e}. "
-                            f"Retrying in {delay:.1f}s..."
-                        )
-                        time.sleep(delay)
-                        
-                        # For connection errors, try to reconnect
-                        if 'connection' in error_str:
-                            try:
-                                self._reconnect()
-                            except Exception:
-                                pass
-                        continue
-                    else:
-                        self.logger.error(f"Max retries ({self.MAX_RETRIES}) exceeded for database operation")
-                
-                # Non-retryable error or max retries exceeded
-                raise
-            except Exception as e:
-                # Non-database errors are not retried
-                raise
-        
-        # Should not reach here, but just in case
-        if last_error:
-            raise last_error
-    
-    def _on_connect(self, dbapi_conn, connection_record):
-        """Event handler for new database connections."""
-        self.logger.debug("New database connection established")
-        with self._health_check_lock:
-            self._connection_healthy = True
-    
-    def _on_checkout(self, dbapi_conn, connection_record, connection_proxy):
-        """Event handler for connection checkout from pool."""
-        # Could add connection validation here if needed
-        pass
-    
-    def _on_checkin(self, dbapi_conn, connection_record):
-        """Event handler for connection checkin to pool."""
-        # Could add cleanup here if needed
-        pass
-
-    @property
-    def engine(self) -> Engine:
-        """Get the database engine."""
-        if self._engine is None:
-            raise DatabaseConnectionError("Database engine not initialized")
-        return self._engine
-
-    @property
-    def Session(self):
-        """Get the scoped session class."""
-        if self._Session is None:
-            raise DatabaseConnectionError("Database session not initialized")
-        return self._Session
-
-    @property
-    def database_path_info(self) -> dict:
-        """Get detailed information about current database path configuration."""
-        try:
-            # Extract database path from engine URL
-            if self._engine:
-                db_url = str(self._engine.url)
-                if db_url.startswith("sqlite:///"):
-                    current_path = db_url[10:]  # Remove "sqlite:///"
-                else:
-                    current_path = db_url
-            else:
-                current_path = "Not initialized"
-            
-            # Check user configuration
-            user_config_path = Path.home() / ".laser_trim_analyzer" / "user_database.yaml"
-            user_config = None
-            if user_config_path.exists():
-                try:
-                    with open(user_config_path, 'r') as f:
-                        user_config = yaml.safe_load(f)
-                except Exception:
-                    pass
-            
-            return {
-                'current_path': current_path,
-                'user_config_exists': user_config_path.exists(),
-                'user_config': user_config,
-                'settings_page_active': user_config is not None,
-                'using_settings_config': user_config is not None and (
-                    'database_path' in user_config or 'network_database_path' in user_config
-                )
-            }
-        except Exception as e:
-            self.logger.error(f"Error getting database path info: {e}")
-            return {'error': str(e)}
-
-    def validate_database_consistency(self) -> bool:
-        """
-        Validate that all application components are using the same database.
-        
-        Returns:
-            bool: True if database configuration is consistent across all components
-        """
-        try:
-            db_info = self.database_path_info
-            self.logger.info("Validating database configuration consistency")
-            
-            if 'error' in db_info:
-                self.logger.error(f"Cannot validate database consistency: {db_info['error']}")
-                return False
-            
-            current_path = db_info['current_path']
-            self.logger.info(f"Current active database: {current_path}")
-            
-            if db_info['settings_page_active']:
-                user_config = db_info['user_config']
-                settings_path = user_config.get('database_path') or user_config.get('network_database_path')
-                
-                if settings_path:
-                    # Normalize paths for comparison
-                    current_normalized = Path(current_path).resolve()
-                    settings_normalized = Path(settings_path).resolve()
-                    
-                    if current_normalized == settings_normalized:
-                        self.logger.info("✅ Database configuration is consistent with Settings page")
-                        return True
-                    else:
-                        self.logger.warning(f"❌ Database inconsistency detected!")
-                        self.logger.warning(f"   Active database: {current_normalized}")
-                        self.logger.warning(f"   Settings page: {settings_normalized}")
-                        return False
-            else:
-                self.logger.warning("No Settings page configuration found, using fallback")
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"Error validating database consistency: {e}")
-            return False
+            logger.error(f"Failed to initialize database: {e}")
+            raise DatabaseError(f"Database initialization failed: {e}")
 
     @contextmanager
-    def get_session(self) -> Iterator[Session]:
+    def session(self) -> Iterator[Session]:
         """
-        Context manager for database sessions with comprehensive error handling.
-
-        Ensures proper session cleanup and error handling for production use.
+        Provide a transactional session context.
 
         Usage:
-            with db_manager.get_session() as session:
-                # Perform database operations
+            with db_manager.session() as session:
                 session.add(record)
-                session.commit()
-
-        Raises:
-            DatabaseError: For database-related errors
-            DatabaseIntegrityError: For constraint violations
+                # Auto-commits on success, rolls back on exception
         """
-        if self._Session is None:
-            self.logger.error("DEBUG: Database session factory is None!")
-            raise DatabaseConnectionError("Database not initialized")
-
-        self.logger.debug("DEBUG: Creating new database session...")
-        # CRITICAL: Remove any existing session for this thread to ensure fresh state
-        self._Session.remove()
-        session = self._Session()
-        self.logger.debug("DEBUG: Database session created successfully")
+        session = self._SessionFactory()
         try:
             yield session
-        except IntegrityError as e:
-            session.rollback()
-            self.logger.error(f"Database integrity error: {str(e)}")
-            raise DatabaseIntegrityError(f"Data integrity violation: {str(e)}") from e
-        except OperationalError as e:
-            session.rollback()
-            self.logger.error(f"Database operational error: {str(e)}")
-            raise DatabaseConnectionError(f"Database operation failed: {str(e)}") from e
-        except SQLAlchemyError as e:
-            session.rollback()
-            self.logger.error(f"Database error: {str(e)}")
-            raise DatabaseError(f"Database operation failed: {str(e)}") from e
-        except Exception as e:
-            session.rollback()
-            self.logger.error(f"Unexpected error in database session: {str(e)}")
-            raise DatabaseError(f"Unexpected database error: {str(e)}") from e
-        finally:
-            try:
-                session.close()
-                # CRITICAL: Remove the session from the registry to ensure clean state
-                self._Session.remove()
-            except Exception as e:
-                self.logger.warning(f"Error closing database session: {str(e)}")
-
-    def init_db(self, drop_existing: bool = False) -> None:
-        """
-        Initialize database tables for production use.
-
-        Args:
-            drop_existing: If True, drop all existing tables first (USE WITH EXTREME CAUTION!)
-
-        Raises:
-            DatabaseError: If database initialization fails
-        """
-        try:
-            if drop_existing:
-                self.logger.warning("DROPPING ALL EXISTING TABLES - THIS WILL DELETE ALL DATA!")
-                Base.metadata.drop_all(self.engine)
-                self.logger.warning("All tables dropped")
-
-            # Check what tables already exist
-            inspector = inspect(self.engine)
-            existing_tables = set(inspector.get_table_names())
-            self.logger.info(f"Existing tables before creation: {existing_tables}")
-            
-            self.logger.info("Creating database tables...")
-            
-            # Create all tables at once first
-            try:
-                Base.metadata.create_all(self.engine, checkfirst=True)
-                self.logger.info("Called create_all successfully")
-            except Exception as e:
-                self.logger.error(f"Error in create_all: {e}")
-                # Try to create tables individually to handle any issues
-                for table in Base.metadata.sorted_tables:
-                    if table.name not in existing_tables:
-                        try:
-                            table.create(self.engine, checkfirst=True)
-                            self.logger.info(f"Created table: {table.name}")
-                        except Exception as e:
-                            # Table exists but might need migration
-                            self.logger.warning(f"Could not create table {table.name}: {e}")
-            
-            # Re-check tables after creation attempt - need fresh inspector
-            inspector = inspect(self.engine)
-            tables = inspector.get_table_names()
-            
-            if not tables:
-                raise DatabaseError("No tables were created")
-
-            expected_tables = {
-                'analysis_results', 'track_results', 'ml_predictions',
-                'qa_alerts', 'batch_info', 'analysis_batch', 'processed_files'
-            }
-            
-            missing_tables = expected_tables - set(tables)
-            if missing_tables:
-                raise DatabaseError(f"Missing expected tables: {missing_tables}")
-
-            self.logger.info(f"Successfully created {len(tables)} tables: {', '.join(sorted(tables))}")
-            
-            # Check for schema updates on existing databases
-            if 'track_results' in tables:
-                self._migrate_track_results_schema()
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize database: {str(e)}")
-            raise DatabaseError(f"Database initialization failed: {str(e)}") from e
-    
-    def _migrate_track_results_schema(self) -> None:
-        """Migrate track_results table to add new columns if missing."""
-        try:
-            inspector = inspect(self.engine)
-            existing_columns = [col['name'] for col in inspector.get_columns('track_results')]
-            
-            columns_to_add = []
-            if 'position_data' not in existing_columns:
-                columns_to_add.append(('position_data', 'TEXT'))
-            if 'error_data' not in existing_columns:
-                columns_to_add.append(('error_data', 'TEXT'))
-            
-            if columns_to_add:
-                self.logger.info(f"Migrating track_results schema - adding columns: {[c[0] for c in columns_to_add]}")
-                with self.engine.begin() as conn:
-                    for column_name, column_type in columns_to_add:
-                        try:
-                            conn.execute(text(f"ALTER TABLE track_results ADD COLUMN {column_name} {column_type}"))
-                            self.logger.info(f"Added column: {column_name}")
-                        except Exception as e:
-                            self.logger.warning(f"Could not add column {column_name}: {e}")
-                self.logger.info("Schema migration completed")
-                
-        except Exception as e:
-            self.logger.warning(f"Schema migration check failed: {e}")
-            # Don't raise - allow app to continue with existing schema
-
-    def initialize_schema(self) -> None:
-        """
-        Initialize database schema for production use.
-        
-        This method ensures all tables are created if they don't exist.
-        Safe to call multiple times.
-
-        Raises:
-            DatabaseError: If schema initialization fails
-        """
-        try:
-            self.init_db(drop_existing=False)
-        except Exception as e:
-            raise DatabaseError(f"Schema initialization failed: {str(e)}") from e
-
-    @validate_inputs(
-        model={'type': 'model_number'},
-        serial={'type': 'serial_number'},
-        file_date={'type': 'date'}
-    )
-    def _should_update_raw_data(self, existing_id: int, analysis: PydanticAnalysisResult) -> bool:
-        """Check if existing record needs raw data update."""
-        try:
-            with self.get_session() as session:
-                # Get existing tracks
-                existing_tracks = session.query(DBTrackResult).filter(
-                    DBTrackResult.analysis_id == existing_id
-                ).all()
-                
-                # Check if any track is missing position_data or error_data
-                for track in existing_tracks:
-                    if track.position_data is None or track.error_data is None:
-                        return True
-                        
-                return False
-        except Exception as e:
-            self.logger.error(f"Error checking raw data status: {e}")
-            return False
-    
-    def _update_raw_data(self, existing_id: int, analysis: PydanticAnalysisResult, session) -> None:
-        """Update existing tracks with raw position and error data."""
-        try:
-            # Get existing tracks
-            existing_tracks = session.query(DBTrackResult).filter(
-                DBTrackResult.analysis_id == existing_id
-            ).all()
-            
-            # Create a mapping of track_id to track data from the new analysis
-            new_tracks_map = {track_id: track_data for track_id, track_data in analysis.tracks.items()}
-            
-            # Update each existing track with raw data
-            for db_track in existing_tracks:
-                if db_track.track_id in new_tracks_map:
-                    new_track_data = new_tracks_map[db_track.track_id]
-                    
-                    # Update only if missing
-                    if db_track.position_data is None and hasattr(new_track_data, 'position_data'):
-                        db_track.position_data = new_track_data.position_data
-                        
-                    if db_track.error_data is None and hasattr(new_track_data, 'error_data'):
-                        db_track.error_data = new_track_data.error_data
-                        
-                    self.logger.info(f"Updated track {db_track.track_id} with raw data")
-            
             session.commit()
-            
         except Exception as e:
-            self.logger.error(f"Failed to update raw data: {e}")
             session.rollback()
+            logger.error(f"Session error: {e}")
             raise
-    
-    def check_duplicate_analysis(
-            self,
-            model: str,
-            serial: str,
-            file_date: datetime
-    ) -> Optional[int]:
+        finally:
+            session.close()
+
+    # =========================================================================
+    # Analysis Results
+    # =========================================================================
+
+    def save_analysis(self, analysis: AnalysisResult) -> int:
         """
-        Check if this unit has already been analyzed.
+        Save a single analysis result to the database.
 
         Args:
-            model: Model number (required, non-empty)
-            serial: Serial number (required, non-empty)
-            file_date: Date from the file (required)
+            analysis: AnalysisResult from processing
 
         Returns:
-            ID of existing analysis if found, None otherwise
-
-        Raises:
-            DatabaseError: If database operation fails
-            ValueError: If required parameters are missing or invalid
+            Database ID of the saved analysis
         """
-        if not model or not model.strip():
-            raise ValueError("Model number is required and cannot be empty")
-        if not serial or not serial.strip():
-            raise ValueError("Serial number is required and cannot be empty")
-        if not file_date:
-            raise ValueError("File date is required")
+        with self.session() as session:
+            # Map Pydantic model to SQLAlchemy model
+            db_analysis = self._map_analysis_to_db(analysis)
 
-        try:
-            with self.get_session() as session:
-                # CRITICAL: For SQLite, use SERIALIZABLE to ensure we only see committed data
-                # SQLite doesn't support READ_COMMITTED, only READ UNCOMMITTED, SERIALIZABLE, AUTOCOMMIT
-                if self.database_url.startswith("sqlite"):
-                    session.connection(execution_options={"isolation_level": "SERIALIZABLE"})
-                
-                # Security: Use parameterized queries (SQLAlchemy does this automatically)
-                # Model and serial are already sanitized by the decorator
-                # Check for exact match (model + serial + file date)
-                existing = session.query(DBAnalysisResult).filter(
-                    and_(
-                        DBAnalysisResult.model == model.strip(),
-                        DBAnalysisResult.serial == serial.strip(),
-                        DBAnalysisResult.file_date == file_date
+            try:
+                session.add(db_analysis)
+                session.flush()  # Get ID before commit
+
+                # Record as processed file
+                self._record_processed_file(
+                    session,
+                    analysis.metadata.file_path,
+                    db_analysis.id
+                )
+
+                logger.info(f"Saved analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+                return db_analysis.id
+
+            except IntegrityError as e:
+                # Handle duplicate - update existing record
+                logger.warning(f"Duplicate file, updating: {analysis.metadata.filename}")
+                session.rollback()
+                return self._update_existing_analysis(session, analysis)
+
+    def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
+        """
+        Save multiple analysis results efficiently.
+
+        Args:
+            analyses: List of AnalysisResult objects
+
+        Returns:
+            List of database IDs
+        """
+        saved_ids = []
+
+        with self.session() as session:
+            for analysis in analyses:
+                db_analysis = self._map_analysis_to_db(analysis)
+
+                try:
+                    session.add(db_analysis)
+                    session.flush()
+
+                    self._record_processed_file(
+                        session,
+                        analysis.metadata.file_path,
+                        db_analysis.id
                     )
-                ).first()
-                
-                if existing:
-                    # Double-check the ID actually exists with a direct SQL query
-                    result = session.execute(
-                        text("SELECT COUNT(*) FROM analysis_results WHERE id = :id"),
-                        {"id": existing.id}
-                    ).scalar()
-                    
-                    if result > 0:
-                        # Log duplicates at DEBUG level to reduce log verbosity during large batch processing
-                        self.logger.debug(
-                            f"Found duplicate analysis for {model}-{serial} from {file_date}: "
-                            f"ID {existing.id}"
-                        )
-                        return existing.id
-                    else:
-                        self.logger.warning(f"Phantom ID {existing.id} detected - ignoring")
-                
+
+                    saved_ids.append(db_analysis.id)
+
+                except IntegrityError:
+                    session.rollback()
+                    # Update existing
+                    updated_id = self._update_existing_analysis(session, analysis)
+                    saved_ids.append(updated_id)
+
+        logger.info(f"Saved batch of {len(saved_ids)} analyses")
+        return saved_ids
+
+    def get_analysis(self, analysis_id: int) -> Optional[AnalysisResult]:
+        """
+        Retrieve a single analysis by ID.
+
+        Args:
+            analysis_id: Database ID
+
+        Returns:
+            AnalysisResult or None if not found
+        """
+        with self.session() as session:
+            db_analysis = session.query(DBAnalysisResult).get(analysis_id)
+
+            if db_analysis is None:
                 return None
 
-        except Exception as e:
-            self.logger.error(f"Failed to check for duplicate analysis: {str(e)}")
-            raise DatabaseError(f"Duplicate check failed: {str(e)}") from e
+            return self._map_db_to_analysis(db_analysis)
 
-    @handle_errors(
-        category=ErrorCategory.DATABASE,
-        severity=ErrorSeverity.ERROR,
-        max_retries=2
-    )
-    def save_analysis(self, analysis_data: PydanticAnalysisResult) -> int:
-        """
-        Save a complete analysis result with all tracks to production database.
-
-        Args:
-            analysis_data: Pydantic model containing analysis results (validated)
-
-        Returns:
-            ID of the saved analysis record
-
-        Raises:
-            DatabaseError: If save operation fails
-            DatabaseIntegrityError: If data violates constraints
-            ValueError: If analysis data is invalid
-        """
-        if not analysis_data:
-            raise ValueError("Analysis data is required")
-        
-        if not analysis_data.metadata:
-            raise ValueError("Analysis metadata is required")
-            
-        if not analysis_data.metadata.model or not analysis_data.metadata.model.strip():
-            raise ValueError("Model number is required in analysis metadata")
-            
-        if not analysis_data.metadata.serial or not analysis_data.metadata.serial.strip():
-            raise ValueError("Serial number is required in analysis metadata")
-        
-        # Log detailed information about what we're about to save
-        self.logger.info(f"Attempting to save analysis: {analysis_data.metadata.filename}")
-        self.logger.debug(f"Analysis details: model={analysis_data.metadata.model}, serial={analysis_data.metadata.serial}, tracks={len(analysis_data.tracks) if analysis_data.tracks else 0}")
-
-        # Check for existing duplicate
-        existing_id = self.check_duplicate_analysis(
-            analysis_data.metadata.model,
-            analysis_data.metadata.serial,
-            analysis_data.metadata.file_date
-        )
-        
-        if existing_id:
-            # Check if we should update with missing raw data
-            if self._should_update_raw_data(existing_id, analysis_data):
-                self.logger.info(f"Updating existing record {existing_id} with missing raw data")
-                with self.get_session() as session:
-                    self._update_raw_data(existing_id, analysis_data, session)
-                return existing_id
-            else:
-                self.logger.info(f"Duplicate analysis found for {analysis_data.metadata.model}-{analysis_data.metadata.serial}, skipping save")
-                return existing_id
-
-        # Use retry logic for the entire save operation
-        return self._execute_with_retry(self._save_analysis_impl, analysis_data)
-    
-    def _save_analysis_impl(self, analysis_data: PydanticAnalysisResult) -> int:
-        """Internal implementation of save_analysis with transaction support."""
-        # Log save operation for debugging
-        self.logger.debug(f"DEBUG: _save_analysis_impl called for {analysis_data.metadata.filename}")
-        
-        if HAS_SECURE_LOGGING:
-            self.logger.debug("Saving analysis to database", context={
-                'model': analysis_data.metadata.model,
-                'serial': analysis_data.metadata.serial,
-                'file_date': analysis_data.metadata.file_date.isoformat() if analysis_data.metadata.file_date else None,
-                'num_tracks': len(analysis_data.tracks),
-                'overall_status': analysis_data.overall_status.value
-            })
-        else:
-            self.logger.debug(f"Saving analysis: model={analysis_data.metadata.model}, serial={analysis_data.metadata.serial}, tracks={len(analysis_data.tracks)}")
-        
-        try:
-            self.logger.debug("DEBUG: Getting database session...")
-            with self.get_session() as session:
-                self.logger.debug("DEBUG: Got database session successfully")
-                # Convert Pydantic SystemType to DB SystemType
-                system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
-
-                # Convert Pydantic AnalysisStatus to DB StatusType
-                status_map = {
-                    AnalysisStatus.PASS: DBStatusType.PASS,
-                    AnalysisStatus.FAIL: DBStatusType.FAIL,
-                    AnalysisStatus.WARNING: DBStatusType.WARNING,
-                    AnalysisStatus.ERROR: DBStatusType.ERROR,
-                    AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
-                }
-                overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
-
-                # Create main analysis record
-                analysis = DBAnalysisResult(
-                    filename=analysis_data.metadata.filename,
-                    file_path=str(analysis_data.metadata.file_path) if analysis_data.metadata.file_path else None,
-                    file_date=analysis_data.metadata.file_date,
-                    file_hash=None,  # Can be calculated if needed
-                    model=analysis_data.metadata.model.strip(),
-                    serial=analysis_data.metadata.serial.strip(),
-                    system=system_type,
-                    has_multi_tracks=analysis_data.metadata.has_multi_tracks,
-                    overall_status=overall_status,
-                    processing_time=analysis_data.processing_time,
-                    output_dir=None,  # Set if available
-                    software_version="2.0.0",  # Set from config
-                    operator=None,  # Set if available
-                    sigma_scaling_factor=None,  # Set from first track if available
-                    filter_cutoff_frequency=None  # Set from config if available
-                )
-
-                # Validate and add track results
-                if not analysis_data.tracks:
-                    raise ValueError("Analysis must contain at least one track")
-
-                for track_id, track_data in analysis_data.tracks.items():
-                    if not track_id or not track_id.strip():
-                        raise ValueError("Track ID cannot be empty")
-                        
-                    if track_data.sigma_analysis is None:
-                        raise ValueError(f"Sigma analysis is required for track {track_id}")
-
-                    # Convert track status
-                    track_status = status_map.get(track_data.status, DBStatusType.ERROR)
-
-                    # Convert risk category if available
-                    risk_category = None
-                    if track_data.failure_prediction:
-                        risk_map = {
-                            RiskCategory.HIGH: DBRiskCategory.HIGH,
-                            RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
-                            RiskCategory.LOW: DBRiskCategory.LOW,
-                            RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
-                        }
-                        risk_category = risk_map.get(getattr(track_data.failure_prediction, 'risk_category', None))
-
-                    track = DBTrackResult(
-                        track_id=track_id.strip(),
-                        status=track_status,
-                        travel_length=track_data.travel_length,
-                        linearity_spec=getattr(track_data.linearity_analysis, 'linearity_spec', None) if track_data.linearity_analysis else None,
-                        position_data=track_data.position_data if hasattr(track_data, 'position_data') else None,
-                        error_data=track_data.error_data if hasattr(track_data, 'error_data') else None,
-                        sigma_gradient=getattr(track_data.sigma_analysis, 'sigma_gradient', None) if track_data.sigma_analysis else None,
-                        sigma_threshold=getattr(track_data.sigma_analysis, 'sigma_threshold', None) if track_data.sigma_analysis else None,
-                        sigma_pass=getattr(track_data.sigma_analysis, 'sigma_pass', None) if track_data.sigma_analysis else None,
-                        unit_length=getattr(track_data.unit_properties, 'unit_length', None) if track_data.unit_properties else None,
-                        untrimmed_resistance=getattr(track_data.unit_properties, 'untrimmed_resistance', None) if track_data.unit_properties else None,
-                        trimmed_resistance=getattr(track_data.unit_properties, 'trimmed_resistance', None) if track_data.unit_properties else None,
-                        resistance_change=getattr(track_data.unit_properties, 'resistance_change', None) if track_data.unit_properties else None,
-                        resistance_change_percent=getattr(track_data.unit_properties, 'resistance_change_percent', None) if track_data.unit_properties else None,
-                        optimal_offset=getattr(track_data.linearity_analysis, 'optimal_offset', None) if track_data.linearity_analysis else None,
-                        final_linearity_error_raw=getattr(track_data.linearity_analysis, 'final_linearity_error_raw', None) if track_data.linearity_analysis else None,
-                        final_linearity_error_shifted=getattr(track_data.linearity_analysis, 'final_linearity_error_shifted', None) if track_data.linearity_analysis else None,
-                        linearity_pass=getattr(track_data.linearity_analysis, 'linearity_pass', None) if track_data.linearity_analysis else None,
-                        linearity_fail_points=getattr(track_data.linearity_analysis, 'linearity_fail_points', None) if track_data.linearity_analysis else None,
-                        max_deviation=getattr(track_data.linearity_analysis, 'max_deviation', None) if track_data.linearity_analysis else None,
-                        max_deviation_position=getattr(track_data.linearity_analysis, 'max_deviation_position', None) if track_data.linearity_analysis else None,
-                        deviation_uniformity=None,  # Calculate if needed
-                        trim_improvement_percent=getattr(track_data.trim_effectiveness, 'improvement_percent', None) if track_data.trim_effectiveness else None,
-                        untrimmed_rms_error=getattr(track_data.trim_effectiveness, 'untrimmed_rms_error', None) if track_data.trim_effectiveness else None,
-                        trimmed_rms_error=getattr(track_data.trim_effectiveness, 'trimmed_rms_error', None) if track_data.trim_effectiveness else None,
-                        max_error_reduction_percent=getattr(track_data.trim_effectiveness, 'max_error_reduction_percent', None) if track_data.trim_effectiveness else None,
-                        worst_zone=getattr(track_data.zone_analysis, 'worst_zone', None) if track_data.zone_analysis else None,
-                        worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and hasattr(track_data.zone_analysis, 'worst_zone_position') and track_data.zone_analysis.worst_zone_position) else None,
-                        zone_details=getattr(track_data.zone_analysis, 'zone_results', None) if track_data.zone_analysis else None,
-                        failure_probability=getattr(track_data.failure_prediction, 'failure_probability', None) if track_data.failure_prediction else None,
-                        risk_category=risk_category,
-                        gradient_margin=getattr(track_data.sigma_analysis, 'gradient_margin', None) if track_data.sigma_analysis else None,
-                        range_utilization_percent=getattr(track_data.dynamic_range, 'range_utilization_percent', None) if track_data.dynamic_range else None,
-                        minimum_margin=getattr(track_data.dynamic_range, 'minimum_margin', None) if track_data.dynamic_range else None,
-                        minimum_margin_position=getattr(track_data.dynamic_range, 'minimum_margin_position', None) if track_data.dynamic_range else None,
-                        margin_bias=getattr(track_data.dynamic_range, 'margin_bias', None) if track_data.dynamic_range else None,
-                        plot_path=str(track_data.plot_path) if track_data.plot_path else None
-                    )
-                    analysis.tracks.append(track)
-
-                session.add(analysis)
-                session.flush()  # Ensure analysis gets an ID
-                
-                # Generate alerts based on real analysis data (after ID is assigned)
-                self._generate_alerts(analysis, session)
-                
-                session.commit()
-
-                self.logger.info(
-                    f"Successfully saved analysis for {analysis_data.metadata.filename} "
-                    f"with {len(analysis.tracks)} tracks (ID: {analysis.id})"
-                )
-                
-                # Log save completion for debugging
-                if HAS_SECURE_LOGGING:
-                    self.logger.debug("Analysis save completed", context={
-                        'analysis_id': analysis.id,
-                        'model': analysis_data.metadata.model,
-                        'serial': analysis_data.metadata.serial,
-                        'tracks_saved': len(analysis.tracks),
-                        'ml_predictions_saved': len(analysis.ml_predictions) if hasattr(analysis, 'ml_predictions') else 0,
-                        'alerts_generated': len(analysis.qa_alerts) if hasattr(analysis, 'qa_alerts') else 0
-                    })
-                
-                return analysis.id
-
-        except IntegrityError as e:
-            # Handle specific integrity errors
-            error_str = str(e).lower()
-            
-            if "unique constraint" in error_str or "duplicate" in error_str:
-                # Extract which field caused the duplicate
-                duplicate_info = "duplicate entry"
-                if "filename" in error_str:
-                    duplicate_info = f"file '{analysis_data.metadata.filename}' already analyzed"
-                elif "serial" in error_str:
-                    duplicate_info = f"serial '{analysis_data.metadata.serial}' at this timestamp"
-                
-                error_handler.handle_error(
-                    error=e,
-                    category=ErrorCategory.DATABASE,
-                    severity=ErrorSeverity.WARNING,
-                    code=ErrorCode.DB_DUPLICATE_ENTRY,
-                    user_message=f"Analysis already exists: {duplicate_info}",
-                    recovery_suggestions=[
-                        "Check if this file was already processed",
-                        "Use 'Force Save' to overwrite existing data",
-                        "Verify the serial number is correct"
-                    ],
-                    additional_data={
-                        'filename': analysis_data.metadata.filename,
-                        'model': analysis_data.metadata.model,
-                        'serial': analysis_data.metadata.serial
-                    }
-                )
-                raise DatabaseIntegrityError(f"Duplicate analysis: {duplicate_info}")
-            else:
-                raise DatabaseIntegrityError(f"Data integrity violation: {str(e)}")
-                
-        except ValueError as e:
-            raise e  # Re-raise validation errors as-is
-            
-        except OperationalError as e:
-            # Enhanced error reporting for OperationalError with detailed context
-            error_details = self._analyze_operational_error(e, analysis_data)
-            
-            self.logger.error(
-                f"Database operational error during save: {error_details['error_category']} - {str(e)}",
-                extra={
-                    'filename': analysis_data.metadata.filename,
-                    'model': analysis_data.metadata.model,
-                    'serial': analysis_data.metadata.serial,
-                    'error_category': error_details['error_category'],
-                    'retry_recommended': error_details['retry_recommended']
-                }
-            )
-            
-            error_handler.handle_error(
-                error=e,
-                category=ErrorCategory.DATABASE,
-                severity=ErrorSeverity.ERROR,
-                code=ErrorCode.DB_QUERY_FAILED,
-                user_message=error_details['user_message'],
-                recovery_suggestions=error_details['recovery_suggestions'],
-                additional_data={
-                    'technical_details': str(e),
-                    'error_category': error_details['error_category'],
-                    'filename': analysis_data.metadata.filename,
-                    'file_size_estimate': len(str(analysis_data.dict())) if hasattr(analysis_data, 'dict') else 'unknown',
-                    'track_count': len(analysis_data.tracks) if analysis_data.tracks else 0,
-                    'retry_recommended': error_details['retry_recommended']
-                }
-            )
-            raise DatabaseError(f"Database operation failed ({error_details['error_category']}): {str(e)}") from e
-            
-        except Exception as e:
-            # Enhanced error reporting for unexpected errors with comprehensive context
-            self.logger.error(
-                f"Unexpected error during analysis save: {type(e).__name__} - {str(e)}",
-                extra={
-                    'filename': analysis_data.metadata.filename if analysis_data.metadata else 'unknown',
-                    'model': analysis_data.metadata.model if analysis_data.metadata else 'unknown',
-                    'serial': analysis_data.metadata.serial if analysis_data.metadata else 'unknown',
-                    'error_type': type(e).__name__,
-                    'track_count': len(analysis_data.tracks) if analysis_data.tracks else 0,
-                    'has_ml_predictions': bool(hasattr(analysis_data, 'ml_predictions') and analysis_data.ml_predictions)
-                }
-            )
-            
-            # Provide specific guidance based on error type
-            recovery_suggestions = self._get_error_recovery_suggestions(e, analysis_data)
-            
-            error_handler.handle_error(
-                error=e,
-                category=ErrorCategory.DATABASE,
-                severity=ErrorSeverity.ERROR,
-                code=ErrorCode.UNKNOWN_ERROR,
-                user_message=f"An unexpected {type(e).__name__} error occurred while saving analysis.",
-                recovery_suggestions=recovery_suggestions,
-                additional_data={
-                    'filename': analysis_data.metadata.filename if analysis_data.metadata else 'unknown',
-                    'model': analysis_data.metadata.model if analysis_data.metadata else 'unknown', 
-                    'serial': analysis_data.metadata.serial if analysis_data.metadata else 'unknown',
-                    'error_type': type(e).__name__,
-                    'technical_details': str(e),
-                    'file_size_estimate': len(str(analysis_data.dict())) if hasattr(analysis_data, 'dict') else 'unknown',
-                    'track_count': len(analysis_data.track_results) if analysis_data.track_results else 0
-                }
-            )
-            
-            raise DatabaseError(f"Analysis save failed ({type(e).__name__}): {str(e)}") from e
-
-    @validate_inputs(
-        model={'type': 'model_number', 'required': False},
-        serial={'type': 'serial_number', 'required': False},
-        days_back={'type': 'number', 'min': 1, 'max': 3650, 'required': False},
-        start_date={'type': 'date', 'required': False},
-        end_date={'type': 'date', 'required': False},
-        status={'type': 'string', 'max_length': 50, 'required': False},
-        risk_category={'type': 'string', 'max_length': 50, 'required': False},
-        limit={'type': 'number', 'min': 1, 'max': 10000, 'required': False},
-        offset={'type': 'number', 'min': 0, 'max': 1000000, 'required': False}
-    )
-    @cached_query('historical_data', ttl=300)
     def get_historical_data(
-            self,
-            model: Optional[str] = None,
-            serial: Optional[str] = None,
-            days_back: Optional[int] = None,
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            status: Optional[str] = None,
-            risk_category: Optional[str] = None,
-            limit: Optional[int] = None,
-            offset: Optional[int] = None,
-            include_tracks: bool = True
-    ) -> List[DBAnalysisResult]:
+        self,
+        model: Optional[str] = None,
+        days_back: int = 30,
+        limit: int = 1000
+    ) -> List[AnalysisResult]:
         """
-        Retrieve historical analysis data with flexible filtering for production use.
+        Get historical analysis data with optional filtering.
 
         Args:
-            model: Filter by model number (supports wildcards with %)
-            serial: Filter by serial number (supports wildcards with %)
-            days_back: Number of days to look back from today (must be positive)
-            start_date: Start date for date range filter
-            end_date: End date for date range filter
-            status: Filter by overall status
-            risk_category: Filter by risk category in tracks
-            limit: Maximum number of records to return (must be positive)
-            offset: Number of records to skip for pagination (must be non-negative)
-            include_tracks: Whether to include track details
+            model: Filter by model number (optional)
+            days_back: How many days back to query
+            limit: Maximum number of results
 
         Returns:
-            List of AnalysisResult objects (empty list if no data found)
-
-        Raises:
-            DatabaseError: If database operation fails
-            ValueError: If parameters are invalid
+            List of AnalysisResult objects
         """
-        # Validate parameters
-        if days_back is not None and days_back <= 0:
-            raise ValueError("days_back must be positive")
-        if limit is not None and limit <= 0:
-            raise ValueError("limit must be positive")
-        if offset is not None and offset < 0:
-            raise ValueError("offset must be non-negative")
-        if start_date and end_date and start_date > end_date:
-            raise ValueError("start_date cannot be after end_date")
+        with self.session() as session:
+            query = session.query(DBAnalysisResult)
 
-        try:
-            with self.get_session() as session:
-                # Import joinedload for eager loading
-                from sqlalchemy.orm import joinedload
-                
-                query = session.query(DBAnalysisResult)
-                
-                # Apply eager loading if tracks are requested
-                if include_tracks:
-                    from sqlalchemy.orm import selectinload, joinedload
-                    query = query.options(
-                        selectinload(DBAnalysisResult.tracks).joinedload(DBTrackResult.analysis),
-                        selectinload(DBAnalysisResult.ml_predictions),
-                        joinedload(DBAnalysisResult.qa_alerts)  # Use joinedload to avoid SQLite IN clause issues
-                    )
+            # Apply filters
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+            query = query.filter(DBAnalysisResult.timestamp >= cutoff_date)
 
-                # Apply filters with SQL injection protection
-                # Note: SQLAlchemy parameterizes these automatically
-                if model:
-                    # Sanitize wildcards to prevent DOS
-                    safe_model = model.strip()
-                    if safe_model.count('%') > 2:
-                        self.logger.warning("Too many wildcards in model filter")
-                        safe_model = safe_model.replace('%', '', safe_model.count('%') - 2)
-                    query = query.filter(DBAnalysisResult.model.like(safe_model))
+            if model:
+                query = query.filter(DBAnalysisResult.model == model)
 
-                if serial:
-                    # Sanitize wildcards to prevent DOS
-                    safe_serial = serial.strip()
-                    if safe_serial.count('%') > 2:
-                        self.logger.warning("Too many wildcards in serial filter")
-                        safe_serial = safe_serial.replace('%', '', safe_serial.count('%') - 2)
-                    query = query.filter(DBAnalysisResult.serial.like(safe_serial))
+            # Order by newest first and limit
+            query = query.order_by(desc(DBAnalysisResult.timestamp)).limit(limit)
 
-                # Date filtering
-                if days_back:
-                    # Use UTC to match database timestamps
-                    cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-                    query = query.filter(DBAnalysisResult.timestamp >= cutoff_date)
-                elif start_date:
-                    query = query.filter(DBAnalysisResult.timestamp >= start_date)
-                    if end_date:
-                        query = query.filter(DBAnalysisResult.timestamp <= end_date)
+            results = []
+            for db_analysis in query.all():
+                mapped = self._map_db_to_analysis(db_analysis)
+                if mapped is not None:  # Filter out failed mappings
+                    results.append(mapped)
 
-                if status:
-                    try:
-                        status_enum = DBStatusType(status)
-                        query = query.filter(DBAnalysisResult.overall_status == status_enum)
-                    except ValueError:
-                        self.logger.warning(f"Invalid status filter: {status}")
-                        return []
+            return results
 
-                if risk_category and include_tracks:
-                    try:
-                        risk_enum = DBRiskCategory(risk_category)
-                        # Join with tracks to filter by risk category
-                        query = query.join(DBTrackResult).filter(
-                            DBTrackResult.risk_category == risk_enum
-                        ).distinct()
-                    except ValueError:
-                        self.logger.warning(f"Invalid risk category filter: {risk_category}")
-                        return []
-
-                # Order by most recent first
-                query = query.order_by(desc(DBAnalysisResult.timestamp))
-
-                # Apply pagination
-                if offset:
-                    query = query.offset(offset)
-                if limit:
-                    query = query.limit(limit)
-
-                # Execute query
-                results = query.all()
-                
-                # Force loading of all relationships to avoid lazy loading issues
-                # when objects are used outside the session context
-                if include_tracks:
-                    for result in results:
-                        # Access tracks to force loading
-                        _ = len(result.tracks)
-                        for track in result.tracks:
-                            # Force load the back-reference to analysis
-                            _ = track.analysis_id
-                        # Access other relationships to force loading
-                        _ = len(result.ml_predictions)
-                        _ = len(result.qa_alerts)
-
-                self.logger.info(f"Retrieved {len(results)} historical records")
-                return results
-
-        except Exception as e:
-            self.logger.error(f"Failed to retrieve historical data: {str(e)}")
-            raise DatabaseError(f"Historical data retrieval failed: {str(e)}") from e
-
-    @validate_inputs(
-        model={'type': 'model_number'}
-    )
-    @cached_query('model_stats', ttl=600)
-    def get_model_statistics(self, model: str) -> Dict[str, Any]:
+    def get_model_statistics(self, model: str, days_back: int = 30) -> Dict[str, Any]:
         """
-        Get comprehensive statistics for a specific model from production data.
+        Get aggregated statistics for a model.
 
-        Args:
-            model: Model number to analyze (required, non-empty)
-
-        Returns:
-            Dictionary containing model statistics (empty stats if no data found)
-
-        Raises:
-            DatabaseError: If database operation fails
-            ValueError: If model parameter is invalid
-        """
-        if not model or not model.strip():
-            raise ValueError("Model number is required and cannot be empty")
-
-        try:
-            with self.get_session() as session:
-                model = model.strip()
-                
-                # Base query for the model
-                base_query = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.model == model
-                )
-
-                # Get basic counts
-                total_files = base_query.count()
-
-                if total_files == 0:
-                    self.logger.info(f"No data found for model: {model}")
-                    return {
-                        "model": model,
-                        "total_files": 0,
-                        "total_tracks": 0,
-                        "statistics": {},
-                        "recent_trend": []
-                    }
-
-                # Get track statistics
-                track_stats = session.query(
-                    func.count(DBTrackResult.id).label('total_tracks'),
-                    func.avg(DBTrackResult.sigma_gradient).label('avg_sigma'),
-                    func.min(DBTrackResult.sigma_gradient).label('min_sigma'),
-                    func.max(DBTrackResult.sigma_gradient).label('max_sigma'),
-                    func.sum(func.cast(DBTrackResult.sigma_pass, Integer)).label('sigma_passes'),
-                    func.sum(func.cast(DBTrackResult.linearity_pass, Integer)).label('linearity_passes'),
-                    func.avg(DBTrackResult.failure_probability).label('avg_failure_prob')
-                ).join(
-                    DBAnalysisResult
-                ).filter(
-                    DBAnalysisResult.model == model
-                ).first()
-
-                # Calculate pass rates safely
-                total_tracks = track_stats.total_tracks or 0
-                sigma_passes = track_stats.sigma_passes or 0
-                linearity_passes = track_stats.linearity_passes or 0
-                
-                sigma_pass_rate = (sigma_passes / total_tracks * 100) if total_tracks > 0 else 0
-                linearity_pass_rate = (linearity_passes / total_tracks * 100) if total_tracks > 0 else 0
-
-                # Get risk distribution
-                risk_dist = session.query(
-                    DBTrackResult.risk_category,
-                    func.count(DBTrackResult.id).label('count')
-                ).join(
-                    DBAnalysisResult
-                ).filter(
-                    DBAnalysisResult.model == model
-                ).group_by(
-                    DBTrackResult.risk_category
-                ).all()
-
-                risk_distribution = {}
-                for risk, count in risk_dist:
-                    if risk:
-                        risk_distribution[str(risk.value)] = count
-
-                # Get recent trend (last 30 days)
-                thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-                recent_trend = session.query(
-                    func.date(DBAnalysisResult.timestamp).label('date'),
-                    func.count(DBAnalysisResult.id).label('count'),
-                    func.avg(DBTrackResult.sigma_gradient).label('avg_sigma')
-                ).join(
-                    DBTrackResult
-                ).filter(
-                    and_(
-                        DBAnalysisResult.model == model,
-                        DBAnalysisResult.timestamp >= thirty_days_ago
-                    )
-                ).group_by(
-                    func.date(DBAnalysisResult.timestamp)
-                ).order_by(
-                    func.date(DBAnalysisResult.timestamp)
-                ).all()
-
-                trend_data = []
-                for date, count, avg_sigma in recent_trend:
-                    trend_data.append({
-                        "date": date.isoformat() if date and hasattr(date, 'isoformat') else str(date) if date else None,
-                        "count": count or 0,
-                        "avg_sigma": float(avg_sigma or 0)
-                    })
-
-                return {
-                    "model": model,
-                    "total_files": total_files,
-                    "total_tracks": total_tracks,
-                    "statistics": {
-                        "sigma_gradient": {
-                            "average": float(track_stats.avg_sigma or 0),
-                            "minimum": float(track_stats.min_sigma or 0),
-                            "maximum": float(track_stats.max_sigma or 0)
-                        },
-                        "pass_rates": {
-                            "sigma": round(sigma_pass_rate, 2),
-                            "linearity": round(linearity_pass_rate, 2)
-                        },
-                        "failure_probability": {
-                            "average": float(track_stats.avg_failure_prob or 0)
-                        },
-                        "risk_distribution": risk_distribution
-                    },
-                    "recent_trend": trend_data
-                }
-
-        except Exception as e:
-            self.logger.error(f"Failed to get model statistics for {model}: {str(e)}")
-            raise DatabaseError(f"Model statistics retrieval failed: {str(e)}") from e
-
-    def _generate_alerts(self, analysis: DBAnalysisResult, session: Session) -> None:
-        """Generate alerts for analysis based on thresholds and risk."""
-        try:
-            # Generate alerts for high-risk tracks
-            for track in analysis.tracks:
-                if track.risk_category == DBRiskCategory.HIGH:
-                    alert = DBQAAlert(
-                        analysis_id=analysis.id,
-                        alert_type=DBAlertType.HIGH_RISK,
-                        severity="High",  # Must be 'Critical', 'High', 'Medium', or 'Low'
-                        message=f"High risk track {track.track_id}: failure probability {track.failure_probability:.2%}",
-                        track_id=track.track_id,
-                        metric_name="failure_probability",
-                        metric_value=track.failure_probability,
-                        threshold_value=0.7,  # High risk threshold
-                        details={"recommendation": "Immediate inspection recommended"}
-                    )
-                    session.add(alert)
-                
-                # Sigma gradient alerts
-                if track.sigma_gradient and track.sigma_threshold and track.sigma_gradient > track.sigma_threshold:
-                    alert = DBQAAlert(
-                        analysis_id=analysis.id,
-                        alert_type=DBAlertType.SIGMA_FAIL,
-                        severity="Medium",  # Must be 'Critical', 'High', 'Medium', or 'Low'
-                        message=f"Sigma gradient exceeds threshold on track {track.track_id}",
-                        track_id=track.track_id,
-                        metric_name="sigma_gradient",
-                        metric_value=track.sigma_gradient,
-                        threshold_value=track.sigma_threshold,
-                        details={"recommendation": "Review trimming parameters"}
-                    )
-                    session.add(alert)
-            
-            # Overall status alert
-            if analysis.overall_status in [DBStatusType.FAIL, DBStatusType.ERROR]:
-                alert = DBQAAlert(
-                    analysis_id=analysis.id,
-                    alert_type=DBAlertType.PROCESS_ERROR if analysis.overall_status == DBStatusType.ERROR else DBAlertType.HIGH_RISK,
-                    severity="Critical" if analysis.overall_status == DBStatusType.ERROR else "High",  # Must be 'Critical', 'High', 'Medium', or 'Low'
-                    message=f"Analysis failed with status: {analysis.overall_status.value}",
-                    details={"recommendation": "Review all test parameters and retry"}
-                )
-                session.add(alert)
-                
-        except Exception as e:
-            self.logger.error(f"Failed to generate alerts: {e}")
-            # Don't fail the entire save operation for alert generation
-    
-    def get_risk_summary(self, days_back: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Get summary of units by risk category from production data.
-
-        Args:
-            days_back: Limit to records from last N days (must be positive if provided)
-
-        Returns:
-            Dictionary with risk category counts and details
-
-        Raises:
-            DatabaseError: If database operation fails
-            ValueError: If days_back is invalid
-        """
-        if days_back is not None and days_back <= 0:
-            raise ValueError("days_back must be positive")
-
-        try:
-            with self.get_session() as session:
-                query = session.query(
-                    DBTrackResult.risk_category,
-                    func.count(DBTrackResult.id).label('count'),
-                    func.avg(DBTrackResult.failure_probability).label('avg_prob')
-                )
-
-                if days_back:
-                    cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-                    query = query.join(DBAnalysisResult).filter(
-                        DBAnalysisResult.timestamp >= cutoff_date
-                    )
-
-                results = query.group_by(DBTrackResult.risk_category).all()
-
-                # Build summary
-                summary = {
-                    "categories": {},
-                    "total": 0,
-                    "period_days": days_back,
-                    "high_risk_units": []
-                }
-
-                for risk_category, count, avg_prob in results:
-                    if risk_category:
-                        category_name = risk_category.value
-                        summary["categories"][category_name] = {
-                            "count": count,
-                            "percentage": 0,  # Will calculate after total
-                            "avg_failure_probability": float(avg_prob or 0)
-                        }
-                        summary["total"] += count
-
-                # Calculate percentages
-                if summary["total"] > 0:
-                    for category in summary["categories"].values():
-                        category["percentage"] = (category["count"] / summary["total"]) * 100
-
-                return summary
-
-        except SQLAlchemyError as e:
-            self.logger.error(f"Database error in get_risk_summary: {e}")
-            raise DatabaseError(f"Failed to get risk summary: {e}")
-        except Exception as e:
-            self.logger.error(f"Unexpected error in get_risk_summary: {e}")
-            raise DatabaseError(f"Unexpected error getting risk summary: {e}")
-    
-    def get_latest_ml_threshold(self, model: str, serial: Optional[str] = None) -> Optional[float]:
-        """
-        Get the latest ML-recommended threshold for a model.
-        
         Args:
             model: Model number
-            serial: Optional serial number for more specific threshold
-            
+            days_back: Days to include in statistics
+
         Returns:
-            Latest recommended threshold from ML predictions, or None if not found
+            Dictionary with statistics
         """
-        try:
-            with self.get_session() as session:
-                query = session.query(DBMLPrediction.recommended_threshold)\
-                    .join(DBAnalysisResult)\
-                    .filter(
-                        DBAnalysisResult.model == model,
-                        DBMLPrediction.prediction_type == 'threshold_optimization',
-                        DBMLPrediction.recommended_threshold.isnot(None)
-                    )
-                
-                # Add serial filter if provided
-                if serial:
-                    query = query.filter(DBAnalysisResult.serial == serial)
-                
-                # Get the most recent prediction
-                result = query.order_by(DBMLPrediction.prediction_date.desc()).first()
-                
-                if result:
-                    self.logger.info(f"Found ML threshold for model {model}: {result[0]}")
-                    return float(result[0])
-                else:
-                    self.logger.info(f"No ML threshold found for model {model}")
-                    return None
-                    
-        except Exception as e:
-            self.logger.error(f"Error getting ML threshold: {e}")
-            return None
-    
-    def save_analysis_batch(self, analyses: List[PydanticAnalysisResult], force_overwrite: bool = False) -> List[int]:
-        """
-        Save multiple analyses in a batch for performance.
-        
-        Args:
-            analyses: List of analysis results to save
-            force_overwrite: If True, delete and replace existing records instead of skipping
-            
-        Returns:
-            List of saved analysis IDs
-            
-        Raises:
-            DatabaseError: If batch save fails
-            ValueError: If input is invalid
-        """
-        if not analyses:
-            raise ValueError("No analyses provided for batch save")
-            
-        if len(analyses) > 1000:
-            raise ValueError("Batch size too large (max 1000)")
-        
-        self.logger.info(f"Starting batch save for {len(analyses)} analyses (force_overwrite={force_overwrite})")
-        
-        # Validate all analyses first
-        if HAS_SECURITY:
-            validator = get_security_validator()
-            for i, analysis in enumerate(analyses):
-                if not analysis:
-                    raise ValueError(f"Analysis at index {i} is None")
-                if not analysis.metadata:
-                    raise ValueError(f"Analysis at index {i} missing metadata")
-                    
-                # Validate model and serial
-                model_result = validator.validate_input(
-                    analysis.metadata.model, 
-                    'model_number'
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Query track results for this model
+            results = (
+                session.query(DBTrackResult)
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.timestamp >= cutoff_date
                 )
-                if not model_result.is_safe:
-                    raise ValueError(f"Invalid model at index {i}: {model_result.validation_errors}")
-                    
-                serial_result = validator.validate_input(
-                    analysis.metadata.serial,
-                    'serial_number'
-                )
-                if not serial_result.is_safe:
-                    raise ValueError(f"Invalid serial at index {i}: {serial_result.validation_errors}")
-        else:
-            # Basic validation without security module
-            for i, analysis in enumerate(analyses):
-                if not analysis:
-                    raise ValueError(f"Analysis at index {i} is None")
-                if not analysis.metadata:
-                    raise ValueError(f"Analysis at index {i} missing metadata")
-                if not analysis.metadata.model:
-                    raise ValueError(f"Analysis at index {i} missing model")
-                if not analysis.metadata.serial:
-                    raise ValueError(f"Analysis at index {i} missing serial")
-        
-        saved_ids = []
-        failed_saves = []
-        
-        # Use a single transaction for all saves with bulk operations
-        try:
-            with self.get_session() as session:
-                # Prepare bulk data
-                analyses_to_insert = []
-                tracks_to_insert = []
-                analysis_objects = []
-                
-                for i, analysis in enumerate(analyses):
-                    try:
-                        # Log each analysis being processed
-                        self.logger.debug(f"Processing analysis {i+1}/{len(analyses)}: {analysis.metadata.filename}")
-                        
-                        # Check for duplicates
-                        existing_id = self.check_duplicate_analysis(
-                            analysis.metadata.model,
-                            analysis.metadata.serial,
-                            analysis.metadata.file_date
-                        )
-                        
-                        if existing_id:
-                            if force_overwrite:
-                                # Delete existing record and its tracks for force overwrite
-                                self.logger.info(f"Force overwrite: Deleting existing record {existing_id} for {analysis.metadata.model}-{analysis.metadata.serial}")
-                                # Delete tracks first (foreign key constraint)
-                                session.query(DBTrackResult).filter(
-                                    DBTrackResult.analysis_id == existing_id
-                                ).delete()
-                                # Delete the analysis record
-                                session.query(DBAnalysisResult).filter(
-                                    DBAnalysisResult.id == existing_id
-                                ).delete()
-                                # Continue to create new record
-                            else:
-                                # Check if we should update with missing raw data
-                                if self._should_update_raw_data(existing_id, analysis):
-                                    self.logger.info(f"Updating existing record {existing_id} with missing raw data")
-                                    self._update_raw_data(existing_id, analysis, session)
-                                    saved_ids.append(existing_id)
-                                else:
-                                    self.logger.info(f"Skipping duplicate: {analysis.metadata.model}-{analysis.metadata.serial}")
-                                    saved_ids.append(existing_id)
-                                continue
-                        
-                        # Create database record but don't add to session yet
-                        db_analysis = self._prepare_analysis_record(analysis)
-                        analyses_to_insert.append(db_analysis)
-                        analysis_objects.append((i, analysis))
-                        
-                    except Exception as e:
-                        self.logger.error(f"Failed to prepare analysis {i+1} ({analysis.metadata.filename}): {str(e)}")
-                        failed_saves.append((i, analysis.metadata.filename, str(e)))
-                        saved_ids.append(None)  # Placeholder for failed save
-                
-                # Bulk insert all analyses at once
-                if analyses_to_insert:
-                    session.bulk_save_objects(analyses_to_insert, return_defaults=True)
-                    session.flush()  # Ensure IDs are generated
-                    
-                    # Now prepare tracks with analysis IDs
-                    for db_analysis, (orig_idx, orig_analysis) in zip(analyses_to_insert, analysis_objects):
-                        saved_ids.insert(orig_idx, db_analysis.id)
-                        
-                        # Add tracks for this analysis
-                        for track_id, track_data in orig_analysis.tracks.items():
-                            db_track = self._prepare_track_record(track_data, db_analysis.id, track_id)
-                            tracks_to_insert.append(db_track)
-                    
-                    # Bulk insert all tracks
-                    if tracks_to_insert:
-                        session.bulk_save_objects(tracks_to_insert)
-                
-                # Commit all at once
-                session.commit()
-                
-            # Log summary
-            successful_saves = len([id for id in saved_ids if id is not None])
-            self.logger.info(f"Batch save completed: {successful_saves}/{len(analyses)} successful")
-            
-            if failed_saves:
-                self.logger.error(f"Failed saves: {failed_saves}")
-                
-            return saved_ids
-            
-        except Exception as e:
-            self.logger.error(f"Batch save failed: {e}")
-            raise DatabaseError(f"Batch save failed: {str(e)}") from e
-    
-    def _prepare_analysis_record(
-        self, 
-        analysis_data: PydanticAnalysisResult
-    ) -> DBAnalysisResult:
-        """Prepare analysis record without adding to session (for bulk operations)."""
-        self.logger.debug(f"Preparing analysis record for {analysis_data.metadata.filename}")
-        
-        # Convert Pydantic SystemType to DB SystemType
-        system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
-
-        # Convert Pydantic AnalysisStatus to DB StatusType
-        status_map = {
-            AnalysisStatus.PASS: DBStatusType.PASS,
-            AnalysisStatus.FAIL: DBStatusType.FAIL,
-            AnalysisStatus.WARNING: DBStatusType.WARNING,
-            AnalysisStatus.ERROR: DBStatusType.ERROR,
-            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
-        }
-        overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
-
-        # Create main analysis record
-        analysis = DBAnalysisResult(
-            filename=analysis_data.metadata.filename,
-            file_path=str(analysis_data.metadata.file_path) if analysis_data.metadata.file_path else None,
-            file_date=analysis_data.metadata.file_date,
-            file_hash=None,  # Can be calculated if needed
-            model=analysis_data.metadata.model.strip(),
-            serial=analysis_data.metadata.serial.strip(),
-            system=system_type,
-            has_multi_tracks=analysis_data.metadata.has_multi_tracks,
-            overall_status=overall_status,
-            processing_time=analysis_data.processing_time,
-            output_dir=None,  # Set if available
-            software_version="2.0.0",  # Set from config
-            operator=None,  # Set if available
-            sigma_scaling_factor=None,  # Set from first track if available
-            filter_cutoff_frequency=None  # Set from config if available
-        )
-        
-        return analysis
-    
-    def _prepare_track_record(
-        self,
-        track_data: TrackData,
-        analysis_id: int,
-        track_id: str
-    ) -> DBTrackResult:
-        """Prepare track record for bulk insert."""
-        # Convert track status
-        status_map = {
-            AnalysisStatus.PASS: DBStatusType.PASS,
-            AnalysisStatus.FAIL: DBStatusType.FAIL,
-            AnalysisStatus.WARNING: DBStatusType.WARNING,
-            AnalysisStatus.ERROR: DBStatusType.ERROR,
-            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
-        }
-        track_status = status_map.get(track_data.status, DBStatusType.ERROR)
-        
-        # Convert risk category
-        risk_category = None
-        if track_data.failure_prediction and hasattr(track_data.failure_prediction, 'risk_category') and track_data.failure_prediction.risk_category:
-            risk_map = {
-                RiskCategory.HIGH: DBRiskCategory.HIGH,
-                RiskCategory.MEDIUM: DBRiskCategory.MEDIUM, 
-                RiskCategory.LOW: DBRiskCategory.LOW,
-                RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
-            }
-            risk_category = risk_map.get(track_data.failure_prediction.risk_category)
-        
-        # Create track record with safe attribute access
-        track = DBTrackResult(
-            analysis_id=analysis_id,
-            track_id=track_id,
-            status=track_status,
-            travel_length=track_data.travel_length,
-            sigma_gradient=getattr(track_data.sigma_analysis, 'sigma_gradient', None) if track_data.sigma_analysis else None,
-            sigma_threshold=getattr(track_data.sigma_analysis, 'sigma_threshold', None) if track_data.sigma_analysis else None,
-            sigma_pass=getattr(track_data.sigma_analysis, 'sigma_pass', None) if track_data.sigma_analysis else None,
-            linearity_spec=getattr(track_data.linearity_analysis, 'linearity_spec', None) if track_data.linearity_analysis else None,
-            final_linearity_error_raw=getattr(track_data.linearity_analysis, 'final_linearity_error_raw', None) if track_data.linearity_analysis else None,
-            final_linearity_error_shifted=getattr(track_data.linearity_analysis, 'final_linearity_error_shifted', None) if track_data.linearity_analysis else None,
-            optimal_offset=getattr(track_data.linearity_analysis, 'optimal_offset', None) if track_data.linearity_analysis else None,
-            linearity_pass=getattr(track_data.linearity_analysis, 'linearity_pass', None) if track_data.linearity_analysis else None,
-            trimmed_resistance=getattr(track_data.unit_properties, 'trimmed_resistance', None) if track_data.unit_properties else None,
-            untrimmed_resistance=getattr(track_data.unit_properties, 'untrimmed_resistance', None) if track_data.unit_properties else None,
-            resistance_change=getattr(track_data.resistance_analysis, 'resistance_change', None) if track_data.resistance_analysis else None,
-            resistance_change_percent=getattr(track_data.resistance_analysis, 'resistance_change_percent', None) if track_data.resistance_analysis else None,
-            max_deviation=getattr(track_data.linearity_analysis, 'max_deviation', None) if track_data.linearity_analysis else None,
-            max_deviation_position=getattr(track_data.linearity_analysis, 'max_deviation_position', None) if track_data.linearity_analysis else None,
-            deviation_uniformity=None,  # Calculate if needed
-            trim_improvement_percent=getattr(track_data.trim_effectiveness, 'improvement_percent', None) if track_data.trim_effectiveness else None,
-            untrimmed_rms_error=getattr(track_data.trim_effectiveness, 'untrimmed_rms_error', None) if track_data.trim_effectiveness else None,
-            trimmed_rms_error=getattr(track_data.trim_effectiveness, 'trimmed_rms_error', None) if track_data.trim_effectiveness else None,
-            max_error_reduction_percent=getattr(track_data.trim_effectiveness, 'max_error_reduction_percent', None) if track_data.trim_effectiveness else None,
-            worst_zone=getattr(track_data.zone_analysis, 'worst_zone', None) if track_data.zone_analysis else None,
-            worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and hasattr(track_data.zone_analysis, 'worst_zone_position') and track_data.zone_analysis.worst_zone_position) else None,
-            zone_details=getattr(track_data.zone_analysis, 'zone_results', None) if track_data.zone_analysis else None,
-            failure_probability=getattr(track_data.failure_prediction, 'failure_probability', None) if track_data.failure_prediction else None,
-            risk_category=risk_category,
-            gradient_margin=getattr(track_data.sigma_analysis, 'gradient_margin', None) if track_data.sigma_analysis else None,
-            range_utilization_percent=getattr(track_data.dynamic_range, 'range_utilization_percent', None) if track_data.dynamic_range else None,
-            minimum_margin=getattr(track_data.dynamic_range, 'minimum_margin', None) if track_data.dynamic_range else None,
-            minimum_margin_position=getattr(track_data.dynamic_range, 'minimum_margin_position', None) if track_data.dynamic_range else None,
-            margin_bias=getattr(track_data.dynamic_range, 'margin_bias', None) if track_data.dynamic_range else None,
-            plot_path=str(track_data.plot_path) if track_data.plot_path else None,
-            # Raw data for accurate plotting
-            position_data=track_data.position_data,
-            error_data=track_data.error_data
-        )
-        
-        return track
-    
-    def _create_analysis_record(
-        self, 
-        analysis_data: PydanticAnalysisResult, 
-        session: Session
-    ) -> int:
-        """Create analysis record in database (extracted for reuse)."""
-        self.logger.debug(f"Creating analysis record for {analysis_data.metadata.filename}")
-        # This is the core logic from _save_analysis_impl
-        # Convert Pydantic SystemType to DB SystemType
-        system_type = DBSystemType.A if analysis_data.metadata.system == SystemType.SYSTEM_A else DBSystemType.B
-
-        # Convert Pydantic AnalysisStatus to DB StatusType
-        status_map = {
-            AnalysisStatus.PASS: DBStatusType.PASS,
-            AnalysisStatus.FAIL: DBStatusType.FAIL,
-            AnalysisStatus.WARNING: DBStatusType.WARNING,
-            AnalysisStatus.ERROR: DBStatusType.ERROR,
-            AnalysisStatus.PENDING: DBStatusType.PROCESSING_FAILED
-        }
-        overall_status = status_map.get(analysis_data.overall_status, DBStatusType.ERROR)
-
-        # Create main analysis record
-        analysis = DBAnalysisResult(
-            filename=analysis_data.metadata.filename,
-            file_path=str(analysis_data.metadata.file_path) if analysis_data.metadata.file_path else None,
-            file_date=analysis_data.metadata.file_date,
-            file_hash=None,  # Can be calculated if needed
-            model=analysis_data.metadata.model.strip(),
-            serial=analysis_data.metadata.serial.strip(),
-            system=system_type,
-            has_multi_tracks=analysis_data.metadata.has_multi_tracks,
-            overall_status=overall_status,
-            processing_time=analysis_data.processing_time,
-            output_dir=None,  # Set if available
-            software_version="2.0.0",  # Set from config
-            operator=None,  # Set if available
-            sigma_scaling_factor=None,  # Set from first track if available
-            filter_cutoff_frequency=None  # Set from config if available
-        )
-
-        # Add track results
-        for track_id, track_data in analysis_data.tracks.items():
-            # Convert track status
-            track_status = status_map.get(track_data.status, DBStatusType.ERROR)
-
-            # Convert risk category if available
-            risk_category = None
-            if track_data.failure_prediction:
-                risk_map = {
-                    RiskCategory.HIGH: DBRiskCategory.HIGH,
-                    RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
-                    RiskCategory.LOW: DBRiskCategory.LOW,
-                    RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN
-                }
-                risk_category = risk_map.get(track_data.failure_prediction.risk_category)
-
-            track = DBTrackResult(
-                track_id=track_id.strip(),
-                status=track_status,
-                travel_length=track_data.travel_length,
-                linearity_spec=track_data.linearity_analysis.linearity_spec if track_data.linearity_analysis else None,
-                sigma_gradient=track_data.sigma_analysis.sigma_gradient,
-                sigma_threshold=track_data.sigma_analysis.sigma_threshold,
-                sigma_pass=track_data.sigma_analysis.sigma_pass,
-                unit_length=track_data.unit_properties.unit_length if track_data.unit_properties else None,
-                untrimmed_resistance=track_data.unit_properties.untrimmed_resistance if track_data.unit_properties else None,
-                trimmed_resistance=track_data.unit_properties.trimmed_resistance if track_data.unit_properties else None,
-                resistance_change=track_data.unit_properties.resistance_change if track_data.unit_properties else None,
-                resistance_change_percent=track_data.unit_properties.resistance_change_percent if track_data.unit_properties else None,
-                optimal_offset=track_data.linearity_analysis.optimal_offset if track_data.linearity_analysis else None,
-                final_linearity_error_raw=track_data.linearity_analysis.final_linearity_error_raw if track_data.linearity_analysis else None,
-                final_linearity_error_shifted=track_data.linearity_analysis.final_linearity_error_shifted if track_data.linearity_analysis else None,
-                linearity_pass=track_data.linearity_analysis.linearity_pass if track_data.linearity_analysis else None,
-                linearity_fail_points=track_data.linearity_analysis.linearity_fail_points if track_data.linearity_analysis else None,
-                max_deviation=track_data.linearity_analysis.max_deviation if track_data.linearity_analysis else None,
-                max_deviation_position=track_data.linearity_analysis.max_deviation_position if track_data.linearity_analysis else None,
-                deviation_uniformity=None,  # Calculate if needed
-                trim_improvement_percent=track_data.trim_effectiveness.improvement_percent if track_data.trim_effectiveness else None,
-                untrimmed_rms_error=track_data.trim_effectiveness.untrimmed_rms_error if track_data.trim_effectiveness else None,
-                trimmed_rms_error=track_data.trim_effectiveness.trimmed_rms_error if track_data.trim_effectiveness else None,
-                max_error_reduction_percent=track_data.trim_effectiveness.max_error_reduction_percent if track_data.trim_effectiveness else None,
-                worst_zone=track_data.zone_analysis.worst_zone if track_data.zone_analysis else None,
-                worst_zone_position=track_data.zone_analysis.worst_zone_position[0] if (track_data.zone_analysis and track_data.zone_analysis.worst_zone_position) else None,
-                zone_details=track_data.zone_analysis.zone_results if (track_data.zone_analysis and track_data.zone_analysis.zone_results) else None,
-                failure_probability=track_data.failure_prediction.failure_probability if track_data.failure_prediction else None,
-                risk_category=risk_category,
-                gradient_margin=track_data.sigma_analysis.gradient_margin if hasattr(track_data.sigma_analysis, 'gradient_margin') else None,
-                range_utilization_percent=track_data.dynamic_range.range_utilization_percent if track_data.dynamic_range else None,
-                minimum_margin=track_data.dynamic_range.minimum_margin if track_data.dynamic_range else None,
-                minimum_margin_position=track_data.dynamic_range.minimum_margin_position if track_data.dynamic_range else None,
-                margin_bias=track_data.dynamic_range.margin_bias if track_data.dynamic_range else None,
-                plot_path=str(track_data.plot_path) if track_data.plot_path else None
+                .all()
             )
-            analysis.tracks.append(track)
 
-        # Add to session
-        session.add(analysis)
-        
-        try:
-            session.flush()  # Get the ID without committing
-            
-            # Generate alerts after ID is assigned
-            self._generate_alerts(analysis, session)
-            self.logger.debug(f"Successfully flushed analysis record, ID: {analysis.id}")
-        except Exception as e:
-            self.logger.error(f"Failed to flush analysis record: {str(e)}")
-            self.logger.error(f"Analysis data: model={analysis_data.metadata.model}, serial={analysis_data.metadata.serial}, tracks={len(analysis_data.tracks)}")
-            raise
-        
-        return analysis.id
-    
-    def validate_saved_analysis(self, analysis_id: int) -> bool:
-        """
-        Validate that an analysis was saved correctly.
-        
-        Args:
-            analysis_id: ID of the analysis to validate
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        try:
-            with self.get_session() as session:
-                analysis = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.id == analysis_id
-                ).first()
-                
-                if not analysis:
-                    return False
-                    
-                # Check that it has tracks
-                if not analysis.tracks:
-                    self.logger.warning(f"Analysis {analysis_id} has no tracks")
-                    return False
-                    
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"Failed to validate analysis {analysis_id}: {e}")
-            return False
-    
-    @handle_errors(
-        category=ErrorCategory.DATABASE,
-        severity=ErrorSeverity.WARNING
-    )
-    def force_save_analysis(self, analysis_data: PydanticAnalysisResult) -> int:
-        """
-        Force save an analysis, overwriting any existing data.
-        
-        Args:
-            analysis_data: Analysis data to save
-            
-        Returns:
-            ID of the saved analysis
-            
-        Raises:
-            DatabaseError: If save fails
-        """
-        try:
-            with self.get_session() as session:
-                # Delete existing analysis if present
-                existing = session.query(DBAnalysisResult).filter(
-                    and_(
-                        DBAnalysisResult.model == analysis_data.metadata.model,
-                        DBAnalysisResult.serial == analysis_data.metadata.serial,
-                        DBAnalysisResult.file_date == analysis_data.metadata.file_date
-                    )
-                ).first()
-                
-                if existing:
-                    self.logger.warning(
-                        f"Force overwriting analysis {existing.id} for "
-                        f"{analysis_data.metadata.model}-{analysis_data.metadata.serial}"
-                    )
-                    session.delete(existing)
-                    session.flush()
-                
-                # Create new analysis
-                analysis_id = self._create_analysis_record(analysis_data, session)
-                session.commit()
-                
-                return analysis_id
-                
-        except Exception as e:
-            self.logger.error(f"Force save failed: {e}")
-            raise DatabaseError(f"Force save failed: {str(e)}") from e
-    
-    def get_performance_report(self) -> Dict[str, Any]:
-        """
-        Get database performance report.
-        
-        Returns:
-            Performance metrics and optimization suggestions
-        """
-        if not self.performance_optimizer:
+            if not results:
+                return {
+                    "model": model,
+                    "count": 0,
+                    "pass_rate": 0.0,
+                    "avg_sigma_gradient": None,
+                    "avg_failure_probability": None,
+                }
+
+            # Calculate statistics
+            total_tracks = len(results)
+            passed_tracks = sum(1 for r in results if r.sigma_pass)
+            sigma_values = [r.sigma_gradient for r in results if r.sigma_gradient is not None]
+            prob_values = [r.failure_probability for r in results if r.failure_probability is not None]
+
             return {
-                'enabled': False,
-                'message': 'Performance optimization not enabled'
+                "model": model,
+                "count": total_tracks,
+                "pass_rate": (passed_tracks / total_tracks * 100) if total_tracks > 0 else 0.0,
+                "avg_sigma_gradient": sum(sigma_values) / len(sigma_values) if sigma_values else None,
+                "avg_failure_probability": sum(prob_values) / len(prob_values) if prob_values else None,
             }
-            
-        return self.performance_optimizer.get_performance_report()
-    
-    def optimize_performance(self) -> Dict[str, Any]:
-        """
-        Run automatic performance optimizations.
-        
-        Returns:
-            Optimization results
-        """
-        if not self.performance_optimizer:
-            return {
-                'success': False,
-                'message': 'Performance optimization not enabled'
-            }
-            
-        return self.performance_optimizer.optimize()
-    
-    def create_suggested_indexes(self) -> List[Dict[str, Any]]:
-        """
-        Create indexes based on query pattern analysis.
-        
-        Returns:
-            List of created indexes
-        """
-        if not self.performance_optimizer:
-            return []
-            
-        # Get suggestions
-        suggestions = self.performance_optimizer.index_optimizer.analyze_query_patterns(
-            self.performance_optimizer._profiles
-        )
-        
-        created = []
-        for suggestion in suggestions[:5]:  # Limit to 5 at a time
-            try:
-                success = self.performance_optimizer.index_optimizer.create_index(
-                    suggestion['table'],
-                    suggestion['columns'],
-                    suggestion['name']
-                )
-                if success:
-                    created.append(suggestion)
-                    self.logger.info(f"Created index: {suggestion['name']}")
-            except Exception as e:
-                self.logger.error(f"Failed to create index {suggestion['name']}: {e}")
-                
-        return created
-    
-    def clear_query_cache(self, pattern: Optional[str] = None):
-        """
-        Clear query result cache.
-        
-        Args:
-            pattern: Optional pattern to match for selective clearing
-        """
-        if not self.performance_optimizer:
-            return
-            
-        if pattern:
-            self.performance_optimizer.cache.invalidate_pattern(pattern)
-            self.logger.info(f"Cleared cache entries matching pattern: {pattern}")
-        else:
-            self.performance_optimizer.cache.clear()
-            self.logger.info("Cleared entire query cache")
-    
-    def get_slow_queries(self, threshold: float = 0.1) -> List[Dict[str, Any]]:
-        """
-        Get queries slower than threshold.
-        
-        Args:
-            threshold: Time threshold in seconds
-            
-        Returns:
-            List of slow queries with statistics
-        """
-        if not self.performance_optimizer:
-            return []
-            
-        return self.performance_optimizer.get_slow_queries(threshold)
-    
-    def batch_save_analyses(self, analyses: List[PydanticAnalysisResult], 
-                          batch_size: int = 100) -> List[int]:
-        """
-        Save multiple analyses using batch optimization.
-        
-        Args:
-            analyses: List of analyses to save
-            batch_size: Batch size for processing
-            
-        Returns:
-            List of saved analysis IDs
-        """
-        if not analyses:
-            return []
-            
-        # Use performance optimizer if available
-        if self.performance_optimizer:
-            # Process in optimized batches
-            saved_ids = []
-            
-            for i in range(0, len(analyses), batch_size):
-                batch = analyses[i:i + batch_size]
-                batch_ids = self.save_analysis_batch(batch)
-                saved_ids.extend(batch_ids)
-                
-                # Clear cache for these models to ensure fresh data
-                for analysis in batch:
-                    if analysis.metadata:
-                        self.clear_query_cache(f"model_stats:{analysis.metadata.model}")
-                        
-            return saved_ids
-        else:
-            # Fall back to regular batch save
-            return self.save_analysis_batch(analyses)
-    
-    def prepare_common_queries(self):
-        """Prepare commonly used queries for better performance."""
-        if not self.performance_optimizer:
-            return
-            
-        prepared = self.performance_optimizer.prepared_statements
-        
-        # Prepare common queries
-        queries = {
-            'get_by_model': '''
-                SELECT * FROM analysis_results 
-                WHERE model = :model 
-                ORDER BY timestamp DESC
-            ''',
-            'get_recent_analyses': '''
-                SELECT * FROM analysis_results 
-                WHERE timestamp >= :cutoff_date 
-                ORDER BY timestamp DESC 
-                LIMIT :limit
-            ''',
-            'get_high_risk_tracks': '''
-                SELECT t.*, a.model, a.serial 
-                FROM track_results t 
-                JOIN analysis_results a ON t.analysis_id = a.id 
-                WHERE t.risk_category = :risk_category 
-                ORDER BY t.failure_probability DESC
-            ''',
-            'count_by_status': '''
-                SELECT overall_status, COUNT(*) as count 
-                FROM analysis_results 
-                WHERE timestamp >= :start_date 
-                GROUP BY overall_status
-            '''
-        }
-        
-        for name, query in queries.items():
-            try:
-                prepared.prepare(name, query)
-                self.logger.debug(f"Prepared query: {name}")
-            except Exception as e:
-                self.logger.error(f"Failed to prepare query {name}: {e}")
-    
-    def save_analysis_result(self, analysis_data: PydanticAnalysisResult) -> int:
-        """
-        Save analysis result without decorators for debugging.
-        
-        This method is a direct save without error handling decorators to help debug issues.
-        
-        Args:
-            analysis_data: Analysis data to save
-            
-        Returns:
-            ID of saved analysis
-            
-        Raises:
-            Any exception that occurs
-        """
-        self.logger.info(f"DEBUG: save_analysis_result called for {analysis_data.metadata.filename if analysis_data is not None and analysis_data.metadata else 'unknown'}")
-        
-        # First check if tables exist
-        try:
-            inspector = inspect(self.engine)
-            tables = inspector.get_table_names()
-            self.logger.debug(f"DEBUG: Available tables: {tables}")
-            
-            if 'analysis_results' not in tables:
-                self.logger.error("DEBUG: analysis_results table does not exist! Creating tables...")
-                self.init_db(drop_existing=False)
-                tables = inspector.get_table_names()
-                self.logger.debug(f"DEBUG: Tables after init: {tables}")
-        except Exception as e:
-            self.logger.error(f"DEBUG: Failed to check/create tables: {e}")
-        
-        try:
-            # Validate input
-            if not analysis_data:
-                raise ValueError("Analysis data is None")
-            if not analysis_data.metadata:
-                raise ValueError("Analysis metadata is None")
-            if not analysis_data.metadata.model:
-                raise ValueError("Model is None")
-            if not analysis_data.metadata.serial:
-                raise ValueError("Serial is None")
-            
-            self.logger.debug(f"Validation passed, calling _save_analysis_impl")
-            
-            # Direct call to implementation
-            result = self._save_analysis_impl(analysis_data)
-            
-            self.logger.info(f"DEBUG: Successfully saved analysis with ID {result}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"DEBUG: save_analysis_result failed with {type(e).__name__}: {str(e)}")
-            import traceback
-            self.logger.error(f"DEBUG: Traceback:\n{traceback.format_exc()}")
-            raise
-    
-    def _should_update_raw_data(self, existing_id: int, analysis_data: PydanticAnalysisResult) -> bool:
-        """Check if we should update an existing record with missing raw data."""
-        try:
-            with self.get_session() as session:
-                # Get existing analysis with tracks
-                existing = session.query(DBAnalysisResult).filter_by(id=existing_id).first()
-                if not existing:
-                    return False
-                
-                # Check if any tracks are missing raw data
-                for track in existing.tracks:
-                    if not track.position_data or not track.error_data:
-                        # Check if new data has raw data for this track
-                        if track.track_id in analysis_data.tracks:
-                            new_track = analysis_data.tracks[track.track_id]
-                            if hasattr(new_track, 'position_data') and new_track.position_data:
-                                return True
-                
-                return False
-        except Exception as e:
-            self.logger.error(f"Error checking if should update raw data: {e}")
-            return False
-    
-    def _update_raw_data(self, existing_id: int, analysis_data: PydanticAnalysisResult, session: Session) -> None:
-        """Update an existing record with missing raw data."""
-        try:
-            # Get existing analysis with tracks
-            existing = session.query(DBAnalysisResult).filter_by(id=existing_id).first()
-            if not existing:
-                return
-            
-            # Update tracks with missing raw data
-            updated_count = 0
-            for track in existing.tracks:
-                if not track.position_data or not track.error_data:
-                    # Check if new data has raw data for this track
-                    if track.track_id in analysis_data.tracks:
-                        new_track = analysis_data.tracks[track.track_id]
-                        if hasattr(new_track, 'position_data') and new_track.position_data:
-                            track.position_data = new_track.position_data
-                            track.error_data = new_track.error_data if hasattr(new_track, 'error_data') else []
-                            updated_count += 1
-                            self.logger.info(f"Updated track {track.track_id} with {len(track.position_data)} position points")
-            
-            if updated_count > 0:
-                session.commit()
-                self.logger.info(f"Updated {updated_count} tracks with raw data for analysis {existing_id}")
-            
-        except Exception as e:
-            self.logger.error(f"Error updating raw data: {e}")
-            session.rollback()
-            raise
-            
-    def _analyze_operational_error(self, error: Exception, analysis_data: 'PydanticAnalysisResult') -> dict:
-        """
-        Analyze OperationalError to provide detailed context and retry recommendations.
-        
-        Returns:
-            Dictionary with error category, user message, recovery suggestions, and retry recommendation
-        """
-        error_str = str(error).lower()
-        
-        if "database is locked" in error_str or "locked" in error_str:
-            return {
-                'error_category': 'Database Lock',
-                'user_message': f'Database is locked. File: {analysis_data.metadata.filename}',
-                'recovery_suggestions': [
-                    'Wait a moment and try again - another process may be using the database',
-                    'Check if another instance of the application is running',
-                    'Restart the application if the lock persists'
-                ],
-                'retry_recommended': True
-            }
-        elif "disk" in error_str or "space" in error_str:
-            return {
-                'error_category': 'Disk Space',
-                'user_message': f'Insufficient disk space to save analysis for {analysis_data.metadata.filename}',
-                'recovery_suggestions': [
-                    'Free up disk space on the database drive',
-                    'Clean up old temporary files',
-                    'Contact IT if this is a network database'
-                ],
-                'retry_recommended': False
-            }
-        elif "timeout" in error_str or "connection" in error_str:
-            return {
-                'error_category': 'Connection Timeout',
-                'user_message': f'Database connection timeout while saving {analysis_data.metadata.filename}',
-                'recovery_suggestions': [
-                    'Check network connection (if using network database)',
-                    'Try again - the connection may be temporarily slow',
-                    'Contact IT if using a shared network database'
-                ],
-                'retry_recommended': True
-            }
-        elif "permission" in error_str or "access" in error_str:
-            return {
-                'error_category': 'Permission Denied',
-                'user_message': f'Permission denied accessing database for {analysis_data.metadata.filename}',
-                'recovery_suggestions': [
-                    'Check file permissions on the database directory',
-                    'Run the application as administrator',
-                    'Contact IT to verify database access permissions'
-                ],
-                'retry_recommended': False
-            }
-        else:
-            return {
-                'error_category': 'Unknown Operational',
-                'user_message': f'Database operational error while saving {analysis_data.metadata.filename}',
-                'recovery_suggestions': [
-                    'Try saving again in a few moments',
-                    'Check database integrity',
-                    'Contact support if error persists'
-                ],
-                'retry_recommended': True
-            }
-    
-    def _get_error_recovery_suggestions(self, error: Exception, analysis_data: 'PydanticAnalysisResult') -> list:
-        """
-        Provide specific recovery suggestions based on error type and context.
-        """
-        error_type = type(error).__name__
-        error_str = str(error).lower()
-        
-        if error_type == 'ValidationError':
-            return [
-                f'Check the data format in {analysis_data.metadata.filename}',
-                'Verify all required fields are present',
-                'Check for data type mismatches'
-            ]
-        elif error_type == 'AttributeError':
-            if 'nonetype' in error_str:
-                return [
-                    f'Missing required data in {analysis_data.metadata.filename}',
-                    'Check if the file was processed completely',
-                    'Verify file format is correct'
-                ]
-            else:
-                return [
-                    'Data structure issue detected',
-                    'Check for missing attributes in the analysis data',
-                    'Reprocess the file if necessary'
-                ]
-        elif error_type == 'KeyError':
-            return [
-                f'Missing expected data field in {analysis_data.metadata.filename}',
-                'Verify the file format matches expected structure',
-                'Check if analysis was complete before saving'
-            ]
-        elif error_type == 'TypeError':
-            return [
-                f'Data type mismatch in {analysis_data.metadata.filename}',
-                'Check numeric fields for invalid characters',
-                'Verify date/time formats are correct'
-            ]
-        elif error_type in ('MemoryError', 'OverflowError'):
-            return [
-                f'File {analysis_data.metadata.filename} may be too large',
-                'Try processing smaller batches',
-                'Check available system memory',
-                'Contact support for large file handling'
-            ]
-        else:
-            return [
-                f'Unexpected error processing {analysis_data.metadata.filename}',
-                'Try saving the file again',
-                'Check system resources and database status',
-                'Contact support if error persists'
-            ]
 
     # =========================================================================
-    # ProcessedFile Methods - Incremental Processing Support (Phase 1, Day 2)
-    # Related: ADR-002 (Incremental Processing via Database Tracking)
+    # Incremental Processing
     # =========================================================================
-
-    @staticmethod
-    def compute_file_hash(file_path: Union[str, Path]) -> str:
-        """
-        Compute SHA-256 hash of a file for duplicate detection.
-
-        Args:
-            file_path: Path to the file to hash
-
-        Returns:
-            64-character lowercase hexadecimal SHA-256 hash
-
-        Raises:
-            FileNotFoundError: If file does not exist
-            IOError: If file cannot be read
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        hasher = hashlib.sha256()
-        with open(file_path, 'rb') as f:
-            # Read in 64KB chunks for memory efficiency with large files
-            for chunk in iter(lambda: f.read(65536), b''):
-                hasher.update(chunk)
-        return hasher.hexdigest().lower()
 
     def is_file_processed(self, file_path: Union[str, Path]) -> bool:
         """
-        Check if a file has already been processed (by hash).
+        Check if a file has already been processed.
 
-        This method computes the file's SHA-256 hash and checks if it exists
-        in the processed_files table. This ensures that even if a file is moved
-        or renamed, it won't be reprocessed if the content is the same.
-
-        Args:
-            file_path: Path to the file to check
-
-        Returns:
-            True if file has been processed, False otherwise
-
-        Raises:
-            FileNotFoundError: If file does not exist
-            DatabaseError: If database operation fails
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        try:
-            file_hash = self.compute_file_hash(file_path)
-
-            with self.get_session() as session:
-                existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_hash == file_hash
-                ).first()
-
-                return existing is not None
-
-        except FileNotFoundError:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error checking if file is processed: {e}")
-            raise DatabaseError(f"Failed to check processed status: {str(e)}") from e
-
-    def get_processed_file(self, file_path: Union[str, Path]) -> Optional[DBProcessedFile]:
-        """
-        Get the ProcessedFile record for a file (by hash).
+        Uses SHA-256 hash for accurate duplicate detection even if file
+        was moved or renamed.
 
         Args:
-            file_path: Path to the file to lookup
+            file_path: Path to the file
 
         Returns:
-            ProcessedFile record if found, None otherwise
-
-        Raises:
-            FileNotFoundError: If file does not exist
-            DatabaseError: If database operation fails
+            True if file was already processed
         """
         file_path = Path(file_path)
+
         if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+            return False
 
-        try:
-            file_hash = self.compute_file_hash(file_path)
+        file_hash = self._calculate_file_hash(file_path)
 
-            with self.get_session() as session:
-                return session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_hash == file_hash
-                ).first()
+        with self.session() as session:
+            exists = (
+                session.query(DBProcessedFile)
+                .filter(DBProcessedFile.file_hash == file_hash)
+                .first()
+            ) is not None
 
-        except FileNotFoundError:
-            raise
-        except Exception as e:
-            self.logger.error(f"Error getting processed file record: {e}")
-            raise DatabaseError(f"Failed to get processed file: {str(e)}") from e
+            return exists
 
-    def mark_file_processed(
-        self,
-        file_path: Union[str, Path],
-        success: bool = True,
-        error_message: Optional[str] = None,
-        processing_time_ms: Optional[int] = None,
-        analysis_id: Optional[int] = None
-    ) -> int:
+    def get_unprocessed_files(self, file_paths: List[Path]) -> List[Path]:
         """
-        Mark a file as processed in the database.
+        Filter a list of files to only those not yet processed.
 
-        This method creates a ProcessedFile record with the file's hash,
-        allowing the system to skip it during future incremental processing.
-
-        Args:
-            file_path: Path to the processed file
-            success: Whether processing was successful
-            error_message: Error message if processing failed
-            processing_time_ms: Processing time in milliseconds
-            analysis_id: ID of the created analysis record (if any)
-
-        Returns:
-            ID of the created ProcessedFile record
-
-        Raises:
-            FileNotFoundError: If file does not exist
-            DatabaseError: If database operation fails
-            DatabaseIntegrityError: If file was already processed (duplicate hash)
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        try:
-            file_hash = self.compute_file_hash(file_path)
-            file_stat = file_path.stat()
-
-            # Get software version
-            try:
-                from ..version import __version__
-            except ImportError:
-                __version__ = "unknown"
-
-            with self.get_session() as session:
-                # Check if already exists (should be caught by unique constraint, but be safe)
-                existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_hash == file_hash
-                ).first()
-
-                if existing:
-                    self.logger.debug(f"File already marked as processed: {file_path.name}")
-                    return existing.id
-
-                processed_file = DBProcessedFile(
-                    filename=file_path.name,
-                    file_path=str(file_path.absolute()),
-                    file_hash=file_hash,
-                    file_size=file_stat.st_size,
-                    file_modified_date=datetime.fromtimestamp(file_stat.st_mtime),
-                    processed_date=datetime.utcnow(),
-                    processing_time_ms=processing_time_ms,
-                    software_version=__version__,
-                    success=success,
-                    error_message=error_message,
-                    analysis_id=analysis_id
-                )
-
-                session.add(processed_file)
-                session.commit()
-
-                self.logger.debug(f"Marked file as processed: {file_path.name} (ID: {processed_file.id})")
-                return processed_file.id
-
-        except FileNotFoundError:
-            raise
-        except IntegrityError as e:
-            # Duplicate hash - file already processed
-            self.logger.debug(f"File already processed (duplicate hash): {file_path.name}")
-            raise DatabaseIntegrityError(f"File already processed: {str(e)}") from e
-        except Exception as e:
-            self.logger.error(f"Error marking file as processed: {e}")
-            raise DatabaseError(f"Failed to mark file as processed: {str(e)}") from e
-
-    def get_unprocessed_files(self, file_paths: List[Union[str, Path]]) -> List[Path]:
-        """
-        Filter a list of files to return only those not yet processed.
-
-        This is the main method for incremental processing. Given a list of files,
-        it returns only those that haven't been processed yet (based on file hash).
+        Efficient batch operation for incremental processing.
 
         Args:
             file_paths: List of file paths to check
 
         Returns:
-            List of Path objects for files that haven't been processed
-
-        Raises:
-            DatabaseError: If database operation fails
+            List of paths that have not been processed
         """
         if not file_paths:
             return []
 
+        # Calculate hashes for all files
+        file_hashes = {}
+        for path in file_paths:
+            path = Path(path)
+            if path.exists():
+                file_hashes[self._calculate_file_hash(path)] = path
+
+        if not file_hashes:
+            return []
+
+        # Query for existing hashes
+        with self.session() as session:
+            existing_hashes = set(
+                row.file_hash for row in
+                session.query(DBProcessedFile.file_hash)
+                .filter(DBProcessedFile.file_hash.in_(list(file_hashes.keys())))
+                .all()
+            )
+
+        # Return files whose hash is not in database
+        return [
+            path for hash_val, path in file_hashes.items()
+            if hash_val not in existing_hashes
+        ]
+
+    def _calculate_file_hash(self, file_path: Path) -> str:
+        """Calculate SHA-256 hash of a file."""
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _record_processed_file(
+        self,
+        session: Session,
+        file_path: Path,
+        analysis_id: int
+    ) -> None:
+        """Record a file as processed."""
+        file_path = Path(file_path)
+
+        if not file_path.exists():
+            return
+
         try:
-            # Get hashes for all existing files
-            file_hash_map = {}  # hash -> Path
-            for file_path in file_paths:
-                path = Path(file_path)
-                if path.exists():
-                    try:
-                        file_hash = self.compute_file_hash(path)
-                        file_hash_map[file_hash] = path
-                    except Exception as e:
-                        self.logger.warning(f"Could not hash file {path}: {e}")
-                        # Include files we can't hash - they'll be processed normally
-                        file_hash_map[f"unknown_{path.name}_{path.stat().st_size}"] = path
-                else:
-                    self.logger.warning(f"File does not exist: {path}")
+            processed_file = DBProcessedFile(
+                filename=file_path.name,
+                file_path=str(file_path),
+                file_hash=self._calculate_file_hash(file_path),
+                file_size=file_path.stat().st_size,
+                file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
+                analysis_id=analysis_id,
+                success=True,
+            )
+            session.add(processed_file)
+        except IntegrityError:
+            # Already recorded, ignore
+            pass
 
-            if not file_hash_map:
-                return []
+    # =========================================================================
+    # QA Alerts
+    # =========================================================================
 
-            # Query for existing hashes in database
-            with self.get_session() as session:
-                # Get all hashes that are in the database
-                hashes_to_check = list(file_hash_map.keys())
-
-                # Query in batches to avoid SQL limits
-                existing_hashes = set()
-                batch_size = 500
-                for i in range(0, len(hashes_to_check), batch_size):
-                    batch = hashes_to_check[i:i + batch_size]
-                    results = session.query(DBProcessedFile.file_hash).filter(
-                        DBProcessedFile.file_hash.in_(batch)
-                    ).all()
-                    existing_hashes.update(h[0] for h in results)
-
-            # Return files whose hashes are NOT in the database
-            unprocessed = []
-            skipped_count = 0
-            for file_hash, path in file_hash_map.items():
-                if file_hash not in existing_hashes:
-                    unprocessed.append(path)
-                else:
-                    skipped_count += 1
-
-            if skipped_count > 0:
-                self.logger.info(f"Incremental processing: Skipping {skipped_count} already-processed files")
-
-            self.logger.info(f"Incremental processing: {len(unprocessed)} new files to process out of {len(file_paths)} total")
-            return unprocessed
-
-        except Exception as e:
-            self.logger.error(f"Error filtering unprocessed files: {e}")
-            raise DatabaseError(f"Failed to filter unprocessed files: {str(e)}") from e
-
-    def get_processed_files_count(self) -> int:
+    def create_alert(
+        self,
+        analysis_id: int,
+        alert_type: str,
+        severity: str,
+        message: str,
+        track_id: Optional[str] = None,
+        metric_value: Optional[float] = None,
+        threshold_value: Optional[float] = None,
+    ) -> int:
         """
-        Get the total count of processed files.
-
-        Returns:
-            Total number of processed file records
-
-        Raises:
-            DatabaseError: If database operation fails
-        """
-        try:
-            with self.get_session() as session:
-                return session.query(func.count(DBProcessedFile.id)).scalar() or 0
-        except Exception as e:
-            self.logger.error(f"Error getting processed files count: {e}")
-            raise DatabaseError(f"Failed to get processed files count: {str(e)}") from e
-
-    def get_processed_files_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about processed files.
-
-        Returns:
-            Dictionary with statistics:
-            - total_count: Total processed files
-            - success_count: Files processed successfully
-            - failed_count: Files that failed processing
-            - earliest_date: Earliest processing date
-            - latest_date: Latest processing date
-
-        Raises:
-            DatabaseError: If database operation fails
-        """
-        try:
-            with self.get_session() as session:
-                total = session.query(func.count(DBProcessedFile.id)).scalar() or 0
-                success = session.query(func.count(DBProcessedFile.id)).filter(
-                    DBProcessedFile.success == True
-                ).scalar() or 0
-                failed = session.query(func.count(DBProcessedFile.id)).filter(
-                    DBProcessedFile.success == False
-                ).scalar() or 0
-
-                dates = session.query(
-                    func.min(DBProcessedFile.processed_date),
-                    func.max(DBProcessedFile.processed_date)
-                ).first()
-
-                return {
-                    'total_count': total,
-                    'success_count': success,
-                    'failed_count': failed,
-                    'earliest_date': dates[0] if dates else None,
-                    'latest_date': dates[1] if dates else None
-                }
-        except Exception as e:
-            self.logger.error(f"Error getting processed files stats: {e}")
-            raise DatabaseError(f"Failed to get processed files stats: {str(e)}") from e
-
-    def clear_processed_files(self, older_than_days: Optional[int] = None) -> int:
-        """
-        Clear processed files records (for reprocessing).
-
-        WARNING: This will cause files to be reprocessed. Use with caution.
+        Create a QA alert.
 
         Args:
-            older_than_days: If specified, only clear records older than this many days.
-                           If None, clear ALL records.
+            analysis_id: Related analysis ID
+            alert_type: Type of alert (from AlertType enum)
+            severity: Severity level (Critical, High, Medium, Low)
+            message: Alert message
+            track_id: Related track (optional)
+            metric_value: Value that triggered alert (optional)
+            threshold_value: Threshold that was exceeded (optional)
 
         Returns:
-            Number of records deleted
-
-        Raises:
-            DatabaseError: If database operation fails
+            Database ID of created alert
         """
+        with self.session() as session:
+            alert = DBQAAlert(
+                analysis_id=analysis_id,
+                alert_type=DBAlertType[alert_type] if isinstance(alert_type, str) else alert_type,
+                severity=severity,
+                message=message,
+                track_id=track_id,
+                metric_value=metric_value,
+                threshold_value=threshold_value,
+            )
+            session.add(alert)
+            session.flush()
+
+            logger.info(f"Created alert: {alert_type} - {message}")
+            return alert.id
+
+    def get_unresolved_alerts(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Get unresolved QA alerts.
+
+        Args:
+            limit: Maximum number to return
+
+        Returns:
+            List of alert dictionaries
+        """
+        with self.session() as session:
+            alerts = (
+                session.query(DBQAAlert)
+                .filter(DBQAAlert.resolved == False)
+                .order_by(
+                    # Critical first, then by date
+                    desc(DBQAAlert.severity == "Critical"),
+                    desc(DBQAAlert.created_date)
+                )
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                {
+                    "id": a.id,
+                    "analysis_id": a.analysis_id,
+                    "alert_type": a.alert_type.value if a.alert_type else None,
+                    "severity": a.severity,
+                    "message": a.message,
+                    "created_date": a.created_date,
+                    "acknowledged": a.acknowledged,
+                }
+                for a in alerts
+            ]
+
+    def acknowledge_alert(self, alert_id: int, acknowledged_by: str) -> bool:
+        """
+        Acknowledge an alert.
+
+        Args:
+            alert_id: Alert ID
+            acknowledged_by: User who acknowledged
+
+        Returns:
+            True if successful
+        """
+        with self.session() as session:
+            alert = session.query(DBQAAlert).get(alert_id)
+            if alert:
+                alert.acknowledged = True
+                alert.acknowledged_by = acknowledged_by
+                alert.acknowledged_date = datetime.now()
+                return True
+            return False
+
+    def resolve_alert(
+        self,
+        alert_id: int,
+        resolved_by: str,
+        resolution_notes: Optional[str] = None
+    ) -> bool:
+        """
+        Resolve an alert.
+
+        Args:
+            alert_id: Alert ID
+            resolved_by: User who resolved
+            resolution_notes: Notes about resolution
+
+        Returns:
+            True if successful
+        """
+        with self.session() as session:
+            alert = session.query(DBQAAlert).get(alert_id)
+            if alert:
+                if not alert.acknowledged:
+                    # Auto-acknowledge when resolving
+                    alert.acknowledged = True
+                    alert.acknowledged_by = resolved_by
+                    alert.acknowledged_date = datetime.now()
+
+                alert.resolved = True
+                alert.resolved_by = resolved_by
+                alert.resolved_date = datetime.now()
+                alert.resolution_notes = resolution_notes
+                return True
+            return False
+
+    # =========================================================================
+    # Dashboard Queries
+    # =========================================================================
+
+    def get_dashboard_stats(self, days_back: int = 7) -> Dict[str, Any]:
+        """
+        Get statistics for dashboard display.
+
+        Args:
+            days_back: Number of days to include
+
+        Returns:
+            Dictionary with dashboard statistics
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Count analyses
+            total_analyses = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.timestamp >= cutoff_date)
+                .scalar()
+            ) or 0
+
+            # Count by status
+            status_counts = (
+                session.query(
+                    DBAnalysisResult.overall_status,
+                    func.count(DBAnalysisResult.id)
+                )
+                .filter(DBAnalysisResult.timestamp >= cutoff_date)
+                .group_by(DBAnalysisResult.overall_status)
+                .all()
+            )
+
+            passed = 0
+            failed = 0
+            for status, count in status_counts:
+                if status == DBStatusType.PASS:
+                    passed = count
+                elif status in (DBStatusType.FAIL, DBStatusType.ERROR):
+                    failed = count
+
+            # Count unresolved alerts
+            unresolved_alerts = (
+                session.query(func.count(DBQAAlert.id))
+                .filter(DBQAAlert.resolved == False)
+                .scalar()
+            ) or 0
+
+            # Get high-risk count
+            high_risk = (
+                session.query(func.count(DBTrackResult.id))
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.timestamp >= cutoff_date,
+                    DBTrackResult.risk_category == DBRiskCategory.HIGH
+                )
+                .scalar()
+            ) or 0
+
+            pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
+
+            # Total files (all time)
+            total_files = (
+                session.query(func.count(DBAnalysisResult.id))
+                .scalar()
+            ) or 0
+
+            # Today's count
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_count = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.timestamp >= today)
+                .scalar()
+            ) or 0
+
+            # This week's count
+            week_start = today - timedelta(days=today.weekday())
+            week_count = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.timestamp >= week_start)
+                .scalar()
+            ) or 0
+
+            # Daily trend for the past N days
+            daily_trend = []
+            for i in range(days_back):
+                day_start = (today - timedelta(days=days_back - 1 - i))
+                day_end = day_start + timedelta(days=1)
+
+                day_total = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.timestamp >= day_start,
+                        DBAnalysisResult.timestamp < day_end
+                    )
+                    .scalar()
+                ) or 0
+
+                day_passed = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.timestamp >= day_start,
+                        DBAnalysisResult.timestamp < day_end,
+                        DBAnalysisResult.overall_status == DBStatusType.PASS
+                    )
+                    .scalar()
+                ) or 0
+
+                day_pass_rate = (day_passed / day_total * 100) if day_total > 0 else 0.0
+                daily_trend.append({
+                    "date": day_start.strftime("%m/%d"),
+                    "total": day_total,
+                    "passed": day_passed,
+                    "pass_rate": day_pass_rate,
+                })
+
+            return {
+                "total_analyses": total_analyses,
+                "total_files": total_files,
+                "passed": passed,
+                "failed": failed,
+                "pass_rate": pass_rate,
+                "unresolved_alerts": unresolved_alerts,
+                "high_risk_count": high_risk,
+                "period_days": days_back,
+                "today_count": today_count,
+                "week_count": week_count,
+                "daily_trend": daily_trend,
+            }
+
+    def get_alerts(self, limit: int = 10, include_resolved: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get recent alerts.
+
+        Args:
+            limit: Maximum number of alerts to return
+            include_resolved: Whether to include resolved alerts
+
+        Returns:
+            List of alert dictionaries
+        """
+        with self.session() as session:
+            query = session.query(DBQAAlert)
+
+            if not include_resolved:
+                query = query.filter(DBQAAlert.resolved == False)
+
+            alerts = (
+                query
+                .order_by(DBQAAlert.created_date.desc())
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                {
+                    "id": a.id,
+                    "analysis_id": a.analysis_id,
+                    "alert_type": a.alert_type.value if a.alert_type else "INFO",
+                    "severity": a.severity,
+                    "message": a.message,
+                    "model": a.model,
+                    "created_at": a.created_date.strftime("%Y-%m-%d %H:%M") if a.created_date else "",
+                    "acknowledged": a.acknowledged,
+                    "resolved": a.resolved,
+                }
+                for a in alerts
+            ]
+
+    def get_model_stats(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get statistics by model number.
+
+        Args:
+            limit: Maximum number of models to return
+
+        Returns:
+            List of model statistics dictionaries
+        """
+        with self.session() as session:
+            # Get counts by model
+            model_counts = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBAnalysisResult.id).label('count')
+                )
+                .group_by(DBAnalysisResult.model)
+                .order_by(func.count(DBAnalysisResult.id).desc())
+                .limit(limit)
+                .all()
+            )
+
+            result = []
+            for model, count in model_counts:
+                if not model:
+                    continue
+
+                # Get pass rate for this model
+                passed = (
+                    session.query(func.count(DBAnalysisResult.id))
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        DBAnalysisResult.overall_status == DBStatusType.PASS
+                    )
+                    .scalar()
+                ) or 0
+
+                pass_rate = (passed / count * 100) if count > 0 else 0.0
+
+                result.append({
+                    "model": model,
+                    "count": count,
+                    "passed": passed,
+                    "failed": count - passed,
+                    "pass_rate": pass_rate,
+                })
+
+            return result
+
+    def get_trend_data(
+        self,
+        model: Optional[str] = None,
+        days_back: int = 30,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Get trend data for analysis.
+
+        Args:
+            model: Filter by model number (None for all)
+            days_back: Number of days to include
+            limit: Maximum number of records
+
+        Returns:
+            List of trend data dictionaries
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            query = (
+                session.query(
+                    DBAnalysisResult.timestamp,
+                    DBAnalysisResult.file_date,  # Trim date from file
+                    DBAnalysisResult.model,
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.sigma_threshold,
+                    DBTrackResult.sigma_pass,
+                    DBTrackResult.status,
+                    DBTrackResult.unit_length,
+                    DBTrackResult.linearity_spec,
+                )
+                .join(DBTrackResult)
+                .filter(DBAnalysisResult.timestamp >= cutoff_date)
+            )
+
+            if model:
+                query = query.filter(DBAnalysisResult.model == model)
+
+            results = (
+                query
+                .order_by(DBAnalysisResult.file_date.asc())  # Order by trim date
+                .limit(limit)
+                .all()
+            )
+
+            return [
+                {
+                    # Use file_date (trim date) if available, fallback to timestamp (processing date)
+                    "date": (r.file_date or r.timestamp).strftime("%Y-%m-%d") if (r.file_date or r.timestamp) else "",
+                    "model": r.model,
+                    "sigma_gradient": r.sigma_gradient,
+                    "sigma_threshold": r.sigma_threshold,
+                    "sigma_pass": r.sigma_pass,
+                    "status": r.status.value if r.status else "UNKNOWN",
+                    "unit_length": r.unit_length,
+                    "linearity_spec": r.linearity_spec,
+                }
+                for r in results
+            ]
+
+    def get_models_list(self) -> List[str]:
+        """Get list of all unique model numbers in database."""
+        with self.session() as session:
+            models = (
+                session.query(DBAnalysisResult.model)
+                .distinct()
+                .order_by(DBAnalysisResult.model)
+                .all()
+            )
+            return [m[0] for m in models if m[0]]
+
+    # =========================================================================
+    # Private Mapping Methods
+    # =========================================================================
+
+    def _map_analysis_to_db(self, analysis: AnalysisResult) -> DBAnalysisResult:
+        """Map Pydantic AnalysisResult to SQLAlchemy model."""
+        # Map system type
+        system_type = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+
+        # Map overall status
+        status_map = {
+            AnalysisStatus.PASS: DBStatusType.PASS,
+            AnalysisStatus.FAIL: DBStatusType.FAIL,
+            AnalysisStatus.WARNING: DBStatusType.WARNING,
+            AnalysisStatus.ERROR: DBStatusType.ERROR,
+        }
+        overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
+
+        db_analysis = DBAnalysisResult(
+            filename=analysis.metadata.filename,
+            file_path=str(analysis.metadata.file_path),
+            file_date=analysis.metadata.file_date,
+            model=analysis.metadata.model,
+            serial=analysis.metadata.serial,
+            system=system_type,
+            has_multi_tracks=analysis.metadata.has_multi_tracks,
+            overall_status=overall_status,
+            processing_time=analysis.processing_time,
+            timestamp=datetime.now(),
+        )
+
+        # Add track results
+        for track in analysis.tracks:
+            db_track = self._map_track_to_db(track)
+            db_analysis.tracks.append(db_track)
+
+        return db_analysis
+
+    def _map_track_to_db(self, track: TrackData) -> DBTrackResult:
+        """Map Pydantic TrackData to SQLAlchemy model."""
+        status_map = {
+            AnalysisStatus.PASS: DBStatusType.PASS,
+            AnalysisStatus.FAIL: DBStatusType.FAIL,
+            AnalysisStatus.WARNING: DBStatusType.WARNING,
+            AnalysisStatus.ERROR: DBStatusType.ERROR,
+        }
+        status = status_map.get(track.status, DBStatusType.ERROR)
+
+        risk_map = {
+            RiskCategory.HIGH: DBRiskCategory.HIGH,
+            RiskCategory.MEDIUM: DBRiskCategory.MEDIUM,
+            RiskCategory.LOW: DBRiskCategory.LOW,
+            RiskCategory.UNKNOWN: DBRiskCategory.UNKNOWN,
+        }
+        risk_category = risk_map.get(track.risk_category, DBRiskCategory.UNKNOWN)
+
+        return DBTrackResult(
+            track_id=track.track_id,
+            status=status,
+            travel_length=track.travel_length,
+            linearity_spec=track.linearity_spec,
+            sigma_gradient=track.sigma_gradient,
+            sigma_threshold=track.sigma_threshold,
+            sigma_pass=track.sigma_pass,
+            unit_length=track.unit_length,
+            untrimmed_resistance=track.untrimmed_resistance,
+            trimmed_resistance=track.trimmed_resistance,
+            optimal_offset=track.optimal_offset,
+            final_linearity_error_shifted=track.linearity_error,
+            linearity_pass=track.linearity_pass,
+            linearity_fail_points=track.linearity_fail_points,
+            failure_probability=track.failure_probability,
+            risk_category=risk_category,
+            position_data=track.position_data,
+            error_data=track.error_data,
+            upper_limits=track.upper_limits,  # Store position-dependent spec limits
+            lower_limits=track.lower_limits,  # Store position-dependent spec limits
+            untrimmed_positions=track.untrimmed_positions,  # Store untrimmed data for charts
+            untrimmed_errors=track.untrimmed_errors,  # Store untrimmed data for charts
+        )
+
+    def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> Optional[AnalysisResult]:
+        """Map SQLAlchemy model back to Pydantic AnalysisResult.
+
+        Returns None if the analysis has no valid tracks (corrupted data).
+        """
+        from laser_trim_analyzer.core.models import FileMetadata
+
+        # Map system type
+        system_type = SystemType.A if db_analysis.system == DBSystemType.A else SystemType.B
+
+        # Map status
+        status_map = {
+            DBStatusType.PASS: AnalysisStatus.PASS,
+            DBStatusType.FAIL: AnalysisStatus.FAIL,
+            DBStatusType.WARNING: AnalysisStatus.WARNING,
+            DBStatusType.ERROR: AnalysisStatus.ERROR,
+        }
+        overall_status = status_map.get(db_analysis.overall_status, AnalysisStatus.ERROR)
+
+        # Create metadata
+        metadata = FileMetadata(
+            filename=db_analysis.filename,
+            file_path=Path(db_analysis.file_path) if db_analysis.file_path else Path("."),
+            file_date=db_analysis.file_date or datetime.now(),
+            model=db_analysis.model,
+            serial=db_analysis.serial,
+            system=system_type,
+            has_multi_tracks=db_analysis.has_multi_tracks,
+        )
+
+        # Map tracks - filter out None results from failed mappings
+        tracks = [t for t in (self._map_db_to_track(t) for t in db_analysis.tracks) if t is not None]
+
+        # If no valid tracks could be mapped, return None or create with ERROR status
+        if not tracks and overall_status != AnalysisStatus.ERROR:
+            logger.warning(f"Analysis {db_analysis.filename} has no valid tracks, skipping")
+            return None
+
         try:
-            with self.get_session() as session:
-                query = session.query(DBProcessedFile)
-
-                if older_than_days is not None:
-                    cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
-                    query = query.filter(DBProcessedFile.processed_date < cutoff_date)
-                    self.logger.warning(f"Clearing processed files older than {older_than_days} days (before {cutoff_date})")
-                else:
-                    self.logger.warning("Clearing ALL processed files records - all files will be reprocessed!")
-
-                count = query.delete()
-                session.commit()
-
-                self.logger.info(f"Cleared {count} processed file records")
-                return count
-
+            return AnalysisResult(
+                metadata=metadata,
+                overall_status=overall_status,
+                processing_time=db_analysis.processing_time or 0.0,
+                tracks=tracks,
+            )
         except Exception as e:
-            self.logger.error(f"Error clearing processed files: {e}")
-            raise DatabaseError(f"Failed to clear processed files: {str(e)}") from e
+            logger.error(f"Failed to create AnalysisResult for {db_analysis.filename}: {e}")
+            return None
+
+    def _map_db_to_track(self, db_track: DBTrackResult) -> Optional[TrackData]:
+        """Map SQLAlchemy TrackResult back to Pydantic TrackData.
+
+        Returns None if required fields are missing (corrupted/incomplete data).
+        """
+        status_map = {
+            DBStatusType.PASS: AnalysisStatus.PASS,
+            DBStatusType.FAIL: AnalysisStatus.FAIL,
+            DBStatusType.WARNING: AnalysisStatus.WARNING,
+            DBStatusType.ERROR: AnalysisStatus.ERROR,
+        }
+        status = status_map.get(db_track.status, AnalysisStatus.ERROR)
+
+        risk_map = {
+            DBRiskCategory.HIGH: RiskCategory.HIGH,
+            DBRiskCategory.MEDIUM: RiskCategory.MEDIUM,
+            DBRiskCategory.LOW: RiskCategory.LOW,
+            DBRiskCategory.UNKNOWN: RiskCategory.UNKNOWN,
+        }
+        risk_category = risk_map.get(db_track.risk_category, RiskCategory.UNKNOWN)
+
+        # Handle missing required fields - these are required for TrackData
+        sigma_gradient = db_track.sigma_gradient
+        sigma_threshold = db_track.sigma_threshold
+        sigma_pass = db_track.sigma_pass
+
+        # If any required sigma fields are None, provide defaults or skip
+        if sigma_gradient is None:
+            logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
+            sigma_gradient = 0.0
+        if sigma_threshold is None:
+            logger.warning(f"Track {db_track.track_id} has None sigma_threshold, using 0.01")
+            sigma_threshold = 0.01
+        if sigma_pass is None:
+            # Calculate from gradient and threshold
+            sigma_pass = sigma_gradient <= sigma_threshold
+
+        try:
+            return TrackData(
+                track_id=db_track.track_id or "default",
+                status=status,
+                travel_length=db_track.travel_length or 1.0,  # Default to 1.0 to avoid 0
+                linearity_spec=db_track.linearity_spec or 0.01,
+                sigma_gradient=sigma_gradient,
+                sigma_threshold=sigma_threshold,
+                sigma_pass=sigma_pass,
+                optimal_offset=db_track.optimal_offset or 0.0,
+                linearity_error=db_track.final_linearity_error_shifted or 0.0,
+                linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else True,
+                linearity_fail_points=db_track.linearity_fail_points or 0,
+                unit_length=db_track.unit_length,
+                untrimmed_resistance=db_track.untrimmed_resistance,
+                trimmed_resistance=db_track.trimmed_resistance,
+                failure_probability=db_track.failure_probability,
+                risk_category=risk_category,
+                position_data=db_track.position_data,
+                error_data=db_track.error_data,
+                upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
+                lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
+                untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
+                untrimmed_errors=db_track.untrimmed_errors,  # Retrieve untrimmed data for charts
+            )
+        except Exception as e:
+            logger.error(f"Failed to map track {db_track.track_id}: {e}")
+            return None
+
+    def _update_existing_analysis(
+        self,
+        session: Session,
+        analysis: AnalysisResult
+    ) -> int:
+        """Update an existing analysis record."""
+        # Find existing record by filename only (model/serial may have changed due to parsing fixes)
+        existing = (
+            session.query(DBAnalysisResult)
+            .filter(DBAnalysisResult.filename == analysis.metadata.filename)
+            .first()
+        )
+
+        if existing:
+            # Update ALL fields including model/serial (parsing may have changed)
+            existing.model = analysis.metadata.model
+            existing.serial = analysis.metadata.serial
+            existing.system = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+            existing.file_date = analysis.metadata.file_date
+            existing.has_multi_tracks = analysis.metadata.has_multi_tracks
+            existing.processing_time = analysis.processing_time
+            existing.timestamp = datetime.now()
+
+            # Map overall status
+            status_map = {
+                AnalysisStatus.PASS: DBStatusType.PASS,
+                AnalysisStatus.FAIL: DBStatusType.FAIL,
+                AnalysisStatus.WARNING: DBStatusType.WARNING,
+                AnalysisStatus.ERROR: DBStatusType.ERROR,
+            }
+            existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
+
+            # Clear old tracks and add new ones
+            existing.tracks.clear()
+            for track in analysis.tracks:
+                db_track = self._map_track_to_db(track)
+                existing.tracks.append(db_track)
+
+            return existing.id
+
+        # If no existing record found, create new
+        db_analysis = self._map_analysis_to_db(analysis)
+        session.add(db_analysis)
+        session.flush()
+        return db_analysis.id
+
+    # =========================================================================
+    # Utility Methods
+    # =========================================================================
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._engine:
+            self._engine.dispose()
+            logger.info("Database connection closed")
+
+    def get_database_path(self) -> Path:
+        """Get the path to the database file."""
+        return self.database_path
+
+    def get_record_count(self) -> Dict[str, int]:
+        """Get count of records in main tables."""
+        with self.session() as session:
+            return {
+                "analyses": session.query(func.count(DBAnalysisResult.id)).scalar() or 0,
+                "tracks": session.query(func.count(DBTrackResult.id)).scalar() or 0,
+                "processed_files": session.query(func.count(DBProcessedFile.id)).scalar() or 0,
+                "alerts": session.query(func.count(DBQAAlert.id)).scalar() or 0,
+            }
+
+    def get_models_list(self) -> List[str]:
+        """
+        Get a list of all unique model numbers in the database.
+
+        Returns:
+            List of model strings, sorted alphabetically
+        """
+        with self.session() as session:
+            models = (
+                session.query(DBAnalysisResult.model)
+                .filter(DBAnalysisResult.model.isnot(None))
+                .distinct()
+                .order_by(DBAnalysisResult.model)
+                .all()
+            )
+            return [m[0] for m in models if m[0]]
+
+    # =========================================================================
+    # Trends Page Methods (Active Models Summary)
+    # =========================================================================
+
+    def get_active_models_summary(
+        self,
+        days_back: int = 90,
+        min_samples: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Get summary statistics for all models with recent activity.
+
+        Args:
+            days_back: Only include models with files in this period
+            min_samples: Minimum samples required for inclusion
+
+        Returns:
+            List of model summaries sorted by sample count descending
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all models with recent activity
+            model_data = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBAnalysisResult.id).label('total'),
+                    func.sum(
+                        case(
+                            (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                            else_=0
+                        )
+                    ).label('passed'),
+                    func.min(DBAnalysisResult.file_date).label('first_date'),
+                    func.max(DBAnalysisResult.file_date).label('last_date'),
+                )
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    or_(
+                        DBAnalysisResult.file_date >= cutoff_date,
+                        DBAnalysisResult.timestamp >= cutoff_date
+                    )
+                )
+                .group_by(DBAnalysisResult.model)
+                .having(func.count(DBAnalysisResult.id) >= min_samples)
+                .all()
+            )
+
+            results = []
+            for model, total, passed, first_date, last_date in model_data:
+                if not model or total == 0:
+                    continue
+
+                passed = passed or 0
+                pass_rate = (passed / total * 100)
+
+                # Get average sigma gradient for this model
+                sigma_data = (
+                    session.query(
+                        func.avg(DBTrackResult.sigma_gradient),
+                        func.avg(DBTrackResult.sigma_threshold),
+                    )
+                    .join(DBAnalysisResult)
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= cutoff_date,
+                            DBAnalysisResult.timestamp >= cutoff_date
+                        ),
+                        DBTrackResult.sigma_gradient.isnot(None),
+                    )
+                    .first()
+                )
+
+                avg_sigma = sigma_data[0] if sigma_data and sigma_data[0] else 0
+                avg_threshold = sigma_data[1] if sigma_data and sigma_data[1] else 0
+
+                results.append({
+                    "model": model,
+                    "total": total,
+                    "passed": passed,
+                    "failed": total - passed,
+                    "pass_rate": pass_rate,
+                    "avg_sigma": avg_sigma,
+                    "avg_threshold": avg_threshold,
+                    "first_date": first_date,
+                    "last_date": last_date,
+                })
+
+            # Sort by sample count descending
+            results.sort(key=lambda x: x["total"], reverse=True)
+            return results
+
+    def get_models_requiring_attention(
+        self,
+        days_back: int = 90,
+        min_samples: int = 5,
+        pass_rate_threshold: float = 80.0,
+        trend_threshold: float = 10.0,
+        rolling_days: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Get models that require attention based on alert criteria.
+
+        Alert criteria:
+        - Pass rate below threshold (default 80%)
+        - Trending worse by threshold% over rolling period
+        - High variance in recent samples
+
+        Args:
+            days_back: Period to analyze
+            min_samples: Minimum samples for inclusion
+            pass_rate_threshold: Alert if pass rate below this
+            trend_threshold: Alert if trend worse by this %
+            rolling_days: Rolling window for trend calculation
+
+        Returns:
+            List of models requiring attention with alert details
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+            rolling_cutoff = datetime.now() - timedelta(days=rolling_days)
+
+            # Get active models
+            active_models = self.get_active_models_summary(days_back, min_samples)
+
+            alerts = []
+            for model_data in active_models:
+                model = model_data["model"]
+                alert_reasons = []
+
+                # Check 1: Low pass rate
+                if model_data["pass_rate"] < pass_rate_threshold:
+                    alert_reasons.append({
+                        "type": "LOW_PASS_RATE",
+                        "message": f"Pass rate {model_data['pass_rate']:.1f}% is below {pass_rate_threshold}%",
+                        "severity": "High" if model_data["pass_rate"] < 70 else "Medium"
+                    })
+
+                # Check 2: Trending worse
+                # Compare older period vs rolling period
+                older_cutoff = cutoff_date
+                older_end = rolling_cutoff
+
+                older_pass_rate = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            and_(DBAnalysisResult.file_date >= older_cutoff, DBAnalysisResult.file_date < older_end),
+                            and_(DBAnalysisResult.timestamp >= older_cutoff, DBAnalysisResult.timestamp < older_end)
+                        )
+                    )
+                    .first()
+                )
+
+                recent_pass_rate = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= rolling_cutoff,
+                            DBAnalysisResult.timestamp >= rolling_cutoff
+                        )
+                    )
+                    .first()
+                )
+
+                older_count, older_passed = older_pass_rate
+                recent_count, recent_passed = recent_pass_rate
+
+                if older_count and older_count >= min_samples and recent_count and recent_count >= min_samples:
+                    older_pct = (older_passed or 0) / older_count * 100
+                    recent_pct = (recent_passed or 0) / recent_count * 100
+
+                    if recent_pct < older_pct - trend_threshold:
+                        alert_reasons.append({
+                            "type": "TRENDING_WORSE",
+                            "message": f"Pass rate dropped from {older_pct:.1f}% to {recent_pct:.1f}% ({older_pct - recent_pct:.1f}% decline)",
+                            "severity": "High" if (older_pct - recent_pct) > 20 else "Medium"
+                        })
+
+                # Check 3: High variance (use coefficient of variation)
+                sigma_values = (
+                    session.query(DBTrackResult.sigma_gradient)
+                    .join(DBAnalysisResult)
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        or_(
+                            DBAnalysisResult.file_date >= rolling_cutoff,
+                            DBAnalysisResult.timestamp >= rolling_cutoff
+                        ),
+                        DBTrackResult.sigma_gradient.isnot(None),
+                    )
+                    .all()
+                )
+
+                if len(sigma_values) >= min_samples:
+                    values = [v[0] for v in sigma_values if v[0] is not None]
+                    if values:
+                        import numpy as np
+                        mean_val = np.mean(values)
+                        std_val = np.std(values, ddof=1)
+                        cv = (std_val / mean_val * 100) if mean_val > 0 else 0
+
+                        # CV > 50% is high variance for sigma gradient
+                        if cv > 50:
+                            alert_reasons.append({
+                                "type": "HIGH_VARIANCE",
+                                "message": f"High variance in sigma gradient (CV={cv:.1f}%)",
+                                "severity": "Medium"
+                            })
+
+                if alert_reasons:
+                    alerts.append({
+                        "model": model,
+                        "pass_rate": model_data["pass_rate"],
+                        "total_samples": model_data["total"],
+                        "alerts": alert_reasons,
+                        "severity": max(a["severity"] for a in alert_reasons)
+                    })
+
+            # Sort by severity (High first) then by pass rate (lowest first)
+            severity_order = {"High": 0, "Medium": 1, "Low": 2}
+            alerts.sort(key=lambda x: (severity_order.get(x["severity"], 3), x["pass_rate"]))
+
+            return alerts
+
+    def get_model_trend_data(
+        self,
+        model: str,
+        days_back: int = 90,
+        rolling_window: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Get detailed trend data for a specific model.
+
+        Args:
+            model: Model number
+            days_back: Total days to include
+            rolling_window: Days for rolling average
+
+        Returns:
+            Dict with trend data for charts
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all track results for this model
+            results = (
+                session.query(
+                    DBAnalysisResult.file_date,
+                    DBAnalysisResult.timestamp,
+                    DBAnalysisResult.overall_status,
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.sigma_threshold,
+                    DBTrackResult.sigma_pass,
+                )
+                .join(DBTrackResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    or_(
+                        DBAnalysisResult.file_date >= cutoff_date,
+                        DBAnalysisResult.timestamp >= cutoff_date
+                    ),
+                )
+                .order_by(DBAnalysisResult.file_date.asc())
+                .all()
+            )
+
+            if not results:
+                return {
+                    "model": model,
+                    "data_points": [],
+                    "rolling_averages": [],
+                    "pass_rates_by_day": [],
+                    "threshold": None,
+                }
+
+            # Extract data points
+            data_points = []
+            for file_date, timestamp, status, sigma_gradient, sigma_threshold, sigma_pass in results:
+                date = file_date or timestamp
+                if date and sigma_gradient is not None:
+                    data_points.append({
+                        "date": date,
+                        "sigma_gradient": sigma_gradient,
+                        "sigma_threshold": sigma_threshold,
+                        "sigma_pass": sigma_pass,
+                        "status": status.value if status else "UNKNOWN",
+                    })
+
+            # Calculate threshold (use mode of thresholds)
+            thresholds = [d["sigma_threshold"] for d in data_points if d["sigma_threshold"]]
+            threshold = max(set(thresholds), key=thresholds.count) if thresholds else None
+
+            # Calculate daily pass rates for rolling average
+            from collections import defaultdict
+            daily_data = defaultdict(lambda: {"passed": 0, "total": 0})
+
+            for dp in data_points:
+                day_key = dp["date"].strftime("%Y-%m-%d")
+                daily_data[day_key]["total"] += 1
+                if dp["sigma_pass"]:
+                    daily_data[day_key]["passed"] += 1
+
+            # Sort by date and calculate pass rates
+            sorted_days = sorted(daily_data.keys())
+            pass_rates_by_day = []
+            for day in sorted_days:
+                d = daily_data[day]
+                pass_rates_by_day.append({
+                    "date": day,
+                    "pass_rate": (d["passed"] / d["total"] * 100) if d["total"] > 0 else 0,
+                    "total": d["total"],
+                })
+
+            # Calculate rolling averages
+            rolling_averages = []
+            if len(pass_rates_by_day) >= 2:
+                # Use the specified rolling window
+                window_size = min(rolling_window, len(pass_rates_by_day))
+                for i in range(len(pass_rates_by_day)):
+                    start_idx = max(0, i - window_size + 1)
+                    window = pass_rates_by_day[start_idx:i + 1]
+
+                    total_passed = sum(d["pass_rate"] * d["total"] for d in window)
+                    total_count = sum(d["total"] for d in window)
+                    rolling_avg = total_passed / total_count if total_count > 0 else 0
+
+                    rolling_averages.append({
+                        "date": pass_rates_by_day[i]["date"],
+                        "rolling_avg": rolling_avg,
+                        "window_size": len(window),
+                    })
+
+            return {
+                "model": model,
+                "data_points": data_points,
+                "rolling_averages": rolling_averages,
+                "pass_rates_by_day": pass_rates_by_day,
+                "threshold": threshold,
+                "total_samples": len(data_points),
+            }
+
+
+# Global instance for convenience
+_db_manager: Optional[DatabaseManager] = None
+
+
+def get_database() -> DatabaseManager:
+    """Get the global database manager instance."""
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+    return _db_manager
+
+
+def reset_database() -> None:
+    """Reset the global database manager (for testing)."""
+    global _db_manager
+    if _db_manager:
+        _db_manager.close()
+    _db_manager = None

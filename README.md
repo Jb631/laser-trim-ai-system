@@ -1,138 +1,94 @@
-# README.md
-# Laser Trim Analyzer v2
+# Laser Trim Analyzer v3
 
-A modern, AI-enhanced quality analysis platform for potentiometer laser trim data.
+A streamlined, production-ready quality analysis platform for potentiometer laser trim data.
 
 ## Features
 
-- **Multi-track Analysis**: Full support for System A (TRK1/TRK2) and System B files
-- **Advanced Analytics**: Sigma gradient, linearity optimization, failure prediction
-- **Machine Learning**: Automated threshold optimization and predictive maintenance
-- **Database Integration**: Historical tracking and trend analysis
-- **Modern GUI**: Clean, intuitive interface with real-time insights
-- **AI Integration**: Optional cloud AI for anomaly detection and recommendations
-
-## Installation
-
-### Requirements
-- Python 3.10 or higher
-- Windows 10/11, macOS, or Linux
-
-### Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourcompany/laser-trim-analyzer-v2.git
-cd laser-trim-analyzer-v2
-```
-
-2. Create a virtual environment:
-```bash
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS/Linux
-source venv/bin/activate
-```
-
-3. Install the package:
-```bash
-pip install -e .
-```
+- **Multi-track Analysis**: Full support for System A and System B files
+- **Sigma Gradient Analysis**: Pass/fail determination with ML-optimized thresholds
+- **Linearity Analysis**: Error vs position with spec limit validation
+- **Database Integration**: SQLite database for historical tracking
+- **Trend Analysis**: Model-level trends and alerts
+- **Excel Export**: Clean, professional Excel reports
+- **Modern GUI**: Dark-themed, intuitive interface
 
 ## Quick Start
 
-### GUI Application
-```bash
-laser-trim-analyzer-gui
-```
-
-### Command Line
-```bash
-lta analyze /path/to/data --output /path/to/results
-```
-
-### Python API
-```python
-from laser_trim_analyzer import Config, AnalysisResult
-from laser_trim_analyzer.analysis import SigmaAnalyzer
-
-# Load configuration
-config = Config()
-
-# Analyze a file
-analyzer = SigmaAnalyzer(config)
-result = analyzer.analyze_file("path/to/file.xlsx")
-
-# Access results
-print(f"Sigma gradient: {result.primary_track.sigma_analysis.sigma_gradient}")
-print(f"Pass/Fail: {result.overall_status}")
-```
-
-## Configuration
-
-Configuration is managed through YAML files in the `config/` directory:
-
-- `default.yaml`: Default settings
-- `production.yaml`: Production environment settings
-
-You can also use environment variables with the `LTA_` prefix:
+### Running from Source
 
 ```bash
-export LTA_DEBUG=true
-export LTA_DATABASE__PATH=/custom/path/to/db
+# Activate virtual environment
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # Linux/Mac
+
+# Run the application
+python src/__main__.py
 ```
+
+### Deployed Executable
+
+1. Run `deploy.bat` to build the executable
+2. Find the package in `dist/LaserTrimAnalyzer-v3.x.x/`
+3. Copy to your work computer
+4. Run `LaserTrimAnalyzer.exe`
 
 ## Project Structure
 
 ```
-src/laser_trim_analyzer/
-├── core/           # Core models and configuration
-├── analysis/       # Analysis engines
-├── database/       # Database management
-├── ml/            # Machine learning components
-├── gui/           # Graphical interface
-├── api/           # API client for AI services
-└── utils/         # Utility functions
+laser-trim-analyzer/
+├── src/
+│   └── laser_trim_analyzer/    # Main application code
+│       ├── core/               # Parser, processor, models
+│       ├── database/           # SQLite database manager
+│       ├── gui/                # CustomTkinter GUI
+│       │   ├── pages/          # Dashboard, Process, Analyze, Trends, Settings
+│       │   └── widgets/        # Chart widget
+│       ├── ml/                 # Threshold optimizer, drift detector
+│       └── export/             # Excel export
+├── test_files/                 # Sample data files for testing
+├── archive/                    # Archived V2 code and docs
+├── deploy.bat                  # Build deployment package
+└── pyproject.toml              # Project configuration
 ```
+
+## Configuration
+
+V3 uses a self-contained configuration system:
+- Database: `./data/analysis.db` (relative to app)
+- User settings: `~/.laser_trim_analyzer/config.yaml`
+
+No external config files required - everything is self-contained for easy deployment.
 
 ## Development
 
-### Running Tests
+### Setup
+
 ```bash
-pytest tests/
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate
+
+# Install dependencies
+pip install -e .
 ```
 
-### Code Quality
+### Building Deployment Package
+
 ```bash
-# Format code
-black src/
-
-# Lint
-ruff src/
-
-# Type check
-mypy src/
+deploy.bat
 ```
 
-### Pre-commit Hooks
-```bash
-pre-commit install
-pre-commit run --all-files
-```
+This creates a versioned folder (e.g., `LaserTrimAnalyzer-v3.0.0-20251216/`) ready for distribution.
 
-## Documentation
+## Version History
 
-Full documentation is available at [docs/index.md](docs/index.md).
-
-## Contributing
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+- **v3.0.0** (2025-12-16): Complete redesign with simplified architecture
+  - Reduced from 110 files to ~30 files
+  - Self-contained configuration
+  - Improved ML integration
+  - Excel-only export
+  - Dark theme GUI
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-For support, please contact the QA team or create an issue in the repository.
+MIT License - see [LICENSE](LICENSE) file.

@@ -1,16 +1,10 @@
 """
-SQLAlchemy database models for Laser Trim Analyzer v3.
+SQLAlchemy database models for Laser Trim Analyzer v2.
 
-Reused from v2 - the database schema is well-designed and production-ready.
-v3 uses the same database schema for backwards compatibility.
+This module defines all database tables and their relationships using SQLAlchemy ORM.
+Designed for QA specialists to store and analyze potentiometer test results.
 
-Tables:
-- AnalysisResult: File-level analysis results
-- TrackResult: Track-level measurements
-- MLPrediction: ML model outputs
-- QAAlert: Quality assurance alerts
-- BatchInfo: Production batch metadata
-- ProcessedFile: Incremental processing tracking
+Production-ready models with proper constraints, indexes, and validation.
 """
 
 from datetime import datetime
@@ -327,10 +321,6 @@ class TrackResult(Base):
     # Raw data for detailed analysis and comparison
     position_data = Column(SafeJSON, nullable=True)  # Array of position values
     error_data = Column(SafeJSON, nullable=True)     # Array of error values
-    upper_limits = Column(SafeJSON, nullable=True)   # Array of upper spec limits (position-dependent)
-    lower_limits = Column(SafeJSON, nullable=True)   # Array of lower spec limits (position-dependent)
-    untrimmed_positions = Column(SafeJSON, nullable=True)  # Array of untrimmed position values
-    untrimmed_errors = Column(SafeJSON, nullable=True)     # Array of untrimmed error values
     
     # Zone analysis
     worst_zone = Column(Integer)
@@ -357,12 +347,12 @@ class TrackResult(Base):
     # Production-ready indexes and constraints
     __table_args__ = (
         Index('idx_track_analysis', 'analysis_id', 'track_id'),
-        Index('idx_track_sigma_gradient', 'sigma_gradient'),
-        Index('idx_track_sigma_pass', 'sigma_pass'),
-        Index('idx_track_linearity_pass', 'linearity_pass'),
-        Index('idx_track_risk_category', 'risk_category'),
-        Index('idx_track_failure_probability', 'failure_probability'),
-        Index('idx_track_status', 'status'),
+        Index('idx_sigma_gradient', 'sigma_gradient'),
+        Index('idx_sigma_pass', 'sigma_pass'),
+        Index('idx_linearity_pass', 'linearity_pass'),
+        Index('idx_risk_category', 'risk_category'),
+        Index('idx_failure_probability', 'failure_probability'),
+        Index('idx_status', 'status'),
         # Ensure unique track per analysis
         UniqueConstraint('analysis_id', 'track_id', name='uq_analysis_track'),
         # Data validation constraints for production
