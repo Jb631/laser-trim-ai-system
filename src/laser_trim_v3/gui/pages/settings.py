@@ -212,10 +212,37 @@ class SettingsPage(ctk.CTkFrame):
         # Training requirements note
         ctk.CTkLabel(
             frame,
-            text="Note: ML training requires at least 100 processed files with known outcomes.",
+            text="Note: Trains ThresholdOptimizer + DriftDetector. Requires 50+ files.",
             text_color="gray",
-            font=ctk.CTkFont(size=11)
-        ).grid(row=3, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="w")
+            font=ctk.CTkFont(size=11),
+            justify="left"
+        ).grid(row=3, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+
+        # Re-analyze all database button
+        self.reanalyze_btn = ctk.CTkButton(
+            frame,
+            text="Re-analyze All DB",
+            command=self._reanalyze_database,
+            width=150
+        )
+        self.reanalyze_btn.grid(row=4, column=0, padx=15, pady=(10, 5), sticky="w")
+
+        self.reanalyze_status_label = ctk.CTkLabel(
+            frame,
+            text="",
+            text_color="gray"
+        )
+        self.reanalyze_status_label.grid(row=4, column=1, padx=15, pady=(10, 5), sticky="w")
+
+        # Re-analyze note
+        ctk.CTkLabel(
+            frame,
+            text="Re-analyze All: Updates ALL database records with current ML thresholds.\n"
+                 "This ensures consistent pass/fail status across your entire history.",
+            text_color="gray",
+            font=ctk.CTkFont(size=11),
+            justify="left"
+        ).grid(row=5, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="w")
 
     def _create_appearance_section(self, container):
         """Create appearance settings section."""
@@ -306,56 +333,109 @@ class SettingsPage(ctk.CTkFrame):
         thread.start()
 
     def _run_training(self):
-        """Run ML training in background thread."""
+        """Run ML training in background thread - trains BOTH models."""
         try:
+            import numpy as np
+            import pandas as pd
             from laser_trim_v3.database import get_database
             from laser_trim_v3.ml import ThresholdOptimizer
+            from laser_trim_v3.ml.drift import DriftDetector
+            from laser_trim_v3.config import get_config
 
             db = get_database()
+            config = get_config()
 
             # Get training data from database
-            # This is a simplified version - real training would need more data
-            training_data = db.get_trend_data(days_back=365, limit=10000)
+            training_data = db.get_trend_data(days_back=365 * 10, limit=50000)  # Get all available data
 
-            if len(training_data) < 100:
+            if len(training_data) < 50:
                 self.after(0, lambda: self._on_training_complete(
                     False,
-                    f"Insufficient data: {len(training_data)} records (need 100+)"
+                    f"Need at least 50 files, found {len(training_data)}"
                 ))
                 return
 
-            # Train threshold optimizer
-            optimizer = ThresholdOptimizer()
-
-            # Prepare training data
-            X_data = []
-            y_data = []
-
+            # Prepare training DataFrame for ThresholdOptimizer
+            # Required columns: model, unit_length, linearity_spec, sigma_gradient
+            records = []
+            sigma_values = []  # For drift detector baseline
             for record in training_data:
-                if record.get("sigma_gradient") and record.get("sigma_threshold"):
-                    X_data.append({
-                        "model": record.get("model", "Unknown"),
-                        "sigma_gradient": record["sigma_gradient"],
-                    })
-                    y_data.append(record["sigma_threshold"])
+                sigma_gradient = record.get("sigma_gradient")
+                sigma_threshold = record.get("sigma_threshold")
+                model = record.get("model")
 
-            if len(X_data) < 50:
+                # Skip records without required data
+                if sigma_gradient is None or sigma_threshold is None or not model:
+                    continue
+
+                records.append({
+                    "model": model,
+                    "unit_length": record.get("unit_length") or record.get("travel_length") or 100.0,
+                    "linearity_spec": record.get("linearity_spec") or 0.01,
+                    "sigma_gradient": sigma_gradient,
+                    "sigma_threshold": sigma_threshold,
+                    "sigma_pass": record.get("sigma_pass", sigma_gradient <= sigma_threshold),
+                })
+                sigma_values.append(sigma_gradient)
+
+            if len(records) < 50:
                 self.after(0, lambda: self._on_training_complete(
                     False,
-                    "Not enough valid training samples"
+                    f"Only {len(records)} valid training samples (need 50+)"
                 ))
                 return
 
-            # Note: Actual training would require more sophisticated data preparation
-            # This is a placeholder showing the structure
+            # Create DataFrame
+            df = pd.DataFrame(records)
 
-            self.after(0, lambda: self._on_training_complete(
-                True,
-                f"Training complete with {len(X_data)} samples"
-            ))
+            # Log data summary
+            unique_models = df["model"].nunique()
+            logger.info(f"Training with {len(df)} samples across {unique_models} models")
+
+            # ===== 1. Train Threshold Optimizer =====
+            optimizer = ThresholdOptimizer()
+            result = optimizer.train(df)
+
+            if not result.success:
+                self.after(0, lambda: self._on_training_complete(
+                    False,
+                    result.error or "Threshold training failed"
+                ))
+                return
+
+            # Save the trained threshold model
+            model_path = config.models.path / "threshold_optimizer.pkl"
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            optimizer.save(model_path)
+            logger.info(f"Threshold optimizer saved to {model_path}")
+
+            # ===== 2. Train Drift Detector =====
+            drift_msg = ""
+            try:
+                drift_detector = DriftDetector()
+
+                # Set baseline from sigma values
+                sigma_array = np.array(sigma_values)
+                if drift_detector.set_baseline(sigma_array):
+                    # Train anomaly detector on numeric features
+                    drift_detector.train_anomaly_detector(df[["sigma_gradient", "unit_length", "linearity_spec"]])
+
+                    # Save drift detector
+                    drift_path = config.models.path / "drift_detector.pkl"
+                    drift_detector.save(drift_path)
+                    drift_msg = ", Drift detector trained"
+                    logger.info(f"Drift detector saved to {drift_path}")
+            except Exception as e:
+                logger.warning(f"Drift detector training failed (non-critical): {e}")
+                drift_msg = ", Drift detector skipped"
+
+            # Success message with metrics
+            msg = f"Trained on {result.n_samples} samples, R²={result.r2_score:.3f}, {unique_models} models{drift_msg}"
+
+            self.after(0, lambda: self._on_training_complete(True, msg))
 
         except Exception as e:
-            logger.error(f"ML training failed: {e}")
+            logger.exception(f"ML training failed: {e}")
             self.after(0, lambda: self._on_training_complete(False, str(e)))
 
     def _on_training_complete(self, success: bool, message: str):
@@ -368,6 +448,168 @@ class SettingsPage(ctk.CTkFrame):
         else:
             self.ml_status_label.configure(text=f"Status: Failed - {message[:40]}...", text_color="#e74c3c")
             logger.error(f"ML training failed: {message}")
+
+    def _reanalyze_database(self):
+        """Trigger re-analysis of all database records with current ML thresholds."""
+        from tkinter import messagebox
+
+        # Confirm with user
+        result = messagebox.askyesno(
+            "Re-analyze All Database Records",
+            "This will update ALL records in the database with the current ML thresholds.\n\n"
+            "• Sigma thresholds will be recalculated for each record\n"
+            "• Pass/Fail status will be updated based on new thresholds\n"
+            "• Overall status will be recalculated\n\n"
+            "This may take several minutes for large databases.\n\n"
+            "Continue?"
+        )
+
+        if not result:
+            return
+
+        self.reanalyze_btn.configure(state="disabled")
+        self.reanalyze_status_label.configure(text="Starting...", text_color="gray")
+
+        thread = threading.Thread(target=self._run_reanalysis, daemon=True)
+        thread.start()
+
+    def _run_reanalysis(self):
+        """Run database re-analysis in background thread."""
+        try:
+            from laser_trim_v3.database import get_database
+            from laser_trim_v3.database.models import (
+                AnalysisResult as DBAnalysisResult,
+                TrackResult as DBTrackResult,
+                StatusType as DBStatusType,
+            )
+            from laser_trim_v3.ml import ThresholdOptimizer
+            from laser_trim_v3.config import get_config
+
+            db = get_database()
+            config = get_config()
+
+            # Load the trained ML model
+            optimizer = ThresholdOptimizer()
+            model_path = config.models.path / "threshold_optimizer.pkl"
+
+            if model_path.exists():
+                optimizer.load(model_path)
+                logger.info("Loaded trained ML model for re-analysis")
+            else:
+                logger.info("No trained ML model found, using formula-based thresholds")
+
+            # Get all track records from database
+            with db.session() as session:
+                # Get count first
+                total_tracks = session.query(DBTrackResult).count()
+                total_analyses = session.query(DBAnalysisResult).count()
+
+                if total_tracks == 0:
+                    self.after(0, lambda: self._on_reanalysis_complete(
+                        False, "No records in database"
+                    ))
+                    return
+
+                self.after(0, lambda: self.reanalyze_status_label.configure(
+                    text=f"Processing {total_tracks} tracks...", text_color="gray"
+                ))
+
+                # Process tracks in batches to avoid memory issues
+                batch_size = 500
+                updated_count = 0
+                status_changed = 0
+
+                # Get all analyses with their tracks
+                analyses = session.query(DBAnalysisResult).all()
+
+                for idx, analysis in enumerate(analyses):
+                    analysis_changed = False
+
+                    for track in analysis.tracks:
+                        old_pass = track.sigma_pass
+                        old_threshold = track.sigma_threshold
+
+                        # Get parameters for threshold calculation
+                        model_name = analysis.model or "UNKNOWN"
+                        unit_length = track.unit_length or track.travel_length or 100.0
+                        linearity_spec = track.linearity_spec or 0.01
+
+                        # Calculate new threshold using ML model
+                        new_threshold = optimizer.predict(
+                            model=model_name,
+                            unit_length=unit_length,
+                            linearity_spec=linearity_spec
+                        )
+
+                        # Update threshold
+                        track.sigma_threshold = new_threshold
+
+                        # Recalculate pass/fail
+                        if track.sigma_gradient is not None:
+                            track.sigma_pass = track.sigma_gradient <= new_threshold
+                        else:
+                            track.sigma_pass = True  # No data = pass
+
+                        # Recalculate track status based on both sigma and linearity
+                        if track.sigma_pass and track.linearity_pass:
+                            track.status = DBStatusType.PASS
+                        elif not track.sigma_pass or not track.linearity_pass:
+                            track.status = DBStatusType.FAIL
+                        else:
+                            track.status = DBStatusType.WARNING
+
+                        updated_count += 1
+
+                        if old_pass != track.sigma_pass:
+                            status_changed += 1
+                            analysis_changed = True
+
+                    # Recalculate overall analysis status
+                    if analysis_changed or True:  # Always recalculate to be safe
+                        # Skip analyses with no tracks (keep existing ERROR status)
+                        if not analysis.tracks:
+                            if analysis.overall_status != DBStatusType.ERROR:
+                                analysis.overall_status = DBStatusType.ERROR
+                            continue
+
+                        all_pass = all(t.sigma_pass and t.linearity_pass for t in analysis.tracks)
+                        any_fail = any(not t.sigma_pass or not t.linearity_pass for t in analysis.tracks)
+
+                        if all_pass:
+                            analysis.overall_status = DBStatusType.PASS
+                        elif any_fail:
+                            analysis.overall_status = DBStatusType.FAIL
+                        else:
+                            analysis.overall_status = DBStatusType.WARNING
+
+                    # Update progress periodically
+                    if (idx + 1) % 100 == 0:
+                        progress = int((idx + 1) / len(analyses) * 100)
+                        self.after(0, lambda p=progress, u=updated_count: self.reanalyze_status_label.configure(
+                            text=f"Progress: {p}% ({u} tracks updated)", text_color="gray"
+                        ))
+
+                # Commit all changes
+                session.commit()
+
+            # Success
+            msg = f"Updated {updated_count} tracks across {total_analyses} files. {status_changed} pass/fail changes."
+            self.after(0, lambda: self._on_reanalysis_complete(True, msg))
+
+        except Exception as e:
+            logger.exception(f"Database re-analysis failed: {e}")
+            self.after(0, lambda: self._on_reanalysis_complete(False, str(e)))
+
+    def _on_reanalysis_complete(self, success: bool, message: str):
+        """Handle re-analysis completion."""
+        self.reanalyze_btn.configure(state="normal")
+
+        if success:
+            self.reanalyze_status_label.configure(text=message, text_color="#27ae60")
+            logger.info(f"Database re-analysis successful: {message}")
+        else:
+            self.reanalyze_status_label.configure(text=f"Failed: {message[:50]}...", text_color="#e74c3c")
+            logger.error(f"Database re-analysis failed: {message}")
 
     def _change_theme(self, theme: str):
         """Change the application theme."""

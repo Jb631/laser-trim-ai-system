@@ -352,8 +352,9 @@ class Analyzer:
             for i in range(n):
                 shifted = errors[i] + offset
                 if upper_limits[i] is not None and lower_limits[i] is not None:
-                    if shifted > upper_limits[i] or shifted < lower_limits[i]:
-                        count += 1
+                    if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
+                        if shifted > upper_limits[i] or shifted < lower_limits[i]:
+                            count += 1
             return count
 
         try:

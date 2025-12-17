@@ -259,7 +259,9 @@ class DatabaseManager:
 
             results = []
             for db_analysis in query.all():
-                results.append(self._map_db_to_analysis(db_analysis))
+                mapped = self._map_db_to_analysis(db_analysis)
+                if mapped is not None:  # Filter out failed mappings
+                    results.append(mapped)
 
             return results
 
@@ -797,11 +799,14 @@ class DatabaseManager:
             query = (
                 session.query(
                     DBAnalysisResult.timestamp,
+                    DBAnalysisResult.file_date,  # Trim date from file
                     DBAnalysisResult.model,
                     DBTrackResult.sigma_gradient,
                     DBTrackResult.sigma_threshold,
                     DBTrackResult.sigma_pass,
                     DBTrackResult.status,
+                    DBTrackResult.unit_length,
+                    DBTrackResult.linearity_spec,
                 )
                 .join(DBTrackResult)
                 .filter(DBAnalysisResult.timestamp >= cutoff_date)
@@ -812,19 +817,22 @@ class DatabaseManager:
 
             results = (
                 query
-                .order_by(DBAnalysisResult.timestamp.asc())
+                .order_by(DBAnalysisResult.file_date.asc())  # Order by trim date
                 .limit(limit)
                 .all()
             )
 
             return [
                 {
-                    "date": r.timestamp.strftime("%Y-%m-%d") if r.timestamp else "",
+                    # Use file_date (trim date) if available, fallback to timestamp (processing date)
+                    "date": (r.file_date or r.timestamp).strftime("%Y-%m-%d") if (r.file_date or r.timestamp) else "",
                     "model": r.model,
                     "sigma_gradient": r.sigma_gradient,
                     "sigma_threshold": r.sigma_threshold,
                     "sigma_pass": r.sigma_pass,
                     "status": r.status.value if r.status else "UNKNOWN",
+                    "unit_length": r.unit_length,
+                    "linearity_spec": r.linearity_spec,
                 }
                 for r in results
             ]
@@ -921,8 +929,11 @@ class DatabaseManager:
             untrimmed_errors=track.untrimmed_errors,  # Store untrimmed data for charts
         )
 
-    def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> AnalysisResult:
-        """Map SQLAlchemy model back to Pydantic AnalysisResult."""
+    def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> Optional[AnalysisResult]:
+        """Map SQLAlchemy model back to Pydantic AnalysisResult.
+
+        Returns None if the analysis has no valid tracks (corrupted data).
+        """
         from laser_trim_v3.core.models import FileMetadata
 
         # Map system type
@@ -948,18 +959,30 @@ class DatabaseManager:
             has_multi_tracks=db_analysis.has_multi_tracks,
         )
 
-        # Map tracks
-        tracks = [self._map_db_to_track(t) for t in db_analysis.tracks]
+        # Map tracks - filter out None results from failed mappings
+        tracks = [t for t in (self._map_db_to_track(t) for t in db_analysis.tracks) if t is not None]
 
-        return AnalysisResult(
-            metadata=metadata,
-            overall_status=overall_status,
-            processing_time=db_analysis.processing_time or 0.0,
-            tracks=tracks,
-        )
+        # If no valid tracks could be mapped, return None or create with ERROR status
+        if not tracks and overall_status != AnalysisStatus.ERROR:
+            logger.warning(f"Analysis {db_analysis.filename} has no valid tracks, skipping")
+            return None
 
-    def _map_db_to_track(self, db_track: DBTrackResult) -> TrackData:
-        """Map SQLAlchemy TrackResult back to Pydantic TrackData."""
+        try:
+            return AnalysisResult(
+                metadata=metadata,
+                overall_status=overall_status,
+                processing_time=db_analysis.processing_time or 0.0,
+                tracks=tracks,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create AnalysisResult for {db_analysis.filename}: {e}")
+            return None
+
+    def _map_db_to_track(self, db_track: DBTrackResult) -> Optional[TrackData]:
+        """Map SQLAlchemy TrackResult back to Pydantic TrackData.
+
+        Returns None if required fields are missing (corrupted/incomplete data).
+        """
         status_map = {
             DBStatusType.PASS: AnalysisStatus.PASS,
             DBStatusType.FAIL: AnalysisStatus.FAIL,
@@ -976,30 +999,50 @@ class DatabaseManager:
         }
         risk_category = risk_map.get(db_track.risk_category, RiskCategory.UNKNOWN)
 
-        return TrackData(
-            track_id=db_track.track_id,
-            status=status,
-            travel_length=db_track.travel_length or 0.0,
-            linearity_spec=db_track.linearity_spec or 0.01,
-            sigma_gradient=db_track.sigma_gradient,
-            sigma_threshold=db_track.sigma_threshold,
-            sigma_pass=db_track.sigma_pass,
-            optimal_offset=db_track.optimal_offset or 0.0,
-            linearity_error=db_track.final_linearity_error_shifted or 0.0,
-            linearity_pass=db_track.linearity_pass or False,
-            linearity_fail_points=db_track.linearity_fail_points or 0,
-            unit_length=db_track.unit_length,
-            untrimmed_resistance=db_track.untrimmed_resistance,
-            trimmed_resistance=db_track.trimmed_resistance,
-            failure_probability=db_track.failure_probability,
-            risk_category=risk_category,
-            position_data=db_track.position_data,
-            error_data=db_track.error_data,
-            upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
-            lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
-            untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
-            untrimmed_errors=db_track.untrimmed_errors,  # Retrieve untrimmed data for charts
-        )
+        # Handle missing required fields - these are required for TrackData
+        sigma_gradient = db_track.sigma_gradient
+        sigma_threshold = db_track.sigma_threshold
+        sigma_pass = db_track.sigma_pass
+
+        # If any required sigma fields are None, provide defaults or skip
+        if sigma_gradient is None:
+            logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
+            sigma_gradient = 0.0
+        if sigma_threshold is None:
+            logger.warning(f"Track {db_track.track_id} has None sigma_threshold, using 0.01")
+            sigma_threshold = 0.01
+        if sigma_pass is None:
+            # Calculate from gradient and threshold
+            sigma_pass = sigma_gradient <= sigma_threshold
+
+        try:
+            return TrackData(
+                track_id=db_track.track_id or "default",
+                status=status,
+                travel_length=db_track.travel_length or 1.0,  # Default to 1.0 to avoid 0
+                linearity_spec=db_track.linearity_spec or 0.01,
+                sigma_gradient=sigma_gradient,
+                sigma_threshold=sigma_threshold,
+                sigma_pass=sigma_pass,
+                optimal_offset=db_track.optimal_offset or 0.0,
+                linearity_error=db_track.final_linearity_error_shifted or 0.0,
+                linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else True,
+                linearity_fail_points=db_track.linearity_fail_points or 0,
+                unit_length=db_track.unit_length,
+                untrimmed_resistance=db_track.untrimmed_resistance,
+                trimmed_resistance=db_track.trimmed_resistance,
+                failure_probability=db_track.failure_probability,
+                risk_category=risk_category,
+                position_data=db_track.position_data,
+                error_data=db_track.error_data,
+                upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
+                lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
+                untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
+                untrimmed_errors=db_track.untrimmed_errors,  # Retrieve untrimmed data for charts
+            )
+        except Exception as e:
+            logger.error(f"Failed to map track {db_track.track_id}: {e}")
+            return None
 
     def _update_existing_analysis(
         self,

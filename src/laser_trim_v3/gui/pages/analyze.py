@@ -1,8 +1,8 @@
 """
 Analyze Page - Browse and view analysis results from database.
 
-This page is for reviewing already-processed files.
-Use the Process Files page to process new files.
+This page is for reviewing already-processed files only.
+All file processing is done through the Process Files page.
 """
 
 import threading
@@ -74,15 +74,19 @@ class AnalyzePage(ctk.CTkFrame):
         filter_frame = ctk.CTkFrame(self)
         filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
 
-        # Model filter
+        # Model filter - use ComboBox for dropdown with many models
         ctk.CTkLabel(filter_frame, text="Model:").pack(side="left", padx=(15, 5), pady=15)
-        self.model_filter = ctk.CTkOptionMenu(
+        self.model_filter = ctk.CTkComboBox(
             filter_frame,
             values=["All Models"],
             command=self._on_filter_change,
-            width=150
+            width=150,
+            state="normal"  # Allow typing to filter, dropdown still works
         )
+        self.model_filter.set("All Models")
         self.model_filter.pack(side="left", padx=5, pady=15)
+        # Bind mousewheel to scroll through options
+        self._bind_mousewheel_scroll(self.model_filter)
 
         # Days filter
         ctk.CTkLabel(filter_frame, text="Period:").pack(side="left", padx=(20, 5), pady=15)
@@ -122,12 +126,13 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.count_label.pack(side="right", padx=10, pady=15)
 
-        # Main content area
-        content = ctk.CTkFrame(self)
+        # Main content area - use scrollable frame for smaller screens
+        content = ctk.CTkScrollableFrame(self, orientation="horizontal")
         content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        content.grid_columnconfigure(0, weight=1, minsize=300)  # List panel
-        content.grid_columnconfigure(1, weight=2)  # Details panel
-        content.grid_rowconfigure(0, weight=1)
+        # Configure inner frame for proper layout
+        content.grid_columnconfigure(0, weight=1, minsize=280)  # List panel - slightly narrower
+        content.grid_columnconfigure(1, weight=3)  # Details panel - more space
+        content.grid_rowconfigure(0, weight=1, minsize=500)  # Minimum height for content
 
         # Left panel - analysis list
         list_frame = ctk.CTkFrame(content)
@@ -150,7 +155,10 @@ class AnalyzePage(ctk.CTkFrame):
         # Right panel - details view
         details_frame = ctk.CTkFrame(content)
         details_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
-        details_frame.grid_rowconfigure(2, weight=1)  # Row 2 = tabview with chart
+        details_frame.grid_rowconfigure(0, weight=0)  # Status banner - fixed
+        details_frame.grid_rowconfigure(1, weight=0)  # Action buttons - fixed
+        details_frame.grid_rowconfigure(2, weight=1, minsize=400)  # Tabview with chart - expandable with min
+        details_frame.grid_rowconfigure(3, weight=0)  # DB info footer - fixed
         details_frame.grid_columnconfigure(0, weight=1)
 
         # Status banner
@@ -168,17 +176,6 @@ class AnalyzePage(ctk.CTkFrame):
         # Action buttons row
         actions_frame = ctk.CTkFrame(details_frame, fg_color="transparent")
         actions_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=5)
-
-        # Process file button (analyze new file)
-        self.process_file_btn = ctk.CTkButton(
-            actions_frame,
-            text="📂 Analyze File",
-            command=self._process_single_file,
-            width=130,
-            fg_color="green",
-            hover_color="darkgreen"
-        )
-        self.process_file_btn.pack(side="left", padx=5)
 
         # Re-analyze button (re-process selected file from original path)
         self.reanalyze_btn = ctk.CTkButton(
@@ -281,6 +278,45 @@ class AnalyzePage(ctk.CTkFrame):
         self.db_info_label.pack(side="left")
 
     # =========================================================================
+    # Mousewheel Support
+    # =========================================================================
+
+    def _bind_mousewheel_scroll(self, combobox):
+        """Bind mousewheel events to scroll through combobox values."""
+        def on_mousewheel(event):
+            values = combobox.cget("values")
+            if not values:
+                return
+
+            current = combobox.get()
+            try:
+                current_idx = list(values).index(current)
+            except ValueError:
+                current_idx = 0
+
+            # Scroll direction (Windows: event.delta, Linux: event.num)
+            if hasattr(event, 'delta'):
+                # Windows
+                direction = -1 if event.delta > 0 else 1
+            else:
+                # Linux
+                direction = -1 if event.num == 4 else 1
+
+            new_idx = current_idx + direction
+            if 0 <= new_idx < len(values):
+                combobox.set(values[new_idx])
+                # Trigger command callback if defined
+                command = combobox.cget("command")
+                if command:
+                    command(values[new_idx])
+
+        # Bind for Windows
+        combobox.bind("<MouseWheel>", on_mousewheel)
+        # Bind for Linux
+        combobox.bind("<Button-4>", on_mousewheel)
+        combobox.bind("<Button-5>", on_mousewheel)
+
+    # =========================================================================
     # Data Loading
     # =========================================================================
 
@@ -310,12 +346,16 @@ class AnalyzePage(ctk.CTkFrame):
             }
             days_back = days_map.get(days_str, 7)
 
-            # Get historical data
-            analyses = db.get_historical_data(
-                model=None if model == "All Models" else model,
-                days_back=days_back,
-                limit=100
-            )
+            # Get historical data - now handles None results from failed mappings
+            try:
+                analyses = db.get_historical_data(
+                    model=None if model == "All Models" else model,
+                    days_back=days_back,
+                    limit=100
+                )
+            except Exception as e:
+                logger.error(f"Failed to get historical data: {e}")
+                analyses = []
 
             # Filter by status if needed
             if status == "Pass":
@@ -323,18 +363,29 @@ class AnalyzePage(ctk.CTkFrame):
             elif status == "Fail":
                 analyses = [a for a in analyses if a.overall_status == AnalysisStatus.FAIL]
 
-            # Get models list for dropdown
-            models = db.get_models_list()
+            # Get models list for dropdown - separate try to ensure dropdown works even if data fails
+            try:
+                models = db.get_models_list()
+            except Exception as e:
+                logger.error(f"Failed to get models list: {e}")
+                models = []
 
             # Get database info
-            db_path = db.get_database_path()
-            record_count = db.get_record_count()
+            try:
+                db_path = db.get_database_path()
+                record_count = db.get_record_count()
+            except Exception as e:
+                logger.error(f"Failed to get database info: {e}")
+                db_path = db.database_path
+                record_count = {"analyses": 0, "tracks": 0}
 
             # Update UI on main thread
             self.after(0, lambda: self._display_analyses(analyses, models, db_path, record_count))
 
         except Exception as e:
             logger.error(f"Failed to fetch analyses: {e}")
+            import traceback
+            traceback.print_exc()
             self.after(0, lambda: self._show_fetch_error(str(e)))
 
     def _display_analyses(self, analyses: List[AnalysisResult], models: List[str],
@@ -499,15 +550,18 @@ class AnalyzePage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.position_data)
 
         # ALWAYS recalculate fail point indices (old DB data may have incorrect fail_points=0)
+        # Skip positions where limit is None (no spec = unlimited at that position)
         fail_indices = []
         actual_fail_count = 0
         if upper_limits and lower_limits:
             shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
-                    if e > upper_limits[i] or e < lower_limits[i]:
-                        fail_indices.append(i)
-                        actual_fail_count += 1
+                    # Only check positions that have spec limits (not None)
+                    if upper_limits[i] is not None and lower_limits[i] is not None:
+                        if e > upper_limits[i] or e < lower_limits[i]:
+                            fail_indices.append(i)
+                            actual_fail_count += 1
 
         # Determine actual status based on recalculated fail points
         if actual_fail_count > 0:
@@ -534,99 +588,107 @@ class AnalyzePage(ctk.CTkFrame):
 
     def _display_metrics(self, analysis: AnalysisResult):
         """Display analysis metrics."""
-        lines = []
+        try:
+            lines = []
 
-        # Overall status
-        lines.append("═══════════════════════════════════════")
-        lines.append(f"  OVERALL STATUS: {analysis.overall_status.value.upper()}")
-        lines.append("═══════════════════════════════════════")
-        lines.append("")
-
-        # Track details
-        for track in analysis.tracks:
-            lines.append(f"━━━ TRACK {track.track_id} ━━━")
-            lines.append(f"  Status: {track.status.value}")
+            # Overall status
+            lines.append("═══════════════════════════════════════")
+            lines.append(f"  OVERALL STATUS: {analysis.overall_status.value.upper()}")
+            lines.append("═══════════════════════════════════════")
             lines.append("")
 
-            # Sigma Analysis
-            lines.append("  SIGMA ANALYSIS:")
-            lines.append(f"    Gradient:  {track.sigma_gradient:.6f}")
-            lines.append(f"    Threshold: {track.sigma_threshold:.6f}")
-            margin = track.sigma_threshold - track.sigma_gradient
-            lines.append(f"    Margin:    {margin:.6f}")
-            lines.append(f"    Result:    {'✓ PASS' if track.sigma_pass else '✗ FAIL'}")
-            lines.append("")
-
-            # Linearity Analysis
-            lines.append("  LINEARITY ANALYSIS:")
-
-            # Recalculate fail points using actual spec limits
-            actual_upper = track.upper_limits
-            actual_lower = track.lower_limits
-
-            # Fall back to linearity_spec if limits not stored
-            if not actual_upper or not actual_lower:
-                if track.linearity_spec and track.linearity_spec > 0:
-                    actual_upper = [track.linearity_spec] * len(track.error_data) if track.error_data else []
-                    actual_lower = [-track.linearity_spec] * len(track.error_data) if track.error_data else []
-
-            # Calculate actual fail points
-            actual_fail_count = 0
-            if actual_upper and actual_lower and track.error_data:
-                shifted_errors = [e + track.optimal_offset for e in track.error_data]
-                for i, e in enumerate(shifted_errors):
-                    if i < len(actual_upper) and i < len(actual_lower):
-                        if e > actual_upper[i] or e < actual_lower[i]:
-                            actual_fail_count += 1
-
-            # Show spec limits
-            if actual_upper and actual_lower:
-                max_upper = max(actual_upper)
-                min_lower = min(actual_lower)
-                lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
-                if max_upper != track.linearity_spec or min_lower != -track.linearity_spec:
-                    lines.append(f"    (Limits vary: +{max_upper:.6f} / {min_lower:.6f})")
-            else:
-                lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
-
-            lines.append(f"    Max Error:  {track.linearity_error:.6f}")
-            lines.append(f"    Offset:     {track.optimal_offset:.6f}")
-
-            # Show both stored and recalculated fail points if they differ
-            if actual_fail_count != track.linearity_fail_points:
-                lines.append(f"    Fail Pts:   {actual_fail_count} (DB stored: {track.linearity_fail_points})")
-            else:
-                lines.append(f"    Fail Pts:   {track.linearity_fail_points}")
-
-            # Show actual result based on recalculation
-            actual_pass = actual_fail_count == 0
-            if actual_pass != track.linearity_pass:
-                lines.append(f"    Result:     {'✓ PASS' if actual_pass else '✗ FAIL'} (DB: {'PASS' if track.linearity_pass else 'FAIL'})")
-            else:
-                lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
-            lines.append("")
-
-            # Risk Assessment
-            lines.append("  RISK ASSESSMENT:")
-            if track.failure_probability is not None:
-                lines.append(f"    Probability: {track.failure_probability:.1%}")
-            else:
-                lines.append(f"    Probability: N/A")
-            lines.append(f"    Category:    {track.risk_category.value}")
-            lines.append("")
-
-            # Unit Properties (if available)
-            if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance:
-                lines.append("  UNIT PROPERTIES:")
-                if track.unit_length:
-                    lines.append(f"    Unit Length: {track.unit_length:.4f}")
-                if track.untrimmed_resistance:
-                    lines.append(f"    Untrimmed R: {track.untrimmed_resistance:.2f}")
-                if track.trimmed_resistance:
-                    lines.append(f"    Trimmed R:   {track.trimmed_resistance:.2f}")
+            # Track details
+            for track in analysis.tracks:
+                lines.append(f"━━━ TRACK {track.track_id} ━━━")
+                lines.append(f"  Status: {track.status.value}")
                 lines.append("")
 
-        self._update_metrics("\n".join(lines))
+                # Sigma Analysis
+                lines.append("  SIGMA ANALYSIS:")
+                lines.append(f"    Gradient:  {track.sigma_gradient:.6f}")
+                lines.append(f"    Threshold: {track.sigma_threshold:.6f}")
+                margin = track.sigma_threshold - track.sigma_gradient
+                lines.append(f"    Margin:    {margin:.6f}")
+                lines.append(f"    Result:    {'✓ PASS' if track.sigma_pass else '✗ FAIL'}")
+                lines.append("")
+
+                # Linearity Analysis
+                lines.append("  LINEARITY ANALYSIS:")
+
+                # Recalculate fail points using actual spec limits
+                actual_upper = track.upper_limits
+                actual_lower = track.lower_limits
+
+                # Fall back to linearity_spec if limits not stored
+                if not actual_upper or not actual_lower:
+                    if track.linearity_spec and track.linearity_spec > 0:
+                        actual_upper = [track.linearity_spec] * len(track.error_data) if track.error_data else []
+                        actual_lower = [-track.linearity_spec] * len(track.error_data) if track.error_data else []
+
+                # Calculate actual fail points (skip None = no limit at that position)
+                actual_fail_count = 0
+                if actual_upper and actual_lower and track.error_data:
+                    shifted_errors = [e + track.optimal_offset for e in track.error_data]
+                    for i, e in enumerate(shifted_errors):
+                        if i < len(actual_upper) and i < len(actual_lower):
+                            # Skip positions with no spec limit (None = unlimited)
+                            if actual_upper[i] is not None and actual_lower[i] is not None:
+                                if e > actual_upper[i] or e < actual_lower[i]:
+                                    actual_fail_count += 1
+
+                # Show spec limits (filter out None values for display)
+                lines.append(f"    Spec:       ±{track.linearity_spec:.6f}")
+                if actual_upper and actual_lower:
+                    # Filter out None values for max/min calculation
+                    valid_upper = [u for u in actual_upper if u is not None]
+                    valid_lower = [l for l in actual_lower if l is not None]
+                    if valid_upper and valid_lower:
+                        # Count positions with no spec
+                        none_count = sum(1 for u in actual_upper if u is None)
+                        if none_count > 0:
+                            lines.append(f"    (No spec at {none_count} positions)")
+
+                lines.append(f"    Max Error:  {track.linearity_error:.6f}")
+                lines.append(f"    Offset:     {track.optimal_offset:.6f}")
+
+                # Show both stored and recalculated fail points if they differ
+                if actual_fail_count != track.linearity_fail_points:
+                    lines.append(f"    Fail Pts:   {actual_fail_count} (DB stored: {track.linearity_fail_points})")
+                else:
+                    lines.append(f"    Fail Pts:   {track.linearity_fail_points}")
+
+                # Show actual result based on recalculation
+                actual_pass = actual_fail_count == 0
+                if actual_pass != track.linearity_pass:
+                    lines.append(f"    Result:     {'✓ PASS' if actual_pass else '✗ FAIL'} (DB: {'PASS' if track.linearity_pass else 'FAIL'})")
+                else:
+                    lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
+                lines.append("")
+
+                # Risk Assessment
+                lines.append("  RISK ASSESSMENT:")
+                if track.failure_probability is not None:
+                    lines.append(f"    Probability: {track.failure_probability:.1%}")
+                else:
+                    lines.append(f"    Probability: N/A")
+                lines.append(f"    Category:    {track.risk_category.value}")
+                lines.append("")
+
+                # Unit Properties (if available)
+                if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance:
+                    lines.append("  UNIT PROPERTIES:")
+                    if track.unit_length:
+                        lines.append(f"    Unit Length: {track.unit_length:.4f}")
+                    if track.untrimmed_resistance:
+                        lines.append(f"    Untrimmed R: {track.untrimmed_resistance:.2f}")
+                    if track.trimmed_resistance:
+                        lines.append(f"    Trimmed R:   {track.trimmed_resistance:.2f}")
+                    lines.append("")
+
+            self._update_metrics("\n".join(lines))
+        except Exception as e:
+            logger.error(f"Error displaying metrics: {e}")
+            self._update_metrics(f"Error loading metrics: {e}")
 
     def _display_file_info(self, analysis: AnalysisResult):
         """Display file information."""
@@ -722,67 +784,6 @@ class AnalyzePage(ctk.CTkFrame):
         self.info_text.delete("1.0", "end")
         self.info_text.insert("end", text)
         self.info_text.configure(state="disabled")
-
-    def _process_single_file(self):
-        """Process a single file and display results."""
-        # Open file dialog
-        file_path = filedialog.askopenfilename(
-            title="Select Excel File to Analyze",
-            filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
-        )
-
-        if not file_path:
-            return  # User cancelled
-
-        # Update UI to show processing
-        self.status_text.configure(text="Processing...", text_color="orange")
-        self.status_banner.configure(fg_color="orange")
-        self.process_file_btn.configure(state="disabled")
-        self.update_idletasks()
-
-        # Process in background thread
-        def process():
-            try:
-                processor = Processor()
-                result = processor.process_file(Path(file_path))
-
-                # Save to database
-                try:
-                    db = get_database()
-                    db.save_analysis(result)
-                except Exception as e:
-                    logger.error(f"Failed to save to database: {e}")
-
-                # Update UI on main thread
-                self.after(0, lambda: self._on_single_file_processed(result))
-
-            except Exception as e:
-                logger.exception(f"Processing error: {e}")
-                self.after(0, lambda: self._on_single_file_error(str(e)))
-
-        thread = threading.Thread(target=process, daemon=True)
-        thread.start()
-
-    def _on_single_file_processed(self, result: AnalysisResult):
-        """Handle single file processing completion."""
-        self.process_file_btn.configure(state="normal")
-        self.current_result = result
-
-        # Show the result
-        self._show_analysis_details(result)
-
-        # Refresh the list to include the new result
-        self._load_recent_analyses()
-
-        logger.info(f"Processed single file: {result.metadata.filename}")
-
-    def _on_single_file_error(self, error: str):
-        """Handle single file processing error."""
-        self.process_file_btn.configure(state="normal")
-        self.reanalyze_btn.configure(state="normal")
-        self.status_text.configure(text=f"Error: {error}", text_color="red")
-        self.status_banner.configure(fg_color="red")
-        logger.error(f"Single file processing failed: {error}")
 
     def _reanalyze_current(self):
         """Re-analyze the current file from its original path (updates DB with corrected values)."""
@@ -975,6 +976,32 @@ class AnalyzePage(ctk.CTkFrame):
         if not track:
             track = result.tracks[0]
 
+        # RECALCULATE fail points using actual spec limits (DB may have incorrect values)
+        actual_fail_count = 0
+        upper_limits = track.upper_limits
+        lower_limits = track.lower_limits
+
+        # Fallback to flat linearity_spec if limits not stored
+        if not upper_limits or not lower_limits:
+            if track.linearity_spec and track.linearity_spec > 0 and track.error_data:
+                upper_limits = [track.linearity_spec] * len(track.error_data)
+                lower_limits = [-track.linearity_spec] * len(track.error_data)
+
+        if upper_limits and lower_limits and track.error_data:
+            shifted_errors = [e + track.optimal_offset for e in track.error_data]
+            for i, e in enumerate(shifted_errors):
+                if i < len(upper_limits) and i < len(lower_limits):
+                    # Skip positions with no spec limit (None = unlimited)
+                    if upper_limits[i] is not None and lower_limits[i] is not None:
+                        if e > upper_limits[i] or e < lower_limits[i]:
+                            actual_fail_count += 1
+
+        # Create corrected values dict for export panels
+        corrected_values = {
+            'fail_points': actual_fail_count,
+            'linearity_pass': actual_fail_count == 0,
+        }
+
         # Create figure with subplots (larger for detailed export) - LIGHT mode
         fig = plt.figure(figsize=(14, 10), dpi=150, facecolor='white')
 
@@ -994,13 +1021,13 @@ class AnalyzePage(ctk.CTkFrame):
         ax_info = fig.add_subplot(gs[2, 0])
         self._plot_unit_info(ax_info, result, track)
 
-        # ===== Metrics summary (bottom middle) =====
+        # ===== Metrics summary (bottom middle) - use corrected values =====
         ax_metrics = fig.add_subplot(gs[2, 1])
-        self._plot_metrics_summary(ax_metrics, track)
+        self._plot_metrics_summary(ax_metrics, track, corrected_values)
 
-        # ===== Status display (bottom right) =====
+        # ===== Status display (bottom right) - use corrected values =====
         ax_status = fig.add_subplot(gs[2, 2])
-        self._plot_status_display(ax_status, track, result)
+        self._plot_status_display(ax_status, track, result, corrected_values)
 
         # Save
         fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
@@ -1048,22 +1075,29 @@ class AnalyzePage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(positions)
                 logger.debug(f"Using flat spec limits: +/-{track.linearity_spec}")
 
-        # Plot spec limits
+        # Plot spec limits (handle None = no limit at that position)
         if upper_limits and lower_limits and len(upper_limits) == len(positions):
-            ax.plot(positions, upper_limits, 'r--', linewidth=1.5,
-                   label=f'Spec Limits (+/-{track.linearity_spec:.4f})', color=QA_COLORS['spec_limit'])
-            ax.plot(positions, lower_limits, 'r--', linewidth=1.5,
-                   color=QA_COLORS['spec_limit'])
-            ax.fill_between(positions, lower_limits, upper_limits,
-                           alpha=0.15, color=QA_COLORS['spec_limit'])
+            # Convert None to NaN for matplotlib (creates gaps in the line)
+            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
+            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
 
-        # Find and mark fail points
+            ax.plot(positions, upper_plot, 'r--', linewidth=1.5,
+                   label=f'Spec Limits (+/-{track.linearity_spec:.4f})', color=QA_COLORS['spec_limit'])
+            ax.plot(positions, lower_plot, 'r--', linewidth=1.5,
+                   color=QA_COLORS['spec_limit'])
+            # Fill only where limits are defined
+            ax.fill_between(positions, lower_plot, upper_plot,
+                           alpha=0.15, color=QA_COLORS['spec_limit'],
+                           where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
+
+        # Find and mark fail points (skip positions with None = no spec)
         fail_indices = []
         if upper_limits and lower_limits:
             for i, e in enumerate(errors_shifted):
                 if i < len(upper_limits) and i < len(lower_limits):
-                    if e > upper_limits[i] or e < lower_limits[i]:
-                        fail_indices.append(i)
+                    if upper_limits[i] is not None and lower_limits[i] is not None:
+                        if e > upper_limits[i] or e < lower_limits[i]:
+                            fail_indices.append(i)
 
         if fail_indices:
             fail_pos = [positions[i] for i in fail_indices]
@@ -1126,10 +1160,14 @@ class AnalyzePage(ctk.CTkFrame):
             y_pos -= 0.09
             ax.text(0.05, y_pos, line, fontsize=10, transform=ax.transAxes, va='top', color='black')
 
-    def _plot_metrics_summary(self, ax, track: TrackData):
+    def _plot_metrics_summary(self, ax, track: TrackData, corrected_values: Dict[str, Any] = None):
         """Plot analysis metrics summary (light mode)."""
         ax.axis('off')
         ax.set_facecolor('white')
+
+        # Use corrected values if provided (recalculated from actual spec limits)
+        fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
+        linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
 
         metrics = [
             f"Sigma Gradient: {track.sigma_gradient:.6f}",
@@ -1138,8 +1176,8 @@ class AnalyzePage(ctk.CTkFrame):
             "",
             f"Optimal Offset: {track.optimal_offset:.6f}",
             f"Linearity Error: {track.linearity_error:.6f}",
-            f"Fail Points: {track.linearity_fail_points}",
-            f"Linearity Pass: {'✓ YES' if track.linearity_pass else '✗ NO'}",
+            f"Fail Points: {fail_points}",
+            f"Linearity Pass: {'✓ YES' if linearity_pass else '✗ NO'}",
             "",
             f"Risk Category: {track.risk_category.value}",
             f"Failure Prob: {track.failure_probability:.1%}" if track.failure_probability else "Failure Prob: N/A"
@@ -1160,15 +1198,19 @@ class AnalyzePage(ctk.CTkFrame):
             ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes,
                    va='top', color=color)
 
-    def _plot_status_display(self, ax, track: TrackData, result: AnalysisResult):
+    def _plot_status_display(self, ax, track: TrackData, result: AnalysisResult, corrected_values: Dict[str, Any] = None):
         """Plot status display panel (light mode)."""
         from matplotlib.patches import Rectangle
 
         ax.axis('off')
         ax.set_facecolor('white')
 
-        # Determine overall status
-        if track.sigma_pass and track.linearity_pass:
+        # Use corrected values if provided (recalculated from actual spec limits)
+        fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
+        linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
+
+        # Determine overall status using corrected linearity pass
+        if track.sigma_pass and linearity_pass:
             status = "PASS"
             color = '#27ae60'
         else:
@@ -1188,8 +1230,8 @@ class AnalyzePage(ctk.CTkFrame):
         details = []
         if not track.sigma_pass:
             details.append("Sigma: FAIL")
-        if not track.linearity_pass:
-            details.append(f"Linearity: FAIL ({track.linearity_fail_points} pts)")
+        if not linearity_pass:
+            details.append(f"Linearity: FAIL ({fail_points} pts)")
 
         if details:
             ax.text(0.5, 0.45, "\n".join(details), ha='center', va='center',
