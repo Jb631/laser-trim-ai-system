@@ -136,13 +136,13 @@ class ProcessPage(ctk.CTkFrame):
         )
         self.export_btn.pack(side="right", padx=5, pady=15)
 
-        # Content frame
-        content = ctk.CTkFrame(self)
+        # Content frame - scrollable for smaller screens
+        content = ctk.CTkScrollableFrame(self)
         content.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
         content.grid_columnconfigure(0, weight=1, uniform="col")  # File list
         content.grid_columnconfigure(1, weight=1, uniform="col")  # Results
         content.grid_rowconfigure(0, weight=0)  # Progress bar row
-        content.grid_rowconfigure(1, weight=1)  # Main content row
+        content.grid_rowconfigure(1, weight=1, minsize=300)  # Main content row with min height
 
         # Progress frame
         progress_frame = ctk.CTkFrame(content)
@@ -201,12 +201,17 @@ class ProcessPage(ctk.CTkFrame):
             self._update_file_list()
 
     def _select_folder(self):
-        """Open folder dialog to select a folder."""
+        """Open folder dialog to select a folder (crawls all subfolders)."""
         folder = filedialog.askdirectory(title="Select Folder with Excel Files")
         if folder:
             folder_path = Path(folder)
-            # Find all Excel files in folder
-            self.selected_files = list(folder_path.glob("*.xls")) + list(folder_path.glob("*.xlsx"))
+            # Find all Excel files recursively in folder and all subfolders
+            # Using rglob for recursive search - supports master folder with model subfolders
+            xls_files = list(folder_path.rglob("*.xls"))
+            xlsx_files = list(folder_path.rglob("*.xlsx"))
+            self.selected_files = xls_files + xlsx_files
+            # Sort by path for consistent ordering (groups files by subfolder)
+            self.selected_files.sort(key=lambda f: (f.parent, f.name))
             self._update_file_list()
 
     def _update_file_list(self):
@@ -215,12 +220,33 @@ class ProcessPage(ctk.CTkFrame):
         self.file_list.delete("1.0", "end")
 
         if self.selected_files:
-            for f in self.selected_files[:50]:  # Show first 50
-                self.file_list.insert("end", f"{f.name}\n")
-            if len(self.selected_files) > 50:
-                self.file_list.insert("end", f"\n... and {len(self.selected_files) - 50} more files")
+            # Group files by parent folder for better display
+            current_folder = None
+            display_count = 0
+            max_display = 100  # Show more files since we now have subfolders
 
-            self.file_count_label.configure(text=f"{len(self.selected_files)} files selected")
+            for f in self.selected_files:
+                if display_count >= max_display:
+                    break
+
+                # Show folder header when it changes
+                if f.parent != current_folder:
+                    current_folder = f.parent
+                    folder_name = current_folder.name
+                    if display_count > 0:
+                        self.file_list.insert("end", "\n")
+                    self.file_list.insert("end", f"📁 {folder_name}/\n")
+
+                self.file_list.insert("end", f"   {f.name}\n")
+                display_count += 1
+
+            if len(self.selected_files) > max_display:
+                self.file_list.insert("end", f"\n... and {len(self.selected_files) - max_display} more files")
+
+            # Count unique folders
+            unique_folders = len(set(f.parent for f in self.selected_files))
+            folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
+            self.file_count_label.configure(text=f"{len(self.selected_files)} files selected{folder_info}")
             self.process_btn.configure(state="normal")
         else:
             self.file_list.insert("end", "No files selected")

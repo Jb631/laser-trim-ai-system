@@ -462,11 +462,15 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     """Create sheet with all results in tabular format."""
     ws = wb.create_sheet("All Results")
 
-    # Headers
+    # Headers - filename at the end for better readability
+    # For multi-track: (max)=worst case, (min)=most restrictive, (sum)=total across tracks
     headers = [
-        "Filename", "Model", "Serial", "System", "Trim Date",
-        "Status", "Tracks", "Processing Time", "Avg Sigma", "Threshold",
-        "Sigma Pass", "Lin Error", "Linearity Pass", "Risk", "Fail Prob"
+        "Model", "Serial", "System", "Trim Date", "Status",
+        "Tracks", "Sigma Gradient (max)", "Sigma Threshold (min)", "Sigma Margin %",
+        "Sigma Pass", "Linearity Error (max)", "Linearity Spec", "Fail Points (sum)",
+        "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Travel Length",
+        "Untrimmed R", "Trimmed R", "R Change %",
+        "Filename"
     ]
 
     for col, header in enumerate(headers, 1):
@@ -479,56 +483,103 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
     # Data rows
     for row_idx, result in enumerate(results, 2):
-        # Calculate averages and aggregates
-        avg_sigma = 0
-        avg_threshold = 0
-        avg_lin_error = 0
+        # Get track data - for multi-track files, aggregate appropriately
+        sigma_gradient = 0
+        sigma_threshold = 0
+        sigma_margin_pct = 0
+        linearity_error = 0
+        linearity_spec = 0
+        fail_points = 0
+        travel_length = 0
         sigma_pass = True
         linearity_pass = True
         risk = "Unknown"
         fail_prob = None
+        untrimmed_r = None
+        trimmed_r = None
+        r_change_pct = None
 
         if result.tracks:
-            avg_sigma = sum(t.sigma_gradient for t in result.tracks) / len(result.tracks)
-            avg_threshold = sum(t.sigma_threshold for t in result.tracks) / len(result.tracks)
-            avg_lin_error = sum(t.linearity_error for t in result.tracks) / len(result.tracks)
-            sigma_pass = all(t.sigma_pass for t in result.tracks)
-            linearity_pass = all(t.linearity_pass for t in result.tracks)
-            # Use worst risk category
-            risk_order = {"Low": 0, "Medium": 1, "High": 2, "Unknown": -1}
-            risk = max([t.risk_category.value for t in result.tracks], key=lambda x: risk_order.get(x, -1))
-            # Average failure probability
-            probs = [t.failure_probability for t in result.tracks if t.failure_probability is not None]
-            fail_prob = sum(probs) / len(probs) if probs else None
+            num_tracks = len(result.tracks)
+
+            # For single track: use direct values
+            # For multi-track: use max sigma (worst case), sum fail points
+            if num_tracks == 1:
+                track = result.tracks[0]
+                sigma_gradient = track.sigma_gradient
+                sigma_threshold = track.sigma_threshold
+                linearity_error = track.linearity_error
+                linearity_spec = track.linearity_spec
+                fail_points = track.linearity_fail_points
+                travel_length = track.travel_length
+                sigma_pass = track.sigma_pass
+                linearity_pass = track.linearity_pass
+                risk = track.risk_category.value
+                fail_prob = track.failure_probability
+                untrimmed_r = track.untrimmed_resistance
+                trimmed_r = track.trimmed_resistance
+                r_change_pct = track.resistance_change_percent
+            else:
+                # Multi-track: use worst-case values for sigma, sum for fail points
+                sigma_gradient = max(t.sigma_gradient for t in result.tracks)
+                sigma_threshold = min(t.sigma_threshold for t in result.tracks)  # Most restrictive
+                linearity_error = max(t.linearity_error for t in result.tracks)
+                linearity_spec = result.tracks[0].linearity_spec  # Should be same for all
+                fail_points = sum(t.linearity_fail_points for t in result.tracks)
+                travel_length = result.tracks[0].travel_length  # Should be same
+                sigma_pass = all(t.sigma_pass for t in result.tracks)
+                linearity_pass = all(t.linearity_pass for t in result.tracks)
+                # Use worst risk category
+                risk_order = {"Low": 0, "Medium": 1, "High": 2, "Unknown": -1}
+                risk = max([t.risk_category.value for t in result.tracks], key=lambda x: risk_order.get(x, -1))
+                # Max failure probability (worst case)
+                probs = [t.failure_probability for t in result.tracks if t.failure_probability is not None]
+                fail_prob = max(probs) if probs else None
+                # Use first track's resistance (typically same for multi-track units)
+                untrimmed_r = result.tracks[0].untrimmed_resistance
+                trimmed_r = result.tracks[0].trimmed_resistance
+                r_change_pct = result.tracks[0].resistance_change_percent
+
+            # Calculate sigma margin percentage
+            if sigma_threshold > 0:
+                sigma_margin_pct = ((sigma_threshold - sigma_gradient) / sigma_threshold) * 100
 
         # Use file_date which is the trim date (we set file_date = test_date in parser)
         trim_date = result.metadata.file_date or result.metadata.test_date
 
         values = [
-            result.metadata.filename,
             result.metadata.model,
             result.metadata.serial,
             result.metadata.system.value,
             trim_date.strftime("%Y-%m-%d") if trim_date else "",
             result.overall_status.value,
             len(result.tracks),
-            f"{result.processing_time:.2f}s",
-            f"{avg_sigma:.6f}",
-            f"{avg_threshold:.6f}",
+            f"{sigma_gradient:.6f}",
+            f"{sigma_threshold:.6f}",
+            f"{sigma_margin_pct:.1f}%",
             "PASS" if sigma_pass else "FAIL",
-            f"{avg_lin_error:.6f}",
+            f"{linearity_error:.6f}",
+            f"{linearity_spec:.6f}",
+            fail_points,
             "PASS" if linearity_pass else "FAIL",
             risk,
             f"{fail_prob:.1%}" if fail_prob is not None else "N/A",
+            f"{travel_length:.1f}" if travel_length else "",
+            f"{untrimmed_r:.2f}" if untrimmed_r is not None else "",
+            f"{trimmed_r:.2f}" if trimmed_r is not None else "",
+            f"{r_change_pct:.2f}%" if r_change_pct is not None else "",
+            result.metadata.filename,  # Filename at end
         ]
+
+        status_col = 5  # Status is now column 5
 
         for col, value in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col)
             cell.value = value
             cell.border = THIN_BORDER
 
-            # Color status column (column 6 now after removing file_date)
-            if col == 6:  # Status column
+            # Color status column
+            if col == status_col:
                 if value == "Pass":
                     cell.fill = PASS_FILL
                 elif value == "Fail" or value == "Error":
@@ -537,10 +588,11 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                     cell.fill = WARNING_FILL
 
     # Auto-filter
-    ws.auto_filter.ref = f"A1:O{len(results) + 1}"
+    num_cols = len(headers)
+    ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}{len(results) + 1}"
 
-    # Adjust column widths (15 columns now)
-    widths = [30, 12, 12, 8, 12, 8, 6, 10, 12, 12, 10, 12, 10, 8, 10]
+    # Adjust column widths (21 columns now)
+    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 12, 12, 12, 10, 35]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 

@@ -326,19 +326,29 @@ class ExcelParser:
 
         # Find untrimmed and trimmed sheets
         untrimmed_sheet = None
-        trimmed_sheet = None
+        lin_error_sheet = None  # Preferred: final linearity error after all trims
+        trim_sheets = []  # Fallback: intermediate trim sheets
 
         for sheet in xl.sheet_names:
             sheet_lower = sheet.lower()
             if sheet_lower == "test":
                 untrimmed_sheet = sheet
-            # More specific matching for trimmed sheet:
-            # "Lin Error" or "Trim 1" (but NOT "Trim Parameters", "TRIMDATA", "TrimVolts1")
+            # "Lin Error" is the preferred final trimmed data sheet
             elif sheet_lower == "lin error":
-                trimmed_sheet = sheet
+                lin_error_sheet = sheet
+            # "Trim 1", "Trim 2", etc. are intermediate trim passes (fallback only)
             elif sheet_lower.startswith("trim ") and sheet_lower[5:].isdigit():
-                # Matches "Trim 1", "Trim 2", etc.
-                trimmed_sheet = sheet
+                trim_sheets.append(sheet)
+
+        # Priority: Lin Error > highest Trim N > Trim 1
+        if lin_error_sheet:
+            trimmed_sheet = lin_error_sheet
+        elif trim_sheets:
+            # Sort trim sheets and use the highest number (most recent trim pass)
+            trim_sheets.sort(key=lambda s: int(s.lower().split()[-1]))
+            trimmed_sheet = trim_sheets[-1]  # Use highest trim number
+        else:
+            trimmed_sheet = None
 
         if trimmed_sheet:
             track_data = self._extract_track_data(
@@ -374,14 +384,33 @@ class ExcelParser:
                 return None
 
             # Extract columns
+            # Position column should stop at first NaN
             positions = self._get_column_data(df, columns["position"], data_start)
-            errors = self._get_column_data(df, columns["error"], data_start)
-            upper_limits = self._get_column_data(df, columns["upper_limit"], data_start)
-            lower_limits = self._get_column_data(df, columns["lower_limit"], data_start)
 
-            if not positions or not errors:
-                logger.warning(f"No position/error data in {trimmed_sheet}")
+            if not positions:
+                logger.warning(f"No position data in {trimmed_sheet}")
                 return None
+
+            # Error column may have leading NaN values (no error at those positions)
+            # Use allow_nan=True to handle this, then trim to match positions length
+            errors = self._get_column_data(df, columns["error"], data_start, allow_nan=True)
+
+            # Trim errors to match positions length (or pad if needed)
+            if len(errors) > len(positions):
+                errors = errors[:len(positions)]
+            elif len(errors) < len(positions):
+                # Pad with zeros if error column is shorter
+                errors = errors + [0.0] * (len(positions) - len(errors))
+
+            if not errors:
+                logger.warning(f"No error data in {trimmed_sheet}")
+                return None
+
+            # Extract limit columns - use special method that preserves NaN values
+            # NaN means "no spec limit" at that position (unlimited)
+            num_data_points = len(positions)
+            upper_limits = self._get_limit_column_data(df, columns["upper_limit"], data_start, num_data_points)
+            lower_limits = self._get_limit_column_data(df, columns["lower_limit"], data_start, num_data_points)
 
             # Extract untrimmed data if available
             untrimmed_positions = None
@@ -418,6 +447,8 @@ class ExcelParser:
             travel_length = max(positions) - min(positions) if positions else 0.0
 
             # Calculate linearity spec from limits
+            # Note: Some positions may have NaN limits intentionally (no spec for that portion of travel)
+            # We preserve NaN values - they mean "unlimited" at that position
             linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
 
             return {
@@ -450,18 +481,63 @@ class ExcelParser:
                 continue
         return None
 
-    def _get_column_data(self, df: pd.DataFrame, col_idx: int, start_row: int) -> List[float]:
-        """Extract numeric data from a column."""
+    def _get_column_data(self, df: pd.DataFrame, col_idx: int, start_row: int, allow_nan: bool = False) -> List[float]:
+        """
+        Extract numeric data from a column.
+
+        Args:
+            df: DataFrame to extract from
+            col_idx: Column index
+            start_row: Starting row
+            allow_nan: If True, replace NaN with 0.0 instead of stopping. Used for error columns
+                       that may have leading NaN values (no error data for first few positions)
+
+        Returns:
+            List of float values
+        """
         data = []
+        consecutive_nan = 0
         for i in range(start_row, len(df)):
             try:
                 value = df.iloc[i, col_idx]
                 if pd.notna(value):
                     data.append(float(value))
+                    consecutive_nan = 0
+                elif allow_nan:
+                    # For error columns, NaN typically means 0 error (within spec, no trim needed)
+                    data.append(0.0)
+                    consecutive_nan += 1
+                    # If we have too many consecutive NaN, we've hit the end of data
+                    if consecutive_nan > 10:
+                        # Remove the trailing NaN placeholders
+                        data = data[:-consecutive_nan]
+                        break
                 else:
                     break  # Stop at first empty cell
             except (ValueError, TypeError):
                 break
+        return data
+
+    def _get_limit_column_data(self, df: pd.DataFrame, col_idx: int, start_row: int, num_rows: int) -> List[Optional[float]]:
+        """
+        Extract limit data from a column, preserving NaN values.
+
+        NaN in spec limit columns means "no specification" (unlimited) at that position.
+        This is different from position/error columns where NaN means end of data.
+        """
+        data = []
+        for i in range(start_row, start_row + num_rows):
+            if i >= len(df):
+                data.append(None)
+                continue
+            try:
+                value = df.iloc[i, col_idx]
+                if pd.notna(value):
+                    data.append(float(value))
+                else:
+                    data.append(None)  # Preserve NaN as None (no limit at this position)
+            except (ValueError, TypeError):
+                data.append(None)
         return data
 
     def _extract_cell_value(

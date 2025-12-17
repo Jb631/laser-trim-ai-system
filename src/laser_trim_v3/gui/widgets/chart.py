@@ -116,19 +116,29 @@ class ChartWidget(ctk.CTkFrame):
         width = self.winfo_width()
         height = self.winfo_height()
 
-        # Avoid tiny sizes during initialization
-        if width < 50 or height < 50:
+        # Minimum sizes to avoid tiny charts
+        MIN_WIDTH = 200
+        MIN_HEIGHT = 150
+
+        # Use minimum sizes if widget is too small (during initialization or small screens)
+        if width < MIN_WIDTH:
+            width = MIN_WIDTH
+        if height < MIN_HEIGHT:
+            height = MIN_HEIGHT
+
+        # Avoid sizes that are clearly invalid
+        if width < 10 or height < 10:
             return
 
         # Convert pixels to inches for matplotlib
         dpi = self.style.dpi
-        fig_width = width / dpi
-        fig_height = height / dpi
+        fig_width = max(2.0, width / dpi)  # Minimum 2 inches
+        fig_height = max(1.5, height / dpi)  # Minimum 1.5 inches
 
         # Update figure size and redraw
         self.figure.set_size_inches(fig_width, fig_height, forward=True)
         try:
-            self.figure.tight_layout()
+            self.figure.tight_layout(pad=0.5)
         except Exception:
             pass  # tight_layout can fail with certain axes configurations
         self.canvas.draw_idle()
@@ -136,7 +146,28 @@ class ChartWidget(ctk.CTkFrame):
     def clear(self) -> None:
         """Clear the chart."""
         self.figure.clear()
+        # Restore figure facecolor after clear (matplotlib may reset it)
+        self.figure.set_facecolor(COLORS['background'] if self.style.dark_mode else 'white')
         self.canvas.draw()
+
+    def _style_axis(self, ax) -> None:
+        """Apply consistent styling to an axis based on dark/light mode."""
+        if self.style.dark_mode:
+            ax.set_facecolor(COLORS['background'])
+            ax.tick_params(colors=COLORS['text'])
+            ax.xaxis.label.set_color(COLORS['text'])
+            ax.yaxis.label.set_color(COLORS['text'])
+            ax.title.set_color(COLORS['text'])
+            for spine in ax.spines.values():
+                spine.set_color(COLORS['grid'])
+        else:
+            ax.set_facecolor('white')
+            ax.tick_params(colors='black')
+            ax.xaxis.label.set_color('black')
+            ax.yaxis.label.set_color('black')
+            ax.title.set_color('black')
+            for spine in ax.spines.values():
+                spine.set_color('black')
 
     def plot_error_vs_position(
         self,
@@ -166,6 +197,7 @@ class ChartWidget(ctk.CTkFrame):
         """
         self.clear()
         ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
 
         # Apply offset to trimmed errors
         shifted_errors = [e + offset for e in trimmed_errors]
@@ -189,10 +221,15 @@ class ChartWidget(ctk.CTkFrame):
             label=f'Trimmed (offset: {offset:.6f})'
         )
 
-        # Plot specification limits
+        # Plot specification limits (handle None = no limit at that position)
         if upper_limits and lower_limits:
+            # Convert None to NaN for matplotlib (creates gaps in the line)
+            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
+            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
+            pos_array = np.array(positions[:len(upper_limits)])
+
             ax.plot(
-                positions[:len(upper_limits)], upper_limits,
+                pos_array, upper_plot,
                 color=COLORS['spec_limit'],
                 linestyle='--',
                 linewidth=1,
@@ -200,20 +237,21 @@ class ChartWidget(ctk.CTkFrame):
                 label='Spec Limits'
             )
             ax.plot(
-                positions[:len(lower_limits)], lower_limits,
+                pos_array, lower_plot,
                 color=COLORS['spec_limit'],
                 linestyle='--',
                 linewidth=1,
                 alpha=0.8
             )
 
-            # Fill between limits
+            # Fill between limits only where both are defined
             ax.fill_between(
-                positions[:min(len(upper_limits), len(lower_limits))],
-                lower_limits[:min(len(upper_limits), len(lower_limits))],
-                upper_limits[:min(len(upper_limits), len(lower_limits))],
+                pos_array,
+                lower_plot,
+                upper_plot,
                 alpha=0.1,
-                color=COLORS['spec_limit']
+                color=COLORS['spec_limit'],
+                where=~np.isnan(upper_plot) & ~np.isnan(lower_plot)
             )
 
         # Mark fail points
@@ -264,6 +302,7 @@ class ChartWidget(ctk.CTkFrame):
         """
         self.clear()
         ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
 
         x = dates if dates else list(range(len(values)))
 
@@ -323,6 +362,7 @@ class ChartWidget(ctk.CTkFrame):
         """
         self.clear()
         ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
 
         ax.hist(
             values, bins=bins,
@@ -415,6 +455,7 @@ class ChartWidget(ctk.CTkFrame):
         # Multiple tracks - create subplots
         fig = self.figure
         fig.clear()
+        fig.set_facecolor(COLORS['background'] if self.style.dark_mode else 'white')
 
         # Determine status string for each track
         def get_status_str(track):
@@ -423,8 +464,10 @@ class ChartWidget(ctk.CTkFrame):
                 shifted = [e + track.optimal_offset for e in track.error_data]
                 for i, e in enumerate(shifted):
                     if i < len(track.upper_limits) and i < len(track.lower_limits):
-                        if e > track.upper_limits[i] or e < track.lower_limits[i]:
-                            fail_count += 1
+                        # Skip positions with no spec limit (None = unlimited)
+                        if track.upper_limits[i] is not None and track.lower_limits[i] is not None:
+                            if e > track.upper_limits[i] or e < track.lower_limits[i]:
+                                fail_count += 1
             if fail_count > 0:
                 return f"FAIL ({fail_count} pts)"
             elif not track.sigma_pass:
@@ -437,6 +480,7 @@ class ChartWidget(ctk.CTkFrame):
 
         for idx, track in enumerate(tracks):
             ax = fig.add_subplot(1, n_tracks, idx + 1)
+            self._style_axis(ax)
             color = track_colors[idx % len(track_colors)]
 
             if not track.position_data or not track.error_data:
@@ -456,20 +500,27 @@ class ChartWidget(ctk.CTkFrame):
                 ax.plot(track.untrimmed_positions, track.untrimmed_errors,
                        '--', color='gray', alpha=0.6, linewidth=1, label='Untrimmed')
 
-            # Plot spec limits
+            # Plot spec limits (handle None values = no limit at that position)
             if track.upper_limits and track.lower_limits and len(track.upper_limits) == len(positions):
-                ax.plot(positions, track.upper_limits, 'r--', linewidth=1.5, alpha=0.7)
-                ax.plot(positions, track.lower_limits, 'r--', linewidth=1.5, alpha=0.7)
-                ax.fill_between(positions, track.lower_limits, track.upper_limits,
-                               alpha=0.1, color=COLORS['spec_limit'])
+                # Convert None to NaN for matplotlib (NaN creates gaps in lines)
+                upper_plot = [u if u is not None else np.nan for u in track.upper_limits]
+                lower_plot = [l if l is not None else np.nan for l in track.lower_limits]
+                ax.plot(positions, upper_plot, 'r--', linewidth=1.5, alpha=0.7)
+                ax.plot(positions, lower_plot, 'r--', linewidth=1.5, alpha=0.7)
+                # Only fill where both limits are defined
+                upper_fill = np.array([u if u is not None else np.nan for u in track.upper_limits])
+                lower_fill = np.array([l if l is not None else np.nan for l in track.lower_limits])
+                ax.fill_between(positions, lower_fill, upper_fill,
+                               alpha=0.1, color=COLORS['spec_limit'], where=~np.isnan(upper_fill))
 
-            # Mark fail points
+            # Mark fail points (skip positions with no spec = None)
             fail_indices = []
             if track.upper_limits and track.lower_limits:
                 for i, e in enumerate(errors):
                     if i < len(track.upper_limits) and i < len(track.lower_limits):
-                        if e > track.upper_limits[i] or e < track.lower_limits[i]:
-                            fail_indices.append(i)
+                        if track.upper_limits[i] is not None and track.lower_limits[i] is not None:
+                            if e > track.upper_limits[i] or e < track.lower_limits[i]:
+                                fail_indices.append(i)
             if fail_indices:
                 fail_pos = [positions[i] for i in fail_indices]
                 fail_err = [errors[i] for i in fail_indices]
@@ -509,9 +560,16 @@ class ChartWidget(ctk.CTkFrame):
         title: str,
     ) -> None:
         """Plot simple side-by-side comparison from raw data."""
+        # Set figure facecolor for dark/light mode
+        self.figure.set_facecolor(COLORS['background'] if self.style.dark_mode else 'white')
+
         # Create two subplots
         ax1 = self.figure.add_subplot(121)
         ax2 = self.figure.add_subplot(122)
+
+        # Apply dark/light mode styling
+        self._style_axis(ax1)
+        self._style_axis(ax2)
 
         # Plot track 1
         ax1.plot(
@@ -535,7 +593,8 @@ class ChartWidget(ctk.CTkFrame):
         ax2.set_ylabel('Error', fontsize=self.style.font_size)
         ax2.grid(True, alpha=0.3, color=COLORS['grid'])
 
-        self.figure.suptitle(title, fontsize=self.style.title_size + 2)
+        self.figure.suptitle(title, fontsize=self.style.title_size + 2,
+                            color=COLORS['text'] if self.style.dark_mode else 'black')
         self.figure.tight_layout()
         self.canvas.draw()
 
@@ -543,13 +602,14 @@ class ChartWidget(ctk.CTkFrame):
         """Show placeholder message when no data."""
         self.clear()
         ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
         ax.text(
             0.5, 0.5, message,
             horizontalalignment='center',
             verticalalignment='center',
             transform=ax.transAxes,
             fontsize=14,
-            color='gray'
+            color=COLORS['text'] if self.style.dark_mode else 'gray'
         )
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
@@ -570,6 +630,7 @@ class ChartWidget(ctk.CTkFrame):
         """
         self.clear()
         ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
 
         # Status colors
         status_colors = {
@@ -600,7 +661,7 @@ class ChartWidget(ctk.CTkFrame):
                 verticalalignment='center',
                 transform=ax.transAxes,
                 fontsize=12,
-                color='white' if self.style.dark_mode else 'black'
+                color=COLORS['text'] if self.style.dark_mode else 'black'
             )
 
         ax.axis('off')

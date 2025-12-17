@@ -117,8 +117,9 @@ class TrackData(BaseAnalysisModel):
     # Raw data for plotting (optional - can be large)
     position_data: Optional[List[float]] = Field(None, description="Position values")
     error_data: Optional[List[float]] = Field(None, description="Error values")
-    upper_limits: Optional[List[float]] = Field(None, description="Upper spec limits")
-    lower_limits: Optional[List[float]] = Field(None, description="Lower spec limits")
+    # Note: Limits can have None values at positions with no specification (unlimited)
+    upper_limits: Optional[List[Optional[float]]] = Field(None, description="Upper spec limits (None = no limit)")
+    lower_limits: Optional[List[Optional[float]]] = Field(None, description="Lower spec limits (None = no limit)")
 
     # Untrimmed data for comparison (optional)
     untrimmed_positions: Optional[List[float]] = Field(None, description="Untrimmed positions")

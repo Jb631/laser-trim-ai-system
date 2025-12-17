@@ -59,16 +59,21 @@ class TrendsPage(ctk.CTkFrame):
         controls = ctk.CTkFrame(self)
         controls.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
 
-        # Model selector
+        # Model selector - use ComboBox for dropdown with many models
         model_label = ctk.CTkLabel(controls, text="Model:")
         model_label.pack(side="left", padx=(15, 5), pady=15)
 
-        self.model_dropdown = ctk.CTkOptionMenu(
+        self.model_dropdown = ctk.CTkComboBox(
             controls,
             values=["All Models"],
-            command=self._on_model_change
+            command=self._on_model_change,
+            width=150,
+            state="normal"  # Allow typing to filter, dropdown still works
         )
+        self.model_dropdown.set("All Models")
         self.model_dropdown.pack(side="left", padx=5, pady=15)
+        # Bind mousewheel to scroll through options
+        self._bind_mousewheel_scroll(self.model_dropdown)
 
         # Date range
         date_label = ctk.CTkLabel(controls, text="Date Range:")
@@ -100,66 +105,29 @@ class TrendsPage(ctk.CTkFrame):
         )
         self.status_label.pack(side="right", padx=15, pady=15)
 
-        # Main content area
-        content = ctk.CTkFrame(self)
+        # Main content area - scrollable for smaller screens
+        content = ctk.CTkScrollableFrame(self)
         content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        content.grid_columnconfigure(0, weight=4)  # Charts get more space
-        content.grid_columnconfigure(1, weight=1, minsize=200)  # Stats panel - narrower
-        content.grid_rowconfigure(0, weight=2)  # SPC chart - taller
-        content.grid_rowconfigure(1, weight=1)  # Distribution - shorter
+        content.grid_columnconfigure(0, weight=1)
+        # All sections stacked vertically
+        content.grid_rowconfigure(0, weight=0)  # Statistics - compact
+        content.grid_rowconfigure(1, weight=2, minsize=300)  # SPC chart - larger
+        content.grid_rowconfigure(2, weight=1, minsize=200)  # Distribution chart
+        content.grid_rowconfigure(3, weight=0)  # Drift detection - compact
+        content.grid_rowconfigure(4, weight=0)  # ML recommendations - compact
 
-        # Chart area (left side)
-        chart_frame = ctk.CTkFrame(content)
-        chart_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
-
-        chart_label = ctk.CTkLabel(
-            chart_frame,
-            text="Sigma Gradient SPC Chart",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self.chart = ChartWidget(
-            chart_frame,
-            style=ChartStyle(figure_size=(8, 4), dpi=100)
-        )
-        self.chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.chart.show_placeholder("Select a model and date range to view trends")
-
-        # Distribution chart
-        dist_frame = ctk.CTkFrame(content)
-        dist_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(0, 10))
-
-        dist_label = ctk.CTkLabel(
-            dist_frame,
-            text="Sigma Distribution",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        dist_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self.dist_chart = ChartWidget(
-            dist_frame,
-            style=ChartStyle(figure_size=(8, 2.5), dpi=100)
-        )
-        self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.dist_chart.show_placeholder("Distribution will appear here")
-
-        # Stats panel (right side) - use scrollable for smaller screens
-        stats_frame = ctk.CTkScrollableFrame(content)
-        stats_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(5, 10), pady=10)
+        # Statistics panel (top - horizontal layout)
+        stats_frame = ctk.CTkFrame(content)
+        stats_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
 
         stats_label = ctk.CTkLabel(
             stats_frame,
             text="Statistics",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        stats_label.pack(padx=15, pady=(15, 10), anchor="w")
+        stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=6)
 
-        # Stats container
-        self.stats_container = ctk.CTkFrame(stats_frame, fg_color="transparent")
-        self.stats_container.pack(fill="x", padx=15)
-
-        # Create stat labels
+        # Stats in a horizontal row for efficient space usage
         self.stat_labels = {}
         stat_names = [
             ("files_analyzed", "Files Analyzed"),
@@ -170,40 +138,123 @@ class TrendsPage(ctk.CTkFrame):
             ("trend", "Trend"),
         ]
 
-        for key, label in stat_names:
-            stat_row = ctk.CTkFrame(self.stats_container, fg_color="transparent")
-            stat_row.pack(fill="x", pady=2)
+        for idx, (key, label) in enumerate(stat_names):
+            stat_col = ctk.CTkFrame(stats_frame, fg_color="transparent")
+            stat_col.grid(row=1, column=idx, padx=15, pady=(0, 15), sticky="w")
 
-            ctk.CTkLabel(stat_row, text=label, text_color="gray").pack(side="left")
-            value_label = ctk.CTkLabel(stat_row, text="--")
-            value_label.pack(side="right")
+            ctk.CTkLabel(stat_col, text=label, text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w")
+            value_label = ctk.CTkLabel(stat_col, text="--", font=ctk.CTkFont(size=14, weight="bold"))
+            value_label.pack(anchor="w")
             self.stat_labels[key] = value_label
 
-        # Drift alerts section
-        drift_label = ctk.CTkLabel(
-            stats_frame,
-            text="Drift Detection",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        drift_label.pack(padx=15, pady=(20, 10), anchor="w")
+        # SPC Chart (main chart - largest)
+        chart_frame = ctk.CTkFrame(content)
+        chart_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
-        self.drift_text = ctk.CTkTextbox(stats_frame, height=80)
-        self.drift_text.pack(fill="x", padx=15, pady=5)
+        chart_label = ctk.CTkLabel(
+            chart_frame,
+            text="Sigma Gradient SPC Chart",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self.chart = ChartWidget(
+            chart_frame,
+            style=ChartStyle(figure_size=(10, 4), dpi=100)
+        )
+        self.chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.chart.show_placeholder("Select a model and date range to view trends")
+
+        # Distribution chart
+        dist_frame = ctk.CTkFrame(content)
+        dist_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+
+        dist_label = ctk.CTkLabel(
+            dist_frame,
+            text="Sigma Distribution",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        dist_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self.dist_chart = ChartWidget(
+            dist_frame,
+            style=ChartStyle(figure_size=(10, 2.5), dpi=100)
+        )
+        self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.dist_chart.show_placeholder("Distribution will appear here")
+
+        # Bottom row: Drift Detection and ML Recommendations side by side
+        bottom_frame = ctk.CTkFrame(content, fg_color="transparent")
+        bottom_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 10))
+        bottom_frame.grid_columnconfigure(0, weight=1)
+        bottom_frame.grid_columnconfigure(1, weight=1)
+
+        # Drift alerts section (left)
+        drift_frame = ctk.CTkFrame(bottom_frame)
+        drift_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
+
+        drift_label = ctk.CTkLabel(
+            drift_frame,
+            text="Drift Detection",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        drift_label.pack(padx=15, pady=(15, 10), anchor="w")
+
+        self.drift_text = ctk.CTkTextbox(drift_frame, height=100)
+        self.drift_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.drift_text.configure(state="disabled")
         self._update_drift_display(None)
 
-        # ML recommendations section
-        ml_label = ctk.CTkLabel(
-            stats_frame,
-            text="ML Recommendations",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        ml_label.pack(padx=15, pady=(20, 10), anchor="w")
+        # ML recommendations section (right)
+        ml_frame = ctk.CTkFrame(bottom_frame)
+        ml_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
 
-        self.ml_text = ctk.CTkTextbox(stats_frame, height=80)
-        self.ml_text.pack(fill="x", padx=15, pady=(5, 15))
+        ml_label = ctk.CTkLabel(
+            ml_frame,
+            text="ML Recommendations",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        ml_label.pack(padx=15, pady=(15, 10), anchor="w")
+
+        self.ml_text = ctk.CTkTextbox(ml_frame, height=100)
+        self.ml_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.ml_text.configure(state="disabled")
         self._update_ml_display(None)
+
+    def _bind_mousewheel_scroll(self, combobox):
+        """Bind mousewheel events to scroll through combobox values."""
+        def on_mousewheel(event):
+            values = combobox.cget("values")
+            if not values:
+                return
+
+            current = combobox.get()
+            try:
+                current_idx = list(values).index(current)
+            except ValueError:
+                current_idx = 0
+
+            # Scroll direction (Windows: event.delta, Linux: event.num)
+            if hasattr(event, 'delta'):
+                # Windows
+                direction = -1 if event.delta > 0 else 1
+            else:
+                # Linux
+                direction = -1 if event.num == 4 else 1
+
+            new_idx = current_idx + direction
+            if 0 <= new_idx < len(values):
+                combobox.set(values[new_idx])
+                # Trigger command callback if defined
+                command = combobox.cget("command")
+                if command:
+                    command(values[new_idx])
+
+        # Bind for Windows
+        combobox.bind("<MouseWheel>", on_mousewheel)
+        # Bind for Linux
+        combobox.bind("<Button-4>", on_mousewheel)
+        combobox.bind("<Button-5>", on_mousewheel)
 
     def _on_model_change(self, model: str):
         """Handle model selection change."""
