@@ -149,28 +149,31 @@ class DatabaseManager:
             Database ID of the saved analysis
         """
         with self.session() as session:
-            # Map Pydantic model to SQLAlchemy model
-            db_analysis = self._map_analysis_to_db(analysis)
+            # Check for existing record by filename (stable identifier)
+            # This ensures re-analysis updates the existing record even if
+            # model/serial/date parsing changed
+            existing = session.query(DBAnalysisResult).filter(
+                DBAnalysisResult.filename == analysis.metadata.filename
+            ).first()
 
-            try:
-                session.add(db_analysis)
-                session.flush()  # Get ID before commit
-
-                # Record as processed file
-                self._record_processed_file(
-                    session,
-                    analysis.metadata.file_path,
-                    db_analysis.id
-                )
-
-                logger.info(f"Saved analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-                return db_analysis.id
-
-            except IntegrityError as e:
-                # Handle duplicate - update existing record
-                logger.warning(f"Duplicate file, updating: {analysis.metadata.filename}")
-                session.rollback()
+            if existing:
+                logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
                 return self._update_existing_analysis(session, analysis)
+
+            # No existing record, create new one
+            db_analysis = self._map_analysis_to_db(analysis)
+            session.add(db_analysis)
+            session.flush()  # Get ID before commit
+
+            # Record as processed file
+            self._record_processed_file(
+                session,
+                analysis.metadata.file_path,
+                db_analysis.id
+            )
+
+            logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+            return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
@@ -186,9 +189,18 @@ class DatabaseManager:
 
         with self.session() as session:
             for analysis in analyses:
-                db_analysis = self._map_analysis_to_db(analysis)
+                # Check for existing record by filename
+                existing = session.query(DBAnalysisResult).filter(
+                    DBAnalysisResult.filename == analysis.metadata.filename
+                ).first()
 
-                try:
+                if existing:
+                    # Update existing record
+                    updated_id = self._update_existing_analysis(session, analysis)
+                    saved_ids.append(updated_id)
+                else:
+                    # Create new record
+                    db_analysis = self._map_analysis_to_db(analysis)
                     session.add(db_analysis)
                     session.flush()
 
@@ -199,12 +211,6 @@ class DatabaseManager:
                     )
 
                     saved_ids.append(db_analysis.id)
-
-                except IntegrityError:
-                    session.rollback()
-                    # Update existing
-                    updated_id = self._update_existing_analysis(session, analysis)
-                    saved_ids.append(updated_id)
 
         logger.info(f"Saved batch of {len(saved_ids)} analyses")
         return saved_ids
@@ -737,12 +743,19 @@ class DatabaseManager:
             List of model statistics dictionaries
         """
         with self.session() as session:
-            # Get counts by model
-            model_counts = (
+            # Single query with conditional aggregation - no N+1 problem
+            model_stats = (
                 session.query(
                     DBAnalysisResult.model,
-                    func.count(DBAnalysisResult.id).label('count')
+                    func.count(DBAnalysisResult.id).label('count'),
+                    func.sum(
+                        case(
+                            (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                            else_=0
+                        )
+                    ).label('passed')
                 )
+                .filter(DBAnalysisResult.model.isnot(None))
                 .group_by(DBAnalysisResult.model)
                 .order_by(func.count(DBAnalysisResult.id).desc())
                 .limit(limit)
@@ -750,20 +763,8 @@ class DatabaseManager:
             )
 
             result = []
-            for model, count in model_counts:
-                if not model:
-                    continue
-
-                # Get pass rate for this model
-                passed = (
-                    session.query(func.count(DBAnalysisResult.id))
-                    .filter(
-                        DBAnalysisResult.model == model,
-                        DBAnalysisResult.overall_status == DBStatusType.PASS
-                    )
-                    .scalar()
-                ) or 0
-
+            for model, count, passed in model_stats:
+                passed = passed or 0
                 pass_rate = (passed / count * 100) if count > 0 else 0.0
 
                 result.append({
@@ -1076,12 +1077,22 @@ class DatabaseManager:
             }
             existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
 
-            # Clear old tracks and add new ones
-            existing.tracks.clear()
+            # Delete old tracks explicitly and flush before adding new ones
+            # This avoids unique constraint violations
+            session.query(DBTrackResult).filter(
+                DBTrackResult.analysis_id == existing.id
+            ).delete()
+            session.flush()
+
+            # Add new tracks
             for track in analysis.tracks:
                 db_track = self._map_track_to_db(track)
-                existing.tracks.append(db_track)
+                db_track.analysis_id = existing.id
+                session.add(db_track)
 
+            # Flush to ensure changes are written
+            session.flush()
+            logger.info(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
             return existing.id
 
         # If no existing record found, create new
@@ -1153,11 +1164,11 @@ class DatabaseManager:
         with self.session() as session:
             cutoff_date = datetime.now() - timedelta(days=days_back)
 
-            # Get all models with recent activity
+            # Single query with join to get all data at once - no N+1 problem
             model_data = (
                 session.query(
                     DBAnalysisResult.model,
-                    func.count(DBAnalysisResult.id).label('total'),
+                    func.count(func.distinct(DBAnalysisResult.id)).label('total'),
                     func.sum(
                         case(
                             (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
@@ -1166,7 +1177,10 @@ class DatabaseManager:
                     ).label('passed'),
                     func.min(DBAnalysisResult.file_date).label('first_date'),
                     func.max(DBAnalysisResult.file_date).label('last_date'),
+                    func.avg(DBTrackResult.sigma_gradient).label('avg_sigma'),
+                    func.avg(DBTrackResult.sigma_threshold).label('avg_threshold'),
                 )
+                .outerjoin(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
                 .filter(
                     DBAnalysisResult.model.isnot(None),
                     or_(
@@ -1175,38 +1189,17 @@ class DatabaseManager:
                     )
                 )
                 .group_by(DBAnalysisResult.model)
-                .having(func.count(DBAnalysisResult.id) >= min_samples)
+                .having(func.count(func.distinct(DBAnalysisResult.id)) >= min_samples)
                 .all()
             )
 
             results = []
-            for model, total, passed, first_date, last_date in model_data:
+            for model, total, passed, first_date, last_date, avg_sigma, avg_threshold in model_data:
                 if not model or total == 0:
                     continue
 
                 passed = passed or 0
                 pass_rate = (passed / total * 100)
-
-                # Get average sigma gradient for this model
-                sigma_data = (
-                    session.query(
-                        func.avg(DBTrackResult.sigma_gradient),
-                        func.avg(DBTrackResult.sigma_threshold),
-                    )
-                    .join(DBAnalysisResult)
-                    .filter(
-                        DBAnalysisResult.model == model,
-                        or_(
-                            DBAnalysisResult.file_date >= cutoff_date,
-                            DBAnalysisResult.timestamp >= cutoff_date
-                        ),
-                        DBTrackResult.sigma_gradient.isnot(None),
-                    )
-                    .first()
-                )
-
-                avg_sigma = sigma_data[0] if sigma_data and sigma_data[0] else 0
-                avg_threshold = sigma_data[1] if sigma_data and sigma_data[1] else 0
 
                 results.append({
                     "model": model,
@@ -1214,8 +1207,8 @@ class DatabaseManager:
                     "passed": passed,
                     "failed": total - passed,
                     "pass_rate": pass_rate,
-                    "avg_sigma": avg_sigma,
-                    "avg_threshold": avg_threshold,
+                    "avg_sigma": avg_sigma or 0,
+                    "avg_threshold": avg_threshold or 0,
                     "first_date": first_date,
                     "last_date": last_date,
                 })
@@ -1262,11 +1255,11 @@ class DatabaseManager:
                 model = model_data["model"]
                 alert_reasons = []
 
-                # Check 1: Low pass rate
+                # Check 1: Low pass rate (overall = both sigma and linearity must pass)
                 if model_data["pass_rate"] < pass_rate_threshold:
                     alert_reasons.append({
                         "type": "LOW_PASS_RATE",
-                        "message": f"Pass rate {model_data['pass_rate']:.1f}% is below {pass_rate_threshold}%",
+                        "message": f"Overall pass rate {model_data['pass_rate']:.1f}% is below {pass_rate_threshold}%",
                         "severity": "High" if model_data["pass_rate"] < 70 else "Medium"
                     })
 

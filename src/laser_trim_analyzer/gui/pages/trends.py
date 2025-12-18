@@ -44,6 +44,9 @@ class TrendsPage(ctk.CTkFrame):
         self.active_models_data: List[Dict[str, Any]] = []
         self.model_trend_data: Optional[Dict[str, Any]] = None
 
+        # Track chart widgets for proper cleanup
+        self._chart_widgets: List[ChartWidget] = []
+
         self._create_ui()
 
     def _create_ui(self):
@@ -129,8 +132,20 @@ class TrendsPage(ctk.CTkFrame):
         # Create placeholder content
         self._create_summary_view()
 
+    def _cleanup_charts(self):
+        """Properly destroy chart widgets to free matplotlib resources."""
+        for chart in self._chart_widgets:
+            try:
+                chart.destroy()
+            except Exception:
+                pass
+        self._chart_widgets.clear()
+
     def _create_summary_view(self):
         """Create the summary view (All Models mode)."""
+        # Clean up existing charts first (frees matplotlib figures)
+        self._cleanup_charts()
+
         # Clear existing content
         for widget in self.content.winfo_children():
             widget.destroy()
@@ -186,6 +201,7 @@ class TrendsPage(ctk.CTkFrame):
             alerts_frame,
             style=ChartStyle(figure_size=(10, 3), dpi=100)
         )
+        self._chart_widgets.append(self.alerts_chart)
         self.alerts_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.alerts_chart.show_placeholder("Loading models requiring attention...")
 
@@ -210,6 +226,7 @@ class TrendsPage(ctk.CTkFrame):
             best_frame,
             style=ChartStyle(figure_size=(5, 3), dpi=100)
         )
+        self._chart_widgets.append(self.best_chart)
         self.best_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.best_chart.show_placeholder("Loading best models...")
 
@@ -228,6 +245,7 @@ class TrendsPage(ctk.CTkFrame):
             worst_frame,
             style=ChartStyle(figure_size=(5, 3), dpi=100)
         )
+        self._chart_widgets.append(self.worst_chart)
         self.worst_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.worst_chart.show_placeholder("Loading models needing improvement...")
 
@@ -249,6 +267,9 @@ class TrendsPage(ctk.CTkFrame):
 
     def _create_detail_view(self):
         """Create the detail view (specific model mode)."""
+        # Clean up existing charts first (frees matplotlib figures)
+        self._cleanup_charts()
+
         # Clear existing content
         for widget in self.content.winfo_children():
             widget.destroy()
@@ -273,7 +294,8 @@ class TrendsPage(ctk.CTkFrame):
         self.detail_stat_labels = {}
         stat_names = [
             ("total_samples", "Total Samples"),
-            ("pass_rate", "Pass Rate"),
+            ("sigma_pass_rate", "Sigma Pass"),
+            ("overall_pass_rate", "Overall Pass"),
             ("avg_sigma", "Avg Sigma"),
             ("threshold", "Threshold"),
             ("trend", "Trend"),
@@ -304,6 +326,7 @@ class TrendsPage(ctk.CTkFrame):
             chart_frame,
             style=ChartStyle(figure_size=(10, 4), dpi=100)
         )
+        self._chart_widgets.append(self.scatter_chart)
         self.scatter_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.scatter_chart.show_placeholder("Loading trend data...")
 
@@ -322,6 +345,7 @@ class TrendsPage(ctk.CTkFrame):
             dist_frame,
             style=ChartStyle(figure_size=(10, 2.5), dpi=100)
         )
+        self._chart_widgets.append(self.dist_chart)
         self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.dist_chart.show_placeholder("Loading distribution...")
 
@@ -733,8 +757,14 @@ class TrendsPage(ctk.CTkFrame):
 
         # Calculate stats
         sigma_values = [d["sigma_gradient"] for d in data_points if d["sigma_gradient"] is not None]
-        pass_count = sum(1 for d in data_points if d.get("sigma_pass", False))
-        pass_rate = (pass_count / total_samples * 100) if total_samples > 0 else 0
+
+        # Sigma pass rate (track-level: did sigma gradient pass?)
+        sigma_pass_count = sum(1 for d in data_points if d.get("sigma_pass", False))
+        sigma_pass_rate = (sigma_pass_count / total_samples * 100) if total_samples > 0 else 0
+
+        # Overall pass rate (file-level: did entire analysis pass including linearity?)
+        overall_pass_count = sum(1 for d in data_points if d.get("status") == "PASS")
+        overall_pass_rate = (overall_pass_count / total_samples * 100) if total_samples > 0 else 0
 
         avg_sigma = np.mean(sigma_values) if sigma_values else 0
         std_sigma = np.std(sigma_values, ddof=1) if len(sigma_values) > 1 else 0
@@ -756,14 +786,14 @@ class TrendsPage(ctk.CTkFrame):
             trend = "Insufficient Data"
             trend_color = "gray"
 
-        # Status
-        if pass_rate >= 95:
+        # Status based on overall pass rate
+        if overall_pass_rate >= 95:
             status = "Excellent"
             status_color = "#27ae60"
-        elif pass_rate >= 80:
+        elif overall_pass_rate >= 80:
             status = "Good"
             status_color = "#3498db"
-        elif pass_rate >= 70:
+        elif overall_pass_rate >= 70:
             status = "Warning"
             status_color = "#f39c12"
         else:
@@ -772,9 +802,13 @@ class TrendsPage(ctk.CTkFrame):
 
         # Update stat labels
         self.detail_stat_labels["total_samples"].configure(text=f"{total_samples:,}")
-        self.detail_stat_labels["pass_rate"].configure(
-            text=f"{pass_rate:.1f}%",
-            text_color="#27ae60" if pass_rate >= 90 else "#f39c12" if pass_rate >= 80 else "#e74c3c"
+        self.detail_stat_labels["sigma_pass_rate"].configure(
+            text=f"{sigma_pass_rate:.1f}%",
+            text_color="#27ae60" if sigma_pass_rate >= 90 else "#f39c12" if sigma_pass_rate >= 80 else "#e74c3c"
+        )
+        self.detail_stat_labels["overall_pass_rate"].configure(
+            text=f"{overall_pass_rate:.1f}%",
+            text_color="#27ae60" if overall_pass_rate >= 90 else "#f39c12" if overall_pass_rate >= 80 else "#e74c3c"
         )
         self.detail_stat_labels["avg_sigma"].configure(text=f"{avg_sigma:.6f}")
         self.detail_stat_labels["threshold"].configure(
@@ -810,8 +844,10 @@ class TrendsPage(ctk.CTkFrame):
             ylabel="Sigma Gradient"
         )
 
-        # Update distribution
-        if len(sigma_values) >= 3:
+        # Update distribution - only show histogram for 20+ samples
+        # For small sample sizes, the trend chart above shows everything needed
+        if len(sigma_values) >= 20:
+            self.dist_chart.master.grid()  # Show the distribution frame
             self.dist_chart.plot_histogram(
                 values=sigma_values,
                 bins=min(30, len(sigma_values) // 3 + 1),
@@ -820,7 +856,8 @@ class TrendsPage(ctk.CTkFrame):
                 spec_limit=threshold
             )
         else:
-            self.dist_chart.show_placeholder("Insufficient data for distribution")
+            # Hide distribution chart for small sample sizes
+            self.dist_chart.master.grid_remove()
 
         # Update alerts text
         self._update_detail_alerts(model_alerts)

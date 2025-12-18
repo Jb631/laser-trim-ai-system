@@ -42,6 +42,11 @@ class AnalyzePage(ctk.CTkFrame):
         self.current_result: Optional[AnalysisResult] = None
         self.recent_analyses: List[AnalysisResult] = []
 
+        # Pagination settings
+        self._page_size = 20
+        self._current_page = 0
+        self._total_pages = 1
+
         self._create_ui()
 
     def _create_ui(self):
@@ -103,7 +108,7 @@ class AnalyzePage(ctk.CTkFrame):
         ctk.CTkLabel(filter_frame, text="Status:").pack(side="left", padx=(20, 5), pady=15)
         self.status_filter = ctk.CTkOptionMenu(
             filter_frame,
-            values=["All", "Pass", "Fail"],
+            values=["All", "Pass", "Warning", "Fail"],
             command=self._on_filter_change,
             width=100
         )
@@ -138,6 +143,7 @@ class AnalyzePage(ctk.CTkFrame):
         list_frame = ctk.CTkFrame(content)
         list_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         list_frame.grid_rowconfigure(1, weight=1)
+        list_frame.grid_rowconfigure(2, weight=0)  # Pagination row
         list_frame.grid_columnconfigure(0, weight=1)
 
         list_label = ctk.CTkLabel(
@@ -149,8 +155,37 @@ class AnalyzePage(ctk.CTkFrame):
 
         # Scrollable list of analyses
         self.analysis_list_frame = ctk.CTkScrollableFrame(list_frame)
-        self.analysis_list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.analysis_list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 5))
         self.analysis_list_frame.grid_columnconfigure(0, weight=1)
+
+        # Pagination controls
+        pagination_frame = ctk.CTkFrame(list_frame, fg_color="transparent")
+        pagination_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        self._prev_btn = ctk.CTkButton(
+            pagination_frame,
+            text="<",
+            width=30,
+            command=self._prev_page,
+            state="disabled"
+        )
+        self._prev_btn.pack(side="left", padx=2)
+
+        self._page_label = ctk.CTkLabel(
+            pagination_frame,
+            text="Page 1/1",
+            font=ctk.CTkFont(size=11)
+        )
+        self._page_label.pack(side="left", padx=10, expand=True)
+
+        self._next_btn = ctk.CTkButton(
+            pagination_frame,
+            text=">",
+            width=30,
+            command=self._next_page,
+            state="disabled"
+        )
+        self._next_btn.pack(side="right", padx=2)
 
         # Right panel - details view
         details_frame = ctk.CTkFrame(content)
@@ -438,8 +473,10 @@ class AnalyzePage(ctk.CTkFrame):
             # Filter by status if needed
             if status == "Pass":
                 analyses = [a for a in analyses if a.overall_status == AnalysisStatus.PASS]
+            elif status == "Warning":
+                analyses = [a for a in analyses if a.overall_status == AnalysisStatus.WARNING]
             elif status == "Fail":
-                analyses = [a for a in analyses if a.overall_status == AnalysisStatus.FAIL]
+                analyses = [a for a in analyses if a.overall_status in (AnalysisStatus.FAIL, AnalysisStatus.ERROR)]
 
             # Get models list for dropdown - separate try to ensure dropdown works even if data fails
             try:
@@ -486,11 +523,23 @@ class AnalyzePage(ctk.CTkFrame):
             text=f"Database: {db_path.name} | {record_count.get('analyses', 0)} analyses, {record_count.get('tracks', 0)} tracks"
         )
 
+        # Calculate pagination
+        self._total_pages = max(1, (len(analyses) + self._page_size - 1) // self._page_size)
+        self._current_page = min(self._current_page, self._total_pages - 1)
+
+        # Update pagination controls
+        self._update_pagination_controls()
+
+        # Display current page
+        self._display_current_page()
+
+    def _display_current_page(self):
+        """Display only the items for the current page."""
         # Clear existing list
         for widget in self.analysis_list_frame.winfo_children():
             widget.destroy()
 
-        if not analyses:
+        if not self.recent_analyses:
             no_data_label = ctk.CTkLabel(
                 self.analysis_list_frame,
                 text="No analyses found.\n\nUse 'Process Files' to\nprocess some files first!",
@@ -500,9 +549,44 @@ class AnalyzePage(ctk.CTkFrame):
             no_data_label.pack(pady=40)
             return
 
-        # Create list items
-        for i, analysis in enumerate(analyses):
-            self._create_analysis_list_item(analysis, i)
+        # Get items for current page
+        start_idx = self._current_page * self._page_size
+        end_idx = start_idx + self._page_size
+        page_items = self.recent_analyses[start_idx:end_idx]
+
+        # Create list items for current page only
+        for i, analysis in enumerate(page_items):
+            self._create_analysis_list_item(analysis, start_idx + i)
+
+    def _update_pagination_controls(self):
+        """Update pagination button states and label."""
+        self._page_label.configure(text=f"Page {self._current_page + 1}/{self._total_pages}")
+
+        # Enable/disable prev button
+        if self._current_page > 0:
+            self._prev_btn.configure(state="normal")
+        else:
+            self._prev_btn.configure(state="disabled")
+
+        # Enable/disable next button
+        if self._current_page < self._total_pages - 1:
+            self._next_btn.configure(state="normal")
+        else:
+            self._next_btn.configure(state="disabled")
+
+    def _prev_page(self):
+        """Go to previous page."""
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._update_pagination_controls()
+            self._display_current_page()
+
+    def _next_page(self):
+        """Go to next page."""
+        if self._current_page < self._total_pages - 1:
+            self._current_page += 1
+            self._update_pagination_controls()
+            self._display_current_page()
 
     def _create_analysis_list_item(self, analysis: AnalysisResult, index: int):
         """Create a clickable item for an analysis."""
@@ -642,14 +726,18 @@ class AnalyzePage(ctk.CTkFrame):
                             actual_fail_count += 1
 
         # Determine actual status based on recalculated fail points
-        if actual_fail_count > 0:
-            status_str = "FAIL (Lin)"
-        elif not track.sigma_pass:
-            status_str = "FAIL (Sigma)"
-        elif track.status == AnalysisStatus.PASS:
+        # Use WARNING when one passes and one fails
+        lin_pass = actual_fail_count == 0
+        sigma_pass = track.sigma_pass
+
+        if lin_pass and sigma_pass:
             status_str = "PASS"
+        elif lin_pass and not sigma_pass:
+            status_str = "WARNING (Sigma Fail)"
+        elif not lin_pass and sigma_pass:
+            status_str = "WARNING (Lin Fail)"
         else:
-            status_str = track.status.value
+            status_str = "FAIL"
         title = f"Track {track.track_id} - {status_str}"
 
         self.chart.plot_error_vs_position(
@@ -829,6 +917,7 @@ class AnalyzePage(ctk.CTkFrame):
 
     def _on_filter_change(self, *args):
         """Handle filter change."""
+        self._current_page = 0  # Reset to first page on filter change
         self._load_recent_analyses()
 
     def _show_fetch_error(self, error: str):
@@ -912,13 +1001,21 @@ class AnalyzePage(ctk.CTkFrame):
         self.reanalyze_btn.configure(state="normal")
         self.current_result = result
 
-        # Show the updated result
+        # Show the updated result (updates chart, metrics, etc.)
         self._show_analysis_details(result)
 
-        # Refresh the list
+        # Override status banner to show re-analysis success with status
+        status_str = result.overall_status.value.upper()
+        self.status_text.configure(
+            text=f"✓ Re-analyzed: {status_str}",
+            text_color="#27ae60"
+        )
+        self.status_banner.configure(fg_color="#1e4d2b")
+
+        # Refresh the list to show updated entry
         self._load_recent_analyses()
 
-        logger.info(f"Re-analysis complete: {result.metadata.filename}")
+        logger.info(f"Re-analysis complete: {result.metadata.filename} - {status_str}")
 
     def _on_reanalyze_error(self, error: str):
         """Handle re-analysis error."""
@@ -1191,7 +1288,17 @@ class AnalyzePage(ctk.CTkFrame):
         ax.set_xlabel('Position', fontsize=12)
         ax.set_ylabel('Error (Volts)', fontsize=12)
 
-        status_str = "PASS" if track.linearity_pass and track.sigma_pass else "FAIL"
+        # Use recalculated lin_pass from fail_indices, not stored value
+        lin_pass = len(fail_indices) == 0
+        sigma_pass = track.sigma_pass
+        if lin_pass and sigma_pass:
+            status_str = "PASS"
+        elif lin_pass and not sigma_pass:
+            status_str = "WARNING (Sigma Fail)"
+        elif not lin_pass and sigma_pass:
+            status_str = "WARNING (Lin Fail)"
+        else:
+            status_str = "FAIL"
         ax.set_title(f'Track {track.track_id} - {status_str}', fontsize=14, fontweight='bold')
 
         ax.legend(loc='best', fontsize=9)
@@ -1288,9 +1395,13 @@ class AnalyzePage(ctk.CTkFrame):
         linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
 
         # Determine overall status using corrected linearity pass
+        # WARNING when one passes and one fails
         if track.sigma_pass and linearity_pass:
             status = "PASS"
             color = '#27ae60'
+        elif track.sigma_pass or linearity_pass:
+            status = "WARNING"
+            color = '#f39c12'
         else:
             status = "FAIL"
             color = '#e74c3c'
