@@ -47,7 +47,7 @@ def run_pyinstaller():
     print(f"Using spec file: {spec_file}")
 
     result = subprocess.run(
-        [sys.executable, "-m", "PyInstaller", str(spec_file), "--clean"],
+        [sys.executable, "-m", "PyInstaller", str(spec_file), "--clean", "-y"],
         cwd=str(root_dir),
         check=False
     )
