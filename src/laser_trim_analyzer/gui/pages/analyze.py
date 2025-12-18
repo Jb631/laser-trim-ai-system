@@ -10,17 +10,20 @@ import customtkinter as ctk
 import logging
 from pathlib import Path
 from tkinter import filedialog
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_analyzer.core.processor import Processor
-from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.export import (
     export_single_result, export_batch_results,
     generate_export_filename, generate_batch_export_filename, ExcelExportError
 )
 from datetime import datetime
+
+# Lazy import for ChartWidget - defer matplotlib loading until first use
+if TYPE_CHECKING:
+    from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,10 @@ class AnalyzePage(ctk.CTkFrame):
         self._page_size = 20
         self._current_page = 0
         self._total_pages = 1
+
+        # Lazy chart initialization
+        self._chart_initialized = False
+        self.chart = None
 
         self._create_ui()
 
@@ -274,17 +281,17 @@ class AnalyzePage(ctk.CTkFrame):
         self.details_tabview.add("File Info")
 
         # Chart tab - responsive sizing
-        chart_tab = self.details_tabview.tab("Chart")
-        chart_tab.grid_columnconfigure(0, weight=1)
-        chart_tab.grid_rowconfigure(0, weight=1)
+        self._chart_tab = self.details_tabview.tab("Chart")
+        self._chart_tab.grid_columnconfigure(0, weight=1)
+        self._chart_tab.grid_rowconfigure(0, weight=1)
 
-        # Start with small figure, let dynamic resizing handle actual size
-        self.chart = ChartWidget(
-            chart_tab,
-            style=ChartStyle(figure_size=(6, 4), dpi=100)
+        # Placeholder until chart is needed - ChartWidget created lazily
+        self._chart_placeholder = ctk.CTkLabel(
+            self._chart_tab,
+            text="Select an analysis to view chart",
+            text_color="gray"
         )
-        self.chart.pack(fill="both", expand=True)
-        self.chart.show_placeholder("Select an analysis to view chart")
+        self._chart_placeholder.pack(fill="both", expand=True)
 
         # Metrics tab
         metrics_tab = self.details_tabview.tab("Metrics")
@@ -311,6 +318,30 @@ class AnalyzePage(ctk.CTkFrame):
             font=ctk.CTkFont(size=10)
         )
         self.db_info_label.pack(side="left")
+
+    def _ensure_chart_initialized(self):
+        """Lazily initialize ChartWidget on first use - defers matplotlib loading."""
+        if self._chart_initialized:
+            return
+
+        # Import matplotlib-dependent ChartWidget only when needed
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+
+        # Remove placeholder
+        if self._chart_placeholder:
+            self._chart_placeholder.destroy()
+            self._chart_placeholder = None
+
+        # Create actual chart widget
+        self.chart = ChartWidget(
+            self._chart_tab,
+            style=ChartStyle(figure_size=(6, 4), dpi=100)
+        )
+        self.chart.pack(fill="both", expand=True)
+        self.chart.show_placeholder("Select an analysis to view chart")
+
+        self._chart_initialized = True
+        logger.debug("AnalyzePage ChartWidget initialized (matplotlib loaded)")
 
     # =========================================================================
     # Mousewheel Support
@@ -697,6 +728,9 @@ class AnalyzePage(ctk.CTkFrame):
 
     def _display_track_chart(self, track: TrackData):
         """Display chart for a track."""
+        # Ensure chart is initialized before use
+        self._ensure_chart_initialized()
+
         if not track.position_data or not track.error_data:
             self.chart.show_placeholder("No chart data available\n\n(Position/error data not stored)")
             return
@@ -911,6 +945,9 @@ class AnalyzePage(ctk.CTkFrame):
         if not tracks or len(tracks) < 2:
             self._display_track_chart(tracks[0] if tracks else None)
             return
+
+        # Ensure chart is initialized before use
+        self._ensure_chart_initialized()
 
         # Use ChartWidget's comparison method
         self.chart.plot_track_comparison(tracks)

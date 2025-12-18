@@ -9,10 +9,13 @@ import threading
 import customtkinter as ctk
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 from laser_trim_analyzer.database import get_database
-from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+
+# Lazy import for ChartWidget - defer matplotlib loading until first use
+if TYPE_CHECKING:
+    from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,10 @@ class DashboardPage(ctk.CTkFrame):
         super().__init__(parent)
         self.app = app
         self.stats: Optional[Dict[str, Any]] = None
+
+        # Lazy chart initialization - defer matplotlib loading
+        self._chart_initialized = False
+        self.trend_chart = None
 
         self._create_ui()
 
@@ -138,12 +145,14 @@ class DashboardPage(ctk.CTkFrame):
         )
         chart_label.pack(padx=15, pady=15, anchor="w")
 
-        self.trend_chart = ChartWidget(
+        # Placeholder frame for chart - actual ChartWidget created lazily on first show
+        self._chart_frame = chart_frame
+        self._chart_placeholder = ctk.CTkLabel(
             chart_frame,
-            style=ChartStyle(figure_size=(4, 2.5), dpi=80)
+            text="Loading trend data...",
+            text_color="gray"
         )
-        self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.trend_chart.show_placeholder("Loading trend data...")
+        self._chart_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
         # Quick Actions Card
         actions_frame = ctk.CTkFrame(content)
@@ -247,6 +256,28 @@ class DashboardPage(ctk.CTkFrame):
         card.title_label.configure(text=title)
         card.value_label.configure(text=value, text_color=color)
         card.subtitle_label.configure(text=subtitle)
+
+    def _ensure_chart_initialized(self):
+        """Lazily initialize ChartWidget on first use - defers matplotlib loading."""
+        if self._chart_initialized:
+            return
+
+        # Import matplotlib-dependent ChartWidget only when needed
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+
+        # Remove placeholder
+        self._chart_placeholder.destroy()
+
+        # Create actual chart widget
+        self.trend_chart = ChartWidget(
+            self._chart_frame,
+            style=ChartStyle(figure_size=(4, 2.5), dpi=80)
+        )
+        self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.trend_chart.show_placeholder("Loading trend data...")
+
+        self._chart_initialized = True
+        logger.debug("ChartWidget initialized (matplotlib loaded)")
 
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
@@ -367,6 +398,9 @@ class DashboardPage(ctk.CTkFrame):
 
     def _update_trend_chart(self, stats: Dict[str, Any]):
         """Update trend chart with pass rate data."""
+        # Ensure chart is initialized before use
+        self._ensure_chart_initialized()
+
         trend_data = stats.get("daily_trend", [])
 
         if not trend_data:
