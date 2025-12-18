@@ -23,7 +23,18 @@
       "Bash(git commit:*)",
       "Bash(timeout 5 .venv/Scripts/python.exe:*)",
       "Bash(cat:*)",
-      "Bash(deploy.bat)"
+      "Bash(deploy.bat)",
+      "Bash(tasklist /FI 'IMAGENAME eq python*')",
+      "Bash(timeout 10 .venv/Scripts/python.exe:*)",
+      "Bash(timeout:*)",
+      "Bash(.venvScriptspython.exe scriptsdeploy.py)",
+      "Bash(powershell:*)",
+      "Bash(gh release create:*)",
+      "Bash(gh auth status:*)",
+      "Bash(gh auth login:*)",
+      "Bash(.LaserTrimAnalyzer.exe)",
+      "Bash(gh release:*)",
+      "Bash(.venv/Scripts/pip.exe install:*)"
     ],
     "deny": [],
     "ask": []

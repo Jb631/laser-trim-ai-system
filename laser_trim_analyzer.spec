@@ -7,6 +7,7 @@ Build with: pyinstaller laser_trim_analyzer.spec --clean
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # Get version from pyproject.toml
 import tomllib
@@ -15,10 +16,14 @@ with open("pyproject.toml", "rb") as f:
 
 block_cipher = None
 
+# Collect scipy completely to avoid import issues
+scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
+
 # Collect data files
 datas = [
     ('src/laser_trim_analyzer', 'laser_trim_analyzer'),
 ]
+datas += scipy_datas
 
 # Hidden imports that PyInstaller might miss
 hiddenimports = [
@@ -61,20 +66,26 @@ hiddenimports = [
     'matplotlib.backends.backend_tkagg',
     'scipy',
     'scipy.stats',
+    'scipy.signal',
+    'scipy.stats._distn_infrastructure',
+    'scipy.stats.distributions',
+    'scipy.stats._stats_py',
+    'scipy.signal._peak_finding',
     'sklearn',
     'sklearn.ensemble',
     'sklearn.preprocessing',
     'joblib',
     'yaml',
     'platformdirs',
+    'pandas',
 ]
 
 a = Analysis(
     ['src/laser_trim_analyzer/__main__.py'],
     pathex=['src'],
-    binaries=[],
+    binaries=scipy_binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + scipy_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -83,7 +94,6 @@ a = Analysis(
         'test',
         'tests',
         'pytest',
-        'unittest',
         # Heavy ML libraries NOT used by this app
         'tensorflow',
         'tensorflow_core',
@@ -98,7 +108,6 @@ a = Analysis(
         'safetensors',
         # Data libraries not needed
         'pyarrow',
-        'pandas',
         'h5py',
         # Other unused
         'IPython',
@@ -123,14 +132,14 @@ a = Analysis(
 exclude_patterns = [
     'tests', 'test_', '_test.py', '__pycache__', '.pyc',
     'tensorflow', 'torch', 'transformers', 'huggingface',
-    'pyarrow', 'pandas', 'h5py', 'grpc', 'Pythonwin',
+    'pyarrow', 'h5py', 'grpc', 'Pythonwin',
 ]
 a.datas = [d for d in a.datas if not any(x in d[0] for x in exclude_patterns)]
 
 # Also filter binaries
 a.binaries = [b for b in a.binaries if not any(x in b[0].lower() for x in [
     'tensorflow', 'torch', 'libtorch', 'transformers', 'pyarrow',
-    'pandas', 'h5py', 'grpc', 'zmq', 'crypto'
+    'h5py', 'grpc', 'zmq', 'crypto'
 ])]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
