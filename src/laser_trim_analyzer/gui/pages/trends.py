@@ -16,14 +16,34 @@ import threading
 import customtkinter as ctk
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 import numpy as np
 
 from laser_trim_analyzer.database import get_database
-from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+
+# Lazy import for ChartWidget - defer matplotlib loading until first use
+if TYPE_CHECKING:
+    from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
 logger = logging.getLogger(__name__)
+
+# Module-level flag to track if ChartWidget has been imported
+_chart_module_loaded = False
+_ChartWidget = None
+_ChartStyle = None
+
+
+def _ensure_chart_module():
+    """Lazily load ChartWidget module - defers matplotlib loading."""
+    global _chart_module_loaded, _ChartWidget, _ChartStyle
+    if not _chart_module_loaded:
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+        _ChartWidget = ChartWidget
+        _ChartStyle = ChartStyle
+        _chart_module_loaded = True
+        logger.debug("ChartWidget module loaded (matplotlib initialized)")
+    return _ChartWidget, _ChartStyle
 
 
 class TrendsPage(ctk.CTkFrame):
@@ -45,7 +65,11 @@ class TrendsPage(ctk.CTkFrame):
         self.model_trend_data: Optional[Dict[str, Any]] = None
 
         # Track chart widgets for proper cleanup
-        self._chart_widgets: List[ChartWidget] = []
+        self._chart_widgets: List["ChartWidget"] = []
+
+        # Lazy chart initialization flags
+        self._summary_charts_initialized = False
+        self._detail_charts_initialized = False
 
         self._create_ui()
 
@@ -145,6 +169,7 @@ class TrendsPage(ctk.CTkFrame):
         """Create the summary view (All Models mode)."""
         # Clean up existing charts first (frees matplotlib figures)
         self._cleanup_charts()
+        self._summary_charts_initialized = False
 
         # Clear existing content
         for widget in self.content.winfo_children():
@@ -186,68 +211,69 @@ class TrendsPage(ctk.CTkFrame):
             value_label.pack(anchor="w")
             self.summary_stat_labels[key] = value_label
 
-        # Alerts chart (models requiring attention)
-        alerts_frame = ctk.CTkFrame(self.content)
-        alerts_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        # Alerts chart (models requiring attention) - placeholder until data loads
+        self._alerts_frame = ctk.CTkFrame(self.content)
+        self._alerts_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
         alerts_label = ctk.CTkLabel(
-            alerts_frame,
+            self._alerts_frame,
             text="Models Requiring Attention",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         alerts_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.alerts_chart = ChartWidget(
-            alerts_frame,
-            style=ChartStyle(figure_size=(10, 3), dpi=100)
+        # Placeholder label instead of ChartWidget
+        self._alerts_placeholder = ctk.CTkLabel(
+            self._alerts_frame,
+            text="Loading models requiring attention...",
+            text_color="gray"
         )
-        self._chart_widgets.append(self.alerts_chart)
-        self.alerts_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.alerts_chart.show_placeholder("Loading models requiring attention...")
+        self._alerts_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.alerts_chart = None
 
         # Best/Worst models side by side
-        models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        models_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
-        models_frame.grid_columnconfigure(0, weight=1)
-        models_frame.grid_columnconfigure(1, weight=1)
+        self._models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        self._models_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self._models_frame.grid_columnconfigure(0, weight=1)
+        self._models_frame.grid_columnconfigure(1, weight=1)
 
-        # Best performers
-        best_frame = ctk.CTkFrame(models_frame)
-        best_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
+        # Best performers - placeholder
+        self._best_frame = ctk.CTkFrame(self._models_frame)
+        self._best_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
 
         best_label = ctk.CTkLabel(
-            best_frame,
+            self._best_frame,
             text="Top Performing Models",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         best_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.best_chart = ChartWidget(
-            best_frame,
-            style=ChartStyle(figure_size=(5, 3), dpi=100)
+        self._best_placeholder = ctk.CTkLabel(
+            self._best_frame,
+            text="Loading best models...",
+            text_color="gray"
         )
-        self._chart_widgets.append(self.best_chart)
-        self.best_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.best_chart.show_placeholder("Loading best models...")
+        self._best_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.best_chart = None
 
-        # Worst performers
-        worst_frame = ctk.CTkFrame(models_frame)
-        worst_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
+        # Worst performers - placeholder
+        self._worst_frame = ctk.CTkFrame(self._models_frame)
+        self._worst_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
 
         worst_label = ctk.CTkLabel(
-            worst_frame,
+            self._worst_frame,
             text="Models Needing Improvement",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         worst_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.worst_chart = ChartWidget(
-            worst_frame,
-            style=ChartStyle(figure_size=(5, 3), dpi=100)
+        self._worst_placeholder = ctk.CTkLabel(
+            self._worst_frame,
+            text="Loading models needing improvement...",
+            text_color="gray"
         )
-        self._chart_widgets.append(self.worst_chart)
-        self.worst_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.worst_chart.show_placeholder("Loading models needing improvement...")
+        self._worst_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.worst_chart = None
 
         # ML Recommendations at bottom
         ml_frame = ctk.CTkFrame(self.content)
@@ -265,10 +291,54 @@ class TrendsPage(ctk.CTkFrame):
         self.ml_text.configure(state="disabled")
         self._update_ml_summary(None)
 
+    def _ensure_summary_charts_initialized(self):
+        """Lazily initialize summary view charts - defers matplotlib loading."""
+        if self._summary_charts_initialized:
+            return
+
+        ChartWidget, ChartStyle = _ensure_chart_module()
+
+        # Create alerts chart
+        if self._alerts_placeholder:
+            self._alerts_placeholder.destroy()
+        self.alerts_chart = ChartWidget(
+            self._alerts_frame,
+            style=ChartStyle(figure_size=(10, 3), dpi=100)
+        )
+        self._chart_widgets.append(self.alerts_chart)
+        self.alerts_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.alerts_chart.show_placeholder("Loading models requiring attention...")
+
+        # Create best chart
+        if self._best_placeholder:
+            self._best_placeholder.destroy()
+        self.best_chart = ChartWidget(
+            self._best_frame,
+            style=ChartStyle(figure_size=(5, 3), dpi=100)
+        )
+        self._chart_widgets.append(self.best_chart)
+        self.best_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.best_chart.show_placeholder("Loading best models...")
+
+        # Create worst chart
+        if self._worst_placeholder:
+            self._worst_placeholder.destroy()
+        self.worst_chart = ChartWidget(
+            self._worst_frame,
+            style=ChartStyle(figure_size=(5, 3), dpi=100)
+        )
+        self._chart_widgets.append(self.worst_chart)
+        self.worst_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.worst_chart.show_placeholder("Loading models needing improvement...")
+
+        self._summary_charts_initialized = True
+        logger.debug("Summary charts initialized (matplotlib loaded)")
+
     def _create_detail_view(self):
         """Create the detail view (specific model mode)."""
         # Clean up existing charts first (frees matplotlib figures)
         self._cleanup_charts()
+        self._detail_charts_initialized = False
 
         # Clear existing content
         for widget in self.content.winfo_children():
@@ -311,43 +381,43 @@ class TrendsPage(ctk.CTkFrame):
             value_label.pack(anchor="w")
             self.detail_stat_labels[key] = value_label
 
-        # Main SPC scatter chart
-        chart_frame = ctk.CTkFrame(self.content)
-        chart_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        # Main SPC scatter chart - placeholder
+        self._scatter_frame = ctk.CTkFrame(self.content)
+        self._scatter_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
         chart_label = ctk.CTkLabel(
-            chart_frame,
+            self._scatter_frame,
             text=f"Sigma Gradient Trend ({self.rolling_window}-Day Rolling Average)",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         chart_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.scatter_chart = ChartWidget(
-            chart_frame,
-            style=ChartStyle(figure_size=(10, 4), dpi=100)
+        self._scatter_placeholder = ctk.CTkLabel(
+            self._scatter_frame,
+            text="Loading trend data...",
+            text_color="gray"
         )
-        self._chart_widgets.append(self.scatter_chart)
-        self.scatter_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.scatter_chart.show_placeholder("Loading trend data...")
+        self._scatter_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.scatter_chart = None
 
-        # Distribution chart
-        dist_frame = ctk.CTkFrame(self.content)
-        dist_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        # Distribution chart - placeholder
+        self._dist_frame = ctk.CTkFrame(self.content)
+        self._dist_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
 
         dist_label = ctk.CTkLabel(
-            dist_frame,
+            self._dist_frame,
             text="Sigma Distribution",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         dist_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.dist_chart = ChartWidget(
-            dist_frame,
-            style=ChartStyle(figure_size=(10, 2.5), dpi=100)
+        self._dist_placeholder = ctk.CTkLabel(
+            self._dist_frame,
+            text="Loading distribution...",
+            text_color="gray"
         )
-        self._chart_widgets.append(self.dist_chart)
-        self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.dist_chart.show_placeholder("Loading distribution...")
+        self._dist_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.dist_chart = None
 
         # Bottom row: Alerts and ML side by side
         bottom_frame = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -384,6 +454,38 @@ class TrendsPage(ctk.CTkFrame):
         self.detail_ml_text = ctk.CTkTextbox(ml_frame, height=100)
         self.detail_ml_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.detail_ml_text.configure(state="disabled")
+
+    def _ensure_detail_charts_initialized(self):
+        """Lazily initialize detail view charts - defers matplotlib loading."""
+        if self._detail_charts_initialized:
+            return
+
+        ChartWidget, ChartStyle = _ensure_chart_module()
+
+        # Create scatter chart
+        if self._scatter_placeholder:
+            self._scatter_placeholder.destroy()
+        self.scatter_chart = ChartWidget(
+            self._scatter_frame,
+            style=ChartStyle(figure_size=(10, 4), dpi=100)
+        )
+        self._chart_widgets.append(self.scatter_chart)
+        self.scatter_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.scatter_chart.show_placeholder("Loading trend data...")
+
+        # Create distribution chart
+        if self._dist_placeholder:
+            self._dist_placeholder.destroy()
+        self.dist_chart = ChartWidget(
+            self._dist_frame,
+            style=ChartStyle(figure_size=(10, 2.5), dpi=100)
+        )
+        self._chart_widgets.append(self.dist_chart)
+        self.dist_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.dist_chart.show_placeholder("Loading distribution...")
+
+        self._detail_charts_initialized = True
+        logger.debug("Detail charts initialized (matplotlib loaded)")
 
     def _bind_mousewheel_scroll(self, combobox):
         """Bind mousewheel events to CTkComboBox dropdown."""
@@ -639,6 +741,9 @@ class TrendsPage(ctk.CTkFrame):
         model_names: List[str]
     ):
         """Update summary display with loaded data."""
+        # Ensure charts are initialized before use (lazy matplotlib loading)
+        self._ensure_summary_charts_initialized()
+
         # Update model dropdown
         current_model = self.model_dropdown.get()
         self.model_dropdown.configure(values=model_names)
@@ -738,6 +843,9 @@ class TrendsPage(ctk.CTkFrame):
         model_stats: Optional[Dict[str, Any]] = None
     ):
         """Update detail display with loaded data."""
+        # Ensure charts are initialized before use (lazy matplotlib loading)
+        self._ensure_detail_charts_initialized()
+
         # Update model dropdown
         current_model = self.model_dropdown.get()
         self.model_dropdown.configure(values=model_names)
