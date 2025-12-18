@@ -584,13 +584,16 @@ class TrendsPage(ctk.CTkFrame):
         # Get ML recommendations
         ml_recommendations = self._get_ml_recommendations(trend_data)
 
-        # Update model dropdown
+        # Update model dropdown and get model stats for pass rate
         active_models = db.get_active_models_summary(self.selected_days, 5)
         model_names = ["All Models"] + [m["model"] for m in active_models]
 
+        # Get the model's analysis-level stats (for consistent pass rate with alerts)
+        model_stats = next((m for m in active_models if m["model"] == self.selected_model), None)
+
         # Update UI on main thread
         self.after(0, lambda: self._update_detail_display(
-            trend_data, model_alerts, ml_recommendations, model_names
+            trend_data, model_alerts, ml_recommendations, model_names, model_stats
         ))
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -731,7 +734,8 @@ class TrendsPage(ctk.CTkFrame):
         trend_data: Dict[str, Any],
         model_alerts: Optional[Dict[str, Any]],
         ml_recommendations: Optional[Dict[str, Any]],
-        model_names: List[str]
+        model_names: List[str],
+        model_stats: Optional[Dict[str, Any]] = None
     ):
         """Update detail display with loaded data."""
         # Update model dropdown
@@ -762,9 +766,16 @@ class TrendsPage(ctk.CTkFrame):
         sigma_pass_count = sum(1 for d in data_points if d.get("sigma_pass", False))
         sigma_pass_rate = (sigma_pass_count / total_samples * 100) if total_samples > 0 else 0
 
-        # Overall pass rate (file-level: did entire analysis pass including linearity?)
-        overall_pass_count = sum(1 for d in data_points if d.get("status") == "PASS")
-        overall_pass_rate = (overall_pass_count / total_samples * 100) if total_samples > 0 else 0
+        # Overall pass rate - use model_stats from get_active_models_summary for consistency with alerts
+        # This counts analysis-level pass (both sigma AND linearity must pass for all tracks)
+        if model_stats:
+            overall_pass_rate = model_stats.get("pass_rate", 0)
+            total_analyses = model_stats.get("total", total_samples)
+        else:
+            # Fallback: count from track data (may differ from analysis-level count)
+            overall_pass_count = sum(1 for d in data_points if d.get("status") == "PASS")
+            overall_pass_rate = (overall_pass_count / total_samples * 100) if total_samples > 0 else 0
+            total_analyses = total_samples
 
         avg_sigma = np.mean(sigma_values) if sigma_values else 0
         std_sigma = np.std(sigma_values, ddof=1) if len(sigma_values) > 1 else 0
@@ -801,7 +812,9 @@ class TrendsPage(ctk.CTkFrame):
             status_color = "#e74c3c"
 
         # Update stat labels
-        self.detail_stat_labels["total_samples"].configure(text=f"{total_samples:,}")
+        # Use analysis count from model_stats if available, otherwise track count
+        display_count = total_analyses if model_stats else total_samples
+        self.detail_stat_labels["total_samples"].configure(text=f"{display_count:,}")
         self.detail_stat_labels["sigma_pass_rate"].configure(
             text=f"{sigma_pass_rate:.1f}%",
             text_color="#27ae60" if sigma_pass_rate >= 90 else "#f39c12" if sigma_pass_rate >= 80 else "#e74c3c"
