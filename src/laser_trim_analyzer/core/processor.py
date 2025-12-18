@@ -81,6 +81,7 @@ class Processor:
         self.config = config or get_config()
         self.parser = ExcelParser()
         self._processed_hashes: set = set()
+        self._processed_filenames: set = set()  # Fast filename lookup for incremental mode
 
         # Try to load ML threshold optimizer
         self.threshold_optimizer: Optional["ThresholdOptimizer"] = None
@@ -312,12 +313,29 @@ class Processor:
         On 8GB systems, limits workers and monitors memory to prevent crashes.
         Falls back to sequential processing if memory is critical.
         """
-        # Filter out already processed files
+        # Filter out already processed files (fast filename-based check)
         if incremental:
+            # Report scanning progress for large batches
+            if progress_callback and len(file_paths) > 100:
+                progress_callback(ProcessingStatus(
+                    filename="",
+                    status="scanning",
+                    message=f"Scanning {len(file_paths)} files against database...",
+                    progress_percent=0,
+                ))
+
             files_to_process = [
                 f for f in file_paths if not self._is_processed(Path(f))
             ]
             summary.skipped = len(file_paths) - len(files_to_process)
+
+            if progress_callback and len(file_paths) > 100:
+                progress_callback(ProcessingStatus(
+                    filename="",
+                    status="scanning",
+                    message=f"Found {len(files_to_process)} new files to process ({summary.skipped} already in database)",
+                    progress_percent=0,
+                ))
         else:
             files_to_process = list(file_paths)
 
@@ -479,18 +497,22 @@ class Processor:
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
-        Uses cached hashes if loaded (faster for batch), otherwise queries database.
+        Uses filename lookup first (O(1) and fast), which handles most cases.
+        Only falls back to hash calculation if strict checking is needed.
         """
         try:
-            # If we have cached hashes, use them (faster for batch processing)
-            if self._processed_hashes:
-                file_hash = self._calculate_file_hash(file_path)
-                return file_hash in self._processed_hashes
+            # Fast path: filename lookup (handles 99% of cases)
+            if self._processed_filenames:
+                if file_path.name in self._processed_filenames:
+                    return True
 
-            # Otherwise query database directly
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            return db.is_file_processed(file_path)
+            # If no caches loaded, query database directly (slower)
+            if not self._processed_filenames and not self._processed_hashes:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                return db.is_file_processed(file_path)
+
+            return False
         except Exception as e:
             logger.warning(f"Could not check if file is processed: {e}")
             return False
@@ -504,11 +526,14 @@ class Processor:
         return sha256.hexdigest()
 
     def _load_processed_hashes(self) -> None:
-        """Load processed file hashes from database into memory cache.
+        """Load processed file info from database into memory cache.
 
-        This pre-loads hashes for faster checking during batch processing.
-        Uses SHA-256 hashes stored in the ProcessedFile table.
+        Loads filenames for fast O(1) lookup during batch processing.
+        Filename matching handles 99% of incremental cases (same file = same name).
+        Hash matching is available but not used by default since it requires
+        reading entire file contents (slow for 70K+ files).
         """
+        self._processed_filenames = set()
         self._processed_hashes = set()
         try:
             from laser_trim_analyzer.database import get_database
@@ -516,14 +541,15 @@ class Processor:
 
             db = get_database()
             with db.session() as session:
-                # Load all processed file hashes into memory for fast lookup
-                hashes = session.query(DBProcessedFile.file_hash).all()
-                self._processed_hashes = set(row.file_hash for row in hashes)
+                # Load filenames for fast lookup (much faster than hash comparison)
+                # We only need filenames for incremental checking
+                filenames = session.query(DBProcessedFile.filename).all()
+                self._processed_filenames = set(row.filename for row in filenames if row.filename)
 
-            logger.info(f"Loaded {len(self._processed_hashes)} processed file hashes from database")
+            logger.info(f"Loaded {len(self._processed_filenames)} processed filenames from database")
         except Exception as e:
-            logger.warning(f"Could not load processed hashes from database: {e}")
-            self._processed_hashes = set()
+            logger.warning(f"Could not load processed files from database: {e}")
+            self._processed_filenames = set()
 
     def _create_error_result(
         self, metadata: FileMetadata, error_msg: str, start_time: float

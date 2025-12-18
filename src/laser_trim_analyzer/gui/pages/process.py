@@ -39,7 +39,15 @@ class ProcessPage(ctk.CTkFrame):
         self.selected_files: List[Path] = []
         self.processor: Optional[Processor] = None
         self.is_processing = False
+        # Keep lightweight result summaries instead of full results to prevent memory issues
+        # Full results are saved to database immediately, not kept in memory
         self.results: List[AnalysisResult] = []
+        self._result_count = 0
+        self._pass_count = 0
+        self._warning_count = 0
+        self._fail_count = 0
+        self._error_count = 0
+        self._last_ui_update = 0  # Throttle UI updates
 
         self._create_ui()
 
@@ -275,7 +283,14 @@ class ProcessPage(ctk.CTkFrame):
             return
 
         self.is_processing = True
+        # Reset counters - don't accumulate full results in memory for large batches
         self.results = []
+        self._result_count = 0
+        self._pass_count = 0
+        self._warning_count = 0
+        self._fail_count = 0
+        self._error_count = 0
+        self._last_ui_update = 0
 
         # Update UI state
         self.process_btn.configure(state="disabled")
@@ -297,27 +312,52 @@ class ProcessPage(ctk.CTkFrame):
 
     def _process_files(self):
         """Process files in background thread."""
+        import time
+        import gc
+
         try:
             # Initialize processor
             self.processor = Processor()
 
-            # Process callback
+            # Determine if this is a large batch (affects memory strategy)
+            is_large_batch = len(self.selected_files) > 100
+
+            # Process callback with throttling for large batches
             def on_progress(status: ProcessingStatus):
+                # Throttle UI updates for large batches (max 10 updates/sec)
+                current_time = time.time()
+                if is_large_batch and (current_time - self._last_ui_update) < 0.1:
+                    # Skip UI update but still count results
+                    if status.status == "completed" and status.result:
+                        return  # Will be counted in main loop
+                    return
+
+                self._last_ui_update = current_time
                 # Schedule UI update on main thread
                 self.after(0, lambda s=status: self._on_progress_update(s))
 
             # Process batch
             incremental = self.incremental_var.get()
+            gc_interval = 100  # Force GC every 100 files for large batches
 
-            for result in self.processor.process_batch(
+            for i, result in enumerate(self.processor.process_batch(
                 self.selected_files,
                 progress_callback=on_progress,
                 incremental=incremental
-            ):
+            )):
                 if not self.is_processing:
                     break  # User cancelled
 
-                self.results.append(result)
+                # Update counters
+                self._result_count += 1
+                if result.overall_status == AnalysisStatus.PASS:
+                    self._pass_count += 1
+                elif result.overall_status == AnalysisStatus.WARNING:
+                    self._warning_count += 1
+                elif result.overall_status == AnalysisStatus.FAIL:
+                    self._fail_count += 1
+                else:
+                    self._error_count += 1
 
                 # Save to database if enabled
                 if self.save_db_var.get():
@@ -326,6 +366,20 @@ class ProcessPage(ctk.CTkFrame):
                         db.save_analysis(result)
                     except Exception as e:
                         logger.error(f"Failed to save to database: {e}")
+
+                # For small batches, keep results for export
+                # For large batches, only keep last 50 to prevent memory issues
+                if is_large_batch:
+                    if len(self.results) >= 50:
+                        self.results.pop(0)  # Remove oldest
+                    self.results.append(result)
+
+                    # Periodic garbage collection for large batches
+                    if (i + 1) % gc_interval == 0:
+                        gc.collect()
+                        logger.debug(f"GC after {i + 1} files processed")
+                else:
+                    self.results.append(result)
 
             self.after(0, self._on_processing_complete)
 
@@ -340,6 +394,12 @@ class ProcessPage(ctk.CTkFrame):
 
         # Update progress bar
         self.progress_bar.set(status.progress_percent / 100)
+
+        # Handle scanning status (incremental mode file checking)
+        if status.status == "scanning":
+            self.progress_label.configure(text=status.message)
+            self._append_result(f"[INFO] {status.message}\n")
+            return
 
         # Update label
         self.progress_label.configure(
@@ -379,13 +439,19 @@ class ProcessPage(ctk.CTkFrame):
         self.progress_bar.set(1)
         self.progress_label.configure(text="Processing complete!")
 
-        # Calculate summary
-        total = len(self.results)
-        passed = sum(1 for r in self.results if r.overall_status == AnalysisStatus.PASS)
-        warnings = sum(1 for r in self.results if r.overall_status == AnalysisStatus.WARNING)
-        failed = sum(1 for r in self.results if r.overall_status == AnalysisStatus.FAIL)
-        errors = sum(1 for r in self.results if r.overall_status == AnalysisStatus.ERROR)
+        # Use counters for summary (self.results may be truncated for large batches)
+        total = self._result_count
+        passed = self._pass_count
+        warnings = self._warning_count
+        failed = self._fail_count
+        errors = self._error_count
         pass_rate = (passed / total * 100) if total > 0 else 0
+
+        # Note about large batch export limitations
+        is_large_batch = len(self.selected_files) > 100
+        export_note = ""
+        if is_large_batch and self.results:
+            export_note = f"\n  Note: Export contains last {len(self.results)} files only (use Analyze page for full data)\n"
 
         # Append summary
         self._append_result(
@@ -396,7 +462,7 @@ class ProcessPage(ctk.CTkFrame):
             f"  Warnings: {warnings} (partial pass)\n"
             f"  Failed: {failed}\n"
             f"  Errors: {errors}\n"
-            f"  Pass rate: {pass_rate:.1f}%\n"
+            f"  Pass rate: {pass_rate:.1f}%{export_note}"
             f"Completed: {datetime.now().strftime('%H:%M:%S')}\n"
         )
 
