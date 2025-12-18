@@ -102,10 +102,10 @@ class ChartWidget(ctk.CTkFrame):
 
     def _on_resize(self, event) -> None:
         """Handle widget resize - update figure size to match."""
-        # Debounce resize events to avoid excessive redraws
+        # Debounce resize events to avoid excessive redraws (300ms to reduce stutter)
         if self._resize_job:
             self.after_cancel(self._resize_job)
-        self._resize_job = self.after(100, self._do_resize)
+        self._resize_job = self.after(300, self._do_resize)
 
     def _do_resize(self) -> None:
         """Actually perform the resize after debounce."""
@@ -388,6 +388,69 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_xlabel(xlabel, fontsize=self.style.font_size)
         ax.set_ylabel('Count', fontsize=self.style.font_size)
         ax.set_title(f"{title}\n(Mean: {mean:.4f}, Std: {std:.4f})",
+                     fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='y')
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_sample_scatter(
+        self,
+        dates: List[str],
+        values: List[float],
+        pass_flags: Optional[List[bool]] = None,
+        spec_limit: Optional[float] = None,
+        title: str = "Sample Values",
+        ylabel: str = "Value",
+    ) -> None:
+        """
+        Plot simple scatter for low sample counts.
+        Shows individual samples with pass/fail coloring and spec limit.
+
+        Args:
+            dates: Date labels for each sample
+            values: Data values
+            pass_flags: Pass/fail status for each sample (optional)
+            spec_limit: Specification limit line
+            title: Chart title
+            ylabel: Y-axis label
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        x = list(range(len(values)))
+
+        # Color points by pass/fail if provided
+        if pass_flags:
+            colors = [COLORS['pass'] if p else COLORS['fail'] for p in pass_flags]
+            for i, (xi, yi, c) in enumerate(zip(x, values, colors)):
+                ax.scatter([xi], [yi], c=c, s=80, zorder=5, edgecolors='white', linewidth=1)
+        else:
+            ax.scatter(x, values, c=COLORS['info'], s=80, zorder=5, edgecolors='white', linewidth=1)
+
+        # Connect points with line
+        ax.plot(x, values, color=COLORS['info'], alpha=0.3, linewidth=1, zorder=1)
+
+        # Spec limit line
+        if spec_limit is not None:
+            ax.axhline(y=spec_limit, color=COLORS['spec_limit'],
+                       linestyle='--', linewidth=2, label=f'Spec: {spec_limit:.4f}')
+            ax.legend(loc='upper right', fontsize=9)
+
+        # X-axis labels
+        ax.set_xticks(x)
+        ax.set_xticklabels(dates, rotation=45, ha='right', fontsize=8)
+
+        # Stats annotation
+        mean_val = np.mean(values)
+        ax.axhline(y=mean_val, color=COLORS['warning'], linestyle='-',
+                   alpha=0.5, linewidth=1)
+
+        # Styling
+        ax.set_xlabel('Sample Date', fontsize=self.style.font_size)
+        ax.set_ylabel(ylabel, fontsize=self.style.font_size)
+        ax.set_title(f"{title}\n({len(values)} samples, Mean: {mean_val:.4f})",
                      fontsize=self.style.title_size)
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='y')
 
