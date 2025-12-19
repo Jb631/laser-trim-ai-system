@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any, List, TYPE_CHECKING
 import numpy as np
 
 from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
 
 # Lazy import for ChartWidget - defer matplotlib loading until first use
 if TYPE_CHECKING:
@@ -61,6 +62,7 @@ class TrendsPage(ctk.CTkFrame):
         self.selected_model: str = "All Models"
         self.selected_days: int = 90
         self.rolling_window: int = 30
+        self.chart_timeline_days: int = 0  # 0 = all data
         self.active_models_data: List[Dict[str, Any]] = []
         self.model_trend_data: Optional[Dict[str, Any]] = None
 
@@ -91,20 +93,19 @@ class TrendsPage(ctk.CTkFrame):
         controls = ctk.CTkFrame(self)
         controls.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
 
-        # Model selector
+        # Model selector - use ScrollableComboBox for many models
         model_label = ctk.CTkLabel(controls, text="Model:")
         model_label.pack(side="left", padx=(15, 5), pady=15)
 
-        self.model_dropdown = ctk.CTkComboBox(
+        self.model_dropdown = ScrollableComboBox(
             controls,
             values=["All Models"],
             command=self._on_model_change,
             width=150,
-            state="normal"
+            dropdown_height=300,  # Scrollable dropdown
         )
         self.model_dropdown.set("All Models")
         self.model_dropdown.pack(side="left", padx=5, pady=15)
-        self._bind_mousewheel_scroll(self.model_dropdown)
 
         # Date range for active models consideration
         date_label = ctk.CTkLabel(controls, text="Activity Period:")
@@ -197,6 +198,8 @@ class TrendsPage(ctk.CTkFrame):
             ("active_models", "Active Models"),
             ("total_samples", "Total Samples"),
             ("avg_pass_rate", "Avg Pass Rate"),
+            ("avg_sigma_rate", "Avg Sigma Pass"),
+            ("avg_linearity_rate", "Avg Lin Pass"),
             ("models_at_risk", "Models at Risk"),
             ("best_model", "Best Model"),
             ("worst_model", "Worst Model"),
@@ -340,6 +343,9 @@ class TrendsPage(ctk.CTkFrame):
         self._cleanup_charts()
         self._detail_charts_initialized = False
 
+        # Reset timeline filter to show all data when switching models
+        self.chart_timeline_days = 0
+
         # Clear existing content
         for widget in self.content.winfo_children():
             widget.destroy()
@@ -365,6 +371,7 @@ class TrendsPage(ctk.CTkFrame):
         stat_names = [
             ("total_samples", "Total Samples"),
             ("sigma_pass_rate", "Sigma Pass"),
+            ("linearity_pass_rate", "Linearity Pass"),
             ("overall_pass_rate", "Overall Pass"),
             ("avg_sigma", "Avg Sigma"),
             ("threshold", "Threshold"),
@@ -385,12 +392,32 @@ class TrendsPage(ctk.CTkFrame):
         self._scatter_frame = ctk.CTkFrame(self.content)
         self._scatter_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
+        # Header row with title and timeline filter
+        scatter_header = ctk.CTkFrame(self._scatter_frame, fg_color="transparent")
+        scatter_header.pack(fill="x", padx=15, pady=(15, 5))
+
         chart_label = ctk.CTkLabel(
-            self._scatter_frame,
+            scatter_header,
             text=f"Sigma Gradient Trend ({self.rolling_window}-Day Rolling Average)",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+        chart_label.pack(side="left", anchor="w")
+
+        # Timeline filter for zooming into specific date ranges
+        timeline_frame = ctk.CTkFrame(scatter_header, fg_color="transparent")
+        timeline_frame.pack(side="right", anchor="e")
+
+        timeline_label = ctk.CTkLabel(timeline_frame, text="Chart Range:", font=ctk.CTkFont(size=11))
+        timeline_label.pack(side="left", padx=(0, 5))
+
+        self.timeline_dropdown = ctk.CTkOptionMenu(
+            timeline_frame,
+            values=["All Data", "Recent 7 Days", "Recent 14 Days", "Recent 30 Days", "Recent 60 Days"],
+            command=self._on_timeline_change,
+            width=130,
+        )
+        self.timeline_dropdown.set("All Data")
+        self.timeline_dropdown.pack(side="left")
 
         self._scatter_placeholder = ctk.CTkLabel(
             self._scatter_frame,
@@ -617,6 +644,79 @@ class TrendsPage(ctk.CTkFrame):
         logger.debug(f"Rolling window changed to: {rolling} ({self.rolling_window} days)")
         self._refresh_data()
 
+    def _on_timeline_change(self, timeline: str):
+        """Handle chart timeline filter change (zooms into the scatter chart)."""
+        timeline_map = {
+            "All Data": 0,
+            "Recent 7 Days": 7,
+            "Recent 14 Days": 14,
+            "Recent 30 Days": 30,
+            "Recent 60 Days": 60,
+        }
+        self.chart_timeline_days = timeline_map.get(timeline, 0)
+        logger.debug(f"Chart timeline changed to: {timeline} ({self.chart_timeline_days} days)")
+        # Re-render charts with filtered data (no need to reload from DB)
+        if self.model_trend_data:
+            self._update_scatter_chart_with_filter()
+
+    def _update_scatter_chart_with_filter(self):
+        """Update the scatter chart with current timeline filter applied."""
+        if not self.model_trend_data or not self.model_trend_data.get("data_points"):
+            return
+
+        if not self.scatter_chart:
+            return
+
+        data_points = self.model_trend_data["data_points"]
+        threshold = self.model_trend_data.get("threshold")
+
+        # Apply timeline filter - use RELATIVE to data, not absolute calendar dates
+        # This way "Last 7 Days" means "most recent 7 days of data that exists"
+        if self.chart_timeline_days > 0 and data_points:
+            # Find the most recent date in the data
+            def get_date(d):
+                return d["date"] if isinstance(d["date"], datetime) else datetime.strptime(str(d["date"])[:10], "%Y-%m-%d")
+
+            most_recent = max(get_date(d) for d in data_points)
+            cutoff_date = most_recent - timedelta(days=self.chart_timeline_days)
+            filtered_points = [d for d in data_points if get_date(d) >= cutoff_date]
+        else:
+            filtered_points = data_points
+
+        if not filtered_points:
+            self.scatter_chart.show_placeholder(f"No data in selected range (last {self.chart_timeline_days} days)")
+            return
+
+        # Extract values for plotting - include year in date format
+        dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in filtered_points]
+        sigma_values = [d["sigma_gradient"] for d in filtered_points if d["sigma_gradient"] is not None]
+        pass_flags = [d.get("sigma_pass", False) for d in filtered_points]
+        anomaly_flags = [d.get("is_anomaly", False) for d in filtered_points]
+
+        # Calculate rolling average for filtered data
+        rolling_vals = None
+        window = min(self.rolling_window, len(sigma_values))
+        if window > 1 and sigma_values:
+            rolling_vals = []
+            for i in range(len(sigma_values)):
+                start = max(0, i - window + 1)
+                window_vals = sigma_values[start:i+1]
+                rolling_vals.append(np.mean(window_vals))
+
+        # Determine title suffix based on filter
+        filter_suffix = f" (Last {self.chart_timeline_days} Days)" if self.chart_timeline_days > 0 else ""
+
+        self.scatter_chart.plot_sigma_scatter(
+            dates=dates,
+            sigma_values=sigma_values,
+            pass_flags=pass_flags,
+            threshold=threshold,
+            rolling_avg=rolling_vals,
+            title=f"Sigma Gradient Trend - {self.selected_model}{filter_suffix}",
+            ylabel="Sigma Gradient",
+            anomaly_flags=anomaly_flags,
+        )
+
     def _refresh_data(self):
         """Refresh data from database."""
         self.status_label.configure(text="Loading...")
@@ -766,6 +866,8 @@ class TrendsPage(ctk.CTkFrame):
         total_models = len(active_models)
         total_samples = sum(m["total"] for m in active_models)
         avg_pass_rate = sum(m["pass_rate"] for m in active_models) / total_models if total_models > 0 else 0
+        avg_sigma_rate = sum(m.get("sigma_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
+        avg_linearity_rate = sum(m.get("linearity_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
         models_at_risk = len(alert_models)
 
         # Best and worst models
@@ -781,6 +883,14 @@ class TrendsPage(ctk.CTkFrame):
         self.summary_stat_labels["avg_pass_rate"].configure(
             text=f"{avg_pass_rate:.1f}%",
             text_color="#27ae60" if avg_pass_rate >= 90 else "#f39c12" if avg_pass_rate >= 80 else "#e74c3c"
+        )
+        self.summary_stat_labels["avg_sigma_rate"].configure(
+            text=f"{avg_sigma_rate:.1f}%",
+            text_color="#27ae60" if avg_sigma_rate >= 90 else "#f39c12" if avg_sigma_rate >= 80 else "#e74c3c"
+        )
+        self.summary_stat_labels["avg_linearity_rate"].configure(
+            text=f"{avg_linearity_rate:.1f}%",
+            text_color="#27ae60" if avg_linearity_rate >= 90 else "#f39c12" if avg_linearity_rate >= 80 else "#e74c3c"
         )
         self.summary_stat_labels["models_at_risk"].configure(
             text=str(models_at_risk),
@@ -867,22 +977,30 @@ class TrendsPage(ctk.CTkFrame):
         threshold = trend_data.get("threshold")
         total_samples = len(data_points)
 
-        # Calculate stats
-        sigma_values = [d["sigma_gradient"] for d in data_points if d["sigma_gradient"] is not None]
+        # Count and filter anomalies from statistics calculations
+        # Anomalies (trim failures with linear slope) would skew averages
+        anomaly_count = sum(1 for d in data_points if d.get("is_anomaly", False))
+        normal_points = [d for d in data_points if not d.get("is_anomaly", False)]
+        normal_sample_count = len(normal_points)
 
-        # Sigma pass rate (track-level: did sigma gradient pass?)
-        sigma_pass_count = sum(1 for d in data_points if d.get("sigma_pass", False))
-        sigma_pass_rate = (sigma_pass_count / total_samples * 100) if total_samples > 0 else 0
+        # Calculate stats from NORMAL samples only (excludes anomalies)
+        sigma_values = [d["sigma_gradient"] for d in normal_points if d["sigma_gradient"] is not None]
+
+        # Sigma pass rate (track-level: did sigma gradient pass?) - from normal samples
+        sigma_pass_count = sum(1 for d in normal_points if d.get("sigma_pass", False))
+        sigma_pass_rate = (sigma_pass_count / normal_sample_count * 100) if normal_sample_count > 0 else 0
 
         # Overall pass rate - use model_stats from get_active_models_summary for consistency with alerts
         # This counts analysis-level pass (both sigma AND linearity must pass for all tracks)
         if model_stats:
             overall_pass_rate = model_stats.get("pass_rate", 0)
+            linearity_pass_rate = model_stats.get("linearity_pass_rate", 0)
             total_analyses = model_stats.get("total", total_samples)
         else:
             # Fallback: count from track data (may differ from analysis-level count)
             overall_pass_count = sum(1 for d in data_points if d.get("status") == "PASS")
             overall_pass_rate = (overall_pass_count / total_samples * 100) if total_samples > 0 else 0
+            linearity_pass_rate = 0  # Can't calculate without model_stats
             total_analyses = total_samples
 
         avg_sigma = np.mean(sigma_values) if sigma_values else 0
@@ -927,6 +1045,10 @@ class TrendsPage(ctk.CTkFrame):
             text=f"{sigma_pass_rate:.1f}%",
             text_color="#27ae60" if sigma_pass_rate >= 90 else "#f39c12" if sigma_pass_rate >= 80 else "#e74c3c"
         )
+        self.detail_stat_labels["linearity_pass_rate"].configure(
+            text=f"{linearity_pass_rate:.1f}%",
+            text_color="#27ae60" if linearity_pass_rate >= 90 else "#f39c12" if linearity_pass_rate >= 80 else "#e74c3c"
+        )
         self.detail_stat_labels["overall_pass_rate"].configure(
             text=f"{overall_pass_rate:.1f}%",
             text_color="#27ae60" if overall_pass_rate >= 90 else "#f39c12" if overall_pass_rate >= 80 else "#e74c3c"
@@ -938,32 +1060,8 @@ class TrendsPage(ctk.CTkFrame):
         self.detail_stat_labels["trend"].configure(text=trend, text_color=trend_color)
         self.detail_stat_labels["status"].configure(text=status, text_color=status_color)
 
-        # Update scatter chart
-        dates = [d["date"].strftime("%m/%d") if hasattr(d["date"], 'strftime') else str(d["date"])[:5] for d in data_points]
-        pass_flags = [d.get("sigma_pass", False) for d in data_points]
-
-        # Rolling average values
-        rolling_vals = None
-        if rolling_averages:
-            # Calculate sigma rolling average (not pass rate)
-            # Use a simple moving average of sigma values
-            window = min(self.rolling_window, len(sigma_values))
-            if window > 1:
-                rolling_vals = []
-                for i in range(len(sigma_values)):
-                    start = max(0, i - window + 1)
-                    window_vals = sigma_values[start:i+1]
-                    rolling_vals.append(np.mean(window_vals))
-
-        self.scatter_chart.plot_sigma_scatter(
-            dates=dates,
-            sigma_values=sigma_values,
-            pass_flags=pass_flags,
-            threshold=threshold,
-            rolling_avg=rolling_vals,
-            title=f"Sigma Gradient Trend - {self.selected_model}",
-            ylabel="Sigma Gradient"
-        )
+        # Update scatter chart using the filter method (applies timeline filter)
+        self._update_scatter_chart_with_filter()
 
         # Update distribution - only show histogram for 20+ samples
         # For small sample sizes, the trend chart above shows everything needed

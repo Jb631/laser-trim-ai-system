@@ -105,13 +105,32 @@ class DatabaseManager:
         self._init_database()
 
     def _init_database(self) -> None:
-        """Create all tables if they don't exist."""
+        """Create all tables if they don't exist and run migrations."""
         try:
             Base.metadata.create_all(self._engine, checkfirst=True)
+            self._run_migrations()
             logger.info("Database initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise DatabaseError(f"Database initialization failed: {e}")
+
+    def _run_migrations(self) -> None:
+        """Run database migrations for schema updates."""
+        with self.session() as session:
+            # Migration: Add is_anomaly and anomaly_reason columns to track_results
+            try:
+                # Check if columns exist by attempting a query
+                session.execute(text("SELECT is_anomaly FROM track_results LIMIT 1"))
+            except OperationalError:
+                # Columns don't exist, add them
+                logger.info("Running migration: Adding is_anomaly and anomaly_reason columns")
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN is_anomaly BOOLEAN DEFAULT 0"))
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN anomaly_reason TEXT"))
+                    session.commit()
+                    logger.info("Migration completed: Added anomaly detection columns")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -624,6 +643,25 @@ class DatabaseManager:
 
             pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
 
+            # Get track-level sigma and linearity pass rates
+            track_stats = (
+                session.query(
+                    func.count(DBTrackResult.id).label('total_tracks'),
+                    func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
+                    func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
+                )
+                .join(DBAnalysisResult)
+                .filter(DBAnalysisResult.timestamp >= cutoff_date)
+                .first()
+            )
+
+            total_tracks = track_stats.total_tracks or 0
+            sigma_passed = track_stats.sigma_passed or 0
+            linearity_passed = track_stats.linearity_passed or 0
+
+            sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
+            linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
+
             # Total files (all time)
             total_files = (
                 session.query(func.count(DBAnalysisResult.id))
@@ -685,6 +723,9 @@ class DatabaseManager:
                 "passed": passed,
                 "failed": failed,
                 "pass_rate": pass_rate,
+                "sigma_pass_rate": sigma_pass_rate,
+                "linearity_pass_rate": linearity_pass_rate,
+                "total_tracks": total_tracks,
                 "unresolved_alerts": unresolved_alerts,
                 "high_risk_count": high_risk,
                 "period_days": days_back,
@@ -743,29 +784,39 @@ class DatabaseManager:
             List of model statistics dictionaries
         """
         with self.session() as session:
-            # Single query with conditional aggregation - no N+1 problem
+            # Single query with conditional aggregation including track-level stats
             model_stats = (
                 session.query(
                     DBAnalysisResult.model,
-                    func.count(DBAnalysisResult.id).label('count'),
+                    func.count(func.distinct(DBAnalysisResult.id)).label('count'),
                     func.sum(
                         case(
                             (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
                             else_=0
                         )
-                    ).label('passed')
+                    ).label('passed'),
+                    func.count(DBTrackResult.id).label('total_tracks'),
+                    func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
+                    func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
                 )
+                .outerjoin(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
                 .filter(DBAnalysisResult.model.isnot(None))
                 .group_by(DBAnalysisResult.model)
-                .order_by(func.count(DBAnalysisResult.id).desc())
+                .order_by(func.count(func.distinct(DBAnalysisResult.id)).desc())
                 .limit(limit)
                 .all()
             )
 
             result = []
-            for model, count, passed in model_stats:
+            for model, count, passed, total_tracks, sigma_passed, linearity_passed in model_stats:
                 passed = passed or 0
+                total_tracks = total_tracks or 0
+                sigma_passed = sigma_passed or 0
+                linearity_passed = linearity_passed or 0
+
                 pass_rate = (passed / count * 100) if count > 0 else 0.0
+                sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
+                linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
 
                 result.append({
                     "model": model,
@@ -773,6 +824,8 @@ class DatabaseManager:
                     "passed": passed,
                     "failed": count - passed,
                     "pass_rate": pass_rate,
+                    "sigma_pass_rate": sigma_pass_rate,
+                    "linearity_pass_rate": linearity_pass_rate,
                 })
 
             return result
@@ -922,6 +975,8 @@ class DatabaseManager:
             linearity_fail_points=track.linearity_fail_points,
             failure_probability=track.failure_probability,
             risk_category=risk_category,
+            is_anomaly=track.is_anomaly,  # Anomaly detection flag
+            anomaly_reason=track.anomaly_reason,  # Reason for anomaly flag
             position_data=track.position_data,
             error_data=track.error_data,
             upper_limits=track.upper_limits,  # Store position-dependent spec limits
@@ -1034,6 +1089,8 @@ class DatabaseManager:
                 trimmed_resistance=db_track.trimmed_resistance,
                 failure_probability=db_track.failure_probability,
                 risk_category=risk_category,
+                is_anomaly=db_track.is_anomaly or False,  # Retrieve anomaly flag
+                anomaly_reason=db_track.anomaly_reason,  # Retrieve anomaly reason
                 position_data=db_track.position_data,
                 error_data=db_track.error_data,
                 upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
@@ -1179,6 +1236,9 @@ class DatabaseManager:
                     func.max(DBAnalysisResult.file_date).label('last_date'),
                     func.avg(DBTrackResult.sigma_gradient).label('avg_sigma'),
                     func.avg(DBTrackResult.sigma_threshold).label('avg_threshold'),
+                    func.count(DBTrackResult.id).label('total_tracks'),
+                    func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
+                    func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
                 )
                 .outerjoin(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
                 .filter(
@@ -1194,12 +1254,20 @@ class DatabaseManager:
             )
 
             results = []
-            for model, total, passed, first_date, last_date, avg_sigma, avg_threshold in model_data:
+            for row in model_data:
+                model = row.model
+                total = row.total
+                passed = row.passed or 0
+                total_tracks = row.total_tracks or 0
+                sigma_passed = row.sigma_passed or 0
+                linearity_passed = row.linearity_passed or 0
+
                 if not model or total == 0:
                     continue
 
-                passed = passed or 0
                 pass_rate = (passed / total * 100)
+                sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
+                linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
 
                 results.append({
                     "model": model,
@@ -1207,10 +1275,12 @@ class DatabaseManager:
                     "passed": passed,
                     "failed": total - passed,
                     "pass_rate": pass_rate,
-                    "avg_sigma": avg_sigma or 0,
-                    "avg_threshold": avg_threshold or 0,
-                    "first_date": first_date,
-                    "last_date": last_date,
+                    "sigma_pass_rate": sigma_pass_rate,
+                    "linearity_pass_rate": linearity_pass_rate,
+                    "avg_sigma": row.avg_sigma or 0,
+                    "avg_threshold": row.avg_threshold or 0,
+                    "first_date": row.first_date,
+                    "last_date": row.last_date,
                 })
 
             # Sort by sample count descending
@@ -1388,7 +1458,7 @@ class DatabaseManager:
         with self.session() as session:
             cutoff_date = datetime.now() - timedelta(days=days_back)
 
-            # Get all track results for this model
+            # Get all track results for this model (including anomaly flag)
             results = (
                 session.query(
                     DBAnalysisResult.file_date,
@@ -1397,6 +1467,7 @@ class DatabaseManager:
                     DBTrackResult.sigma_gradient,
                     DBTrackResult.sigma_threshold,
                     DBTrackResult.sigma_pass,
+                    DBTrackResult.is_anomaly,
                 )
                 .join(DBTrackResult)
                 .filter(
@@ -1421,7 +1492,7 @@ class DatabaseManager:
 
             # Extract data points
             data_points = []
-            for file_date, timestamp, status, sigma_gradient, sigma_threshold, sigma_pass in results:
+            for file_date, timestamp, status, sigma_gradient, sigma_threshold, sigma_pass, is_anomaly in results:
                 date = file_date or timestamp
                 if date and sigma_gradient is not None:
                     data_points.append({
@@ -1430,6 +1501,7 @@ class DatabaseManager:
                         "sigma_threshold": sigma_threshold,
                         "sigma_pass": sigma_pass,
                         "status": status.value if status else "UNKNOWN",
+                        "is_anomaly": is_anomaly or False,
                     })
 
             # Calculate threshold (use mode of thresholds)

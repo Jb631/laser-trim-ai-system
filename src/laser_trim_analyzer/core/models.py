@@ -114,6 +114,10 @@ class TrackData(BaseAnalysisModel):
     failure_probability: Optional[float] = Field(None, ge=0, le=1, description="Failure probability")
     risk_category: RiskCategory = Field(default=RiskCategory.UNKNOWN, description="Risk category")
 
+    # Anomaly detection (trim failures with linear slope pattern)
+    is_anomaly: bool = Field(default=False, description="Flagged as anomalous (likely trim failure)")
+    anomaly_reason: Optional[str] = Field(None, description="Reason for anomaly flag")
+
     # Raw data for plotting (optional - can be large)
     position_data: Optional[List[float]] = Field(None, description="Position values")
     error_data: Optional[List[float]] = Field(None, description="Error values")
@@ -281,6 +285,7 @@ class BatchSummary(BaseAnalysisModel):
     warnings: int = 0  # Pass linearity but fail sigma (or vice versa)
     skipped: int = 0
     errors: int = 0
+    anomalies: int = 0  # Trim failures with linear slope pattern
 
     # Timing
     start_time: Optional[datetime] = None

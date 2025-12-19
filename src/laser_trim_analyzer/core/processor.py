@@ -494,6 +494,10 @@ class Processor:
         if any(t.risk_category.value == "High" for t in result.tracks):
             summary.high_risk_count += 1
 
+        # Count anomalies (trim failures with linear slope pattern)
+        if any(getattr(t, 'is_anomaly', False) for t in result.tracks):
+            summary.anomalies += 1
+
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
