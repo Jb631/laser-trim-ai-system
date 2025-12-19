@@ -19,6 +19,7 @@ from laser_trim_analyzer.export import (
     export_single_result, export_batch_results,
     generate_export_filename, generate_batch_export_filename, ExcelExportError
 )
+from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
 from datetime import datetime
 
 # Lazy import for ChartWidget - defer matplotlib loading until first use
@@ -86,19 +87,17 @@ class AnalyzePage(ctk.CTkFrame):
         filter_frame = ctk.CTkFrame(self)
         filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
 
-        # Model filter - use ComboBox for dropdown with many models
+        # Model filter - use ScrollableComboBox for dropdown with many models
         ctk.CTkLabel(filter_frame, text="Model:").pack(side="left", padx=(15, 5), pady=15)
-        self.model_filter = ctk.CTkComboBox(
+        self.model_filter = ScrollableComboBox(
             filter_frame,
             values=["All Models"],
             command=self._on_filter_change,
             width=150,
-            state="normal"  # Allow typing to filter, dropdown still works
+            dropdown_height=300,  # Scrollable dropdown
         )
         self.model_filter.set("All Models")
         self.model_filter.pack(side="left", padx=5, pady=15)
-        # Bind mousewheel to scroll through options
-        self._bind_mousewheel_scroll(self.model_filter)
 
         # Days filter
         ctk.CTkLabel(filter_frame, text="Period:").pack(side="left", padx=(20, 5), pady=15)
@@ -203,17 +202,20 @@ class AnalyzePage(ctk.CTkFrame):
         details_frame.grid_rowconfigure(3, weight=0)  # DB info footer - fixed
         details_frame.grid_columnconfigure(0, weight=1)
 
-        # Status banner
-        self.status_banner = ctk.CTkFrame(details_frame, height=60)
+        # Status banner - dynamic height based on content, but capped
+        self.status_banner = ctk.CTkFrame(details_frame)
         self.status_banner.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 5))
+        # Prevent banner from pushing other rows around during resize
+        self.status_banner.grid_propagate(True)
 
         self.status_text = ctk.CTkLabel(
             self.status_banner,
             text="Select an analysis",
             font=ctk.CTkFont(size=24, weight="bold"),
-            text_color="gray"
+            text_color="gray",
+            wraplength=500  # Wrap long text to prevent horizontal overflow
         )
-        self.status_text.pack(expand=True, pady=15)
+        self.status_text.pack(pady=12, padx=15)
 
         # Action buttons row
         actions_frame = ctk.CTkFrame(details_frame, fg_color="transparent")
@@ -621,6 +623,9 @@ class AnalyzePage(ctk.CTkFrame):
 
     def _create_analysis_list_item(self, analysis: AnalysisResult, index: int):
         """Create a clickable item for an analysis."""
+        # Check if any track is flagged as anomaly
+        has_anomaly = any(t.is_anomaly for t in analysis.tracks if hasattr(t, 'is_anomaly'))
+
         # Determine status color
         if analysis.overall_status == AnalysisStatus.PASS:
             status_color = "#27ae60"
@@ -644,6 +649,17 @@ class AnalyzePage(ctk.CTkFrame):
             width=40
         )
         status_indicator.pack(side="left", padx=(10, 5), pady=8)
+
+        # Anomaly indicator (if any track is anomalous)
+        if has_anomaly:
+            anomaly_indicator = ctk.CTkLabel(
+                item_frame,
+                text="⚠",
+                font=ctk.CTkFont(size=12),
+                text_color="#9b59b6",  # Purple for anomaly
+                width=20
+            )
+            anomaly_indicator.pack(side="left", padx=(0, 5), pady=8)
 
         # Info section
         info_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
@@ -679,6 +695,9 @@ class AnalyzePage(ctk.CTkFrame):
         info_frame.bind("<Button-1>", on_click)
         filename_label.bind("<Button-1>", on_click)
         details_label.bind("<Button-1>", on_click)
+        # Bind anomaly indicator if it exists
+        if has_anomaly:
+            anomaly_indicator.bind("<Button-1>", on_click)
 
     # =========================================================================
     # Details Display
@@ -688,15 +707,16 @@ class AnalyzePage(ctk.CTkFrame):
         """Show details for selected analysis."""
         self.current_result = analysis
 
-        # Update status banner
+        # Update status banner - reset font to normal size
+        normal_font = ctk.CTkFont(size=24, weight="bold")
         if analysis.overall_status == AnalysisStatus.PASS:
-            self.status_text.configure(text="PASS", text_color="#27ae60")
+            self.status_text.configure(text="PASS", text_color="#27ae60", font=normal_font)
             self.status_banner.configure(fg_color="#1e4d2b")
         elif analysis.overall_status == AnalysisStatus.FAIL:
-            self.status_text.configure(text="FAIL", text_color="#e74c3c")
+            self.status_text.configure(text="FAIL", text_color="#e74c3c", font=normal_font)
             self.status_banner.configure(fg_color="#4d1e1e")
         else:
-            self.status_text.configure(text=analysis.overall_status.value.upper(), text_color="#f39c12")
+            self.status_text.configure(text=analysis.overall_status.value.upper(), text_color="#f39c12", font=normal_font)
             self.status_banner.configure(fg_color="#4d3d1e")
 
         # Enable export buttons
@@ -772,7 +792,16 @@ class AnalyzePage(ctk.CTkFrame):
             status_str = "WARNING (Lin Fail)"
         else:
             status_str = "FAIL"
-        title = f"Track {track.track_id} - {status_str}"
+
+        # Build title with model and SN for identification
+        model = self.current_result.metadata.model if self.current_result else "?"
+        serial = self.current_result.metadata.serial if self.current_result else "?"
+
+        # Add anomaly indicator if detected
+        if track.is_anomaly:
+            title = f"{model} / {serial} - Track {track.track_id} - {status_str} [ANOMALY]"
+        else:
+            title = f"{model} / {serial} - Track {track.track_id} - {status_str}"
 
         self.chart.plot_error_vs_position(
             positions=track.position_data,
@@ -874,6 +903,14 @@ class AnalyzePage(ctk.CTkFrame):
                 lines.append(f"    Category:    {track.risk_category.value}")
                 lines.append("")
 
+                # Anomaly Detection (if flagged)
+                if track.is_anomaly:
+                    lines.append("  ⚠️  ANOMALY DETECTED:")
+                    lines.append(f"    Reason: {track.anomaly_reason or 'Unknown'}")
+                    lines.append("    Note: This unit likely has a trim failure")
+                    lines.append("          and may skew statistical analysis.")
+                    lines.append("")
+
                 # Unit Properties (if available)
                 if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance:
                     lines.append("  UNIT PROPERTIES:")
@@ -949,8 +986,12 @@ class AnalyzePage(ctk.CTkFrame):
         # Ensure chart is initialized before use
         self._ensure_chart_initialized()
 
-        # Use ChartWidget's comparison method
-        self.chart.plot_track_comparison(tracks)
+        # Build title with model/SN
+        model = self.current_result.metadata.model if self.current_result else "?"
+        serial = self.current_result.metadata.serial if self.current_result else "?"
+
+        # Use ChartWidget's comparison method with model/SN title
+        self.chart.plot_track_comparison(tracks, title=f"{model} / {serial} - Track Comparison")
 
     def _on_filter_change(self, *args):
         """Handle filter change."""
@@ -996,11 +1037,14 @@ class AnalyzePage(ctk.CTkFrame):
 
         file_path = self.current_result.metadata.file_path
         if not file_path or not Path(file_path).exists():
+            # Show file not found error - use smaller font for longer error text
+            display_path = str(file_path)[:50] + "..." if len(str(file_path)) > 50 else str(file_path)
             self.status_text.configure(
-                text=f"Original file not found: {file_path}",
-                text_color="red"
+                text=f"File not found:\n{display_path}",
+                text_color="white",
+                font=ctk.CTkFont(size=14, weight="bold")  # Smaller for error
             )
-            self.status_banner.configure(fg_color="red")
+            self.status_banner.configure(fg_color="#8B0000")  # Dark red
             logger.error(f"Cannot re-analyze - file not found: {file_path}")
             return
 
@@ -1045,7 +1089,8 @@ class AnalyzePage(ctk.CTkFrame):
         status_str = result.overall_status.value.upper()
         self.status_text.configure(
             text=f"✓ Re-analyzed: {status_str}",
-            text_color="#27ae60"
+            text_color="#27ae60",
+            font=ctk.CTkFont(size=24, weight="bold")  # Reset to normal font
         )
         self.status_banner.configure(fg_color="#1e4d2b")
 
@@ -1057,8 +1102,14 @@ class AnalyzePage(ctk.CTkFrame):
     def _on_reanalyze_error(self, error: str):
         """Handle re-analysis error."""
         self.reanalyze_btn.configure(state="normal")
-        self.status_text.configure(text=f"Re-analysis error: {error}", text_color="red")
-        self.status_banner.configure(fg_color="red")
+        # Truncate long error messages for display
+        display_error = error[:80] + "..." if len(error) > 80 else error
+        self.status_text.configure(
+            text=f"Re-analysis error:\n{display_error}",
+            text_color="white",
+            font=ctk.CTkFont(size=14, weight="bold")  # Smaller for error
+        )
+        self.status_banner.configure(fg_color="#8B0000")  # Dark red, not bright red
         logger.error(f"Re-analysis failed: {error}")
 
     def _export_result(self):

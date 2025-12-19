@@ -113,6 +113,11 @@ class Analyzer:
             sigma_gradient, sigma_threshold, linearity_pass
         )
 
+        # Anomaly detection (linear slope pattern = trim failure)
+        is_anomaly, anomaly_reason = self._detect_anomaly(
+            positions, errors, sigma_gradient, sigma_threshold, fail_points
+        )
+
         # Determine overall status
         if sigma_pass and linearity_pass:
             status = AnalysisStatus.PASS
@@ -142,6 +147,9 @@ class Analyzer:
             # Risk
             failure_probability=failure_probability,
             risk_category=risk_category,
+            # Anomaly detection
+            is_anomaly=is_anomaly,
+            anomaly_reason=anomaly_reason,
             # Raw data (for plotting)
             position_data=positions,
             error_data=errors,
@@ -431,6 +439,82 @@ class Analyzer:
 
         return failure_probability, risk_category
 
+    def _detect_anomaly(
+        self,
+        positions: List[float],
+        errors: List[float],
+        sigma_gradient: float,
+        sigma_threshold: float,
+        fail_points: int,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Detect anomalous units (likely trim failures).
+
+        Characteristics of trim failures:
+        - Error data forms a highly linear pattern (high R² when fitting line)
+        - Often shows monotonic decrease/increase (steep slope)
+        - Very high sigma gradient (>>threshold)
+        - Many fail points
+
+        Returns:
+            (is_anomaly, reason) tuple
+        """
+        if len(positions) < 10 or len(errors) < 10:
+            return False, None
+
+        try:
+            # Fit linear regression to error data
+            # For normal trimmed data, R² should be low (random errors around 0)
+            # For trim failures, R² will be high (linear slope pattern)
+            x = np.array(positions[:len(errors)])
+            y = np.array(errors)
+
+            # Simple linear regression
+            n = len(x)
+            x_mean = np.mean(x)
+            y_mean = np.mean(y)
+
+            numerator = np.sum((x - x_mean) * (y - y_mean))
+            denominator = np.sum((x - x_mean) ** 2)
+
+            if abs(denominator) < 1e-10:
+                return False, None
+
+            slope = numerator / denominator
+            intercept = y_mean - slope * x_mean
+
+            # Calculate R² (coefficient of determination)
+            y_pred = slope * x + intercept
+            ss_res = np.sum((y - y_pred) ** 2)
+            ss_tot = np.sum((y - y_mean) ** 2)
+
+            if ss_tot < 1e-10:
+                return False, None
+
+            r_squared = 1 - (ss_res / ss_tot)
+
+            # Calculate error range (max - min)
+            error_range = np.max(y) - np.min(y)
+
+            # Anomaly detection: Focus on linear slope pattern (trim failure signature)
+            #
+            # Normal trimmed data should have random errors around 0 (low R²)
+            # Trim failures show a perfect linear slope (very high R²) because
+            # the trimmer didn't actually cut/adjust the resistor
+            #
+            # Criteria: High R² AND significant error range (not just noise)
+            # R² > 0.95 is very strict - only catches truly linear patterns
+            # Error range > 1.0 ensures it's a significant slope, not flat noise
+
+            if r_squared > 0.95 and error_range > 1.0:
+                return True, f"Linear slope pattern (R²={r_squared:.3f}, range={error_range:.2f})"
+
+            return False, None
+
+        except Exception as e:
+            logger.debug(f"Anomaly detection error: {e}")
+            return False, None
+
     def _create_failed_track(self, track_id: str, reason: str) -> TrackData:
         """Create a failed track result."""
         return TrackData(
@@ -447,4 +531,6 @@ class Analyzer:
             linearity_fail_points=0,
             failure_probability=1.0,
             risk_category=RiskCategory.UNKNOWN,
+            is_anomaly=True,
+            anomaly_reason=reason,
         )

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laser-trim-analyzer"
-version = "3.0.0"
+version = "3.0.2"
 description = "Modern QA analysis platform for potentiometer laser trim data"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,58 +27,29 @@ classifiers = [
 dependencies = [
     # Core
     "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",
 
     # Data processing
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "openpyxl>=3.1.0",
-    "xlrd>=2.0.0",
-    "pyarrow>=14.0.0",  # Parquet support
 
     # Visualization
     "matplotlib>=3.7.0",
-    "seaborn>=0.12.0",
-    "Pillow>=10.0.0",  # Image processing
+    "Pillow>=10.0.0",
 
     # Database
     "sqlalchemy>=2.0.0",
-    "alembic>=1.12.0",
 
     # ML/Scientific
     "scikit-learn>=1.3.0",
     "scipy>=1.11.0",
-    "statsmodels>=0.14.0",
-    "joblib>=1.3.0",  # Model serialization
+    "joblib>=1.3.0",
 
     # GUI
     "customtkinter>=5.2.0",
-    "ttkthemes>=3.2.0",
-    "tkinterdnd2>=0.3.0",  # Drag and drop support
-
-    # API
-    "httpx>=0.25.0",
-    "requests>=2.31.0",
-    "tenacity>=8.2.0",
 
     # Utilities
     "pyyaml>=6.0",
-    "rich>=13.0.0",  # Better console output
-    "click>=8.1.0",   # CLI interface
-    "python-dotenv>=1.0.0",
-    "psutil>=5.9.0",  # System monitoring
-    "watchdog>=3.0.0",  # File monitoring
-    "python-dateutil>=2.8.2",  # Date parsing
-    "filelock>=3.12.0",  # File locking
-
-    # Performance & Caching
-    "diskcache>=5.6.0",  # Persistent caching
-    "h5py>=3.9.0",  # HDF5 support
-    "zarr>=2.16.0",  # Zarr support
-    "memory-profiler>=0.61.0",  # Memory profiling
-
-    # Security
-    "cryptography>=41.0.0",  # Secure tokens
 ]
 
 [project.optional-dependencies]
@@ -114,10 +85,6 @@ all = [
 
 [project.scripts]
 laser-trim-analyzer = "laser_trim_analyzer.__main__:main"
-lta = "laser_trim_analyzer.cli:cli"
-
-[project.gui-scripts]
-laser-trim-analyzer-gui = "laser_trim_analyzer.gui.main_window:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

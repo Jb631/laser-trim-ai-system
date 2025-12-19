@@ -47,6 +47,7 @@ class ProcessPage(ctk.CTkFrame):
         self._warning_count = 0
         self._fail_count = 0
         self._error_count = 0
+        self._anomaly_count = 0
         self._last_ui_update = 0  # Throttle UI updates
 
         self._create_ui()
@@ -290,6 +291,7 @@ class ProcessPage(ctk.CTkFrame):
         self._warning_count = 0
         self._fail_count = 0
         self._error_count = 0
+        self._anomaly_count = 0
         self._last_ui_update = 0
 
         # Update UI state
@@ -358,6 +360,10 @@ class ProcessPage(ctk.CTkFrame):
                     self._fail_count += 1
                 else:
                     self._error_count += 1
+
+                # Count anomalies (trim failures with linear slope pattern)
+                if any(getattr(t, 'is_anomaly', False) for t in result.tracks):
+                    self._anomaly_count += 1
 
                 # Save to database if enabled
                 if self.save_db_var.get():
@@ -445,6 +451,7 @@ class ProcessPage(ctk.CTkFrame):
         warnings = self._warning_count
         failed = self._fail_count
         errors = self._error_count
+        anomalies = self._anomaly_count
         pass_rate = (passed / total * 100) if total > 0 else 0
 
         # Note about large batch export limitations
@@ -452,6 +459,11 @@ class ProcessPage(ctk.CTkFrame):
         export_note = ""
         if is_large_batch and self.results:
             export_note = f"\n  Note: Export contains last {len(self.results)} files only (use Analyze page for full data)\n"
+
+        # Anomaly note if any detected
+        anomaly_note = ""
+        if anomalies > 0:
+            anomaly_note = f"  Anomalies: {anomalies} (trim failures excluded from stats)\n"
 
         # Append summary
         self._append_result(
@@ -462,11 +474,12 @@ class ProcessPage(ctk.CTkFrame):
             f"  Warnings: {warnings} (partial pass)\n"
             f"  Failed: {failed}\n"
             f"  Errors: {errors}\n"
+            f"{anomaly_note}"
             f"  Pass rate: {pass_rate:.1f}%{export_note}"
             f"Completed: {datetime.now().strftime('%H:%M:%S')}\n"
         )
 
-        logger.info(f"Processing complete: {total} files, {passed} passed, {warnings} warnings, {failed} failed")
+        logger.info(f"Processing complete: {total} files, {passed} passed, {warnings} warnings, {failed} failed, {anomalies} anomalies")
 
     def _on_processing_error(self, error: str):
         """Handle processing error."""

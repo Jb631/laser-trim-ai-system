@@ -364,8 +364,20 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
+        # Calculate percentile-based limits to handle outliers
+        # Use 98th percentile to clip extreme values
+        p98 = np.percentile(values, 98)
+        # Ensure spec limit is visible if provided
+        x_max = max(p98 * 1.2, (spec_limit * 2) if spec_limit else p98 * 1.2)
+        # Filter values for display (still count all for stats)
+        display_values = [v for v in values if v <= x_max]
+        outlier_count = len(values) - len(display_values)
+
+        # Compute histogram with filtered values but appropriate bin count
+        display_bins = min(bins, max(10, len(display_values) // 10 + 1))
+
         ax.hist(
-            values, bins=bins,
+            display_values, bins=display_bins,
             color=COLORS['info'],
             alpha=0.7,
             edgecolor='white',
@@ -376,13 +388,31 @@ class ChartWidget(ctk.CTkFrame):
             ax.axvline(x=spec_limit, color=COLORS['spec_limit'],
                        linestyle='--', linewidth=2,
                        label=f'Spec: {spec_limit:.4f}')
-            ax.legend()
 
-        # Add statistics
+        # Add statistics (computed from ALL values, not just displayed)
         mean = np.mean(values)
         std = np.std(values, ddof=1)
-        ax.axvline(x=mean, color=COLORS['warning'], linestyle='-',
-                   alpha=0.8, label=f'Mean: {mean:.4f}')
+        median = np.median(values)
+
+        # Show mean line only if within display range
+        if mean <= x_max:
+            ax.axvline(x=mean, color=COLORS['warning'], linestyle='-',
+                       alpha=0.8, linewidth=1.5, label=f'Mean: {mean:.4f}')
+        # Show median too for skewed distributions
+        if median <= x_max and abs(median - mean) > std * 0.1:
+            ax.axvline(x=median, color=COLORS['pass'], linestyle=':',
+                       alpha=0.8, linewidth=1.5, label=f'Median: {median:.4f}')
+
+        ax.legend(fontsize=self.style.font_size - 2)
+
+        # Add outlier annotation if any exist
+        if outlier_count > 0:
+            ax.text(0.98, 0.98, f'{outlier_count} outlier(s) > {x_max:.2f}',
+                   transform=ax.transAxes, fontsize=8, ha='right', va='top',
+                   color=COLORS['fail'], alpha=0.8)
+
+        # Set x-axis limit
+        ax.set_xlim(left=0, right=x_max)
 
         # Styling
         ax.set_xlabel(xlabel, fontsize=self.style.font_size)
@@ -490,7 +520,7 @@ class ChartWidget(ctk.CTkFrame):
 
         if is_track_data:
             # TrackData mode - comprehensive comparison
-            self._plot_track_data_comparison(tracks)
+            self._plot_track_data_comparison(tracks, title=title)
         else:
             # Raw data mode - simple comparison
             self._plot_raw_track_comparison(
@@ -499,7 +529,7 @@ class ChartWidget(ctk.CTkFrame):
                 track1_label, track2_label, title
             )
 
-    def _plot_track_data_comparison(self, tracks) -> None:
+    def _plot_track_data_comparison(self, tracks, title: str = "Track Comparison") -> None:
         """Plot comprehensive track comparison from TrackData objects."""
         # Create side-by-side subplots
         n_tracks = len(tracks)
@@ -608,7 +638,7 @@ class ChartWidget(ctk.CTkFrame):
                    transform=ax.transAxes, fontsize=8, va='top',
                    bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.8))
 
-        fig.suptitle("Track Comparison", fontsize=self.style.title_size + 2)
+        fig.suptitle(title, fontsize=self.style.title_size + 2)
         fig.tight_layout()
         self.canvas.draw()
 
@@ -823,6 +853,7 @@ class ChartWidget(ctk.CTkFrame):
         rolling_dates: Optional[List[Any]] = None,
         title: str = "Sigma Gradient Trend",
         ylabel: str = "Sigma Gradient",
+        anomaly_flags: Optional[List[bool]] = None,
     ) -> None:
         """
         Plot sigma gradient scatter with threshold line and rolling average.
@@ -836,6 +867,7 @@ class ChartWidget(ctk.CTkFrame):
             rolling_dates: Dates for rolling average (optional)
             title: Chart title
             ylabel: Y-axis label
+            anomaly_flags: Boolean flags for anomalies (trim failures)
         """
         self.clear()
         ax = self.figure.add_subplot(111)
@@ -847,11 +879,25 @@ class ChartWidget(ctk.CTkFrame):
 
         x = list(range(len(sigma_values)))
 
-        # Separate pass/fail points
-        pass_x = [i for i, p in enumerate(pass_flags) if p]
+        # Calculate Y-axis limits using percentile to handle outliers
+        # Use 98th percentile to clip extreme values while showing most data
+        p98 = np.percentile(sigma_values, 98)
+        # Ensure threshold is visible if provided
+        y_max = max(p98 * 1.1, (threshold * 1.5) if threshold else p98 * 1.1)
+        # Count outliers above the clipped range
+        outlier_count = sum(1 for v in sigma_values if v > y_max)
+
+        # Separate pass/fail/anomaly points
+        # Anomalies are shown differently (they would skew statistics)
+        if anomaly_flags is None:
+            anomaly_flags = [False] * len(pass_flags)
+
+        pass_x = [i for i, (p, a) in enumerate(zip(pass_flags, anomaly_flags)) if p and not a]
         pass_y = [sigma_values[i] for i in pass_x]
-        fail_x = [i for i, p in enumerate(pass_flags) if not p]
+        fail_x = [i for i, (p, a) in enumerate(zip(pass_flags, anomaly_flags)) if not p and not a]
         fail_y = [sigma_values[i] for i in fail_x]
+        anomaly_x = [i for i, a in enumerate(anomaly_flags) if a]
+        anomaly_y = [sigma_values[i] for i in anomaly_x]
 
         # Plot points
         if pass_x:
@@ -860,6 +906,9 @@ class ChartWidget(ctk.CTkFrame):
         if fail_x:
             ax.scatter(fail_x, fail_y, color=COLORS['fail'], s=30, alpha=0.7,
                       label='Fail', zorder=3)
+        if anomaly_x:
+            ax.scatter(anomaly_x, anomaly_y, color='#9b59b6', s=60, alpha=0.9,
+                      marker='X', label=f'Anomaly ({len(anomaly_x)})', zorder=5)
 
         # Plot threshold line
         if threshold is not None:
@@ -890,8 +939,14 @@ class ChartWidget(ctk.CTkFrame):
         ax.legend(loc='best', fontsize=self.style.font_size - 2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
 
-        # Set y-axis minimum to 0
-        ax.set_ylim(bottom=0)
+        # Set y-axis limits (0 to percentile-based max)
+        ax.set_ylim(bottom=0, top=y_max)
+
+        # Add outlier annotation if any exist
+        if outlier_count > 0:
+            ax.text(0.98, 0.98, f'{outlier_count} outlier(s) above {y_max:.2f}',
+                   transform=ax.transAxes, fontsize=8, ha='right', va='top',
+                   color=COLORS['fail'], alpha=0.8)
 
         self.figure.tight_layout()
         self.canvas.draw()

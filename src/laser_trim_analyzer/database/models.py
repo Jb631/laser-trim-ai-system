@@ -342,6 +342,10 @@ class TrackResult(Base):
     risk_category = Column(Enum(RiskCategory))
     gradient_margin = Column(Float)
 
+    # Anomaly detection (trim failures with linear slope pattern)
+    is_anomaly = Column(Boolean, default=False)
+    anomaly_reason = Column(Text)
+
     # Dynamic range
     range_utilization_percent = Column(Float)
     minimum_margin = Column(Float)

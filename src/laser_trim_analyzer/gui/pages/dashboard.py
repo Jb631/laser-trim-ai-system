@@ -313,8 +313,11 @@ class DashboardPage(ctk.CTkFrame):
         model_stats: List[Dict[str, Any]]
     ):
         """Update display with loaded data."""
-        # Update health card
+        # Update health card with sigma and linearity pass rates
         pass_rate = stats.get("pass_rate", 0)
+        sigma_pass_rate = stats.get("sigma_pass_rate", 0)
+        linearity_pass_rate = stats.get("linearity_pass_rate", 0)
+
         if pass_rate >= 95:
             health_color = "#27ae60"  # Green
             health_status = "Excellent"
@@ -332,7 +335,7 @@ class DashboardPage(ctk.CTkFrame):
             self.health_card,
             title="Overall Health",
             value=f"{pass_rate:.1f}%",
-            subtitle=f"Pass rate - {health_status}",
+            subtitle=f"Sigma: {sigma_pass_rate:.1f}% | Lin: {linearity_pass_rate:.1f}%",
             color=health_color
         )
 
@@ -439,7 +442,9 @@ class DashboardPage(ctk.CTkFrame):
                 model = stat.get("model", "Unknown")
                 count = stat.get("count", 0)
                 pass_rate = stat.get("pass_rate", 0)
-                lines.append(f"  {model}: {count} files ({pass_rate:.1f}% pass rate)")
+                sigma_rate = stat.get("sigma_pass_rate", 0)
+                lin_rate = stat.get("linearity_pass_rate", 0)
+                lines.append(f"  {model}: {count} files | Pass: {pass_rate:.0f}% | Sigma: {sigma_rate:.0f}% | Lin: {lin_rate:.0f}%")
             self.model_text.insert("end", "\n".join(lines))
 
         self.model_text.configure(state="disabled")
