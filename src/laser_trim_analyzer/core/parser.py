@@ -157,8 +157,11 @@ class ExcelParser:
         - "8340-3_AB12345.xls"
         - "Model_Serial_Date.xlsx"
         - "12345_8340-1.xls"
+        - "8877_5_deg_1_TEST DATA_12-2-2024.xls" (with degree designator)
+        - "1844202_10_TA_Test Data_11-22-2024.xls"
 
         Model numbers can have suffixes like 8340-1, 8340-3, etc.
+        Handles degree designators (e.g., "5_deg", "10_deg") which should NOT be the serial.
         """
         name = Path(filename).stem
 
@@ -169,25 +172,68 @@ class ExcelParser:
             model = "Unknown"
             serial = "Unknown"
 
-            for part in parts:
+            # First pass: find the model (4+ digit number, possibly with hyphen suffix)
+            for i, part in enumerate(parts):
                 # Model pattern: starts with 4+ digits, may have hyphen suffix (8340, 8340-1, 8340-3)
                 if re.match(r'^\d{4,}(-\d+)?$', part):
-                    if model == "Unknown":
-                        model = part
-                    elif serial == "Unknown":
-                        serial = part
-                # Serial pattern: letter prefix + digits (SN12345, AB12345)
-                elif re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
-                    serial = part
-                # Also check for pure numeric serial
-                elif re.match(r'^\d+$', part) and model != "Unknown":
-                    if serial == "Unknown":
-                        serial = part
+                    model = part
+                    break
 
+            # Second pass: find the serial
+            # Skip parts that are: the model, degree designators, known keywords, dates
+            skip_keywords = {'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct', 'scrap', 'cut', 'wiper', 'path', 'am', 'pm'}
+
+            for i, part in enumerate(parts):
+                part_lower = part.lower()
+
+                # Skip the model itself
+                if part == model:
+                    continue
+
+                # Skip known keywords
+                if part_lower in skip_keywords:
+                    continue
+
+                # Skip if this is part of a degree designator (e.g., "5" followed by "deg")
+                # Check if next part is "deg"
+                if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                    continue
+
+                # Skip the "deg" part itself
+                if part_lower == 'deg':
+                    continue
+
+                # Skip date patterns (e.g., "12-2-2024", "11-22-2024")
+                if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', part):
+                    continue
+
+                # Skip time patterns (e.g., "4-05", "9-08")
+                if re.match(r'^\d{1,2}-\d{2}$', part):
+                    continue
+
+                # Serial pattern: letter prefix + digits (SN12345, AB12345, TA, TB)
+                if re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
+                    serial = part
+                    break
+
+                # Pure numeric serial (only if model is already found)
+                elif re.match(r'^\d+$', part) and model != "Unknown":
+                    serial = part
+                    break
+
+            # Fallback: if serial still unknown, use first non-model, non-keyword part
             if serial == "Unknown" and len(parts) > 1:
-                # Use the part that isn't the model as serial
-                for part in parts:
-                    if part != model:
+                for i, part in enumerate(parts):
+                    part_lower = part.lower()
+                    if part != model and part_lower not in skip_keywords:
+                        # Skip degree designator pattern
+                        if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                            continue
+                        if part_lower == 'deg':
+                            continue
+                        # Skip date/time patterns
+                        if re.match(r'^\d{1,2}-\d{1,2}(-\d{4})?$', part):
+                            continue
                         serial = part
                         break
 

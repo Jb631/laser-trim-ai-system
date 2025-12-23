@@ -9,7 +9,7 @@ import threading
 import customtkinter as ctk
 import logging
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
@@ -232,6 +232,18 @@ class AnalyzePage(ctk.CTkFrame):
             hover_color="darkorange"
         )
         self.reanalyze_btn.pack(side="left", padx=5)
+
+        # Delete button (remove from database)
+        self.delete_btn = ctk.CTkButton(
+            actions_frame,
+            text="🗑 Delete",
+            command=self._delete_current,
+            state="disabled",
+            width=90,
+            fg_color="#8B0000",  # Dark red
+            hover_color="#B22222"  # Lighter red on hover
+        )
+        self.delete_btn.pack(side="left", padx=5)
 
         # Export chart button
         self.export_chart_btn = ctk.CTkButton(
@@ -724,6 +736,7 @@ class AnalyzePage(ctk.CTkFrame):
         self.export_chart_btn.configure(state="normal")
         self.export_model_btn.configure(state="normal")
         self.reanalyze_btn.configure(state="normal")
+        self.delete_btn.configure(state="normal")
 
         # Update track selector
         if analysis.tracks:
@@ -797,11 +810,16 @@ class AnalyzePage(ctk.CTkFrame):
         model = self.current_result.metadata.model if self.current_result else "?"
         serial = self.current_result.metadata.serial if self.current_result else "?"
 
+        # Get trim date for display
+        trim_date = None
+        if self.current_result and self.current_result.metadata.file_date:
+            trim_date = self.current_result.metadata.file_date.strftime('%m/%d/%Y')
+
         # Add anomaly indicator if detected
         if track.is_anomaly:
-            title = f"{model} / {serial} - Track {track.track_id} - {status_str} [ANOMALY]"
+            title = f"{model} - Track {track.track_id} - {status_str} [ANOMALY]"
         else:
-            title = f"{model} / {serial} - Track {track.track_id} - {status_str}"
+            title = f"{model} - Track {track.track_id} - {status_str}"
 
         self.chart.plot_error_vs_position(
             positions=track.position_data,
@@ -812,7 +830,9 @@ class AnalyzePage(ctk.CTkFrame):
             untrimmed_errors=track.untrimmed_errors,
             offset=track.optimal_offset,
             title=title,
-            fail_points=fail_indices
+            fail_points=fail_indices,
+            serial_number=serial,
+            trim_date=trim_date
         )
 
     def _display_metrics(self, analysis: AnalysisResult):
@@ -990,8 +1010,18 @@ class AnalyzePage(ctk.CTkFrame):
         model = self.current_result.metadata.model if self.current_result else "?"
         serial = self.current_result.metadata.serial if self.current_result else "?"
 
+        # Get trim date for display
+        trim_date = None
+        if self.current_result and self.current_result.metadata.file_date:
+            trim_date = self.current_result.metadata.file_date.strftime('%m/%d/%Y')
+
         # Use ChartWidget's comparison method with model/SN title
-        self.chart.plot_track_comparison(tracks, title=f"{model} / {serial} - Track Comparison")
+        self.chart.plot_track_comparison(
+            tracks,
+            title=f"{model} - Track Comparison",
+            serial_number=serial,
+            trim_date=trim_date
+        )
 
     def _on_filter_change(self, *args):
         """Handle filter change."""
@@ -1111,6 +1141,107 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.status_banner.configure(fg_color="#8B0000")  # Dark red, not bright red
         logger.error(f"Re-analysis failed: {error}")
+
+    def _delete_current(self):
+        """Delete the current analysis from the database."""
+        if not self.current_result:
+            return
+
+        filename = self.current_result.metadata.filename
+        model = self.current_result.metadata.model
+        serial = self.current_result.metadata.serial
+
+        # Confirm deletion
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Are you sure you want to delete this record?\n\n"
+            f"Model: {model}\n"
+            f"Serial: {serial}\n"
+            f"File: {filename}\n\n"
+            f"This action cannot be undone.",
+            icon="warning"
+        )
+
+        if not confirm:
+            return
+
+        logger.info(f"Deleting analysis: {filename}")
+        self.delete_btn.configure(state="disabled")
+        self.status_text.configure(text="Deleting...", text_color="#f39c12")
+        self.status_banner.configure(fg_color="#4d3d1e")
+
+        # Delete in background thread
+        def delete():
+            try:
+                db = get_database()
+                success = db.delete_analysis_by_filename(filename)
+
+                # Update UI on main thread
+                self.after(0, lambda: self._on_delete_complete(success, filename))
+
+            except Exception as e:
+                logger.exception(f"Delete error: {e}")
+                self.after(0, lambda: self._on_delete_error(str(e)))
+
+        thread = threading.Thread(target=delete, daemon=True)
+        thread.start()
+
+    def _on_delete_complete(self, success: bool, filename: str):
+        """Handle deletion completion."""
+        self.delete_btn.configure(state="normal")
+
+        if success:
+            # Clear current result
+            self.current_result = None
+
+            # Reset status banner
+            self.status_text.configure(
+                text="Record Deleted",
+                text_color="#27ae60",
+                font=ctk.CTkFont(size=24, weight="bold")
+            )
+            self.status_banner.configure(fg_color="#1e4d2b")
+
+            # Disable buttons that need a selection
+            self.export_btn.configure(state="disabled")
+            self.export_chart_btn.configure(state="disabled")
+            self.export_model_btn.configure(state="disabled")
+            self.reanalyze_btn.configure(state="disabled")
+            self.delete_btn.configure(state="disabled")
+            self.track_selector.configure(state="disabled")
+
+            # Show placeholder chart
+            if self.chart:
+                self.chart.show_placeholder("Select an analysis to view chart")
+
+            # Clear metrics and info
+            self._update_metrics("Record deleted. Select another analysis from the list.")
+            self._update_info("Select an analysis from the list.")
+
+            # Refresh the list
+            self._load_recent_analyses()
+
+            logger.info(f"Successfully deleted: {filename}")
+        else:
+            self.status_text.configure(
+                text="Delete failed - record not found",
+                text_color="white",
+                font=ctk.CTkFont(size=14, weight="bold")
+            )
+            self.status_banner.configure(fg_color="#8B0000")
+            logger.warning(f"Delete failed - record not found: {filename}")
+
+    def _on_delete_error(self, error: str):
+        """Handle deletion error."""
+        self.delete_btn.configure(state="normal")
+        display_error = error[:80] + "..." if len(error) > 80 else error
+        self.status_text.configure(
+            text=f"Delete error:\n{display_error}",
+            text_color="white",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.status_banner.configure(fg_color="#8B0000")
+        logger.error(f"Delete failed: {error}")
 
     def _export_result(self):
         """Export the current analysis result to Excel."""
@@ -1271,6 +1402,10 @@ class AnalyzePage(ctk.CTkFrame):
         # Title - black text for light mode
         title = f'Laser Trim Analysis - {result.metadata.model} / {result.metadata.serial}'
         fig.suptitle(title, fontsize=16, fontweight='bold', color='black')
+
+        # Add filename at top-right below title
+        fig.text(0.95, 0.96, f"File: {result.metadata.filename}",
+                fontsize=9, ha='right', va='top', color='gray', style='italic')
 
         # Grid spec for layout
         gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3,

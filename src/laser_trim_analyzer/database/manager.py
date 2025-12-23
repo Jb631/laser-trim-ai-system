@@ -1159,6 +1159,99 @@ class DatabaseManager:
         return db_analysis.id
 
     # =========================================================================
+    # Delete Operations
+    # =========================================================================
+
+    def delete_analysis(self, analysis_id: int) -> bool:
+        """
+        Delete an analysis record and all associated data.
+
+        This removes:
+        - The analysis record
+        - All associated track results
+        - The processed file record (to allow re-processing)
+        - Any related alerts
+
+        Args:
+            analysis_id: Database ID of the analysis to delete
+
+        Returns:
+            True if deletion was successful, False if record not found
+        """
+        with self.session() as session:
+            # Find the analysis record
+            analysis = session.query(DBAnalysisResult).get(analysis_id)
+
+            if not analysis:
+                logger.warning(f"Analysis ID {analysis_id} not found for deletion")
+                return False
+
+            filename = analysis.filename
+
+            # Delete associated tracks (cascade should handle this, but be explicit)
+            session.query(DBTrackResult).filter(
+                DBTrackResult.analysis_id == analysis_id
+            ).delete()
+
+            # Delete processed file record (allows re-processing of same file)
+            session.query(DBProcessedFile).filter(
+                DBProcessedFile.analysis_id == analysis_id
+            ).delete()
+
+            # Delete any related alerts
+            session.query(DBQAAlert).filter(
+                DBQAAlert.analysis_id == analysis_id
+            ).delete()
+
+            # Delete the analysis record itself
+            session.delete(analysis)
+
+            logger.info(f"Deleted analysis ID {analysis_id}: {filename}")
+            return True
+
+    def delete_analysis_by_filename(self, filename: str) -> bool:
+        """
+        Delete an analysis record by filename.
+
+        Args:
+            filename: The filename of the analysis to delete
+
+        Returns:
+            True if deletion was successful, False if record not found
+        """
+        with self.session() as session:
+            analysis = session.query(DBAnalysisResult).filter(
+                DBAnalysisResult.filename == filename
+            ).first()
+
+            if not analysis:
+                logger.warning(f"Analysis with filename '{filename}' not found for deletion")
+                return False
+
+            analysis_id = analysis.id
+
+            # Delete associated tracks
+            session.query(DBTrackResult).filter(
+                DBTrackResult.analysis_id == analysis_id
+            ).delete()
+
+            # Delete processed file record
+            session.query(DBProcessedFile).filter(
+                DBProcessedFile.analysis_id == analysis_id
+            ).delete()
+
+            # Delete any related alerts
+            session.query(DBQAAlert).filter(
+                DBQAAlert.analysis_id == analysis_id
+            ).delete()
+
+            # Delete the analysis record itself
+            session.delete(analysis)
+
+            logger.info(f"Deleted analysis by filename: {filename}")
+            return True
+
+    # =========================================================================
     # Utility Methods
     # =========================================================================
 
