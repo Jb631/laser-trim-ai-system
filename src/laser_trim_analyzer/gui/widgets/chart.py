@@ -180,6 +180,8 @@ class ChartWidget(ctk.CTkFrame):
         offset: float = 0.0,
         title: str = "Error vs Position Analysis",
         fail_points: Optional[List[int]] = None,
+        serial_number: Optional[str] = None,
+        trim_date: Optional[str] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -194,6 +196,8 @@ class ChartWidget(ctk.CTkFrame):
             offset: Optimal offset applied
             title: Chart title
             fail_points: Indices of fail points (optional)
+            serial_number: Serial number to display on chart (optional)
+            trim_date: Trim date to display on chart (optional)
         """
         self.clear()
         ax = self.figure.add_subplot(111)
@@ -274,6 +278,24 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_title(title, fontsize=self.style.title_size)
         ax.legend(loc='best', fontsize=self.style.font_size - 2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        # Add SN and Trim Date info box in upper right corner
+        if serial_number or trim_date:
+            info_lines = []
+            if serial_number:
+                info_lines.append(f"SN: {serial_number}")
+            if trim_date:
+                info_lines.append(f"Trim Date: {trim_date}")
+            info_text = "\n".join(info_lines)
+
+            # Position in upper right, below title
+            text_color = COLORS['text'] if self.style.dark_mode else 'black'
+            bg_color = '#3d3d3d' if self.style.dark_mode else 'lightyellow'
+            ax.text(0.98, 0.98, info_text,
+                   transform=ax.transAxes, fontsize=self.style.font_size - 1,
+                   va='top', ha='right',
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9, edgecolor='gray'),
+                   color=text_color)
 
         self.figure.tight_layout()
         self.canvas.draw()
@@ -497,6 +519,8 @@ class ChartWidget(ctk.CTkFrame):
         track1_label: str = "Track A",
         track2_label: str = "Track B",
         title: str = "Track Comparison",
+        serial_number: Optional[str] = None,
+        trim_date: Optional[str] = None,
     ) -> None:
         """
         Plot track comparison - either from TrackData objects or raw arrays.
@@ -510,6 +534,8 @@ class ChartWidget(ctk.CTkFrame):
             track1_label: Label for track 1
             track2_label: Label for track 2
             title: Chart title
+            serial_number: Serial number to display on chart (optional)
+            trim_date: Trim date to display on chart (optional)
         """
         self.clear()
 
@@ -520,7 +546,7 @@ class ChartWidget(ctk.CTkFrame):
 
         if is_track_data:
             # TrackData mode - comprehensive comparison
-            self._plot_track_data_comparison(tracks, title=title)
+            self._plot_track_data_comparison(tracks, title=title, serial_number=serial_number, trim_date=trim_date)
         else:
             # Raw data mode - simple comparison
             self._plot_raw_track_comparison(
@@ -529,7 +555,9 @@ class ChartWidget(ctk.CTkFrame):
                 track1_label, track2_label, title
             )
 
-    def _plot_track_data_comparison(self, tracks, title: str = "Track Comparison") -> None:
+    def _plot_track_data_comparison(self, tracks, title: str = "Track Comparison",
+                                      serial_number: Optional[str] = None,
+                                      trim_date: Optional[str] = None) -> None:
         """Plot comprehensive track comparison from TrackData objects."""
         # Create side-by-side subplots
         n_tracks = len(tracks)
@@ -639,6 +667,24 @@ class ChartWidget(ctk.CTkFrame):
                    bbox=dict(boxstyle='round,pad=0.2', facecolor='lightyellow', alpha=0.8))
 
         fig.suptitle(title, fontsize=self.style.title_size + 2)
+
+        # Add SN and Trim Date info box
+        if serial_number or trim_date:
+            info_lines = []
+            if serial_number:
+                info_lines.append(f"SN: {serial_number}")
+            if trim_date:
+                info_lines.append(f"Trim Date: {trim_date}")
+            info_text = "\n".join(info_lines)
+
+            text_color = COLORS['text'] if self.style.dark_mode else 'black'
+            bg_color = '#3d3d3d' if self.style.dark_mode else 'lightyellow'
+            fig.text(0.99, 0.99, info_text,
+                    fontsize=self.style.font_size - 1,
+                    va='top', ha='right',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9, edgecolor='gray'),
+                    color=text_color)
+
         fig.tight_layout()
         self.canvas.draw()
 
