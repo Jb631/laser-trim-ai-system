@@ -6,11 +6,12 @@ Laser Trim Analyzer v3 - A production-ready quality analysis platform for potent
 
 ### V3 Architecture
 - **~30 files** (down from 110 in v2)
-- **5 pages**: Dashboard, Process, Analyze, Trends, Settings
+- **6 pages**: Dashboard, Process, Analyze, Compare, Trends, Settings
 - **1 chart widget** with multiple plot types
 - **Self-contained configuration**
 - **SQLite database** with SQLAlchemy
 - **Excel-only export**
+- **Final Test support**: Parse and compare post-assembly test files
 
 ### Source Code Location
 - **Main code**: `src/laser_trim_analyzer/`
@@ -46,10 +47,11 @@ src/laser_trim_analyzer/
 ├── app.py               # Main application class
 ├── config.py            # Self-contained configuration
 ├── core/
-│   ├── parser.py        # Excel file parser
-│   ├── processor.py     # Analysis processor
-│   ├── analyzer.py      # Sigma/linearity analysis
-│   └── models.py        # Data models
+│   ├── parser.py            # Excel file parser (trim files)
+│   ├── final_test_parser.py # Final Test file parser
+│   ├── processor.py         # Analysis processor
+│   ├── analyzer.py          # Sigma/linearity analysis
+│   └── models.py            # Data models
 ├── database/
 │   ├── manager.py       # Database operations
 │   └── models.py        # SQLAlchemy models
@@ -59,6 +61,7 @@ src/laser_trim_analyzer/
 │   │   ├── dashboard.py
 │   │   ├── process.py
 │   │   ├── analyze.py
+│   │   ├── compare.py   # Final Test comparison
 │   │   ├── trends.py
 │   │   └── settings.py
 │   └── widgets/

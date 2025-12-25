@@ -65,7 +65,7 @@ class LaserTrimApp(ctk.CTk):
         # Sidebar frame
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(6, weight=1)  # Spacer row
+        self.sidebar.grid_rowconfigure(7, weight=1)  # Spacer row (adjusted for Compare)
 
         # App title
         self.title_label = ctk.CTkLabel(
@@ -89,7 +89,8 @@ class LaserTrimApp(ctk.CTk):
             ("dashboard", "Dashboard", 2),
             ("process", "Process Files", 3),
             ("analyze", "Analyze", 4),
-            ("trends", "Trends", 5),
+            ("compare", "Compare", 5),
+            ("trends", "Trends", 6),
         ]
 
         for page_id, label, row in nav_items:
@@ -107,7 +108,7 @@ class LaserTrimApp(ctk.CTk):
             btn.grid(row=row, column=0, padx=10, pady=5, sticky="ew")
             self._nav_buttons[page_id] = btn
 
-        # Settings at bottom (row 7, after spacer row 6)
+        # Settings at bottom (row 8, after spacer row 7)
         settings_btn = ctk.CTkButton(
             self.sidebar,
             text="Settings",
@@ -119,7 +120,7 @@ class LaserTrimApp(ctk.CTk):
             text_color=("gray10", "gray90"),
             hover_color=("gray70", "gray30")
         )
-        settings_btn.grid(row=7, column=0, padx=10, pady=(5, 20), sticky="ew")
+        settings_btn.grid(row=8, column=0, padx=10, pady=(5, 20), sticky="ew")
         self._nav_buttons["settings"] = settings_btn
 
     def _create_main_content(self):
@@ -135,6 +136,7 @@ class LaserTrimApp(ctk.CTk):
         from laser_trim_analyzer.gui.pages.dashboard import DashboardPage
         from laser_trim_analyzer.gui.pages.process import ProcessPage
         from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
+        from laser_trim_analyzer.gui.pages.compare import ComparePage
         from laser_trim_analyzer.gui.pages.trends import TrendsPage
         from laser_trim_analyzer.gui.pages.settings import SettingsPage
 
@@ -142,6 +144,7 @@ class LaserTrimApp(ctk.CTk):
         self._pages["dashboard"] = DashboardPage(self.main_frame, self)
         self._pages["process"] = ProcessPage(self.main_frame, self)
         self._pages["analyze"] = AnalyzePage(self.main_frame, self)
+        self._pages["compare"] = ComparePage(self.main_frame, self)
         self._pages["trends"] = TrendsPage(self.main_frame, self)
         self._pages["settings"] = SettingsPage(self.main_frame, self)
 
