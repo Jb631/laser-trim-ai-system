@@ -72,3 +72,71 @@ DEFAULT_TRAVEL_FACTOR: Final[float] = 1.0
 # Risk thresholds
 HIGH_RISK_THRESHOLD: Final[float] = 0.7
 MEDIUM_RISK_THRESHOLD: Final[float] = 0.4
+
+# =============================================================================
+# Final Test File Constants
+# For post-assembly testing (separate from laser trim)
+# =============================================================================
+
+# Final Test Format 1 - Standard format (e.g., 1081313-sn108_3-16-2011_12-17 PM.xls)
+# Sheet: Sheet1
+FINAL_TEST_FORMAT1_COLUMNS: Final[Dict[str, int]] = {
+    "measured": 0,         # Column A - Measured value
+    "index": 1,            # Column B - Index/sample number
+    "electrical_angle": 2, # Column C - Theory/electrical angle (for alignment)
+    "error": 3,            # Column D - Linearity error
+    "position": 4,         # Column E - Position
+    "upper_limit": 6,      # Column G - Upper spec limit
+    "lower_limit": 7,      # Column H - Lower spec limit
+}
+
+# Final Test Format 2 - Rout_ files (e.g., Rout_1091701_sn1695a_vo.xls)
+# Sheet: Data
+FINAL_TEST_FORMAT2_COLUMNS: Final[Dict[str, int]] = {
+    "measured": 0,         # Column A - Measured value
+    "position": 1,         # Column B - Position
+    "index": 2,            # Column C - Index
+}
+
+# Final Test metadata cell locations (Format 1)
+FINAL_TEST_FORMAT1_METADATA: Final[Dict[str, str]] = {
+    "model_cell": "L1",       # Model/shop number location
+    "datetime_cell": "N1",    # Test datetime location
+    "data_start_row": 2,      # First row of actual data (0-indexed)
+}
+
+# Final Test Data Table sheet - test results summary
+FINAL_TEST_DATA_TABLE_ROWS: Final[Dict[str, int]] = {
+    "resistance": 13,      # Row with resistance test results
+    "linearity": 14,       # Row with linearity test results
+    "electrical_angle": 15, # Row with electrical angle test results
+    "hysteresis": 16,      # Row with hysteresis test results
+    "phasing": 17,         # Row with phasing test results
+}
+FINAL_TEST_DATA_TABLE_COLUMNS: Final[Dict[str, int]] = {
+    "test_name": 1,        # Column B - Test name
+    "spec": 3,             # Column D - Specification
+    "measured": 4,         # Column E - Measured value
+    "result": 5,           # Column F - PASSED/FAILED
+}
+
+# Detection patterns for Final Test files
+FINAL_TEST_SHEET_PATTERNS: Final[list] = [
+    "Sheet1",              # Standard format primary sheet
+    "Data Table",          # Test results summary
+    "TEST RESULTS DATA",   # Alternative identifier
+]
+FINAL_TEST_ROUT_PREFIX: Final[str] = "Rout_"  # Prefix for Format 2 files
+
+# Trim file detection (things that indicate it's NOT a final test)
+TRIM_FILE_INDICATORS: Final[list] = [
+    "SEC1 TRK",           # System A multi-track
+    "TRK1",               # Track identifiers
+    "TRK2",
+    "Lin Error",          # System B linearity error sheet
+    "_Trimmed",           # Trimmed file suffix
+    "_Untrimmed",         # Untrimmed file suffix
+]
+
+# Matching parameters for Final Test to Trim linking
+FINAL_TEST_MAX_DAYS_FROM_TRIM: Final[int] = 60  # Maximum days between trim and final test

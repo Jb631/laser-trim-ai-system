@@ -17,7 +17,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Iterator
+from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, func, and_, or_, desc, text, case
@@ -1649,6 +1649,450 @@ class DatabaseManager:
                 "threshold": threshold,
                 "total_samples": len(data_points),
             }
+
+    # =========================================================================
+    # Final Test Methods - For post-assembly test data and comparison
+    # =========================================================================
+
+    def save_final_test(
+        self,
+        metadata: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+        test_results: Dict[str, Any],
+        file_hash: str
+    ) -> int:
+        """
+        Save a Final Test result to the database.
+
+        Args:
+            metadata: Dict with filename, model, serial, test_date, etc.
+            tracks: List of track data dicts with positions, errors, etc.
+            test_results: Dict with pass/fail for each test type
+            file_hash: SHA256 hash of the file
+
+        Returns:
+            ID of saved FinalTestResult
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            # Check for duplicate
+            existing = (
+                session.query(DBFinalTestResult)
+                .filter(DBFinalTestResult.file_hash == file_hash)
+                .first()
+            )
+            if existing:
+                logger.info(f"Final test already exists: {metadata.get('filename')}")
+                return existing.id
+
+            # Determine overall status from linearity
+            overall_status = DBStatusType.PASS
+            if test_results.get("linearity_pass") is False:
+                overall_status = DBStatusType.FAIL
+            elif test_results.get("linearity_pass") is None:
+                # Check track-level linearity
+                for track in tracks:
+                    if track.get("linearity_pass") is False:
+                        overall_status = DBStatusType.FAIL
+                        break
+
+            # Find matching trim result
+            linked_trim_id, match_confidence, days_since_trim = self._find_matching_trim(
+                session,
+                metadata.get("model"),
+                metadata.get("serial"),
+                metadata.get("file_date") or metadata.get("test_date")
+            )
+
+            # Create FinalTestResult
+            db_result = DBFinalTestResult(
+                filename=metadata.get("filename", "unknown"),
+                file_path=str(metadata.get("file_path", "")),
+                file_hash=file_hash,
+                file_date=metadata.get("file_date"),
+                model=metadata.get("model", "unknown"),
+                serial=metadata.get("serial", "unknown"),
+                test_date=metadata.get("test_date"),
+                overall_status=overall_status,
+                linearity_pass=test_results.get("linearity_pass"),
+                linearity_error=tracks[0].get("linearity_error") if tracks else None,
+                resistance_pass=test_results.get("resistance_pass"),
+                resistance_value=test_results.get("resistance_value"),
+                resistance_tolerance=test_results.get("resistance_tolerance"),
+                electrical_angle_pass=test_results.get("electrical_angle_pass"),
+                hysteresis_pass=test_results.get("hysteresis_pass"),
+                phasing_pass=test_results.get("phasing_pass"),
+                linked_trim_id=linked_trim_id,
+                match_confidence=match_confidence,
+                days_since_trim=days_since_trim,
+            )
+
+            session.add(db_result)
+            session.flush()
+
+            # Add tracks
+            for track_data in tracks:
+                db_track = DBFinalTestTrack(
+                    final_test_id=db_result.id,
+                    track_id=track_data.get("track_id", "default"),
+                    status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                    linearity_spec=track_data.get("linearity_spec"),
+                    linearity_error=track_data.get("linearity_error"),
+                    linearity_pass=track_data.get("linearity_pass"),
+                    linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                    position_data=track_data.get("positions"),
+                    error_data=track_data.get("errors"),
+                    electrical_angle_data=track_data.get("electrical_angles"),
+                    upper_limits=track_data.get("upper_limits"),
+                    lower_limits=track_data.get("lower_limits"),
+                    max_deviation=track_data.get("max_deviation"),
+                    max_deviation_position=track_data.get("max_deviation_position"),
+                )
+                session.add(db_track)
+
+            session.commit()
+            logger.info(f"Saved Final Test: {metadata.get('filename')} (ID: {db_result.id}, linked_trim: {linked_trim_id})")
+            return db_result.id
+
+    def _find_matching_trim(
+        self,
+        session: Session,
+        model: Optional[str],
+        serial: Optional[str],
+        test_date: Optional[datetime]
+    ) -> Tuple[Optional[int], Optional[float], Optional[int]]:
+        """
+        Find the matching trim result for a final test.
+
+        Logic:
+        - Same model and serial
+        - Trim date < final test date
+        - Closest trim date within 60 days
+
+        Returns:
+            Tuple of (trim_id, confidence, days_since_trim)
+        """
+        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
+
+        if not model or not serial or not test_date:
+            return None, None, None
+
+        # Normalize serial for matching (some have prefix variations)
+        serial_clean = serial.lower().strip()
+
+        # Query for matching trim results
+        # Must be: same model, same serial, trim date < test date, within 60 days
+        cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+
+        candidates = (
+            session.query(DBAnalysisResult)
+            .filter(
+                DBAnalysisResult.model == model,
+                func.lower(DBAnalysisResult.serial) == serial_clean,
+                DBAnalysisResult.file_date.isnot(None),
+                DBAnalysisResult.file_date < test_date,
+                DBAnalysisResult.file_date >= cutoff_date,
+            )
+            .order_by(desc(DBAnalysisResult.file_date))  # Most recent first
+            .limit(5)
+            .all()
+        )
+
+        if not candidates:
+            # Try without serial match (just model)
+            candidates = (
+                session.query(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date.isnot(None),
+                    DBAnalysisResult.file_date < test_date,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                )
+                .order_by(desc(DBAnalysisResult.file_date))
+                .limit(1)
+                .all()
+            )
+            if candidates:
+                # Lower confidence since serial didn't match
+                match = candidates[0]
+                days_diff = (test_date - match.file_date).days
+                confidence = 0.5 * (1 - days_diff / FINAL_TEST_MAX_DAYS_FROM_TRIM)
+                return match.id, confidence, days_diff
+
+            return None, None, None
+
+        # Found candidates with matching serial
+        match = candidates[0]  # Most recent before test date
+        days_diff = (test_date - match.file_date).days
+
+        # Calculate confidence based on time proximity
+        # 0-7 days: high confidence (0.9-1.0)
+        # 8-30 days: medium confidence (0.7-0.9)
+        # 31-60 days: low confidence (0.5-0.7)
+        if days_diff <= 7:
+            confidence = 1.0 - (days_diff * 0.01)  # 0.93-1.0
+        elif days_diff <= 30:
+            confidence = 0.9 - ((days_diff - 7) * 0.01)  # 0.67-0.9
+        else:
+            confidence = 0.7 - ((days_diff - 30) * 0.007)  # 0.5-0.7
+
+        return match.id, max(0.5, confidence), days_diff
+
+    def get_final_test(self, final_test_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get a Final Test result by ID.
+
+        Returns:
+            Dict with final test data, tracks, and linked trim info
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            result = session.query(DBFinalTestResult).filter(
+                DBFinalTestResult.id == final_test_id
+            ).first()
+
+            if not result:
+                return None
+
+            # Get tracks
+            tracks = session.query(DBFinalTestTrack).filter(
+                DBFinalTestTrack.final_test_id == final_test_id
+            ).all()
+
+            # Get linked trim if exists
+            linked_trim = None
+            if result.linked_trim_id:
+                linked_trim = self._get_analysis_summary(session, result.linked_trim_id)
+
+            return {
+                "id": result.id,
+                "filename": result.filename,
+                "model": result.model,
+                "serial": result.serial,
+                "test_date": result.test_date,
+                "file_date": result.file_date,
+                "overall_status": result.overall_status.value if result.overall_status else "UNKNOWN",
+                "linearity_pass": result.linearity_pass,
+                "linearity_error": result.linearity_error,
+                "resistance_pass": result.resistance_pass,
+                "resistance_value": result.resistance_value,
+                "linked_trim_id": result.linked_trim_id,
+                "match_confidence": result.match_confidence,
+                "days_since_trim": result.days_since_trim,
+                "linked_trim": linked_trim,
+                "tracks": [
+                    {
+                        "track_id": t.track_id,
+                        "status": t.status.value if t.status else "UNKNOWN",
+                        "linearity_pass": t.linearity_pass,
+                        "linearity_error": t.linearity_error,
+                        "linearity_fail_points": t.linearity_fail_points,
+                        "positions": t.position_data or [],
+                        "errors": t.error_data or [],
+                        "electrical_angles": t.electrical_angle_data or [],
+                        "upper_limits": t.upper_limits or [],
+                        "lower_limits": t.lower_limits or [],
+                    }
+                    for t in tracks
+                ],
+            }
+
+    def _get_analysis_summary(self, session: Session, analysis_id: int) -> Optional[Dict[str, Any]]:
+        """Get a summary of an analysis result for linking."""
+        result = session.query(DBAnalysisResult).filter(
+            DBAnalysisResult.id == analysis_id
+        ).first()
+
+        if not result:
+            return None
+
+        return {
+            "id": result.id,
+            "filename": result.filename,
+            "model": result.model,
+            "serial": result.serial,
+            "file_date": result.file_date,
+            "overall_status": result.overall_status.value if result.overall_status else "UNKNOWN",
+        }
+
+    def get_comparison_pairs(
+        self,
+        model: Optional[str] = None,
+        days_back: int = 90,
+        linked_only: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Get Final Test + Trim comparison pairs.
+
+        Args:
+            model: Filter by model (None = all models)
+            days_back: How far back to look
+            linked_only: If True, only return pairs with linked trim
+
+        Returns:
+            List of comparison pair dicts
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            query = session.query(DBFinalTestResult).filter(
+                or_(
+                    DBFinalTestResult.file_date >= cutoff_date,
+                    DBFinalTestResult.timestamp >= cutoff_date
+                )
+            )
+
+            if model:
+                query = query.filter(DBFinalTestResult.model == model)
+
+            if linked_only:
+                query = query.filter(DBFinalTestResult.linked_trim_id.isnot(None))
+
+            results = query.order_by(desc(DBFinalTestResult.file_date)).limit(500).all()
+
+            pairs = []
+            for ft in results:
+                # Get linked trim info
+                linked_trim = None
+                if ft.linked_trim_id:
+                    linked_trim = self._get_analysis_summary(session, ft.linked_trim_id)
+
+                pairs.append({
+                    "final_test_id": ft.id,
+                    "final_test_filename": ft.filename,
+                    "model": ft.model,
+                    "serial": ft.serial,
+                    "final_test_date": ft.file_date or ft.test_date,
+                    "final_test_status": ft.overall_status.value if ft.overall_status else "UNKNOWN",
+                    "linearity_pass": ft.linearity_pass,
+                    "linked_trim_id": ft.linked_trim_id,
+                    "linked_trim": linked_trim,
+                    "match_confidence": ft.match_confidence,
+                    "days_since_trim": ft.days_since_trim,
+                    "is_linked": ft.linked_trim_id is not None,
+                })
+
+            return pairs
+
+    def get_comparison_data(
+        self,
+        final_test_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get full comparison data for overlay chart.
+
+        Returns both Final Test and linked Trim data with track details.
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            # Get final test
+            ft = session.query(DBFinalTestResult).filter(
+                DBFinalTestResult.id == final_test_id
+            ).first()
+
+            if not ft:
+                return None
+
+            # Get final test tracks
+            ft_tracks = session.query(DBFinalTestTrack).filter(
+                DBFinalTestTrack.final_test_id == final_test_id
+            ).all()
+
+            final_test_data = {
+                "id": ft.id,
+                "filename": ft.filename,
+                "model": ft.model,
+                "serial": ft.serial,
+                "test_date": ft.file_date or ft.test_date,
+                "status": ft.overall_status.value if ft.overall_status else "UNKNOWN",
+                "linearity_pass": ft.linearity_pass,
+                "linearity_error": ft.linearity_error,
+                "tracks": [
+                    {
+                        "track_id": t.track_id,
+                        "positions": t.position_data or [],
+                        "errors": t.error_data or [],
+                        "electrical_angles": t.electrical_angle_data or [],
+                        "upper_limits": t.upper_limits or [],
+                        "lower_limits": t.lower_limits or [],
+                        "linearity_error": t.linearity_error,
+                    }
+                    for t in ft_tracks
+                ]
+            }
+
+            # Get linked trim data if exists
+            trim_data = None
+            if ft.linked_trim_id:
+                trim = session.query(DBAnalysisResult).filter(
+                    DBAnalysisResult.id == ft.linked_trim_id
+                ).first()
+
+                if trim:
+                    trim_tracks = session.query(DBTrackResult).filter(
+                        DBTrackResult.analysis_id == ft.linked_trim_id
+                    ).all()
+
+                    trim_data = {
+                        "id": trim.id,
+                        "filename": trim.filename,
+                        "model": trim.model,
+                        "serial": trim.serial,
+                        "file_date": trim.file_date,
+                        "status": trim.overall_status.value if trim.overall_status else "UNKNOWN",
+                        "tracks": [
+                            {
+                                "track_id": t.track_id,
+                                "positions": t.position_data or [],
+                                "errors": t.error_data or [],
+                                "upper_limits": t.upper_limits or [],
+                                "lower_limits": t.lower_limits or [],
+                                "linearity_error": t.final_linearity_error_shifted,
+                                "sigma_gradient": t.sigma_gradient,
+                                "sigma_pass": t.sigma_pass,
+                            }
+                            for t in trim_tracks
+                        ]
+                    }
+
+            return {
+                "final_test": final_test_data,
+                "trim": trim_data,
+                "match_confidence": ft.match_confidence,
+                "days_since_trim": ft.days_since_trim,
+            }
+
+    def get_final_test_models_list(self) -> List[str]:
+        """
+        Get list of unique models from Final Test results.
+        """
+        from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
+
+        with self.session() as session:
+            models = (
+                session.query(DBFinalTestResult.model)
+                .filter(DBFinalTestResult.model.isnot(None))
+                .distinct()
+                .order_by(DBFinalTestResult.model)
+                .all()
+            )
+            return [m[0] for m in models if m[0]]
 
 
 # Global instance for convenience

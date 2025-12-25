@@ -30,7 +30,7 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from laser_trim_analyzer.core.parser import ExcelParser
+from laser_trim_analyzer.core.parser import ExcelParser, detect_file_type
 from laser_trim_analyzer.core.analyzer import Analyzer
 from laser_trim_analyzer.core.models import (
     FileMetadata,
@@ -41,6 +41,7 @@ from laser_trim_analyzer.core.models import (
     BatchSummary,
 )
 from laser_trim_analyzer.config import Config, get_config
+from laser_trim_analyzer.core.final_test_parser import FinalTestParser
 
 # Lazy import ML to avoid circular imports
 if TYPE_CHECKING:
@@ -80,6 +81,7 @@ class Processor:
         """
         self.config = config or get_config()
         self.parser = ExcelParser()
+        self.final_test_parser = FinalTestParser()  # For Final Test files
         self._processed_hashes: set = set()
         self._processed_filenames: set = set()  # Fast filename lookup for incremental mode
 
@@ -117,20 +119,30 @@ class Processor:
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> AnalysisResult:
         """
-        Process a single file.
+        Process a single file (trim or final test).
+
+        Automatically detects file type and routes to appropriate handler.
 
         Args:
             file_path: Path to Excel file
             generate_plots: Whether to generate plot images
 
         Returns:
-            AnalysisResult with all track data
+            AnalysisResult with all track data (for trim files)
+            or special final_test result marker
         """
         start_time = time.time()
         file_path = Path(file_path)
 
         logger.info(f"Processing: {file_path.name}")
 
+        # Detect file type
+        file_type = detect_file_type(file_path)
+
+        if file_type == "final_test":
+            return self._process_final_test_file(file_path, start_time)
+
+        # Process as trim file (existing logic)
         try:
             # Parse file
             parsed = self.parser.parse_file(file_path)
@@ -181,6 +193,108 @@ class Processor:
             return self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 str(e),
+                start_time
+            )
+
+    def _process_final_test_file(self, file_path: Path, start_time: float) -> AnalysisResult:
+        """
+        Process a Final Test file.
+
+        Parses the file, saves to database, and returns a special marker result.
+        Final Test files don't go through the same analysis pipeline as trim files.
+
+        Args:
+            file_path: Path to Final Test Excel file
+            start_time: Processing start time
+
+        Returns:
+            AnalysisResult with file_type='final_test' marker
+        """
+        from laser_trim_analyzer.database import get_database
+
+        try:
+            # Parse the Final Test file
+            parsed = self.final_test_parser.parse_file(file_path)
+
+            metadata = parsed["metadata"]
+            tracks = parsed["tracks"]
+            test_results = parsed["test_results"]
+            file_hash = parsed["file_hash"]
+
+            # Add file path to metadata
+            metadata["file_path"] = str(file_path)
+
+            # Save to database
+            db = get_database()
+            final_test_id = db.save_final_test(
+                metadata=metadata,
+                tracks=tracks,
+                test_results=test_results,
+                file_hash=file_hash
+            )
+
+            processing_time = time.time() - start_time
+
+            # Determine status from test results
+            overall_status = AnalysisStatus.PASS
+            if test_results.get("linearity_pass") is False:
+                overall_status = AnalysisStatus.FAIL
+            elif tracks and any(not t.get("linearity_pass", True) for t in tracks):
+                overall_status = AnalysisStatus.FAIL
+
+            # Create a minimal result to return
+            # This signals to the caller that this was a Final Test file
+            minimal_metadata = FileMetadata(
+                filename=metadata.get("filename", file_path.name),
+                file_path=str(file_path),
+                model=metadata.get("model", "unknown"),
+                serial=metadata.get("serial", "unknown"),
+                system=None,  # Final test doesn't have system type
+                file_date=metadata.get("file_date"),
+            )
+
+            # Create minimal track data for display
+            analyzed_tracks = []
+            for track in tracks:
+                # Create a minimal TrackData for the result
+                track_data = TrackData(
+                    track_id=track.get("track_id", "default"),
+                    status=AnalysisStatus.PASS if track.get("linearity_pass", True) else AnalysisStatus.FAIL,
+                    travel_length=1.0,  # Not applicable for final test
+                    linearity_spec=track.get("linearity_spec") or 0.01,
+                    sigma_gradient=0.0,  # Not applicable for final test
+                    sigma_threshold=0.01,
+                    sigma_pass=True,  # Not applicable for final test
+                    optimal_offset=0.0,
+                    linearity_error=track.get("linearity_error", 0.0),
+                    linearity_pass=track.get("linearity_pass", True),
+                    linearity_fail_points=track.get("linearity_fail_points", 0),
+                    position_data=track.get("positions", []),
+                    error_data=track.get("errors", []),
+                )
+                analyzed_tracks.append(track_data)
+
+            result = AnalysisResult(
+                metadata=minimal_metadata,
+                overall_status=overall_status,
+                processing_time=processing_time,
+                tracks=analyzed_tracks,
+            )
+
+            # Mark this as a final test file for special handling
+            result.file_type = "final_test"
+            result.final_test_id = final_test_id
+
+            logger.info(f"Processed Final Test: {file_path.name} - {overall_status.value} "
+                       f"(ID: {final_test_id}, {processing_time:.2f}s)")
+
+            return result
+
+        except Exception as e:
+            logger.exception(f"Error processing Final Test {file_path.name}: {e}")
+            return self._create_error_result(
+                self._create_minimal_metadata(file_path),
+                f"Final Test error: {e}",
                 start_time
             )
 

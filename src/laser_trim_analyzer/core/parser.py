@@ -21,6 +21,8 @@ from laser_trim_analyzer.utils.constants import (
     SYSTEM_A_CELLS, SYSTEM_B_CELLS,
     SYSTEM_A_IDENTIFIER, SYSTEM_B_IDENTIFIERS,
     EXCEL_EXTENSIONS,
+    FINAL_TEST_SHEET_PATTERNS, FINAL_TEST_ROUT_PREFIX,
+    TRIM_FILE_INDICATORS,
 )
 
 logger = logging.getLogger(__name__)
@@ -638,3 +640,116 @@ class ExcelParser:
             return (avg_upper - avg_lower) / 2
 
         return 0.01
+
+
+# =============================================================================
+# File Type Detection - Distinguish Trim files from Final Test files
+# =============================================================================
+
+def detect_file_type(file_path: Path) -> str:
+    """
+    Detect whether a file is a 'trim' or 'final_test' file.
+
+    Detection logic:
+    1. Check filename for Rout_ prefix (Format 2 final test)
+    2. Check filename for trim indicators (_Trimmed, etc.)
+    3. Check sheet names for trim patterns (SEC1 TRK, Lin Error)
+    4. Check sheet names for final test patterns (Data Table)
+
+    Args:
+        file_path: Path to Excel file
+
+    Returns:
+        'trim' or 'final_test'
+    """
+    file_path = Path(file_path)
+    filename = file_path.name
+
+    # Check for Rout_ prefix (Format 2 final test)
+    if filename.startswith(FINAL_TEST_ROUT_PREFIX):
+        logger.debug(f"Detected final_test (Rout_ prefix): {filename}")
+        return "final_test"
+
+    # Check filename for trim indicators
+    for indicator in TRIM_FILE_INDICATORS:
+        if indicator in filename:
+            logger.debug(f"Detected trim (filename indicator '{indicator}'): {filename}")
+            return "trim"
+
+    # Need to check sheet names
+    try:
+        xl = pd.ExcelFile(file_path)
+        sheet_names = xl.sheet_names
+
+        # Check for trim indicators in sheet names
+        for sheet in sheet_names:
+            for indicator in TRIM_FILE_INDICATORS:
+                if indicator in sheet:
+                    logger.debug(f"Detected trim (sheet indicator '{indicator}' in '{sheet}'): {filename}")
+                    return "trim"
+
+        # Check for final test indicators in sheet names
+        for sheet in sheet_names:
+            for pattern in FINAL_TEST_SHEET_PATTERNS:
+                if pattern.lower() in sheet.lower():
+                    # Additional check: "Sheet1" alone isn't enough
+                    # Look for "Data Table" specifically for final test
+                    if pattern == "Sheet1":
+                        # Need more evidence - check if Data Table exists
+                        if "Data Table" in sheet_names:
+                            logger.debug(f"Detected final_test (has Data Table sheet): {filename}")
+                            return "final_test"
+                    else:
+                        logger.debug(f"Detected final_test (sheet pattern '{pattern}'): {filename}")
+                        return "final_test"
+
+        # Final heuristic: if file has only "Sheet1" and no trim indicators,
+        # check the content structure
+        if "Sheet1" in sheet_names and len(sheet_names) <= 3:
+            # Could be final test - check for specific cell patterns
+            try:
+                df = pd.read_excel(file_path, sheet_name="Sheet1", header=None, nrows=5)
+                # Final test format has specific header patterns
+                # Check if row 0 has model info around column L (11)
+                if df.shape[1] > 11:
+                    cell_val = df.iloc[0, 11] if pd.notna(df.iloc[0, 11]) else ""
+                    if isinstance(cell_val, str) and any(c.isdigit() for c in cell_val):
+                        # Has model-like value in expected position
+                        logger.debug(f"Detected final_test (content structure): {filename}")
+                        return "final_test"
+            except Exception:
+                pass
+
+        # Default to trim (existing behavior)
+        logger.debug(f"Defaulting to trim: {filename}")
+        return "trim"
+
+    except Exception as e:
+        logger.warning(f"Error detecting file type for {filename}: {e}, defaulting to trim")
+        return "trim"
+
+
+def is_final_test_file(file_path: Path) -> bool:
+    """
+    Quick check if a file is a final test file.
+
+    Args:
+        file_path: Path to Excel file
+
+    Returns:
+        True if final test file, False otherwise
+    """
+    return detect_file_type(file_path) == "final_test"
+
+
+def is_trim_file(file_path: Path) -> bool:
+    """
+    Quick check if a file is a trim file.
+
+    Args:
+        file_path: Path to Excel file
+
+    Returns:
+        True if trim file, False otherwise
+    """
+    return detect_file_type(file_path) == "trim"

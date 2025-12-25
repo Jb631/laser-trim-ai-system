@@ -960,3 +960,210 @@ class ProcessedFile(Base):
 
     def __repr__(self):
         return f"<ProcessedFile(id={self.id}, filename='{self.filename}', hash='{self.file_hash[:8]}...', success={self.success})>"
+
+
+# =============================================================================
+# Final Test Tables - For post-assembly test data comparison with laser trim
+# =============================================================================
+
+class FinalTestResult(Base):
+    """
+    Final Test file-level results.
+
+    Stores results from final test stand (post-assembly testing).
+    Linked to AnalysisResult by model + serial + date proximity.
+
+    Production-ready with proper validation and constraints.
+    """
+    __tablename__ = 'final_test_results'
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # File identification - required fields
+    filename = Column(String(255), nullable=False)
+    file_path = Column(Text)
+    file_hash = Column(String(64))  # SHA256 hash for deduplication
+    file_date = Column(DateTime)  # From filename parsing
+
+    # Basic properties - required for production
+    model = Column(String(50), nullable=False)
+    serial = Column(String(100), nullable=False)
+    system = Column(Enum(SystemType))  # May be None for final test
+
+    # Test results
+    test_date = Column(DateTime)  # Actual test timestamp from file
+    overall_status = Column(Enum(StatusType), nullable=False)
+
+    # Individual test results (stored for future use)
+    linearity_pass = Column(Boolean)
+    linearity_error = Column(Float)
+    resistance_pass = Column(Boolean)
+    resistance_value = Column(Float)
+    resistance_tolerance = Column(Float)
+    electrical_angle_pass = Column(Boolean)
+    hysteresis_pass = Column(Boolean)
+    phasing_pass = Column(Boolean)
+
+    # Processing metadata
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    processing_time = Column(Float)
+    software_version = Column(String(20))
+
+    # Link to matching trim result (auto-matched by model+serial+date)
+    linked_trim_id = Column(Integer, ForeignKey('analysis_results.id', ondelete='SET NULL'))
+    match_confidence = Column(Float)  # 0-1, how confident the match is
+    days_since_trim = Column(Integer)  # Days between trim and final test
+
+    # Relationships
+    linked_trim = relationship("AnalysisResult", backref="final_test_results", foreign_keys=[linked_trim_id])
+    tracks = relationship(
+        "FinalTestTrack",
+        back_populates="final_test",
+        cascade="all, delete-orphan",
+        lazy="select"
+    )
+
+    # Production-ready indexes for performance
+    __table_args__ = (
+        Index('idx_ft_filename_date', 'filename', 'file_date'),
+        Index('idx_ft_model_serial', 'model', 'serial'),
+        Index('idx_ft_model_serial_date', 'model', 'serial', 'file_date'),
+        Index('idx_ft_timestamp', 'timestamp'),
+        Index('idx_ft_status', 'overall_status'),
+        Index('idx_ft_linked_trim', 'linked_trim_id'),
+        Index('idx_ft_test_date', 'test_date'),
+        # Prevent duplicate processing of same file
+        UniqueConstraint('filename', 'file_date', 'model', 'serial', name='uq_final_test_file'),
+        # Data validation constraints
+        CheckConstraint("LENGTH(TRIM(filename)) > 0", name='check_ft_filename_not_empty'),
+        CheckConstraint("LENGTH(TRIM(model)) > 0", name='check_ft_model_not_empty'),
+        CheckConstraint("LENGTH(TRIM(serial)) > 0", name='check_ft_serial_not_empty'),
+        CheckConstraint("processing_time >= 0", name='check_ft_processing_time_positive'),
+        CheckConstraint("match_confidence >= 0 AND match_confidence <= 1", name='check_ft_match_confidence_range'),
+        CheckConstraint("days_since_trim >= 0", name='check_ft_days_since_trim_positive'),
+    )
+
+    @validates('filename')
+    def validate_filename(self, key, filename):
+        """Validate filename is not empty."""
+        if not filename or not filename.strip():
+            raise ValueError("Filename cannot be empty")
+        return filename.strip()
+
+    @validates('model')
+    def validate_model(self, key, model):
+        """Validate model is not empty."""
+        if not model or not model.strip():
+            raise ValueError("Model cannot be empty")
+        return model.strip()
+
+    @validates('serial')
+    def validate_serial(self, key, serial):
+        """Validate serial is not empty."""
+        if not serial or not serial.strip():
+            raise ValueError("Serial cannot be empty")
+        return serial.strip()
+
+    @validates('match_confidence')
+    def validate_match_confidence(self, key, match_confidence):
+        """Validate match_confidence is between 0 and 1."""
+        if match_confidence is not None:
+            if match_confidence < 0 or match_confidence > 1:
+                raise ValueError("Match confidence must be between 0 and 1")
+        return match_confidence
+
+    @validates('overall_status')
+    def validate_overall_status(self, key, overall_status):
+        """Validate overall_status is a valid enum value."""
+        if overall_status is None:
+            return StatusType.ERROR
+        if isinstance(overall_status, str):
+            if not overall_status or overall_status.strip() == '':
+                return StatusType.ERROR
+            try:
+                return StatusType(overall_status)
+            except ValueError:
+                return StatusType.ERROR
+        return overall_status
+
+    def __repr__(self):
+        return f"<FinalTestResult(id={self.id}, filename='{self.filename}', model='{self.model}', serial='{self.serial}', linked_trim_id={self.linked_trim_id})>"
+
+
+class FinalTestTrack(Base):
+    """
+    Final Test track-level data.
+
+    Stores linearity measurements from final test for comparison with trim data.
+    Similar to TrackResult but simpler - focused on linearity comparison.
+
+    Production-ready with proper validation.
+    """
+    __tablename__ = 'final_test_tracks'
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Foreign key to final test result - required
+    final_test_id = Column(Integer, ForeignKey('final_test_results.id'), nullable=False)
+
+    # Track identification
+    track_id = Column(String(20), nullable=False, default='default')
+    status = Column(Enum(StatusType), nullable=False)
+
+    # Core linearity data for comparison
+    linearity_spec = Column(Float)
+    linearity_error = Column(Float)
+    linearity_pass = Column(Boolean)
+    linearity_fail_points = Column(Integer)
+
+    # Raw data for overlay chart (JSON arrays)
+    position_data = Column(SafeJSON, nullable=True)  # Array of position values
+    error_data = Column(SafeJSON, nullable=True)  # Array of error values
+    electrical_angle_data = Column(SafeJSON, nullable=True)  # For alignment with trim data
+    upper_limits = Column(SafeJSON, nullable=True)  # Spec limits
+    lower_limits = Column(SafeJSON, nullable=True)
+
+    # Additional metrics (for future use)
+    max_deviation = Column(Float)
+    max_deviation_position = Column(Float)
+
+    # Relationships
+    final_test = relationship("FinalTestResult", back_populates="tracks")
+
+    # Production-ready indexes and constraints
+    __table_args__ = (
+        Index('idx_ftt_final_test', 'final_test_id', 'track_id'),
+        Index('idx_ftt_status', 'status'),
+        Index('idx_ftt_linearity_pass', 'linearity_pass'),
+        # Ensure unique track per final test
+        UniqueConstraint('final_test_id', 'track_id', name='uq_final_test_track'),
+        # Data validation constraints
+        CheckConstraint("LENGTH(TRIM(track_id)) > 0", name='check_ftt_track_id_not_empty'),
+        CheckConstraint('linearity_fail_points >= 0', name='check_ftt_linearity_fail_points_positive'),
+    )
+
+    @validates('track_id')
+    def validate_track_id(self, key, track_id):
+        """Validate track_id is not empty."""
+        if not track_id or not track_id.strip():
+            raise ValueError("Track ID cannot be empty")
+        return track_id.strip()
+
+    @validates('status')
+    def validate_status(self, key, status):
+        """Validate status is a valid enum value."""
+        if status is None:
+            return StatusType.ERROR
+        if isinstance(status, str):
+            if not status or status.strip() == '':
+                return StatusType.ERROR
+            try:
+                return StatusType(status)
+            except ValueError:
+                return StatusType.ERROR
+        return status
+
+    def __repr__(self):
+        return f"<FinalTestTrack(id={self.id}, final_test_id={self.final_test_id}, track_id='{self.track_id}', status='{self.status}')>"

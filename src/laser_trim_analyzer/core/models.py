@@ -177,6 +177,10 @@ class AnalysisResult(BaseAnalysisModel):
     # Database reference
     db_id: Optional[int] = Field(None, description="Database record ID")
 
+    # File type marker (for distinguishing trim vs final test)
+    file_type: str = Field(default="trim", description="File type: 'trim' or 'final_test'")
+    final_test_id: Optional[int] = Field(None, description="Database ID for final test records")
+
     @field_validator('tracks')
     @classmethod
     def validate_tracks(cls, v: List[TrackData], info) -> List[TrackData]:
