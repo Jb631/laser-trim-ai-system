@@ -39,6 +39,7 @@ from laser_trim_analyzer.core.models import (
     AnalysisStatus,
     ProcessingStatus,
     BatchSummary,
+    SystemType,
 )
 from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
@@ -249,7 +250,7 @@ class Processor:
                 file_path=str(file_path),
                 model=metadata.get("model", "unknown"),
                 serial=metadata.get("serial", "unknown"),
-                system=None,  # Final test doesn't have system type
+                system=SystemType.UNKNOWN,  # Final test doesn't have system type
                 file_date=metadata.get("file_date"),
             )
 
