@@ -257,21 +257,26 @@ class Processor:
             # Create minimal track data for display
             analyzed_tracks = []
             for track in tracks:
+                # Handle None values explicitly (dict.get returns None if key exists with None value)
+                linearity_pass = track.get("linearity_pass")
+                if linearity_pass is None:
+                    linearity_pass = True  # Default to pass if unknown
+
                 # Create a minimal TrackData for the result
                 track_data = TrackData(
                     track_id=track.get("track_id", "default"),
-                    status=AnalysisStatus.PASS if track.get("linearity_pass", True) else AnalysisStatus.FAIL,
+                    status=AnalysisStatus.PASS if linearity_pass else AnalysisStatus.FAIL,
                     travel_length=1.0,  # Not applicable for final test
                     linearity_spec=track.get("linearity_spec") or 0.01,
                     sigma_gradient=0.0,  # Not applicable for final test
                     sigma_threshold=0.01,
                     sigma_pass=True,  # Not applicable for final test
                     optimal_offset=0.0,
-                    linearity_error=track.get("linearity_error", 0.0),
-                    linearity_pass=track.get("linearity_pass", True),
-                    linearity_fail_points=track.get("linearity_fail_points", 0),
-                    position_data=track.get("positions", []),
-                    error_data=track.get("errors", []),
+                    linearity_error=track.get("linearity_error") or 0.0,
+                    linearity_pass=linearity_pass,
+                    linearity_fail_points=track.get("linearity_fail_points") or 0,
+                    position_data=track.get("positions") or [],
+                    error_data=track.get("errors") or [],
                 )
                 analyzed_tracks.append(track_data)
 
@@ -648,6 +653,7 @@ class Processor:
         """Load processed file info from database into memory cache.
 
         Loads filenames for fast O(1) lookup during batch processing.
+        Only loads successfully processed files - errors will be retried.
         Filename matching handles 99% of incremental cases (same file = same name).
         Hash matching is available but not used by default since it requires
         reading entire file contents (slow for 70K+ files).
@@ -661,11 +667,13 @@ class Processor:
             db = get_database()
             with db.session() as session:
                 # Load filenames for fast lookup (much faster than hash comparison)
-                # We only need filenames for incremental checking
-                filenames = session.query(DBProcessedFile.filename).all()
+                # Only load successfully processed files - errors should be retried
+                filenames = session.query(DBProcessedFile.filename).filter(
+                    DBProcessedFile.success == True
+                ).all()
                 self._processed_filenames = set(row.filename for row in filenames if row.filename)
 
-            logger.info(f"Loaded {len(self._processed_filenames)} processed filenames from database")
+            logger.info(f"Loaded {len(self._processed_filenames)} successfully processed filenames from database")
         except Exception as e:
             logger.warning(f"Could not load processed files from database: {e}")
             self._processed_filenames = set()

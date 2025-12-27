@@ -344,16 +344,17 @@ class DatabaseManager:
 
     def is_file_processed(self, file_path: Union[str, Path]) -> bool:
         """
-        Check if a file has already been processed.
+        Check if a file has already been successfully processed.
 
         Uses SHA-256 hash for accurate duplicate detection even if file
-        was moved or renamed.
+        was moved or renamed. Only returns True for successful processing -
+        errors will be retried.
 
         Args:
             file_path: Path to the file
 
         Returns:
-            True if file was already processed
+            True if file was already successfully processed
         """
         file_path = Path(file_path)
 
@@ -363,9 +364,13 @@ class DatabaseManager:
         file_hash = self._calculate_file_hash(file_path)
 
         with self.session() as session:
+            # Only consider successfully processed files - errors should be retried
             exists = (
                 session.query(DBProcessedFile)
-                .filter(DBProcessedFile.file_hash == file_hash)
+                .filter(
+                    DBProcessedFile.file_hash == file_hash,
+                    DBProcessedFile.success == True
+                )
                 .first()
             ) is not None
 

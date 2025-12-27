@@ -67,7 +67,7 @@ class FileMetadata(BaseAnalysisModel):
     """File information and metadata."""
     filename: str = Field(..., description="Name of the file")
     file_path: Path = Field(..., description="Full path to the file")
-    file_date: datetime = Field(..., description="File modification date")
+    file_date: Optional[datetime] = Field(None, description="File modification date")
     test_date: Optional[datetime] = Field(None, description="Trim date from Excel")
     model: str = Field(..., description="Model number")
     serial: str = Field(..., description="Serial number")
