@@ -1167,3 +1167,159 @@ class FinalTestTrack(Base):
 
     def __repr__(self):
         return f"<FinalTestTrack(id={self.id}, final_test_id={self.final_test_id}, track_id='{self.track_id}', status='{self.status}')>"
+
+
+# =============================================================================
+# Per-Model ML State - Stores learned thresholds, baselines, and metrics
+# =============================================================================
+
+class ModelMLState(Base):
+    """
+    Per-model ML state and statistics.
+
+    Stores learned parameters for each product model:
+    - Threshold optimization results
+    - Predictor training metrics
+    - Profile statistics
+    - Drift detection baselines
+
+    Part of the per-model ML redesign.
+    """
+    __tablename__ = 'model_ml_state'
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Model identification - unique per model
+    model = Column(String(50), unique=True, nullable=False)
+
+    # Training metadata
+    is_trained = Column(Boolean, default=False, nullable=False)
+    training_date = Column(DateTime)
+    training_samples = Column(Integer, default=0)
+    trim_samples = Column(Integer, default=0)
+    final_test_samples = Column(Integer, default=0)
+
+    # Learned threshold
+    sigma_threshold = Column(Float)
+    threshold_confidence = Column(Float)
+    threshold_method = Column(String(20))  # 'separation', 'percentile', 'weighted', 'fallback'
+    n_pass = Column(Integer, default=0)
+    n_fail = Column(Integer, default=0)
+
+    # Threshold statistics
+    pass_sigma_mean = Column(Float)
+    pass_sigma_std = Column(Float)
+    pass_sigma_max = Column(Float)
+    fail_sigma_min = Column(Float)
+    fail_sigma_mean = Column(Float)
+    avg_fail_severity = Column(Float)
+
+    # Predictor metrics
+    predictor_trained = Column(Boolean, default=False)
+    predictor_accuracy = Column(Float)
+    predictor_precision = Column(Float)
+    predictor_recall = Column(Float)
+    predictor_f1 = Column(Float)
+    predictor_auc = Column(Float)
+    feature_importance = Column(JSON)  # Dict of feature name -> importance
+
+    # Profile statistics
+    sigma_mean = Column(Float)
+    sigma_std = Column(Float)
+    sigma_p5 = Column(Float)
+    sigma_p50 = Column(Float)
+    sigma_p95 = Column(Float)
+    error_mean = Column(Float)
+    error_std = Column(Float)
+    pass_rate = Column(Float)
+    fail_rate = Column(Float)
+    linearity_pass_rate = Column(Float)
+    avg_fail_points = Column(Float)
+    track_correlation = Column(Float)
+    spec_margin_percent = Column(Float)
+    difficulty_score = Column(Float)
+    quality_percentile = Column(Float)
+
+    # Drift detection baselines
+    drift_has_baseline = Column(Boolean, default=False)
+    drift_baseline_mean = Column(Float)
+    drift_baseline_std = Column(Float)
+    drift_baseline_p5 = Column(Float)
+    drift_baseline_p50 = Column(Float)
+    drift_baseline_p95 = Column(Float)
+    drift_baseline_samples = Column(Integer, default=0)
+
+    # CUSUM/EWMA state (for online detection)
+    cusum_pos = Column(Float, default=0)
+    cusum_neg = Column(Float, default=0)
+    ewma_value = Column(Float)
+    is_drifting = Column(Boolean, default=False)
+    drift_direction = Column(String(10))  # 'up', 'down', or NULL
+    drift_start_date = Column(DateTime)
+    samples_since_baseline = Column(Integer, default=0)
+
+    # Common spec for this model
+    linearity_spec = Column(Float)
+
+    # Timestamps
+    created_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Production-ready indexes
+    __table_args__ = (
+        Index('idx_mlstate_model', 'model'),
+        Index('idx_mlstate_trained', 'is_trained'),
+        Index('idx_mlstate_drifting', 'is_drifting'),
+        Index('idx_mlstate_training_date', 'training_date'),
+        # Data validation constraints
+        CheckConstraint("LENGTH(TRIM(model)) > 0", name='check_mlstate_model_not_empty'),
+        CheckConstraint('threshold_confidence >= 0 AND threshold_confidence <= 1', name='check_mlstate_confidence_range'),
+        CheckConstraint('predictor_accuracy >= 0 AND predictor_accuracy <= 1', name='check_mlstate_accuracy_range'),
+        CheckConstraint('pass_rate >= 0 AND pass_rate <= 1', name='check_mlstate_pass_rate_range'),
+        CheckConstraint('difficulty_score >= 0 AND difficulty_score <= 1', name='check_mlstate_difficulty_range'),
+        CheckConstraint("drift_direction IN ('up', 'down') OR drift_direction IS NULL", name='check_mlstate_drift_direction'),
+    )
+
+    @validates('model')
+    def validate_model(self, key, model):
+        """Validate model is not empty."""
+        if not model or not model.strip():
+            raise ValueError("Model cannot be empty")
+        return model.strip()
+
+    @validates('threshold_confidence')
+    def validate_threshold_confidence(self, key, confidence):
+        """Validate threshold_confidence is between 0 and 1."""
+        if confidence is not None:
+            if confidence < 0 or confidence > 1:
+                raise ValueError("Threshold confidence must be between 0 and 1")
+        return confidence
+
+    @validates('predictor_accuracy')
+    def validate_predictor_accuracy(self, key, accuracy):
+        """Validate predictor_accuracy is between 0 and 1."""
+        if accuracy is not None:
+            if accuracy < 0 or accuracy > 1:
+                raise ValueError("Predictor accuracy must be between 0 and 1")
+        return accuracy
+
+    @validates('pass_rate')
+    def validate_pass_rate(self, key, pass_rate):
+        """Validate pass_rate is between 0 and 1."""
+        if pass_rate is not None:
+            if pass_rate < 0 or pass_rate > 1:
+                raise ValueError("Pass rate must be between 0 and 1")
+        return pass_rate
+
+    @validates('drift_direction')
+    def validate_drift_direction(self, key, direction):
+        """Validate drift_direction is valid."""
+        if direction is not None:
+            valid = ['up', 'down']
+            if direction not in valid:
+                raise ValueError(f"Drift direction must be one of: {valid}")
+        return direction
+
+    def __repr__(self):
+        return f"<ModelMLState(model='{self.model}', trained={self.is_trained}, threshold={self.sigma_threshold})>"

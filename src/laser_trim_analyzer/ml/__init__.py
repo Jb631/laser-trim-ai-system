@@ -1,36 +1,77 @@
 """
-Machine Learning modules for v3.
+Machine Learning modules for Laser Trim Analyzer v3.
 
-Modules:
-- threshold: ML-based threshold optimization (RandomForestRegressor)
-- drift: Hybrid drift detection (CUSUM + EWMA + IsolationForest)
-
-Simplified from v2's complex ML architecture:
-- v2: ~1,800 lines across 6 files
-- v3: ~650 lines across 2 files
+Per-Model ML System:
+- predictor: Per-model failure probability prediction
+- threshold_optimizer: Per-model threshold optimization
+- drift_detector: Per-model drift detection
+- profiler: Per-model statistical profiling
+- manager: Orchestrates all per-model ML
 """
 
-from laser_trim_analyzer.ml.threshold import (
-    ThresholdOptimizer,
-    ThresholdConfig,
-    TrainingResult,
+from laser_trim_analyzer.ml.predictor import (
+    ModelPredictor,
+    PredictorConfig,
+    PredictorMetrics,
+    PredictorTrainingResult,
+    extract_features,
+    FEATURE_COLUMNS,
 )
 
-from laser_trim_analyzer.ml.drift import (
-    DriftDetector,
-    DriftConfig,
+from laser_trim_analyzer.ml.threshold_optimizer import (
+    ModelThresholdOptimizer,
+    ThresholdResult,
+    ThresholdOptimizerState,
+)
+
+from laser_trim_analyzer.ml.drift_detector import (
+    ModelDriftDetector,
     DriftResult,
     DriftDirection,
+    DriftDetectorState,
+)
+
+from laser_trim_analyzer.ml.profiler import (
+    ModelProfiler,
+    ModelProfile,
+    ProfileStatistics,
+    ModelInsight,
+    calculate_cross_model_metrics,
+)
+
+from laser_trim_analyzer.ml.manager import (
+    MLManager,
+    ModelTrainingResult,
+    TrainingProgress,
+    ApplyProgress,
 )
 
 __all__ = [
-    # Threshold optimization
-    "ThresholdOptimizer",
-    "ThresholdConfig",
-    "TrainingResult",
-    # Drift detection
-    "DriftDetector",
-    "DriftConfig",
+    # Predictor
+    "ModelPredictor",
+    "PredictorConfig",
+    "PredictorMetrics",
+    "PredictorTrainingResult",
+    "extract_features",
+    "FEATURE_COLUMNS",
+    # Threshold Optimizer
+    "ModelThresholdOptimizer",
+    "ThresholdResult",
+    "ThresholdOptimizerState",
+    # Drift Detector
+    "ModelDriftDetector",
     "DriftResult",
     "DriftDirection",
+    "DriftDetectorState",
+    # Profiler
+    "ModelProfiler",
+    "ModelProfile",
+    "ProfileStatistics",
+    "ModelInsight",
+    "calculate_cross_model_metrics",
+    # Manager
+    "MLManager",
+    "ModelTrainingResult",
+    "TrainingProgress",
+    "ApplyProgress",
 ]

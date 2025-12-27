@@ -11,7 +11,7 @@ Memory-safe design for 8GB RAM systems:
 - Monitors memory and throttles if needed
 
 ML Integration:
-- Optional ThresholdOptimizer for ML-based thresholds
+- Per-model thresholds from MLManager (loaded from database)
 - Automatic fallback to formula when ML unavailable
 """
 
@@ -20,7 +20,7 @@ import time
 import hashlib
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Callable, Generator, TYPE_CHECKING
+from typing import Dict, List, Optional, Callable, Generator
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -44,10 +44,6 @@ from laser_trim_analyzer.core.models import (
 from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
 
-# Lazy import ML to avoid circular imports
-if TYPE_CHECKING:
-    from laser_trim_analyzer.ml.threshold import ThresholdOptimizer
-
 logger = logging.getLogger(__name__)
 
 # Memory thresholds for 8GB systems
@@ -65,7 +61,7 @@ class Processor:
     - Incremental mode (skip already processed files)
     - Progress callbacks for UI integration
     - Auto-strategy based on file count
-    - ML-based threshold optimization (optional)
+    - Per-model ML thresholds (loaded from database)
     """
 
     def __init__(
@@ -78,7 +74,7 @@ class Processor:
 
         Args:
             config: Configuration object
-            use_ml: Whether to attempt loading ML models
+            use_ml: Whether to attempt loading ML thresholds from database
         """
         self.config = config or get_config()
         self.parser = ExcelParser()
@@ -86,37 +82,40 @@ class Processor:
         self._processed_hashes: set = set()
         self._processed_filenames: set = set()  # Fast filename lookup for incremental mode
 
-        # Try to load ML threshold optimizer
-        self.threshold_optimizer: Optional["ThresholdOptimizer"] = None
+        # Load per-model thresholds from database
+        self._model_thresholds: Dict[str, float] = {}
         if use_ml:
-            self._load_ml_models()
+            self._load_ml_thresholds()
 
-        # Create analyzer with optional ML
+        # Create analyzer with per-model thresholds
         self.analyzer = Analyzer(
-            threshold_optimizer=self.threshold_optimizer
+            model_thresholds=self._model_thresholds
         )
 
-    def _load_ml_models(self) -> None:
-        """Attempt to load trained ML models."""
+    def _load_ml_thresholds(self) -> None:
+        """Load trained per-model thresholds from database."""
         try:
-            from laser_trim_analyzer.ml.threshold import ThresholdOptimizer
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.ml import MLManager
 
-            # Get model path from config
-            model_path = self.config.models.path / "threshold_optimizer.pkl"
+            db = get_database()
+            ml_manager = MLManager(db)
+            ml_manager.load_all()
 
-            if model_path.exists():
-                self.threshold_optimizer = ThresholdOptimizer()
-                if self.threshold_optimizer.load(model_path):
-                    logger.info("Loaded threshold optimizer from disk")
-                else:
-                    self.threshold_optimizer = None
-                    logger.info("Failed to load threshold optimizer, using formula")
+            # Extract thresholds from trained models
+            for model_name in ml_manager.trained_models:
+                optimizer = ml_manager.threshold_optimizers.get(model_name)
+                if optimizer and optimizer.is_calculated:
+                    self._model_thresholds[model_name] = optimizer.threshold
+
+            if self._model_thresholds:
+                logger.info(f"Loaded ML thresholds for {len(self._model_thresholds)} models")
             else:
-                logger.debug("No threshold optimizer model found, using formula")
+                logger.debug("No trained ML thresholds found, using formula")
 
         except Exception as e:
-            logger.warning(f"Could not load ML models: {e}")
-            self.threshold_optimizer = None
+            logger.debug(f"Could not load ML thresholds: {e}")
+            self._model_thresholds = {}
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> AnalysisResult:
         """
@@ -236,15 +235,7 @@ class Processor:
 
             processing_time = time.time() - start_time
 
-            # Determine status from test results
-            overall_status = AnalysisStatus.PASS
-            if test_results.get("linearity_pass") is False:
-                overall_status = AnalysisStatus.FAIL
-            elif tracks and any(not t.get("linearity_pass", True) for t in tracks):
-                overall_status = AnalysisStatus.FAIL
-
-            # Create a minimal result to return
-            # This signals to the caller that this was a Final Test file
+            # Create minimal metadata for result
             minimal_metadata = FileMetadata(
                 filename=metadata.get("filename", file_path.name),
                 file_path=str(file_path),
@@ -253,6 +244,23 @@ class Processor:
                 system=SystemType.UNKNOWN,  # Final test doesn't have system type
                 file_date=metadata.get("file_date"),
             )
+
+            # Handle Final Test files with no track data
+            # This can happen with some file formats or parsing failures
+            if not tracks:
+                logger.warning(f"Final Test file has no track data: {file_path.name}")
+                return self._create_error_result(
+                    minimal_metadata,
+                    "Final Test file has no track data",
+                    start_time
+                )
+
+            # Determine status from test results
+            overall_status = AnalysisStatus.PASS
+            if test_results.get("linearity_pass") is False:
+                overall_status = AnalysisStatus.FAIL
+            elif any(not t.get("linearity_pass", True) for t in tracks):
+                overall_status = AnalysisStatus.FAIL
 
             # Create minimal track data for display
             analyzed_tracks = []

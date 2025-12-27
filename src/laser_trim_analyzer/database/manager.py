@@ -1790,7 +1790,7 @@ class DatabaseManager:
         serial_clean = serial.lower().strip()
 
         # Query for matching trim results
-        # Must be: same model, same serial, trim date < test date, within 60 days
+        # Must be: same model, same serial, trim date <= test date (same day allowed), within 60 days
         cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
 
         candidates = (
@@ -1799,7 +1799,7 @@ class DatabaseManager:
                 DBAnalysisResult.model == model,
                 func.lower(DBAnalysisResult.serial) == serial_clean,
                 DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date < test_date,
+                DBAnalysisResult.file_date <= test_date,  # Allow same-day matches
                 DBAnalysisResult.file_date >= cutoff_date,
             )
             .order_by(desc(DBAnalysisResult.file_date))  # Most recent first
@@ -1814,7 +1814,7 @@ class DatabaseManager:
                 .filter(
                     DBAnalysisResult.model == model,
                     DBAnalysisResult.file_date.isnot(None),
-                    DBAnalysisResult.file_date < test_date,
+                    DBAnalysisResult.file_date <= test_date,  # Allow same-day matches
                     DBAnalysisResult.file_date >= cutoff_date,
                 )
                 .order_by(desc(DBAnalysisResult.file_date))

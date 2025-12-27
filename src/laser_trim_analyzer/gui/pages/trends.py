@@ -799,36 +799,48 @@ class TrendsPage(ctk.CTkFrame):
         ))
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Get ML recommendations for current model."""
+        """Get ML recommendations for current model using per-model ML system."""
         try:
-            from laser_trim_analyzer.ml.threshold import ThresholdOptimizer
-            from laser_trim_analyzer.config import get_config
-            config = get_config()
-            model_path = config.models.path / "threshold_optimizer.pkl"
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.ml import MLManager
 
-            optimizer = ThresholdOptimizer()
-            if model_path.exists():
-                optimizer.load(model_path)
+            db = get_database()
+            ml_manager = MLManager(db)
 
-            if optimizer.is_trained:
-                # Get average values from trend data
-                avg_unit_length = 100.0
-                avg_linearity_spec = 0.01
+            # Try to load trained state
+            ml_manager.load_all()
 
-                if trend_data.get("data_points"):
-                    # Use threshold from data if available
-                    pass
+            # Get threshold from per-model optimizer
+            threshold = ml_manager.get_threshold(self.selected_model)
 
-                threshold, lower, upper = optimizer.predict_with_confidence(
-                    model=self.selected_model,
-                    unit_length=avg_unit_length,
-                    linearity_spec=avg_linearity_spec
-                )
-                return {
+            if threshold is not None:
+                optimizer = ml_manager.threshold_optimizers.get(self.selected_model)
+                profiler = ml_manager.profilers.get(self.selected_model)
+                detector = ml_manager.drift_detectors.get(self.selected_model)
+
+                result = {
                     "recommended_threshold": threshold,
-                    "confidence": 1.0 - (upper - lower) / threshold if threshold > 0 else 0.5,
-                    "basis": f"{optimizer.training_metadata.get('n_samples', 'unknown')} historical samples"
+                    "confidence": optimizer.confidence if optimizer else 0.5,
+                    "method": optimizer.method if optimizer else "formula",
+                    "basis": f"{optimizer.n_samples if optimizer else 0} samples",
                 }
+
+                # Add drift info if available
+                if detector and detector.has_baseline:
+                    result["drift_status"] = "Drifting" if detector.is_drifting else "Stable"
+                    result["drift_direction"] = detector.drift_direction.value if detector.drift_direction else None
+
+                # Add profile insights if available
+                if profiler and profiler.profile:
+                    result["pass_rate"] = profiler.profile.pass_rate
+                    result["difficulty"] = profiler.profile.difficulty_score
+                    result["insights"] = profiler.get_insights()[:3]  # Top 3 insights
+
+                return result
+
+            # No fallback - new per-model system is the only source
+            # Train models in Settings to get ML recommendations
+
         except Exception as e:
             logger.debug(f"ML recommendations not available: {e}")
 
@@ -1098,31 +1110,88 @@ class TrendsPage(ctk.CTkFrame):
             self.detail_stat_labels[key].configure(text="--", text_color="white")
 
     def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]]):
-        """Update ML summary text for all models view."""
+        """Update ML summary text for all models view with ML insights."""
         self.ml_text.configure(state="normal")
         self.ml_text.delete("1.0", "end")
 
-        if not alert_models:
-            self.ml_text.insert("end", "All models performing within acceptable parameters.\n\n")
-            self.ml_text.insert("end", "No immediate action required. Continue monitoring for changes.")
-        else:
-            self.ml_text.insert("end", f"Summary of {len(alert_models)} models requiring attention:\n\n")
+        # Get ML system insights
+        ml_insights = self._get_ml_summary_insights()
 
-            # Count by alert type
-            low_pass_rate = sum(1 for a in alert_models for al in a.get("alerts", []) if al["type"] == "LOW_PASS_RATE")
-            trending_worse = sum(1 for a in alert_models for al in a.get("alerts", []) if al["type"] == "TRENDING_WORSE")
-            high_variance = sum(1 for a in alert_models for al in a.get("alerts", []) if al["type"] == "HIGH_VARIANCE")
+        if ml_insights:
+            # Show model difficulty ranking
+            if ml_insights.get("difficulty_ranking"):
+                self.ml_text.insert("end", "Model Difficulty Ranking:\n")
+                for rank, (model, score) in enumerate(ml_insights["difficulty_ranking"][:5], 1):
+                    label = "Easy" if score < 0.3 else "Medium" if score < 0.6 else "Hard"
+                    self.ml_text.insert("end", f"  {rank}. {model}: {label} ({score:.2f})\n")
+                self.ml_text.insert("end", "\n")
 
-            if low_pass_rate:
-                self.ml_text.insert("end", f"Low Pass Rate: {low_pass_rate} models below 80%\n")
-            if trending_worse:
-                self.ml_text.insert("end", f"Trending Worse: {trending_worse} models declining\n")
-            if high_variance:
-                self.ml_text.insert("end", f"High Variance: {high_variance} models unstable\n")
+            # Show drift status summary
+            drifting = ml_insights.get("drifting_models", [])
+            if drifting:
+                self.ml_text.insert("end", f"Drift Detected: {len(drifting)} model(s)\n")
+                for model, direction in drifting[:3]:
+                    self.ml_text.insert("end", f"  ⚠ {model} ({direction})\n")
+                self.ml_text.insert("end", "\n")
 
-            self.ml_text.insert("end", "\nRecommendation: Review flagged models for process adjustments.")
+            # Show trained models count
+            trained = ml_insights.get("trained_models", 0)
+            if trained > 0:
+                self.ml_text.insert("end", f"ML Status: {trained} models trained\n")
+
+        # Show alert summary if any
+        if alert_models:
+            self.ml_text.insert("end", f"\nAlerts: {len(alert_models)} models requiring attention\n")
+            low_pass = sum(1 for a in alert_models for al in a.get("alerts", []) if al["type"] == "LOW_PASS_RATE")
+            trending = sum(1 for a in alert_models for al in a.get("alerts", []) if al["type"] == "TRENDING_WORSE")
+            if low_pass:
+                self.ml_text.insert("end", f"  • {low_pass} with low pass rate\n")
+            if trending:
+                self.ml_text.insert("end", f"  • {trending} trending worse\n")
+        elif not ml_insights:
+            self.ml_text.insert("end", "All models performing well.\n")
+            self.ml_text.insert("end", "Train models in Settings for ML insights.")
 
         self.ml_text.configure(state="disabled")
+
+    def _get_ml_summary_insights(self) -> Optional[Dict[str, Any]]:
+        """Get ML insights for summary view."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.ml import MLManager
+
+            db = get_database()
+            ml_manager = MLManager(db)
+            ml_manager.load_all()
+
+            if not ml_manager.profilers:
+                return None
+
+            result = {
+                "trained_models": len(ml_manager.profilers),
+                "difficulty_ranking": [],
+                "drifting_models": [],
+            }
+
+            # Get difficulty ranking (hardest first)
+            for model, profiler in ml_manager.profilers.items():
+                if profiler.profile:
+                    result["difficulty_ranking"].append(
+                        (model, profiler.profile.difficulty_score)
+                    )
+            result["difficulty_ranking"].sort(key=lambda x: -x[1])  # Descending
+
+            # Get drifting models
+            for model, detector in ml_manager.drift_detectors.items():
+                if detector.has_baseline and detector.is_drifting:
+                    direction = detector.drift_direction.value if detector.drift_direction else "unknown"
+                    result["drifting_models"].append((model, direction))
+
+            return result
+
+        except Exception as e:
+            logger.debug(f"Could not get ML summary insights: {e}")
+            return None
 
     def _update_detail_alerts(self, model_alerts: Optional[Dict[str, Any]]):
         """Update detail alerts text."""
@@ -1150,16 +1219,49 @@ class TrendsPage(ctk.CTkFrame):
 
         if ml_recommendations is None:
             self.detail_ml_text.insert("end", "ML recommendations not available.\n\n")
-            self.detail_ml_text.insert("end", "Train the threshold optimizer to see model-specific recommendations.")
+            self.detail_ml_text.insert("end", "Train models in Settings to see recommendations.")
         else:
             threshold = ml_recommendations.get("recommended_threshold", 0)
             confidence = ml_recommendations.get("confidence", 0)
             basis = ml_recommendations.get("basis", "historical data")
+            method = ml_recommendations.get("method", "unknown")
+            is_legacy = ml_recommendations.get("legacy", False)
 
-            self.detail_ml_text.insert("end", f"Recommended Threshold:\n")
-            self.detail_ml_text.insert("end", f"  {threshold:.6f}\n\n")
-            self.detail_ml_text.insert("end", f"Confidence: {confidence:.1%}\n")
-            self.detail_ml_text.insert("end", f"Based on: {basis}\n")
+            # Threshold section
+            self.detail_ml_text.insert("end", f"Recommended Threshold: {threshold:.6f}\n")
+            self.detail_ml_text.insert("end", f"  Method: {method}, Confidence: {confidence:.0%}\n")
+            self.detail_ml_text.insert("end", f"  Based on: {basis}\n")
+
+            if is_legacy:
+                self.detail_ml_text.insert("end", "  (Using legacy optimizer - retrain for per-model ML)\n")
+
+            # Drift status section (new ML system only)
+            drift_status = ml_recommendations.get("drift_status")
+            if drift_status:
+                drift_direction = ml_recommendations.get("drift_direction", "")
+                drift_text = f"{drift_status}"
+                if drift_direction:
+                    drift_text += f" ({drift_direction})"
+                status_indicator = "⚠" if drift_status == "Drifting" else "✓"
+                self.detail_ml_text.insert("end", f"\nDrift Status: {status_indicator} {drift_text}\n")
+
+            # Profile insights section (new ML system only)
+            pass_rate = ml_recommendations.get("pass_rate")
+            difficulty = ml_recommendations.get("difficulty")
+            if pass_rate is not None or difficulty is not None:
+                self.detail_ml_text.insert("end", "\nModel Profile:\n")
+                if pass_rate is not None:
+                    self.detail_ml_text.insert("end", f"  Pass Rate: {pass_rate:.1f}%\n")
+                if difficulty is not None:
+                    diff_label = "Easy" if difficulty < 0.3 else "Medium" if difficulty < 0.6 else "Hard"
+                    self.detail_ml_text.insert("end", f"  Difficulty: {diff_label} ({difficulty:.2f})\n")
+
+            # Top insights (new ML system only)
+            insights = ml_recommendations.get("insights", [])
+            if insights:
+                self.detail_ml_text.insert("end", "\nInsights:\n")
+                for insight in insights[:3]:
+                    self.detail_ml_text.insert("end", f"  • {insight}\n")
 
         self.detail_ml_text.configure(state="disabled")
 

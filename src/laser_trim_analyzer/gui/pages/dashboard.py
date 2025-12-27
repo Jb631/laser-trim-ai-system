@@ -116,23 +116,48 @@ class DashboardPage(ctk.CTkFrame):
             color="gray"
         )
 
+        # Alerts Cards Frame (side by side: Recent Alerts + Drift Alerts)
+        alerts_container = ctk.CTkFrame(content, fg_color="transparent")
+        alerts_container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        alerts_container.grid_columnconfigure(0, weight=1)
+        alerts_container.grid_rowconfigure(0, weight=1)
+        alerts_container.grid_rowconfigure(1, weight=1)
+
         # Recent Alerts Card
-        self.alerts_frame = ctk.CTkFrame(content)
-        self.alerts_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.alerts_frame = ctk.CTkFrame(alerts_container)
+        self.alerts_frame.grid(row=0, column=0, padx=0, pady=(0, 5), sticky="nsew")
         self.alerts_frame.grid_columnconfigure(0, weight=1)
         self.alerts_frame.grid_rowconfigure(1, weight=1)
 
         alerts_label = ctk.CTkLabel(
             self.alerts_frame,
             text="Recent Alerts",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        alerts_label.grid(row=0, column=0, padx=15, pady=15, sticky="w")
+        alerts_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
 
-        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=120)
-        self.alerts_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 15))
+        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=60)
+        self.alerts_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
         self.alerts_list.configure(state="disabled")
         self._update_alerts_display([])
+
+        # Drift Alerts Card (from ML system)
+        self.drift_frame = ctk.CTkFrame(alerts_container)
+        self.drift_frame.grid(row=1, column=0, padx=0, pady=(5, 0), sticky="nsew")
+        self.drift_frame.grid_columnconfigure(0, weight=1)
+        self.drift_frame.grid_rowconfigure(1, weight=1)
+
+        drift_label = ctk.CTkLabel(
+            self.drift_frame,
+            text="ML Drift Status",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        drift_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
+
+        self.drift_list = ctk.CTkTextbox(self.drift_frame, height=60)
+        self.drift_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
+        self.drift_list.configure(state="disabled")
+        self._update_drift_display([])
 
         # Trend Chart
         chart_frame = ctk.CTkFrame(content)
@@ -299,18 +324,49 @@ class DashboardPage(ctk.CTkFrame):
             # Get model breakdown
             model_stats = db.get_model_stats(limit=5)
 
+            # Get ML drift status
+            drift_alerts = self._get_drift_alerts(db)
+
             # Update UI on main thread
-            self.after(0, lambda: self._update_display(stats, alerts, model_stats))
+            self.after(0, lambda: self._update_display(stats, alerts, model_stats, drift_alerts))
 
         except Exception as e:
             logger.error(f"Failed to load dashboard data: {e}")
             self.after(0, lambda: self._show_error(str(e)))
 
+    def _get_drift_alerts(self, db) -> List[Dict[str, Any]]:
+        """Get drift status from ML system."""
+        try:
+            from laser_trim_analyzer.ml import MLManager
+
+            ml_manager = MLManager(db)
+            ml_manager.load_all()
+
+            drift_alerts = []
+            for model, detector in ml_manager.drift_detectors.items():
+                if detector.has_baseline and detector.is_drifting:
+                    direction = detector.drift_direction.value if detector.drift_direction else "unknown"
+                    drift_alerts.append({
+                        "model": model,
+                        "status": "Drifting",
+                        "direction": direction,
+                        "severity": "WARNING"
+                    })
+
+            # Sort by model name
+            drift_alerts.sort(key=lambda x: x["model"])
+            return drift_alerts
+
+        except Exception as e:
+            logger.debug(f"Could not get drift alerts: {e}")
+            return []
+
     def _update_display(
         self,
         stats: Dict[str, Any],
         alerts: List[Dict[str, Any]],
-        model_stats: List[Dict[str, Any]]
+        model_stats: List[Dict[str, Any]],
+        drift_alerts: Optional[List[Dict[str, Any]]] = None
     ):
         """Update display with loaded data."""
         # Update health card with sigma and linearity pass rates
@@ -365,6 +421,9 @@ class DashboardPage(ctk.CTkFrame):
         # Update alerts
         self._update_alerts_display(alerts)
 
+        # Update drift alerts
+        self._update_drift_display(drift_alerts or [])
+
         # Update trend chart
         self._update_trend_chart(stats)
 
@@ -398,6 +457,24 @@ class DashboardPage(ctk.CTkFrame):
                 )
 
         self.alerts_list.configure(state="disabled")
+
+    def _update_drift_display(self, drift_alerts: List[Dict[str, Any]]):
+        """Update drift alerts display from ML system."""
+        self.drift_list.configure(state="normal")
+        self.drift_list.delete("1.0", "end")
+
+        if not drift_alerts:
+            self.drift_list.insert("end", "No drift detected - all models stable.\n")
+            self.drift_list.insert("end", "(Train models in Settings to enable drift detection)")
+        else:
+            self.drift_list.insert("end", f"{len(drift_alerts)} model(s) drifting:\n")
+            for alert in drift_alerts[:5]:  # Limit to 5
+                model = alert.get("model", "Unknown")
+                direction = alert.get("direction", "")
+                direction_text = f" ({direction})" if direction else ""
+                self.drift_list.insert("end", f"  ⚠ {model}{direction_text}\n")
+
+        self.drift_list.configure(state="disabled")
 
     def _update_trend_chart(self, stats: Dict[str, Any]):
         """Update trend chart with pass rate data."""

@@ -172,14 +172,14 @@ class SettingsPage(ctk.CTkFrame):
             ctk.CTkLabel(frame, text=value, text_color="gray").grid(row=i, column=1, padx=10, pady=(5, 15 if i == len(settings) else 5), sticky="w")
 
     def _create_ml_section(self, container):
-        """Create ML settings section."""
+        """Create ML settings section with per-model training."""
         frame = ctk.CTkFrame(container)
         frame.grid(sticky="ew", padx=10, pady=10)
         frame.grid_columnconfigure(1, weight=1)
 
         title = ctk.CTkLabel(
             frame,
-            text="Machine Learning",
+            text="Machine Learning (Per-Model)",
             font=ctk.CTkFont(size=16, weight="bold")
         )
         title.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 10), sticky="w")
@@ -188,7 +188,7 @@ class SettingsPage(ctk.CTkFrame):
         self.ml_enabled_var = ctk.BooleanVar(value=self.app.config.ml.enabled)
         ctk.CTkCheckBox(
             frame,
-            text="Enable ML Features (threshold optimization, drift detection)",
+            text="Enable ML Features (per-model thresholds, failure prediction, drift detection)",
             variable=self.ml_enabled_var,
             command=self._toggle_ml
         ).grid(row=1, column=0, columnspan=3, padx=15, pady=5, sticky="w")
@@ -196,53 +196,64 @@ class SettingsPage(ctk.CTkFrame):
         # Train models button
         self.train_btn = ctk.CTkButton(
             frame,
-            text="Train ML Models",
+            text="Train Models",
             command=self._train_models,
-            width=150
+            width=130,
+            fg_color="#2980b9"
         )
         self.train_btn.grid(row=2, column=0, padx=15, pady=(10, 5), sticky="w")
+
+        # Apply to DB button
+        self.apply_btn = ctk.CTkButton(
+            frame,
+            text="Apply to DB",
+            command=self._apply_ml_to_db,
+            width=130,
+            fg_color="#27ae60"
+        )
+        self.apply_btn.grid(row=2, column=1, padx=5, pady=(10, 5), sticky="w")
 
         self.ml_status_label = ctk.CTkLabel(
             frame,
             text="Status: Not trained",
             text_color="gray"
         )
-        self.ml_status_label.grid(row=2, column=1, padx=15, pady=(10, 5), sticky="w")
+        self.ml_status_label.grid(row=2, column=2, padx=15, pady=(10, 5), sticky="w")
 
         # Training requirements note
         ctk.CTkLabel(
             frame,
-            text="Note: Trains ThresholdOptimizer + DriftDetector. Requires 50+ files.",
+            text="Train Models: Learns per-model thresholds, failure predictors, and drift baselines.\n"
+                 "Apply to DB: Updates all records with learned thresholds and failure probabilities.",
             text_color="gray",
             font=ctk.CTkFont(size=11),
             justify="left"
         ).grid(row=3, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
 
-        # Re-analyze all database button
-        self.reanalyze_btn = ctk.CTkButton(
-            frame,
-            text="Re-analyze All DB",
-            command=self._reanalyze_database,
-            width=150
-        )
-        self.reanalyze_btn.grid(row=4, column=0, padx=15, pady=(10, 5), sticky="w")
+        # Progress bar (hidden initially)
+        self.ml_progress = ctk.CTkProgressBar(frame)
+        self.ml_progress.grid(row=4, column=0, columnspan=3, padx=15, pady=5, sticky="ew")
+        self.ml_progress.set(0)
+        self.ml_progress.grid_remove()  # Hide initially
 
-        self.reanalyze_status_label = ctk.CTkLabel(
+        self.ml_progress_label = ctk.CTkLabel(
             frame,
             text="",
-            text_color="gray"
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
         )
-        self.reanalyze_status_label.grid(row=4, column=1, padx=15, pady=(10, 5), sticky="w")
+        self.ml_progress_label.grid(row=5, column=0, columnspan=3, padx=15, pady=(0, 5), sticky="w")
+        self.ml_progress_label.grid_remove()  # Hide initially
 
-        # Re-analyze note
-        ctk.CTkLabel(
+        # Model status summary (collapsed by default)
+        self.model_status_label = ctk.CTkLabel(
             frame,
-            text="Re-analyze All: Updates ALL database records with current ML thresholds.\n"
-                 "This ensures consistent pass/fail status across your entire history.",
+            text="",
             text_color="gray",
             font=ctk.CTkFont(size=11),
             justify="left"
-        ).grid(row=5, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="w")
+        )
+        self.model_status_label.grid(row=6, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
 
     def _create_appearance_section(self, container):
         """Create appearance settings section."""
@@ -325,291 +336,157 @@ class SettingsPage(ctk.CTkFrame):
         logger.info(f"ML features {'enabled' if self.app.config.ml.enabled else 'disabled'}")
 
     def _train_models(self):
-        """Trigger ML model training."""
+        """Trigger per-model ML training."""
         self.train_btn.configure(state="disabled")
-        self.ml_status_label.configure(text="Status: Training...")
+        self.apply_btn.configure(state="disabled")
+        self.ml_status_label.configure(text="Status: Training...", text_color="gray")
+        self.ml_progress.grid()  # Show progress bar
+        self.ml_progress_label.grid()
+        self.ml_progress.set(0)
 
         thread = threading.Thread(target=self._run_training, daemon=True)
         thread.start()
 
     def _run_training(self):
-        """Run ML training in background thread - trains BOTH models."""
+        """Run per-model ML training in background thread."""
         try:
-            import numpy as np
-            import pandas as pd
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import ThresholdOptimizer
-            from laser_trim_analyzer.ml.drift import DriftDetector
-            from laser_trim_analyzer.config import get_config
+            from laser_trim_analyzer.ml import MLManager, TrainingProgress
 
             db = get_database()
-            config = get_config()
 
-            # Get training data from database
-            training_data = db.get_trend_data(days_back=365 * 10, limit=50000)  # Get all available data
+            # Create ML manager
+            ml_manager = MLManager(db)
 
-            if len(training_data) < 50:
-                self.after(0, lambda: self._on_training_complete(
-                    False,
-                    f"Need at least 50 files, found {len(training_data)}"
-                ))
-                return
+            # Progress callback
+            def on_progress(progress: TrainingProgress):
+                if progress.models_total > 0:
+                    pct = progress.models_complete / progress.models_total
+                    self.after(0, lambda p=pct, m=progress.message: self._update_training_progress(p, m))
 
-            # Prepare training DataFrame for ThresholdOptimizer
-            # Required columns: model, unit_length, linearity_spec, sigma_gradient
-            records = []
-            sigma_values = []  # For drift detector baseline
-            for record in training_data:
-                sigma_gradient = record.get("sigma_gradient")
-                sigma_threshold = record.get("sigma_threshold")
-                model = record.get("model")
+            # Train all models
+            results = ml_manager.train_all_models(
+                min_samples=20,
+                progress_callback=on_progress
+            )
 
-                # Skip records without required data
-                if sigma_gradient is None or sigma_threshold is None or not model:
-                    continue
+            # Save trained state
+            ml_manager.save_all()
 
-                records.append({
-                    "model": model,
-                    "unit_length": record.get("unit_length") or record.get("travel_length") or 100.0,
-                    "linearity_spec": record.get("linearity_spec") or 0.01,
-                    "sigma_gradient": sigma_gradient,
-                    "sigma_threshold": sigma_threshold,
-                    "sigma_pass": record.get("sigma_pass", sigma_gradient <= sigma_threshold),
-                })
-                sigma_values.append(sigma_gradient)
+            # Store manager for apply step
+            self._ml_manager = ml_manager
 
-            if len(records) < 50:
-                self.after(0, lambda: self._on_training_complete(
-                    False,
-                    f"Only {len(records)} valid training samples (need 50+)"
-                ))
-                return
+            # Count results
+            trained = sum(1 for r in results.values() if r.success and r.threshold_calculated)
+            predictors = sum(1 for r in results.values() if r.predictor_trained)
+            drift = sum(1 for r in results.values() if r.drift_baseline_set)
 
-            # Create DataFrame
-            df = pd.DataFrame(records)
+            msg = f"Trained {trained} models ({predictors} predictors, {drift} drift baselines)"
+            status_details = self._format_training_status(results)
 
-            # Log data summary
-            unique_models = df["model"].nunique()
-            logger.info(f"Training with {len(df)} samples across {unique_models} models")
-
-            # ===== 1. Train Threshold Optimizer =====
-            optimizer = ThresholdOptimizer()
-            result = optimizer.train(df)
-
-            if not result.success:
-                self.after(0, lambda: self._on_training_complete(
-                    False,
-                    result.error or "Threshold training failed"
-                ))
-                return
-
-            # Save the trained threshold model
-            model_path = config.models.path / "threshold_optimizer.pkl"
-            model_path.parent.mkdir(parents=True, exist_ok=True)
-            optimizer.save(model_path)
-            logger.info(f"Threshold optimizer saved to {model_path}")
-
-            # ===== 2. Train Drift Detector =====
-            drift_msg = ""
-            try:
-                drift_detector = DriftDetector()
-
-                # Set baseline from sigma values
-                sigma_array = np.array(sigma_values)
-                if drift_detector.set_baseline(sigma_array):
-                    # Train anomaly detector on numeric features
-                    drift_detector.train_anomaly_detector(df[["sigma_gradient", "unit_length", "linearity_spec"]])
-
-                    # Save drift detector
-                    drift_path = config.models.path / "drift_detector.pkl"
-                    drift_detector.save(drift_path)
-                    drift_msg = ", Drift detector trained"
-                    logger.info(f"Drift detector saved to {drift_path}")
-            except Exception as e:
-                logger.warning(f"Drift detector training failed (non-critical): {e}")
-                drift_msg = ", Drift detector skipped"
-
-            # Success message with metrics
-            msg = f"Trained on {result.n_samples} samples, R²={result.r2_score:.3f}, {unique_models} models{drift_msg}"
-
-            self.after(0, lambda: self._on_training_complete(True, msg))
+            self.after(0, lambda: self._on_training_complete(True, msg, status_details))
 
         except Exception as e:
             logger.exception(f"ML training failed: {e}")
             self.after(0, lambda: self._on_training_complete(False, str(e)))
 
-    def _on_training_complete(self, success: bool, message: str):
+    def _update_training_progress(self, progress: float, message: str):
+        """Update training progress bar."""
+        self.ml_progress.set(progress)
+        self.ml_progress_label.configure(text=message)
+
+    def _format_training_status(self, results: dict) -> str:
+        """Format training results for display."""
+        lines = []
+        for model_name, result in sorted(results.items()):
+            if result.success:
+                thresh = f"T={result.threshold_value:.5f}" if result.threshold_value else "T=N/A"
+                pred = "P" if result.predictor_trained else "-"
+                drift = "D" if result.drift_baseline_set else "-"
+                lines.append(f"  {model_name}: {thresh} [{pred}{drift}] ({result.n_samples} samples)")
+            else:
+                lines.append(f"  {model_name}: {result.error or 'insufficient data'}")
+        return "\n".join(lines[:10])  # Limit to first 10 for display
+
+    def _apply_ml_to_db(self):
+        """Apply learned ML to database."""
+        if not hasattr(self, '_ml_manager') or not self._ml_manager.trained_models:
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "No Trained Models",
+                "Please train models first before applying to database."
+            )
+            return
+
+        self.train_btn.configure(state="disabled")
+        self.apply_btn.configure(state="disabled")
+        self.ml_status_label.configure(text="Status: Applying...", text_color="gray")
+        self.ml_progress.grid()
+        self.ml_progress_label.grid()
+        self.ml_progress.set(0)
+
+        thread = threading.Thread(target=self._run_apply_ml, daemon=True)
+        thread.start()
+
+    def _run_apply_ml(self):
+        """Run ML application in background thread."""
+        try:
+            from laser_trim_analyzer.ml import ApplyProgress
+
+            # Progress callback
+            def on_progress(progress: ApplyProgress):
+                if progress.records_total > 0:
+                    pct = progress.records_complete / progress.records_total
+                    self.after(0, lambda p=pct, m=progress.message: self._update_training_progress(p, m))
+
+            # Apply to database
+            counts = self._ml_manager.apply_to_database(
+                progress_callback=on_progress,
+                run_drift_detection=True
+            )
+
+            # Format result message
+            msg = f"Updated {counts['updated']} tracks"
+            if counts['drift_alerts']:
+                msg += f", {len(counts['drift_alerts'])} drift alerts"
+            if counts['errors'] > 0:
+                msg += f", {counts['errors']} errors"
+
+            self.after(0, lambda: self._on_apply_complete(True, msg))
+
+        except Exception as e:
+            logger.exception(f"ML apply failed: {e}")
+            self.after(0, lambda: self._on_apply_complete(False, str(e)))
+
+    def _on_apply_complete(self, success: bool, message: str):
+        """Handle apply completion."""
+        self.train_btn.configure(state="normal")
+        self.apply_btn.configure(state="normal")
+        self.ml_progress.grid_remove()
+        self.ml_progress_label.grid_remove()
+
+        if success:
+            self.ml_status_label.configure(text=f"Applied: {message}", text_color="#27ae60")
+            logger.info(f"ML apply successful: {message}")
+        else:
+            self.ml_status_label.configure(text=f"Apply failed: {message[:40]}...", text_color="#e74c3c")
+            logger.error(f"ML apply failed: {message}")
+
+    def _on_training_complete(self, success: bool, message: str, status_details: str = ""):
         """Handle training completion."""
         self.train_btn.configure(state="normal")
+        self.apply_btn.configure(state="normal")
+        self.ml_progress.grid_remove()
+        self.ml_progress_label.grid_remove()
 
         if success:
             self.ml_status_label.configure(text=f"Status: {message}", text_color="#27ae60")
+            if status_details:
+                self.model_status_label.configure(text=status_details)
             logger.info(f"ML training successful: {message}")
         else:
             self.ml_status_label.configure(text=f"Status: Failed - {message[:40]}...", text_color="#e74c3c")
             logger.error(f"ML training failed: {message}")
-
-    def _reanalyze_database(self):
-        """Trigger re-analysis of all database records with current ML thresholds."""
-        from tkinter import messagebox
-
-        # Confirm with user
-        result = messagebox.askyesno(
-            "Re-analyze All Database Records",
-            "This will update ALL records in the database with the current ML thresholds.\n\n"
-            "• Sigma thresholds will be recalculated for each record\n"
-            "• Pass/Fail status will be updated based on new thresholds\n"
-            "• Overall status will be recalculated\n\n"
-            "This may take several minutes for large databases.\n\n"
-            "Continue?"
-        )
-
-        if not result:
-            return
-
-        self.reanalyze_btn.configure(state="disabled")
-        self.reanalyze_status_label.configure(text="Starting...", text_color="gray")
-
-        thread = threading.Thread(target=self._run_reanalysis, daemon=True)
-        thread.start()
-
-    def _run_reanalysis(self):
-        """Run database re-analysis in background thread."""
-        try:
-            from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.database.models import (
-                AnalysisResult as DBAnalysisResult,
-                TrackResult as DBTrackResult,
-                StatusType as DBStatusType,
-            )
-            from laser_trim_analyzer.ml import ThresholdOptimizer
-            from laser_trim_analyzer.config import get_config
-
-            db = get_database()
-            config = get_config()
-
-            # Load the trained ML model
-            optimizer = ThresholdOptimizer()
-            model_path = config.models.path / "threshold_optimizer.pkl"
-
-            if model_path.exists():
-                optimizer.load(model_path)
-                logger.info("Loaded trained ML model for re-analysis")
-            else:
-                logger.info("No trained ML model found, using formula-based thresholds")
-
-            # Get all track records from database
-            with db.session() as session:
-                # Get count first
-                total_tracks = session.query(DBTrackResult).count()
-                total_analyses = session.query(DBAnalysisResult).count()
-
-                if total_tracks == 0:
-                    self.after(0, lambda: self._on_reanalysis_complete(
-                        False, "No records in database"
-                    ))
-                    return
-
-                self.after(0, lambda: self.reanalyze_status_label.configure(
-                    text=f"Processing {total_tracks} tracks...", text_color="gray"
-                ))
-
-                # Process tracks in batches to avoid memory issues
-                batch_size = 500
-                updated_count = 0
-                status_changed = 0
-
-                # Get all analyses with their tracks
-                analyses = session.query(DBAnalysisResult).all()
-
-                for idx, analysis in enumerate(analyses):
-                    analysis_changed = False
-
-                    for track in analysis.tracks:
-                        old_pass = track.sigma_pass
-                        old_threshold = track.sigma_threshold
-
-                        # Get parameters for threshold calculation
-                        model_name = analysis.model or "UNKNOWN"
-                        unit_length = track.unit_length or track.travel_length or 100.0
-                        linearity_spec = track.linearity_spec or 0.01
-
-                        # Calculate new threshold using ML model
-                        new_threshold = optimizer.predict(
-                            model=model_name,
-                            unit_length=unit_length,
-                            linearity_spec=linearity_spec
-                        )
-
-                        # Update threshold
-                        track.sigma_threshold = new_threshold
-
-                        # Recalculate pass/fail
-                        if track.sigma_gradient is not None:
-                            track.sigma_pass = track.sigma_gradient <= new_threshold
-                        else:
-                            track.sigma_pass = True  # No data = pass
-
-                        # Recalculate track status based on both sigma and linearity
-                        if track.sigma_pass and track.linearity_pass:
-                            track.status = DBStatusType.PASS
-                        elif not track.sigma_pass or not track.linearity_pass:
-                            track.status = DBStatusType.FAIL
-                        else:
-                            track.status = DBStatusType.WARNING
-
-                        updated_count += 1
-
-                        if old_pass != track.sigma_pass:
-                            status_changed += 1
-                            analysis_changed = True
-
-                    # Recalculate overall analysis status
-                    if analysis_changed or True:  # Always recalculate to be safe
-                        # Skip analyses with no tracks (keep existing ERROR status)
-                        if not analysis.tracks:
-                            if analysis.overall_status != DBStatusType.ERROR:
-                                analysis.overall_status = DBStatusType.ERROR
-                            continue
-
-                        all_pass = all(t.sigma_pass and t.linearity_pass for t in analysis.tracks)
-                        any_fail = any(not t.sigma_pass or not t.linearity_pass for t in analysis.tracks)
-
-                        if all_pass:
-                            analysis.overall_status = DBStatusType.PASS
-                        elif any_fail:
-                            analysis.overall_status = DBStatusType.FAIL
-                        else:
-                            analysis.overall_status = DBStatusType.WARNING
-
-                    # Update progress periodically
-                    if (idx + 1) % 100 == 0:
-                        progress = int((idx + 1) / len(analyses) * 100)
-                        self.after(0, lambda p=progress, u=updated_count: self.reanalyze_status_label.configure(
-                            text=f"Progress: {p}% ({u} tracks updated)", text_color="gray"
-                        ))
-
-                # Commit all changes
-                session.commit()
-
-            # Success
-            msg = f"Updated {updated_count} tracks across {total_analyses} files. {status_changed} pass/fail changes."
-            self.after(0, lambda: self._on_reanalysis_complete(True, msg))
-
-        except Exception as e:
-            logger.exception(f"Database re-analysis failed: {e}")
-            self.after(0, lambda: self._on_reanalysis_complete(False, str(e)))
-
-    def _on_reanalysis_complete(self, success: bool, message: str):
-        """Handle re-analysis completion."""
-        self.reanalyze_btn.configure(state="normal")
-
-        if success:
-            self.reanalyze_status_label.configure(text=message, text_color="#27ae60")
-            logger.info(f"Database re-analysis successful: {message}")
-        else:
-            self.reanalyze_status_label.configure(text=f"Failed: {message[:50]}...", text_color="#e74c3c")
-            logger.error(f"Database re-analysis failed: {message}")
 
     def _change_theme(self, theme: str):
         """Change the application theme."""
@@ -637,15 +514,21 @@ class SettingsPage(ctk.CTkFrame):
         # Update database info
         self._update_database_info()
 
-        # Check ML model status
+        # Check ML model status from database
         try:
-            from laser_trim_analyzer.ml import ThresholdOptimizer
-            from laser_trim_analyzer.config import get_config
-            config = get_config()
-            model_path = config.models.path / "threshold_optimizer.pkl"
-            if model_path.exists():
-                self.ml_status_label.configure(text="Status: Trained model loaded", text_color="#27ae60")
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.ml import MLManager
+
+            db = get_database()
+            ml_manager = MLManager(db)
+            ml_manager.load_all()
+
+            if ml_manager.trained_models:
+                self.ml_status_label.configure(
+                    text=f"Status: {len(ml_manager.trained_models)} models trained",
+                    text_color="#27ae60"
+                )
             else:
                 self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
         except Exception:
-            self.ml_status_label.configure(text="Status: ML unavailable", text_color="gray")
+            self.ml_status_label.configure(text="Status: Not trained", text_color="gray")

@@ -223,7 +223,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
 
     # Track summary headers
     headers = ["Track", "Status", "Sigma Gradient", "Threshold", "Sigma Pass",
-               "Linearity Error", "Linearity Pass", "Risk", "Failure Prob"]
+               "Linearity Error", "Linearity Pass", "Risk", "Failure Prob", "Anomaly"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=row, column=col)
         cell.value = header
@@ -236,6 +236,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
 
     # Track data rows
     for track in result.tracks:
+        is_anomaly = getattr(track, 'is_anomaly', False)
         cells = [
             track.track_id,
             track.status.value,
@@ -246,6 +247,7 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             "PASS" if track.linearity_pass else "FAIL",
             track.risk_category.value,
             f"{track.failure_probability:.1%}" if track.failure_probability is not None else "N/A",
+            "YES" if is_anomaly else "",
         ]
 
         for col, value in enumerate(cells, 1):
@@ -260,11 +262,14 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
                     cell.fill = PASS_FILL
                 elif value == "FAIL":
                     cell.fill = FAIL_FILL
+            # Color anomaly cells
+            elif col == 10 and value == "YES":  # Anomaly column
+                cell.font = Font(bold=True, color="9B59B6")
 
         row += 1
 
     # Adjust column widths
-    for col in range(1, 10):
+    for col in range(1, 11):
         ws.column_dimensions[get_column_letter(col)].width = 15
 
 
@@ -346,6 +351,28 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             row += 1
 
         row += 1
+
+        # Anomaly detection section (if anomaly detected)
+        if hasattr(track, 'is_anomaly') and track.is_anomaly:
+            ws[f"A{row}"] = "Anomaly Detection"
+            ws[f"A{row}"].font = Font(bold=True, color="9B59B6")  # Purple for anomaly
+            row += 1
+
+            ws[f"A{row}"] = "Anomaly Detected:"
+            ws[f"B{row}"] = "YES"
+            ws[f"B{row}"].font = Font(bold=True, color="9B59B6")
+            row += 1
+
+            if hasattr(track, 'anomaly_reason') and track.anomaly_reason:
+                ws[f"A{row}"] = "Reason:"
+                ws[f"B{row}"] = track.anomaly_reason
+                row += 1
+
+            ws[f"A{row}"] = "Note:"
+            ws[f"B{row}"] = "This unit likely has a trim failure and may skew statistical analysis."
+            row += 1
+
+            row += 1
 
         # Unit properties (if available)
         if track.travel_length or track.unit_length:
@@ -436,12 +463,19 @@ def _create_batch_summary_sheet(wb: "Workbook", results: List[AnalysisResult]) -
     errors = sum(1 for r in results if r.overall_status == AnalysisStatus.ERROR)
     pass_rate = (passed / total * 100) if total > 0 else 0
 
+    # Count anomalies (trim failures with linear slope pattern)
+    anomalies = sum(
+        1 for r in results
+        if r.tracks and any(getattr(t, 'is_anomaly', False) for t in r.tracks)
+    )
+
     stats = [
         ("Total Files:", total),
         ("Passed:", passed),
         ("Warnings:", f"{warnings} (partial pass - e.g., pass linearity but fail sigma)"),
         ("Failed:", failed),
         ("Errors:", errors),
+        ("Anomalies:", f"{anomalies} (likely trim failures - linear slope pattern)"),
         ("Pass Rate:", f"{pass_rate:.1f}%"),
         ("Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
@@ -468,8 +502,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         "Model", "Serial", "System", "Trim Date", "Status",
         "Tracks", "Sigma Gradient (max)", "Sigma Threshold (min)", "Sigma Margin %",
         "Sigma Pass", "Linearity Error (max)", "Linearity Spec", "Fail Points (sum)",
-        "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Travel Length",
-        "Untrimmed R", "Trimmed R", "R Change %",
+        "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Anomaly",
+        "Travel Length", "Untrimmed R", "Trimmed R", "R Change %",
         "Filename"
     ]
 
@@ -495,6 +529,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         linearity_pass = True
         risk = "Unknown"
         fail_prob = None
+        is_anomaly = False
         untrimmed_r = None
         trimmed_r = None
         r_change_pct = None
@@ -519,6 +554,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 untrimmed_r = track.untrimmed_resistance
                 trimmed_r = track.trimmed_resistance
                 r_change_pct = track.resistance_change_percent
+                is_anomaly = getattr(track, 'is_anomaly', False)
             else:
                 # Multi-track: use worst-case values for sigma, sum for fail points
                 sigma_gradient = max(t.sigma_gradient for t in result.tracks)
@@ -539,6 +575,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 untrimmed_r = result.tracks[0].untrimmed_resistance
                 trimmed_r = result.tracks[0].trimmed_resistance
                 r_change_pct = result.tracks[0].resistance_change_percent
+                # Anomaly if ANY track is anomalous
+                is_anomaly = any(getattr(t, 'is_anomaly', False) for t in result.tracks)
 
             # Calculate sigma margin percentage
             if sigma_threshold > 0:
@@ -564,6 +602,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             "PASS" if linearity_pass else "FAIL",
             risk,
             f"{fail_prob:.1%}" if fail_prob is not None else "N/A",
+            "YES" if is_anomaly else "",  # Anomaly flag
             f"{travel_length:.1f}" if travel_length else "",
             f"{untrimmed_r:.2f}" if untrimmed_r is not None else "",
             f"{trimmed_r:.2f}" if trimmed_r is not None else "",
@@ -591,8 +630,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     num_cols = len(headers)
     ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}{len(results) + 1}"
 
-    # Adjust column widths (21 columns now)
-    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 12, 12, 12, 10, 35]
+    # Adjust column widths (22 columns now with Anomaly)
+    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 12, 12, 12, 10, 35]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 

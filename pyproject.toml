@@ -51,6 +51,9 @@ dependencies = [
 
     # Utilities
     "pyyaml>=6.0",
+
+    # Memory monitoring (for batch processing on low-RAM systems)
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]

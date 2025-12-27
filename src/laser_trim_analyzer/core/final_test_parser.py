@@ -259,9 +259,11 @@ class FinalTestParser:
 
         # Standard format: 1081313-sn108_3-16-2011_12-17 PM
         # Or: 1844202-sn1004a_7-27-2022_1-26 PM
+        # Or: 8340-1-sn470_5-30-2025_1-52 PM (model with suffix)
 
-        # Try to extract model (first number before hyphen)
-        model_match = re.match(r'^(\d+)', base)
+        # Try to extract model number with optional suffix (e.g., 8340-1)
+        # Pattern: digits followed by optional hyphen-digits, before the -sn serial pattern
+        model_match = re.match(r'^(\d+(?:-\d+)?)', base)
         if model_match:
             metadata["model"] = model_match.group(1)
 
@@ -287,7 +289,7 @@ class FinalTestParser:
         """
         Extract track data from Format 1 file.
 
-        Sheet1 contains:
+        Sheet1 contains (standard layout):
         - Measured value (col 0) - actual output voltage/resistance
         - Index (col 1)
         - Electrical angle (col 2)
@@ -295,17 +297,59 @@ class FinalTestParser:
         - Upper limit (col 6, typically ±0.025)
         - Lower limit (col 7)
 
-        Linearity error is CALCULATED as deviation from ideal line,
-        NOT read from column 3 (which is something else).
+        Alternative layout (detected automatically):
+        - Position (col 0) - if col 0 contains increasing values starting near 0
+        - Index (col 1)
+        - Measured value (col 2)
+        - Error (col 3 or 5)
+        - Upper limit (col 6)
+        - Lower limit (col 7)
+
+        Linearity error is CALCULATED as deviation from ideal line.
         """
         tracks = []
-        cols = FINAL_TEST_FORMAT1_COLUMNS
+        cols = FINAL_TEST_FORMAT1_COLUMNS.copy()  # Make a copy we can modify
 
         try:
             df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
 
+            # Detect column layout by checking if col 0 or col 4 contains positions
+            # Position column should have values starting near 0 and increasing
+            data_start = 0
+            for i in range(min(10, len(df))):
+                if pd.notna(df.iloc[i, 0]) and isinstance(df.iloc[i, 0], (int, float)):
+                    data_start = i
+                    break
+
+            # Check first few values in col 0 vs col 4 to determine layout
+            col0_vals = []
+            col4_vals = []
+            for i in range(data_start, min(data_start + 5, len(df))):
+                if pd.notna(df.iloc[i, 0]) and isinstance(df.iloc[i, 0], (int, float)):
+                    col0_vals.append(float(df.iloc[i, 0]))
+                if df.shape[1] > 4 and pd.notna(df.iloc[i, 4]) and isinstance(df.iloc[i, 4], (int, float)):
+                    col4_vals.append(float(df.iloc[i, 4]))
+
+            # Position values should start near 0 and increase
+            # If col 0 looks like position data, use alternative layout
+            if col0_vals and len(col0_vals) >= 3:
+                # Check if col 0 starts near 0 and increases
+                if col0_vals[0] < 0.1 and col0_vals[-1] > col0_vals[0]:
+                    # Also check that values are increasing monotonically
+                    if all(col0_vals[i] < col0_vals[i+1] for i in range(len(col0_vals)-1)):
+                        # Use alternative layout: position in col 0, measured in col 2
+                        cols = {
+                            "measured": 2,  # Column C - appears to be measured value
+                            "index": 1,
+                            "electrical_angle": 4,  # Column E - electrical angle
+                            "error": 5,
+                            "position": 0,  # Column A - position
+                            "upper_limit": 6,
+                            "lower_limit": 7,
+                        }
+                        logger.debug(f"Using alternative column layout (position in col 0)")
+
             # Find data rows (skip header, look for numeric data)
-            data_start = 1  # Usually row 1 (0-indexed)
             for i in range(min(10, len(df))):
                 if df.shape[1] > cols["position"]:
                     val = df.iloc[i, cols["position"]]
