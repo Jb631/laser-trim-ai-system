@@ -1,40 +1,41 @@
 # Claude Code Configuration for Laser Trim Analyzer V3
 
+## Session Checklist
+
+**Before starting work:**
+1. Read `docs/ML_PROGRESS.md` - Check current phase and pending tasks
+2. Continue from where we left off - don't start new work without checking progress
+
+---
+
 ## Project Overview
 
-Laser Trim Analyzer v3 - A production-ready quality analysis platform for potentiometer laser trim data.
+**Laser Trim Analyzer v3** - Production quality analysis platform for potentiometer laser trim data.
 
-### V3 Architecture
-- **~30 files** (down from 110 in v2)
+### Key Features
 - **6 pages**: Dashboard, Process, Analyze, Compare, Trends, Settings
-- **1 chart widget** with multiple plot types
-- **Self-contained configuration**
-- **SQLite database** with SQLAlchemy
-- **Excel-only export**
 - **Final Test support**: Parse and compare post-assembly test files
+- **SQLite database** with SQLAlchemy ORM
+- **Excel-only export**
+- **Per-model ML** (in development) - threshold optimization and drift detection
 
-### Source Code Location
+### Source Code
 - **Main code**: `src/laser_trim_analyzer/`
 - **Entry point**: `src/laser_trim_analyzer/__main__.py`
-- **Archived V2**: `archive/`
 
 ---
 
 ## Commands
 
-### Run Application
 ```bash
+# Run application
 python src/__main__.py
-```
 
-### Build Deployment Package
-```bash
-deploy.bat
-```
-
-### Install Dependencies
-```bash
+# Install dependencies
 pip install -e .
+
+# Build deployment (Windows)
+deploy.bat
 ```
 
 ---
@@ -44,81 +45,62 @@ pip install -e .
 ```
 src/laser_trim_analyzer/
 ├── __main__.py          # Entry point
-├── app.py               # Main application class
-├── config.py            # Self-contained configuration
+├── app.py               # Main application
+├── config.py            # Configuration
 ├── core/
-│   ├── parser.py            # Excel file parser (trim files)
-│   ├── final_test_parser.py # Final Test file parser
-│   ├── processor.py         # Analysis processor
-│   ├── analyzer.py          # Sigma/linearity analysis
-│   └── models.py            # Data models
+│   ├── parser.py        # Trim file parser
+│   ├── final_test_parser.py  # Final Test parser
+│   ├── processor.py     # Analysis processor
+│   ├── analyzer.py      # Sigma/linearity analysis
+│   └── models.py        # Data models
 ├── database/
 │   ├── manager.py       # Database operations
 │   └── models.py        # SQLAlchemy models
 ├── gui/
 │   ├── app.py           # GUI application
-│   ├── pages/           # Page components
-│   │   ├── dashboard.py
-│   │   ├── process.py
-│   │   ├── analyze.py
-│   │   ├── compare.py   # Final Test comparison
-│   │   ├── trends.py
-│   │   └── settings.py
-│   └── widgets/
-│       └── chart.py     # Matplotlib chart widget
+│   ├── pages/           # Dashboard, Process, Analyze, Compare, Trends, Settings
+│   └── widgets/chart.py # Chart widget
 ├── ml/
-│   ├── threshold.py     # Threshold optimizer
-│   └── drift.py         # Drift detector
-└── export/
-    └── excel.py         # Excel export
+│   ├── threshold.py     # Legacy global threshold optimizer
+│   ├── drift.py         # Legacy global drift detector
+│   └── (new per-model ML in development)
+└── export/excel.py      # Excel export
 ```
 
 ---
 
-## Development Guidelines
+## Development Rules
 
 ### Core Principles
-1. **Fix existing code** - Don't create new test files
-2. **All features must work** - No optional features
+1. **Fix existing code** - Don't create unnecessary new files
+2. **All features must work** - No partial implementations
 3. **Self-contained deployment** - No external config files
-4. **Excel-only export** - No CSV/HTML complexity
+4. **Keep it simple** - Avoid over-engineering
 
 ### Code Style
-- Type hints where used
-- Consistent logging with `logging` module
-- SQLAlchemy 2.0 syntax (use `case()` not `func.case()`)
+- Type hints where practical
+- Logging with `logging` module
+- SQLAlchemy 2.0 syntax (`case()` not `func.case()`)
 
 ### Database
-- SQLite with SQLAlchemy ORM
-- Path: `./data/analysis.db` (relative to app)
-- User settings: `~/.laser_trim_analyzer/config.yaml`
+- SQLite at `./data/analysis.db`
+- User settings at `~/.laser_trim_analyzer/config.yaml`
 
 ---
 
-## Known Issues
+## Active Development
 
-Track issues here as they're discovered.
+### Per-Model ML System
+- **Design**: `docs/ML_REDESIGN_PLAN.md`
+- **Progress**: `docs/ML_PROGRESS.md`
 
-### Current Issues
-(None tracked)
-
-### Previously Fixed
-- Trends page "Loading" stuck - SQLAlchemy 2.0 case() syntax (2025-12-16)
+Goal: Replace global ML with per-model threshold optimization and drift detection using Final Test data as ground truth.
 
 ---
 
-## Change Tracking
+## Previously Fixed Issues
 
-All changes should be documented in `CHANGELOG.md`.
-
----
-
-## Archived Code
-
-V2 code and documentation is archived in `archive/`:
-- `archive/laser_trim_v2/` - V2 source code
-- `archive/v2_docs/` - V2 documentation
-- `archive/v2_tests/` - V2 test suite
-- `archive/v2_config/` - V2 YAML config files
-
-V2 is preserved for reference but no longer maintained.
+- Trends page stuck on "Loading" - SQLAlchemy 2.0 case() syntax (2025-12-16)
+- Missing xlrd for .xls files (2025-12-26)
+- Incremental processing not retrying errors (2025-12-26)
+- Final Test None handling in processor (2025-12-26)
