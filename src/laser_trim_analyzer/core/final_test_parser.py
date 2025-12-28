@@ -281,11 +281,13 @@ class FinalTestParser:
             metadata["model"] = model_match.group(1)
 
         # Try to extract serial number (snXXX pattern)
-        sn_match = re.search(r'-sn([a-zA-Z0-9]+)', base, re.IGNORECASE)
+        # Handle both hyphen and underscore separators: -sn108 or _SN16
+        sn_match = re.search(r'[-_]sn([a-zA-Z0-9]+)', base, re.IGNORECASE)
         if sn_match:
             metadata["serial"] = sn_match.group(1)
 
-        # Try to extract date (M-D-YYYY pattern)
+        # Try to extract date - multiple patterns:
+        # Pattern 1: M-D-YYYY (e.g., 3-16-2011)
         date_match = re.search(r'_(\d{1,2})-(\d{1,2})-(\d{4})', base)
         if date_match:
             try:
@@ -295,6 +297,23 @@ class FinalTestParser:
                 metadata["file_date"] = datetime(year, month, day)
             except ValueError:
                 pass
+        else:
+            # Pattern 2: MMDDYY (e.g., 050225 = May 2, 2025)
+            date_match2 = re.search(r'_(\d{6})(?:[_.]|$)', base)
+            if date_match2:
+                try:
+                    date_str = date_match2.group(1)
+                    month = int(date_str[0:2])
+                    day = int(date_str[2:4])
+                    year = int(date_str[4:6])
+                    # Handle 2-digit year
+                    if year < 50:
+                        year += 2000
+                    else:
+                        year += 1900
+                    metadata["file_date"] = datetime(year, month, day)
+                except ValueError:
+                    pass
 
         return metadata
 

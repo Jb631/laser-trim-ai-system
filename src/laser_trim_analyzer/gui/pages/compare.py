@@ -535,41 +535,57 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
 
         ax = self.chart.figure.add_subplot(111)
 
-        # Plot Final Test data
+        # Apply dark mode styling
+        self.chart._style_axis(ax)
+
+        # Plot Final Test data (blue)
         ft_data = chart_data.get("final_test", {})
-        if ft_data.get("positions") and ft_data.get("errors"):
+        has_ft_data = bool(ft_data.get("positions") and ft_data.get("errors"))
+        if has_ft_data:
             ax.plot(
                 ft_data["positions"],
                 ft_data["errors"],
-                'b-',
+                color='#3498db',  # Blue
                 linewidth=1.5,
                 label=ft_data.get("label", "Final Test"),
-                alpha=0.8
+                alpha=0.9
             )
 
-        # Plot Trim data if available
+        # Plot Trim data if available (green, dashed for contrast)
         trim_data = chart_data.get("trim", {})
-        if trim_data.get("positions") and trim_data.get("errors"):
+        has_trim_data = bool(trim_data.get("positions") and trim_data.get("errors"))
+        if has_trim_data:
             ax.plot(
                 trim_data["positions"],
                 trim_data["errors"],
-                'g-',
+                color='#27ae60',  # Green
                 linewidth=1.5,
+                linestyle='--',
                 label=trim_data.get("label", "Trim"),
-                alpha=0.8
+                alpha=0.9
             )
 
+        # Show message if no data
+        if not has_ft_data and not has_trim_data:
+            ax.text(0.5, 0.5, "No track data available",
+                   ha='center', va='center', transform=ax.transAxes,
+                   fontsize=12, color='gray')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+
         # Add zero line
-        ax.axhline(y=0, color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.axhline(y=0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
 
         # Labels and legend
-        ax.set_xlabel("Position")
-        ax.set_ylabel("Linearity Error")
-        ax.set_title("Trim vs Final Test Comparison")
-        ax.legend(loc='upper right', fontsize=8)
+        ax.set_xlabel("Position", fontsize=10)
+        ax.set_ylabel("Linearity Error", fontsize=10)
+        ax.set_title("Trim vs Final Test Comparison", fontsize=12)
+        if has_ft_data or has_trim_data:
+            ax.legend(loc='upper right', fontsize=9)
         ax.grid(True, alpha=0.3)
 
-        self.chart.draw()
+        self.chart.figure.tight_layout()
+        self.chart.canvas.draw()
 
     def _update_pagination(self):
         """Update pagination controls."""

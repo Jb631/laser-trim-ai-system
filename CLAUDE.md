@@ -103,39 +103,59 @@ Design docs archived in `archive/completed_docs/`.
 
 ### Fixes Applied This Session
 
+**Compare Page Charts**
+
+1. **ChartWidget.draw() fix** - Changed `self.chart.draw()` to `self.chart.canvas.draw()`
+   - File: `gui/pages/compare.py:572`
+   - ChartWidget wraps matplotlib canvas; direct `draw()` method doesn't exist
+
+2. **Dark mode styling** - Added `self.chart._style_axis(ax)` call to Compare charts
+   - Proper styling for dark/light mode
+   - Better colors for Final Test (blue) vs Trim (green dashed)
+
+3. **Empty chart handling** - Added "No track data available" message when no data
+
+**Final Test Metadata Parsing**
+
+4. **Underscore serial format** - Fixed regex to handle `_SN` in addition to `-sn`
+   - Files like `8824_SN16_050225.xls` now parse correctly
+   - File: `core/final_test_parser.py:285`
+
+5. **MMDDYY date format** - Added support for 6-digit date format (e.g., `050225`)
+   - Previously only supported `M-D-YYYY` format
+   - File: `core/final_test_parser.py:300-316`
+
 **Final Test Parser Overhaul - Success rate improved from 67% to 95.7%**
 
-1. **Multi-format detection and parsing** - Added support for 4 distinct file formats
+6. **Multi-format detection and parsing** - Added support for 4 distinct file formats
    - Format 1: Standard (`Sheet1` + `Data Table`) - 845 files
    - Format 2: Rout_ prefix (`Data` + `Charts` sheets) - 8 files
    - Format 3: Multi-track (`A`, `B`, `C` sheets) - 3 files
    - Format 4: Parameters sheet format - 3 files
    - File: `core/final_test_parser.py` - Added `_parse_format3_multitrack`, `_parse_format4_parameters`
 
-2. **Format variation detection** - Auto-detect column layouts within Format 1
+7. **Format variation detection** - Auto-detect column layouts within Format 1
    - Some files have Col E = electrical_angle (standard)
    - Some files have Col E = error duplicate, position in Col F or Col 14
    - Added detection logic and fallback to index column
 
-3. **numpy type handling** - Fixed `isinstance(val, (int, float))` to use `np.issubdtype`
+8. **numpy type handling** - Fixed `isinstance(val, (int, float))` to use `np.issubdtype`
    - Was causing parsing failures for numpy.float64 values
 
-4. **Data sorting** - Added ascending sort by electrical_angle for proper chart display
+9. **Data sorting** - Added ascending sort by electrical_angle for proper chart display
    - Some files have descending X values (81° to -81°), now sorted correctly
-
-5. **Database manager updates** - Use `electrical_angles` for position_data storage
 
 **Database Thread Safety Fixes**
 
-6. **Race condition fix** - Added thread locks for SQLite write operations
-   - `save_analysis` and `save_final_test` now use locks to prevent concurrent write corruption
-   - Prevents segfaults and UNIQUE constraint violations during batch processing
+10. **Race condition fix** - Added thread locks for SQLite write operations
+    - `save_analysis` and `save_final_test` now use locks to prevent concurrent write corruption
+    - Prevents segfaults and UNIQUE constraint violations during batch processing
 
-7. **Final Test double-save prevention** - `save_analysis` now skips Final Test files
-   - Final Test files are saved in processor via `save_final_test`
-   - Prevents incorrect storage in AnalysisResult table
+11. **Final Test double-save prevention** - `save_analysis` now skips Final Test files
+    - Final Test files are saved in processor via `save_final_test`
+    - Prevents incorrect storage in AnalysisResult table
 
-8. **IntegrityError handling** - Added proper exception handling for duplicate key errors
+12. **IntegrityError handling** - Added proper exception handling for duplicate key errors
 
 ### Parser Stats (Current)
 - Total Final Test files: 859
@@ -146,6 +166,9 @@ Design docs archived in `archive/completed_docs/`.
 
 ## Previously Fixed Issues
 
+- **Compare page charts** - Fixed ChartWidget.draw(), dark mode styling, empty data handling (2025-12-27)
+- **Final Test underscore serial** - Fixed `_SN` parsing for filenames like `8824_SN16_050225.xls` (2025-12-27)
+- **MMDDYY date format** - Added support for 6-digit dates in filenames (2025-12-27)
 - **Database thread safety** - Added locks to prevent SQLite race conditions (2025-12-27)
 - **Final Test parser overhaul** - 95.7% success rate, 4 format types (2025-12-27)
 - Final Test model suffix parsing (2025-12-27)
