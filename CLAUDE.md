@@ -102,59 +102,57 @@ Design docs archived in `archive/completed_docs/`.
 ## Current Session Status (2025-12-27)
 
 ### Fixes Applied This Session
-1. **Final Test model parsing** - Now preserves suffixes like `8340-1` (was truncating to `8340`)
-   - File: `core/final_test_parser.py:266` - Changed regex to `r'^(\d+(?:-\d+)?)'`
 
-2. **Final Test column layout detection** - Added auto-detection for alternative file formats
-   - File: `core/final_test_parser.py:288-350` - Detects if position is in col 0 vs col 4
-   - **INCOMPLETE**: Needs user help to properly map all Final Test file variations
+**Final Test Parser Overhaul - Success rate improved from 67% to 95.7%**
 
-3. **Excel export anomaly detection** - Added `is_anomaly` and `anomaly_reason` to exports
-   - File: `export/excel.py` - Added to Summary, Track Details, All Results sheets
+1. **Multi-format detection and parsing** - Added support for 4 distinct file formats
+   - Format 1: Standard (`Sheet1` + `Data Table`) - 845 files
+   - Format 2: Rout_ prefix (`Data` + `Charts` sheets) - 8 files
+   - Format 3: Multi-track (`A`, `B`, `C` sheets) - 3 files
+   - Format 4: Parameters sheet format - 3 files
+   - File: `core/final_test_parser.py` - Added `_parse_format3_multitrack`, `_parse_format4_parameters`
 
-4. **Final Test same-day linking** - Changed `<` to `<=` for date comparison
-   - File: `database/manager.py:1802,1817`
+2. **Format variation detection** - Auto-detect column layouts within Format 1
+   - Some files have Col E = electrical_angle (standard)
+   - Some files have Col E = error duplicate, position in Col F or Col 14
+   - Added detection logic and fallback to index column
 
-5. **Processor crash fix** - Handle Final Test files with no track data gracefully
-   - File: `core/processor.py:248-256`
+3. **numpy type handling** - Fixed `isinstance(val, (int, float))` to use `np.issubdtype`
+   - Was causing parsing failures for numpy.float64 values
 
-6. **Added psutil dependency** - For memory monitoring on low-RAM systems
-   - File: `pyproject.toml`
+4. **Data sorting** - Added ascending sort by electrical_angle for proper chart display
+   - Some files have descending X values (81° to -81°), now sorted correctly
 
-### Known Issues - TO FIX NEXT SESSION
+5. **Database manager updates** - Use `electrical_angles` for position_data storage
 
-1. **Final Test Column Mapping** (PRIORITY)
-   - ~228 Final Test files (33%) have no track data due to column layout variations
-   - Current auto-detection helps but doesn't cover all formats
-   - Need user to review sample files and help map columns correctly
-   - Sample problematic file: `test_files/Final Test files/2475/2475-sn0001_8-24-2015_11-23 AM.xls`
+**Database Thread Safety Fixes**
 
-2. **Low Pass Rate (13.4%)**
-   - 3940 Fail (56.6%), 1655 Warning (23.8%), 930 Pass (13.4%)
-   - Linearity pass rate: 39%, Sigma pass rate: 64%
-   - May improve after re-processing with fixed Final Test parsing
+6. **Race condition fix** - Added thread locks for SQLite write operations
+   - `save_analysis` and `save_final_test` now use locks to prevent concurrent write corruption
+   - Prevents segfaults and UNIQUE constraint violations during batch processing
 
-3. **Database needs re-processing**
-   - After fixing Final Test model parsing, need to re-process files to:
-     - Update model names (8340 -> 8340-1)
-     - Extract track data from previously empty files
-     - Re-link Final Test to Trim files
+7. **Final Test double-save prevention** - `save_analysis` now skips Final Test files
+   - Final Test files are saved in processor via `save_final_test`
+   - Prevents incorrect storage in AnalysisResult table
 
-### Database Stats (Current)
-- Analysis records: 6,959
-- Track records: 6,567
-- Final Test records: 696 (468 with tracks, 228 without)
-- Distinct models: 336 (trim), 220 (final test)
+8. **IntegrityError handling** - Added proper exception handling for duplicate key errors
+
+### Parser Stats (Current)
+- Total Final Test files: 859
+- Successfully parsed: 822 (95.7%)
+- Zero tracks (edge cases): 37 (4.3%)
 
 ---
 
 ## Previously Fixed Issues
 
-- Trends page stuck on "Loading" - SQLAlchemy 2.0 case() syntax (2025-12-16)
-- Missing xlrd for .xls files (2025-12-26)
-- Incremental processing not retrying errors (2025-12-26)
-- Final Test None handling in processor (2025-12-26)
+- **Database thread safety** - Added locks to prevent SQLite race conditions (2025-12-27)
+- **Final Test parser overhaul** - 95.7% success rate, 4 format types (2025-12-27)
 - Final Test model suffix parsing (2025-12-27)
 - Excel export missing anomaly data (2025-12-27)
 - Same-day Final Test linking (2025-12-27)
 - Processor crash on empty Final Test tracks (2025-12-27)
+- Final Test None handling in processor (2025-12-26)
+- Incremental processing not retrying errors (2025-12-26)
+- Missing xlrd for .xls files (2025-12-26)
+- Trends page stuck on "Loading" - SQLAlchemy 2.0 case() syntax (2025-12-16)

@@ -101,6 +101,10 @@ class DatabaseManager:
         # Thread-local session storage
         self._thread_local = threading.local()
 
+        # Locks for thread-safe database operations (SQLite doesn't handle concurrent writes)
+        self._write_lock = threading.Lock()
+        self._final_test_lock = threading.Lock()
+
         # Initialize database
         self._init_database()
 
@@ -165,34 +169,41 @@ class DatabaseManager:
             analysis: AnalysisResult from processing
 
         Returns:
-            Database ID of the saved analysis
+            Database ID of the saved analysis, or -1 for final test files
         """
-        with self.session() as session:
-            # Check for existing record by filename (stable identifier)
-            # This ensures re-analysis updates the existing record even if
-            # model/serial/date parsing changed
-            existing = session.query(DBAnalysisResult).filter(
-                DBAnalysisResult.filename == analysis.metadata.filename
-            ).first()
+        # Skip Final Test files - they're already saved in processor via save_final_test
+        if getattr(analysis, 'file_type', 'trim') == 'final_test':
+            logger.debug(f"Skipping save_analysis for Final Test: {analysis.metadata.filename}")
+            return getattr(analysis, 'final_test_id', -1) or -1
 
-            if existing:
-                logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
-                return self._update_existing_analysis(session, analysis)
+        # Use write lock for thread safety with SQLite
+        with self._write_lock:
+            with self.session() as session:
+                # Check for existing record by filename (stable identifier)
+                # This ensures re-analysis updates the existing record even if
+                # model/serial/date parsing changed
+                existing = session.query(DBAnalysisResult).filter(
+                    DBAnalysisResult.filename == analysis.metadata.filename
+                ).first()
 
-            # No existing record, create new one
-            db_analysis = self._map_analysis_to_db(analysis)
-            session.add(db_analysis)
-            session.flush()  # Get ID before commit
+                if existing:
+                    logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
+                    return self._update_existing_analysis(session, analysis)
 
-            # Record as processed file
-            self._record_processed_file(
-                session,
-                analysis.metadata.file_path,
-                db_analysis.id
-            )
+                # No existing record, create new one
+                db_analysis = self._map_analysis_to_db(analysis)
+                session.add(db_analysis)
+                session.flush()  # Get ID before commit
 
-            logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-            return db_analysis.id
+                # Record as processed file
+                self._record_processed_file(
+                    session,
+                    analysis.metadata.file_path,
+                    db_analysis.id
+                )
+
+                logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+                return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
@@ -208,6 +219,11 @@ class DatabaseManager:
 
         with self.session() as session:
             for analysis in analyses:
+                # Skip Final Test files - they're already saved in processor
+                if getattr(analysis, 'file_type', 'trim') == 'final_test':
+                    saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                    continue
+
                 # Check for existing record by filename
                 existing = session.query(DBAnalysisResult).filter(
                     DBAnalysisResult.filename == analysis.metadata.filename
@@ -1678,90 +1694,116 @@ class DatabaseManager:
         Returns:
             ID of saved FinalTestResult
         """
+        from sqlalchemy.exc import IntegrityError
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
             FinalTestTrack as DBFinalTestTrack,
         )
 
-        with self.session() as session:
-            # Check for duplicate
-            existing = (
-                session.query(DBFinalTestResult)
-                .filter(DBFinalTestResult.file_hash == file_hash)
-                .first()
-            )
-            if existing:
-                logger.info(f"Final test already exists: {metadata.get('filename')}")
-                return existing.id
+        # Use lock to prevent race conditions with SQLite
+        with self._final_test_lock:
+            try:
+                with self.session() as session:
+                    # Check for duplicate by file_hash
+                    existing = (
+                        session.query(DBFinalTestResult)
+                        .filter(DBFinalTestResult.file_hash == file_hash)
+                        .first()
+                    )
+                    if existing:
+                        logger.info(f"Final test already exists: {metadata.get('filename')}")
+                        return existing.id
 
-            # Determine overall status from linearity
-            overall_status = DBStatusType.PASS
-            if test_results.get("linearity_pass") is False:
-                overall_status = DBStatusType.FAIL
-            elif test_results.get("linearity_pass") is None:
-                # Check track-level linearity
-                for track in tracks:
-                    if track.get("linearity_pass") is False:
+                    # Determine overall status from linearity
+                    overall_status = DBStatusType.PASS
+                    if test_results.get("linearity_pass") is False:
                         overall_status = DBStatusType.FAIL
-                        break
+                    elif test_results.get("linearity_pass") is None:
+                        # Check track-level linearity
+                        for track in tracks:
+                            if track.get("linearity_pass") is False:
+                                overall_status = DBStatusType.FAIL
+                                break
 
-            # Find matching trim result
-            linked_trim_id, match_confidence, days_since_trim = self._find_matching_trim(
-                session,
-                metadata.get("model"),
-                metadata.get("serial"),
-                metadata.get("file_date") or metadata.get("test_date")
-            )
+                    # Find matching trim result
+                    linked_trim_id, match_confidence, days_since_trim = self._find_matching_trim(
+                        session,
+                        metadata.get("model"),
+                        metadata.get("serial"),
+                        metadata.get("file_date") or metadata.get("test_date")
+                    )
 
-            # Create FinalTestResult
-            db_result = DBFinalTestResult(
-                filename=metadata.get("filename", "unknown"),
-                file_path=str(metadata.get("file_path", "")),
-                file_hash=file_hash,
-                file_date=metadata.get("file_date"),
-                model=metadata.get("model", "unknown"),
-                serial=metadata.get("serial", "unknown"),
-                test_date=metadata.get("test_date"),
-                overall_status=overall_status,
-                linearity_pass=test_results.get("linearity_pass"),
-                linearity_error=tracks[0].get("linearity_error") if tracks else None,
-                resistance_pass=test_results.get("resistance_pass"),
-                resistance_value=test_results.get("resistance_value"),
-                resistance_tolerance=test_results.get("resistance_tolerance"),
-                electrical_angle_pass=test_results.get("electrical_angle_pass"),
-                hysteresis_pass=test_results.get("hysteresis_pass"),
-                phasing_pass=test_results.get("phasing_pass"),
-                linked_trim_id=linked_trim_id,
-                match_confidence=match_confidence,
-                days_since_trim=days_since_trim,
-            )
+                    # Create FinalTestResult
+                    db_result = DBFinalTestResult(
+                        filename=metadata.get("filename", "unknown"),
+                        file_path=str(metadata.get("file_path", "")),
+                        file_hash=file_hash,
+                        file_date=metadata.get("file_date"),
+                        model=metadata.get("model", "unknown"),
+                        serial=metadata.get("serial", "unknown"),
+                        test_date=metadata.get("test_date"),
+                        overall_status=overall_status,
+                        linearity_pass=test_results.get("linearity_pass"),
+                        linearity_error=tracks[0].get("linearity_error") if tracks else None,
+                        resistance_pass=test_results.get("resistance_pass"),
+                        resistance_value=test_results.get("resistance_value"),
+                        resistance_tolerance=test_results.get("resistance_tolerance"),
+                        electrical_angle_pass=test_results.get("electrical_angle_pass"),
+                        hysteresis_pass=test_results.get("hysteresis_pass"),
+                        phasing_pass=test_results.get("phasing_pass"),
+                        linked_trim_id=linked_trim_id,
+                        match_confidence=match_confidence,
+                        days_since_trim=days_since_trim,
+                    )
 
-            session.add(db_result)
-            session.flush()
+                    session.add(db_result)
+                    session.flush()
+                    result_id = db_result.id
 
-            # Add tracks
-            for track_data in tracks:
-                db_track = DBFinalTestTrack(
-                    final_test_id=db_result.id,
-                    track_id=track_data.get("track_id", "default"),
-                    status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
-                    linearity_spec=track_data.get("linearity_spec"),
-                    linearity_error=track_data.get("linearity_error"),
-                    linearity_pass=track_data.get("linearity_pass"),
-                    linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                    position_data=track_data.get("positions"),
-                    error_data=track_data.get("errors"),
-                    electrical_angle_data=track_data.get("electrical_angles"),
-                    upper_limits=track_data.get("upper_limits"),
-                    lower_limits=track_data.get("lower_limits"),
-                    max_deviation=track_data.get("max_deviation"),
-                    max_deviation_position=track_data.get("max_deviation_position"),
-                )
-                session.add(db_track)
+                    # Add tracks
+                    for track_data in tracks:
+                        # Use electrical_angles as position_data (X-axis for charts)
+                        # electrical_angles contains: inches for linear pots, degrees for rotary
+                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
 
-            session.commit()
-            logger.info(f"Saved Final Test: {metadata.get('filename')} (ID: {db_result.id}, linked_trim: {linked_trim_id})")
-            return db_result.id
+                        db_track = DBFinalTestTrack(
+                            final_test_id=result_id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                            linearity_spec=track_data.get("linearity_spec"),
+                            linearity_error=track_data.get("linearity_error"),
+                            linearity_pass=track_data.get("linearity_pass"),
+                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                            position_data=position_values,
+                            error_data=track_data.get("errors"),
+                            electrical_angle_data=track_data.get("electrical_angles"),
+                            upper_limits=track_data.get("upper_limits"),
+                            lower_limits=track_data.get("lower_limits"),
+                            max_deviation=track_data.get("max_deviation"),
+                            max_deviation_position=track_data.get("max_deviation_angle"),
+                        )
+                        session.add(db_track)
+
+                    session.commit()
+                    logger.info(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
+                    return result_id
+
+            except IntegrityError as e:
+                # Handle race condition - another thread inserted first
+                logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
+                # Try to find the existing record
+                try:
+                    with self.session() as session:
+                        existing = (
+                            session.query(DBFinalTestResult)
+                            .filter(DBFinalTestResult.file_hash == file_hash)
+                            .first()
+                        )
+                        if existing:
+                            return existing.id
+                except Exception:
+                    pass
+                raise
 
     def _find_matching_trim(
         self,
@@ -1900,7 +1942,8 @@ class DatabaseManager:
                         "linearity_pass": t.linearity_pass,
                         "linearity_error": t.linearity_error,
                         "linearity_fail_points": t.linearity_fail_points,
-                        "positions": t.position_data or [],
+                        # Use position_data if available, fall back to electrical_angle_data
+                        "positions": t.position_data or t.electrical_angle_data or [],
                         "errors": t.error_data or [],
                         "electrical_angles": t.electrical_angle_data or [],
                         "upper_limits": t.upper_limits or [],
@@ -2031,7 +2074,8 @@ class DatabaseManager:
                 "tracks": [
                     {
                         "track_id": t.track_id,
-                        "positions": t.position_data or [],
+                        # Use position_data if available, fall back to electrical_angle_data
+                        "positions": t.position_data or t.electrical_angle_data or [],
                         "errors": t.error_data or [],
                         "electrical_angles": t.electrical_angle_data or [],
                         "upper_limits": t.upper_limits or [],

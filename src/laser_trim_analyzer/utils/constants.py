@@ -80,14 +80,17 @@ MEDIUM_RISK_THRESHOLD: Final[float] = 0.4
 
 # Final Test Format 1 - Standard format (e.g., 1081313-sn108_3-16-2011_12-17 PM.xls)
 # Sheet: Sheet1
+# Column mapping verified against model 8340-1 files
 FINAL_TEST_FORMAT1_COLUMNS: Final[Dict[str, int]] = {
-    "measured": 0,         # Column A - Measured value
-    "index": 1,            # Column B - Index/sample number
-    "electrical_angle": 2, # Column C - Theory/electrical angle (for alignment)
-    "error": 3,            # Column D - Linearity error
-    "position": 4,         # Column E - Position
-    "upper_limit": 6,      # Column G - Upper spec limit
-    "lower_limit": 7,      # Column H - Lower spec limit
+    "measured": 0,           # Column A - Measured Volts (actual output)
+    "index": 1,              # Column B - Index/sample number
+    "theory": 2,             # Column C - Theory Volts (expected/ideal value)
+    "error": 3,              # Column D - Voltage Error (pre-calculated)
+    "electrical_angle": 4,   # Column E - Electrical Angle (X-axis for linearity)
+                             #   Linear pots (8340-1): 0 to ~0.61 inches
+                             #   Rotary pots (2475): -170° to +170°
+    "upper_limit": 6,        # Column G - Upper Spec Limit
+    "lower_limit": 7,        # Column H - Lower Spec Limit
 }
 
 # Final Test Format 2 - Rout_ files (e.g., Rout_1091701_sn1695a_vo.xls)

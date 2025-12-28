@@ -500,7 +500,8 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
             return
 
         ft_track = ft_tracks[0]  # Use first track
-        ft_positions = ft_track.get("positions", [])
+        # Support both "positions" and "electrical_angles" (new format)
+        ft_positions = ft_track.get("positions") or ft_track.get("electrical_angles", [])
         ft_errors = ft_track.get("errors", [])
 
         # Prepare chart data

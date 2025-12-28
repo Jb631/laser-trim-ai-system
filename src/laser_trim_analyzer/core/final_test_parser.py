@@ -75,6 +75,10 @@ class FinalTestParser:
 
         if format_type == "format2":
             return self._parse_format2(file_path, file_hash)
+        elif format_type == "format3_multitrack":
+            return self._parse_format3_multitrack(file_path, file_hash)
+        elif format_type == "format4_parameters":
+            return self._parse_format4_parameters(file_path, file_hash)
         else:
             return self._parse_format1(file_path, file_hash)
 
@@ -91,7 +95,7 @@ class FinalTestParser:
         Detect which Final Test format the file uses.
 
         Returns:
-            'format1' or 'format2'
+            'format1', 'format2', 'format3_multitrack', or 'format4_parameters'
         """
         filename = file_path.name
 
@@ -108,7 +112,16 @@ class FinalTestParser:
             if "Data" in sheet_names and "Charts" in sheet_names:
                 return "format2"
 
-            # Format 1 has "Sheet1" and "Data Table"
+            # Format 3: Multi-track with sheets named A, B, C (must check BEFORE Format 1)
+            # These files have A, B, C sheets instead of Sheet1
+            if "A" in sheet_names and "Data Table" in sheet_names and "Sheet1" not in sheet_names:
+                return "format3_multitrack"
+
+            # Format 4: Parameters sheet format
+            if "Parameters" in sheet_names:
+                return "format4_parameters"
+
+            # Format 1 has "Sheet1" and/or "Data Table"
             if "Sheet1" in sheet_names or "Data Table" in sheet_names:
                 return "format1"
 
@@ -289,149 +302,206 @@ class FinalTestParser:
         """
         Extract track data from Format 1 file.
 
-        Sheet1 contains (standard layout):
-        - Measured value (col 0) - actual output voltage/resistance
-        - Index (col 1)
-        - Electrical angle (col 2)
-        - Position (col 4)
-        - Upper limit (col 6, typically ±0.025)
-        - Lower limit (col 7)
+        Sheet1 standard column layout (verified against model 8340-1):
+        - Column A (0): Measured Volts - actual output voltage
+        - Column B (1): Index - sample number
+        - Column C (2): Theory Volts - expected/ideal value
+        - Column D (3): Voltage Error - pre-calculated error (Measured - Theory)
+        - Column E (4): Electrical Angle - X-axis for linearity curve
+            - Linear pots (8340-1): 0 to ~0.61 inches
+            - Rotary pots (2475): -170° to +170°
+        - Column G (6): Upper Spec Limit
+        - Column H (7): Lower Spec Limit
 
-        Alternative layout (detected automatically):
-        - Position (col 0) - if col 0 contains increasing values starting near 0
-        - Index (col 1)
-        - Measured value (col 2)
-        - Error (col 3 or 5)
-        - Upper limit (col 6)
-        - Lower limit (col 7)
-
-        Linearity error is CALCULATED as deviation from ideal line.
+        Uses pre-calculated error from Column D when available.
+        Falls back to calculating error if Column D is empty.
         """
         tracks = []
-        cols = FINAL_TEST_FORMAT1_COLUMNS.copy()  # Make a copy we can modify
+        cols = FINAL_TEST_FORMAT1_COLUMNS.copy()
 
         try:
             df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
 
-            # Detect column layout by checking if col 0 or col 4 contains positions
-            # Position column should have values starting near 0 and increasing
+            # Helper function to check if value is numeric (handles numpy types)
+            def is_numeric(val):
+                return pd.notna(val) and np.issubdtype(type(val), np.number)
+
+            # Find data start row (skip any header rows)
             data_start = 0
             for i in range(min(10, len(df))):
-                if pd.notna(df.iloc[i, 0]) and isinstance(df.iloc[i, 0], (int, float)):
-                    data_start = i
-                    break
-
-            # Check first few values in col 0 vs col 4 to determine layout
-            col0_vals = []
-            col4_vals = []
-            for i in range(data_start, min(data_start + 5, len(df))):
-                if pd.notna(df.iloc[i, 0]) and isinstance(df.iloc[i, 0], (int, float)):
-                    col0_vals.append(float(df.iloc[i, 0]))
-                if df.shape[1] > 4 and pd.notna(df.iloc[i, 4]) and isinstance(df.iloc[i, 4], (int, float)):
-                    col4_vals.append(float(df.iloc[i, 4]))
-
-            # Position values should start near 0 and increase
-            # If col 0 looks like position data, use alternative layout
-            if col0_vals and len(col0_vals) >= 3:
-                # Check if col 0 starts near 0 and increases
-                if col0_vals[0] < 0.1 and col0_vals[-1] > col0_vals[0]:
-                    # Also check that values are increasing monotonically
-                    if all(col0_vals[i] < col0_vals[i+1] for i in range(len(col0_vals)-1)):
-                        # Use alternative layout: position in col 0, measured in col 2
-                        cols = {
-                            "measured": 2,  # Column C - appears to be measured value
-                            "index": 1,
-                            "electrical_angle": 4,  # Column E - electrical angle
-                            "error": 5,
-                            "position": 0,  # Column A - position
-                            "upper_limit": 6,
-                            "lower_limit": 7,
-                        }
-                        logger.debug(f"Using alternative column layout (position in col 0)")
-
-            # Find data rows (skip header, look for numeric data)
-            for i in range(min(10, len(df))):
-                if df.shape[1] > cols["position"]:
-                    val = df.iloc[i, cols["position"]]
-                    if pd.notna(val) and isinstance(val, (int, float)):
+                # Look for numeric data in column A (measured) and column B (index)
+                if df.shape[1] > 1:
+                    val_a = df.iloc[i, 0]
+                    val_b = df.iloc[i, 1]
+                    if is_numeric(val_a) and is_numeric(val_b):
                         data_start = i
                         break
 
+            # Detect format variation: some files have Col E = error duplicate
+            # Need to find the actual position column
+            position_col = cols["electrical_angle"]  # Default: Col E (4)
+
+            if df.shape[1] > 5:
+                # Check if Col E duplicates Col D (error)
+                similar_count = 0
+                for i in range(data_start, min(data_start + 10, len(df))):
+                    col_d = df.iloc[i, cols["error"]]
+                    col_e = df.iloc[i, cols["electrical_angle"]]
+                    if is_numeric(col_d) and is_numeric(col_e):
+                        if abs(float(col_d) - float(col_e)) < 0.0001:
+                            similar_count += 1
+
+                if similar_count >= 5:
+                    # Col E duplicates error - need to find position elsewhere
+                    # Try Col F (5) first
+                    col_f_valid = sum(1 for i in range(data_start, min(data_start + 10, len(df)))
+                                      if df.shape[1] > 5 and is_numeric(df.iloc[i, 5]))
+
+                    if col_f_valid >= 5:
+                        position_col = 5
+                        logger.debug(f"Format B: Using Col F for position")
+                    else:
+                        # Search other columns for position-like data (increasing values)
+                        for test_col in range(8, min(df.shape[1], 16)):
+                            vals = []
+                            for i in range(data_start, min(data_start + 10, len(df))):
+                                if is_numeric(df.iloc[i, test_col]):
+                                    vals.append(float(df.iloc[i, test_col]))
+
+                            if len(vals) >= 5:
+                                # Check if values are monotonically increasing
+                                if all(vals[i] < vals[i+1] for i in range(len(vals)-1)):
+                                    position_col = test_col
+                                    logger.debug(f"Format C: Found position in Col {test_col}")
+                                    break
+                        else:
+                            # Fall back to using index as position
+                            position_col = cols["index"]  # Col B (1)
+                            logger.debug(f"Format D: Using index column for position")
+
             # Extract data arrays
-            positions = []
+            electrical_angles = []  # X-axis (linear inches or rotary degrees)
             measured_values = []
-            electrical_angles = []
+            theory_values = []
+            file_errors = []  # Pre-calculated errors from file
             upper_limits = []
             lower_limits = []
 
             for i in range(data_start, len(df)):
                 row = df.iloc[i]
 
-                # Get position
-                if df.shape[1] > cols["position"]:
-                    pos = row.iloc[cols["position"]]
-                    if pd.notna(pos) and isinstance(pos, (int, float)):
-                        positions.append(float(pos))
+                # Get electrical angle/position - X-axis for linearity
+                # Uses position_col determined by format detection above
+                if df.shape[1] > position_col:
+                    ea = row.iloc[position_col]
+                    if is_numeric(ea):
+                        electrical_angles.append(float(ea))
                     else:
-                        continue  # Skip rows without valid position
+                        continue  # Skip rows without valid electrical angle
                 else:
                     continue
 
-                # Get measured value (col 0) - NOT error
+                # Get measured value (Column A)
                 if df.shape[1] > cols["measured"]:
                     meas = row.iloc[cols["measured"]]
                     measured_values.append(float(meas) if pd.notna(meas) else 0.0)
                 else:
                     measured_values.append(0.0)
 
-                # Get electrical angle
-                if df.shape[1] > cols["electrical_angle"]:
-                    angle = row.iloc[cols["electrical_angle"]]
-                    electrical_angles.append(float(angle) if pd.notna(angle) else 0.0)
+                # Get theory value (Column C)
+                if df.shape[1] > cols["theory"]:
+                    theory = row.iloc[cols["theory"]]
+                    theory_values.append(float(theory) if pd.notna(theory) else None)
                 else:
-                    electrical_angles.append(0.0)
+                    theory_values.append(None)
 
-                # Get limits
+                # Get pre-calculated error (Column D)
+                if df.shape[1] > cols["error"]:
+                    err = row.iloc[cols["error"]]
+                    file_errors.append(float(err) if pd.notna(err) else None)
+                else:
+                    file_errors.append(None)
+
+                # Get upper limit (Column G)
                 if df.shape[1] > cols["upper_limit"]:
                     upper = row.iloc[cols["upper_limit"]]
                     upper_limits.append(float(upper) if pd.notna(upper) else None)
                 else:
                     upper_limits.append(None)
 
+                # Get lower limit (Column H)
                 if df.shape[1] > cols["lower_limit"]:
                     lower = row.iloc[cols["lower_limit"]]
                     lower_limits.append(float(lower) if pd.notna(lower) else None)
                 else:
                     lower_limits.append(None)
 
-            if positions and measured_values:
-                # CALCULATE linearity error from measured vs ideal
-                positions_arr = np.array(positions)
-                measured_arr = np.array(measured_values)
+            if electrical_angles and measured_values:
+                # Use pre-calculated errors from file if available
+                valid_file_errors = [e for e in file_errors if e is not None]
+                n_points = len(electrical_angles)
 
-                # Fit ideal line: measured = m * position + b
-                if len(positions) >= 2:
-                    coeffs = np.polyfit(positions_arr, measured_arr, 1)
-                    ideal_values = np.polyval(coeffs, positions_arr)
-
-                    # Error is deviation from ideal line
-                    errors_raw = measured_arr - ideal_values
-
-                    # Normalize error by full scale range
-                    full_scale = measured_arr.max() - measured_arr.min()
-                    if full_scale > 0:
-                        errors = (errors_raw / full_scale).tolist()
-                    else:
-                        errors = errors_raw.tolist()
+                if len(valid_file_errors) >= n_points * 0.9:
+                    # Use file errors (replace None with 0)
+                    errors = [e if e is not None else 0.0 for e in file_errors]
+                    logger.debug("Using pre-calculated errors from file")
                 else:
-                    errors = [0.0] * len(measured_values)
+                    # Fall back to calculating errors from measured vs theory or ideal line
+                    valid_theory = [t for t in theory_values if t is not None]
+
+                    if len(valid_theory) >= n_points * 0.9:
+                        # Calculate from measured - theory
+                        measured_arr = np.array(measured_values)
+                        theory_arr = np.array([t if t is not None else measured_values[i]
+                                               for i, t in enumerate(theory_values)])
+                        errors_raw = measured_arr - theory_arr
+
+                        # Normalize by full scale
+                        full_scale = measured_arr.max() - measured_arr.min()
+                        if full_scale > 0:
+                            errors = (errors_raw / full_scale).tolist()
+                        else:
+                            errors = errors_raw.tolist()
+                        logger.debug("Calculated errors from measured vs theory")
+                    else:
+                        # Fall back to linear fit using electrical angle as X-axis
+                        ea_arr = np.array(electrical_angles)
+                        measured_arr = np.array(measured_values)
+
+                        if n_points >= 2:
+                            coeffs = np.polyfit(ea_arr, measured_arr, 1)
+                            ideal_values = np.polyval(coeffs, ea_arr)
+                            errors_raw = measured_arr - ideal_values
+
+                            full_scale = measured_arr.max() - measured_arr.min()
+                            if full_scale > 0:
+                                errors = (errors_raw / full_scale).tolist()
+                            else:
+                                errors = errors_raw.tolist()
+                        else:
+                            errors = [0.0] * len(measured_values)
+                        logger.debug("Calculated errors from linear fit")
+
+                # Sort all arrays by electrical_angle (ascending) for proper chart display
+                if electrical_angles and len(electrical_angles) > 1:
+                    # Check if we need to sort
+                    if electrical_angles[0] > electrical_angles[-1]:
+                        # Create sorted indices
+                        sorted_indices = np.argsort(electrical_angles)
+                        electrical_angles = [electrical_angles[i] for i in sorted_indices]
+                        errors = [errors[i] for i in sorted_indices]
+                        measured_values = [measured_values[i] for i in sorted_indices]
+                        theory_values = [theory_values[i] for i in sorted_indices]
+                        upper_limits = [upper_limits[i] for i in sorted_indices] if upper_limits else []
+                        lower_limits = [lower_limits[i] for i in sorted_indices] if lower_limits else []
+                        logger.debug(f"Sorted data by electrical angle: {electrical_angles[0]:.2f} -> {electrical_angles[-1]:.2f}")
 
                 # Calculate linearity metrics
                 linearity_error = max(abs(e) for e in errors) if errors else 0.0
                 linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
                 linearity_pass = linearity_error <= linearity_spec if linearity_spec > 0 else True
 
-                # Count fail points
+                # Count fail points (comparing error to spec limits)
                 fail_points = 0
                 for i, err in enumerate(errors):
                     upper = upper_limits[i] if i < len(upper_limits) else None
@@ -441,16 +511,16 @@ class FinalTestParser:
                     elif lower is not None and err < lower:
                         fail_points += 1
 
-                # Find position of max deviation
+                # Find electrical angle of max deviation
                 max_err_idx = errors.index(max(errors, key=abs)) if errors else 0
-                max_dev_position = positions[max_err_idx] if max_err_idx < len(positions) else 0.0
+                max_dev_angle = electrical_angles[max_err_idx] if max_err_idx < len(electrical_angles) else 0.0
 
                 tracks.append({
                     "track_id": "default",
-                    "positions": positions,
+                    "electrical_angles": electrical_angles,  # X-axis (inches for linear, degrees for rotary)
                     "measured_values": measured_values,
+                    "theory_values": theory_values,
                     "errors": errors,
-                    "electrical_angles": electrical_angles,
                     "upper_limits": upper_limits,
                     "lower_limits": lower_limits,
                     "linearity_error": linearity_error,
@@ -458,7 +528,7 @@ class FinalTestParser:
                     "linearity_pass": linearity_pass,
                     "linearity_fail_points": fail_points,
                     "max_deviation": linearity_error,
-                    "max_deviation_position": max_dev_position,
+                    "max_deviation_angle": max_dev_angle,
                 })
 
         except Exception as e:
@@ -483,8 +553,21 @@ class FinalTestParser:
         try:
             df = pd.read_excel(xl, sheet_name="Data", header=None)
 
-            # Find data start (skip header row)
-            data_start = 1
+            # Helper function to check if value is numeric (handles numpy types)
+            def is_numeric(val):
+                return pd.notna(val) and np.issubdtype(type(val), np.number)
+
+            # Auto-detect data start row
+            # Check if row 0 has numeric data in position column
+            data_start = 0
+            if df.shape[1] > cols["position"]:
+                val = df.iloc[0, cols["position"]]
+                if not is_numeric(val):
+                    # Row 0 is header, start from row 1
+                    data_start = 1
+                    logger.debug("Format 2: Header detected, starting at row 1")
+                else:
+                    logger.debug("Format 2: No header, starting at row 0")
 
             positions = []
             measured_values = []
@@ -495,7 +578,7 @@ class FinalTestParser:
                 # Get position
                 if df.shape[1] > cols["position"]:
                     pos = row.iloc[cols["position"]]
-                    if pd.notna(pos) and isinstance(pos, (int, float)):
+                    if is_numeric(pos):
                         positions.append(float(pos))
                     else:
                         continue
@@ -542,7 +625,7 @@ class FinalTestParser:
                     "positions": positions,
                     "measured_values": measured_values,
                     "errors": errors,
-                    "electrical_angles": [],  # Not available in Format 2
+                    "electrical_angles": positions,  # Use positions as electrical_angles for Format 2
                     "upper_limits": [],
                     "lower_limits": [],
                     "linearity_error": linearity_error,
@@ -557,6 +640,247 @@ class FinalTestParser:
             logger.error(f"Error extracting Format 2 tracks: {e}")
 
         return tracks
+
+    def _parse_format3_multitrack(self, file_path: Path, file_hash: str) -> Dict[str, Any]:
+        """
+        Parse Format 3 Final Test file (multi-track with sheets A, B, C).
+
+        Files like 8639-30 have separate sheets for each track (A, B, C).
+        Each sheet has the same structure as Format 1.
+        """
+        filename = file_path.name
+        xl = pd.ExcelFile(file_path)
+
+        # Extract metadata from filename
+        metadata = self._extract_metadata_from_filename(filename)
+
+        # Extract tracks from sheets A, B, C, etc.
+        tracks = []
+        track_sheets = [s for s in xl.sheet_names if len(s) == 1 and s.isalpha()]
+
+        for sheet_name in track_sheets:
+            try:
+                track = self._extract_single_track_from_sheet(xl, sheet_name, track_id=sheet_name)
+                if track:
+                    tracks.append(track)
+            except Exception as e:
+                logger.debug(f"Error extracting track from sheet {sheet_name}: {e}")
+
+        # Extract test results from Data Table
+        test_results = self._extract_test_results(xl)
+
+        return {
+            "metadata": metadata,
+            "tracks": tracks,
+            "test_results": test_results,
+            "file_hash": file_hash,
+            "format": "format3_multitrack",
+        }
+
+    def _extract_single_track_from_sheet(
+        self, xl: pd.ExcelFile, sheet_name: str, track_id: str = "default"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract a single track from a sheet (used by Format 3).
+
+        The column structure is similar to Format 1:
+        - Col 0: Measured value
+        - Col 1: Index
+        - Col 2: Theory value
+        - Col 3: Calculated error
+        - Col 4: Position/Index
+        - Col 5: Error (from file)
+        - Col 6: Upper limit
+        - Col 7: Lower limit
+        """
+        try:
+            df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+
+            def is_numeric(val):
+                return pd.notna(val) and np.issubdtype(type(val), np.number)
+
+            # Find data start row
+            data_start = 0
+            for i in range(min(5, len(df))):
+                if df.shape[1] > 1:
+                    val = df.iloc[i, 0]
+                    if is_numeric(val):
+                        data_start = i
+                        break
+
+            # Extract data - use col 4 for position (index-based), col 5 for error
+            electrical_angles = []
+            errors = []
+            upper_limits = []
+            lower_limits = []
+
+            for i in range(data_start, len(df)):
+                row = df.iloc[i]
+
+                # Position from column 4
+                if df.shape[1] > 4 and is_numeric(row.iloc[4]):
+                    electrical_angles.append(float(row.iloc[4]))
+                else:
+                    continue
+
+                # Error from column 5
+                if df.shape[1] > 5 and is_numeric(row.iloc[5]):
+                    errors.append(float(row.iloc[5]))
+                else:
+                    errors.append(0.0)
+
+                # Upper limit from column 6
+                if df.shape[1] > 6 and is_numeric(row.iloc[6]):
+                    upper_limits.append(float(row.iloc[6]))
+                else:
+                    upper_limits.append(None)
+
+                # Lower limit from column 7
+                if df.shape[1] > 7 and is_numeric(row.iloc[7]):
+                    lower_limits.append(float(row.iloc[7]))
+                else:
+                    lower_limits.append(None)
+
+            if electrical_angles and errors:
+                linearity_error = max(abs(e) for e in errors) if errors else 0.0
+                linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
+
+                # Count fail points
+                fail_points = 0
+                for i, err in enumerate(errors):
+                    upper = upper_limits[i] if i < len(upper_limits) else None
+                    lower = lower_limits[i] if i < len(lower_limits) else None
+                    if upper is not None and err > upper:
+                        fail_points += 1
+                    elif lower is not None and err < lower:
+                        fail_points += 1
+
+                return {
+                    "track_id": track_id,
+                    "electrical_angles": electrical_angles,
+                    "errors": errors,
+                    "upper_limits": upper_limits,
+                    "lower_limits": lower_limits,
+                    "linearity_error": linearity_error,
+                    "linearity_spec": linearity_spec,
+                    "linearity_pass": fail_points == 0,
+                    "linearity_fail_points": fail_points,
+                    "max_deviation": linearity_error,
+                }
+
+        except Exception as e:
+            logger.debug(f"Error in _extract_single_track_from_sheet: {e}")
+
+        return None
+
+    def _parse_format4_parameters(self, file_path: Path, file_hash: str) -> Dict[str, Any]:
+        """
+        Parse Format 4 Final Test file (Parameters sheet format).
+
+        Files like 8407-52.xls have a Parameters sheet with embedded data.
+        Column structure appears similar but data starts at different rows.
+        """
+        filename = file_path.name
+        xl = pd.ExcelFile(file_path)
+
+        # Extract metadata from filename
+        metadata = self._extract_metadata_from_filename(filename)
+
+        tracks = []
+
+        try:
+            df = pd.read_excel(xl, sheet_name="Parameters", header=None)
+
+            def is_numeric(val):
+                return pd.notna(val) and np.issubdtype(type(val), np.number)
+
+            # Data appears to start at row 0, but first few rows have text in col 0
+            # Look for rows where col 4 (position) has numeric increasing values
+            data_start = 0
+            for i in range(min(10, len(df))):
+                if df.shape[1] > 4 and is_numeric(df.iloc[i, 4]):
+                    data_start = i
+                    break
+
+            # Extract data
+            electrical_angles = []
+            errors = []
+            upper_limits = []
+            lower_limits = []
+
+            for i in range(data_start, len(df)):
+                row = df.iloc[i]
+
+                # Position from column 4
+                if df.shape[1] > 4 and is_numeric(row.iloc[4]):
+                    electrical_angles.append(float(row.iloc[4]))
+                else:
+                    continue
+
+                # Error from column 5
+                if df.shape[1] > 5 and is_numeric(row.iloc[5]):
+                    errors.append(float(row.iloc[5]))
+                else:
+                    errors.append(0.0)
+
+                # Upper limit from column 6
+                if df.shape[1] > 6 and is_numeric(row.iloc[6]):
+                    upper_limits.append(float(row.iloc[6]))
+                else:
+                    upper_limits.append(None)
+
+                # Lower limit from column 7
+                if df.shape[1] > 7 and is_numeric(row.iloc[7]):
+                    lower_limits.append(float(row.iloc[7]))
+                else:
+                    lower_limits.append(None)
+
+            if electrical_angles and errors:
+                linearity_error = max(abs(e) for e in errors) if errors else 0.0
+                linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
+
+                # Count fail points
+                fail_points = 0
+                for i, err in enumerate(errors):
+                    upper = upper_limits[i] if i < len(upper_limits) else None
+                    lower = lower_limits[i] if i < len(lower_limits) else None
+                    if upper is not None and err > upper:
+                        fail_points += 1
+                    elif lower is not None and err < lower:
+                        fail_points += 1
+
+                tracks.append({
+                    "track_id": "default",
+                    "electrical_angles": electrical_angles,
+                    "errors": errors,
+                    "upper_limits": upper_limits,
+                    "lower_limits": lower_limits,
+                    "linearity_error": linearity_error,
+                    "linearity_spec": linearity_spec,
+                    "linearity_pass": fail_points == 0,
+                    "linearity_fail_points": fail_points,
+                    "max_deviation": linearity_error,
+                })
+
+        except Exception as e:
+            logger.error(f"Error parsing Format 4: {e}")
+
+        # No detailed test results for this format
+        test_results = {
+            "linearity_pass": None,
+            "resistance_pass": None,
+            "electrical_angle_pass": None,
+            "hysteresis_pass": None,
+            "phasing_pass": None,
+        }
+
+        return {
+            "metadata": metadata,
+            "tracks": tracks,
+            "test_results": test_results,
+            "file_hash": file_hash,
+            "format": "format4_parameters",
+        }
 
     def _extract_test_results(self, xl: pd.ExcelFile) -> Dict[str, Any]:
         """
