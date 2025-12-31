@@ -504,30 +504,54 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         ft_positions = ft_track.get("positions") or ft_track.get("electrical_angles", [])
         ft_errors = ft_track.get("errors", [])
 
+        # Get spec limits from Final Test track (preferred) or Trim track
+        upper_limits = ft_track.get("upper_limits", [])
+        lower_limits = ft_track.get("lower_limits", [])
+        spec_positions = ft_positions  # Use Final Test positions for spec limits
+
         # Prepare chart data
         chart_data = {
             "final_test": {
                 "positions": ft_positions,
                 "errors": ft_errors,
                 "label": f"Final Test ({final_test.get('filename', 'Unknown')[:20]})",
-            }
+            },
+            "upper_limits": upper_limits,
+            "lower_limits": lower_limits,
+            "spec_positions": spec_positions,
         }
 
         if trim:
             trim_tracks = trim.get("tracks", [])
             if trim_tracks:
                 trim_track = trim_tracks[0]
+                trim_positions = trim_track.get("positions", [])
+                trim_errors = trim_track.get("errors", [])
+                trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0)
+
                 chart_data["trim"] = {
-                    "positions": trim_track.get("positions", []),
-                    "errors": trim_track.get("errors", []),
+                    "positions": trim_positions,
+                    "errors": trim_errors,
+                    "offset": trim_offset,
                     "label": f"Trim ({trim.get('filename', 'Unknown')[:20]})",
                 }
+
+                # If Final Test doesn't have spec limits, try to get from Trim
+                if not upper_limits or not lower_limits:
+                    trim_upper = trim_track.get("upper_limits", [])
+                    trim_lower = trim_track.get("lower_limits", [])
+                    if trim_upper and trim_lower:
+                        chart_data["upper_limits"] = trim_upper
+                        chart_data["lower_limits"] = trim_lower
+                        chart_data["spec_positions"] = trim_positions
 
         # Plot comparison
         self._plot_comparison(chart_data)
 
     def _plot_comparison(self, chart_data: Dict):
-        """Plot the comparison overlay chart."""
+        """Plot the comparison overlay chart with spec limits."""
+        import numpy as np
+
         if not self.chart:
             return
 
@@ -538,7 +562,27 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         # Apply dark mode styling
         self.chart._style_axis(ax)
 
-        # Plot Final Test data (blue)
+        # Plot spec limits first (so they appear behind the data lines)
+        upper_limits = chart_data.get("upper_limits")
+        lower_limits = chart_data.get("lower_limits")
+        spec_positions = chart_data.get("spec_positions")
+
+        if upper_limits and lower_limits and spec_positions:
+            # Convert None to NaN for matplotlib (creates gaps)
+            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
+            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
+            pos_array = np.array(spec_positions)
+
+            ax.plot(pos_array, upper_plot, color='#e74c3c', linestyle='--',
+                   linewidth=1, alpha=0.8, label='Spec Limits')
+            ax.plot(pos_array, lower_plot, color='#e74c3c', linestyle='--',
+                   linewidth=1, alpha=0.8)
+            # Fill between limits
+            ax.fill_between(pos_array, lower_plot, upper_plot,
+                           alpha=0.1, color='#e74c3c',
+                           where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
+
+        # Plot Final Test data (blue, solid)
         ft_data = chart_data.get("final_test", {})
         has_ft_data = bool(ft_data.get("positions") and ft_data.get("errors"))
         if has_ft_data:
@@ -555,9 +599,15 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         trim_data = chart_data.get("trim", {})
         has_trim_data = bool(trim_data.get("positions") and trim_data.get("errors"))
         if has_trim_data:
+            # Apply offset if available
+            trim_errors = trim_data["errors"]
+            offset = trim_data.get("offset", 0)
+            if offset:
+                trim_errors = [e + offset for e in trim_errors]
+
             ax.plot(
                 trim_data["positions"],
-                trim_data["errors"],
+                trim_errors,
                 color='#27ae60',  # Green
                 linewidth=1.5,
                 linestyle='--',
@@ -580,7 +630,7 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         ax.set_xlabel("Position", fontsize=10)
         ax.set_ylabel("Linearity Error", fontsize=10)
         ax.set_title("Trim vs Final Test Comparison", fontsize=12)
-        if has_ft_data or has_trim_data:
+        if has_ft_data or has_trim_data or (upper_limits and lower_limits):
             ax.legend(loc='upper right', fontsize=9)
         ax.grid(True, alpha=0.3)
 

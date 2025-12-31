@@ -5,8 +5,20 @@ Run with: python -m laser_trim_analyzer
 """
 
 import sys
+import os
 import logging
 from pathlib import Path
+
+# Fix Tcl/Tk library path for uv-installed Python on macOS
+# This must happen before any tkinter imports
+if sys.platform == "darwin" and "TCL_LIBRARY" not in os.environ:
+    python_base = Path(sys.executable).resolve().parent.parent
+    tcl_path = python_base / "lib" / "tcl8.6"
+    tk_path = python_base / "lib" / "tk8.6"
+    if tcl_path.exists():
+        os.environ["TCL_LIBRARY"] = str(tcl_path)
+    if tk_path.exists():
+        os.environ["TK_LIBRARY"] = str(tk_path)
 
 # Setup logging before any other imports
 logging.basicConfig(

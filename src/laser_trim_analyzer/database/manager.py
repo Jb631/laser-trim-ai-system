@@ -2112,6 +2112,7 @@ class DatabaseManager:
                                 "errors": t.error_data or [],
                                 "upper_limits": t.upper_limits or [],
                                 "lower_limits": t.lower_limits or [],
+                                "optimal_offset": t.optimal_offset or 0,
                                 "linearity_error": t.final_linearity_error_shifted,
                                 "sigma_gradient": t.sigma_gradient,
                                 "sigma_pass": t.sigma_pass,

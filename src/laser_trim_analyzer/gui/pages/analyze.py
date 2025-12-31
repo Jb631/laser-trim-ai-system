@@ -137,13 +137,13 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.count_label.pack(side="right", padx=10, pady=15)
 
-        # Main content area - use scrollable frame for smaller screens
-        content = ctk.CTkScrollableFrame(self, orientation="horizontal")
+        # Main content area - use regular frame for proper resizing
+        content = ctk.CTkFrame(self)
         content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
         # Configure inner frame for proper layout
-        content.grid_columnconfigure(0, weight=1, minsize=280)  # List panel - slightly narrower
+        content.grid_columnconfigure(0, weight=1, minsize=250)  # List panel
         content.grid_columnconfigure(1, weight=3)  # Details panel - more space
-        content.grid_rowconfigure(0, weight=1, minsize=500)  # Minimum height for content
+        content.grid_rowconfigure(0, weight=1)  # Allow full resizing
 
         # Left panel - analysis list
         list_frame = ctk.CTkFrame(content)
@@ -198,7 +198,7 @@ class AnalyzePage(ctk.CTkFrame):
         details_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
         details_frame.grid_rowconfigure(0, weight=0)  # Status banner - fixed
         details_frame.grid_rowconfigure(1, weight=0)  # Action buttons - fixed
-        details_frame.grid_rowconfigure(2, weight=1, minsize=400)  # Tabview with chart - expandable with min
+        details_frame.grid_rowconfigure(2, weight=1)  # Tabview with chart - fully expandable
         details_frame.grid_rowconfigure(3, weight=0)  # DB info footer - fixed
         details_frame.grid_columnconfigure(0, weight=1)
 

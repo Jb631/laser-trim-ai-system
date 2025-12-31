@@ -370,13 +370,13 @@ class TrendsPage(ctk.CTkFrame):
         self.detail_stat_labels = {}
         stat_names = [
             ("total_samples", "Total Samples"),
+            ("anomalies", "Anomalies"),
             ("sigma_pass_rate", "Sigma Pass"),
             ("linearity_pass_rate", "Linearity Pass"),
             ("overall_pass_rate", "Overall Pass"),
             ("avg_sigma", "Avg Sigma"),
             ("threshold", "Threshold"),
             ("trend", "Trend"),
-            ("status", "Status"),
         ]
 
         for idx, (key, label) in enumerate(stat_names):
@@ -683,17 +683,24 @@ class TrendsPage(ctk.CTkFrame):
         else:
             filtered_points = data_points
 
-        if not filtered_points:
-            self.scatter_chart.show_placeholder(f"No data in selected range (last {self.chart_timeline_days} days)")
+        # Exclude anomalies from chart - they are shown as a count in the stats
+        # Anomalies (trim failures with linear slope) would skew the visual trend
+        normal_points = [d for d in filtered_points if not d.get("is_anomaly", False)]
+
+        if not normal_points:
+            anomaly_count = len([d for d in filtered_points if d.get("is_anomaly", False)])
+            if anomaly_count > 0:
+                self.scatter_chart.show_placeholder(f"All {anomaly_count} samples are anomalies\n(excluded from chart)")
+            else:
+                self.scatter_chart.show_placeholder(f"No data in selected range (last {self.chart_timeline_days} days)")
             return
 
-        # Extract values for plotting - include year in date format
-        dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in filtered_points]
-        sigma_values = [d["sigma_gradient"] for d in filtered_points if d["sigma_gradient"] is not None]
-        pass_flags = [d.get("sigma_pass", False) for d in filtered_points]
-        anomaly_flags = [d.get("is_anomaly", False) for d in filtered_points]
+        # Extract values for plotting (normal samples only) - include year in date format
+        dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in normal_points]
+        sigma_values = [d["sigma_gradient"] for d in normal_points if d["sigma_gradient"] is not None]
+        pass_flags = [d.get("sigma_pass", False) for d in normal_points]
 
-        # Calculate rolling average for filtered data
+        # Calculate rolling average for filtered data (normal samples only)
         rolling_vals = None
         window = min(self.rolling_window, len(sigma_values))
         if window > 1 and sigma_values:
@@ -706,6 +713,7 @@ class TrendsPage(ctk.CTkFrame):
         # Determine title suffix based on filter
         filter_suffix = f" (Last {self.chart_timeline_days} Days)" if self.chart_timeline_days > 0 else ""
 
+        # Plot without anomaly_flags since we've already filtered them out
         self.scatter_chart.plot_sigma_scatter(
             dates=dates,
             sigma_values=sigma_values,
@@ -714,7 +722,6 @@ class TrendsPage(ctk.CTkFrame):
             rolling_avg=rolling_vals,
             title=f"Sigma Gradient Trend - {self.selected_model}{filter_suffix}",
             ylabel="Sigma Gradient",
-            anomaly_flags=anomaly_flags,
         )
 
     def _refresh_data(self):
@@ -1053,6 +1060,10 @@ class TrendsPage(ctk.CTkFrame):
         # Use analysis count from model_stats if available, otherwise track count
         display_count = total_analyses if model_stats else total_samples
         self.detail_stat_labels["total_samples"].configure(text=f"{display_count:,}")
+        self.detail_stat_labels["anomalies"].configure(
+            text=f"{anomaly_count}",
+            text_color="#9b59b6" if anomaly_count > 0 else "gray"
+        )
         self.detail_stat_labels["sigma_pass_rate"].configure(
             text=f"{sigma_pass_rate:.1f}%",
             text_color="#27ae60" if sigma_pass_rate >= 90 else "#f39c12" if sigma_pass_rate >= 80 else "#e74c3c"
@@ -1070,7 +1081,6 @@ class TrendsPage(ctk.CTkFrame):
             text=f"{threshold:.6f}" if threshold else "--"
         )
         self.detail_stat_labels["trend"].configure(text=trend, text_color=trend_color)
-        self.detail_stat_labels["status"].configure(text=status, text_color=status_color)
 
         # Update scatter chart using the filter method (applies timeline filter)
         self._update_scatter_chart_with_filter()
