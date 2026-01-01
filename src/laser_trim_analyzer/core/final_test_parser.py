@@ -79,6 +79,8 @@ class FinalTestParser:
             return self._parse_format3_multitrack(file_path, file_hash)
         elif format_type == "format4_parameters":
             return self._parse_format4_parameters(file_path, file_hash)
+        elif format_type == "format_shop_test":
+            return self._parse_format_shop_test(file_path, file_hash)
         else:
             return self._parse_format1(file_path, file_hash)
 
@@ -124,6 +126,10 @@ class FinalTestParser:
             # Format 1 has "Sheet1" and/or "Data Table"
             if "Sheet1" in sheet_names or "Data Table" in sheet_names:
                 return "format1"
+
+            # Shop test format has "test" sheet with metadata in cols 0-1, data in cols 3-8
+            if "test" in sheet_names:
+                return "format_shop_test"
 
         except Exception as e:
             logger.warning(f"Error detecting format: {e}, defaulting to format1")
@@ -356,27 +362,42 @@ class FinalTestParser:
                         data_start = i
                         break
 
-            # Detect format variation: some files have Col E = error duplicate
+            # Detect format variation: some files have Col E = error duplicate or empty
             # Need to find the actual position column
             position_col = cols["electrical_angle"]  # Default: Col E (4)
 
             if df.shape[1] > 5:
-                # Check if Col E duplicates Col D (error)
+                # Check if Col E is empty (NaN) or duplicates Col D (error)
+                col_e_empty_count = 0
                 similar_count = 0
                 for i in range(data_start, min(data_start + 10, len(df))):
                     col_d = df.iloc[i, cols["error"]]
                     col_e = df.iloc[i, cols["electrical_angle"]]
-                    if is_numeric(col_d) and is_numeric(col_e):
+
+                    if not is_numeric(col_e):
+                        col_e_empty_count += 1
+                    elif is_numeric(col_d) and is_numeric(col_e):
                         if abs(float(col_d) - float(col_e)) < 0.0001:
                             similar_count += 1
 
-                if similar_count >= 5:
-                    # Col E duplicates error - need to find position elsewhere
-                    # Try Col F (5) first
-                    col_f_valid = sum(1 for i in range(data_start, min(data_start + 10, len(df)))
-                                      if df.shape[1] > 5 and is_numeric(df.iloc[i, 5]))
+                # Col E is unusable if mostly empty or duplicates error
+                col_e_unusable = col_e_empty_count >= 5 or similar_count >= 5
 
-                    if col_f_valid >= 5:
+                if col_e_unusable:
+                    # Col E is empty or duplicates error - need to find position elsewhere
+                    # Try Col F (5) first, but only if it's not also a duplicate of error
+                    col_f_valid = 0
+                    col_f_duplicates_error = 0
+                    for i in range(data_start, min(data_start + 10, len(df))):
+                        if df.shape[1] > 5:
+                            col_f = df.iloc[i, 5]
+                            col_d = df.iloc[i, cols["error"]]
+                            if is_numeric(col_f):
+                                col_f_valid += 1
+                                if is_numeric(col_d) and abs(float(col_f) - float(col_d)) < 0.0001:
+                                    col_f_duplicates_error += 1
+
+                    if col_f_valid >= 5 and col_f_duplicates_error < 3:
                         position_col = 5
                         logger.debug(f"Format B: Using Col F for position")
                     else:
@@ -899,6 +920,168 @@ class FinalTestParser:
             "test_results": test_results,
             "file_hash": file_hash,
             "format": "format4_parameters",
+        }
+
+    def _parse_format_shop_test(self, file_path: Path, file_hash: str) -> Dict[str, Any]:
+        """
+        Parse Shop Test format files (have 'test' sheet instead of 'Sheet1').
+
+        Column layout in 'test' sheet:
+        - Col 0-1: Metadata (Model, Shop, Test V, etc.)
+        - Col 3: Position
+        - Col 4: Vtheo (theory voltage)
+        - Col 5: hi tol (upper tolerance)
+        - Col 6: lo tol (lower tolerance)
+        - Col 7: Meas V (measured voltage)
+        - Col 8: Error
+        - Col 9-10: Optional (some files have Column2/3 with pass/fail)
+
+        Row 0 is header, data starts at row 1.
+        """
+        filename = file_path.name
+        xl = pd.ExcelFile(file_path)
+
+        # Extract metadata from filename
+        metadata = self._extract_metadata_from_filename(filename)
+
+        tracks = []
+
+        try:
+            df = pd.read_excel(xl, sheet_name="test", header=None)
+
+            def is_numeric(val):
+                return pd.notna(val) and np.issubdtype(type(val), np.number)
+
+            # Extract metadata from cells
+            # Row 0, Col 1: Model number
+            # Row 1, Col 1: Shop number
+            if df.shape[0] > 0 and df.shape[1] > 1:
+                model_cell = df.iloc[0, 1]
+                if pd.notna(model_cell):
+                    metadata["model"] = str(model_cell)
+
+            if df.shape[0] > 1 and df.shape[1] > 1:
+                shop_cell = df.iloc[1, 1]
+                if pd.notna(shop_cell):
+                    # Shop might be the serial or shop number
+                    metadata["serial"] = str(shop_cell)
+
+            # Data starts at row 1 (after header row 0)
+            data_start = 1
+
+            electrical_angles = []  # Position (col 3)
+            measured_values = []    # Meas V (col 7)
+            theory_values = []      # Vtheo (col 4)
+            file_errors = []        # Error (col 8)
+            upper_limits = []       # hi tol (col 5)
+            lower_limits = []       # lo tol (col 6)
+
+            for i in range(data_start, len(df)):
+                row = df.iloc[i]
+
+                # Position from column 3
+                if df.shape[1] > 3 and is_numeric(row.iloc[3]):
+                    electrical_angles.append(float(row.iloc[3]))
+                else:
+                    continue
+
+                # Theory from column 4
+                if df.shape[1] > 4 and is_numeric(row.iloc[4]):
+                    theory_values.append(float(row.iloc[4]))
+                else:
+                    theory_values.append(None)
+
+                # Upper limit from column 5
+                if df.shape[1] > 5 and is_numeric(row.iloc[5]):
+                    upper_limits.append(float(row.iloc[5]))
+                else:
+                    upper_limits.append(None)
+
+                # Lower limit from column 6
+                if df.shape[1] > 6 and is_numeric(row.iloc[6]):
+                    lower_limits.append(float(row.iloc[6]))
+                else:
+                    lower_limits.append(None)
+
+                # Measured from column 7
+                if df.shape[1] > 7 and is_numeric(row.iloc[7]):
+                    measured_values.append(float(row.iloc[7]))
+                else:
+                    measured_values.append(0.0)
+
+                # Error from column 8
+                if df.shape[1] > 8 and is_numeric(row.iloc[8]):
+                    file_errors.append(float(row.iloc[8]))
+                else:
+                    file_errors.append(None)
+
+            if electrical_angles and measured_values:
+                n_points = len(electrical_angles)
+
+                # Use file errors if available
+                valid_file_errors = [e for e in file_errors if e is not None]
+                if len(valid_file_errors) >= n_points * 0.9:
+                    errors = [e if e is not None else 0.0 for e in file_errors]
+                else:
+                    # Calculate errors from measured vs theory
+                    errors = []
+                    for i in range(len(measured_values)):
+                        meas = measured_values[i]
+                        theory = theory_values[i] if i < len(theory_values) and theory_values[i] is not None else meas
+                        errors.append(meas - theory)
+
+                linearity_error = max(abs(e) for e in errors) if errors else 0.0
+                linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
+                linearity_pass = linearity_error <= linearity_spec if linearity_spec > 0 else True
+
+                # Count fail points
+                fail_points = 0
+                for i, err in enumerate(errors):
+                    upper = upper_limits[i] if i < len(upper_limits) else None
+                    lower = lower_limits[i] if i < len(lower_limits) else None
+                    if upper is not None and err > upper:
+                        fail_points += 1
+                    elif lower is not None and err < lower:
+                        fail_points += 1
+
+                # Find position of max deviation
+                max_err_idx = errors.index(max(errors, key=abs)) if errors else 0
+                max_dev_angle = electrical_angles[max_err_idx] if max_err_idx < len(electrical_angles) else 0.0
+
+                tracks.append({
+                    "track_id": "default",
+                    "electrical_angles": electrical_angles,
+                    "measured_values": measured_values,
+                    "theory_values": theory_values,
+                    "errors": errors,
+                    "upper_limits": upper_limits,
+                    "lower_limits": lower_limits,
+                    "linearity_error": linearity_error,
+                    "linearity_spec": linearity_spec,
+                    "linearity_pass": linearity_pass,
+                    "linearity_fail_points": fail_points,
+                    "max_deviation": linearity_error,
+                    "max_deviation_angle": max_dev_angle,
+                })
+
+        except Exception as e:
+            logger.error(f"Error parsing Shop Test format: {e}")
+
+        # No detailed test results for this format
+        test_results = {
+            "linearity_pass": None,
+            "resistance_pass": None,
+            "electrical_angle_pass": None,
+            "hysteresis_pass": None,
+            "phasing_pass": None,
+        }
+
+        return {
+            "metadata": metadata,
+            "tracks": tracks,
+            "test_results": test_results,
+            "file_hash": file_hash,
+            "format": "format_shop_test",
         }
 
     def _extract_test_results(self, xl: pd.ExcelFile) -> Dict[str, Any]:

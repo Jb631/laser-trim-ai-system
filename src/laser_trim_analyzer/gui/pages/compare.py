@@ -121,6 +121,17 @@ class ComparePage(ctk.CTkFrame):
         )
         refresh_btn.pack(side="right", padx=15, pady=15)
 
+        # Fix Missing Tracks button
+        self.fix_tracks_btn = ctk.CTkButton(
+            filter_frame,
+            text="Fix Missing Tracks",
+            command=self._fix_missing_tracks,
+            width=140,
+            fg_color="#f39c12",
+            hover_color="#e67e22"
+        )
+        self.fix_tracks_btn.pack(side="right", padx=5, pady=15)
+
         # Results count
         self.count_label = ctk.CTkLabel(
             filter_frame,
@@ -484,19 +495,40 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
     def _display_comparison_chart(self, data: Optional[Dict]):
         """Display the comparison overlay chart."""
         if not data:
+            logger.warning("Compare chart: No data received")
             return
 
         self._ensure_chart_initialized()
         if not self.chart:
+            logger.warning("Compare chart: Chart not initialized")
             return
 
         final_test = data.get("final_test", {})
         trim = data.get("trim")
 
+        # Debug logging
+        logger.info(f"Compare chart: final_test keys={list(final_test.keys())}")
+        logger.info(f"Compare chart: tracks count={len(final_test.get('tracks', []))}")
+
         # Get track data
         ft_tracks = final_test.get("tracks", [])
         if not ft_tracks:
-            self.chart.clear()
+            # Show message when Final Test has no track data
+            self._ensure_chart_initialized()
+            if self.chart:
+                self.chart.clear()
+                ax = self.chart.figure.add_subplot(111)
+                self.chart._style_axis(ax)
+                ax.text(0.5, 0.5, "No track data for this Final Test\n\n"
+                       "Re-process the file to fix this.",
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, color='gray')
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                self.chart.figure.tight_layout()
+                self.chart.canvas.draw()
             return
 
         ft_track = ft_tracks[0]  # Use first track
@@ -544,6 +576,9 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
                         chart_data["upper_limits"] = trim_upper
                         chart_data["lower_limits"] = trim_lower
                         chart_data["spec_positions"] = trim_positions
+            else:
+                # Trim record exists but has no track data
+                chart_data["trim_missing_data"] = True
 
         # Plot comparison
         self._plot_comparison(chart_data)
@@ -551,6 +586,7 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
     def _plot_comparison(self, chart_data: Dict):
         """Plot the comparison overlay chart with spec limits."""
         import numpy as np
+        from laser_trim_analyzer.gui.widgets.chart import COLORS
 
         if not self.chart:
             return
@@ -562,58 +598,15 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         # Apply dark mode styling
         self.chart._style_axis(ax)
 
-        # Plot spec limits first (so they appear behind the data lines)
+        # Get data
+        ft_data = chart_data.get("final_test", {})
+        trim_data = chart_data.get("trim", {})
         upper_limits = chart_data.get("upper_limits")
         lower_limits = chart_data.get("lower_limits")
         spec_positions = chart_data.get("spec_positions")
 
-        if upper_limits and lower_limits and spec_positions:
-            # Convert None to NaN for matplotlib (creates gaps)
-            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
-            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
-            pos_array = np.array(spec_positions)
-
-            ax.plot(pos_array, upper_plot, color='#e74c3c', linestyle='--',
-                   linewidth=1, alpha=0.8, label='Spec Limits')
-            ax.plot(pos_array, lower_plot, color='#e74c3c', linestyle='--',
-                   linewidth=1, alpha=0.8)
-            # Fill between limits
-            ax.fill_between(pos_array, lower_plot, upper_plot,
-                           alpha=0.1, color='#e74c3c',
-                           where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
-
-        # Plot Final Test data (blue, solid)
-        ft_data = chart_data.get("final_test", {})
         has_ft_data = bool(ft_data.get("positions") and ft_data.get("errors"))
-        if has_ft_data:
-            ax.plot(
-                ft_data["positions"],
-                ft_data["errors"],
-                color='#3498db',  # Blue
-                linewidth=1.5,
-                label=ft_data.get("label", "Final Test"),
-                alpha=0.9
-            )
-
-        # Plot Trim data if available (green, dashed for contrast)
-        trim_data = chart_data.get("trim", {})
         has_trim_data = bool(trim_data.get("positions") and trim_data.get("errors"))
-        if has_trim_data:
-            # Apply offset if available
-            trim_errors = trim_data["errors"]
-            offset = trim_data.get("offset", 0)
-            if offset:
-                trim_errors = [e + offset for e in trim_errors]
-
-            ax.plot(
-                trim_data["positions"],
-                trim_errors,
-                color='#27ae60',  # Green
-                linewidth=1.5,
-                linestyle='--',
-                label=trim_data.get("label", "Trim"),
-                alpha=0.9
-            )
 
         # Show message if no data
         if not has_ft_data and not has_trim_data:
@@ -622,17 +615,75 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
                    fontsize=12, color='gray')
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
+            self.chart.figure.tight_layout()
+            self.chart.canvas.draw()
+            return
+
+        # Plot Trim data first (if available) - so Final Test appears on top
+        if has_trim_data:
+            trim_errors = trim_data["errors"]
+            offset = trim_data.get("offset", 0)
+            if offset:
+                trim_errors = [e + offset for e in trim_errors]
+
+            ax.plot(
+                trim_data["positions"],
+                trim_errors,
+                color='#3498db',  # Blue for Trim (laser trim data)
+                linewidth=1.5,
+                label=trim_data.get("label", "Trim"),
+                alpha=0.9
+            )
+
+        # Plot Final Test data
+        if has_ft_data:
+            ax.plot(
+                ft_data["positions"],
+                ft_data["errors"],
+                color='#27ae60',  # Green for Final Test (post-assembly)
+                linewidth=1.5,
+                label=ft_data.get("label", "Final Test"),
+                alpha=0.9
+            )
+
+        # Plot specification limits (matching Analyze page style)
+        if upper_limits and lower_limits and spec_positions:
+            # Convert None to NaN for matplotlib (creates gaps)
+            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
+            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
+            pos_array = np.array(spec_positions[:len(upper_limits)])
+
+            ax.plot(pos_array, upper_plot, color=COLORS.get('spec_limit', '#e74c3c'),
+                   linestyle='--', linewidth=1, alpha=0.8, label='Spec Limits')
+            ax.plot(pos_array, lower_plot, color=COLORS.get('spec_limit', '#e74c3c'),
+                   linestyle='--', linewidth=1, alpha=0.8)
+
+            # Fill between limits
+            ax.fill_between(pos_array, lower_plot, upper_plot,
+                           alpha=0.1, color=COLORS.get('spec_limit', '#e74c3c'),
+                           where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
+
+        # Show note if trim data is missing for linked unit
+        if has_ft_data and not has_trim_data and chart_data.get("trim_missing_data"):
+            ax.text(0.02, 0.98, "Note: Linked Trim has no track data (re-process to fix)",
+                   ha='left', va='top', transform=ax.transAxes,
+                   fontsize=9, color='#f39c12', style='italic')
 
         # Add zero line
         ax.axhline(y=0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
 
-        # Labels and legend
-        ax.set_xlabel("Position", fontsize=10)
-        ax.set_ylabel("Linearity Error", fontsize=10)
-        ax.set_title("Trim vs Final Test Comparison", fontsize=12)
-        if has_ft_data or has_trim_data or (upper_limits and lower_limits):
-            ax.legend(loc='upper right', fontsize=9)
-        ax.grid(True, alpha=0.3)
+        # Build title
+        if has_trim_data:
+            title = "Trim vs Final Test Comparison"
+        else:
+            title = "Final Test Linearity"
+
+        # Labels and legend (matching Analyze page style)
+        ax.set_xlabel('Position', fontsize=self.chart.style.font_size)
+        ax.set_ylabel('Error', fontsize=self.chart.style.font_size)
+        ax.set_title(title, fontsize=self.chart.style.title_size)
+        ax.legend(loc='best', fontsize=self.chart.style.font_size - 2)
+        ax.grid(True, alpha=0.3, color=COLORS.get('grid', 'gray'))
 
         self.chart.figure.tight_layout()
         self.chart.canvas.draw()
@@ -658,6 +709,143 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
     def _on_filter_change(self, *args):
         """Handle filter changes."""
         self._current_page = 0
+        self._load_comparisons()
+
+    def _fix_missing_tracks(self):
+        """Re-parse Final Test and Trim files that have missing track data."""
+        from pathlib import Path
+        from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+        from laser_trim_analyzer.core.processor import AnalysisProcessor
+
+        self.fix_tracks_btn.configure(state="disabled", text="Fixing...")
+        self.count_label.configure(text="Finding records with missing tracks...")
+
+        def fix():
+            try:
+                db = get_database()
+                ft_parser = FinalTestParser()
+                trim_processor = AnalysisProcessor()
+
+                fixed_ft = 0
+                failed_ft = 0
+                fixed_trim = 0
+                failed_trim = 0
+
+                # Phase 1: Fix Final Test tracks
+                ft_missing = db.get_final_tests_missing_tracks()
+                total_ft = len(ft_missing)
+
+                for i, record in enumerate(ft_missing):
+                    self.after(0, lambda i=i, t=total_ft: self.count_label.configure(
+                        text=f"Fixing Final Test {i+1}/{t}..."
+                    ))
+
+                    file_path = Path(record["file_path"]) if record.get("file_path") else None
+                    if not file_path or not file_path.exists():
+                        model = record.get("model", "")
+                        filename = record.get("filename", "")
+                        alt_path = Path(f"test_files/Final Test files/{model}/{filename}")
+                        if alt_path.exists():
+                            file_path = alt_path
+                        else:
+                            logger.warning(f"Final Test file not found: {record.get('file_path')}")
+                            failed_ft += 1
+                            continue
+
+                    try:
+                        result = ft_parser.parse_file(file_path)
+                        tracks = result.get("tracks", [])
+                        if tracks and db.update_final_test_tracks(record["id"], tracks):
+                            fixed_ft += 1
+                        else:
+                            failed_ft += 1
+                    except Exception as e:
+                        logger.error(f"Error fixing Final Test {record.get('filename')}: {e}")
+                        failed_ft += 1
+
+                # Phase 2: Fix Trim tracks (linked ones only)
+                # Note: Some "Trim" records may actually point to Final Test files
+                # if the original data was imported incorrectly. We'll try both parsers.
+                trim_missing = db.get_trim_records_missing_tracks(linked_only=True)
+                total_trim = len(trim_missing)
+
+                for i, record in enumerate(trim_missing):
+                    self.after(0, lambda i=i, t=total_trim: self.count_label.configure(
+                        text=f"Fixing Trim {i+1}/{t}..."
+                    ))
+
+                    file_path = Path(record["file_path"]) if record.get("file_path") else None
+                    if not file_path or not file_path.exists():
+                        model = record.get("model", "")
+                        filename = record.get("filename", "")
+                        # Try common locations
+                        for base in ["test_files/System A test files", "test_files/System B test files",
+                                     "test_files/Final Test files"]:
+                            alt_path = Path(base) / model / filename
+                            if alt_path.exists():
+                                file_path = alt_path
+                                break
+                        else:
+                            logger.warning(f"Trim file not found: {record.get('file_path')}")
+                            failed_trim += 1
+                            continue
+
+                    try:
+                        # First try parsing as Final Test (some "Trim" records point to FT files)
+                        ft_result = ft_parser.parse_file(file_path)
+                        ft_tracks = ft_result.get("tracks", [])
+
+                        if ft_tracks:
+                            # Convert FT track format to TrackResult format
+                            track_data = db.update_trim_tracks_from_final_test(record["id"], ft_tracks)
+                            if track_data:
+                                fixed_trim += 1
+                                continue
+
+                        # Fall back to Trim processor
+                        analysis = trim_processor.process_file(file_path)
+                        if analysis and analysis.tracks:
+                            if db.update_trim_tracks(record["id"], analysis.tracks):
+                                fixed_trim += 1
+                            else:
+                                failed_trim += 1
+                        else:
+                            logger.warning(f"No tracks from re-processing {record.get('filename')}")
+                            failed_trim += 1
+                    except Exception as e:
+                        logger.error(f"Error fixing Trim {record.get('filename')}: {e}")
+                        failed_trim += 1
+
+                # Report results
+                total_fixed = fixed_ft + fixed_trim
+                total_failed = failed_ft + failed_trim
+                self.after(0, lambda: self._fix_complete(
+                    total_fixed, total_failed,
+                    details=f"FT:{fixed_ft}/{fixed_ft+failed_ft}, Trim:{fixed_trim}/{fixed_trim+failed_trim}"
+                ))
+
+            except Exception as e:
+                logger.exception(f"Error in fix missing tracks: {e}")
+                self.after(0, lambda: self._fix_complete(0, 0, str(e)))
+
+        thread = threading.Thread(target=fix, daemon=True)
+        thread.start()
+
+    def _fix_complete(self, fixed: int, failed: int, error: str = None, details: str = None):
+        """Called when fix operation completes."""
+        self.fix_tracks_btn.configure(state="normal", text="Fix Missing Tracks")
+
+        if error:
+            self.count_label.configure(text=f"Error: {error}")
+        elif fixed == 0 and failed == 0:
+            self.count_label.configure(text="No records need fixing")
+        else:
+            msg = f"Fixed {fixed}, failed {failed}"
+            if details:
+                msg += f" ({details})"
+            self.count_label.configure(text=msg)
+
+        # Reload data
         self._load_comparisons()
 
     def _show_error(self, error: str):

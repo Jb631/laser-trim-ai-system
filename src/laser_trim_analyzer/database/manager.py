@@ -767,12 +767,16 @@ class DatabaseManager:
             List of alert dictionaries
         """
         with self.session() as session:
-            query = session.query(DBQAAlert)
+            # Join with AnalysisResult to get model info
+            query = (
+                session.query(DBQAAlert, DBAnalysisResult.model)
+                .outerjoin(DBAnalysisResult, DBQAAlert.analysis_id == DBAnalysisResult.id)
+            )
 
             if not include_resolved:
                 query = query.filter(DBQAAlert.resolved == False)
 
-            alerts = (
+            results = (
                 query
                 .order_by(DBQAAlert.created_date.desc())
                 .limit(limit)
@@ -781,17 +785,17 @@ class DatabaseManager:
 
             return [
                 {
-                    "id": a.id,
-                    "analysis_id": a.analysis_id,
-                    "alert_type": a.alert_type.value if a.alert_type else "INFO",
-                    "severity": a.severity,
-                    "message": a.message,
-                    "model": a.model,
-                    "created_at": a.created_date.strftime("%Y-%m-%d %H:%M") if a.created_date else "",
-                    "acknowledged": a.acknowledged,
-                    "resolved": a.resolved,
+                    "id": alert.id,
+                    "analysis_id": alert.analysis_id,
+                    "alert_type": alert.alert_type.value if alert.alert_type else "INFO",
+                    "severity": alert.severity,
+                    "message": alert.message,
+                    "model": model or "Unknown",
+                    "created_at": alert.created_date.strftime("%Y-%m-%d %H:%M") if alert.created_date else "",
+                    "acknowledged": alert.acknowledged,
+                    "resolved": alert.resolved,
                 }
-                for a in alerts
+                for alert, model in results
             ]
 
     def get_model_stats(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -2143,6 +2147,293 @@ class DatabaseManager:
                 .all()
             )
             return [m[0] for m in models if m[0]]
+
+    def get_final_tests_missing_tracks(self) -> List[Dict[str, Any]]:
+        """
+        Get Final Test records that have 0 tracks stored.
+
+        Returns:
+            List of dicts with id, filename, file_path, model
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            # Subquery to count tracks per final test
+            track_count_subq = (
+                session.query(
+                    DBFinalTestTrack.final_test_id,
+                    func.count(DBFinalTestTrack.id).label('track_count')
+                )
+                .group_by(DBFinalTestTrack.final_test_id)
+                .subquery()
+            )
+
+            # Get Final Tests with no tracks (LEFT JOIN where track_count is NULL)
+            results = (
+                session.query(DBFinalTestResult)
+                .outerjoin(track_count_subq, DBFinalTestResult.id == track_count_subq.c.final_test_id)
+                .filter(track_count_subq.c.track_count == None)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "filename": r.filename,
+                    "file_path": r.file_path,
+                    "model": r.model,
+                    "serial": r.serial,
+                }
+                for r in results
+            ]
+
+    def update_final_test_tracks(
+        self,
+        final_test_id: int,
+        tracks: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Update track data for an existing Final Test record.
+
+        Used to fix records that were created before parser improvements.
+
+        Args:
+            final_test_id: ID of the Final Test record
+            tracks: List of track data dicts
+
+        Returns:
+            True if successful
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self._final_test_lock:
+            try:
+                with self.session() as session:
+                    # Get existing record
+                    result = session.query(DBFinalTestResult).get(final_test_id)
+                    if not result:
+                        logger.warning(f"Final Test ID {final_test_id} not found")
+                        return False
+
+                    # Delete existing tracks (if any)
+                    session.query(DBFinalTestTrack).filter(
+                        DBFinalTestTrack.final_test_id == final_test_id
+                    ).delete()
+
+                    # Add new tracks
+                    for track_data in tracks:
+                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
+
+                        db_track = DBFinalTestTrack(
+                            final_test_id=final_test_id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                            linearity_spec=track_data.get("linearity_spec"),
+                            linearity_error=track_data.get("linearity_error"),
+                            linearity_pass=track_data.get("linearity_pass"),
+                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                            position_data=position_values,
+                            error_data=track_data.get("errors"),
+                            electrical_angle_data=track_data.get("electrical_angles"),
+                            upper_limits=track_data.get("upper_limits"),
+                            lower_limits=track_data.get("lower_limits"),
+                            max_deviation=track_data.get("max_deviation"),
+                            max_deviation_position=track_data.get("max_deviation_angle"),
+                        )
+                        session.add(db_track)
+
+                    # Update linearity_error on main record if tracks have it
+                    if tracks and tracks[0].get("linearity_error") is not None:
+                        result.linearity_error = tracks[0].get("linearity_error")
+
+                    session.commit()
+                    logger.info(f"Updated Final Test {final_test_id} with {len(tracks)} tracks")
+                    return True
+
+            except Exception as e:
+                logger.error(f"Error updating Final Test tracks: {e}")
+                return False
+
+    def get_trim_records_missing_tracks(self, linked_only: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get Trim (AnalysisResult) records that have no track data stored.
+
+        Args:
+            linked_only: If True, only return records that are linked to Final Tests
+
+        Returns:
+            List of record info dicts with id, filename, file_path, model, serial
+        """
+        with self.session() as session:
+            # Subquery to count tracks per analysis
+            track_count_subq = (
+                session.query(
+                    DBTrackResult.analysis_id,
+                    func.count(DBTrackResult.id).label('track_count')
+                )
+                .group_by(DBTrackResult.analysis_id)
+                .subquery()
+            )
+
+            # Base query for analyses with no tracks
+            query = (
+                session.query(DBAnalysisResult)
+                .outerjoin(track_count_subq, DBAnalysisResult.id == track_count_subq.c.analysis_id)
+                .filter(
+                    (track_count_subq.c.track_count == None) |
+                    (track_count_subq.c.track_count == 0)
+                )
+            )
+
+            if linked_only:
+                # Get IDs of analyses that are linked to Final Tests
+                from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
+                linked_ids = (
+                    session.query(DBFinalTestResult.linked_trim_id)
+                    .filter(DBFinalTestResult.linked_trim_id != None)
+                    .distinct()
+                    .all()
+                )
+                linked_id_list = [lid[0] for lid in linked_ids]
+                query = query.filter(DBAnalysisResult.id.in_(linked_id_list))
+
+            results = query.all()
+
+            return [
+                {
+                    "id": r.id,
+                    "filename": r.filename,
+                    "file_path": r.file_path,
+                    "model": r.model,
+                    "serial": r.serial,
+                }
+                for r in results
+            ]
+
+    def update_trim_tracks(
+        self,
+        analysis_id: int,
+        tracks: List["TrackResult"]
+    ) -> bool:
+        """
+        Update track data for an existing Trim (AnalysisResult) record.
+
+        Used to fix records that were created before track data storage was added.
+
+        Args:
+            analysis_id: ID of the AnalysisResult record
+            tracks: List of TrackResult objects from re-parsing
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self.session() as session:
+                # Get existing record
+                result = session.query(DBAnalysisResult).get(analysis_id)
+                if not result:
+                    logger.warning(f"Analysis ID {analysis_id} not found")
+                    return False
+
+                # Delete existing tracks (if any)
+                session.query(DBTrackResult).filter(
+                    DBTrackResult.analysis_id == analysis_id
+                ).delete()
+
+                # Add new tracks
+                for track in tracks:
+                    db_track = self._map_track_to_db(track)
+                    db_track.analysis_id = analysis_id
+                    session.add(db_track)
+
+                session.commit()
+                logger.info(f"Updated Analysis {analysis_id} with {len(tracks)} tracks")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error updating Trim tracks: {e}")
+            return False
+
+    def update_trim_tracks_from_final_test(
+        self,
+        analysis_id: int,
+        ft_tracks: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Update Trim (AnalysisResult) track data from Final Test format data.
+
+        Used when "Trim" records actually point to Final Test files.
+        Converts FT track format to TrackResult format.
+
+        Args:
+            analysis_id: ID of the AnalysisResult record
+            ft_tracks: List of track dicts from Final Test parser
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self.session() as session:
+                # Get existing record
+                result = session.query(DBAnalysisResult).get(analysis_id)
+                if not result:
+                    logger.warning(f"Analysis ID {analysis_id} not found")
+                    return False
+
+                # Delete existing tracks (if any)
+                session.query(DBTrackResult).filter(
+                    DBTrackResult.analysis_id == analysis_id
+                ).delete()
+
+                # Add new tracks converted from FT format
+                for ft_track in ft_tracks:
+                    # Get position data (FT format uses electrical_angles)
+                    positions = ft_track.get("electrical_angles") or ft_track.get("positions", [])
+                    errors = ft_track.get("errors", [])
+                    upper_limits = ft_track.get("upper_limits", [])
+                    lower_limits = ft_track.get("lower_limits", [])
+
+                    # Calculate linearity metrics
+                    linearity_error = ft_track.get("linearity_error", 0.0)
+                    linearity_spec = ft_track.get("linearity_spec", 0.02)
+                    linearity_pass = ft_track.get("linearity_pass", True)
+
+                    # Create TrackResult-compatible DB record
+                    db_track = DBTrackResult(
+                        analysis_id=analysis_id,
+                        track_id=ft_track.get("track_id", "default"),
+                        status=DBStatusType.PASS if linearity_pass else DBStatusType.FAIL,
+                        # Sigma values - use defaults for FT data
+                        sigma_gradient=0.0,
+                        sigma_threshold=1.0,
+                        sigma_pass=True,
+                        # Linearity values
+                        linearity_spec=linearity_spec,
+                        final_linearity_error_shifted=linearity_error,
+                        linearity_pass=linearity_pass,
+                        linearity_fail_points=ft_track.get("linearity_fail_points", 0),
+                        # Track data for charts
+                        position_data=positions,
+                        error_data=errors,
+                        upper_limits=upper_limits,
+                        lower_limits=lower_limits,
+                        # Travel length from position range
+                        travel_length=max(positions) - min(positions) if positions else 0,
+                    )
+                    session.add(db_track)
+
+                session.commit()
+                logger.info(f"Updated Analysis {analysis_id} with {len(ft_tracks)} tracks from FT format")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error updating Trim tracks from FT: {e}")
+            return False
 
 
 # Global instance for convenience

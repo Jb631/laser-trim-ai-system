@@ -332,7 +332,8 @@ class DashboardPage(ctk.CTkFrame):
 
         except Exception as e:
             logger.error(f"Failed to load dashboard data: {e}")
-            self.after(0, lambda: self._show_error(str(e)))
+            error_msg = str(e)
+            self.after(0, lambda err=error_msg: self._show_error(err))
 
     def _get_drift_alerts(self, db) -> List[Dict[str, Any]]:
         """Get drift status from ML system."""
