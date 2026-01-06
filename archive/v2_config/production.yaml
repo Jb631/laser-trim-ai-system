@@ -1,0 +1,70 @@
+app_name: "Laser Trim Analyzer"
+version: "2.0.0"
+debug: false  # Disable debug mode in production
+
+database:
+  enabled: true
+  path: "D:/LaserTrimData/production.db"  # Production database path
+  echo: false  # Disable SQL echo for performance
+  pool_size: 8  # Increased pool size for better concurrency
+
+processing:
+  max_workers: 8  # Increased for better performance
+  generate_plots: true  # Enable plot generation
+  plot_dpi: 150
+  cache_enabled: true
+  cache_ttl: 7200  # Increased cache time for production
+  file_extensions: [".xlsx", ".xls"]
+  skip_patterns: ["~$*", ".*", "_backup_*", "*_test_*"]  # Added test file pattern
+  # Feature Flags for Enhanced Processing (ADR-001, ADR-004)
+  use_unified_processor: true  # Enable incremental processing
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+  # ML Feature Flags (ADR-005)
+  use_ml_failure_predictor: true  # Enable ML-based failure prediction
+  use_ml_drift_detector: true  # Enable ML-based drift detection
+
+analysis:
+  sigma_scaling_factor: 24.0
+  matlab_gradient_step: 3
+  filter_sampling_frequency: 100
+  filter_cutoff_frequency: 40
+  # Lockheed Martin Compliance Mode
+  # Set to true to use original LM specifications (80 Hz cutoff)
+  # WARNING: This violates Nyquist theorem but may be required for contractual compliance
+  lockheed_martin_compliance_mode: false
+  default_num_zones: 5
+  high_risk_threshold: 0.7
+  low_risk_threshold: 0.3
+
+ml:
+  enabled: true
+  model_path: "./models"  # Portable models directory
+  failure_prediction_enabled: true
+  failure_prediction_confidence_threshold: 0.9  # Higher confidence threshold
+  threshold_optimization_enabled: true
+  threshold_optimization_min_samples: 1000  # Increased sample size
+  retrain_interval_days: 14  # More frequent retraining
+  min_training_samples: 5000  # More training samples required
+
+api:
+  enabled: true
+  base_url: "http://laser-trim-api.internal"  # Internal API endpoint
+  timeout: 60  # Increased timeout
+  max_retries: 5  # More retries
+  enable_anomaly_detection: true
+  enable_quality_predictions: true
+  enable_maintenance_suggestions: true
+
+gui:
+  theme: "clam"
+  window_width: 1600  # Larger default window
+  window_height: 1200
+  show_historical_tab: true
+  show_ml_insights: true
+  show_batch_processing: true
+  autosave_enabled: true
+  autosave_interval: 180  # More frequent autosave
+
+# Production data paths
+data_directory: "D:/LaserTrimData/Production"  # Production data directory
+log_directory: "D:/LaserTrimData/Logs"  # Production logs directory 

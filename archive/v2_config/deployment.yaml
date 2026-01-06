@@ -1,0 +1,94 @@
+app_name: Laser Trim Analyzer
+database:
+  cache_sync_interval: 300
+  enable_local_cache: true
+  multi_user:
+    connection_timeout: 30
+    enable_wal_mode: true
+    max_retries: 5
+    path: //fileserver/QA_Data/LaserTrimAnalyzer/shared_database.db
+    require_authentication: false
+    retry_delay: 2
+    sqlite_timeout: 30
+    track_users: true
+  single_user:
+    connection_timeout: 10
+    enable_wal_mode: false
+    path: ./data/laser_trim.db
+debug: false
+deployment:
+  enable_auto_update: false
+  enable_error_reporting: false
+  error_report_email: qa-support@company.com
+  install_directory: C:/Program Files/LaserTrimAnalyzer
+  log_level: INFO
+  log_retention_days: 30
+  log_to_event_viewer: false
+  log_to_file: true
+  max_log_size_mb: 100
+  update_check_interval: 86400
+  update_server: //fileserver/QA_Data/LaserTrimAnalyzer/updates
+deployment_mode: single_user
+gui:
+  allow_mode_switching: true
+  company_logo_path: assets/company_logo.png
+  company_name: Your Company Name
+  default_theme: professional
+  remember_window_position: true
+  show_admin_tools: false
+  show_advanced_features: true
+  show_company_logo: false
+  show_ml_features: true
+  start_maximized: false
+it_management:
+  allow_group_policy_override: true
+  backup_interval_days: 7
+  backup_location: //fileserver/QA_Data/LaserTrimAnalyzer/backups
+  backup_retention_days: 90
+  enable_auto_backup: false
+  registry_key: HKLM\Software\CompanyName\LaserTrimAnalyzer
+  silent_install_enabled: true
+multi_user:
+  default_user_role: analyst
+  enable_file_locking: true
+  enable_progress_updates: true
+  max_concurrent_analyses: 10
+  network_timeout: 60
+  update_interval: 1.0
+paths:
+  multi_user:
+    data_directory: //fileserver/QA_Data/LaserTrimAnalyzer/shared_data
+    logs_directory: //fileserver/QA_Data/LaserTrimAnalyzer/logs
+    models_directory: //fileserver/QA_Data/LaserTrimAnalyzer/ml_models
+    reports_directory: //fileserver/QA_Data/LaserTrimAnalyzer/reports
+    temp_directory: '%TEMP%/LaserTrimAnalyzer'
+  single_user:
+    data_directory: ./data
+    logs_directory: ./logs
+    models_directory: ./models
+    reports_directory: '%USERPROFILE%/Documents/LaserTrimAnalyzer/reports'
+    temp_directory: '%TEMP%/LaserTrimAnalyzer'
+processing:
+  clean_temp_on_exit: true
+  max_workers: 4
+  # Threshold for activating turbo mode (high-speed batch processing)
+  turbo_mode_threshold: 100
+  # Feature Flags for Enhanced Processing (ADR-001, ADR-004)
+  use_unified_processor: true  # Enable incremental processing
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+  # ML Feature Flags (ADR-005)
+  use_ml_failure_predictor: true  # Enable ML-based failure prediction
+  use_ml_drift_detector: true  # Enable ML-based drift detection
+security:
+  allowed_file_paths:
+  - //fileserver/QA_Data
+  - C:/LaserTrimData
+  - '%USERPROFILE%/Documents/LaserTrim'
+  - '%USERPROFILE%/Desktop'
+  - '%USERPROFILE%/Downloads'
+  encrypt_local_cache: false
+  restrict_file_access: false
+  secure_delete_temp_files: true
+  use_windows_authentication: true
+  verify_ssl_certificates: true
+version: 2.2.9

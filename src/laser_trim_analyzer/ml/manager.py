@@ -1,0 +1,984 @@
+"""
+ML Manager for Laser Trim Analyzer v3.
+
+Orchestrates all per-model ML components:
+- ModelPredictor: Failure probability prediction
+- ModelThresholdOptimizer: Optimal sigma threshold
+- ModelDriftDetector: Quality drift detection
+- ModelProfiler: Statistical profiling
+
+Handles training, persistence, and application to database.
+"""
+
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Optional, Any, Callable, Tuple
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from laser_trim_analyzer.ml.predictor import (
+    ModelPredictor, PredictorTrainingResult, extract_features, FEATURE_COLUMNS
+)
+from laser_trim_analyzer.ml.threshold_optimizer import (
+    ModelThresholdOptimizer, ThresholdResult
+)
+from laser_trim_analyzer.ml.drift_detector import (
+    ModelDriftDetector, DriftResult, DriftDirection
+)
+from laser_trim_analyzer.ml.profiler import (
+    ModelProfiler, ModelProfile, calculate_cross_model_metrics
+)
+from laser_trim_analyzer.database.models import StatusType
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ModelTrainingResult:
+    """Result of training all ML components for a single model."""
+    model_name: str
+    success: bool
+
+    # Component results
+    predictor_trained: bool = False
+    predictor_accuracy: float = 0.0
+    threshold_calculated: bool = False
+    threshold_value: Optional[float] = None
+    threshold_confidence: float = 0.0
+    drift_baseline_set: bool = False
+    profile_built: bool = False
+
+    # Sample counts
+    n_samples: int = 0
+    n_pass: int = 0
+    n_fail: int = 0
+
+    error: Optional[str] = None
+
+
+@dataclass
+class TrainingProgress:
+    """Progress update during training."""
+    current_model: str
+    models_complete: int
+    models_total: int
+    phase: str  # 'gathering', 'training', 'profiling'
+    message: str
+
+
+@dataclass
+class ApplyProgress:
+    """Progress update during database application."""
+    records_complete: int
+    records_total: int
+    models_updated: int
+    message: str
+
+
+class MLManager:
+    """
+    Manages all per-model ML components.
+
+    Responsibilities:
+    - Train ML components from database data
+    - Apply learned thresholds and predictions to database
+    - Provide threshold/prediction lookups during analysis
+    - Persist and load trained state
+
+    Usage:
+    1. After processing files: call train_all_models()
+    2. To apply ML to existing data: call apply_to_database()
+    3. During analysis: call get_threshold() or get_failure_probability()
+    """
+
+    # Minimum samples for different components
+    MIN_PREDICTOR_SAMPLES = 50
+    MIN_THRESHOLD_SAMPLES = 20
+    MIN_DRIFT_SAMPLES = 30
+    MIN_PROFILE_SAMPLES = 10
+
+    def __init__(self, db_manager: Any, ml_storage_path: Optional[Path] = None):
+        """
+        Initialize ML Manager.
+
+        Args:
+            db_manager: DatabaseManager instance for data access
+            ml_storage_path: Path for storing ML model files (pickles)
+        """
+        self.db = db_manager
+        self.storage_path = ml_storage_path or Path("data/ml_models")
+
+        # Per-model components (lazy loaded)
+        self.predictors: Dict[str, ModelPredictor] = {}
+        self.threshold_optimizers: Dict[str, ModelThresholdOptimizer] = {}
+        self.drift_detectors: Dict[str, ModelDriftDetector] = {}
+        self.profilers: Dict[str, ModelProfiler] = {}
+
+        # State
+        self.is_loaded: bool = False
+        self.last_training_date: Optional[datetime] = None
+        self.trained_models: List[str] = []
+        self.models_needing_data: Dict[str, int] = {}  # model -> samples needed
+
+    def get_predictor(self, model_name: str) -> ModelPredictor:
+        """Get or create predictor for a model."""
+        if model_name not in self.predictors:
+            self.predictors[model_name] = ModelPredictor(model_name)
+        return self.predictors[model_name]
+
+    def get_threshold_optimizer(self, model_name: str) -> ModelThresholdOptimizer:
+        """Get or create threshold optimizer for a model."""
+        if model_name not in self.threshold_optimizers:
+            self.threshold_optimizers[model_name] = ModelThresholdOptimizer(model_name)
+        return self.threshold_optimizers[model_name]
+
+    def get_drift_detector(self, model_name: str) -> ModelDriftDetector:
+        """Get or create drift detector for a model."""
+        if model_name not in self.drift_detectors:
+            self.drift_detectors[model_name] = ModelDriftDetector(model_name)
+        return self.drift_detectors[model_name]
+
+    def get_profiler(self, model_name: str) -> ModelProfiler:
+        """Get or create profiler for a model."""
+        if model_name not in self.profilers:
+            self.profilers[model_name] = ModelProfiler(model_name)
+        return self.profilers[model_name]
+
+    def get_threshold(self, model_name: str) -> Optional[float]:
+        """
+        Get learned threshold for a model.
+
+        Args:
+            model_name: Product model number
+
+        Returns:
+            Learned threshold, or None to use formula fallback
+        """
+        if model_name in self.threshold_optimizers:
+            optimizer = self.threshold_optimizers[model_name]
+            if optimizer.is_calculated:
+                return optimizer.threshold
+        return None
+
+    def get_failure_probability(
+        self,
+        model_name: str,
+        features: Dict[str, float]
+    ) -> Optional[float]:
+        """
+        Get failure probability prediction.
+
+        Args:
+            model_name: Product model number
+            features: Feature dict from extract_features()
+
+        Returns:
+            Failure probability (0-1), or None if not trained
+        """
+        if model_name in self.predictors:
+            predictor = self.predictors[model_name]
+            if predictor.is_trained:
+                return predictor.predict_failure_probability(features)
+        return None
+
+    def train_model(
+        self,
+        model_name: str,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> ModelTrainingResult:
+        """
+        Train all ML components for a specific model.
+
+        Args:
+            model_name: Product model number
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            ModelTrainingResult with training status
+        """
+        result = ModelTrainingResult(model_name=model_name, success=False)
+
+        try:
+            if progress_callback:
+                progress_callback(f"Gathering data for {model_name}...")
+
+            # Get training data from database
+            data = self._get_training_data(model_name)
+
+            if data is None or len(data) < self.MIN_PROFILE_SAMPLES:
+                result.error = f"Insufficient data: {len(data) if data is not None else 0} samples"
+                self.models_needing_data[model_name] = self.MIN_THRESHOLD_SAMPLES - (len(data) if data is not None else 0)
+                return result
+
+            result.n_samples = len(data)
+            result.n_pass = int(data['passed'].sum())
+            result.n_fail = result.n_samples - result.n_pass
+
+            # 1. Build profile (always, needs least data)
+            if progress_callback:
+                progress_callback(f"Building profile for {model_name}...")
+
+            profiler = self.get_profiler(model_name)
+            profiler.build_profile(data)
+            result.profile_built = profiler.is_profiled
+
+            # 2. Calculate threshold (needs 20+ samples)
+            if len(data) >= self.MIN_THRESHOLD_SAMPLES:
+                if progress_callback:
+                    progress_callback(f"Calculating threshold for {model_name}...")
+
+                optimizer = self.get_threshold_optimizer(model_name)
+                threshold_result = optimizer.calculate_threshold(
+                    sigma_values=data['sigma_gradient'],
+                    passed=data['passed'],
+                    fail_points=data.get('linearity_fail_points'),
+                    linearity_spec=data['linearity_spec'].iloc[0] if 'linearity_spec' in data.columns else None
+                )
+                result.threshold_calculated = optimizer.is_calculated
+                result.threshold_value = threshold_result.threshold
+                result.threshold_confidence = threshold_result.confidence
+
+            # 3. Set drift baseline (needs 30+ samples)
+            if len(data) >= self.MIN_DRIFT_SAMPLES:
+                if progress_callback:
+                    progress_callback(f"Setting drift baseline for {model_name}...")
+
+                detector = self.get_drift_detector(model_name)
+                sigma_values = data['sigma_gradient'].dropna().values
+                result.drift_baseline_set = detector.set_baseline(sigma_values)
+
+            # 4. Train predictor (needs 50+ samples)
+            if len(data) >= self.MIN_PREDICTOR_SAMPLES:
+                if progress_callback:
+                    progress_callback(f"Training predictor for {model_name}...")
+
+                predictor = self.get_predictor(model_name)
+
+                # Prepare features
+                features = self._extract_features_from_data(data)
+                labels = ~data['passed']  # 1 = failed
+                severity = data.get('linearity_fail_points')
+
+                training_result = predictor.train(features, labels, severity)
+                result.predictor_trained = training_result.success
+                if training_result.metrics:
+                    result.predictor_accuracy = training_result.metrics.accuracy
+
+            result.success = True
+
+            # Track trained model
+            if model_name not in self.trained_models:
+                self.trained_models.append(model_name)
+
+            logger.info(
+                f"MLManager trained {model_name} - "
+                f"Threshold: {result.threshold_value:.6f if result.threshold_value else 'N/A'}, "
+                f"Predictor: {'Yes' if result.predictor_trained else 'No'}, "
+                f"Drift: {'Yes' if result.drift_baseline_set else 'No'}"
+            )
+
+            return result
+
+        except Exception as e:
+            logger.exception(f"Error training model {model_name}: {e}")
+            result.error = str(e)
+            return result
+
+    def train_all_models(
+        self,
+        min_samples: int = 20,
+        progress_callback: Optional[Callable[[TrainingProgress], None]] = None
+    ) -> Dict[str, ModelTrainingResult]:
+        """
+        Train ML for all models with sufficient data.
+
+        Args:
+            min_samples: Minimum samples required for training
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dict of model_name -> ModelTrainingResult
+        """
+        results = {}
+
+        # Get list of models from database
+        models = self._get_model_list()
+
+        if not models:
+            logger.warning("No models found in database")
+            return results
+
+        logger.info(f"MLManager training {len(models)} models...")
+
+        for i, model_name in enumerate(models):
+            if progress_callback:
+                progress_callback(TrainingProgress(
+                    current_model=model_name,
+                    models_complete=i,
+                    models_total=len(models),
+                    phase='training',
+                    message=f"Training {model_name} ({i+1}/{len(models)})"
+                ))
+
+            # Simple callback for single model
+            def model_callback(msg: str):
+                if progress_callback:
+                    progress_callback(TrainingProgress(
+                        current_model=model_name,
+                        models_complete=i,
+                        models_total=len(models),
+                        phase='training',
+                        message=msg
+                    ))
+
+            results[model_name] = self.train_model(model_name, model_callback)
+
+        # Calculate cross-model metrics
+        if progress_callback:
+            progress_callback(TrainingProgress(
+                current_model='',
+                models_complete=len(models),
+                models_total=len(models),
+                phase='profiling',
+                message='Calculating cross-model metrics...'
+            ))
+
+        cross_metrics = calculate_cross_model_metrics(self.profilers)
+        for model_name, (difficulty, quality) in cross_metrics.items():
+            if model_name in self.profilers:
+                self.profilers[model_name].set_comparative_metrics(difficulty, quality)
+
+        self.last_training_date = datetime.now()
+
+        # Summary
+        trained_count = sum(1 for r in results.values() if r.success)
+        logger.info(
+            f"MLManager training complete - "
+            f"{trained_count}/{len(models)} models trained"
+        )
+
+        return results
+
+    def apply_to_database(
+        self,
+        progress_callback: Optional[Callable[[ApplyProgress], None]] = None,
+        run_drift_detection: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Apply learned ML to all database records.
+
+        Updates:
+        - sigma_threshold and sigma_pass using learned thresholds
+        - failure_probability using trained predictors
+        - Runs drift detection and creates alerts
+
+        Args:
+            progress_callback: Optional callback for progress updates
+            run_drift_detection: Whether to run drift detection (default True)
+
+        Returns:
+            Dict with counts and drift alerts:
+            {'updated': N, 'skipped': M, 'errors': E, 'drift_alerts': [...]}
+        """
+        counts = {'updated': 0, 'skipped': 0, 'errors': 0, 'drift_alerts': []}
+
+        try:
+            from laser_trim_analyzer.database.models import (
+                TrackResult, AnalysisResult, QAAlert, AlertType
+            )
+
+            with self.db.session() as session:
+                # Count total records
+                total = session.query(TrackResult).count()
+
+                if progress_callback:
+                    progress_callback(ApplyProgress(
+                        records_complete=0,
+                        records_total=total,
+                        models_updated=0,
+                        message=f"Processing {total} track records..."
+                    ))
+
+                # Process in batches by model
+                models_updated = set()
+
+                for model_name in self.trained_models:
+                    optimizer = self.threshold_optimizers.get(model_name)
+                    if not optimizer or not optimizer.is_calculated:
+                        continue
+
+                    new_threshold = optimizer.threshold
+                    detector = self.drift_detectors.get(model_name)
+
+                    # Get tracks for this model, ordered by date for drift detection
+                    tracks = (
+                        session.query(TrackResult, AnalysisResult)
+                        .join(AnalysisResult)
+                        .filter(AnalysisResult.model == model_name)
+                        .order_by(AnalysisResult.file_date)
+                        .all()
+                    )
+
+                    # Group tracks by analysis for status recalculation
+                    analysis_tracks: Dict[int, List] = {}
+                    for track, analysis in tracks:
+                        if analysis.id not in analysis_tracks:
+                            analysis_tracks[analysis.id] = []
+                        analysis_tracks[analysis.id].append((track, analysis))
+
+                    for track, analysis in tracks:
+                        try:
+                            # Update threshold
+                            track.sigma_threshold = new_threshold
+
+                            # Recalculate sigma_pass
+                            if track.sigma_gradient is not None:
+                                old_sigma_pass = track.sigma_pass
+                                track.sigma_pass = track.sigma_gradient <= new_threshold
+
+                                # Recalculate track status if sigma_pass changed
+                                if track.sigma_pass != old_sigma_pass:
+                                    linearity_pass = track.linearity_pass if track.linearity_pass is not None else True
+                                    if track.sigma_pass and linearity_pass:
+                                        track.status = StatusType.PASS
+                                    elif track.sigma_pass or linearity_pass:
+                                        track.status = StatusType.WARNING
+                                    else:
+                                        track.status = StatusType.FAIL
+
+                            # Update failure probability if predictor is trained
+                            predictor = self.predictors.get(model_name)
+                            if predictor and predictor.is_trained:
+                                features = {
+                                    'sigma_gradient': track.sigma_gradient,
+                                    'linearity_error': track.final_linearity_error_shifted,
+                                    'fail_points': track.linearity_fail_points or 0,
+                                    'optimal_offset': track.optimal_offset,
+                                    'linearity_spec': track.linearity_spec,
+                                }
+                                features = extract_features(features)
+                                prob = predictor.predict_failure_probability(features)
+                                if prob is not None:
+                                    track.failure_probability = prob
+
+                            # Run drift detection
+                            if run_drift_detection and detector and detector.has_baseline:
+                                if track.sigma_gradient is not None:
+                                    drift_result = detector.detect(track.sigma_gradient)
+
+                                    # Create alert if drift detected
+                                    if drift_result.is_drifting and drift_result.message:
+                                        alert = QAAlert(
+                                            analysis_id=analysis.id,
+                                            alert_type=AlertType.DRIFT_DETECTED,
+                                            severity='High' if drift_result.severity > 0.7 else 'Medium',
+                                            track_id=track.track_id,
+                                            metric_name='sigma_gradient',
+                                            metric_value=track.sigma_gradient,
+                                            threshold_value=detector.baseline_mean,
+                                            message=f"[{model_name}] {drift_result.message}",
+                                            details={
+                                                'direction': drift_result.direction.value,
+                                                'severity': drift_result.severity,
+                                                'cusum_value': drift_result.cusum_value,
+                                                'ewma_value': drift_result.ewma_value,
+                                                'deviation': drift_result.deviation_from_baseline,
+                                            }
+                                        )
+                                        session.add(alert)
+                                        counts['drift_alerts'].append({
+                                            'model': model_name,
+                                            'direction': drift_result.direction.value,
+                                            'severity': drift_result.severity,
+                                        })
+
+                            counts['updated'] += 1
+                            models_updated.add(model_name)
+
+                        except Exception as e:
+                            logger.warning(f"Error updating track {track.id}: {e}")
+                            counts['errors'] += 1
+
+                    # Recalculate overall_status for each affected analysis
+                    for analysis_id, track_list in analysis_tracks.items():
+                        if track_list:
+                            analysis = track_list[0][1]  # Get the analysis object
+                            track_statuses = [t.status for t, _ in track_list]
+
+                            # Determine overall status from track statuses
+                            if all(s == StatusType.PASS for s in track_statuses):
+                                analysis.overall_status = StatusType.PASS
+                            elif any(s == StatusType.ERROR for s in track_statuses):
+                                analysis.overall_status = StatusType.ERROR
+                            elif any(s == StatusType.FAIL for s in track_statuses):
+                                analysis.overall_status = StatusType.FAIL
+                            else:
+                                analysis.overall_status = StatusType.WARNING
+
+                    # Commit batch for this model
+                    session.commit()
+
+                    if progress_callback:
+                        progress_callback(ApplyProgress(
+                            records_complete=counts['updated'] + counts['errors'],
+                            records_total=total,
+                            models_updated=len(models_updated),
+                            message=f"Updated {counts['updated']} records for {len(models_updated)} models"
+                        ))
+
+                counts['skipped'] = total - counts['updated'] - counts['errors']
+
+                # Save updated drift state
+                self._save_state_to_db()
+
+        except Exception as e:
+            logger.exception(f"Error applying ML to database: {e}")
+            counts['errors'] += 1
+
+        logger.info(
+            f"MLManager apply complete - "
+            f"Updated: {counts['updated']}, Skipped: {counts['skipped']}, "
+            f"Errors: {counts['errors']}, Drift alerts: {len(counts['drift_alerts'])}"
+        )
+
+        return counts
+
+    def get_drift_status(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get current drift status for all models.
+
+        Returns:
+            Dict of model_name -> drift info
+        """
+        status = {}
+
+        for model_name, detector in self.drift_detectors.items():
+            if detector.has_baseline:
+                lower, center, upper = detector.get_control_limits()
+                status[model_name] = {
+                    'has_baseline': True,
+                    'is_drifting': detector.is_drifting,
+                    'direction': detector.drift_direction.value if detector.drift_direction else None,
+                    'baseline_mean': detector.baseline_mean,
+                    'baseline_std': detector.baseline_std,
+                    'control_limits': {
+                        'lower': lower,
+                        'center': center,
+                        'upper': upper,
+                    },
+                    'samples_since_baseline': detector.samples_since_baseline,
+                    'drift_start_date': detector.drift_start_date.isoformat() if detector.drift_start_date else None,
+                }
+            else:
+                status[model_name] = {'has_baseline': False}
+
+        return status
+
+    def _get_model_list(self) -> List[str]:
+        """Get list of unique models from database."""
+        try:
+            from laser_trim_analyzer.database.models import AnalysisResult
+
+            with self.db.session() as session:
+                models = (
+                    session.query(AnalysisResult.model)
+                    .distinct()
+                    .all()
+                )
+                return [m[0] for m in models if m[0]]
+        except Exception as e:
+            logger.error(f"Error getting model list: {e}")
+            return []
+
+    def _get_training_data(self, model_name: str) -> Optional[pd.DataFrame]:
+        """
+        Get training data for a specific model from database.
+
+        Combines:
+        - Trim file results (TrackResult)
+        - Final Test results (FinalTestTrack) when linked
+
+        Returns DataFrame with columns:
+        - sigma_gradient, linearity_error, linearity_fail_points
+        - linearity_pass, sigma_pass (outcomes)
+        - linearity_spec, file_date
+        - passed (True if linearity passed)
+        - source ('trim' or 'final_test')
+        """
+        try:
+            from laser_trim_analyzer.database.models import (
+                AnalysisResult, TrackResult, FinalTestResult, FinalTestTrack
+            )
+
+            records = []
+
+            with self.db.session() as session:
+                # Get trim data
+                trim_results = (
+                    session.query(TrackResult, AnalysisResult.file_date)
+                    .join(AnalysisResult)
+                    .filter(AnalysisResult.model == model_name)
+                    .all()
+                )
+
+                for track, file_date in trim_results:
+                    records.append({
+                        'sigma_gradient': track.sigma_gradient,
+                        'linearity_error': track.final_linearity_error_shifted or 0,
+                        'linearity_fail_points': track.linearity_fail_points or 0,
+                        'optimal_offset': track.optimal_offset or 0,
+                        'linearity_spec': track.linearity_spec or 0.01,
+                        'linearity_pass': track.linearity_pass if track.linearity_pass is not None else True,
+                        'sigma_pass': track.sigma_pass,
+                        'passed': track.linearity_pass if track.linearity_pass is not None else True,
+                        'file_date': file_date,
+                        'source': 'trim',
+                    })
+
+                # Get Final Test data (higher priority when linked)
+                final_results = (
+                    session.query(FinalTestTrack, FinalTestResult.file_date)
+                    .join(FinalTestResult)
+                    .filter(FinalTestResult.model == model_name)
+                    .all()
+                )
+
+                for track, file_date in final_results:
+                    # Final Test data overwrites trim outcome for linked records
+                    records.append({
+                        'sigma_gradient': None,  # Final test doesn't have sigma
+                        'linearity_error': track.linearity_error or 0,
+                        'linearity_fail_points': track.linearity_fail_points or 0,
+                        'optimal_offset': 0,
+                        'linearity_spec': track.linearity_spec or 0.01,
+                        'linearity_pass': track.linearity_pass if track.linearity_pass is not None else True,
+                        'sigma_pass': None,
+                        'passed': track.linearity_pass if track.linearity_pass is not None else True,
+                        'file_date': file_date,
+                        'source': 'final_test',
+                    })
+
+            if not records:
+                return None
+
+            df = pd.DataFrame(records)
+
+            # Filter to records with sigma_gradient for predictor training
+            df_with_sigma = df[df['sigma_gradient'].notna()].copy()
+
+            return df_with_sigma if len(df_with_sigma) > 0 else df
+
+        except Exception as e:
+            logger.error(f"Error getting training data for {model_name}: {e}")
+            return None
+
+    def _extract_features_from_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Extract feature columns from training data."""
+        features = pd.DataFrame()
+
+        features['sigma_gradient'] = data.get('sigma_gradient', 0)
+        features['linearity_error'] = data.get('linearity_error', 0).abs()
+        features['fail_points'] = data.get('linearity_fail_points', 0)
+        features['optimal_offset'] = data.get('optimal_offset', 0).abs()
+        features['linearity_spec'] = data.get('linearity_spec', 0.01)
+
+        # Derived features
+        spec = features['linearity_spec'].replace(0, 0.01)
+        features['sigma_to_spec'] = features['sigma_gradient'] / spec
+        features['error_to_spec'] = features['linearity_error'] / spec
+
+        return features.fillna(0)
+
+    def save_all(self) -> bool:
+        """
+        Save all trained ML state to disk.
+
+        Saves:
+        - Predictor models (pickle files)
+        - State to database (via model_ml_state table)
+
+        Returns:
+            True if successful
+        """
+        try:
+            self.storage_path.mkdir(parents=True, exist_ok=True)
+            predictors_path = self.storage_path / "predictors"
+            predictors_path.mkdir(exist_ok=True)
+
+            # Save predictors
+            for model_name, predictor in self.predictors.items():
+                if predictor.is_trained:
+                    path = predictors_path / f"{model_name}.pkl"
+                    predictor.save(path)
+
+            # Save state to database
+            self._save_state_to_db()
+
+            logger.info(f"MLManager saved {len(self.predictors)} predictors")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving ML state: {e}")
+            return False
+
+    def load_all(self) -> bool:
+        """
+        Load all trained ML state from disk and database.
+
+        Returns:
+            True if successful
+        """
+        try:
+            # Load state from database
+            self._load_state_from_db()
+
+            # Load predictor models
+            predictors_path = self.storage_path / "predictors"
+            if predictors_path.exists():
+                for pkl_file in predictors_path.glob("*.pkl"):
+                    model_name = pkl_file.stem
+                    predictor = self.get_predictor(model_name)
+                    predictor.load(pkl_file)
+
+            self.is_loaded = True
+            logger.info(f"MLManager loaded {len(self.predictors)} predictors")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error loading ML state: {e}")
+            return False
+
+    def _save_state_to_db(self) -> None:
+        """Save ML state to database model_ml_state table."""
+        try:
+            from laser_trim_analyzer.database.models import ModelMLState
+
+            with self.db.session() as session:
+                for model_name in self.trained_models:
+                    # Get or create state record
+                    state = session.query(ModelMLState).filter(
+                        ModelMLState.model == model_name
+                    ).first()
+
+                    if not state:
+                        state = ModelMLState(model=model_name)
+                        session.add(state)
+
+                    # Update from threshold optimizer
+                    optimizer = self.threshold_optimizers.get(model_name)
+                    if optimizer and optimizer.is_calculated:
+                        state.is_trained = True
+                        state.sigma_threshold = optimizer.threshold
+                        state.threshold_confidence = optimizer.confidence
+                        state.threshold_method = optimizer.method
+                        state.n_pass = optimizer.n_pass
+                        state.n_fail = optimizer.n_fail
+                        state.pass_sigma_mean = optimizer.pass_sigma_mean
+                        state.pass_sigma_std = optimizer.pass_sigma_std
+                        state.pass_sigma_max = optimizer.pass_sigma_max
+                        state.fail_sigma_min = optimizer.fail_sigma_min
+                        state.fail_sigma_mean = optimizer.fail_sigma_mean
+                        state.avg_fail_severity = optimizer.avg_fail_severity
+                        state.training_samples = optimizer.n_samples
+                        state.training_date = optimizer.calculated_date
+
+                    # Update from predictor
+                    predictor = self.predictors.get(model_name)
+                    if predictor and predictor.is_trained:
+                        state.predictor_trained = True
+                        if predictor.metrics:
+                            state.predictor_accuracy = predictor.metrics.accuracy
+                            state.predictor_precision = predictor.metrics.precision
+                            state.predictor_recall = predictor.metrics.recall
+                            state.predictor_f1 = predictor.metrics.f1
+                            state.predictor_auc = predictor.metrics.auc_roc
+                        state.feature_importance = predictor.feature_importance
+
+                    # Update from profiler
+                    profiler = self.profilers.get(model_name)
+                    if profiler and profiler.profile:
+                        p = profiler.profile
+                        if p.sigma:
+                            state.sigma_mean = p.sigma.mean
+                            state.sigma_std = p.sigma.std
+                            state.sigma_p5 = p.sigma.p5
+                            state.sigma_p50 = p.sigma.p50
+                            state.sigma_p95 = p.sigma.p95
+                        if p.linearity_error:
+                            state.error_mean = p.linearity_error.mean
+                            state.error_std = p.linearity_error.std
+                        state.pass_rate = p.pass_rate
+                        state.fail_rate = p.fail_rate
+                        state.linearity_pass_rate = p.linearity_pass_rate
+                        state.avg_fail_points = p.avg_fail_points
+                        state.track_correlation = p.track_correlation
+                        state.spec_margin_percent = p.spec_margin_percent
+                        state.difficulty_score = p.difficulty_score
+                        state.quality_percentile = p.quality_percentile
+                        state.linearity_spec = p.linearity_spec
+
+                    # Update from drift detector
+                    detector = self.drift_detectors.get(model_name)
+                    if detector and detector.has_baseline:
+                        state.drift_has_baseline = True
+                        state.drift_baseline_mean = detector.baseline_mean
+                        state.drift_baseline_std = detector.baseline_std
+                        state.drift_baseline_p5 = detector.baseline_p5
+                        state.drift_baseline_p50 = detector.baseline_p50
+                        state.drift_baseline_p95 = detector.baseline_p95
+                        state.drift_baseline_samples = detector.baseline_samples
+                        state.cusum_pos = detector.cusum_pos
+                        state.cusum_neg = detector.cusum_neg
+                        state.ewma_value = detector.ewma_value
+                        state.is_drifting = detector.is_drifting
+                        state.drift_direction = detector.drift_direction.value if detector.drift_direction else None
+                        state.drift_start_date = detector.drift_start_date
+                        state.samples_since_baseline = detector.samples_since_baseline
+
+                session.commit()
+                logger.info(f"Saved ML state for {len(self.trained_models)} models to database")
+
+        except Exception as e:
+            logger.error(f"Error saving ML state to database: {e}")
+
+    def _load_state_from_db(self) -> None:
+        """Load ML state from database model_ml_state table."""
+        try:
+            from laser_trim_analyzer.database.models import ModelMLState
+
+            with self.db.session() as session:
+                states = session.query(ModelMLState).filter(
+                    ModelMLState.is_trained == True
+                ).all()
+
+                for state in states:
+                    model_name = state.model
+
+                    # Load threshold optimizer state
+                    if state.sigma_threshold is not None:
+                        optimizer = self.get_threshold_optimizer(model_name)
+                        optimizer.threshold = state.sigma_threshold
+                        optimizer.confidence = state.threshold_confidence
+                        optimizer.method = state.threshold_method
+                        optimizer.n_samples = state.training_samples or 0
+                        optimizer.n_pass = state.n_pass or 0
+                        optimizer.n_fail = state.n_fail or 0
+                        optimizer.pass_sigma_mean = state.pass_sigma_mean or 0
+                        optimizer.pass_sigma_std = state.pass_sigma_std or 0
+                        optimizer.pass_sigma_max = state.pass_sigma_max or 0
+                        optimizer.fail_sigma_min = state.fail_sigma_min or 0
+                        optimizer.fail_sigma_mean = state.fail_sigma_mean or 0
+                        optimizer.avg_fail_severity = state.avg_fail_severity or 0
+                        optimizer.is_calculated = True
+                        optimizer.calculated_date = state.training_date
+
+                    # Load drift detector state
+                    if state.drift_has_baseline:
+                        detector = self.get_drift_detector(model_name)
+                        detector.has_baseline = True
+                        detector.baseline_mean = state.drift_baseline_mean
+                        detector.baseline_std = state.drift_baseline_std
+                        detector.baseline_p5 = state.drift_baseline_p5
+                        detector.baseline_p50 = state.drift_baseline_p50
+                        detector.baseline_p95 = state.drift_baseline_p95
+                        detector.baseline_samples = state.drift_baseline_samples or 0
+                        detector.cusum_pos = state.cusum_pos or 0
+                        detector.cusum_neg = state.cusum_neg or 0
+                        detector.ewma_value = state.ewma_value
+                        detector.is_drifting = state.is_drifting or False
+                        if state.drift_direction:
+                            detector.drift_direction = DriftDirection(state.drift_direction)
+                        detector.drift_start_date = state.drift_start_date
+                        detector.samples_since_baseline = state.samples_since_baseline or 0
+
+                    # Track as trained
+                    if model_name not in self.trained_models:
+                        self.trained_models.append(model_name)
+
+                logger.info(f"Loaded ML state for {len(states)} models from database")
+
+        except Exception as e:
+            logger.error(f"Error loading ML state from database: {e}")
+
+    def get_training_status(self) -> Dict[str, Any]:
+        """Get summary of training status for all models."""
+        trained = []
+        needs_data = []
+        not_trained = []
+
+        for model_name in self._get_model_list():
+            if model_name in self.trained_models:
+                optimizer = self.threshold_optimizers.get(model_name)
+                predictor = self.predictors.get(model_name)
+                trained.append({
+                    'model': model_name,
+                    'threshold': optimizer.threshold if optimizer else None,
+                    'confidence': optimizer.confidence if optimizer else None,
+                    'predictor_accuracy': predictor.metrics.accuracy if predictor and predictor.metrics else None,
+                    'samples': optimizer.n_samples if optimizer else 0,
+                })
+            elif model_name in self.models_needing_data:
+                needs_data.append({
+                    'model': model_name,
+                    'samples_needed': self.models_needing_data[model_name],
+                })
+            else:
+                not_trained.append(model_name)
+
+        return {
+            'trained_count': len(trained),
+            'needs_data_count': len(needs_data),
+            'not_trained_count': len(not_trained),
+            'last_training_date': self.last_training_date,
+            'trained': trained,
+            'needs_data': needs_data,
+            'not_trained': not_trained,
+        }
+
+    def get_model_insights(self, model_name: str) -> Dict[str, Any]:
+        """
+        Get comprehensive insights for a model.
+
+        Returns combined info from predictor, threshold, drift, and profiler.
+        """
+        insights = {
+            'model_name': model_name,
+            'has_data': False,
+        }
+
+        # Threshold info
+        optimizer = self.threshold_optimizers.get(model_name)
+        if optimizer and optimizer.is_calculated:
+            insights['threshold'] = optimizer.get_statistics()
+            insights['has_data'] = True
+
+        # Predictor info
+        predictor = self.predictors.get(model_name)
+        if predictor and predictor.is_trained:
+            insights['predictor'] = predictor.get_state_dict()
+            insights['feature_importance'] = predictor.get_feature_importance()
+
+        # Drift info
+        detector = self.drift_detectors.get(model_name)
+        if detector and detector.has_baseline:
+            insights['drift'] = detector.get_statistics()
+            lower, center, upper = detector.get_control_limits()
+            insights['control_limits'] = {
+                'lower': lower,
+                'center': center,
+                'upper': upper,
+            }
+
+        # Profile info
+        profiler = self.profilers.get(model_name)
+        if profiler and profiler.is_profiled:
+            insights['profile'] = profiler.get_profile_dict()
+            insights['insights'] = [
+                {'category': i.category, 'severity': i.severity, 'message': i.message}
+                for i in profiler.get_insights()
+            ]
+
+        return insights

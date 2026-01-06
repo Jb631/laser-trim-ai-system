@@ -1,0 +1,88 @@
+app_name: "Laser Trim Analyzer"
+version: "2.0.0"
+debug: false
+
+database:
+  enabled: true
+  path: "~/.laser_trim_analyzer/analysis.db"
+  echo: false
+  pool_size: 5
+
+processing:
+  max_workers: 4
+  generate_plots: true
+  plot_dpi: 150
+  cache_enabled: true
+  cache_ttl: 3600
+  file_extensions: [".xlsx", ".xls"]
+  skip_patterns: ["~$*", ".*", "_backup_*", "*_test_*", "*_sample_*"]
+
+  # Phase 2: Unified Processor Feature Flag (ADR-001, ADR-004)
+  # Set to true to use new UnifiedProcessor instead of legacy processors
+  use_unified_processor: false  # Default OFF until stable
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+  
+  # Large-scale processing optimizations
+  max_batch_size: 1000
+  memory_limit_mb: 2048  # 2GB default
+  max_concurrent_files: 20  # Reduced for better memory management
+  
+  # Performance settings
+  high_performance_mode: false
+  disable_plots_threshold: 200  # Disable plots for batches larger than this
+  enable_streaming_processing: false
+  
+  # Memory management
+  gc_interval: 50  # Garbage collect every N files
+  clear_cache_interval: 100  # Clear cache every N files
+  max_cache_entries: 50  # Maximum number of cached results
+  
+  # Database optimizations
+  enable_bulk_insert: true
+  database_batch_size: 100  # Commit every N records
+  batch_commit_interval: 50  # Commit every N files
+
+analysis:
+  sigma_scaling_factor: 24.0
+  matlab_gradient_step: 3
+  filter_sampling_frequency: 100
+  filter_cutoff_frequency: 40
+  # Lockheed Martin Compliance Mode
+  # Set to true to use original LM specifications (80 Hz cutoff)
+  # WARNING: This violates Nyquist theorem but may be required for contractual compliance
+  lockheed_martin_compliance_mode: false
+  default_num_zones: 5
+  high_risk_threshold: 0.7
+  low_risk_threshold: 0.3
+
+ml:
+  enabled: true
+  model_path: "~/.laser_trim_analyzer/models"
+  failure_prediction_enabled: true
+  failure_prediction_confidence_threshold: 0.8
+  threshold_optimization_enabled: true
+  threshold_optimization_min_samples: 100
+  retrain_interval_days: 30
+  min_training_samples: 1000
+
+api:
+  enabled: true
+  base_url: "http://localhost:8000"
+  timeout: 30
+  max_retries: 3
+  enable_anomaly_detection: true
+  enable_quality_predictions: true
+  enable_maintenance_suggestions: true
+
+gui:
+  theme: "clam"
+  window_width: 1200
+  window_height: 900
+  show_historical_tab: true
+  show_ml_insights: true
+  show_batch_processing: true
+  autosave_enabled: true
+  autosave_interval: 300
+
+data_directory: "~/LaserTrimResults"
+log_directory: "~/.laser_trim_analyzer/logs" 

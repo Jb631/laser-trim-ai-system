@@ -1,0 +1,78 @@
+{
+  "model_configs": {
+    "threshold_optimizer": {
+      "model_type": "threshold_optimizer",
+      "version": "1.0.0",
+      "features": [
+        "sigma_gradient",
+        "linearity_spec",
+        "resistance_tolerance",
+        "model_type_encoded",
+        "historical_pass_rate",
+        "production_volume"
+      ],
+      "target": "optimal_threshold",
+      "hyperparameters": {},
+      "training_params": {
+        "test_size": 0.2,
+        "random_state": 42,
+        "cv_folds": 5
+      },
+      "retraining_criteria": {
+        "min_samples": 1000,
+        "max_days_since_training": 30,
+        "performance_threshold": 0.85
+      }
+    },
+    "failure_predictor": {
+      "model_type": "failure_predictor",
+      "version": "1.0.0",
+      "features": [
+        "sigma_gradient",
+        "linearity_error",
+        "resistance_change",
+        "travel_efficiency",
+        "spec_margin",
+        "resistance_stability"
+      ],
+      "target": "failure_within_90_days",
+      "hyperparameters": {},
+      "training_params": {
+        "test_size": 0.2,
+        "random_state": 42,
+        "cv_folds": 5
+      },
+      "retraining_criteria": {
+        "min_samples": 1000,
+        "max_days_since_training": 30,
+        "performance_threshold": 0.85
+      }
+    },
+    "drift_detector": {
+      "model_type": "drift_detector",
+      "version": "1.0.0",
+      "features": [
+        "timestamp_encoded",
+        "batch_mean_sigma",
+        "batch_std_sigma",
+        "rolling_mean_diff",
+        "cumulative_deviation",
+        "trend_slope"
+      ],
+      "target": "drift_detected",
+      "hyperparameters": {},
+      "training_params": {
+        "test_size": 0.2,
+        "random_state": 42,
+        "cv_folds": 5
+      },
+      "retraining_criteria": {
+        "min_samples": 1000,
+        "max_days_since_training": 30,
+        "performance_threshold": 0.85
+      }
+    }
+  },
+  "performance_history": {},
+  "retraining_schedule": {}
+}

@@ -1,0 +1,2071 @@
+{
+  "summary": {
+    "total_files": 101,
+    "orphaned_files": 15,
+    "files_with_internal_deps": 67,
+    "files_with_external_deps": 89
+  },
+  "orphaned_modules": [
+    "api/ai_analysis.py",
+    "core/cache_integration.py",
+    "core/implementations.py",
+    "core/interfaces.py",
+    "core/session_manager.py",
+    "core/strategies.py",
+    "database/performance_optimizer.py",
+    "gui/async_handler.py",
+    "gui/progress_integration.py",
+    "gui/progress_system.py",
+    "gui/widgets/qt_progress_widgets.py",
+    "utils/import_optimizer.py",
+    "utils/lazy_imports.py",
+    "utils/optimize_imports_cli.py",
+    "utils/performance_monitor.py"
+  ],
+  "external_dependencies": {
+    "unique_count": 75,
+    "list": [
+      "PIL",
+      "PySide6",
+      "abc",
+      "anthropic",
+      "argparse",
+      "ast",
+      "asyncio",
+      "click",
+      "collections",
+      "concurrent",
+      "contextlib",
+      "customtkinter",
+      "cv2",
+      "dataclasses",
+      "datetime",
+      "enum",
+      "fnmatch",
+      "functools",
+      "gc",
+      "hashlib",
+      "hmac",
+      "importlib",
+      "inspect",
+      "joblib",
+      "json",
+      "logging",
+      "math",
+      "matplotlib",
+      "numpy",
+      "olefile",
+      "openai",
+      "os",
+      "pandas",
+      "pathlib",
+      "pickle",
+      "platform",
+      "plotly",
+      "psutil",
+      "pydantic",
+      "pydantic_settings",
+      "queue",
+      "random",
+      "re",
+      "reportlab",
+      "requests",
+      "resource",
+      "rich",
+      "scipy",
+      "seaborn",
+      "secrets",
+      "shutil",
+      "sklearn",
+      "socket",
+      "sqlalchemy",
+      "sqlite3",
+      "stat",
+      "statistics",
+      "sys",
+      "tabulate",
+      "tempfile",
+      "tensorflow",
+      "threading",
+      "time",
+      "tkinter",
+      "tkinterdnd2",
+      "torch",
+      "traceback",
+      "tracemalloc",
+      "typing",
+      "urllib",
+      "uuid",
+      "warnings",
+      "weakref",
+      "yaml",
+      "zipfile"
+    ],
+    "by_file": {
+      "__main__.py": [
+        "logging",
+        "pathlib",
+        "sys",
+        "traceback"
+      ],
+      "analysis/analytics_engine.py": [
+        "abc",
+        "contextlib",
+        "dataclasses",
+        "enum",
+        "hashlib",
+        "json",
+        "logging",
+        "numpy",
+        "pandas",
+        "random",
+        "typing"
+      ],
+      "analysis/base.py": [
+        "abc",
+        "logging",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "scipy",
+        "typing"
+      ],
+      "analysis/consistency_analyzer.py": [
+        "dataclasses",
+        "logging",
+        "numpy",
+        "statistics",
+        "typing"
+      ],
+      "analysis/linearity_analyzer.py": [
+        "numpy",
+        "scipy",
+        "time",
+        "typing"
+      ],
+      "analysis/resistance_analyzer.py": [
+        "pandas",
+        "time",
+        "typing"
+      ],
+      "analysis/sigma_analyzer.py": [
+        "numpy",
+        "time",
+        "typing"
+      ],
+      "api/ai_analysis.py": [
+        "collections",
+        "datetime",
+        "json",
+        "matplotlib",
+        "numpy",
+        "os",
+        "pandas",
+        "re",
+        "reportlab",
+        "scipy",
+        "seaborn",
+        "sqlite3",
+        "typing",
+        "warnings"
+      ],
+      "api/client.py": [
+        "abc",
+        "anthropic",
+        "concurrent",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "hashlib",
+        "json",
+        "logging",
+        "openai",
+        "os",
+        "pandas",
+        "pickle",
+        "requests",
+        "socket",
+        "sqlite3",
+        "time",
+        "typing",
+        "urllib"
+      ],
+      "api/schemas.py": [
+        "datetime",
+        "enum",
+        "numpy",
+        "pydantic",
+        "typing"
+      ],
+      "cli/cache_commands.py": [
+        "click",
+        "pathlib",
+        "rich"
+      ],
+      "cli/commands.py": [
+        "asyncio",
+        "click",
+        "datetime",
+        "json",
+        "logging",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "rich",
+        "sys",
+        "time",
+        "typing"
+      ],
+      "core/cached_processor.py": [
+        "asyncio",
+        "hashlib",
+        "json",
+        "logging",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "typing"
+      ],
+      "core/cache_config.py": [
+        "dataclasses",
+        "enum",
+        "os",
+        "pathlib",
+        "time",
+        "typing"
+      ],
+      "core/cache_integration.py": [
+        "hashlib",
+        "json",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "time",
+        "typing"
+      ],
+      "core/cache_manager.py": [
+        "abc",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "fnmatch",
+        "gc",
+        "hashlib",
+        "json",
+        "logging",
+        "os",
+        "pathlib",
+        "pickle",
+        "psutil",
+        "sys",
+        "threading",
+        "time",
+        "typing",
+        "weakref"
+      ],
+      "core/config.py": [
+        "functools",
+        "logging",
+        "os",
+        "pathlib",
+        "pydantic",
+        "pydantic_settings",
+        "tempfile",
+        "typing",
+        "yaml"
+      ],
+      "core/constants.py": [
+        "enum",
+        "typing"
+      ],
+      "core/error_handlers.py": [
+        "datetime",
+        "enum",
+        "functools",
+        "gc",
+        "logging",
+        "os",
+        "pathlib",
+        "psutil",
+        "shutil",
+        "socket",
+        "sys",
+        "time",
+        "traceback",
+        "typing"
+      ],
+      "core/implementations.py": [
+        "asyncio",
+        "datetime",
+        "logging",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "typing"
+      ],
+      "core/interfaces.py": [
+        "abc",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "numpy",
+        "typing"
+      ],
+      "core/large_scale_processor.py": [
+        "asyncio",
+        "concurrent",
+        "datetime",
+        "gc",
+        "logging",
+        "pathlib",
+        "psutil",
+        "threading",
+        "time",
+        "typing"
+      ],
+      "core/memory_safety.py": [
+        "contextlib",
+        "dataclasses",
+        "enum",
+        "functools",
+        "gc",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "psutil",
+        "resource",
+        "sys",
+        "threading",
+        "time",
+        "tracemalloc",
+        "typing",
+        "weakref"
+      ],
+      "core/models.py": [
+        "datetime",
+        "enum",
+        "numpy",
+        "pathlib",
+        "pydantic",
+        "typing"
+      ],
+      "core/processor.py": [
+        "asyncio",
+        "concurrent",
+        "datetime",
+        "gc",
+        "hashlib",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "psutil",
+        "re",
+        "threading",
+        "time",
+        "typing"
+      ],
+      "core/resource_manager.py": [
+        "dataclasses",
+        "datetime",
+        "gc",
+        "logging",
+        "matplotlib",
+        "os",
+        "pathlib",
+        "psutil",
+        "threading",
+        "time",
+        "typing",
+        "warnings"
+      ],
+      "core/secure_logging.py": [
+        "dataclasses",
+        "datetime",
+        "enum",
+        "functools",
+        "hashlib",
+        "json",
+        "logging",
+        "pathlib",
+        "re",
+        "threading",
+        "time",
+        "traceback",
+        "typing"
+      ],
+      "core/security.py": [
+        "dataclasses",
+        "datetime",
+        "enum",
+        "functools",
+        "hashlib",
+        "hmac",
+        "inspect",
+        "json",
+        "logging",
+        "math",
+        "os",
+        "pathlib",
+        "pickle",
+        "re",
+        "secrets",
+        "shutil",
+        "threading",
+        "typing"
+      ],
+      "core/session_manager.py": [
+        "dataclasses",
+        "datetime",
+        "enum",
+        "hashlib",
+        "json",
+        "logging",
+        "pathlib",
+        "secrets",
+        "stat",
+        "threading",
+        "time",
+        "typing",
+        "uuid"
+      ],
+      "core/strategies.py": [
+        "abc",
+        "logging",
+        "typing"
+      ],
+      "core/utils.py": [
+        "asyncio",
+        "logging",
+        "pathlib",
+        "typing"
+      ],
+      "database/manager.py": [
+        "contextlib",
+        "datetime",
+        "logging",
+        "os",
+        "pathlib",
+        "queue",
+        "sqlalchemy",
+        "threading",
+        "time",
+        "traceback",
+        "typing"
+      ],
+      "database/models.py": [
+        "datetime",
+        "enum",
+        "sqlalchemy",
+        "typing"
+      ],
+      "database/performance_optimizer.py": [
+        "collections",
+        "concurrent",
+        "contextlib",
+        "datetime",
+        "functools",
+        "hashlib",
+        "json",
+        "logging",
+        "re",
+        "sqlalchemy",
+        "threading",
+        "time",
+        "typing",
+        "weakref"
+      ],
+      "gui/async_handler.py": [
+        "asyncio",
+        "collections",
+        "concurrent",
+        "contextlib",
+        "customtkinter",
+        "dataclasses",
+        "enum",
+        "functools",
+        "logging",
+        "queue",
+        "threading",
+        "time",
+        "typing",
+        "weakref"
+      ],
+      "gui/ctk_main_window.py": [
+        "customtkinter",
+        "logging",
+        "pathlib",
+        "sys",
+        "tkinter",
+        "typing"
+      ],
+      "gui/main_window.py": [
+        "logging",
+        "typing"
+      ],
+      "gui/progress_integration.py": [
+        "PySide6",
+        "asyncio",
+        "inspect",
+        "json",
+        "logging",
+        "pathlib",
+        "time",
+        "typing"
+      ],
+      "gui/progress_system.py": [
+        "PySide6",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "json",
+        "logging",
+        "pathlib",
+        "threading",
+        "time",
+        "typing"
+      ],
+      "gui/settings_manager.py": [
+        "customtkinter",
+        "datetime",
+        "json",
+        "logging",
+        "os",
+        "pathlib",
+        "tkinter",
+        "typing"
+      ],
+      "gui/theme_helper.py": [
+        "customtkinter",
+        "typing"
+      ],
+      "ml/engine.py": [
+        "abc",
+        "datetime",
+        "hashlib",
+        "joblib",
+        "json",
+        "logging",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "pickle",
+        "sklearn",
+        "typing"
+      ],
+      "ml/ml_manager.py": [
+        "datetime",
+        "gc",
+        "joblib",
+        "json",
+        "logging",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "pickle",
+        "psutil",
+        "sklearn",
+        "threading",
+        "time",
+        "traceback",
+        "typing"
+      ],
+      "ml/models.py": [
+        "logging",
+        "numpy",
+        "pandas",
+        "scipy",
+        "sklearn",
+        "typing"
+      ],
+      "ml/predictors.py": [
+        "dataclasses",
+        "datetime",
+        "logging",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "time",
+        "typing"
+      ],
+      "ml/__init__.py": [
+        "joblib",
+        "logging",
+        "numpy",
+        "pandas",
+        "sklearn"
+      ],
+      "utils/calculation_validator.py": [
+        "dataclasses",
+        "enum",
+        "logging",
+        "numpy",
+        "typing"
+      ],
+      "utils/date_utils.py": [
+        "datetime",
+        "logging",
+        "re",
+        "typing"
+      ],
+      "utils/excel_utils.py": [
+        "contextlib",
+        "logging",
+        "numpy",
+        "olefile",
+        "os",
+        "pandas",
+        "pathlib",
+        "psutil",
+        "re",
+        "tempfile",
+        "time",
+        "typing",
+        "zipfile"
+      ],
+      "utils/file_utils.py": [
+        "datetime",
+        "functools",
+        "hashlib",
+        "logging",
+        "os",
+        "pathlib",
+        "platform",
+        "psutil",
+        "shutil",
+        "stat",
+        "tempfile",
+        "time",
+        "typing"
+      ],
+      "utils/filter_utils.py": [
+        "logging",
+        "numpy",
+        "scipy",
+        "typing"
+      ],
+      "utils/import_optimizer.py": [
+        "ast",
+        "collections",
+        "dataclasses",
+        "importlib",
+        "logging",
+        "os",
+        "pathlib",
+        "sys",
+        "time",
+        "tracemalloc",
+        "typing"
+      ],
+      "utils/lazy_imports.py": [
+        "PIL",
+        "collections",
+        "cv2",
+        "functools",
+        "gc",
+        "importlib",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "plotly",
+        "scipy",
+        "seaborn",
+        "sklearn",
+        "sys",
+        "tensorflow",
+        "threading",
+        "torch",
+        "typing"
+      ],
+      "utils/logging_utils.py": [
+        "datetime",
+        "logging",
+        "pathlib",
+        "sys",
+        "typing"
+      ],
+      "utils/optimize_imports_cli.py": [
+        "argparse",
+        "collections",
+        "json",
+        "pathlib",
+        "sys",
+        "tabulate",
+        "typing"
+      ],
+      "utils/performance_monitor.py": [
+        "asyncio",
+        "dataclasses",
+        "gc",
+        "logging",
+        "matplotlib",
+        "pathlib",
+        "psutil",
+        "threading",
+        "time",
+        "typing"
+      ],
+      "utils/plotting_utils.py": [
+        "datetime",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "scipy",
+        "seaborn",
+        "typing"
+      ],
+      "utils/report_generator.py": [
+        "datetime",
+        "json",
+        "logging",
+        "pathlib",
+        "typing"
+      ],
+      "utils/validators.py": [
+        "dataclasses",
+        "datetime",
+        "json",
+        "logging",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "re",
+        "time",
+        "typing"
+      ],
+      "gui/dialogs/settings_dialog.py": [
+        "json",
+        "pathlib",
+        "requests",
+        "tkinter",
+        "typing",
+        "yaml"
+      ],
+      "gui/pages/ai_insights_page.py": [
+        "customtkinter",
+        "datetime",
+        "json",
+        "os",
+        "platform",
+        "threading",
+        "tkinter",
+        "typing"
+      ],
+      "gui/pages/base_page_ctk.py": [
+        "customtkinter",
+        "logging",
+        "typing"
+      ],
+      "gui/pages/batch_processing_page.py": [
+        "asyncio",
+        "concurrent",
+        "customtkinter",
+        "datetime",
+        "gc",
+        "logging",
+        "matplotlib",
+        "pandas",
+        "pathlib",
+        "threading",
+        "time",
+        "tkinter",
+        "traceback",
+        "typing"
+      ],
+      "gui/pages/historical_page.py": [
+        "customtkinter",
+        "datetime",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "scipy",
+        "seaborn",
+        "sklearn",
+        "threading",
+        "tkinter",
+        "typing"
+      ],
+      "gui/pages/home_page.py": [
+        "customtkinter",
+        "datetime",
+        "queue",
+        "threading",
+        "time",
+        "typing"
+      ],
+      "gui/pages/ml_model_info_analyzers.py": [
+        "datetime",
+        "numpy",
+        "typing"
+      ],
+      "gui/pages/ml_tools_page.py": [
+        "customtkinter",
+        "datetime",
+        "json",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "sklearn",
+        "threading",
+        "time",
+        "tkinter",
+        "traceback",
+        "typing"
+      ],
+      "gui/pages/model_summary_page.py": [
+        "customtkinter",
+        "datetime",
+        "matplotlib",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "seaborn",
+        "threading",
+        "tkinter",
+        "typing"
+      ],
+      "gui/pages/multi_track_page.py": [
+        "customtkinter",
+        "datetime",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "os",
+        "pandas",
+        "pathlib",
+        "sqlalchemy",
+        "threading",
+        "tkinter",
+        "traceback",
+        "typing"
+      ],
+      "gui/pages/settings_page.py": [
+        "customtkinter",
+        "pathlib",
+        "tkinter",
+        "typing",
+        "yaml"
+      ],
+      "gui/pages/single_file_page.py": [
+        "asyncio",
+        "customtkinter",
+        "datetime",
+        "logging",
+        "pandas",
+        "pathlib",
+        "threading",
+        "tkinter",
+        "traceback",
+        "typing"
+      ],
+      "gui/widgets/alert_banner.py": [
+        "datetime",
+        "time",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/analysis_display.py": [
+        "customtkinter",
+        "datetime",
+        "logging",
+        "pathlib",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/animated_widgets.py": [
+        "customtkinter",
+        "math",
+        "threading",
+        "time",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/batch_results_widget.py": [
+        "customtkinter",
+        "logging",
+        "pandas",
+        "pathlib",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/batch_results_widget_ctk.py": [
+        "customtkinter",
+        "logging",
+        "pathlib",
+        "typing"
+      ],
+      "gui/widgets/chart_widget.py": [
+        "customtkinter",
+        "datetime",
+        "json",
+        "matplotlib",
+        "numpy",
+        "pandas",
+        "pathlib",
+        "tkinter",
+        "traceback",
+        "typing"
+      ],
+      "gui/widgets/file_analysis_widget.py": [
+        "customtkinter",
+        "datetime",
+        "logging",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/file_drop_zone.py": [
+        "os",
+        "pathlib",
+        "shutil",
+        "tempfile",
+        "threading",
+        "time",
+        "tkinter",
+        "tkinterdnd2",
+        "typing"
+      ],
+      "gui/widgets/hover_fix.py": [
+        "customtkinter",
+        "typing"
+      ],
+      "gui/widgets/metric_card.py": [
+        "math",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/metric_card_ctk.py": [
+        "customtkinter",
+        "math",
+        "typing"
+      ],
+      "gui/widgets/progress_widget.py": [
+        "datetime",
+        "math",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/progress_widgets.py": [
+        "customtkinter",
+        "logging",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/progress_widgets_ctk.py": [
+        "customtkinter",
+        "logging",
+        "typing"
+      ],
+      "gui/widgets/qt_progress_widgets.py": [
+        "PySide6",
+        "typing"
+      ],
+      "gui/widgets/status_bar.py": [
+        "datetime",
+        "threading",
+        "time",
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/stat_card.py": [
+        "tkinter",
+        "typing"
+      ],
+      "gui/widgets/track_viewer.py": [
+        "customtkinter",
+        "datetime",
+        "json",
+        "logging",
+        "matplotlib",
+        "numpy",
+        "typing"
+      ]
+    }
+  },
+  "internal_dependency_map": {
+    "__init__.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.constants.APP_NAME",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor"
+    ],
+    "__main__.py": [
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.utils.setup_logging",
+      "laser_trim_analyzer.gui.main_window.MainWindow"
+    ],
+    "analysis/analytics_engine.py": [
+      "laser_trim_analyzer.core.memory_safety.MemoryIssueType",
+      "laser_trim_analyzer.core.memory_safety.get_memory_validator",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_array",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_string"
+    ],
+    "analysis/base.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.constants.END_POINT_FILTER_COUNT",
+      "laser_trim_analyzer.core.constants.FILTER_CUTOFF_FREQUENCY",
+      "laser_trim_analyzer.core.constants.FILTER_SAMPLING_FREQUENCY",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.RiskCategory",
+      "laser_trim_analyzer.core.models.SystemType",
+      "laser_trim_analyzer.utils.filter_utils.apply_lm_recursive_filter"
+    ],
+    "analysis/linearity_analyzer.py": [
+      "laser_trim_analyzer.analysis.base.BaseAnalyzer",
+      "laser_trim_analyzer.core.models.LinearityAnalysis"
+    ],
+    "analysis/resistance_analyzer.py": [
+      "laser_trim_analyzer.analysis.base.BaseAnalyzer",
+      "laser_trim_analyzer.core.models.ResistanceAnalysis"
+    ],
+    "analysis/sigma_analyzer.py": [
+      "laser_trim_analyzer.analysis.base.BaseAnalyzer",
+      "laser_trim_analyzer.core.constants.DEFAULT_SIGMA_SCALING_FACTOR",
+      "laser_trim_analyzer.core.constants.END_POINT_FILTER_COUNT",
+      "laser_trim_analyzer.core.constants.MATLAB_GRADIENT_STEP",
+      "laser_trim_analyzer.core.constants.SPECIAL_MODELS",
+      "laser_trim_analyzer.core.models.SigmaAnalysis"
+    ],
+    "analysis/__init__.py": [
+      "laser_trim_analyzer.analysis.base.BaseAnalyzer",
+      "laser_trim_analyzer.analysis.linearity_analyzer.LinearityAnalyzer",
+      "laser_trim_analyzer.analysis.resistance_analyzer.ResistanceAnalyzer",
+      "laser_trim_analyzer.analysis.sigma_analyzer.SigmaAnalyzer"
+    ],
+    "api/client.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors"
+    ],
+    "api/__init__.py": [
+      "laser_trim_analyzer.api.client.AIProvider",
+      "laser_trim_analyzer.api.client.AIResponse",
+      "laser_trim_analyzer.api.client.QAAIAnalyzer",
+      "laser_trim_analyzer.api.schemas.AnalysisRequest",
+      "laser_trim_analyzer.api.schemas.AnalysisResponse",
+      "laser_trim_analyzer.api.schemas.PredictionResult"
+    ],
+    "cli/cache_commands.py": [
+      "laser_trim_analyzer.core.cache_config.CachePreset",
+      "laser_trim_analyzer.core.cache_config.clear_old_cache_files",
+      "laser_trim_analyzer.core.cache_config.get_cache_info",
+      "laser_trim_analyzer.core.cache_config.optimize_cache",
+      "laser_trim_analyzer.core.cache_config.setup_cache_from_preset",
+      "laser_trim_analyzer.core.cache_manager.get_cache_manager",
+      "laser_trim_analyzer.core.cached_processor.CachedFileProcessor",
+      "laser_trim_analyzer.core.config.Config"
+    ],
+    "cli/commands.py": [
+      "laser_trim_analyzer.cli.cache_commands.register_cache_commands",
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.large_scale_processor.LargeScaleProcessor",
+      "laser_trim_analyzer.core.large_scale_processor.process_large_directory",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.ml.engine.MLEngine",
+      "laser_trim_analyzer.ml.models.ModelFactory",
+      "laser_trim_analyzer.utils.report_generator.ReportGenerator"
+    ],
+    "cli/__init__.py": [
+      "laser_trim_analyzer.cli.commands.cli"
+    ],
+    "core/cached_processor.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.CacheManager",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.get_cache_manager",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.CacheError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.ProcessingError",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisResult",
+      "laser_trim_analyzer.laser_trim_analyzer.models.FileMetadata",
+      "laser_trim_analyzer.laser_trim_analyzer.models.ProcessingResult",
+      "laser_trim_analyzer.laser_trim_analyzer.models.TrackData",
+      "laser_trim_analyzer.laser_trim_analyzer.models.ValidationResult",
+      "laser_trim_analyzer.laser_trim_analyzer.processor.FileProcessor",
+      "laser_trim_analyzer.utils.file_utils.calculate_file_hash"
+    ],
+    "core/cache_config.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.CacheStrategy",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.FileCache",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.MemoryCache",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.get_cache_manager",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.initialize_cache_manager",
+      "laser_trim_analyzer.laser_trim_analyzer.config.Config"
+    ],
+    "core/cache_integration.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.get_cache_manager",
+      "laser_trim_analyzer.laser_trim_analyzer.cache_manager.initialize_cache_manager",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisResult",
+      "laser_trim_analyzer.laser_trim_analyzer.models.ProcessingResult",
+      "laser_trim_analyzer.utils.file_utils.calculate_file_hash"
+    ],
+    "core/cache_manager.py": [
+      "laser_trim_analyzer.core.exceptions.CacheError"
+    ],
+    "core/config.py": [
+      "laser_trim_analyzer.core.constants.FILTER_CUTOFF_FREQUENCY_CORRECTED",
+      "laser_trim_analyzer.core.constants.FILTER_CUTOFF_FREQUENCY_LM_ORIGINAL"
+    ],
+    "core/error_handlers.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.ConfigurationError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.DataExtractionError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.DatabaseError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.LaserTrimAnalyzerError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.MLPredictionError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.ProcessingError",
+      "laser_trim_analyzer.laser_trim_analyzer.exceptions.ValidationError"
+    ],
+    "core/implementations.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.FileResult",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.LinearityMetrics",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.SigmaMetrics",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.SystemType",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.TrackResult",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.TrimData",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.TrimEffectiveness",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.UnitProperties",
+      "laser_trim_analyzer.utils.excel_utils.extract_cell_value",
+      "laser_trim_analyzer.utils.filter_utils.apply_filter"
+    ],
+    "core/large_scale_processor.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.memory_safety.MemorySafetyConfig",
+      "laser_trim_analyzer.core.memory_safety.get_memory_validator",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_context",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.core.resource_manager.BatchResourceOptimizer",
+      "laser_trim_analyzer.core.resource_manager.get_resource_manager",
+      "laser_trim_analyzer.core.secure_logging.LogLevel",
+      "laser_trim_analyzer.core.secure_logging.SecureLogger",
+      "laser_trim_analyzer.core.secure_logging.get_logger",
+      "laser_trim_analyzer.core.secure_logging.logged_function",
+      "laser_trim_analyzer.database.manager.DatabaseManager"
+    ],
+    "core/processor.py": [
+      "laser_trim_analyzer.analysis.linearity_analyzer.LinearityAnalyzer",
+      "laser_trim_analyzer.analysis.resistance_analyzer.ResistanceAnalyzer",
+      "laser_trim_analyzer.analysis.sigma_analyzer.SigmaAnalyzer",
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.exceptions.AnalysisError",
+      "laser_trim_analyzer.core.exceptions.DataExtractionError",
+      "laser_trim_analyzer.core.exceptions.ProcessingError",
+      "laser_trim_analyzer.core.exceptions.ValidationError",
+      "laser_trim_analyzer.core.memory_safety.SafeCache",
+      "laser_trim_analyzer.core.memory_safety.get_memory_validator",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_context",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.DynamicRangeAnalysis",
+      "laser_trim_analyzer.core.models.FailurePrediction",
+      "laser_trim_analyzer.core.models.FileMetadata",
+      "laser_trim_analyzer.core.models.LinearityAnalysis",
+      "laser_trim_analyzer.core.models.ResistanceAnalysis",
+      "laser_trim_analyzer.core.models.RiskCategory",
+      "laser_trim_analyzer.core.models.SigmaAnalysis",
+      "laser_trim_analyzer.core.models.SystemType",
+      "laser_trim_analyzer.core.models.TrackData",
+      "laser_trim_analyzer.core.models.TrimEffectiveness",
+      "laser_trim_analyzer.core.models.UnitProperties",
+      "laser_trim_analyzer.core.models.ValidationResult",
+      "laser_trim_analyzer.core.models.ValidationStatus",
+      "laser_trim_analyzer.core.models.ZoneAnalysis",
+      "laser_trim_analyzer.core.secure_logging.LogLevel",
+      "laser_trim_analyzer.core.secure_logging.get_logger",
+      "laser_trim_analyzer.core.secure_logging.logged_function",
+      "laser_trim_analyzer.core.security.SecureFileProcessor",
+      "laser_trim_analyzer.core.security.SecurityLevel",
+      "laser_trim_analyzer.core.security.SecurityValidator",
+      "laser_trim_analyzer.core.security.get_security_validator",
+      "laser_trim_analyzer.core.security.validate_inputs",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.ml.predictors.MLPredictor",
+      "laser_trim_analyzer.ml.predictors.PredictionResult",
+      "laser_trim_analyzer.utils.calculation_validator.CalculationType",
+      "laser_trim_analyzer.utils.calculation_validator.CalculationValidator",
+      "laser_trim_analyzer.utils.calculation_validator.ValidationLevel",
+      "laser_trim_analyzer.utils.date_utils.extract_datetime_from_filename",
+      "laser_trim_analyzer.utils.excel_utils.detect_system_type",
+      "laser_trim_analyzer.utils.excel_utils.extract_cell_value",
+      "laser_trim_analyzer.utils.excel_utils.find_data_columns",
+      "laser_trim_analyzer.utils.excel_utils.read_excel_sheet",
+      "laser_trim_analyzer.utils.file_utils.calculate_file_hash",
+      "laser_trim_analyzer.utils.file_utils.ensure_directory",
+      "laser_trim_analyzer.utils.plotting_utils.create_analysis_plot",
+      "laser_trim_analyzer.utils.validators.AnalysisValidator",
+      "laser_trim_analyzer.utils.validators.BatchValidator",
+      "laser_trim_analyzer.utils.validators.ValidationResult",
+      "laser_trim_analyzer.utils.validators.validate_analysis_data",
+      "laser_trim_analyzer.utils.validators.validate_excel_file",
+      "laser_trim_analyzer.utils.validators.validate_model_number",
+      "laser_trim_analyzer.utils.validators.validate_resistance_values"
+    ],
+    "core/resource_manager.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors"
+    ],
+    "core/secure_logging.py": [
+      "laser_trim_analyzer.core.security.InputSanitizer",
+      "laser_trim_analyzer.core.security.get_security_validator"
+    ],
+    "core/security.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.utils.validators.ValidationResult"
+    ],
+    "core/session_manager.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.security.InputSanitizer",
+      "laser_trim_analyzer.core.security.SecurityValidator",
+      "laser_trim_analyzer.core.security.get_security_validator"
+    ],
+    "core/strategies.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.DataExtractor",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.MetricsCalculator",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.RiskCategory",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.Status",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.SystemType",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.TrackResult",
+      "laser_trim_analyzer.laser_trim_analyzer.interfaces.TrimData"
+    ],
+    "core/utils.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.implementations.ExcelFileReader",
+      "laser_trim_analyzer.laser_trim_analyzer.implementations.ExcelResultsFormatter",
+      "laser_trim_analyzer.laser_trim_analyzer.implementations.StandardDataExtractor",
+      "laser_trim_analyzer.laser_trim_analyzer.implementations.StandardMetricsCalculator",
+      "laser_trim_analyzer.laser_trim_analyzer.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.laser_trim_analyzer.utils.setup_logging"
+    ],
+    "core/__init__.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.FileMetadata",
+      "laser_trim_analyzer.core.models.TrackData"
+    ],
+    "database/manager.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorContext",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.RiskCategory",
+      "laser_trim_analyzer.core.models.SystemType",
+      "laser_trim_analyzer.core.models.TrackData",
+      "laser_trim_analyzer.core.secure_logging.LogLevel",
+      "laser_trim_analyzer.core.secure_logging.get_logger",
+      "laser_trim_analyzer.core.secure_logging.logged_function",
+      "laser_trim_analyzer.core.security.SecurityLevel",
+      "laser_trim_analyzer.core.security.SecurityValidator",
+      "laser_trim_analyzer.core.security.ThreatType",
+      "laser_trim_analyzer.core.security.get_security_validator",
+      "laser_trim_analyzer.core.security.validate_inputs",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AlertType",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisBatch",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisResult",
+      "laser_trim_analyzer.laser_trim_analyzer.models.Base",
+      "laser_trim_analyzer.laser_trim_analyzer.models.BatchInfo",
+      "laser_trim_analyzer.laser_trim_analyzer.models.MLPrediction",
+      "laser_trim_analyzer.laser_trim_analyzer.models.QAAlert",
+      "laser_trim_analyzer.laser_trim_analyzer.models.RiskCategory",
+      "laser_trim_analyzer.laser_trim_analyzer.models.StatusType",
+      "laser_trim_analyzer.laser_trim_analyzer.models.SystemType",
+      "laser_trim_analyzer.laser_trim_analyzer.models.TrackResult",
+      "laser_trim_analyzer.laser_trim_analyzer.performance_optimizer.PerformanceOptimizer",
+      "laser_trim_analyzer.laser_trim_analyzer.performance_optimizer.cached_query"
+    ],
+    "database/performance_optimizer.py": [
+      "laser_trim_analyzer.core.exceptions.DatabaseError",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisBatch",
+      "laser_trim_analyzer.laser_trim_analyzer.models.AnalysisResult",
+      "laser_trim_analyzer.laser_trim_analyzer.models.Base",
+      "laser_trim_analyzer.laser_trim_analyzer.models.BatchInfo",
+      "laser_trim_analyzer.laser_trim_analyzer.models.MLPrediction",
+      "laser_trim_analyzer.laser_trim_analyzer.models.QAAlert",
+      "laser_trim_analyzer.laser_trim_analyzer.models.TrackResult"
+    ],
+    "database/__init__.py": [
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.database.models.AnalysisResult",
+      "laser_trim_analyzer.database.models.Base",
+      "laser_trim_analyzer.database.models.TrackResult"
+    ],
+    "gui/ctk_main_window.py": [
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.constants.APP_NAME",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.gui.pages.AIInsightsPage",
+      "laser_trim_analyzer.gui.pages.BatchProcessingPage",
+      "laser_trim_analyzer.gui.pages.HistoricalPage",
+      "laser_trim_analyzer.gui.pages.HomePage",
+      "laser_trim_analyzer.gui.pages.MLToolsPage",
+      "laser_trim_analyzer.gui.pages.ModelSummaryPage",
+      "laser_trim_analyzer.gui.pages.MultiTrackPage",
+      "laser_trim_analyzer.gui.pages.SettingsPage",
+      "laser_trim_analyzer.gui.pages.SingleFilePage",
+      "laser_trim_analyzer.gui.settings_manager.settings_manager"
+    ],
+    "gui/main_window.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.gui.ctk_main_window.CTkMainWindow"
+    ],
+    "gui/progress_integration.py": [
+      "laser_trim_analyzer.analysis.analytics_engine.AnalyticsEngine",
+      "laser_trim_analyzer.core.models.FileMetadata",
+      "laser_trim_analyzer.core.models.ProcessingResult",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressDialog",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressManager",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressTracker",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressType",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ThreadedProgressUpdater",
+      "laser_trim_analyzer.ml.engine.MLEngine"
+    ],
+    "gui/__init__.py": [
+      "laser_trim_analyzer.gui.main_window.MainWindow",
+      "laser_trim_analyzer.gui.main_window.main"
+    ],
+    "ml/engine.py": [
+      "laser_trim_analyzer.ml.models.AdaptiveThresholdOptimizer",
+      "laser_trim_analyzer.ml.models.DriftDetector",
+      "laser_trim_analyzer.ml.models.FailurePredictor",
+      "laser_trim_analyzer.ml.models.ModelEnsemble",
+      "laser_trim_analyzer.ml.models.ThresholdOptimizer",
+      "laser_trim_analyzer.utils.logging_utils.log_exception",
+      "laser_trim_analyzer.utils.logging_utils.setup_logger"
+    ],
+    "ml/ml_manager.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.check_system_resources",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.exceptions.MLPredictionError",
+      "laser_trim_analyzer.ml.engine.MLEngine",
+      "laser_trim_analyzer.ml.engine.ModelConfig",
+      "laser_trim_analyzer.ml.models.DriftDetector",
+      "laser_trim_analyzer.ml.models.FailurePredictor",
+      "laser_trim_analyzer.ml.models.ThresholdOptimizer"
+    ],
+    "ml/models.py": [
+      "laser_trim_analyzer.ml.engine.BaseMLModel",
+      "laser_trim_analyzer.ml.engine.ModelConfig",
+      "laser_trim_analyzer.utils.logging_utils.log_exception"
+    ],
+    "ml/predictors.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.RiskCategory",
+      "laser_trim_analyzer.core.models.TrackData",
+      "laser_trim_analyzer.core.secure_logging.LogLevel",
+      "laser_trim_analyzer.core.secure_logging.SecureLogger",
+      "laser_trim_analyzer.core.secure_logging.get_logger",
+      "laser_trim_analyzer.core.secure_logging.logged_function",
+      "laser_trim_analyzer.core.security.get_security_validator",
+      "laser_trim_analyzer.database.models.MLPrediction",
+      "laser_trim_analyzer.ml.engine.MLEngine",
+      "laser_trim_analyzer.ml.engine.ModelConfig",
+      "laser_trim_analyzer.ml.models.DriftDetector",
+      "laser_trim_analyzer.ml.models.FailurePredictor",
+      "laser_trim_analyzer.ml.models.ModelFactory",
+      "laser_trim_analyzer.ml.models.ThresholdOptimizer"
+    ],
+    "ml/__init__.py": [
+      "laser_trim_analyzer.ml.engine.MLEngine",
+      "laser_trim_analyzer.ml.engine.ModelConfig",
+      "laser_trim_analyzer.ml.ml_manager.get_ml_manager",
+      "laser_trim_analyzer.ml.models.DriftDetector",
+      "laser_trim_analyzer.ml.models.FailurePredictor",
+      "laser_trim_analyzer.ml.models.ThresholdOptimizer"
+    ],
+    "utils/excel_utils.py": [
+      "laser_trim_analyzer.core.constants.SYSTEM_A_CELLS",
+      "laser_trim_analyzer.core.constants.SYSTEM_A_COLUMNS",
+      "laser_trim_analyzer.core.constants.SYSTEM_B_CELLS",
+      "laser_trim_analyzer.core.constants.SYSTEM_B_COLUMNS",
+      "laser_trim_analyzer.core.constants.SystemIdentifier",
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.check_system_resources",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.error_handlers.validate_file_upload",
+      "laser_trim_analyzer.core.exceptions.DataExtractionError",
+      "laser_trim_analyzer.core.exceptions.SheetNotFoundError",
+      "laser_trim_analyzer.core.exceptions.SystemDetectionError",
+      "laser_trim_analyzer.core.memory_safety.MemorySafetyConfig",
+      "laser_trim_analyzer.core.memory_safety.SafeFileHandle",
+      "laser_trim_analyzer.core.memory_safety.get_memory_validator",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_array",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_context",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_string",
+      "laser_trim_analyzer.core.models.SystemType",
+      "laser_trim_analyzer.core.secure_logging.LogLevel",
+      "laser_trim_analyzer.core.secure_logging.get_logger",
+      "laser_trim_analyzer.core.secure_logging.logged_function"
+    ],
+    "utils/file_utils.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.core.memory_safety.SafeFileHandle",
+      "laser_trim_analyzer.core.memory_safety.get_memory_validator",
+      "laser_trim_analyzer.core.memory_safety.memory_safe_string"
+    ],
+    "utils/optimize_imports_cli.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.import_optimizer.ImportAnalyzer",
+      "laser_trim_analyzer.laser_trim_analyzer.import_optimizer.ImportCleaner",
+      "laser_trim_analyzer.laser_trim_analyzer.import_optimizer.ImportOptimizer",
+      "laser_trim_analyzer.laser_trim_analyzer.import_optimizer.analyze_imports",
+      "laser_trim_analyzer.laser_trim_analyzer.import_optimizer.optimize_imports"
+    ],
+    "utils/plotting_utils.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.TrackData"
+    ],
+    "utils/report_generator.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult"
+    ],
+    "utils/validators.py": [
+      "laser_trim_analyzer.core.error_handlers.ErrorCategory",
+      "laser_trim_analyzer.core.error_handlers.ErrorCode",
+      "laser_trim_analyzer.core.error_handlers.ErrorSeverity",
+      "laser_trim_analyzer.core.error_handlers.error_handler",
+      "laser_trim_analyzer.core.error_handlers.handle_errors",
+      "laser_trim_analyzer.utils.logging_utils.SecureLogger"
+    ],
+    "utils/__init__.py": [
+      "laser_trim_analyzer.utils.excel_utils.detect_system_type",
+      "laser_trim_analyzer.utils.excel_utils.extract_cell_value",
+      "laser_trim_analyzer.utils.excel_utils.find_data_columns",
+      "laser_trim_analyzer.utils.excel_utils.read_excel_sheet",
+      "laser_trim_analyzer.utils.file_utils.calculate_file_hash",
+      "laser_trim_analyzer.utils.file_utils.ensure_directory",
+      "laser_trim_analyzer.utils.file_utils.get_unique_filename",
+      "laser_trim_analyzer.utils.filter_utils.apply_filter",
+      "laser_trim_analyzer.utils.filter_utils.interpolate_missing_data",
+      "laser_trim_analyzer.utils.filter_utils.remove_outliers",
+      "laser_trim_analyzer.utils.filter_utils.smooth_data",
+      "laser_trim_analyzer.utils.plotting_utils.create_analysis_plot",
+      "laser_trim_analyzer.utils.plotting_utils.create_comparison_plot",
+      "laser_trim_analyzer.utils.plotting_utils.create_histogram",
+      "laser_trim_analyzer.utils.plotting_utils.create_trend_chart",
+      "laser_trim_analyzer.utils.plotting_utils.save_plot",
+      "laser_trim_analyzer.utils.validators.ValidationResult",
+      "laser_trim_analyzer.utils.validators.validate_analysis_data",
+      "laser_trim_analyzer.utils.validators.validate_excel_file",
+      "laser_trim_analyzer.utils.validators.validate_model_number",
+      "laser_trim_analyzer.utils.validators.validate_resistance_values"
+    ],
+    "gui/dialogs/settings_dialog.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.database.manager.DatabaseManager"
+    ],
+    "gui/dialogs/__init__.py": [
+      "laser_trim_analyzer.gui.dialogs.settings_dialog.SettingsDialog"
+    ],
+    "gui/pages/ai_insights_page.py": [
+      "laser_trim_analyzer.api.client.AIProvider",
+      "laser_trim_analyzer.api.client.QAAIAnalyzer",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.add_mousewheel_support",
+      "laser_trim_analyzer.gui.widgets.hover_fix.fix_hover_glitches",
+      "laser_trim_analyzer.gui.widgets.hover_fix.stabilize_layout"
+    ],
+    "gui/pages/batch_processing_page.py": [
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.exceptions.ProcessingError",
+      "laser_trim_analyzer.core.exceptions.ValidationError",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.ValidationStatus",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.core.resource_manager.BatchResourceOptimizer",
+      "laser_trim_analyzer.core.resource_manager.ResourceStatus",
+      "laser_trim_analyzer.core.resource_manager.get_resource_manager",
+      "laser_trim_analyzer.core.security.SecurityValidator",
+      "laser_trim_analyzer.core.security.get_security_validator",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.batch_results_widget.BatchResultsWidget",
+      "laser_trim_analyzer.gui.widgets.batch_results_widget_ctk.BatchResultsWidget",
+      "laser_trim_analyzer.gui.widgets.file_drop_zone.FileDropZone",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.gui.widgets.progress_widget.ProgressWidget",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.BatchProgressDialog",
+      "laser_trim_analyzer.gui.widgets.progress_widgets_ctk.BatchProgressDialog",
+      "laser_trim_analyzer.utils.file_utils.ensure_directory",
+      "laser_trim_analyzer.utils.validators.BatchValidator"
+    ],
+    "gui/pages/historical_page.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.FileMetadata",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.add_mousewheel_support",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.utils.date_utils.safe_datetime_convert"
+    ],
+    "gui/pages/home_page.py": [
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard"
+    ],
+    "gui/pages/ml_tools_page.py": [
+      "laser_trim_analyzer.api.client.QAAIAnalyzer",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.pages.ml_model_info_analyzers.analyze_model_info",
+      "laser_trim_analyzer.gui.pages.ml_model_info_analyzers.analyze_prediction_quality_info",
+      "laser_trim_analyzer.gui.pages.ml_model_info_analyzers.analyze_resource_usage_info",
+      "laser_trim_analyzer.gui.pages.ml_model_info_analyzers.compare_feature_importance_info",
+      "laser_trim_analyzer.gui.pages.ml_model_info_analyzers.compare_model_performance_info",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.ml.engine.MLEngine",
+      "laser_trim_analyzer.ml.engine.ModelConfig",
+      "laser_trim_analyzer.ml.ml_manager.get_ml_manager",
+      "laser_trim_analyzer.ml.models.DriftDetector",
+      "laser_trim_analyzer.ml.models.FailurePredictor",
+      "laser_trim_analyzer.ml.models.ThresholdOptimizer"
+    ],
+    "gui/pages/model_summary_page.py": [
+      "laser_trim_analyzer.database.manager.DBAnalysisResult",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.add_mousewheel_support",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.gui.widgets.stat_card.StatCard",
+      "laser_trim_analyzer.utils.date_utils.safe_datetime_convert"
+    ],
+    "gui/pages/multi_track_page.py": [
+      "laser_trim_analyzer.analysis.consistency_analyzer.ConsistencyAnalyzer",
+      "laser_trim_analyzer.database.manager.DBAnalysisResult",
+      "laser_trim_analyzer.database.manager.DBTrackResult",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.widgets.add_mousewheel_support",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.gui.widgets.stat_card.StatCard",
+      "laser_trim_analyzer.gui.widgets.track_viewer.IndividualTrackViewer"
+    ],
+    "gui/pages/settings_page.py": [
+      "laser_trim_analyzer.core.config.Config",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.settings_manager.SettingsDialog",
+      "laser_trim_analyzer.gui.settings_manager.settings_manager"
+    ],
+    "gui/pages/single_file_page.py": [
+      "laser_trim_analyzer.core.config.get_config",
+      "laser_trim_analyzer.core.exceptions.ProcessingError",
+      "laser_trim_analyzer.core.exceptions.ValidationError",
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.ValidationStatus",
+      "laser_trim_analyzer.core.processor.LaserTrimProcessor",
+      "laser_trim_analyzer.database.manager.DatabaseManager",
+      "laser_trim_analyzer.gui.widgets.analysis_display.AnalysisDisplayWidget",
+      "laser_trim_analyzer.gui.widgets.hover_fix.fix_hover_glitches",
+      "laser_trim_analyzer.gui.widgets.hover_fix.stabilize_layout",
+      "laser_trim_analyzer.gui.widgets.metric_card_ctk.MetricCard",
+      "laser_trim_analyzer.gui.widgets.progress_widget.ProgressWidget",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.ProgressDialog",
+      "laser_trim_analyzer.utils.file_utils.ensure_directory",
+      "laser_trim_analyzer.utils.plotting_utils.create_analysis_plot"
+    ],
+    "gui/pages/__init__.py": [
+      "laser_trim_analyzer.gui.pages.ai_insights_page.AIInsightsPage",
+      "laser_trim_analyzer.gui.pages.base_page_ctk.BasePage",
+      "laser_trim_analyzer.gui.pages.batch_processing_page.BatchProcessingPage",
+      "laser_trim_analyzer.gui.pages.historical_page.HistoricalPage",
+      "laser_trim_analyzer.gui.pages.home_page.HomePage",
+      "laser_trim_analyzer.gui.pages.ml_tools_page.MLToolsPage",
+      "laser_trim_analyzer.gui.pages.model_summary_page.ModelSummaryPage",
+      "laser_trim_analyzer.gui.pages.multi_track_page.MultiTrackPage",
+      "laser_trim_analyzer.gui.pages.settings_page.SettingsPage",
+      "laser_trim_analyzer.gui.pages.single_file_page.SingleFilePage"
+    ],
+    "gui/widgets/analysis_display.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.ValidationStatus",
+      "laser_trim_analyzer.gui.widgets.metric_card.MetricCard"
+    ],
+    "gui/widgets/batch_results_widget.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.AnalysisStatus",
+      "laser_trim_analyzer.core.models.ValidationStatus",
+      "laser_trim_analyzer.gui.theme_helper.ThemeHelper"
+    ],
+    "gui/widgets/batch_results_widget_ctk.py": [
+      "laser_trim_analyzer.core.models.AnalysisResult",
+      "laser_trim_analyzer.core.models.ValidationStatus"
+    ],
+    "gui/widgets/chart_widget.py": [
+      "laser_trim_analyzer.gui.theme_helper.ThemeHelper"
+    ],
+    "gui/widgets/file_drop_zone.py": [
+      "laser_trim_analyzer.core.security.SecureFileProcessor",
+      "laser_trim_analyzer.core.security.SecurityValidator",
+      "laser_trim_analyzer.core.security.get_security_validator"
+    ],
+    "gui/widgets/qt_progress_widgets.py": [
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.CircularProgressWidget",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.MultiLevelProgressWidget",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressData",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressManager",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressState",
+      "laser_trim_analyzer.laser_trim_analyzer.progress_system.ProgressType"
+    ],
+    "gui/widgets/__init__.py": [
+      "laser_trim_analyzer.gui.widgets.alert_banner.AlertBanner",
+      "laser_trim_analyzer.gui.widgets.alert_banner.AlertStack",
+      "laser_trim_analyzer.gui.widgets.analysis_display.AnalysisDisplayWidget",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.AccessibilityHelper",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.AnimatedButton",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.AnimatedNotification",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.AnimatedProgressBar",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.FadeInFrame",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.LoadingSpinner",
+      "laser_trim_analyzer.gui.widgets.animated_widgets.SlideInFrame",
+      "laser_trim_analyzer.gui.widgets.batch_results_widget.BatchResultsWidget",
+      "laser_trim_analyzer.gui.widgets.chart_widget.ChartWidget",
+      "laser_trim_analyzer.gui.widgets.file_analysis_widget.FileAnalysisWidget",
+      "laser_trim_analyzer.gui.widgets.file_drop_zone.FileDropZone",
+      "laser_trim_analyzer.gui.widgets.metric_card.MetricCard",
+      "laser_trim_analyzer.gui.widgets.progress_widget.ProgressWidget",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.BatchProgressDialog",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.ProgressDialog",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.ProgressIndicator",
+      "laser_trim_analyzer.gui.widgets.progress_widgets.SimpleProgressBar",
+      "laser_trim_analyzer.gui.widgets.stat_card.StatCard",
+      "laser_trim_analyzer.gui.widgets.status_bar.StatusBar",
+      "laser_trim_analyzer.gui.widgets.track_viewer.IndividualTrackViewer"
+    ]
+  },
+  "reverse_dependency_map": {
+    "core/config.py": [
+      "__init__.py",
+      "__main__.py",
+      "analysis/base.py",
+      "cli/cache_commands.py",
+      "cli/commands.py",
+      "core/__init__.py",
+      "core/large_scale_processor.py",
+      "core/processor.py",
+      "gui/ctk_main_window.py",
+      "gui/dialogs/settings_dialog.py",
+      "gui/main_window.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/settings_page.py",
+      "gui/pages/single_file_page.py",
+      "ml/predictors.py"
+    ],
+    "core/constants.py": [
+      "__init__.py",
+      "analysis/base.py",
+      "analysis/sigma_analyzer.py",
+      "core/config.py",
+      "gui/ctk_main_window.py",
+      "utils/excel_utils.py"
+    ],
+    "core/processor.py": [
+      "__init__.py",
+      "cli/commands.py",
+      "core/large_scale_processor.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/single_file_page.py",
+      "gui/progress_integration.py"
+    ],
+    "gui/main_window.py": [
+      "__main__.py",
+      "gui/__init__.py"
+    ],
+    "core/utils.py": [
+      "__main__.py"
+    ],
+    "core/memory_safety.py": [
+      "analysis/analytics_engine.py",
+      "core/large_scale_processor.py",
+      "core/processor.py",
+      "utils/excel_utils.py",
+      "utils/file_utils.py"
+    ],
+    "core/models.py": [
+      "analysis/base.py",
+      "analysis/linearity_analyzer.py",
+      "analysis/resistance_analyzer.py",
+      "analysis/sigma_analyzer.py",
+      "core/__init__.py",
+      "core/large_scale_processor.py",
+      "core/processor.py",
+      "database/manager.py",
+      "gui/pages/ai_insights_page.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/historical_page.py",
+      "gui/pages/ml_tools_page.py",
+      "gui/pages/single_file_page.py",
+      "gui/progress_integration.py",
+      "gui/widgets/analysis_display.py",
+      "gui/widgets/batch_results_widget.py",
+      "gui/widgets/batch_results_widget_ctk.py",
+      "ml/predictors.py",
+      "utils/excel_utils.py",
+      "utils/plotting_utils.py",
+      "utils/report_generator.py"
+    ],
+    "utils/filter_utils.py": [
+      "analysis/base.py",
+      "core/implementations.py",
+      "utils/__init__.py"
+    ],
+    "analysis/base.py": [
+      "analysis/__init__.py",
+      "analysis/linearity_analyzer.py",
+      "analysis/resistance_analyzer.py",
+      "analysis/sigma_analyzer.py"
+    ],
+    "analysis/sigma_analyzer.py": [
+      "analysis/__init__.py",
+      "core/processor.py"
+    ],
+    "analysis/linearity_analyzer.py": [
+      "analysis/__init__.py",
+      "core/processor.py"
+    ],
+    "analysis/resistance_analyzer.py": [
+      "analysis/__init__.py",
+      "core/processor.py"
+    ],
+    "core/error_handlers.py": [
+      "api/client.py",
+      "core/large_scale_processor.py",
+      "core/resource_manager.py",
+      "core/security.py",
+      "core/session_manager.py",
+      "database/manager.py",
+      "ml/ml_manager.py",
+      "utils/excel_utils.py",
+      "utils/file_utils.py",
+      "utils/validators.py"
+    ],
+    "api/client.py": [
+      "api/__init__.py",
+      "gui/pages/ai_insights_page.py",
+      "gui/pages/ml_tools_page.py"
+    ],
+    "api/schemas.py": [
+      "api/__init__.py"
+    ],
+    "core/cache_manager.py": [
+      "cli/cache_commands.py"
+    ],
+    "core/cache_config.py": [
+      "cli/cache_commands.py"
+    ],
+    "core/cached_processor.py": [
+      "cli/cache_commands.py"
+    ],
+    "core/large_scale_processor.py": [
+      "cli/commands.py"
+    ],
+    "database/manager.py": [
+      "cli/commands.py",
+      "core/large_scale_processor.py",
+      "core/processor.py",
+      "database/__init__.py",
+      "gui/ctk_main_window.py",
+      "gui/dialogs/settings_dialog.py",
+      "gui/pages/ai_insights_page.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/historical_page.py",
+      "gui/pages/model_summary_page.py",
+      "gui/pages/multi_track_page.py",
+      "gui/pages/single_file_page.py"
+    ],
+    "utils/report_generator.py": [
+      "cli/commands.py"
+    ],
+    "cli/cache_commands.py": [
+      "cli/commands.py"
+    ],
+    "ml/engine.py": [
+      "cli/commands.py",
+      "gui/pages/ml_tools_page.py",
+      "gui/progress_integration.py",
+      "ml/__init__.py",
+      "ml/ml_manager.py",
+      "ml/models.py",
+      "ml/predictors.py"
+    ],
+    "ml/models.py": [
+      "cli/commands.py",
+      "gui/pages/ml_tools_page.py",
+      "ml/__init__.py",
+      "ml/engine.py",
+      "ml/ml_manager.py",
+      "ml/predictors.py"
+    ],
+    "cli/commands.py": [
+      "cli/__init__.py"
+    ],
+    "utils/file_utils.py": [
+      "core/cache_integration.py",
+      "core/cached_processor.py",
+      "core/processor.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/single_file_page.py",
+      "utils/__init__.py"
+    ],
+    "core/exceptions.py": [
+      "core/cache_manager.py",
+      "core/processor.py",
+      "database/performance_optimizer.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/single_file_page.py",
+      "ml/ml_manager.py",
+      "utils/excel_utils.py"
+    ],
+    "utils/excel_utils.py": [
+      "core/implementations.py",
+      "core/processor.py",
+      "utils/__init__.py"
+    ],
+    "core/secure_logging.py": [
+      "core/large_scale_processor.py",
+      "core/processor.py",
+      "database/manager.py",
+      "ml/predictors.py",
+      "utils/excel_utils.py"
+    ],
+    "core/resource_manager.py": [
+      "core/large_scale_processor.py",
+      "gui/pages/batch_processing_page.py"
+    ],
+    "utils/plotting_utils.py": [
+      "core/processor.py",
+      "gui/pages/single_file_page.py",
+      "utils/__init__.py"
+    ],
+    "utils/date_utils.py": [
+      "core/processor.py",
+      "gui/pages/historical_page.py",
+      "gui/pages/model_summary_page.py"
+    ],
+    "utils/calculation_validator.py": [
+      "core/processor.py"
+    ],
+    "utils/validators.py": [
+      "core/processor.py",
+      "core/security.py",
+      "gui/pages/batch_processing_page.py",
+      "utils/__init__.py"
+    ],
+    "core/security.py": [
+      "core/processor.py",
+      "core/secure_logging.py",
+      "core/session_manager.py",
+      "database/manager.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/widgets/file_drop_zone.py",
+      "ml/predictors.py"
+    ],
+    "ml/predictors.py": [
+      "core/processor.py"
+    ],
+    "database/models.py": [
+      "database/__init__.py",
+      "ml/predictors.py"
+    ],
+    "gui/settings_manager.py": [
+      "gui/ctk_main_window.py",
+      "gui/pages/settings_page.py"
+    ],
+    "gui/ctk_main_window.py": [
+      "gui/main_window.py"
+    ],
+    "analysis/analytics_engine.py": [
+      "gui/progress_integration.py"
+    ],
+    "utils/logging_utils.py": [
+      "ml/engine.py",
+      "ml/models.py",
+      "utils/validators.py"
+    ],
+    "ml/ml_manager.py": [
+      "gui/pages/ml_tools_page.py",
+      "ml/__init__.py"
+    ],
+    "gui/dialogs/settings_dialog.py": [
+      "gui/dialogs/__init__.py"
+    ],
+    "gui/pages/base_page_ctk.py": [
+      "gui/pages/__init__.py",
+      "gui/pages/ai_insights_page.py",
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/historical_page.py",
+      "gui/pages/home_page.py",
+      "gui/pages/ml_tools_page.py",
+      "gui/pages/model_summary_page.py",
+      "gui/pages/multi_track_page.py",
+      "gui/pages/settings_page.py"
+    ],
+    "gui/widgets/hover_fix.py": [
+      "gui/pages/ai_insights_page.py",
+      "gui/pages/single_file_page.py"
+    ],
+    "gui/widgets/file_drop_zone.py": [
+      "gui/pages/batch_processing_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/progress_widget.py": [
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/single_file_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/metric_card_ctk.py": [
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/historical_page.py",
+      "gui/pages/home_page.py",
+      "gui/pages/ml_tools_page.py",
+      "gui/pages/model_summary_page.py",
+      "gui/pages/multi_track_page.py",
+      "gui/pages/single_file_page.py"
+    ],
+    "gui/widgets/batch_results_widget_ctk.py": [
+      "gui/pages/batch_processing_page.py"
+    ],
+    "gui/widgets/progress_widgets_ctk.py": [
+      "gui/pages/batch_processing_page.py"
+    ],
+    "gui/widgets/batch_results_widget.py": [
+      "gui/pages/batch_processing_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/progress_widgets.py": [
+      "gui/pages/batch_processing_page.py",
+      "gui/pages/single_file_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/chart_widget.py": [
+      "gui/pages/historical_page.py",
+      "gui/pages/home_page.py",
+      "gui/pages/ml_tools_page.py",
+      "gui/pages/model_summary_page.py",
+      "gui/pages/multi_track_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/pages/ml_model_info_analyzers.py": [
+      "gui/pages/ml_tools_page.py"
+    ],
+    "gui/widgets/stat_card.py": [
+      "gui/pages/model_summary_page.py",
+      "gui/pages/multi_track_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/track_viewer.py": [
+      "gui/pages/multi_track_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "analysis/consistency_analyzer.py": [
+      "gui/pages/multi_track_page.py"
+    ],
+    "gui/widgets/analysis_display.py": [
+      "gui/pages/single_file_page.py",
+      "gui/widgets/__init__.py"
+    ],
+    "gui/pages/home_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/historical_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/model_summary_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/ml_tools_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/ai_insights_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/settings_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/single_file_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/batch_processing_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/pages/multi_track_page.py": [
+      "gui/pages/__init__.py"
+    ],
+    "gui/widgets/metric_card.py": [
+      "gui/widgets/__init__.py",
+      "gui/widgets/analysis_display.py"
+    ],
+    "gui/theme_helper.py": [
+      "gui/widgets/batch_results_widget.py",
+      "gui/widgets/chart_widget.py"
+    ],
+    "gui/widgets/status_bar.py": [
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/file_analysis_widget.py": [
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/alert_banner.py": [
+      "gui/widgets/__init__.py"
+    ],
+    "gui/widgets/animated_widgets.py": [
+      "gui/widgets/__init__.py"
+    ]
+  }
+}

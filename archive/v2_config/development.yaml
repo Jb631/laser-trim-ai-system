@@ -1,0 +1,87 @@
+app_name: "Laser Trim Analyzer - Development"
+version: "2.0.0"
+debug: true  # Enable debug mode for development
+
+database:
+  enabled: true
+  path: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/laser_trim_dev.db"  # Separate dev database
+  echo: false  # Set to true to see SQL queries in console
+  pool_size: 5
+  sqlite_timeout: 30
+  enable_wal_mode: true  # Better concurrency even for dev
+
+processing:
+  max_workers: 4  # Reasonable for development machines
+  generate_plots: true  # Always generate plots in development
+  plot_dpi: 150
+  cache_enabled: true
+  cache_ttl: 1800  # 30 minutes - shorter for development
+  file_extensions: [".xlsx", ".xls"]
+  skip_patterns: ["~$*", ".*", "_backup_*"]  # Don't skip test files in dev
+
+  # Phase 2: Unified Processor Feature Flag (ADR-001, ADR-004)
+  # Enable for testing in development environment
+  use_unified_processor: true  # Enable in dev for testing
+  unified_processor_strategy: "auto"  # 'auto', 'standard', 'turbo', 'memory_safe'
+  # ML Feature Flags (ADR-005)
+  use_ml_failure_predictor: true  # Enable ML-based failure prediction
+  use_ml_drift_detector: true  # Enable ML-based drift detection
+
+analysis:
+  sigma_scaling_factor: 24.0
+  matlab_gradient_step: 3
+  filter_sampling_frequency: 100
+  filter_cutoff_frequency: 40
+  # Lockheed Martin Compliance Mode
+  # Set to true to use original LM specifications (80 Hz cutoff)
+  # WARNING: This violates Nyquist theorem but may be required for contractual compliance
+  lockheed_martin_compliance_mode: false
+  default_num_zones: 5
+  high_risk_threshold: 0.7
+  low_risk_threshold: 0.3
+
+ml:
+  enabled: true  # Enable ML features for testing
+  model_path: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/models"  # Separate dev models
+  failure_prediction_enabled: true
+  failure_prediction_confidence_threshold: 0.7  # Lower threshold for testing
+  threshold_optimization_enabled: true
+  threshold_optimization_min_samples: 50  # Lower requirement for dev
+  retrain_interval_days: 7  # More frequent for testing
+  min_training_samples: 100  # Much lower for development
+
+api:
+  enabled: true  # Enable API for development
+  base_url: "http://localhost:8000"  # Local development server
+  timeout: 60  # Generous timeout for debugging
+  max_retries: 3
+  enable_anomaly_detection: true  # Enable all AI features
+  enable_quality_predictions: true
+  enable_maintenance_suggestions: true
+
+gui:
+  theme: "clam"
+  window_width: 1200
+  window_height: 900
+  show_historical_tab: true  # Enable all tabs
+  show_ml_insights: true
+  show_batch_processing: true
+  autosave_enabled: true
+  autosave_interval: 120  # More frequent saves during development
+
+# Development-friendly paths
+data_directory: "%USERPROFILE%/Documents/LaserTrimAnalyzer/dev/data"
+log_directory: "%LOCALAPPDATA%/LaserTrimAnalyzer/dev/logs"
+
+# Development-specific settings
+development:
+  # Enable all experimental features
+  enable_experimental_features: true
+  # Show detailed error messages
+  verbose_errors: true
+  # Enable performance profiling
+  enable_profiling: true
+  # Save all intermediate results
+  save_intermediate_results: true
+  # Enable all validation checks
+  strict_validation: true
