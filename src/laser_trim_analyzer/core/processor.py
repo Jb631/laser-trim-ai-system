@@ -626,16 +626,50 @@ class Processor:
         if any(getattr(t, 'is_anomaly', False) for t in result.tracks):
             summary.anomalies += 1
 
+    def get_unprocessed_count(self, file_paths: List[Path], clear_cache: bool = True) -> tuple:
+        """
+        Get count of files that need processing (not yet in database).
+
+        Memory-optimized for 8GB systems - clears cache after counting.
+
+        Args:
+            file_paths: List of file paths to check
+            clear_cache: If True, clears the path cache after counting to free memory
+
+        Returns:
+            Tuple of (unprocessed_count, already_processed_count)
+        """
+        # Only load from DB if not already cached
+        if self._processed_filenames is None:
+            self._load_processed_hashes()
+
+        already_processed = 0
+
+        # Use set intersection for efficiency (avoids per-item lookup)
+        file_path_strs = {str(p) for p in file_paths}
+        already_processed = len(file_path_strs & self._processed_filenames)
+        unprocessed = len(file_paths) - already_processed
+
+        # Free memory on constrained systems
+        if clear_cache:
+            self._processed_filenames = None
+
+        return unprocessed, already_processed
+
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
-        Uses filename lookup (O(1)) when cache is loaded.
+        Uses full file path lookup (O(1)) when cache is loaded.
         Falls back to DB query only if cache wasn't loaded.
+
+        IMPORTANT: Compares full paths, not just filenames, to handle
+        duplicate filenames in different folders correctly.
         """
         try:
             # If cache was loaded (even if empty), use fast set lookup
             if self._processed_filenames is not None:
-                return file_path.name in self._processed_filenames
+                # Compare full path (as string) for accurate matching
+                return str(file_path) in self._processed_filenames
 
             # Cache not loaded - query database directly (slower)
             from laser_trim_analyzer.database import get_database
@@ -657,13 +691,14 @@ class Processor:
     def _load_processed_hashes(self) -> None:
         """Load processed file info from database into memory cache.
 
-        Loads filenames for fast O(1) lookup during batch processing.
+        Loads full file paths for O(1) lookup during batch processing.
         Only loads successfully processed files - errors will be retried.
-        Filename matching handles 99% of incremental cases (same file = same name).
-        Hash matching is available but not used by default since it requires
-        reading entire file contents (slow for 70K+ files).
+
+        IMPORTANT: Uses full file_path (not just filename) to handle duplicate
+        filenames in different folders correctly. For example:
+        - FolderA/test.xls and FolderB/test.xls are different files
         """
-        self._processed_filenames = set()
+        self._processed_filenames = set()  # Full paths, not just filenames
         self._processed_hashes = set()
         try:
             from laser_trim_analyzer.database import get_database
@@ -672,22 +707,22 @@ class Processor:
 
             db = get_database()
             with db.session() as session:
-                # Load filenames for fast lookup (much faster than hash comparison)
+                # Load FULL PATHS for accurate lookup (handles duplicate filenames)
                 # Only load successfully processed files - errors should be retried
-                filenames = session.query(DBProcessedFile.filename).filter(
+                file_paths = session.query(DBProcessedFile.file_path).filter(
                     DBProcessedFile.success == True
                 ).all()
-                self._processed_filenames = set(row.filename for row in filenames if row.filename)
+                self._processed_filenames = set(row.file_path for row in file_paths if row.file_path)
 
-                # Also load Final Test filenames (they're always "successful" if in DB)
-                ft_filenames = session.query(FinalTestResult.filename).all()
+                # Also load Final Test file paths (they're always "successful" if in DB)
+                ft_paths = session.query(FinalTestResult.file_path).all()
                 ft_count = 0
-                for row in ft_filenames:
-                    if row.filename:
-                        self._processed_filenames.add(row.filename)
+                for row in ft_paths:
+                    if row.file_path:
+                        self._processed_filenames.add(row.file_path)
                         ft_count += 1
 
-            logger.info(f"Loaded {len(self._processed_filenames)} processed filenames "
+            logger.info(f"Loaded {len(self._processed_filenames)} processed file paths "
                        f"({len(self._processed_filenames) - ft_count} trim, {ft_count} final test)")
         except Exception as e:
             logger.warning(f"Could not load processed files from database: {e}")

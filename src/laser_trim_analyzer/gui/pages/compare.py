@@ -8,7 +8,9 @@ with linked Trim results using overlay charts.
 import customtkinter as ctk
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from pathlib import Path
+from tkinter import filedialog, messagebox
+from typing import Optional, List, Dict, Any, Set, TYPE_CHECKING
 
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.utils.threads import get_thread_manager
@@ -42,6 +44,10 @@ class ComparePage(ctk.CTkFrame):
         self._page_size = 20
         self._current_page = 0
         self._total_pages = 1
+
+        # Selection tracking for export
+        self._selected_ids: Set[int] = set()
+        self._checkbox_vars: Dict[int, ctk.BooleanVar] = {}
 
         # Lazy chart initialization
         self._chart_initialized = False
@@ -155,6 +161,26 @@ class ComparePage(ctk.CTkFrame):
         )
         refresh_btn.pack(side="right", padx=15, pady=15)
 
+        # Export Selected button
+        self.export_selected_btn = ctk.CTkButton(
+            filter_frame,
+            text="Export Selected",
+            command=self._export_selected,
+            width=120,
+            state="disabled"
+        )
+        self.export_selected_btn.pack(side="right", padx=5, pady=15)
+
+        # Export Current button
+        self.export_current_btn = ctk.CTkButton(
+            filter_frame,
+            text="Export Chart",
+            command=self._export_current,
+            width=100,
+            state="disabled"
+        )
+        self.export_current_btn.pack(side="right", padx=5, pady=15)
+
         # Fix Missing Tracks button
         self.fix_tracks_btn = ctk.CTkButton(
             filter_frame,
@@ -187,12 +213,41 @@ class ComparePage(ctk.CTkFrame):
         list_frame.grid_rowconfigure(1, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
 
+        # Header with label and select controls
+        list_header = ctk.CTkFrame(list_frame, fg_color="transparent")
+        list_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
+        list_header.grid_columnconfigure(0, weight=1)
+
         list_label = ctk.CTkLabel(
-            list_frame,
+            list_header,
             text="Final Test Results",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        list_label.grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+        list_label.grid(row=0, column=0, padx=5, sticky="w")
+
+        # Select All / None buttons
+        select_frame = ctk.CTkFrame(list_header, fg_color="transparent")
+        select_frame.grid(row=0, column=1, sticky="e")
+
+        select_all_btn = ctk.CTkButton(
+            select_frame,
+            text="All",
+            width=40,
+            height=24,
+            font=ctk.CTkFont(size=11),
+            command=self._select_all
+        )
+        select_all_btn.pack(side="left", padx=2)
+
+        select_none_btn = ctk.CTkButton(
+            select_frame,
+            text="None",
+            width=45,
+            height=24,
+            font=ctk.CTkFont(size=11),
+            command=self._select_none
+        )
+        select_none_btn.pack(side="left", padx=2)
 
         # Scrollable list
         self.list_frame = ctk.CTkScrollableFrame(list_frame)
@@ -404,8 +459,23 @@ class ComparePage(ctk.CTkFrame):
 
     def _create_list_item(self, pair: Dict, index: int):
         """Create a list item for a comparison pair."""
+        ft_id = pair.get("final_test_id")
+
         item_frame = ctk.CTkFrame(self.list_frame)
         item_frame.pack(fill="x", padx=5, pady=2)
+
+        # Checkbox for selection
+        var = ctk.BooleanVar(value=ft_id in self._selected_ids)
+        self._checkbox_vars[ft_id] = var
+
+        checkbox = ctk.CTkCheckBox(
+            item_frame,
+            text="",
+            width=20,
+            variable=var,
+            command=lambda: self._on_checkbox_toggle(ft_id, var)
+        )
+        checkbox.pack(side="left", padx=(5, 0), pady=10)
 
         # Status indicator
         status = pair.get("final_test_status", "UNKNOWN")
@@ -423,7 +493,7 @@ class ComparePage(ctk.CTkFrame):
             fg_color=status_color,
             corner_radius=4
         )
-        status_label.pack(side="left", padx=(10, 5), pady=10)
+        status_label.pack(side="left", padx=(5, 5), pady=10)
 
         # Info
         info_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
@@ -496,6 +566,9 @@ class ComparePage(ctk.CTkFrame):
     def _show_comparison(self, pair: Dict):
         """Show comparison details for selected pair."""
         self.current_comparison = pair
+
+        # Enable export current button
+        self.export_current_btn.configure(state="normal")
 
         # Update info panel
         model = pair.get("model", "Unknown")
@@ -946,3 +1019,597 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
                 self.chart.clear()
             except Exception as e:
                 logger.debug(f"Chart cleanup warning: {e}")
+
+    # ===== Selection Methods =====
+
+    def _on_checkbox_toggle(self, ft_id: int, var: ctk.BooleanVar):
+        """Handle checkbox toggle for selection."""
+        if var.get():
+            self._selected_ids.add(ft_id)
+        else:
+            self._selected_ids.discard(ft_id)
+        self._update_export_button_state()
+
+    def _select_all(self):
+        """Select all items on current page."""
+        for pair in self.comparison_pairs:
+            ft_id = pair.get("final_test_id")
+            if ft_id:
+                self._selected_ids.add(ft_id)
+                if ft_id in self._checkbox_vars:
+                    self._checkbox_vars[ft_id].set(True)
+        self._update_export_button_state()
+
+    def _select_none(self):
+        """Deselect all items."""
+        self._selected_ids.clear()
+        for var in self._checkbox_vars.values():
+            var.set(False)
+        self._update_export_button_state()
+
+    def _update_export_button_state(self):
+        """Update Export Selected button state based on selection count."""
+        count = len(self._selected_ids)
+        if count > 0:
+            self.export_selected_btn.configure(
+                state="normal",
+                text=f"Export Selected ({count})"
+            )
+        else:
+            self.export_selected_btn.configure(
+                state="disabled",
+                text="Export Selected"
+            )
+
+    # ===== Export Methods =====
+
+    def _export_current(self):
+        """Export the currently displayed comparison chart."""
+        if not self.current_comparison:
+            return
+
+        ft_id = self.current_comparison.get("final_test_id")
+        model = self.current_comparison.get("model", "Unknown")
+        serial = self.current_comparison.get("serial", "Unknown")
+
+        default_name = f"{model}-SN{serial}-compare.png"
+
+        file_path = filedialog.asksaveasfilename(
+            title="Export Comparison Chart",
+            defaultextension=".png",
+            initialfile=default_name,
+            filetypes=[
+                ("PNG Image", "*.png"),
+                ("PDF Document", "*.pdf"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        self.export_current_btn.configure(state="disabled", text="Exporting...")
+
+        def do_export():
+            try:
+                db = get_database()
+                data = db.get_comparison_data(ft_id)
+                if data:
+                    self._export_comparison_chart(data, Path(file_path))
+                    self.after(0, lambda: self._export_complete(1, "chart"))
+                else:
+                    self.after(0, lambda: self._export_error("No data found"))
+            except Exception as e:
+                logger.exception(f"Export failed: {e}")
+                self.after(0, lambda: self._export_error(str(e)))
+
+        get_thread_manager().start_thread(target=do_export, name="export-comparison")
+
+    def _export_selected(self):
+        """Export selected comparison charts as PDF."""
+        if not self._selected_ids:
+            return
+
+        count = len(self._selected_ids)
+
+        # Build a meaningful default filename
+        if count == 1:
+            # Single selection - use model/SN format
+            ft_id = list(self._selected_ids)[0]
+            pair = next((p for p in self.comparison_pairs if p.get("final_test_id") == ft_id), None)
+            if pair:
+                model = pair.get("model", "Unknown")
+                serial = pair.get("serial", "Unknown")
+                default_name = f"{model}-SN{serial}-compare.pdf"
+            else:
+                default_name = f"compare-export.pdf"
+        else:
+            # Multiple selections - use model name if all same model
+            models = set()
+            for ft_id in self._selected_ids:
+                pair = next((p for p in self.comparison_pairs if p.get("final_test_id") == ft_id), None)
+                if pair:
+                    models.add(pair.get("model", "Unknown"))
+
+            if len(models) == 1:
+                default_name = f"{models.pop()}-compare-{count}units.pdf"
+            else:
+                default_name = f"compare-export-{count}units.pdf"
+
+        file_path = filedialog.asksaveasfilename(
+            title=f"Export {count} Comparison Charts",
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[
+                ("PDF Document", "*.pdf"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        self.export_selected_btn.configure(state="disabled", text="Exporting...")
+
+        def do_export():
+            try:
+                db = get_database()
+                comparisons = []
+
+                for ft_id in self._selected_ids:
+                    data = db.get_comparison_data(ft_id)
+                    if data:
+                        comparisons.append(data)
+
+                if comparisons:
+                    self._export_multi_comparison_pdf(comparisons, Path(file_path))
+                    self.after(0, lambda: self._export_complete(len(comparisons), "PDF"))
+                else:
+                    self.after(0, lambda: self._export_error("No data found"))
+            except Exception as e:
+                logger.exception(f"Export failed: {e}")
+                self.after(0, lambda: self._export_error(str(e)))
+
+        get_thread_manager().start_thread(target=do_export, name="export-comparisons-pdf")
+
+    def _export_comparison_chart(self, data: Dict, output_path: Path):
+        """Export a single comparison chart to file."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+        import numpy as np
+
+        plt.style.use('default')
+
+        final_test = data.get("final_test", {})
+        trim = data.get("trim")
+
+        # RECALCULATE linearity status from actual data (don't trust stored value)
+        corrected_values = self._calculate_linearity_status(data)
+
+        # Create figure
+        fig = plt.figure(figsize=(14, 10), dpi=150, facecolor='white')
+
+        model = final_test.get("model", "Unknown")
+        serial = final_test.get("serial", "Unknown")
+        title = f'Final Test Comparison - {model} / SN:{serial}'
+        fig.suptitle(title, fontsize=16, fontweight='bold', color='black', y=0.97)
+
+        # Grid layout
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3,
+                              left=0.08, right=0.95, top=0.92, bottom=0.08)
+
+        # Main comparison chart (top 2/3)
+        ax_main = fig.add_subplot(gs[0:2, :])
+        self._plot_comparison_export(ax_main, data, corrected_values)
+
+        # Unit Info (bottom left)
+        ax_ft_info = fig.add_subplot(gs[2, 0])
+        self._plot_final_test_info(ax_ft_info, data)
+
+        # Comparison Metrics (bottom middle)
+        ax_metrics = fig.add_subplot(gs[2, 1])
+        self._plot_comparison_metrics(ax_metrics, data, corrected_values)
+
+        # Status Display (bottom right)
+        ax_status = fig.add_subplot(gs[2, 2])
+        self._plot_comparison_status(ax_status, data, corrected_values)
+
+        # Save
+        fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+
+    def _export_multi_comparison_pdf(self, comparisons: List[Dict], output_path: Path):
+        """Export multiple comparison charts to a single PDF."""
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+        import numpy as np
+
+        plt.style.use('default')
+
+        with PdfPages(output_path) as pdf:
+            for data in comparisons:
+                final_test = data.get("final_test", {})
+                trim = data.get("trim")
+
+                # RECALCULATE linearity status from actual data
+                corrected_values = self._calculate_linearity_status(data)
+
+                # Create figure (letter size for PDF)
+                fig = plt.figure(figsize=(11, 8.5), facecolor='white')
+
+                model = final_test.get("model", "Unknown")
+                serial = final_test.get("serial", "Unknown")
+                title = f'Final Test Comparison - {model} / SN:{serial}'
+                fig.suptitle(title, fontsize=14, fontweight='bold', color='black', y=0.96)
+
+                gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3,
+                                      left=0.08, right=0.95, top=0.90, bottom=0.08)
+
+                ax_main = fig.add_subplot(gs[0:2, :])
+                self._plot_comparison_export(ax_main, data, corrected_values)
+
+                ax_ft_info = fig.add_subplot(gs[2, 0])
+                self._plot_final_test_info(ax_ft_info, data)
+
+                ax_metrics = fig.add_subplot(gs[2, 1])
+                self._plot_comparison_metrics(ax_metrics, data, corrected_values)
+
+                ax_status = fig.add_subplot(gs[2, 2])
+                self._plot_comparison_status(ax_status, data, corrected_values)
+
+                pdf.savefig(fig, facecolor='white')
+                plt.close(fig)
+
+    def _calculate_linearity_status(self, data: Dict) -> Dict[str, Any]:
+        """Calculate linearity status from actual track data using displayed spec limits."""
+        final_test = data.get("final_test", {})
+        trim = data.get("trim")
+        ft_tracks = final_test.get("tracks", [])
+
+        if not ft_tracks:
+            return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
+
+        ft_track = ft_tracks[0]
+        ft_errors = ft_track.get("errors", [])
+        upper_limits = ft_track.get("upper_limits", [])
+        lower_limits = ft_track.get("lower_limits", [])
+
+        if not ft_errors or not upper_limits or not lower_limits:
+            return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
+
+        # Count Final Test fail points
+        fail_count = 0
+        for i, e in enumerate(ft_errors):
+            if i < len(upper_limits) and i < len(lower_limits):
+                if upper_limits[i] is not None and lower_limits[i] is not None:
+                    if e > upper_limits[i] or e < lower_limits[i]:
+                        fail_count += 1
+
+        # Calculate Trim linearity against the SAME spec limits (Final Test spec)
+        # Need to interpolate spec limits at trim positions since they may differ
+        import numpy as np
+
+        trim_fail_count = 0
+        trim_linearity_pass = None
+        if trim:
+            trim_tracks = trim.get("tracks", [])
+            if trim_tracks:
+                trim_track = trim_tracks[0]
+                trim_errors = trim_track.get("errors", [])
+                trim_positions = trim_track.get("positions", [])
+                offset = trim_track.get("optimal_offset", 0) or 0
+
+                # Apply offset to trim errors (same as chart display)
+                if offset and trim_errors:
+                    trim_errors = [e + offset for e in trim_errors]
+
+                # Get FT positions for interpolation
+                ft_positions = ft_track.get("positions", [])
+
+                # Check trim against Final Test spec limits using interpolation
+                if trim_errors and trim_positions and ft_positions and len(ft_positions) == len(upper_limits):
+                    # Interpolate spec limits at trim positions
+                    try:
+                        upper_interp = np.interp(trim_positions, ft_positions,
+                                                  [u if u is not None else np.nan for u in upper_limits])
+                        lower_interp = np.interp(trim_positions, ft_positions,
+                                                  [l if l is not None else np.nan for l in lower_limits])
+
+                        for i, e in enumerate(trim_errors):
+                            if not np.isnan(upper_interp[i]) and not np.isnan(lower_interp[i]):
+                                if e > upper_interp[i] or e < lower_interp[i]:
+                                    trim_fail_count += 1
+                    except Exception:
+                        # Fallback to index-based comparison
+                        for i, e in enumerate(trim_errors):
+                            if i < len(upper_limits) and i < len(lower_limits):
+                                if upper_limits[i] is not None and lower_limits[i] is not None:
+                                    if e > upper_limits[i] or e < lower_limits[i]:
+                                        trim_fail_count += 1
+
+                    trim_linearity_pass = trim_fail_count == 0
+
+        return {
+            'fail_points': fail_count,
+            'linearity_pass': fail_count == 0,
+            'trim_fail_points': trim_fail_count,
+            'trim_linearity_pass': trim_linearity_pass,
+        }
+
+    def _plot_comparison_export(self, ax, data: Dict, corrected_values: Dict = None):
+        """Plot comparison chart for export (light mode)."""
+        import numpy as np
+
+        COLORS = {
+            'final_test': '#27ae60',  # Green
+            'trim': '#3498db',  # Blue
+            'spec_limit': '#e74c3c',  # Red
+            'fail': '#e74c3c',
+        }
+
+        final_test = data.get("final_test", {})
+        trim = data.get("trim")
+
+        ft_tracks = final_test.get("tracks", [])
+        has_ft_data = bool(ft_tracks and ft_tracks[0].get("positions") and ft_tracks[0].get("errors"))
+
+        trim_tracks = trim.get("tracks", []) if trim else []
+        has_trim_data = bool(trim_tracks and trim_tracks[0].get("positions") and trim_tracks[0].get("errors"))
+
+        if not has_ft_data and not has_trim_data:
+            ax.text(0.5, 0.5, "No track data available",
+                   ha='center', va='center', fontsize=12, color='gray')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            return
+
+        # Plot Trim data first (if available)
+        if has_trim_data:
+            trim_track = trim_tracks[0]
+            trim_positions = trim_track.get("positions", [])
+            trim_errors = trim_track.get("errors", [])
+            offset = trim_track.get("optimal_offset", 0) or trim_track.get("offset", 0)
+
+            if offset:
+                trim_errors = [e + offset for e in trim_errors]
+
+            ax.plot(trim_positions, trim_errors, color=COLORS['trim'],
+                   linewidth=1.5, label=f"Trim ({trim.get('filename', 'Unknown')[:25]})", alpha=0.9)
+
+        # Plot Final Test data
+        if has_ft_data:
+            ft_track = ft_tracks[0]
+            ft_positions = ft_track.get("positions", [])
+            ft_errors = ft_track.get("errors", [])
+
+            ax.plot(ft_positions, ft_errors, color=COLORS['final_test'],
+                   linewidth=1.5, label=f"Final Test ({final_test.get('filename', 'Unknown')[:25]})", alpha=0.9)
+
+            # Get spec limits
+            upper_limits = ft_track.get("upper_limits", [])
+            lower_limits = ft_track.get("lower_limits", [])
+
+            if upper_limits and lower_limits:
+                upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
+                lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
+                pos_array = np.array(ft_positions[:len(upper_limits)])
+
+                ax.plot(pos_array, upper_plot, color=COLORS['spec_limit'],
+                       linestyle='--', linewidth=1, alpha=0.8, label='Spec Limits')
+                ax.plot(pos_array, lower_plot, color=COLORS['spec_limit'],
+                       linestyle='--', linewidth=1, alpha=0.8)
+
+                ax.fill_between(pos_array, lower_plot, upper_plot,
+                               alpha=0.1, color=COLORS['spec_limit'],
+                               where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
+
+                # Mark fail points (use corrected values if available)
+                fail_count = corrected_values.get('fail_points', 0) if corrected_values else 0
+                if fail_count > 0:
+                    fail_indices = []
+                    for i, e in enumerate(ft_errors):
+                        if i < len(upper_limits) and i < len(lower_limits):
+                            if upper_limits[i] is not None and lower_limits[i] is not None:
+                                if e > upper_limits[i] or e < lower_limits[i]:
+                                    fail_indices.append(i)
+
+                    if fail_indices:
+                        fail_pos = [ft_positions[i] for i in fail_indices]
+                        fail_err = [ft_errors[i] for i in fail_indices]
+                        ax.scatter(fail_pos, fail_err, color=COLORS['fail'],
+                                  s=100, marker='x', linewidth=3,
+                                  label=f'Fail Points ({len(fail_indices)})', zorder=5)
+
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+        ax.set_xlabel('Position', fontsize=12)
+        ax.set_ylabel('Error', fontsize=12)
+
+        # Use corrected linearity status for title
+        if corrected_values and corrected_values.get('linearity_pass') is not None:
+            lin_pass = corrected_values['linearity_pass']
+            if lin_pass:
+                status = "PASS"
+            else:
+                status = f"FAIL ({corrected_values['fail_points']} pts)"
+        else:
+            status = "Linked Comparison" if has_trim_data else "Final Test Only"
+
+        ax.set_title(f'Track Comparison - {status}', fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    def _plot_final_test_info(self, ax, data: Dict):
+        """Plot Final Test information panel with source files."""
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        final_test = data.get("final_test", {})
+        trim = data.get("trim")
+
+        test_date = final_test.get("test_date")
+        if test_date and isinstance(test_date, datetime):
+            date_str = test_date.strftime('%m/%d/%Y')
+        else:
+            date_str = str(test_date)[:10] if test_date else "N/A"
+
+        # Truncate long filenames
+        ft_filename = final_test.get('filename', 'Unknown')
+        if len(ft_filename) > 35:
+            ft_filename = ft_filename[:32] + "..."
+        trim_filename = trim.get('filename', 'N/A') if trim else 'N/A'
+        if len(trim_filename) > 35:
+            trim_filename = trim_filename[:32] + "..."
+
+        info_lines = [
+            f"Model: {final_test.get('model', 'Unknown')}",
+            f"Serial: {final_test.get('serial', 'Unknown')}",
+            f"Test Date: {date_str}",
+            "",
+            "Source Files:",
+            f"  FT: {ft_filename}",
+            f"  Trim: {trim_filename}",
+        ]
+
+        y_pos = 0.95
+        ax.text(0.05, 0.98, "Unit Info", fontsize=11, fontweight='bold',
+               transform=ax.transAxes, va='top', color='black')
+
+        for line in info_lines:
+            y_pos -= 0.11
+            ax.text(0.05, y_pos, line, fontsize=9, transform=ax.transAxes, va='top', color='black')
+
+    def _plot_comparison_metrics(self, ax, data: Dict, corrected_values: Dict = None):
+        """Plot comparison metrics panel."""
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        final_test = data.get("final_test", {})
+        trim = data.get("trim")
+        days_since = data.get("days_since_trim")
+        confidence = data.get("match_confidence")
+
+        metrics = [
+            f"Days Since Trim: {days_since}" if days_since is not None else "Days Since Trim: N/A",
+            f"Match Confidence: {confidence*100:.0f}%" if confidence else "Match Confidence: N/A",
+            "",
+        ]
+
+        # Final Test results - use corrected values if available
+        ft_tracks = final_test.get("tracks", [])
+        if ft_tracks:
+            if corrected_values and corrected_values.get('linearity_pass') is not None:
+                linearity_pass = corrected_values['linearity_pass']
+                fail_pts = corrected_values.get('fail_points', 0)
+                metrics.extend([
+                    "Final Test Results:",
+                    f"  Linearity: {'PASS' if linearity_pass else f'FAIL ({fail_pts} pts)'}",
+                ])
+            else:
+                linearity_pass = final_test.get("linearity_pass")
+                metrics.extend([
+                    "Final Test Results:",
+                    f"  Linearity: {'PASS' if linearity_pass else 'FAIL' if linearity_pass is False else 'N/A'}",
+                ])
+
+        # Trim info - use recalculated value against Final Test spec limits
+        if trim:
+            if corrected_values and corrected_values.get('trim_linearity_pass') is not None:
+                trim_lin_pass = corrected_values['trim_linearity_pass']
+                trim_fail_pts = corrected_values.get('trim_fail_points', 0)
+                metrics.extend([
+                    "",
+                    "Trim Results (vs FT spec):",
+                    f"  Linearity: {'PASS' if trim_lin_pass else f'FAIL ({trim_fail_pts} pts)'}",
+                ])
+            else:
+                trim_tracks = trim.get("tracks", [])
+                if trim_tracks:
+                    trim_track = trim_tracks[0]
+                    lin_pass = trim_track.get('linearity_pass')
+                    metrics.extend([
+                        "",
+                        "Trim Results:",
+                        f"  Linearity: {'PASS' if lin_pass else 'FAIL' if lin_pass is False else 'N/A'}",
+                    ])
+
+        y_pos = 0.95
+        ax.text(0.05, 0.98, "Comparison Metrics", fontsize=11, fontweight='bold',
+               transform=ax.transAxes, va='top', color='black')
+
+        for metric in metrics:
+            y_pos -= 0.09
+            color = 'black'
+            if 'FAIL' in metric:
+                color = '#e74c3c'
+            elif 'PASS' in metric:
+                color = '#27ae60'
+            ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes, va='top', color=color)
+
+    def _plot_comparison_status(self, ax, data: Dict, corrected_values: Dict = None):
+        """Plot status display panel."""
+        from matplotlib.patches import Rectangle
+
+        ax.axis('off')
+        ax.set_facecolor('white')
+
+        final_test = data.get("final_test", {})
+
+        # Use corrected linearity_pass if available
+        if corrected_values and corrected_values.get('linearity_pass') is not None:
+            linearity_pass = corrected_values['linearity_pass']
+        else:
+            linearity_pass = final_test.get("linearity_pass")
+
+        # Determine color from actual linearity status
+        if linearity_pass:
+            status = "PASS"
+            color = '#27ae60'
+        elif linearity_pass is False:
+            status = "FAIL"
+            color = '#e74c3c'
+        else:
+            status = "UNKNOWN"
+            color = 'gray'
+
+        # Draw status box
+        rect = Rectangle((0.1, 0.55), 0.8, 0.30,
+                         linewidth=3, edgecolor=color,
+                         facecolor='white', alpha=0.9)
+        ax.add_patch(rect)
+
+        ax.text(0.5, 0.70, f'STATUS: {status}', ha='center', va='center',
+               fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
+
+        # Show fail details if applicable
+        if corrected_values and not linearity_pass and corrected_values.get('fail_points', 0) > 0:
+            ax.text(0.5, 0.48, f"({corrected_values['fail_points']} fail points)",
+                   ha='center', va='center', fontsize=10, color=color, transform=ax.transAxes)
+
+        # Linked status
+        trim = data.get("trim")
+        if trim:
+            ax.text(0.5, 0.35, "Linked to Trim", ha='center', va='center',
+                   fontsize=11, color='#27ae60', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.35, "No Linked Trim", ha='center', va='center',
+                   fontsize=11, color='gray', transform=ax.transAxes)
+
+        # Export timestamp
+        ax.text(0.5, 0.15, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+               ha='center', va='center', fontsize=9, color='gray',
+               style='italic', transform=ax.transAxes)
+
+    def _export_complete(self, count: int, format_name: str):
+        """Called when export completes successfully."""
+        self.export_current_btn.configure(state="normal", text="Export Chart")
+        self._update_export_button_state()
+        messagebox.showinfo(
+            "Export Complete",
+            f"Successfully exported {count} comparison{'s' if count != 1 else ''} as {format_name}."
+        )
+
+    def _export_error(self, error: str):
+        """Called when export fails."""
+        self.export_current_btn.configure(state="normal", text="Export Chart")
+        self._update_export_button_state()
+        messagebox.showerror("Export Error", f"Failed to export:\n{error}")

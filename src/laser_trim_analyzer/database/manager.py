@@ -2106,26 +2106,7 @@ class DatabaseManager:
         )
 
         if not candidates:
-            # Try without serial match (just model)
-            candidates = (
-                session.query(DBAnalysisResult)
-                .filter(
-                    DBAnalysisResult.model == model,
-                    DBAnalysisResult.file_date.isnot(None),
-                    DBAnalysisResult.file_date <= test_date,  # Allow same-day matches
-                    DBAnalysisResult.file_date >= cutoff_date,
-                )
-                .order_by(desc(DBAnalysisResult.file_date))
-                .limit(1)
-                .all()
-            )
-            if candidates:
-                # Lower confidence since serial didn't match
-                match = candidates[0]
-                days_diff = (test_date - match.file_date).days
-                confidence = 0.5 * (1 - days_diff / FINAL_TEST_MAX_DAYS_FROM_TRIM)
-                return match.id, confidence, days_diff
-
+            # No match found - require both model AND serial to match
             return None, None, None
 
         # Found candidates with matching serial
@@ -2484,6 +2465,7 @@ class DatabaseManager:
                                 "lower_limits": t.lower_limits or [],
                                 "optimal_offset": t.optimal_offset or 0,
                                 "linearity_error": t.final_linearity_error_shifted,
+                                "linearity_pass": t.linearity_pass,
                                 "sigma_gradient": t.sigma_gradient,
                                 "sigma_pass": t.sigma_pass,
                             }

@@ -77,7 +77,8 @@ class ProcessPage(ctk.CTkFrame):
         incremental_check = ctk.CTkCheckBox(
             options_frame,
             text="Incremental Mode (only process new files)",
-            variable=self.incremental_var
+            variable=self.incremental_var,
+            command=self._on_incremental_toggle
         )
         incremental_check.pack(side="left", padx=15, pady=15)
 
@@ -201,6 +202,18 @@ class ProcessPage(ctk.CTkFrame):
         self.results_text.configure(state="disabled")
         self._update_results("Ready to process files.\n\nSelect files and click 'Start Processing' to begin.")
 
+    def _on_incremental_toggle(self):
+        """Called when incremental mode checkbox is toggled."""
+        if not self.selected_files:
+            return
+
+        if self.incremental_var.get():
+            # Incremental mode turned ON - check how many files need processing
+            self._check_incremental_count()
+        else:
+            # Incremental mode turned OFF - show total count
+            self._update_file_count_label()
+
     def _select_files(self):
         """Open file dialog to select files."""
         files = filedialog.askopenfilenames(
@@ -210,6 +223,9 @@ class ProcessPage(ctk.CTkFrame):
         if files:
             self.selected_files = [Path(f) for f in files]
             self._update_file_list()
+            # Check incremental count if mode is on
+            if self.incremental_var.get():
+                self._check_incremental_count()
 
     def _select_folder(self):
         """Open folder dialog to select a folder (crawls all subfolders)."""
@@ -248,6 +264,60 @@ class ProcessPage(ctk.CTkFrame):
         """Called when folder scan completes - updates UI with found files."""
         self.selected_files = files
         self._update_file_list()
+
+        # If incremental mode is ON, check how many files are already processed
+        if self.incremental_var.get() and len(files) > 0:
+            self._check_incremental_count()
+
+    def _check_incremental_count(self):
+        """Check how many files are already processed (for incremental mode display)."""
+        if not self.selected_files:
+            return
+
+        # Show checking status
+        total = len(self.selected_files)
+        self.file_count_label.configure(text=f"Checking {total:,} files against database...")
+
+        def check_files():
+            try:
+                # Create temporary processor, clear cache after to free memory
+                processor = Processor(use_ml=False)
+                unprocessed, already_processed = processor.get_unprocessed_count(
+                    self.selected_files, clear_cache=True
+                )
+                self.after(0, lambda: self._on_incremental_count_ready(unprocessed, already_processed))
+            except Exception as e:
+                logger.error(f"Error checking incremental count: {e}")
+                # Fall back to showing total count
+                self.after(0, lambda: self._update_file_count_label())
+
+        get_thread_manager().start_thread(target=check_files, name="incremental-check")
+
+    def _on_incremental_count_ready(self, unprocessed: int, already_processed: int):
+        """Called when incremental count check completes."""
+        total = len(self.selected_files)
+        unique_folders = len(set(f.parent for f in self.selected_files))
+        folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
+
+        if already_processed > 0:
+            self.file_count_label.configure(
+                text=f"{unprocessed} new files to process ({already_processed} already in DB){folder_info}"
+            )
+        else:
+            self.file_count_label.configure(
+                text=f"{total} files selected{folder_info}"
+            )
+
+    def _update_file_count_label(self):
+        """Update file count label with basic info (no incremental check)."""
+        if not self.selected_files:
+            self.file_count_label.configure(text="No files selected")
+            return
+
+        total = len(self.selected_files)
+        unique_folders = len(set(f.parent for f in self.selected_files))
+        folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
+        self.file_count_label.configure(text=f"{total} files selected{folder_info}")
 
     def _on_folder_scan_error(self, error: str):
         """Called when folder scan fails."""
