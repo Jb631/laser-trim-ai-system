@@ -307,9 +307,10 @@ class MLManager:
             if model_name not in self.trained_models:
                 self.trained_models.append(model_name)
 
+            threshold_str = f"{result.threshold_value:.6f}" if result.threshold_value else "N/A"
             logger.info(
                 f"MLManager trained {model_name} - "
-                f"Threshold: {result.threshold_value:.6f if result.threshold_value else 'N/A'}, "
+                f"Threshold: {threshold_str}, "
                 f"Predictor: {'Yes' if result.predictor_trained else 'No'}, "
                 f"Drift: {'Yes' if result.drift_baseline_set else 'No'}"
             )

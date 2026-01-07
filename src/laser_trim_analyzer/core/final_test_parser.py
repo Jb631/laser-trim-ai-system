@@ -261,6 +261,10 @@ class FinalTestParser:
         # Remove extension
         base = Path(filename).stem
 
+        # Strip common prefixes like "Copy of "
+        if base.lower().startswith("copy of "):
+            base = base[8:]  # Remove "Copy of "
+
         # Handle Rout_ prefix format
         if base.startswith("Rout_"):
             base = base[5:]  # Remove "Rout_"
