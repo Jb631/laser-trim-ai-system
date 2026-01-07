@@ -50,6 +50,37 @@ from laser_trim_analyzer.config import get_config
 logger = logging.getLogger(__name__)
 
 
+def _status_matches(status: Any, *targets: DBStatusType) -> bool:
+    """Check if status matches any of the target StatusType values.
+
+    Handles both enum values and string values (from legacy data).
+    SQLAlchemy Enum columns store the enum NAME (e.g., 'PASS') but may
+    have legacy data with the VALUE (e.g., 'Pass').
+
+    Args:
+        status: The status value from database (enum or string)
+        *targets: One or more StatusType enum values to match against
+
+    Returns:
+        True if status matches any target
+    """
+    if status is None:
+        return False
+
+    # Get both names (PASS) and values (Pass) we're looking for
+    target_names = {t.name for t in targets}
+    target_values = {t.value for t in targets}
+
+    # Handle both enum and string
+    if isinstance(status, DBStatusType):
+        return status in targets
+    elif isinstance(status, str):
+        # Check both name and value for backwards compatibility
+        return status in target_names or status in target_values
+    else:
+        return False
+
+
 class DatabaseError(Exception):
     """Base exception for database operations."""
     pass
@@ -145,6 +176,55 @@ class DatabaseManager:
                     logger.info("Migration completed: Added anomaly detection columns")
                 except Exception as e:
                     logger.warning(f"Migration warning (may already exist): {e}")
+
+            # Migration: Add drift_baseline_cutoff_date column to model_ml_state
+            try:
+                session.execute(text("SELECT drift_baseline_cutoff_date FROM model_ml_state LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding drift_baseline_cutoff_date column")
+                try:
+                    session.execute(text("ALTER TABLE model_ml_state ADD COLUMN drift_baseline_cutoff_date DATETIME"))
+                    session.commit()
+                    logger.info("Migration completed: Added drift_baseline_cutoff_date column")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
+
+            # Migration: Add peak_cusum column to model_ml_state
+            try:
+                session.execute(text("SELECT peak_cusum FROM model_ml_state LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding peak_cusum column")
+                try:
+                    session.execute(text("ALTER TABLE model_ml_state ADD COLUMN peak_cusum FLOAT DEFAULT 0"))
+                    session.commit()
+                    logger.info("Migration completed: Added peak_cusum column")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
+
+            # Migration: Normalize status values from 'Pass' to 'PASS' format
+            # SQLAlchemy stores enum NAME (PASS), not value (Pass)
+            # This fixes data corrupted by bulk SQL that used .value instead of .name
+            try:
+                # Check if there are any title-case values that need fixing
+                result = session.execute(text(
+                    "SELECT COUNT(*) FROM analysis_results WHERE overall_status IN ('Pass', 'Fail', 'Warning', 'Error')"
+                )).scalar()
+                if result and result > 0:
+                    logger.info(f"Running migration: Normalizing {result} status values to uppercase")
+                    # Fix analysis_results
+                    session.execute(text("UPDATE analysis_results SET overall_status = 'PASS' WHERE overall_status = 'Pass'"))
+                    session.execute(text("UPDATE analysis_results SET overall_status = 'FAIL' WHERE overall_status = 'Fail'"))
+                    session.execute(text("UPDATE analysis_results SET overall_status = 'WARNING' WHERE overall_status = 'Warning'"))
+                    session.execute(text("UPDATE analysis_results SET overall_status = 'ERROR' WHERE overall_status = 'Error'"))
+                    # Fix track_results
+                    session.execute(text("UPDATE track_results SET status = 'PASS' WHERE status = 'Pass'"))
+                    session.execute(text("UPDATE track_results SET status = 'FAIL' WHERE status = 'Fail'"))
+                    session.execute(text("UPDATE track_results SET status = 'WARNING' WHERE status = 'Warning'"))
+                    session.execute(text("UPDATE track_results SET status = 'ERROR' WHERE status = 'Error'"))
+                    session.commit()
+                    logger.info("Migration completed: Status values normalized")
+            except Exception as e:
+                logger.warning(f"Status normalization warning: {e}")
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -671,9 +751,9 @@ class DatabaseManager:
             passed = 0
             failed = 0
             for status, count in status_counts:
-                if status == DBStatusType.PASS:
+                if _status_matches(status, DBStatusType.PASS):
                     passed = count
-                elif status in (DBStatusType.FAIL, DBStatusType.ERROR):
+                elif _status_matches(status, DBStatusType.FAIL, DBStatusType.ERROR):
                     failed = count
 
             # Count unresolved alerts
@@ -905,11 +985,11 @@ class DatabaseManager:
             warnings = 0
             failed = 0
             for status, count in status_counts:
-                if status == DBStatusType.PASS:
+                if _status_matches(status, DBStatusType.PASS):
                     passed = count
-                elif status == DBStatusType.WARNING:
+                elif _status_matches(status, DBStatusType.WARNING):
                     warnings = count
-                elif status in (DBStatusType.FAIL, DBStatusType.ERROR):
+                elif _status_matches(status, DBStatusType.FAIL, DBStatusType.ERROR):
                     failed += count
 
             # Date range (using file_date - when files were trimmed)

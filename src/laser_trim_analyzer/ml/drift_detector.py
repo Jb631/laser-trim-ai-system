@@ -52,6 +52,7 @@ class DriftDetectorState:
     baseline_p50: Optional[float]
     baseline_p95: Optional[float]
     baseline_samples: int
+    baseline_cutoff_date: Optional[datetime]  # Files older than this were used for baseline
 
     # CUSUM state
     cusum_pos: float
@@ -134,6 +135,7 @@ class ModelDriftDetector:
         self.baseline_p50: Optional[float] = None
         self.baseline_p95: Optional[float] = None
         self.baseline_samples: int = 0
+        self.baseline_cutoff_date: Optional[datetime] = None  # Files older than this were used for baseline
 
         # CUSUM state (accumulates deviations)
         self.cusum_pos: float = 0.0  # Positive accumulator (detecting upward drift)
@@ -152,7 +154,14 @@ class ModelDriftDetector:
         self.has_baseline: bool = False
         self.updated_date: Optional[datetime] = None
 
-    def set_baseline(self, sigma_values: np.ndarray) -> bool:
+        # Recovery tracking - require consecutive samples near baseline before resetting CUSUM
+        self._consecutive_recovered: int = 0
+        self.RECOVERY_SAMPLES_REQUIRED: int = 5  # Need 5 consecutive "recovered" samples to reset
+
+        # Peak CUSUM tracking - shows maximum CUSUM reached during detection period
+        self._peak_cusum: float = 0.0
+
+    def set_baseline(self, sigma_values: np.ndarray, cutoff_date: Optional[datetime] = None) -> bool:
         """
         Set baseline statistics from historical data.
 
@@ -161,6 +170,8 @@ class ModelDriftDetector:
 
         Args:
             sigma_values: Array of sigma_gradient values
+            cutoff_date: Date marking end of baseline period. Files newer than this
+                         will be checked for drift. If None, uses current datetime.
 
         Returns:
             True if baseline was set successfully
@@ -179,6 +190,7 @@ class ModelDriftDetector:
         self.baseline_p50 = float(np.percentile(sigma_values, 50))
         self.baseline_p95 = float(np.percentile(sigma_values, 95))
         self.baseline_samples = len(sigma_values)
+        self.baseline_cutoff_date = cutoff_date if cutoff_date else datetime.now()
 
         # Reset detection state
         self.cusum_pos = 0.0
@@ -188,6 +200,8 @@ class ModelDriftDetector:
         self.is_drifting = False
         self.drift_direction = None
         self.drift_start_date = None
+        self._consecutive_recovered = 0
+        self._peak_cusum = 0.0
 
         self.has_baseline = True
         self.updated_date = datetime.now()
@@ -195,7 +209,7 @@ class ModelDriftDetector:
         logger.info(
             f"DriftDetector[{self.model_name}] baseline set - "
             f"Mean: {self.baseline_mean:.6f}, Std: {self.baseline_std:.6f}, "
-            f"Samples: {self.baseline_samples}"
+            f"Samples: {self.baseline_samples}, Cutoff: {self.baseline_cutoff_date}"
         )
 
         return True
@@ -232,23 +246,54 @@ class ModelDriftDetector:
         # Update CUSUM
         cusum_signal, cusum_direction = self._update_cusum(z)
 
+        # Track peak CUSUM value (maximum reached during detection period)
+        current_cusum = max(self.cusum_pos, self.cusum_neg)
+        self._peak_cusum = max(self._peak_cusum, current_cusum)
+
         # Update EWMA
         ewma_signal, ewma_direction = self._update_ewma(sigma_value)
 
-        # Combine signals
+        # Check if process has recovered (EWMA within 0.5 std of baseline mean)
+        # Require consecutive samples near baseline before resetting CUSUM
+        if self.ewma_value is not None and self.baseline_mean is not None and self.baseline_std is not None:
+            deviation_from_mean = abs(self.ewma_value - self.baseline_mean)
+            if deviation_from_mean <= 0.5 * self.baseline_std:
+                # Sample is near baseline - increment recovery counter
+                self._consecutive_recovered += 1
+
+                # Only reset CUSUM after enough consecutive recovered samples
+                if self._consecutive_recovered >= self.RECOVERY_SAMPLES_REQUIRED:
+                    if self.cusum_pos > self.cusum_h or self.cusum_neg > self.cusum_h:
+                        logger.debug(
+                            f"DriftDetector[{self.model_name}] EWMA stable for "
+                            f"{self._consecutive_recovered} samples, resetting CUSUM"
+                        )
+                    self.cusum_pos = 0.0
+                    self.cusum_neg = 0.0
+                    cusum_signal = False
+            else:
+                # Sample is outside recovery zone - reset counter
+                self._consecutive_recovered = 0
+
+        # Combine signals - only signal drift if CUSUM triggered AND still outside normal range
         is_drifting = cusum_signal or ewma_signal
 
-        # Determine direction (prefer CUSUM since it's more persistent)
-        if cusum_signal:
-            direction = cusum_direction
-        elif ewma_signal:
-            direction = ewma_direction
+        # Determine direction based on CURRENT state (EWMA vs mean)
+        if is_drifting and self.ewma_value is not None and self.baseline_mean is not None:
+            if self.ewma_value > self.baseline_mean:
+                direction = DriftDirection.UP
+            elif self.ewma_value < self.baseline_mean:
+                direction = DriftDirection.DOWN
+            else:
+                direction = DriftDirection.STABLE
         else:
             direction = DriftDirection.STABLE
 
-        # Calculate severity (0-1)
-        cusum_max = max(abs(self.cusum_pos), abs(self.cusum_neg))
-        severity = min(1.0, cusum_max / (self.cusum_h * 2))
+        # Calculate severity based on how far EWMA is from mean (in std devs)
+        if self.ewma_value is not None and self.baseline_mean is not None and self.baseline_std and self.baseline_std > 0:
+            severity = min(1.0, abs(self.ewma_value - self.baseline_mean) / (3 * self.baseline_std))
+        else:
+            severity = 0.0
 
         # Track drift start
         if is_drifting and not self.is_drifting:
@@ -263,9 +308,11 @@ class ModelDriftDetector:
         message = None
         if is_drifting:
             if direction == DriftDirection.UP:
-                message = f"Quality degrading - sigma trending upward ({severity:.0%} severity)"
+                message = f"Quality degrading - sigma currently above baseline ({severity:.0%} severity)"
+            elif direction == DriftDirection.DOWN:
+                message = f"Quality improved - sigma currently below baseline ({severity:.0%} severity)"
             else:
-                message = f"Quality improving - sigma trending downward ({severity:.0%} severity)"
+                message = f"Process deviation detected ({severity:.0%} severity)"
 
         return DriftResult(
             is_drifting=is_drifting,
@@ -273,7 +320,7 @@ class ModelDriftDetector:
             severity=severity,
             cusum_signal=cusum_signal,
             ewma_signal=ewma_signal,
-            cusum_value=cusum_max,
+            cusum_value=max(self.cusum_pos, self.cusum_neg),
             ewma_value=self.ewma_value or 0.0,
             deviation_from_baseline=z,
             message=message
@@ -353,6 +400,8 @@ class ModelDriftDetector:
         self.is_drifting = False
         self.drift_direction = None
         self.drift_start_date = None
+        self._consecutive_recovered = 0
+        self._peak_cusum = 0.0
         self.updated_date = datetime.now()
 
         logger.debug(f"DriftDetector[{self.model_name}] reset")
@@ -385,6 +434,7 @@ class ModelDriftDetector:
             baseline_p50=self.baseline_p50,
             baseline_p95=self.baseline_p95,
             baseline_samples=self.baseline_samples,
+            baseline_cutoff_date=self.baseline_cutoff_date,
             cusum_pos=self.cusum_pos,
             cusum_neg=self.cusum_neg,
             cusum_threshold=self.cusum_h,
@@ -407,6 +457,7 @@ class ModelDriftDetector:
         self.baseline_p50 = state.baseline_p50
         self.baseline_p95 = state.baseline_p95
         self.baseline_samples = state.baseline_samples
+        self.baseline_cutoff_date = state.baseline_cutoff_date
         self.cusum_pos = state.cusum_pos
         self.cusum_neg = state.cusum_neg
         self.cusum_h = state.cusum_threshold

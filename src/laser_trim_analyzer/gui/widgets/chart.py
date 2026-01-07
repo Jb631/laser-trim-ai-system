@@ -1079,6 +1079,154 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw()
 
+    def plot_drift_chart(
+        self,
+        dates: List[Any],
+        sigma_values: List[float],
+        baseline_cutoff_idx: Optional[int] = None,
+        ucl: Optional[float] = None,
+        lcl: Optional[float] = None,
+        center: Optional[float] = None,
+        is_drifting: bool = False,
+        drift_direction: Optional[str] = None,
+        cusum_value: Optional[float] = None,
+        ewma_value: Optional[float] = None,
+        title: str = "Drift Detection",
+        model_name: str = "",
+    ) -> None:
+        """
+        Plot drift detection chart with baseline/detection periods and control limits.
+
+        Args:
+            dates: X-axis dates for each sigma value
+            sigma_values: Sigma gradient values (all samples, oldest to newest)
+            baseline_cutoff_idx: Index where baseline ends and detection starts
+            ucl: Upper control limit (3-sigma)
+            lcl: Lower control limit (3-sigma)
+            center: Center line (baseline mean)
+            is_drifting: Whether drift is currently detected
+            drift_direction: 'up' or 'down' if drifting
+            cusum_value: Current CUSUM value (for info display)
+            ewma_value: Current EWMA value (for info display)
+            title: Chart title
+            model_name: Model name for display
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not sigma_values or len(sigma_values) < 2:
+            self.show_placeholder("Insufficient data for drift chart")
+            return
+
+        x = list(range(len(sigma_values)))
+
+        # Calculate Y-axis limits using percentile
+        p98 = np.percentile(sigma_values, 98)
+        y_max = max(p98 * 1.1, (ucl * 1.1) if ucl else p98 * 1.1)
+        y_min = 0
+
+        # Default baseline cutoff if not provided (70% point)
+        if baseline_cutoff_idx is None:
+            baseline_cutoff_idx = int(len(sigma_values) * 0.7)
+
+        # Separate baseline and detection points
+        baseline_x = x[:baseline_cutoff_idx]
+        baseline_y = sigma_values[:baseline_cutoff_idx]
+        detection_x = x[baseline_cutoff_idx:]
+        detection_y = sigma_values[baseline_cutoff_idx:]
+
+        # Plot baseline period (blue/gray)
+        if baseline_x:
+            ax.scatter(baseline_x, baseline_y, color='#7f8c8d', s=20, alpha=0.6,
+                      label=f'Baseline ({len(baseline_x)} samples)', zorder=2)
+
+        # Plot detection period (colored by drift status)
+        if detection_x:
+            detection_color = COLORS['fail'] if is_drifting else COLORS['pass']
+            ax.scatter(detection_x, detection_y, color=detection_color, s=30, alpha=0.8,
+                      label=f'Detection ({len(detection_x)} samples)', zorder=3)
+
+        # Vertical line at baseline cutoff
+        if baseline_cutoff_idx < len(x):
+            ax.axvline(x=baseline_cutoff_idx - 0.5, color='#9b59b6', linestyle='-',
+                      linewidth=2, alpha=0.7, label='Baseline Cutoff')
+
+        # Plot control limits
+        if ucl is not None:
+            ax.axhline(y=ucl, color=COLORS['fail'], linestyle='--',
+                      linewidth=1.5, alpha=0.8, label=f'UCL: {ucl:.4f}')
+        if lcl is not None and lcl >= 0:
+            ax.axhline(y=lcl, color=COLORS['fail'], linestyle='--',
+                      linewidth=1.5, alpha=0.8, label=f'LCL: {lcl:.4f}')
+        if center is not None:
+            ax.axhline(y=center, color=COLORS['warning'], linestyle='-',
+                      linewidth=1.5, alpha=0.9, label=f'Mean: {center:.4f}')
+
+        # Highlight out-of-control points in detection period
+        if detection_x and ucl is not None:
+            for i, (xi, yi) in enumerate(zip(detection_x, detection_y)):
+                if yi > ucl or (lcl is not None and yi < lcl):
+                    ax.scatter([xi], [yi], color=COLORS['fail'], s=100,
+                              marker='x', linewidth=3, zorder=5)
+
+        # Fill control zone
+        if ucl is not None and center is not None:
+            lcl_fill = lcl if lcl is not None and lcl >= 0 else 0
+            ax.fill_between([0, len(x)-1], [lcl_fill, lcl_fill], [ucl, ucl],
+                           alpha=0.1, color=COLORS['pass'])
+
+        # Drift status annotation
+        status_text = "DRIFTING" if is_drifting else "STABLE"
+        status_color = COLORS['fail'] if is_drifting else COLORS['pass']
+        direction_text = f" ({drift_direction})" if drift_direction else ""
+
+        # Info box in upper right
+        info_lines = [f"Status: {status_text}{direction_text}"]
+        if ewma_value is not None and center is not None:
+            # Show EWMA relative to mean
+            diff = ewma_value - center
+            diff_pct = (diff / center * 100) if center != 0 else 0
+            trend = "↑" if diff > 0 else "↓" if diff < 0 else "→"
+            info_lines.append(f"Current: {ewma_value:.4f} ({trend}{abs(diff_pct):.1f}%)")
+            info_lines.append(f"Baseline: {center:.4f}")
+        elif ewma_value is not None:
+            info_lines.append(f"EWMA: {ewma_value:.4f}")
+        info_text = "\n".join(info_lines)
+
+        text_color = COLORS['text'] if self.style.dark_mode else 'black'
+        bg_color = '#3d3d3d' if self.style.dark_mode else 'lightyellow'
+        ax.text(0.98, 0.98, info_text,
+               transform=ax.transAxes, fontsize=self.style.font_size - 1,
+               va='top', ha='right',
+               bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9,
+                        edgecolor=status_color, linewidth=2),
+               color=text_color)
+
+        # X-axis labels (show subset of dates)
+        if dates and len(dates) == len(sigma_values):
+            n_labels = min(8, len(dates))
+            step = max(1, len(dates) // n_labels)
+            tick_positions = list(range(0, len(dates), step))
+            tick_labels = [str(dates[i])[:10] if i < len(dates) else '' for i in tick_positions]
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels, rotation=45, ha='right',
+                              fontsize=self.style.font_size - 2)
+
+        # Styling
+        chart_title = f"{title}: {model_name}" if model_name else title
+        ax.set_xlabel('Sample', fontsize=self.style.font_size)
+        ax.set_ylabel('Sigma Gradient', fontsize=self.style.font_size)
+        ax.set_title(chart_title, fontsize=self.style.title_size, color=status_color)
+        ax.legend(loc='upper left', fontsize=self.style.font_size - 2, ncol=2)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        # Set y-axis limits
+        ax.set_ylim(bottom=y_min, top=y_max)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
     def destroy(self):
         """Clean up matplotlib resources."""
         # Cancel any pending resize jobs

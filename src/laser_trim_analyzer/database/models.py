@@ -1260,10 +1260,12 @@ class ModelMLState(Base):
     drift_baseline_p50 = Column(Float)
     drift_baseline_p95 = Column(Float)
     drift_baseline_samples = Column(Integer, default=0)
+    drift_baseline_cutoff_date = Column(DateTime)  # Files older than this were used for baseline
 
     # CUSUM/EWMA state (for online detection)
     cusum_pos = Column(Float, default=0)
     cusum_neg = Column(Float, default=0)
+    peak_cusum = Column(Float, default=0)  # Maximum CUSUM reached during detection
     ewma_value = Column(Float)
     is_drifting = Column(Boolean, default=False)
     drift_direction = Column(String(10))  # 'up', 'down', or NULL

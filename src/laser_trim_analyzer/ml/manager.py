@@ -241,14 +241,48 @@ class MLManager:
                 result.threshold_value = threshold_result.threshold
                 result.threshold_confidence = threshold_result.confidence
 
-            # 3. Set drift baseline (needs 30+ samples)
+            # 3. Set drift baseline using 70/30 split (needs 30+ samples)
             if len(data) >= self.MIN_DRIFT_SAMPLES:
                 if progress_callback:
                     progress_callback(f"Setting drift baseline for {model_name}...")
 
                 detector = self.get_drift_detector(model_name)
-                sigma_values = data['sigma_gradient'].dropna().values
-                result.drift_baseline_set = detector.set_baseline(sigma_values)
+
+                # Sort by file_date for temporal split
+                data_with_sigma = data[data['sigma_gradient'].notna()].copy()
+                if 'file_date' in data_with_sigma.columns:
+                    data_with_sigma = data_with_sigma.sort_values('file_date')
+
+                # Use oldest 70% for baseline, newest 30% for detection
+                baseline_cutoff_idx = int(len(data_with_sigma) * 0.7)
+                baseline_data = data_with_sigma.iloc[:baseline_cutoff_idx]
+                detection_data = data_with_sigma.iloc[baseline_cutoff_idx:]
+
+                if len(baseline_data) >= self.MIN_DRIFT_SAMPLES:
+                    # Determine cutoff date (date of last baseline sample)
+                    cutoff_date = None
+                    if 'file_date' in baseline_data.columns and len(baseline_data) > 0:
+                        last_baseline_date = baseline_data['file_date'].iloc[-1]
+                        if pd.notna(last_baseline_date):
+                            cutoff_date = last_baseline_date
+
+                    sigma_values = baseline_data['sigma_gradient'].values
+                    result.drift_baseline_set = detector.set_baseline(sigma_values, cutoff_date)
+
+                    # Reset detector state before running on detection period
+                    if result.drift_baseline_set:
+                        detector.reset()
+
+                        # Run drift detection on the newest 30%
+                        for sigma in detection_data['sigma_gradient'].values:
+                            detector.detect(sigma)
+
+                        logger.info(
+                            f"DriftDetector[{model_name}] using 70/30 split - "
+                            f"Baseline: {len(baseline_data)} samples, "
+                            f"Detection: {len(detection_data)} samples, "
+                            f"Cutoff: {cutoff_date}"
+                        )
 
             # 4. Train predictor (needs 50+ samples)
             if len(data) >= self.MIN_PREDICTOR_SAMPLES:
@@ -353,6 +387,10 @@ class MLManager:
 
         self.last_training_date = datetime.now()
 
+        # Save state to database immediately after training
+        # This ensures drift detector state is persisted before user views Trends page
+        self._save_state_to_db()
+
         # Summary
         trained_count = sum(1 for r in results.values() if r.success)
         logger.info(
@@ -372,8 +410,13 @@ class MLManager:
 
         Updates:
         - sigma_threshold and sigma_pass using learned thresholds
-        - failure_probability using trained predictors
-        - Runs drift detection and creates alerts
+        - Track and analysis status based on new sigma_pass values
+        - Runs drift detection on detection-period samples only
+
+        Optimized for performance:
+        - Uses bulk SQL UPDATE for threshold/sigma_pass (fast)
+        - Only loads tracks for status recalculation and drift detection
+        - Commits in batches per model
 
         Args:
             progress_callback: Optional callback for progress updates
@@ -386,26 +429,26 @@ class MLManager:
         counts = {'updated': 0, 'skipped': 0, 'errors': 0, 'drift_alerts': []}
 
         try:
+            from sqlalchemy import update, case, and_
             from laser_trim_analyzer.database.models import (
                 TrackResult, AnalysisResult, QAAlert, AlertType
             )
 
+            models_updated = set()
+
             with self.db.session() as session:
-                # Count total records
-                total = session.query(TrackResult).count()
+                # Count total trained models for progress
+                total_models = len(self.trained_models)
 
                 if progress_callback:
                     progress_callback(ApplyProgress(
                         records_complete=0,
-                        records_total=total,
+                        records_total=total_models,
                         models_updated=0,
-                        message=f"Processing {total} track records..."
+                        message=f"Applying thresholds to {total_models} models..."
                     ))
 
-                # Process in batches by model
-                models_updated = set()
-
-                for model_name in self.trained_models:
+                for model_idx, model_name in enumerate(self.trained_models):
                     optimizer = self.threshold_optimizers.get(model_name)
                     if not optimizer or not optimizer.is_calculated:
                         continue
@@ -413,123 +456,203 @@ class MLManager:
                     new_threshold = optimizer.threshold
                     detector = self.drift_detectors.get(model_name)
 
-                    # Get tracks for this model, ordered by date for drift detection
-                    tracks = (
-                        session.query(TrackResult, AnalysisResult)
-                        .join(AnalysisResult)
-                        .filter(AnalysisResult.model == model_name)
-                        .order_by(AnalysisResult.file_date)
-                        .all()
-                    )
+                    # OPTIMIZATION 1: Bulk update sigma_threshold and sigma_pass using SQL
+                    # This is MUCH faster than loading each row into Python
+                    try:
+                        # Get analysis IDs for this model
+                        analysis_ids = [
+                            r[0] for r in session.query(AnalysisResult.id)
+                            .filter(AnalysisResult.model == model_name)
+                            .all()
+                        ]
 
-                    # Group tracks by analysis for status recalculation
-                    analysis_tracks: Dict[int, List] = {}
-                    for track, analysis in tracks:
-                        if analysis.id not in analysis_tracks:
-                            analysis_tracks[analysis.id] = []
-                        analysis_tracks[analysis.id].append((track, analysis))
+                        if not analysis_ids:
+                            continue
 
-                    for track, analysis in tracks:
+                        # Bulk update sigma_threshold for all tracks of this model
+                        session.execute(
+                            update(TrackResult)
+                            .where(TrackResult.analysis_id.in_(analysis_ids))
+                            .values(sigma_threshold=new_threshold)
+                        )
+
+                        # Bulk update sigma_pass based on threshold comparison
+                        # sigma_pass = True if sigma_gradient <= threshold, else False
+                        session.execute(
+                            update(TrackResult)
+                            .where(
+                                and_(
+                                    TrackResult.analysis_id.in_(analysis_ids),
+                                    TrackResult.sigma_gradient.isnot(None)
+                                )
+                            )
+                            .values(
+                                sigma_pass=case(
+                                    (TrackResult.sigma_gradient <= new_threshold, True),
+                                    else_=False
+                                )
+                            )
+                        )
+
+                        # OPTIMIZATION 2: Bulk update track status based on sigma_pass and linearity_pass
+                        # Status = PASS if both pass, FAIL if both fail, WARNING otherwise
+                        # NOTE: Use .name (not .value) for SQLite - SQLAlchemy stores enum NAME not value
+                        session.execute(
+                            update(TrackResult)
+                            .where(TrackResult.analysis_id.in_(analysis_ids))
+                            .values(
+                                status=case(
+                                    # Both pass -> PASS
+                                    (and_(
+                                        TrackResult.sigma_pass == True,
+                                        TrackResult.linearity_pass == True
+                                    ), StatusType.PASS.name),
+                                    # Both fail -> FAIL
+                                    (and_(
+                                        TrackResult.sigma_pass == False,
+                                        TrackResult.linearity_pass == False
+                                    ), StatusType.FAIL.name),
+                                    # Mixed -> WARNING
+                                    else_=StatusType.WARNING.name
+                                )
+                            )
+                        )
+
+                        # Count updated tracks
+                        track_count = session.query(TrackResult).filter(
+                            TrackResult.analysis_id.in_(analysis_ids)
+                        ).count()
+                        counts['updated'] += track_count
+                        models_updated.add(model_name)
+
+                    except Exception as e:
+                        logger.warning(f"Error in bulk update for {model_name}: {e}")
+                        counts['errors'] += 1
+
+                    # OPTIMIZATION 3: Update analysis overall_status in bulk using subqueries
+                    # This is faster than iterating over each analysis
+                    try:
+                        from sqlalchemy import func, exists, select
+                        from sqlalchemy.orm import aliased
+
+                        # Update analyses that have any ERROR tracks -> ERROR
+                        # NOTE: Use .name (not .value) - SQLAlchemy stores enum NAME
+                        session.execute(
+                            update(AnalysisResult)
+                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(
+                                exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.ERROR.name)
+                                )
+                            )
+                            .values(overall_status=StatusType.ERROR.name)
+                        )
+
+                        # Update analyses that have FAIL but no ERROR -> FAIL
+                        session.execute(
+                            update(AnalysisResult)
+                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(~exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status == StatusType.ERROR.name)
+                            ))
+                            .where(exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status == StatusType.FAIL.name)
+                            ))
+                            .values(overall_status=StatusType.FAIL.name)
+                        )
+
+                        # Update analyses that have WARNING but no ERROR/FAIL -> WARNING
+                        session.execute(
+                            update(AnalysisResult)
+                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(~exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status == StatusType.ERROR.name)
+                            ))
+                            .where(~exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status == StatusType.FAIL.name)
+                            ))
+                            .where(exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status == StatusType.WARNING.name)
+                            ))
+                            .values(overall_status=StatusType.WARNING.name)
+                        )
+
+                        # Update remaining analyses (all tracks PASS) -> PASS
+                        session.execute(
+                            update(AnalysisResult)
+                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(~exists(
+                                select(TrackResult.id)
+                                .where(TrackResult.analysis_id == AnalysisResult.id)
+                                .where(TrackResult.status.in_([
+                                    StatusType.ERROR.name, StatusType.FAIL.name, StatusType.WARNING.name
+                                ]))
+                            ))
+                            .values(overall_status=StatusType.PASS.name)
+                        )
+
+                    except Exception as e:
+                        logger.warning(f"Error updating analysis status for {model_name}: {e}")
+
+                    # OPTIMIZATION 4: Drift detection - only load detection-period tracks
+                    if run_drift_detection and detector and detector.has_baseline:
                         try:
-                            # Update threshold
-                            track.sigma_threshold = new_threshold
+                            # Only get tracks AFTER baseline cutoff date
+                            cutoff_date = detector.baseline_cutoff_date
 
-                            # Recalculate sigma_pass
-                            if track.sigma_gradient is not None:
-                                old_sigma_pass = track.sigma_pass
-                                track.sigma_pass = track.sigma_gradient <= new_threshold
+                            if cutoff_date:
+                                detection_tracks = (
+                                    session.query(TrackResult.sigma_gradient, AnalysisResult.id)
+                                    .join(AnalysisResult)
+                                    .filter(AnalysisResult.model == model_name)
+                                    .filter(AnalysisResult.file_date > cutoff_date)
+                                    .filter(TrackResult.sigma_gradient.isnot(None))
+                                    .order_by(AnalysisResult.file_date)
+                                    .all()
+                                )
 
-                                # Recalculate track status if sigma_pass changed
-                                if track.sigma_pass != old_sigma_pass:
-                                    linearity_pass = track.linearity_pass if track.linearity_pass is not None else True
-                                    if track.sigma_pass and linearity_pass:
-                                        track.status = StatusType.PASS
-                                    elif track.sigma_pass or linearity_pass:
-                                        track.status = StatusType.WARNING
-                                    else:
-                                        track.status = StatusType.FAIL
+                                # Reset detector before running on detection period
+                                detector.reset()
 
-                            # Update failure probability if predictor is trained
-                            predictor = self.predictors.get(model_name)
-                            if predictor and predictor.is_trained:
-                                features = {
-                                    'sigma_gradient': track.sigma_gradient,
-                                    'linearity_error': track.final_linearity_error_shifted,
-                                    'fail_points': track.linearity_fail_points or 0,
-                                    'optimal_offset': track.optimal_offset,
-                                    'linearity_spec': track.linearity_spec,
-                                }
-                                features = extract_features(features)
-                                prob = predictor.predict_failure_probability(features)
-                                if prob is not None:
-                                    track.failure_probability = prob
+                                # Run drift detection only on detection-period samples
+                                for sigma, analysis_id in detection_tracks:
+                                    drift_result = detector.detect(sigma)
 
-                            # Run drift detection
-                            if run_drift_detection and detector and detector.has_baseline:
-                                if track.sigma_gradient is not None:
-                                    drift_result = detector.detect(track.sigma_gradient)
-
-                                    # Create alert if drift detected
+                                    # Only create alert on first detection per model
                                     if drift_result.is_drifting and drift_result.message:
-                                        alert = QAAlert(
-                                            analysis_id=analysis.id,
-                                            alert_type=AlertType.DRIFT_DETECTED,
-                                            severity='High' if drift_result.severity > 0.7 else 'Medium',
-                                            track_id=track.track_id,
-                                            metric_name='sigma_gradient',
-                                            metric_value=track.sigma_gradient,
-                                            threshold_value=detector.baseline_mean,
-                                            message=f"[{model_name}] {drift_result.message}",
-                                            details={
+                                        # Check if we already logged this drift
+                                        if model_name not in [a['model'] for a in counts['drift_alerts']]:
+                                            counts['drift_alerts'].append({
+                                                'model': model_name,
                                                 'direction': drift_result.direction.value,
                                                 'severity': drift_result.severity,
-                                                'cusum_value': drift_result.cusum_value,
-                                                'ewma_value': drift_result.ewma_value,
-                                                'deviation': drift_result.deviation_from_baseline,
-                                            }
-                                        )
-                                        session.add(alert)
-                                        counts['drift_alerts'].append({
-                                            'model': model_name,
-                                            'direction': drift_result.direction.value,
-                                            'severity': drift_result.severity,
-                                        })
-
-                            counts['updated'] += 1
-                            models_updated.add(model_name)
+                                            })
 
                         except Exception as e:
-                            logger.warning(f"Error updating track {track.id}: {e}")
-                            counts['errors'] += 1
+                            logger.warning(f"Error in drift detection for {model_name}: {e}")
 
-                    # Recalculate overall_status for each affected analysis
-                    for analysis_id, track_list in analysis_tracks.items():
-                        if track_list:
-                            analysis = track_list[0][1]  # Get the analysis object
-                            track_statuses = [t.status for t, _ in track_list]
-
-                            # Determine overall status from track statuses
-                            if all(s == StatusType.PASS for s in track_statuses):
-                                analysis.overall_status = StatusType.PASS
-                            elif any(s == StatusType.ERROR for s in track_statuses):
-                                analysis.overall_status = StatusType.ERROR
-                            elif any(s == StatusType.FAIL for s in track_statuses):
-                                analysis.overall_status = StatusType.FAIL
-                            else:
-                                analysis.overall_status = StatusType.WARNING
-
-                    # Commit batch for this model
+                    # Commit after each model to avoid holding locks too long
                     session.commit()
 
                     if progress_callback:
                         progress_callback(ApplyProgress(
-                            records_complete=counts['updated'] + counts['errors'],
-                            records_total=total,
+                            records_complete=model_idx + 1,
+                            records_total=total_models,
                             models_updated=len(models_updated),
-                            message=f"Updated {counts['updated']} records for {len(models_updated)} models"
+                            message=f"Completed {model_name} ({model_idx + 1}/{total_models})"
                         ))
-
-                counts['skipped'] = total - counts['updated'] - counts['errors']
 
                 # Save updated drift state
                 self._save_state_to_db()
@@ -558,10 +681,23 @@ class MLManager:
         for model_name, detector in self.drift_detectors.items():
             if detector.has_baseline:
                 lower, center, upper = detector.get_control_limits()
+
+                # Compute direction fresh based on current EWMA vs baseline mean
+                # This ensures direction reflects CURRENT state, not historical drift
+                if detector.is_drifting and detector.ewma_value is not None and detector.baseline_mean is not None:
+                    if detector.ewma_value > detector.baseline_mean:
+                        direction = 'up'
+                    elif detector.ewma_value < detector.baseline_mean:
+                        direction = 'down'
+                    else:
+                        direction = None
+                else:
+                    direction = None
+
                 status[model_name] = {
                     'has_baseline': True,
                     'is_drifting': detector.is_drifting,
-                    'direction': detector.drift_direction.value if detector.drift_direction else None,
+                    'direction': direction,
                     'baseline_mean': detector.baseline_mean,
                     'baseline_std': detector.baseline_std,
                     'control_limits': {
@@ -830,8 +966,10 @@ class MLManager:
                         state.drift_baseline_p50 = detector.baseline_p50
                         state.drift_baseline_p95 = detector.baseline_p95
                         state.drift_baseline_samples = detector.baseline_samples
+                        state.drift_baseline_cutoff_date = detector.baseline_cutoff_date
                         state.cusum_pos = detector.cusum_pos
                         state.cusum_neg = detector.cusum_neg
+                        state.peak_cusum = detector._peak_cusum
                         state.ewma_value = detector.ewma_value
                         state.is_drifting = detector.is_drifting
                         state.drift_direction = detector.drift_direction.value if detector.drift_direction else None
@@ -885,8 +1023,10 @@ class MLManager:
                         detector.baseline_p50 = state.drift_baseline_p50
                         detector.baseline_p95 = state.drift_baseline_p95
                         detector.baseline_samples = state.drift_baseline_samples or 0
+                        detector.baseline_cutoff_date = state.drift_baseline_cutoff_date
                         detector.cusum_pos = state.cusum_pos or 0
                         detector.cusum_neg = state.cusum_neg or 0
+                        detector._peak_cusum = state.peak_cusum or 0
                         detector.ewma_value = state.ewma_value
                         detector.is_drifting = state.is_drifting or False
                         if state.drift_direction:

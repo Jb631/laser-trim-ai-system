@@ -189,7 +189,8 @@ class TrendsPage(ctk.CTkFrame):
         self.content.grid_rowconfigure(0, weight=0)  # Stats row - compact
         self.content.grid_rowconfigure(1, weight=1, minsize=250)  # Alerts chart
         self.content.grid_rowconfigure(2, weight=1, minsize=250)  # Best/Worst charts
-        self.content.grid_rowconfigure(3, weight=0)  # ML section - compact
+        self.content.grid_rowconfigure(3, weight=1, minsize=280)  # Drift Detection section
+        self.content.grid_rowconfigure(4, weight=0)  # ML section - compact
 
         # Summary stats at top
         stats_frame = ctk.CTkFrame(self.content)
@@ -288,20 +289,107 @@ class TrendsPage(ctk.CTkFrame):
         self._worst_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.worst_chart = None
 
+        # Drift Detection section
+        self._drift_frame = ctk.CTkFrame(self.content)
+        self._drift_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        self._drift_frame.grid_columnconfigure(0, weight=0, minsize=200)  # Model list
+        self._drift_frame.grid_columnconfigure(1, weight=1)  # Chart area
+
+        drift_header = ctk.CTkFrame(self._drift_frame, fg_color="transparent")
+        drift_header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=15, pady=(15, 5))
+
+        drift_label = ctk.CTkLabel(
+            drift_header,
+            text="Drift Detection",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        drift_label.pack(side="left")
+
+        # Refresh button for drift section
+        drift_refresh_btn = ctk.CTkButton(
+            drift_header,
+            text="Refresh",
+            command=self._refresh_drift_data,
+            width=70,
+            height=24,
+            font=ctk.CTkFont(size=11)
+        )
+        drift_refresh_btn.pack(side="right", padx=5)
+
+        # Model list frame (left side)
+        model_list_frame = ctk.CTkFrame(self._drift_frame)
+        model_list_frame.grid(row=1, column=0, sticky="nsew", padx=(15, 5), pady=(5, 15))
+
+        list_label = ctk.CTkLabel(
+            model_list_frame,
+            text="Model Status",
+            font=ctk.CTkFont(size=11, weight="bold")
+        )
+        list_label.pack(padx=10, pady=(10, 5), anchor="w")
+
+        # Scrollable frame for model list
+        self._drift_model_list = ctk.CTkScrollableFrame(model_list_frame, width=180, height=180)
+        self._drift_model_list.pack(fill="both", expand=True, padx=5, pady=(0, 10))
+
+        self._drift_model_placeholder = ctk.CTkLabel(
+            self._drift_model_list,
+            text="Loading drift status...",
+            text_color="gray",
+            font=ctk.CTkFont(size=10)
+        )
+        self._drift_model_placeholder.pack(padx=10, pady=20)
+
+        # Chart area (right side) - placeholder
+        self._drift_chart_frame = ctk.CTkFrame(self._drift_frame)
+        self._drift_chart_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 15), pady=(5, 15))
+
+        self._drift_chart_placeholder = ctk.CTkLabel(
+            self._drift_chart_frame,
+            text="Select a model to view drift chart",
+            text_color="gray"
+        )
+        self._drift_chart_placeholder.pack(fill="both", expand=True, padx=15, pady=30)
+        self.drift_chart = None
+        self._selected_drift_model = None
+
+        # Details label below chart (shows CUSUM/EWMA when model selected)
+        self._drift_details_label = ctk.CTkLabel(
+            self._drift_frame,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        self._drift_details_label.grid(row=2, column=1, sticky="w", padx=15, pady=(0, 10))
+
         # ML Recommendations at bottom
         ml_frame = ctk.CTkFrame(self.content)
-        ml_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ml_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
+
+        ml_header = ctk.CTkFrame(ml_frame, fg_color="transparent")
+        ml_header.pack(fill="x", padx=15, pady=(15, 5))
 
         ml_label = ctk.CTkLabel(
-            ml_frame,
+            ml_header,
             text="ML Insights",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        ml_label.pack(padx=15, pady=(15, 10), anchor="w")
+        ml_label.pack(side="left")
 
-        self.ml_text = ctk.CTkTextbox(ml_frame, height=80)
+        # View All button
+        self._ml_view_all_btn = ctk.CTkButton(
+            ml_header,
+            text="View All Details",
+            command=self._show_ml_details_dialog,
+            width=100,
+            height=24,
+            font=ctk.CTkFont(size=11)
+        )
+        self._ml_view_all_btn.pack(side="right", padx=5)
+
+        self.ml_text = ctk.CTkTextbox(ml_frame, height=100)
         self.ml_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.ml_text.configure(state="disabled")
+        self._cached_alert_models = None  # Cache for dialog
         self._update_ml_summary(None)
 
     def _ensure_summary_charts_initialized(self):
@@ -969,6 +1057,9 @@ class TrendsPage(ctk.CTkFrame):
         # Update ML summary
         self._update_ml_summary(alert_models)
 
+        # Load drift detection data
+        self._refresh_drift_data()
+
         # Update status
         self.status_label.configure(text=f"Updated: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -1130,38 +1221,36 @@ class TrendsPage(ctk.CTkFrame):
 
     def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]]):
         """Update ML summary text for all models view with ML insights."""
+        # Cache for the details dialog
+        self._cached_alert_models = alert_models
+        self._cached_ml_insights = self._get_ml_summary_insights()
+
         self.ml_text.configure(state="normal")
         self.ml_text.delete("1.0", "end")
 
-        # Get ML system insights
-        ml_insights = self._get_ml_summary_insights()
+        ml_insights = self._cached_ml_insights
+        has_content = False
 
         if ml_insights:
-            # Show model difficulty ranking
-            if ml_insights.get("difficulty_ranking"):
-                self.ml_text.insert("end", "Model Difficulty Ranking:\n")
-                for rank, (model, score) in enumerate(ml_insights["difficulty_ranking"][:5], 1):
-                    label = "Easy" if score < 0.3 else "Medium" if score < 0.6 else "Hard"
-                    self.ml_text.insert("end", f"  {rank}. {model}: {label} ({score:.2f})\n")
-                self.ml_text.insert("end", "\n")
+            has_content = True
+            trained = ml_insights.get("trained_models", 0)
 
-            # Show drift status summary
+            # Show trained models count first
+            if trained > 0:
+                self.ml_text.insert("end", f"ML Status: {trained} models trained  |  ")
+
+            # Show drift status summary inline
             drifting = ml_insights.get("drifting_models", [])
             if drifting:
-                self.ml_text.insert("end", f"Drift Detected: {len(drifting)} model(s)\n")
-                for model, direction in drifting[:3]:
-                    self.ml_text.insert("end", f"  ⚠ {model} ({direction})\n")
-                self.ml_text.insert("end", "\n")
+                self.ml_text.insert("end", f"Drift: {len(drifting)} model(s)\n\n")
+            else:
+                self.ml_text.insert("end", "Drift: None detected\n\n")
 
-            # Show trained models count
-            trained = ml_insights.get("trained_models", 0)
-            if trained > 0:
-                self.ml_text.insert("end", f"ML Status: {trained} models trained\n")
-
-        # Show alert summary if any
+        # Show alert summary if any - show more items now
         if alert_models:
-            self.ml_text.insert("end", f"\nModels Requiring Attention ({len(alert_models)}):\n")
-            for alert_model in alert_models[:5]:  # Show top 5
+            has_content = True
+            self.ml_text.insert("end", f"Models Requiring Attention ({len(alert_models)}):\n")
+            for alert_model in alert_models[:8]:  # Show top 8 in summary
                 model_name = alert_model.get("model", "Unknown")
                 pass_rate = alert_model.get("pass_rate", 0)
                 alerts = alert_model.get("alerts", [])
@@ -1178,9 +1267,10 @@ class TrendsPage(ctk.CTkFrame):
                 else:
                     self.ml_text.insert("end", f"  • {model_name}\n")
 
-            if len(alert_models) > 5:
-                self.ml_text.insert("end", f"  ... and {len(alert_models) - 5} more\n")
-        elif not ml_insights:
+            if len(alert_models) > 8:
+                self.ml_text.insert("end", f"  ... click 'View All Details' for {len(alert_models) - 8} more\n")
+
+        if not has_content:
             self.ml_text.insert("end", "All models performing well.\n")
             self.ml_text.insert("end", "Train models in Settings for ML insights.")
 
@@ -1224,6 +1314,126 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.debug(f"Could not get ML summary insights: {e}")
             return None
+
+    def _show_ml_details_dialog(self):
+        """Show a dialog with full ML insights details."""
+        from tkinter import Toplevel
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("ML Insights - Full Details")
+        dialog.geometry("700x600")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Main container with scrollable text
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title_label = ctk.CTkLabel(
+            main_frame,
+            text="ML Insights - Full Details",
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        title_label.pack(pady=(10, 15))
+
+        # Scrollable text area
+        text_widget = ctk.CTkTextbox(main_frame, width=650, height=450)
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Populate the text
+        ml_insights = getattr(self, '_cached_ml_insights', None)
+        alert_models = getattr(self, '_cached_alert_models', None)
+
+        # Section 1: ML Status Overview
+        text_widget.insert("end", "=" * 60 + "\n")
+        text_widget.insert("end", "ML SYSTEM STATUS\n")
+        text_widget.insert("end", "=" * 60 + "\n\n")
+
+        if ml_insights:
+            trained = ml_insights.get("trained_models", 0)
+            text_widget.insert("end", f"Trained Models: {trained}\n\n")
+
+            # Drift status
+            drifting = ml_insights.get("drifting_models", [])
+            if drifting:
+                text_widget.insert("end", f"DRIFT DETECTED in {len(drifting)} model(s):\n")
+                for model, direction in drifting:
+                    text_widget.insert("end", f"  ⚠ {model}: drifting {direction}\n")
+                text_widget.insert("end", "\n")
+            else:
+                text_widget.insert("end", "Drift Status: All models stable\n\n")
+
+            # Difficulty ranking
+            difficulty = ml_insights.get("difficulty_ranking", [])
+            if difficulty:
+                text_widget.insert("end", "Model Difficulty Ranking (hardest first):\n")
+                for rank, (model, score) in enumerate(difficulty, 1):
+                    label = "Easy" if score < 0.3 else "Medium" if score < 0.6 else "Hard"
+                    bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
+                    text_widget.insert("end", f"  {rank:2}. {model:<15} {bar} {label} ({score:.2f})\n")
+                text_widget.insert("end", "\n")
+        else:
+            text_widget.insert("end", "No ML models trained.\n")
+            text_widget.insert("end", "Go to Settings → Train Models to enable ML insights.\n\n")
+
+        # Section 2: Models Requiring Attention
+        text_widget.insert("end", "=" * 60 + "\n")
+        text_widget.insert("end", "MODELS REQUIRING ATTENTION\n")
+        text_widget.insert("end", "=" * 60 + "\n\n")
+
+        if alert_models:
+            text_widget.insert("end", f"Total: {len(alert_models)} models with alerts\n\n")
+
+            for i, alert_model in enumerate(alert_models, 1):
+                model_name = alert_model.get("model", "Unknown")
+                pass_rate = alert_model.get("pass_rate", 0)
+                total = alert_model.get("total", 0)
+                alerts = alert_model.get("alerts", [])
+
+                text_widget.insert("end", f"{i}. {model_name}\n")
+                text_widget.insert("end", f"   Pass Rate: {pass_rate:.1f}%  |  Samples: {total}\n")
+
+                if alerts:
+                    text_widget.insert("end", "   Alerts:\n")
+                    for alert in alerts:
+                        alert_type = alert.get("type", "Unknown")
+                        severity = alert.get("severity", "Medium")
+                        message = alert.get("message", "")
+                        icon = "!!" if severity == "High" else "!" if severity == "Medium" else "·"
+                        text_widget.insert("end", f"     {icon} [{severity}] {alert_type}\n")
+                        if message:
+                            text_widget.insert("end", f"        {message}\n")
+                text_widget.insert("end", "\n")
+        else:
+            text_widget.insert("end", "No models currently require attention.\n")
+            text_widget.insert("end", "All models are performing within acceptable parameters.\n")
+
+        # Section 3: Quick Tips
+        text_widget.insert("end", "\n" + "=" * 60 + "\n")
+        text_widget.insert("end", "QUICK TIPS\n")
+        text_widget.insert("end", "=" * 60 + "\n\n")
+        text_widget.insert("end", "• LOW_PASS_RATE: Model has <50% pass rate - investigate process\n")
+        text_widget.insert("end", "• TRENDING_WORSE: Quality declining over time - check for drift\n")
+        text_widget.insert("end", "• HIGH_VARIANCE: Inconsistent results - check equipment calibration\n")
+        text_widget.insert("end", "• DRIFT (up): Sigma values increasing - process degrading\n")
+        text_widget.insert("end", "• DRIFT (down): Sigma values decreasing - process improving\n")
+
+        text_widget.configure(state="disabled")
+
+        # Close button
+        close_btn = ctk.CTkButton(
+            main_frame,
+            text="Close",
+            command=dialog.destroy,
+            width=100
+        )
+        close_btn.pack(pady=(10, 10))
+
+        # Center dialog on parent
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
 
     def _update_detail_alerts(self, model_alerts: Optional[Dict[str, Any]]):
         """Update detail alerts text."""
@@ -1314,3 +1524,220 @@ class TrendsPage(ctk.CTkFrame):
         """Called when page becomes hidden - cleanup to free memory."""
         # Cleanup charts (frees matplotlib figures)
         self._cleanup_charts()
+
+    def _refresh_drift_data(self):
+        """Refresh drift detection data."""
+        get_thread_manager().start_thread(target=self._load_drift_data, name="trends-load-drift")
+
+    def _load_drift_data(self):
+        """Load drift detection data in background."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.ml import MLManager
+
+            db = get_database()
+            ml_manager = MLManager(db)
+            ml_manager.load_all()
+
+            # Get drift status for all models
+            drift_status = ml_manager.get_drift_status()
+
+            # Update UI on main thread
+            self.after(0, lambda: self._update_drift_display(drift_status, ml_manager))
+
+        except Exception as e:
+            logger.error(f"Failed to load drift data: {e}")
+            self.after(0, lambda: self._show_drift_error(str(e)))
+
+    def _update_drift_display(self, drift_status: Dict[str, Dict[str, Any]], ml_manager):
+        """Update drift detection display with data."""
+        # Clear model list
+        for widget in self._drift_model_list.winfo_children():
+            widget.destroy()
+
+        if not drift_status:
+            no_data_label = ctk.CTkLabel(
+                self._drift_model_list,
+                text="No ML models trained.\nTrain models in Settings.",
+                text_color="gray",
+                font=ctk.CTkFont(size=10)
+            )
+            no_data_label.pack(padx=10, pady=20)
+            return
+
+        # Sort models: drifting first, then stable, then no baseline
+        def sort_key(item):
+            model, status = item
+            if not status.get("has_baseline"):
+                return (2, model)  # No baseline - last
+            elif status.get("is_drifting"):
+                return (0, model)  # Drifting - first
+            else:
+                return (1, model)  # Stable - middle
+
+        sorted_models = sorted(drift_status.items(), key=sort_key)
+
+        # Create model buttons with status indicators
+        for model, status in sorted_models:
+            has_baseline = status.get("has_baseline", False)
+            is_drifting = status.get("is_drifting", False)
+
+            # Determine status indicator
+            if not has_baseline:
+                indicator = "○"  # Empty circle - no baseline
+                color = "gray"
+                status_text = "No Data"
+            elif is_drifting:
+                indicator = "●"  # Filled circle - drifting
+                direction = status.get("direction", "")
+                color = "#e74c3c"  # Red
+                status_text = f"DRIFTING ({direction})" if direction else "DRIFTING"
+            else:
+                indicator = "●"  # Filled circle - stable
+                color = "#27ae60"  # Green
+                status_text = "STABLE"
+
+            # Create button for each model
+            btn_frame = ctk.CTkFrame(self._drift_model_list, fg_color="transparent")
+            btn_frame.pack(fill="x", padx=2, pady=1)
+
+            indicator_label = ctk.CTkLabel(
+                btn_frame,
+                text=indicator,
+                text_color=color,
+                font=ctk.CTkFont(size=12),
+                width=20
+            )
+            indicator_label.pack(side="left", padx=(5, 2))
+
+            model_btn = ctk.CTkButton(
+                btn_frame,
+                text=f"{model}",
+                command=lambda m=model, s=status, mgr=ml_manager: self._on_drift_model_select(m, s, mgr),
+                fg_color="transparent",
+                hover_color=("gray75", "gray25"),
+                anchor="w",
+                height=24,
+                font=ctk.CTkFont(size=11)
+            )
+            model_btn.pack(side="left", fill="x", expand=True)
+
+        # Auto-select first drifting model if any
+        first_drifting = next(
+            ((m, s) for m, s in sorted_models if s.get("is_drifting")),
+            None
+        )
+        if first_drifting:
+            self._on_drift_model_select(first_drifting[0], first_drifting[1], ml_manager)
+
+    def _on_drift_model_select(self, model: str, status: Dict[str, Any], ml_manager):
+        """Handle drift model selection - show drift chart."""
+        self._selected_drift_model = model
+
+        # Ensure chart is initialized
+        ChartWidget, ChartStyle = _ensure_chart_module()
+
+        if not self.drift_chart:
+            if hasattr(self, '_drift_chart_placeholder') and self._drift_chart_placeholder:
+                self._drift_chart_placeholder.destroy()
+            self.drift_chart = ChartWidget(
+                self._drift_chart_frame,
+                style=ChartStyle(figure_size=(8, 3), dpi=100)
+            )
+            self._chart_widgets.append(self.drift_chart)
+            self.drift_chart.pack(fill="both", expand=True, padx=10, pady=10)
+
+        if not status.get("has_baseline"):
+            self.drift_chart.show_placeholder(f"No baseline data for {model}")
+            return
+
+        # Get sigma data for this model from database
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.database.models import TrackResult, AnalysisResult
+
+            db = get_database()
+
+            with db.session() as session:
+                # Get all sigma values for this model, ordered by date
+                results = (
+                    session.query(
+                        TrackResult.sigma_gradient,
+                        AnalysisResult.file_date
+                    )
+                    .join(AnalysisResult)
+                    .filter(AnalysisResult.model == model)
+                    .filter(TrackResult.sigma_gradient.isnot(None))
+                    .order_by(AnalysisResult.file_date)
+                    .all()
+                )
+
+            if not results:
+                self.drift_chart.show_placeholder(f"No data for {model}")
+                return
+
+            sigma_values = [r[0] for r in results]
+            dates = [r[1] for r in results]
+
+            # Get detector for control limits
+            detector = ml_manager.drift_detectors.get(model)
+            if detector:
+                lower, center, upper = detector.get_control_limits()
+
+                # Calculate baseline cutoff index based on baseline_cutoff_date
+                baseline_cutoff_idx = int(len(sigma_values) * 0.7)  # Default
+                if detector.baseline_cutoff_date:
+                    for i, d in enumerate(dates):
+                        if d and d > detector.baseline_cutoff_date:
+                            baseline_cutoff_idx = i
+                            break
+
+                # Get current CUSUM/EWMA values
+                cusum_value = max(detector.cusum_pos, detector.cusum_neg)
+                ewma_value = detector.ewma_value
+
+                self.drift_chart.plot_drift_chart(
+                    dates=dates,
+                    sigma_values=sigma_values,
+                    baseline_cutoff_idx=baseline_cutoff_idx,
+                    ucl=upper,
+                    lcl=lower,
+                    center=center,
+                    is_drifting=status.get("is_drifting", False),
+                    drift_direction=status.get("direction"),
+                    cusum_value=cusum_value,
+                    ewma_value=ewma_value,
+                    model_name=model
+                )
+
+                # Update details label with technical values
+                baseline_std = detector.baseline_std or 0
+                ewma_display = f"{ewma_value:.4f}" if ewma_value is not None else "N/A"
+                peak_cusum = detector._peak_cusum
+                details_text = (
+                    f"CUSUM: {cusum_value:.2f} / {detector.cusum_h:.1f} threshold  |  "
+                    f"Peak CUSUM: {peak_cusum:.2f}  |  "
+                    f"EWMA: {ewma_display}  |  "
+                    f"Baseline Std: {baseline_std:.4f}"
+                )
+                self._drift_details_label.configure(text=details_text)
+            else:
+                self.drift_chart.show_placeholder(f"No detector loaded for {model}")
+                self._drift_details_label.configure(text="")
+
+        except Exception as e:
+            logger.error(f"Error loading drift chart data: {e}")
+            self.drift_chart.show_placeholder(f"Error loading data: {e}")
+
+    def _show_drift_error(self, error: str):
+        """Show error in drift section."""
+        for widget in self._drift_model_list.winfo_children():
+            widget.destroy()
+
+        error_label = ctk.CTkLabel(
+            self._drift_model_list,
+            text=f"Error: {error}",
+            text_color="#e74c3c",
+            font=ctk.CTkFont(size=10)
+        )
+        error_label.pack(padx=10, pady=20)
