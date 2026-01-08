@@ -12,6 +12,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Any, Set, TYPE_CHECKING
 
+import numpy as np
+
 from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.utils.threads import get_thread_manager
 from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
@@ -596,9 +598,10 @@ Linearity: {"PASS" if linearity_pass else "FAIL" if linearity_pass is False else
         if is_linked:
             linked_trim = pair.get("linked_trim", {})
             trim_file = linked_trim.get("filename", "Unknown") if linked_trim else "Unknown"
+            confidence_str = f"{confidence*100:.0f}%" if confidence else "N/A"
             info_text += f"""Linked Trim: {trim_file}
 Days Since Trim: {days_since if days_since else 'N/A'}
-Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
+Match Confidence: {confidence_str}"""
         else:
             info_text += "No linked trim result found"
 
@@ -715,8 +718,7 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
 
     def _plot_comparison(self, chart_data: Dict):
         """Plot the comparison overlay chart with spec limits."""
-        import numpy as np
-        from laser_trim_analyzer.gui.widgets.chart import COLORS
+        from laser_trim_analyzer.gui.widgets.chart import COLORS  # Lazy import for chart module
 
         if not self.chart:
             return
@@ -860,6 +862,10 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         self._current_page = 0
         self._load_comparisons()
 
+    def _update_fix_progress(self, current: int, total: int, item_type: str = "Final Test"):
+        """Update progress label for fix operation."""
+        self.count_label.configure(text=f"Fixing {item_type} {current}/{total}...")
+
     def _fix_missing_tracks(self):
         """Re-parse Final Test and Trim files that have missing track data."""
         from pathlib import Path
@@ -885,9 +891,7 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
                 total_ft = len(ft_missing)
 
                 for i, record in enumerate(ft_missing):
-                    self.after(0, lambda i=i, t=total_ft: self.count_label.configure(
-                        text=f"Fixing Final Test {i+1}/{t}..."
-                    ))
+                    self.after(0, lambda c=i+1, t=total_ft: self._update_fix_progress(c, t, "Final Test"))
 
                     file_path = Path(record["file_path"]) if record.get("file_path") else None
                     if not file_path or not file_path.exists():
@@ -919,9 +923,7 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
                 total_trim = len(trim_missing)
 
                 for i, record in enumerate(trim_missing):
-                    self.after(0, lambda i=i, t=total_trim: self.count_label.configure(
-                        text=f"Fixing Trim {i+1}/{t}..."
-                    ))
+                    self.after(0, lambda c=i+1, t=total_trim: self._update_fix_progress(c, t, "Trim"))
 
                     file_path = Path(record["file_path"]) if record.get("file_path") else None
                     if not file_path or not file_path.exists():
@@ -1176,7 +1178,6 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         """Export a single comparison chart to file."""
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
-        import numpy as np
 
         plt.style.use('default')
 
@@ -1222,7 +1223,6 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
         """Export multiple comparison charts to a single PDF."""
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_pdf import PdfPages
-        import numpy as np
 
         plt.style.use('default')
 
@@ -1287,8 +1287,6 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
 
         # Calculate Trim linearity against the SAME spec limits (Final Test spec)
         # Need to interpolate spec limits at trim positions since they may differ
-        import numpy as np
-
         trim_fail_count = 0
         trim_linearity_pass = None
         if trim:
@@ -1338,8 +1336,6 @@ Match Confidence: {confidence*100:.0f}% if confidence else 'N/A'"""
 
     def _plot_comparison_export(self, ax, data: Dict, corrected_values: Dict = None):
         """Plot comparison chart for export (light mode)."""
-        import numpy as np
-
         COLORS = {
             'final_test': '#27ae60',  # Green
             'trim': '#3498db',  # Blue

@@ -35,9 +35,16 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> 
     path = Path(file_path)
     path_str = str(path.resolve())
 
+    # Include modification time in cache key to detect file changes
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0  # File doesn't exist yet, will fail in hash calculation
+    cache_key = f"{path_str}:{mtime}"
+
     # Check cache first
-    if use_cache and path_str in _hash_cache:
-        return _hash_cache[path_str]
+    if use_cache and cache_key in _hash_cache:
+        return _hash_cache[cache_key]
 
     # Calculate hash
     sha256 = hashlib.sha256()
@@ -62,7 +69,7 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> 
             keys_to_remove = list(_hash_cache.keys())[:_cache_max_size // 2]
             for key in keys_to_remove:
                 del _hash_cache[key]
-        _hash_cache[path_str] = file_hash
+        _hash_cache[cache_key] = file_hash
 
     return file_hash
 

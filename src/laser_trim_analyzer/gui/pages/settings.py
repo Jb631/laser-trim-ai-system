@@ -8,7 +8,7 @@ import customtkinter as ctk
 import logging
 from tkinter import filedialog, messagebox
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from laser_trim_analyzer.utils.threads import get_thread_manager
 
@@ -31,6 +31,7 @@ class SettingsPage(ctk.CTkFrame):
         super().__init__(parent)
         self.app = app
         self.export_path: Optional[Path] = None
+        self._ml_manager: Optional[Any] = None  # Set during training
 
         self._create_ui()
 
@@ -295,12 +296,12 @@ class SettingsPage(ctk.CTkFrame):
         version_info = ctk.CTkLabel(
             frame,
             text=f"Laser Trim Analyzer v{self.app.config.version}\n\n"
-                 "A simplified, ML-integrated application for laser trim data analysis.\n\n"
-                 "v3 Redesign Goals:\n"
-                 "  • ~30 files instead of 110 (73% reduction)\n"
-                 "  • ~7,000 lines instead of 144,000 (95% reduction)\n"
+                 "A streamlined, ML-integrated application for laser trim data analysis.\n\n"
+                 "Key Features:\n"
+                 "  • Per-model ML threshold optimization\n"
+                 "  • Drift detection with CUSUM/EWMA\n"
                  "  • Memory-safe processing for 8GB systems\n"
-                 "  • ML-integrated with automatic formula fallback",
+                 "  • Excel export with batch processing",
             text_color="gray",
             justify="left"
         )

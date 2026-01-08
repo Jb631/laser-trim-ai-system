@@ -78,6 +78,7 @@ class ChartWidget(ctk.CTkFrame):
         self.figure: Optional[Figure] = None
         self.canvas: Optional[FigureCanvasTkAgg] = None
         self._resize_job = None  # For debouncing resize events
+        self._destroyed = False  # Flag to prevent callbacks after destroy
 
         self._setup_figure()
 
@@ -109,7 +110,7 @@ class ChartWidget(ctk.CTkFrame):
 
     def _do_resize(self) -> None:
         """Actually perform the resize after debounce."""
-        if not self.figure or not self.canvas:
+        if self._destroyed or not self.figure or not self.canvas:
             return
 
         # Get the widget's current size
@@ -1308,12 +1309,26 @@ class ChartWidget(ctk.CTkFrame):
 
     def destroy(self):
         """Clean up matplotlib resources."""
+        self._destroyed = True  # Prevent pending after() callbacks from executing
+
         # Cancel any pending resize jobs
         if self._resize_job:
-            self.after_cancel(self._resize_job)
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
             self._resize_job = None
+
         if self.canvas:
-            self.canvas.get_tk_widget().destroy()
+            try:
+                self.canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+
         if self.figure:
-            plt.close(self.figure)
+            try:
+                plt.close(self.figure)
+            except Exception:
+                pass
+
         super().destroy()

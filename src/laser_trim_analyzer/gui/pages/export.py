@@ -39,8 +39,9 @@ class ExportPage(ctk.CTkFrame):
         super().__init__(parent)
         self.app = app
         self.search_results: List[AnalysisResult] = []
-        self.selected_ids: Set[int] = set()  # Track selected by database ID
+        self.selected_ids: Set[int] = set()  # Track selected by stable hash ID
         self._checkbox_vars: Dict[int, ctk.BooleanVar] = {}  # Checkbox state by ID
+        self._id_to_result: Dict[int, AnalysisResult] = {}  # Map ID to result for export
 
         self._create_ui()
 
@@ -308,8 +309,13 @@ class ExportPage(ctk.CTkFrame):
 
     def _create_result_item(self, result: AnalysisResult, index: int):
         """Create a result item with checkbox."""
-        # Use a unique ID (we'll use the index as fallback if no DB id)
-        item_id = index
+        # Use a stable hash-based ID that doesn't change across searches
+        # This ensures selections remain valid even if search results change
+        date_str = result.metadata.file_date.isoformat() if result.metadata.file_date else ''
+        item_id = hash((result.metadata.filename, result.metadata.serial, date_str))
+
+        # Store mapping from ID to result for export
+        self._id_to_result[item_id] = result
 
         # Status color
         if result.overall_status == AnalysisStatus.PASS:
@@ -414,6 +420,7 @@ class ExportPage(ctk.CTkFrame):
         self.search_results.clear()
         self.selected_ids.clear()
         self._checkbox_vars.clear()
+        self._id_to_result.clear()
         self._update_selection_count()
 
     def _show_error(self, error: str):
@@ -434,11 +441,11 @@ class ExportPage(ctk.CTkFrame):
         if not self.selected_ids:
             return
 
-        # Get selected results
+        # Get selected results using ID-to-result mapping
         selected_results = [
-            self.search_results[idx]
-            for idx in sorted(self.selected_ids)
-            if idx < len(self.search_results)
+            self._id_to_result[item_id]
+            for item_id in self.selected_ids
+            if item_id in self._id_to_result
         ]
 
         if not selected_results:
@@ -475,12 +482,16 @@ class ExportPage(ctk.CTkFrame):
                         filename = f"{result.metadata.model}_{result.metadata.serial}_chart.png"
                         filepath = output_path / filename
 
-                        # Handle duplicates
+                        # Handle duplicates with safeguard
                         counter = 1
-                        while filepath.exists():
+                        max_attempts = 1000
+                        while filepath.exists() and counter < max_attempts:
                             filename = f"{result.metadata.model}_{result.metadata.serial}_chart_{counter}.png"
                             filepath = output_path / filename
                             counter += 1
+                        if counter >= max_attempts:
+                            logger.error(f"Could not find unique filename after {max_attempts} attempts")
+                            continue
 
                         # Export chart
                         self._export_single_chart(result, filepath)

@@ -1481,8 +1481,8 @@ class TrendsPage(ctk.CTkFrame):
         text_widget = ctk.CTkTextbox(main_frame, width=650, height=450)
         text_widget.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Populate the text
-        ml_insights = getattr(self, '_cached_ml_insights', None)
+        # Fetch fresh data instead of using potentially stale cache
+        ml_insights = self._get_ml_summary_insights()
         alert_models = getattr(self, '_cached_alert_models', None)
 
         # Section 1: ML Status Overview

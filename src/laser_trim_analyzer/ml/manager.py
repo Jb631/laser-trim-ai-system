@@ -1035,6 +1035,47 @@ class MLManager:
                         detector.drift_start_date = state.drift_start_date
                         detector.samples_since_baseline = state.samples_since_baseline or 0
 
+                    # Load profiler state
+                    if state.sigma_mean is not None or state.pass_rate is not None:
+                        from laser_trim_analyzer.ml.profiler import (
+                            ModelProfiler, ModelProfile, ProfileStatistics
+                        )
+                        profiler = self.get_profiler(model_name)
+                        profile = ModelProfile(model_name=model_name)
+
+                        # Restore sigma statistics
+                        if state.sigma_mean is not None:
+                            profile.sigma = ProfileStatistics(
+                                mean=state.sigma_mean or 0,
+                                std=state.sigma_std or 0,
+                                p5=state.sigma_p5 or 0,
+                                p50=state.sigma_p50 or 0,
+                                p95=state.sigma_p95 or 0,
+                            )
+
+                        # Restore linearity error statistics
+                        if state.error_mean is not None:
+                            profile.linearity_error = ProfileStatistics(
+                                mean=state.error_mean or 0,
+                                std=state.error_std or 0,
+                            )
+
+                        # Restore quality metrics
+                        profile.pass_rate = state.pass_rate or 0
+                        profile.fail_rate = state.fail_rate or 0
+                        profile.linearity_pass_rate = state.linearity_pass_rate or 0
+                        profile.avg_fail_points = state.avg_fail_points or 0
+                        profile.track_correlation = state.track_correlation or 0
+                        profile.spec_margin_percent = state.spec_margin_percent or 0
+                        profile.difficulty_score = state.difficulty_score or 0.5
+                        profile.quality_percentile = state.quality_percentile or 0.5
+                        profile.linearity_spec = state.linearity_spec
+                        profile.sample_count = state.training_samples or 0
+                        profile.profiled_date = state.training_date
+
+                        profiler.profile = profile
+                        profiler.is_profiled = True
+
                     # Track as trained
                     if model_name not in self.trained_models:
                         self.trained_models.append(model_name)

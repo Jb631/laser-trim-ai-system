@@ -10,6 +10,7 @@ for failure prediction (threshold calculation moved to ThresholdOptimizer).
 
 import logging
 import pickle
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -310,17 +311,6 @@ class ModelPredictor:
             return None
 
         try:
-            # Prepare features in correct order
-            feature_values = []
-            for col in FEATURE_COLUMNS:
-                if col in features:
-                    feature_values.append(features[col])
-                elif col in self.feature_means:
-                    # Use training mean as fallback
-                    feature_values.append(self.feature_means[col])
-                else:
-                    feature_values.append(0)
-
             # Only use features the model was trained on
             trained_features = list(self.feature_importance.keys())
             X = pd.DataFrame([{
@@ -418,12 +408,25 @@ class ModelPredictor:
             with open(path, 'wb') as f:
                 pickle.dump(data, f)
 
+            # Write hash file for integrity verification on load
+            file_hash = self._compute_file_hash(path)
+            hash_path = path.with_suffix('.hash')
+            hash_path.write_text(file_hash)
+
             logger.debug(f"Predictor saved: {self.model_name} -> {path}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to save predictor {self.model_name}: {e}")
             return False
+
+    def _compute_file_hash(self, path: Path) -> str:
+        """Compute SHA256 hash of a file for integrity verification."""
+        sha256 = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        return sha256.hexdigest()
 
     def load(self, path: Path) -> bool:
         """
@@ -440,6 +443,16 @@ class ModelPredictor:
             if not path.exists():
                 logger.warning(f"Predictor file not found: {path}")
                 return False
+
+            # Verify file integrity before loading pickle
+            hash_path = path.with_suffix('.hash')
+            if hash_path.exists():
+                expected_hash = hash_path.read_text().strip()
+                actual_hash = self._compute_file_hash(path)
+                if expected_hash != actual_hash:
+                    logger.error(f"Predictor file integrity check failed: {path}")
+                    logger.error("File may have been corrupted or tampered with")
+                    return False
 
             with open(path, 'rb') as f:
                 data = pickle.load(f)

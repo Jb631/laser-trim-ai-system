@@ -48,14 +48,14 @@ SYSTEM_B_CELLS: Final[Dict[str, str]] = {
 }
 
 # Sheet name patterns
-SYSTEM_A_UNTRIMMED_PATTERNS = ["{track} 0", "SEC1 {track} 0", "{track}_0"]
-SYSTEM_A_TRIMMED_PATTERNS = ["{track} TRM", "SEC1 {track} TRM", "{track} TRM1"]
-SYSTEM_B_UNTRIMMED_SHEET = "test"
-SYSTEM_B_TRIMMED_PATTERN = "Trim {n}"
+SYSTEM_A_UNTRIMMED_PATTERNS: Final[list] = ["{track} 0", "SEC1 {track} 0", "{track}_0"]
+SYSTEM_A_TRIMMED_PATTERNS: Final[list] = ["{track} TRM", "SEC1 {track} TRM", "{track} TRM1"]
+SYSTEM_B_UNTRIMMED_SHEET: Final[str] = "test"
+SYSTEM_B_TRIMMED_PATTERN: Final[str] = "Trim {n}"
 
 # System detection patterns
-SYSTEM_A_IDENTIFIER = "SEC1 TRK"
-SYSTEM_B_IDENTIFIERS = ["test", "Lin Error"]
+SYSTEM_A_IDENTIFIER: Final[str] = "SEC1 TRK"
+SYSTEM_B_IDENTIFIERS: Final[list] = ["test", "Lin Error"]
 
 # Analysis parameters
 DEFAULT_SIGMA_SCALING_FACTOR: Final[float] = 24.0

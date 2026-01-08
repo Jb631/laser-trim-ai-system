@@ -141,16 +141,10 @@ class ThreadManager:
         return self._shutting_down
 
 
-# Singleton accessor
-_manager: Optional[ThreadManager] = None
-
-
+# Singleton accessor - relies on class-level __new__ for singleton pattern
 def get_thread_manager() -> ThreadManager:
     """Get the singleton ThreadManager instance."""
-    global _manager
-    if _manager is None:
-        _manager = ThreadManager()
-    return _manager
+    return ThreadManager()  # __new__ ensures only one instance exists
 
 
 def background_thread(name: Optional[str] = None):

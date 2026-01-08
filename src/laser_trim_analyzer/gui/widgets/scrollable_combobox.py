@@ -40,6 +40,7 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._current_value = self._values[0] if self._values else ""
         self._dropdown_window = None
         self._is_open = False
+        self._toplevel_bind_id = None  # Track our bind ID for proper cleanup
 
         # Main button that shows current value and opens dropdown
         self._button = ctk.CTkButton(
@@ -127,8 +128,8 @@ class ScrollableComboBox(ctk.CTkFrame):
         # Close when clicking outside - bind to toplevel losing focus
         self._dropdown_window.bind("<FocusOut>", self._on_focus_out)
 
-        # Also close if the main window is clicked
-        self.winfo_toplevel().bind("<Button-1>", self._on_toplevel_click, add="+")
+        # Also close if the main window is clicked - track the bind ID for cleanup
+        self._toplevel_bind_id = self.winfo_toplevel().bind("<Button-1>", self._on_toplevel_click, add="+")
 
     def _on_focus_out(self, event):
         """Handle focus out - close dropdown after a short delay."""
@@ -152,8 +153,8 @@ class ScrollableComboBox(ctk.CTkFrame):
                 return  # Click on button, let toggle handle it
 
             self._close_dropdown()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Click handling error (ignored): {e}")
 
     def _check_and_close(self):
         """Check if we should close the dropdown."""
@@ -176,11 +177,13 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._is_open = False
         self._arrow_label.configure(text="\u25BC")  # Down arrow
 
-        # Unbind toplevel click handler
+        # Unbind only our toplevel click handler (not all Button-1 handlers)
         try:
-            self.winfo_toplevel().unbind("<Button-1>")
-        except Exception:
-            pass
+            if self._toplevel_bind_id:
+                self.winfo_toplevel().unbind("<Button-1>", self._toplevel_bind_id)
+                self._toplevel_bind_id = None
+        except Exception as e:
+            logger.debug(f"Failed to unbind toplevel click handler: {e}")
 
         if self._dropdown_window:
             self._dropdown_window.destroy()
@@ -199,8 +202,10 @@ class ScrollableComboBox(ctk.CTkFrame):
         """Get current value."""
         return self._current_value
 
-    def set(self, value: str):
+    def set(self, value: str) -> None:
         """Set current value."""
+        if value not in self._values and self._values:
+            logger.warning(f"Value '{value}' not in options, setting anyway")
         self._current_value = value
         self._button.configure(text=value)
 

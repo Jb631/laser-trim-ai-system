@@ -89,15 +89,19 @@ class ModelDriftDetector:
     Each model has its own baseline statistics and detection state.
     """
 
-    # Default CUSUM parameters
-    DEFAULT_CUSUM_K = 0.5  # Slack value (in std devs)
-    DEFAULT_CUSUM_H = 5.0  # Decision threshold (in std devs)
+    # Default CUSUM parameters (based on Montgomery's SPC recommendations)
+    # K = 0.5: Standard slack value; detects shifts of ~1 std dev within ~10 samples
+    DEFAULT_CUSUM_K = 0.5  # Slack value (in std devs) - smaller = more sensitive
+    # H = 5.0: Decision threshold; balances false alarms vs detection speed
+    DEFAULT_CUSUM_H = 5.0  # Decision threshold (in std devs) - larger = fewer false alarms
 
-    # Default EWMA parameters
-    DEFAULT_EWMA_LAMBDA = 0.2  # Smoothing factor (0-1)
+    # Default EWMA parameters (per Roberts 1959 EWMA control chart theory)
+    # Lambda = 0.2: Weights recent observations; 0.2 means last ~5 samples dominate
+    DEFAULT_EWMA_LAMBDA = 0.2  # Smoothing factor (0-1) - larger = more reactive
+    # L = 3.0: Standard 3-sigma control limit for ~0.27% false alarm rate
     DEFAULT_EWMA_L = 3.0  # Control limit (in std devs)
 
-    # Minimum samples for baseline
+    # Minimum samples for reliable baseline statistics (per CLT guidelines)
     MIN_BASELINE_SAMPLES = 30
 
     def __init__(
@@ -290,7 +294,7 @@ class ModelDriftDetector:
             direction = DriftDirection.STABLE
 
         # Calculate severity based on how far EWMA is from mean (in std devs)
-        if self.ewma_value is not None and self.baseline_mean is not None and self.baseline_std and self.baseline_std > 0:
+        if all(v is not None for v in [self.ewma_value, self.baseline_mean, self.baseline_std]) and self.baseline_std > 0:
             severity = min(1.0, abs(self.ewma_value - self.baseline_mean) / (3 * self.baseline_std))
         else:
             severity = 0.0

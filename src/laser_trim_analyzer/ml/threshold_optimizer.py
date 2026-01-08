@@ -264,17 +264,25 @@ class ModelThresholdOptimizer:
         # Weighted percentile of failures (lower = more aggressive)
         # Higher severity failures pull threshold down
         if len(fail_sigma) > 0:
-            # Sort by sigma value
+            # Weighted percentile algorithm:
+            # 1. Sort failures by sigma (ascending) - low sigma failures are borderline
             sorted_idx = np.argsort(fail_sigma)
             sorted_sigma = fail_sigma[sorted_idx]
             sorted_weights = fail_weights[sorted_idx]
 
-            # Weighted 10th percentile of failures
+            # 2. Build cumulative weight distribution
+            # Each sample contributes its weight to cumulative sum
             cumsum = np.cumsum(sorted_weights)
+            # Normalize to [0,1] range for percentile lookup
             cumsum_norm = cumsum / cumsum[-1]
+
+            # 3. Find weighted 10th percentile of failures
+            # This captures the low-sigma failures that severe failures "pull down"
+            # More severe failures = more weight = shifts distribution toward low sigma
             p10_idx = np.searchsorted(cumsum_norm, 0.10)
             weighted_fail_low = sorted_sigma[min(p10_idx, len(sorted_sigma) - 1)]
         else:
+            logger.debug(f"Using fallback fail_sigma_min for {self.model_name}")
             weighted_fail_low = self.fail_sigma_min
 
         # 95th percentile of passing

@@ -183,7 +183,7 @@ class ModelProfiler:
 
         # Fail points analysis
         if 'linearity_fail_points' in data.columns:
-            failed = data[data.get('linearity_pass', pd.Series([True] * len(data))) == False]
+            failed = data[~data.get('linearity_pass', pd.Series([True] * len(data)))]
             if len(failed) > 0:
                 profile.avg_fail_points = float(failed['linearity_fail_points'].mean())
 
@@ -191,8 +191,12 @@ class ModelProfiler:
         if 'linearity_spec' in data.columns:
             specs = data['linearity_spec'].dropna()
             if len(specs) > 0:
-                # Use most common spec (mode)
-                profile.linearity_spec = float(specs.mode().iloc[0]) if len(specs.mode()) > 0 else float(specs.mean())
+                # Use most common spec (mode), fall back to mean if mode is empty
+                mode_result = specs.mode()
+                if len(mode_result) > 0:
+                    profile.linearity_spec = float(mode_result.iloc[0])
+                else:
+                    profile.linearity_spec = float(specs.mean())
 
                 # Calculate margin to spec
                 if error_col in data.columns and profile.linearity_spec > 0:
