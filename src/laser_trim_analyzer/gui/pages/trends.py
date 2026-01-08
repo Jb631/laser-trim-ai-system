@@ -172,6 +172,10 @@ class TrendsPage(ctk.CTkFrame):
                 logger.debug(f"Chart cleanup warning: {e}")
         self._chart_widgets.clear()
 
+        # Reset initialization flags so charts get recreated on next show
+        self._summary_charts_initialized = False
+        self._detail_charts_initialized = False
+
         # Clear any stale data
         self.active_models_data = []
         self.model_trend_data = None
@@ -448,7 +452,7 @@ class TrendsPage(ctk.CTkFrame):
         ChartWidget, ChartStyle = _ensure_chart_module()
 
         # Create alerts chart
-        if self._alerts_placeholder:
+        if self._alerts_placeholder and self._alerts_placeholder.winfo_exists():
             self._alerts_placeholder.destroy()
         self.alerts_chart = ChartWidget(
             self._alerts_frame,
@@ -459,7 +463,7 @@ class TrendsPage(ctk.CTkFrame):
         self.alerts_chart.show_placeholder("Loading models requiring attention...")
 
         # Create best chart
-        if self._best_placeholder:
+        if self._best_placeholder and self._best_placeholder.winfo_exists():
             self._best_placeholder.destroy()
         self.best_chart = ChartWidget(
             self._best_frame,
@@ -470,7 +474,7 @@ class TrendsPage(ctk.CTkFrame):
         self.best_chart.show_placeholder("Loading best models...")
 
         # Create recent issues chart (replaces worst chart)
-        if self._recent_issues_placeholder:
+        if self._recent_issues_placeholder and self._recent_issues_placeholder.winfo_exists():
             self._recent_issues_placeholder.destroy()
         self.recent_issues_chart = ChartWidget(
             self._recent_issues_frame,
@@ -481,7 +485,7 @@ class TrendsPage(ctk.CTkFrame):
         self.recent_issues_chart.show_placeholder("Loading recent issues...")
 
         # Create trending worse chart
-        if self._trending_placeholder:
+        if self._trending_placeholder and self._trending_placeholder.winfo_exists():
             self._trending_placeholder.destroy()
         self.trending_chart = ChartWidget(
             self._trending_frame,
@@ -1655,6 +1659,12 @@ class TrendsPage(ctk.CTkFrame):
     def on_show(self):
         """Called when the page is shown."""
         logger.debug("Trends page shown")
+        # Recreate view if charts were cleaned up
+        if not self._summary_charts_initialized and not self._detail_charts_initialized:
+            if self.selected_model == "All Models":
+                self._create_summary_view()
+            else:
+                self._create_detail_view()
         self._refresh_data()
 
     def on_hide(self):
