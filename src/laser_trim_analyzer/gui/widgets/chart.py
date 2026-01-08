@@ -892,6 +892,85 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw()
 
+    def plot_trending_worse(
+        self,
+        models: List[str],
+        pass_rates: List[float],
+        declines: List[float],
+        sample_counts: List[int],
+        title: str = "Trending Worse",
+    ) -> None:
+        """
+        Plot horizontal bar chart for models with declining pass rates.
+
+        Args:
+            models: List of model names
+            pass_rates: Current pass rate percentages
+            declines: Decline percentages (positive = getting worse)
+            sample_counts: Number of samples per model
+            title: Chart title
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not models:
+            self.show_placeholder("No models trending worse")
+            return
+
+        # Limit to top 10 models for readability
+        max_models = 10
+        if len(models) > max_models:
+            models = models[:max_models]
+            pass_rates = pass_rates[:max_models]
+            declines = declines[:max_models]
+            sample_counts = sample_counts[:max_models]
+
+        y_pos = np.arange(len(models))
+
+        # Color bars: darker red for bigger declines
+        colors = []
+        for decline in declines:
+            if decline >= 20:
+                colors.append('#c0392b')  # Dark red for severe decline
+            elif decline >= 15:
+                colors.append('#e74c3c')  # Red for significant decline
+            else:
+                colors.append('#f39c12')  # Orange for moderate decline
+
+        # Create horizontal bar chart
+        bars = ax.barh(y_pos, pass_rates, color=colors, alpha=0.8, edgecolor='white')
+
+        # Add decline labels at end of bars
+        for i, (bar, count, rate, decline) in enumerate(zip(bars, sample_counts, pass_rates, declines)):
+            width = bar.get_width()
+            label_x = width + 1 if width < 80 else width - 5
+            h_align = 'left' if width < 80 else 'right'
+            label_color = COLORS['text'] if self.style.dark_mode else 'black'
+
+            # Show current pass rate and decline
+            ax.text(label_x, bar.get_y() + bar.get_height() / 2,
+                   f'{rate:.0f}% (↓{decline:.0f}%)',
+                   va='center', ha=h_align,
+                   fontsize=self.style.font_size - 1,
+                   color=label_color if width < 80 else 'white',
+                   weight='bold')
+
+        # Styling
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(models, fontsize=self.style.font_size - 1)
+        ax.set_xlabel('Current Pass Rate (%)', fontsize=self.style.font_size)
+        ax.set_xlim(0, 105)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
+
+        # Add 80% threshold line
+        ax.axvline(x=80, color=COLORS['warning'],
+                  linestyle='--', linewidth=1.5, alpha=0.7)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
     def plot_sigma_scatter(
         self,
         dates: List[Any],

@@ -1890,6 +1890,110 @@ class DatabaseManager:
 
             return alerts
 
+    def get_trending_worse_models(
+        self,
+        days_back: int = 90,
+        min_samples: int = 20,
+        trend_threshold: float = 10.0,
+        rolling_days: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Get models whose pass rate is declining.
+
+        Compares older period vs recent rolling period pass rates.
+
+        Args:
+            days_back: Total period to analyze
+            min_samples: Minimum samples required for both periods
+            trend_threshold: Minimum decline % to be considered "trending worse"
+            rolling_days: Recent period for comparison
+
+        Returns:
+            List of models with decline info, sorted by decline magnitude (biggest first)
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+            rolling_cutoff = datetime.now() - timedelta(days=rolling_days)
+
+            # Get active models with sufficient data
+            active_models = self.get_active_models_summary(days_back, min_samples)
+
+            trending_worse = []
+            for model_data in active_models:
+                model = model_data["model"]
+
+                # Skip if not enough total samples
+                if model_data["total"] < min_samples:
+                    continue
+
+                # Get older period pass rate (from cutoff to rolling_cutoff)
+                older_result = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        DBAnalysisResult.file_date >= cutoff_date,
+                        DBAnalysisResult.file_date < rolling_cutoff
+                    )
+                    .first()
+                )
+
+                # Get recent period pass rate (from rolling_cutoff to now)
+                recent_result = (
+                    session.query(
+                        func.count(DBAnalysisResult.id),
+                        func.sum(
+                            case(
+                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                else_=0
+                            )
+                        )
+                    )
+                    .filter(
+                        DBAnalysisResult.model == model,
+                        DBAnalysisResult.file_date >= rolling_cutoff
+                    )
+                    .first()
+                )
+
+                older_count, older_passed = older_result
+                recent_count, recent_passed = recent_result
+
+                # Need sufficient samples in both periods
+                if not older_count or older_count < 5:
+                    continue
+                if not recent_count or recent_count < 5:
+                    continue
+
+                older_pct = (older_passed or 0) / older_count * 100
+                recent_pct = (recent_passed or 0) / recent_count * 100
+                decline = older_pct - recent_pct
+
+                # Only include if declining by threshold
+                if decline >= trend_threshold:
+                    trending_worse.append({
+                        "model": model,
+                        "pass_rate": model_data["pass_rate"],
+                        "older_pass_rate": older_pct,
+                        "recent_pass_rate": recent_pct,
+                        "decline": decline,
+                        "total_samples": model_data["total"],
+                        "older_samples": older_count,
+                        "recent_samples": recent_count,
+                    })
+
+            # Sort by decline magnitude (biggest drop first)
+            trending_worse.sort(key=lambda x: x["decline"], reverse=True)
+
+            return trending_worse
+
     def get_model_trend_data(
         self,
         model: str,

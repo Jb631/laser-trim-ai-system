@@ -187,10 +187,11 @@ class TrendsPage(ctk.CTkFrame):
             widget.destroy()
 
         self.content.grid_rowconfigure(0, weight=0)  # Stats row - compact
-        self.content.grid_rowconfigure(1, weight=1, minsize=250)  # Alerts chart
-        self.content.grid_rowconfigure(2, weight=1, minsize=250)  # Best/Worst charts
-        self.content.grid_rowconfigure(3, weight=1, minsize=280)  # Drift Detection section
-        self.content.grid_rowconfigure(4, weight=0)  # ML section - compact
+        self.content.grid_rowconfigure(1, weight=1, minsize=200)  # Alerts chart
+        self.content.grid_rowconfigure(2, weight=1, minsize=180)  # Top 5 / Recent Issues
+        self.content.grid_rowconfigure(3, weight=1, minsize=180)  # Trending Worse / Low Data
+        self.content.grid_rowconfigure(4, weight=1, minsize=250)  # Drift Detection section
+        self.content.grid_rowconfigure(5, weight=0)  # ML section - compact
 
         # Summary stats at top
         stats_frame = ctk.CTkFrame(self.content)
@@ -270,28 +271,75 @@ class TrendsPage(ctk.CTkFrame):
         self._best_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.best_chart = None
 
-        # Worst performers - placeholder
-        self._worst_frame = ctk.CTkFrame(self._models_frame)
-        self._worst_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
+        # Recent Issues (replaces "worst performers") - placeholder
+        self._recent_issues_frame = ctk.CTkFrame(self._models_frame)
+        self._recent_issues_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
 
-        worst_label = ctk.CTkLabel(
-            self._worst_frame,
-            text="Models Needing Improvement",
+        recent_label = ctk.CTkLabel(
+            self._recent_issues_frame,
+            text="Recent Issues (Last 30 Days)",
             font=ctk.CTkFont(size=14, weight="bold")
         )
-        worst_label.pack(padx=15, pady=(15, 5), anchor="w")
+        recent_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self._worst_placeholder = ctk.CTkLabel(
-            self._worst_frame,
-            text="Loading models needing improvement...",
+        self._recent_issues_placeholder = ctk.CTkLabel(
+            self._recent_issues_frame,
+            text="Loading recent issues...",
             text_color="gray"
         )
-        self._worst_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.worst_chart = None
+        self._recent_issues_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.recent_issues_chart = None
+
+        # Row 3: Trending Worse / Low Data Models
+        self._row3_frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        self._row3_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        self._row3_frame.grid_columnconfigure(0, weight=1)
+        self._row3_frame.grid_columnconfigure(1, weight=1)
+
+        # Trending Worse - placeholder
+        self._trending_frame = ctk.CTkFrame(self._row3_frame)
+        self._trending_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
+
+        trending_label = ctk.CTkLabel(
+            self._trending_frame,
+            text="Trending Worse",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        trending_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self._trending_placeholder = ctk.CTkLabel(
+            self._trending_frame,
+            text="Loading trending data...",
+            text_color="gray"
+        )
+        self._trending_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.trending_chart = None
+
+        # Low Data Models - scrollable list (not a chart)
+        self._low_data_frame = ctk.CTkFrame(self._row3_frame)
+        self._low_data_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
+
+        low_data_label = ctk.CTkLabel(
+            self._low_data_frame,
+            text="Low Data Models (<10 samples)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        low_data_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self._low_data_list = ctk.CTkScrollableFrame(self._low_data_frame, height=120)
+        self._low_data_list.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+
+        self._low_data_placeholder = ctk.CTkLabel(
+            self._low_data_list,
+            text="Loading low data models...",
+            text_color="gray",
+            font=ctk.CTkFont(size=10)
+        )
+        self._low_data_placeholder.pack(padx=10, pady=20)
 
         # Drift Detection section
         self._drift_frame = ctk.CTkFrame(self.content)
-        self._drift_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        self._drift_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
         self._drift_frame.grid_columnconfigure(0, weight=0, minsize=200)  # Model list
         self._drift_frame.grid_columnconfigure(1, weight=1)  # Chart area
 
@@ -363,7 +411,7 @@ class TrendsPage(ctk.CTkFrame):
 
         # ML Recommendations at bottom
         ml_frame = ctk.CTkFrame(self.content)
-        ml_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ml_frame.grid(row=5, column=0, sticky="ew", padx=10, pady=(5, 10))
 
         ml_header = ctk.CTkFrame(ml_frame, fg_color="transparent")
         ml_header.pack(fill="x", padx=15, pady=(15, 5))
@@ -421,16 +469,27 @@ class TrendsPage(ctk.CTkFrame):
         self.best_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.best_chart.show_placeholder("Loading best models...")
 
-        # Create worst chart
-        if self._worst_placeholder:
-            self._worst_placeholder.destroy()
-        self.worst_chart = ChartWidget(
-            self._worst_frame,
+        # Create recent issues chart (replaces worst chart)
+        if self._recent_issues_placeholder:
+            self._recent_issues_placeholder.destroy()
+        self.recent_issues_chart = ChartWidget(
+            self._recent_issues_frame,
             style=ChartStyle(figure_size=(5, 3), dpi=100)
         )
-        self._chart_widgets.append(self.worst_chart)
-        self.worst_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.worst_chart.show_placeholder("Loading models needing improvement...")
+        self._chart_widgets.append(self.recent_issues_chart)
+        self.recent_issues_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.recent_issues_chart.show_placeholder("Loading recent issues...")
+
+        # Create trending worse chart
+        if self._trending_placeholder:
+            self._trending_placeholder.destroy()
+        self.trending_chart = ChartWidget(
+            self._trending_frame,
+            style=ChartStyle(figure_size=(5, 3), dpi=100)
+        )
+        self._chart_widgets.append(self.trending_chart)
+        self.trending_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.trending_chart.show_placeholder("Loading trending data...")
 
         self._summary_charts_initialized = True
         logger.debug("Summary charts initialized (matplotlib loaded)")
@@ -851,11 +910,19 @@ class TrendsPage(ctk.CTkFrame):
             min_samples=5
         )
 
-        # Get models requiring attention
+        # Get models requiring attention (filter to 20+ samples)
         alert_models = db.get_models_requiring_attention(
             days_back=self.selected_days,
-            min_samples=5,
+            min_samples=20,  # Increased to filter out low-data models
             pass_rate_threshold=80.0,
+            trend_threshold=10.0,
+            rolling_days=self.rolling_window
+        )
+
+        # Get trending worse models
+        trending_worse = db.get_trending_worse_models(
+            days_back=self.selected_days,
+            min_samples=20,
             trend_threshold=10.0,
             rolling_days=self.rolling_window
         )
@@ -865,7 +932,7 @@ class TrendsPage(ctk.CTkFrame):
 
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
-            active_models, alert_models, model_names
+            active_models, alert_models, model_names, trending_worse
         ))
 
     def _load_detail_data(self, db):
@@ -954,7 +1021,8 @@ class TrendsPage(ctk.CTkFrame):
         self,
         active_models: List[Dict[str, Any]],
         alert_models: List[Dict[str, Any]],
-        model_names: List[str]
+        model_names: List[str],
+        trending_worse: Optional[List[Dict[str, Any]]] = None
     ):
         """Update summary display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -970,11 +1038,17 @@ class TrendsPage(ctk.CTkFrame):
 
         self.active_models_data = active_models
 
+        # Filter models by sample count
+        models_with_data = [m for m in active_models if m["total"] >= 20]  # 20+ samples
+        low_data_models = [m for m in active_models if m["total"] < 10]  # <10 samples
+
         if not active_models:
             self._reset_summary_stats()
             self.alerts_chart.show_placeholder("No active models in selected period")
             self.best_chart.show_placeholder("No data")
-            self.worst_chart.show_placeholder("No data")
+            self.recent_issues_chart.show_placeholder("No data")
+            self.trending_chart.show_placeholder("No data")
+            self._update_low_data_list([])
             self.status_label.configure(text="No data")
             return
 
@@ -1032,27 +1106,54 @@ class TrendsPage(ctk.CTkFrame):
         else:
             self.alerts_chart.show_placeholder("All models performing well - no alerts!")
 
-        # Update best/worst charts
-        # Best 5 models
-        best_5 = sorted_by_rate[:5]
-        self.best_chart.plot_pass_rate_bars(
-            models=[m["model"] for m in best_5],
-            pass_rates=[m["pass_rate"] for m in best_5],
-            sample_counts=[m["total"] for m in best_5],
-            title="Top 5 Performing Models",
-            highlight_threshold=80.0
-        )
+        # Update best models chart (filtered to 20+ samples)
+        sorted_with_data = sorted(models_with_data, key=lambda x: x["pass_rate"], reverse=True)
+        best_5 = sorted_with_data[:5]
+        if best_5:
+            self.best_chart.plot_pass_rate_bars(
+                models=[m["model"] for m in best_5],
+                pass_rates=[m["pass_rate"] for m in best_5],
+                sample_counts=[m["total"] for m in best_5],
+                title="Top 5 Performing Models",
+                highlight_threshold=80.0
+            )
+        else:
+            self.best_chart.show_placeholder("No models with 20+ samples")
 
-        # Worst 5 models
-        worst_5 = sorted_by_rate[-5:] if len(sorted_by_rate) >= 5 else sorted_by_rate
-        worst_5 = sorted(worst_5, key=lambda x: x["pass_rate"])  # Lowest first
-        self.worst_chart.plot_pass_rate_bars(
-            models=[m["model"] for m in worst_5],
-            pass_rates=[m["pass_rate"] for m in worst_5],
-            sample_counts=[m["total"] for m in worst_5],
-            title="Bottom 5 Models",
-            highlight_threshold=80.0
-        )
+        # Recent Issues: models with data in last 30 days AND pass_rate < 80% (filtered to 20+ samples)
+        recent_cutoff = datetime.now() - timedelta(days=30)
+        recent_issues = [
+            m for m in models_with_data
+            if m.get("last_date") and m["last_date"] >= recent_cutoff and m["pass_rate"] < 80
+        ]
+        recent_issues = sorted(recent_issues, key=lambda x: x["pass_rate"])[:5]  # Worst first
+
+        if recent_issues:
+            self.recent_issues_chart.plot_pass_rate_bars(
+                models=[m["model"] for m in recent_issues],
+                pass_rates=[m["pass_rate"] for m in recent_issues],
+                sample_counts=[m["total"] for m in recent_issues],
+                title="Recent Issues (Last 30 Days)",
+                highlight_threshold=80.0
+            )
+        else:
+            self.recent_issues_chart.show_placeholder("No recent issues - great!")
+
+        # Trending Worse section
+        if trending_worse and len(trending_worse) > 0:
+            top_trending = trending_worse[:5]
+            self.trending_chart.plot_trending_worse(
+                models=[m["model"] for m in top_trending],
+                pass_rates=[m["pass_rate"] for m in top_trending],
+                declines=[m["decline"] for m in top_trending],
+                sample_counts=[m["total_samples"] for m in top_trending],
+                title="Trending Worse (>10% decline)"
+            )
+        else:
+            self.trending_chart.show_placeholder("No models trending worse - stable!")
+
+        # Low Data Models section
+        self._update_low_data_list(low_data_models)
 
         # Update ML summary
         self._update_ml_summary(alert_models)
@@ -1062,6 +1163,42 @@ class TrendsPage(ctk.CTkFrame):
 
         # Update status
         self.status_label.configure(text=f"Updated: {datetime.now().strftime('%H:%M:%S')}")
+
+    def _update_low_data_list(self, low_data_models: List[Dict[str, Any]]):
+        """Update the low data models list section."""
+        # Clear existing items
+        for widget in self._low_data_list.winfo_children():
+            widget.destroy()
+
+        if not low_data_models:
+            placeholder = ctk.CTkLabel(
+                self._low_data_list,
+                text="No models with insufficient data",
+                text_color="gray",
+                font=ctk.CTkFont(size=10)
+            )
+            placeholder.pack(padx=10, pady=20)
+            return
+
+        # Sort by sample count (fewest first)
+        sorted_models = sorted(low_data_models, key=lambda x: x["total"])
+
+        for model_data in sorted_models[:10]:  # Show max 10
+            model_name = model_data["model"]
+            samples = model_data["total"]
+            last_date = model_data.get("last_date")
+
+            # Format: "Model: X samples (last: date)"
+            date_str = last_date.strftime("%m/%d") if last_date else "N/A"
+            text = f"{model_name}: {samples} samples (last: {date_str})"
+
+            label = ctk.CTkLabel(
+                self._low_data_list,
+                text=text,
+                font=ctk.CTkFont(size=10),
+                text_color="#f39c12"  # Orange for warning
+            )
+            label.pack(padx=10, pady=2, anchor="w")
 
     def _update_detail_display(
         self,
