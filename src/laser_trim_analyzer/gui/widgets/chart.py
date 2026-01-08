@@ -1153,7 +1153,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_title(title, fontsize=self.style.title_size)
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
         ax.legend(loc='lower right', fontsize=self.style.font_size - 2)
-        ax.invert_yaxis()
+        # Don't invert - keep High severity (first in list) at top
 
         self.figure.tight_layout()
         self.canvas.draw()
