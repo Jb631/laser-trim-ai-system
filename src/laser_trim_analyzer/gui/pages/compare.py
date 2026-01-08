@@ -159,9 +159,20 @@ class ComparePage(ctk.CTkFrame):
             filter_frame,
             text="Refresh",
             command=self._load_comparisons,
-            width=100
+            width=80
         )
-        refresh_btn.pack(side="right", padx=15, pady=15)
+        refresh_btn.pack(side="right", padx=10, pady=15)
+
+        # Re-match button (re-link Final Tests to Trim data)
+        self.rematch_btn = ctk.CTkButton(
+            filter_frame,
+            text="Re-match",
+            command=self._rematch_final_tests,
+            width=80,
+            fg_color="#3498db",
+            hover_color="#2980b9"
+        )
+        self.rematch_btn.pack(side="right", padx=5, pady=15)
 
         # Export Selected button
         self.export_selected_btn = ctk.CTkButton(
@@ -415,8 +426,8 @@ class ComparePage(ctk.CTkFrame):
         """Display comparison pairs in the list."""
         self.comparison_pairs = pairs
 
-        # Update model filter
-        all_models = ["All Models"] + sorted(models)
+        # Update model filter (models already sorted numerically from database)
+        all_models = ["All Models"] + models
         current = self.model_filter.get()
         self.model_filter.configure(values=all_models)
         if current in all_models:
@@ -716,6 +727,20 @@ Match Confidence: {confidence_str}"""
         # Plot comparison
         self._plot_comparison(chart_data)
 
+    def _normalize_positions(self, positions: list) -> list:
+        """Normalize positions to 0-100% range for comparison alignment."""
+        if not positions or len(positions) < 2:
+            return positions
+
+        pos_min = min(positions)
+        pos_max = max(positions)
+        pos_range = pos_max - pos_min
+
+        if pos_range == 0:
+            return [50.0] * len(positions)  # All same position -> center
+
+        return [(p - pos_min) / pos_range * 100 for p in positions]
+
     def _plot_comparison(self, chart_data: Dict):
         """Plot the comparison overlay chart with spec limits."""
         from laser_trim_analyzer.gui.widgets.chart import COLORS  # Lazy import for chart module
@@ -751,6 +776,11 @@ Match Confidence: {confidence_str}"""
             self.chart.canvas.draw()
             return
 
+        # Normalize positions to 0-100% for alignment (different systems use different scales)
+        ft_positions_norm = self._normalize_positions(ft_data.get("positions", [])) if has_ft_data else []
+        trim_positions_norm = self._normalize_positions(trim_data.get("positions", [])) if has_trim_data else []
+        spec_positions_norm = self._normalize_positions(spec_positions) if spec_positions else []
+
         # Plot Trim data first (if available) - so Final Test appears on top
         if has_trim_data:
             trim_errors = trim_data["errors"]
@@ -759,7 +789,7 @@ Match Confidence: {confidence_str}"""
                 trim_errors = [e + offset for e in trim_errors]
 
             ax.plot(
-                trim_data["positions"],
+                trim_positions_norm,
                 trim_errors,
                 color='#3498db',  # Blue for Trim (laser trim data)
                 linewidth=1.5,
@@ -770,7 +800,7 @@ Match Confidence: {confidence_str}"""
         # Plot Final Test data
         if has_ft_data:
             ax.plot(
-                ft_data["positions"],
+                ft_positions_norm,
                 ft_data["errors"],
                 color='#27ae60',  # Green for Final Test (post-assembly)
                 linewidth=1.5,
@@ -779,11 +809,11 @@ Match Confidence: {confidence_str}"""
             )
 
         # Plot specification limits (matching Analyze page style)
-        if upper_limits and lower_limits and spec_positions:
+        if upper_limits and lower_limits and spec_positions_norm:
             # Convert None to NaN for matplotlib (creates gaps)
             upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
             lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
-            pos_array = np.array(spec_positions[:len(upper_limits)])
+            pos_array = np.array(spec_positions_norm[:len(upper_limits)])
 
             ax.plot(pos_array, upper_plot, color=COLORS.get('spec_limit', '#e74c3c'),
                    linestyle='--', linewidth=1, alpha=0.8, label='Spec Limits')
@@ -796,19 +826,31 @@ Match Confidence: {confidence_str}"""
                            where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
 
             # Find and mark fail points for Final Test data
+            # Use interpolation when spec limits have different point count than FT data
             if has_ft_data:
                 fail_indices = []
-                ft_positions = ft_data["positions"]
                 ft_errors = ft_data["errors"]
 
-                for i, e in enumerate(ft_errors):
-                    if i < len(upper_limits) and i < len(lower_limits):
+                # Check if we need to interpolate (different point counts)
+                if len(upper_limits) == len(ft_errors):
+                    # Same point count - direct comparison
+                    for i, e in enumerate(ft_errors):
                         if upper_limits[i] is not None and lower_limits[i] is not None:
                             if e > upper_limits[i] or e < lower_limits[i]:
                                 fail_indices.append(i)
+                else:
+                    # Different point counts - interpolate limits to FT positions
+                    upper_interp = np.interp(ft_positions_norm, spec_positions_norm,
+                                            [u if u is not None else np.nan for u in upper_limits])
+                    lower_interp = np.interp(ft_positions_norm, spec_positions_norm,
+                                            [l if l is not None else np.nan for l in lower_limits])
+                    for i, e in enumerate(ft_errors):
+                        if not np.isnan(upper_interp[i]) and not np.isnan(lower_interp[i]):
+                            if e > upper_interp[i] or e < lower_interp[i]:
+                                fail_indices.append(i)
 
                 if fail_indices:
-                    fail_pos = [ft_positions[i] for i in fail_indices]
+                    fail_pos = [ft_positions_norm[i] for i in fail_indices]
                     fail_err = [ft_errors[i] for i in fail_indices]
                     ax.scatter(fail_pos, fail_err, color='#e74c3c',
                               s=100, marker='x', linewidth=3,
@@ -830,7 +872,7 @@ Match Confidence: {confidence_str}"""
             title = "Final Test Linearity"
 
         # Labels and legend (matching Analyze page style)
-        ax.set_xlabel('Position', fontsize=self.chart.style.font_size)
+        ax.set_xlabel('Position (%)', fontsize=self.chart.style.font_size)
         ax.set_ylabel('Error', fontsize=self.chart.style.font_size)
         ax.set_title(title, fontsize=self.chart.style.title_size)
         ax.legend(loc='best', fontsize=self.chart.style.font_size - 2)
@@ -865,6 +907,50 @@ Match Confidence: {confidence_str}"""
     def _update_fix_progress(self, current: int, total: int, item_type: str = "Final Test"):
         """Update progress label for fix operation."""
         self.count_label.configure(text=f"Fixing {item_type} {current}/{total}...")
+
+    def _rematch_final_tests(self):
+        """Re-run matching for all Final Test records against current trim data."""
+        self.rematch_btn.configure(state="disabled", text="Matching...")
+        self.count_label.configure(text="Re-matching Final Tests with Trim data...")
+
+        def rematch():
+            try:
+                db = get_database()
+                stats = db.rematch_final_tests()
+
+                # Show results on main thread
+                self.after(0, lambda: self._rematch_complete(stats))
+
+            except Exception as e:
+                logger.exception(f"Error in rematch: {e}")
+                self.after(0, lambda: self._rematch_complete(None, str(e)))
+
+        get_thread_manager().start_thread(target=rematch, name="rematch-final-tests")
+
+    def _rematch_complete(self, stats: dict = None, error: str = None):
+        """Called when rematch operation completes."""
+        self.rematch_btn.configure(state="normal", text="Re-match")
+
+        if error:
+            self.count_label.configure(text=f"Error: {error}")
+            messagebox.showerror("Re-match Error", f"Failed to re-match:\n{error}")
+        elif stats:
+            msg = f"Re-match: {stats['new_matches']} new, {stats['updated_matches']} updated"
+            self.count_label.configure(text=msg)
+
+            if stats['new_matches'] > 0 or stats['updated_matches'] > 0:
+                messagebox.showinfo(
+                    "Re-match Complete",
+                    f"Re-matched {stats['total']} Final Test records:\n\n"
+                    f"  New matches: {stats['new_matches']}\n"
+                    f"  Updated matches: {stats['updated_matches']}\n"
+                    f"  Unchanged: {stats['unchanged']}"
+                )
+            else:
+                messagebox.showinfo("Re-match Complete", "No new matches found.")
+
+        # Reload data to show updated matches
+        self._load_comparisons()
 
     def _fix_missing_tracks(self):
         """Re-parse Final Test and Trim files that have missing track data."""

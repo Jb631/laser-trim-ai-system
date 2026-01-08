@@ -931,8 +931,10 @@ class TrendsPage(ctk.CTkFrame):
             rolling_days=self.rolling_window
         )
 
-        # Update model dropdown with active models
-        model_names = ["All Models"] + [m["model"] for m in active_models]
+        # Update model dropdown with active models (sorted numerically)
+        models_sorted = sorted([m["model"] for m in active_models],
+                               key=lambda x: (int(''.join(c for c in x.split('-')[0] if c.isdigit()) or '0'), x))
+        model_names = ["All Models"] + models_sorted
 
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
@@ -961,9 +963,11 @@ class TrendsPage(ctk.CTkFrame):
         # Get ML recommendations
         ml_recommendations = self._get_ml_recommendations(trend_data)
 
-        # Update model dropdown and get model stats for pass rate
+        # Update model dropdown and get model stats for pass rate (sorted numerically)
         active_models = db.get_active_models_summary(self.selected_days, 5)
-        model_names = ["All Models"] + [m["model"] for m in active_models]
+        models_sorted = sorted([m["model"] for m in active_models],
+                               key=lambda x: (int(''.join(c for c in x.split('-')[0] if c.isdigit()) or '0'), x))
+        model_names = ["All Models"] + models_sorted
 
         # Get the model's analysis-level stats (for consistent pass rate with alerts)
         model_stats = next((m for m in active_models if m["model"] == self.selected_model), None)

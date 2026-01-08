@@ -458,24 +458,37 @@ class MLManager:
                     detector = self.drift_detectors.get(model_name)
 
                     # OPTIMIZATION 1: Bulk update sigma_threshold and sigma_pass using SQL
-                    # This is MUCH faster than loading each row into Python
-                    try:
-                        # Get analysis IDs for this model
-                        analysis_ids = [
-                            r[0] for r in session.query(AnalysisResult.id)
-                            .filter(AnalysisResult.model == model_name)
-                            .all()
-                        ]
+                    # Use subquery instead of loading IDs into Python (much faster for large datasets)
+                    import time
+                    model_start_time = time.time()
+                    track_count = 0
+                    analysis_updates = 0
 
-                        if not analysis_ids:
+                    try:
+                        from sqlalchemy import select
+
+                        # Use subquery instead of loading all IDs into Python
+                        # SQLite can optimize this much better than a massive IN list
+                        analysis_subquery = (
+                            select(AnalysisResult.id)
+                            .where(AnalysisResult.model == model_name)
+                        )
+
+                        # Check if there are any analyses for this model
+                        analysis_count = session.query(AnalysisResult.id).filter(
+                            AnalysisResult.model == model_name
+                        ).count()
+
+                        if analysis_count == 0:
                             continue
 
                         # Bulk update sigma_threshold for all tracks of this model
-                        session.execute(
+                        result1 = session.execute(
                             update(TrackResult)
-                            .where(TrackResult.analysis_id.in_(analysis_ids))
+                            .where(TrackResult.analysis_id.in_(analysis_subquery))
                             .values(sigma_threshold=new_threshold)
                         )
+                        track_count = result1.rowcount  # Get count from UPDATE result
 
                         # Bulk update sigma_pass based on threshold comparison
                         # sigma_pass = True if sigma_gradient <= threshold, else False
@@ -483,7 +496,7 @@ class MLManager:
                             update(TrackResult)
                             .where(
                                 and_(
-                                    TrackResult.analysis_id.in_(analysis_ids),
+                                    TrackResult.analysis_id.in_(analysis_subquery),
                                     TrackResult.sigma_gradient.isnot(None)
                                 )
                             )
@@ -500,7 +513,7 @@ class MLManager:
                         # NOTE: Use .name (not .value) for SQLite - SQLAlchemy stores enum NAME not value
                         session.execute(
                             update(TrackResult)
-                            .where(TrackResult.analysis_id.in_(analysis_ids))
+                            .where(TrackResult.analysis_id.in_(analysis_subquery))
                             .values(
                                 status=case(
                                     # Both pass -> PASS
@@ -519,10 +532,7 @@ class MLManager:
                             )
                         )
 
-                        # Count updated tracks
-                        track_count = session.query(TrackResult).filter(
-                            TrackResult.analysis_id.in_(analysis_ids)
-                        ).count()
+                        # Track count already captured from first UPDATE rowcount
                         counts['updated'] += track_count
                         models_updated.add(model_name)
 
@@ -533,14 +543,14 @@ class MLManager:
                     # OPTIMIZATION 3: Update analysis overall_status in bulk using subqueries
                     # This is faster than iterating over each analysis
                     try:
-                        from sqlalchemy import func, exists, select
+                        from sqlalchemy import func, exists
                         from sqlalchemy.orm import aliased
 
                         # Update analyses that have any ERROR tracks -> ERROR
                         # NOTE: Use .name (not .value) - SQLAlchemy stores enum NAME
-                        session.execute(
+                        result = session.execute(
                             update(AnalysisResult)
-                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(AnalysisResult.model == model_name)
                             .where(
                                 exists(
                                     select(TrackResult.id)
@@ -550,11 +560,12 @@ class MLManager:
                             )
                             .values(overall_status=StatusType.ERROR.name)
                         )
+                        analysis_updates += result.rowcount
 
                         # Update analyses that have FAIL but no ERROR -> FAIL
-                        session.execute(
+                        result = session.execute(
                             update(AnalysisResult)
-                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(AnalysisResult.model == model_name)
                             .where(~exists(
                                 select(TrackResult.id)
                                 .where(TrackResult.analysis_id == AnalysisResult.id)
@@ -567,11 +578,12 @@ class MLManager:
                             ))
                             .values(overall_status=StatusType.FAIL.name)
                         )
+                        analysis_updates += result.rowcount
 
                         # Update analyses that have WARNING but no ERROR/FAIL -> WARNING
-                        session.execute(
+                        result = session.execute(
                             update(AnalysisResult)
-                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(AnalysisResult.model == model_name)
                             .where(~exists(
                                 select(TrackResult.id)
                                 .where(TrackResult.analysis_id == AnalysisResult.id)
@@ -589,11 +601,12 @@ class MLManager:
                             ))
                             .values(overall_status=StatusType.WARNING.name)
                         )
+                        analysis_updates += result.rowcount
 
                         # Update remaining analyses (all tracks PASS) -> PASS
-                        session.execute(
+                        result = session.execute(
                             update(AnalysisResult)
-                            .where(AnalysisResult.id.in_(analysis_ids))
+                            .where(AnalysisResult.model == model_name)
                             .where(~exists(
                                 select(TrackResult.id)
                                 .where(TrackResult.analysis_id == AnalysisResult.id)
@@ -603,6 +616,7 @@ class MLManager:
                             ))
                             .values(overall_status=StatusType.PASS.name)
                         )
+                        analysis_updates += result.rowcount
 
                     except Exception as e:
                         logger.warning(f"Error updating analysis status for {model_name}: {e}")
@@ -647,12 +661,20 @@ class MLManager:
                     # Commit after each model to avoid holding locks too long
                     session.commit()
 
+                    # Log completion with timing and counts for verification
+                    model_elapsed = time.time() - model_start_time
+                    logger.info(
+                        f"Apply complete for {model_name}: "
+                        f"{track_count} tracks, {analysis_updates} analyses updated "
+                        f"in {model_elapsed:.1f}s"
+                    )
+
                     if progress_callback:
                         progress_callback(ApplyProgress(
                             records_complete=model_idx + 1,
                             records_total=total_models,
                             models_updated=len(models_updated),
-                            message=f"Completed {model_name} ({model_idx + 1}/{total_models})"
+                            message=f"Completed {model_name}: {track_count} tracks, {analysis_updates} analyses ({model_elapsed:.1f}s)"
                         ))
 
                 # Save updated drift state

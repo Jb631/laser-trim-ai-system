@@ -50,6 +50,17 @@ from laser_trim_analyzer.config import get_config
 logger = logging.getLogger(__name__)
 
 
+def _model_sort_key(model: str) -> tuple:
+    """
+    Sort key for numerical model sorting.
+    Extracts leading digits from model number for numerical comparison.
+    E.g., '8340-1' -> (8340, '8340-1'), '8397-2' -> (8397, '8397-2')
+    """
+    base = model.split('-')[0] if model else ''
+    num = int(''.join(c for c in base if c.isdigit()) or '0')
+    return (num, model)
+
+
 def _status_matches(status: Any, *targets: DBStatusType) -> bool:
     """Check if status matches any of the target StatusType values.
 
@@ -1202,15 +1213,16 @@ class DatabaseManager:
             ]
 
     def get_models_list(self) -> List[str]:
-        """Get list of all unique model numbers in database."""
+        """Get list of all unique model numbers, sorted numerically."""
         with self.session() as session:
             models = (
                 session.query(DBAnalysisResult.model)
+                .filter(DBAnalysisResult.model.isnot(None))
                 .distinct()
-                .order_by(DBAnalysisResult.model)
                 .all()
             )
-            return [m[0] for m in models if m[0]]
+            model_list = [m[0] for m in models if m[0]]
+            return sorted(model_list, key=_model_sort_key)
 
     def search_for_export(
         self,
@@ -1647,17 +1659,17 @@ class DatabaseManager:
         Get a list of all unique model numbers in the database.
 
         Returns:
-            List of model strings, sorted alphabetically
+            List of model strings, sorted numerically
         """
         with self.session() as session:
             models = (
                 session.query(DBAnalysisResult.model)
                 .filter(DBAnalysisResult.model.isnot(None))
                 .distinct()
-                .order_by(DBAnalysisResult.model)
                 .all()
             )
-            return [m[0] for m in models if m[0]]
+            model_list = [m[0] for m in models if m[0]]
+            return sorted(model_list, key=_model_sort_key)
 
     # =========================================================================
     # Trends Page Methods (Active Models Summary)
@@ -1743,7 +1755,7 @@ class DatabaseManager:
                     "last_date": row.last_date,
                 })
 
-            # Sort by sample count descending
+            # Sort by sample count descending (for chart display)
             results.sort(key=lambda x: x["total"], reverse=True)
             return results
 
@@ -2310,6 +2322,59 @@ class DatabaseManager:
 
         return match.id, max(0.5, confidence), days_diff
 
+    def rematch_final_tests(self) -> Dict[str, int]:
+        """
+        Re-run matching for all Final Test records against current trim data.
+
+        This is useful when trim files are imported after Final Test files,
+        or when trim data has been updated.
+
+        Returns:
+            Dict with counts: new_matches, updated_matches, unchanged, total
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+
+        stats = {"new_matches": 0, "updated_matches": 0, "unchanged": 0, "total": 0}
+
+        with self._write_lock:
+            with self.session() as session:
+                # Get all Final Test records
+                final_tests = session.query(DBFinalTestResult).all()
+                stats["total"] = len(final_tests)
+
+                for ft in final_tests:
+                    # Get test date (prefer file_date, fall back to test_date)
+                    test_date = ft.file_date or ft.test_date
+
+                    # Find matching trim
+                    new_trim_id, new_confidence, new_days = self._find_matching_trim(
+                        session, ft.model, ft.serial, test_date
+                    )
+
+                    # Check if match changed
+                    if new_trim_id != ft.linked_trim_id:
+                        if ft.linked_trim_id is None and new_trim_id is not None:
+                            stats["new_matches"] += 1
+                        elif ft.linked_trim_id is not None and new_trim_id is not None:
+                            stats["updated_matches"] += 1
+
+                        # Update the record
+                        ft.linked_trim_id = new_trim_id
+                        ft.match_confidence = new_confidence
+                        ft.days_since_trim = new_days
+                    else:
+                        stats["unchanged"] += 1
+
+                session.commit()
+                logger.info(
+                    f"Rematch complete: {stats['new_matches']} new, "
+                    f"{stats['updated_matches']} updated, {stats['unchanged']} unchanged"
+                )
+
+        return stats
+
     def get_final_test(self, final_test_id: int) -> Optional[Dict[str, Any]]:
         """
         Get a Final Test result by ID.
@@ -2666,7 +2731,7 @@ class DatabaseManager:
 
     def get_final_test_models_list(self) -> List[str]:
         """
-        Get list of unique models from Final Test results.
+        Get list of unique models from Final Test results, sorted numerically.
         """
         from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
 
@@ -2675,10 +2740,10 @@ class DatabaseManager:
                 session.query(DBFinalTestResult.model)
                 .filter(DBFinalTestResult.model.isnot(None))
                 .distinct()
-                .order_by(DBFinalTestResult.model)
                 .all()
             )
-            return [m[0] for m in models if m[0]]
+            model_list = [m[0] for m in models if m[0]]
+            return sorted(model_list, key=_model_sort_key)
 
     def get_final_tests_missing_tracks(self) -> List[Dict[str, Any]]:
         """
