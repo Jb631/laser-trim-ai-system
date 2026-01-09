@@ -1671,6 +1671,72 @@ class DatabaseManager:
             model_list = [m[0] for m in models if m[0]]
             return sorted(model_list, key=_model_sort_key)
 
+    def get_models_list_prioritized(
+        self,
+        mps_models: List[str] = None,
+        recent_days: int = 90
+    ) -> List[Dict[str, Any]]:
+        """
+        Get models sorted by priority: MPS first, then Recently Active, then Inactive.
+
+        Each group is sorted numerically using _model_sort_key.
+
+        Args:
+            mps_models: List of models on MPS schedule (user-managed)
+            recent_days: Days threshold for "recently active" (default 90)
+
+        Returns:
+            List of dicts: [{'model': str, 'status': 'mps'|'active'|'inactive', 'count': int, 'last_date': datetime}]
+        """
+        mps_models = mps_models or []
+        mps_set = set(mps_models)
+        cutoff_date = datetime.now() - timedelta(days=recent_days)
+
+        with self.session() as session:
+            # Get all models with their latest activity date and count
+            results = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.max(DBAnalysisResult.file_date).label('last_date'),
+                    func.count(DBAnalysisResult.id).label('count')
+                )
+                .filter(DBAnalysisResult.model.isnot(None))
+                .group_by(DBAnalysisResult.model)
+                .all()
+            )
+
+            # Categorize models
+            mps_list = []
+            active_list = []
+            inactive_list = []
+
+            for model, last_date, count in results:
+                if not model:
+                    continue
+
+                entry = {
+                    'model': model,
+                    'count': count,
+                    'last_date': last_date
+                }
+
+                if model in mps_set:
+                    entry['status'] = 'mps'
+                    mps_list.append(entry)
+                elif last_date and last_date >= cutoff_date:
+                    entry['status'] = 'active'
+                    active_list.append(entry)
+                else:
+                    entry['status'] = 'inactive'
+                    inactive_list.append(entry)
+
+            # Sort each group numerically
+            mps_list.sort(key=lambda x: _model_sort_key(x['model']))
+            active_list.sort(key=lambda x: _model_sort_key(x['model']))
+            inactive_list.sort(key=lambda x: _model_sort_key(x['model']))
+
+            return mps_list + active_list + inactive_list
+
     # =========================================================================
     # Trends Page Methods (Active Models Summary)
     # =========================================================================

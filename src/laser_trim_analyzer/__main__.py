@@ -7,7 +7,11 @@ Run with: python -m laser_trim_analyzer
 import sys
 import os
 import logging
+import warnings
 from pathlib import Path
+
+# Suppress scikit-learn parallel warnings (compatibility issue with joblib)
+warnings.filterwarnings("ignore", message=".*sklearn.utils.parallel.delayed.*")
 
 # Fix Tcl/Tk library path for uv-installed Python on macOS
 # This must happen before any tkinter imports

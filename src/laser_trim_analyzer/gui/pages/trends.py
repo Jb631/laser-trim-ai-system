@@ -22,6 +22,7 @@ from laser_trim_analyzer.utils.threads import get_thread_manager
 import numpy as np
 
 from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
 
 # Lazy import for ChartWidget - defer matplotlib loading until first use
@@ -908,6 +909,11 @@ class TrendsPage(ctk.CTkFrame):
 
     def _load_summary_data(self, db):
         """Load data for summary mode."""
+        # Get active models config for MPS prioritization
+        config = get_config()
+        mps_models = config.active_models.mps_models
+        recent_days = config.active_models.recent_days
+
         # Get active models summary
         active_models = db.get_active_models_summary(
             days_back=self.selected_days,
@@ -931,21 +937,41 @@ class TrendsPage(ctk.CTkFrame):
             rolling_days=self.rolling_window
         )
 
-        # Update model dropdown with active models (sorted numerically)
-        models_sorted = sorted([m["model"] for m in active_models],
-                               key=lambda x: (int(''.join(c for c in x.split('-')[0] if c.isdigit()) or '0'), x))
-        model_names = ["All Models"] + models_sorted
+        # Get prioritized model list for dropdown (MPS first, then active, then inactive)
+        prioritized_models = db.get_models_list_prioritized(
+            mps_models=mps_models,
+            recent_days=recent_days
+        )
+
+        # Build model names list with inactive suffix
+        model_names = ["All Models"]
+        for m in prioritized_models:
+            if m['status'] == 'inactive':
+                model_names.append(f"{m['model']} (inactive)")
+            else:
+                model_names.append(m['model'])
 
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
-            active_models, alert_models, model_names, trending_worse
+            active_models, alert_models, model_names, trending_worse,
+            mps_models=mps_models, recent_days=recent_days
         ))
 
     def _load_detail_data(self, db):
         """Load data for detail mode."""
+        # Get active models config for MPS prioritization
+        config = get_config()
+        mps_models = config.active_models.mps_models
+        recent_days = config.active_models.recent_days
+
         # Get detailed trend data for this model
+        # Strip (inactive) suffix if present
+        clean_model = self.selected_model
+        if " (inactive)" in clean_model:
+            clean_model = clean_model.replace(" (inactive)", "")
+
         trend_data = db.get_model_trend_data(
-            model=self.selected_model,
+            model=clean_model,
             days_back=self.selected_days,
             rolling_window=self.rolling_window
         )
@@ -958,19 +984,28 @@ class TrendsPage(ctk.CTkFrame):
             trend_threshold=10.0,
             rolling_days=self.rolling_window
         )
-        model_alerts = next((a for a in alert_models if a["model"] == self.selected_model), None)
+        model_alerts = next((a for a in alert_models if a["model"] == clean_model), None)
 
         # Get ML recommendations
         ml_recommendations = self._get_ml_recommendations(trend_data)
 
-        # Update model dropdown and get model stats for pass rate (sorted numerically)
-        active_models = db.get_active_models_summary(self.selected_days, 5)
-        models_sorted = sorted([m["model"] for m in active_models],
-                               key=lambda x: (int(''.join(c for c in x.split('-')[0] if c.isdigit()) or '0'), x))
-        model_names = ["All Models"] + models_sorted
+        # Get prioritized model list for dropdown (MPS first, then active, then inactive)
+        prioritized_models = db.get_models_list_prioritized(
+            mps_models=mps_models,
+            recent_days=recent_days
+        )
+
+        # Build model names list with inactive suffix
+        model_names = ["All Models"]
+        for m in prioritized_models:
+            if m['status'] == 'inactive':
+                model_names.append(f"{m['model']} (inactive)")
+            else:
+                model_names.append(m['model'])
 
         # Get the model's analysis-level stats (for consistent pass rate with alerts)
-        model_stats = next((m for m in active_models if m["model"] == self.selected_model), None)
+        active_models = db.get_active_models_summary(self.selected_days, 5)
+        model_stats = next((m for m in active_models if m["model"] == clean_model), None)
 
         # Update UI on main thread
         self.after(0, lambda: self._update_detail_display(
@@ -1030,7 +1065,9 @@ class TrendsPage(ctk.CTkFrame):
         active_models: List[Dict[str, Any]],
         alert_models: List[Dict[str, Any]],
         model_names: List[str],
-        trending_worse: Optional[List[Dict[str, Any]]] = None
+        trending_worse: Optional[List[Dict[str, Any]]] = None,
+        mps_models: Optional[List[str]] = None,
+        recent_days: int = 90
     ):
         """Update summary display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -1060,13 +1097,36 @@ class TrendsPage(ctk.CTkFrame):
             self.status_label.configure(text="No data")
             return
 
+        # Classify alert models as active or inactive (need this early for models_at_risk)
+        mps_set = set(mps_models or [])
+        active_cutoff = datetime.now() - timedelta(days=recent_days)
+
+        def is_active_model(model_data):
+            """Check if model is MPS or recently active."""
+            model_name = model_data.get("model", "")
+            if model_name in mps_set:
+                return True
+            # Check last_date from model_data or find in active_models
+            last_date = model_data.get("last_date")
+            if not last_date:
+                # Look up in active_models
+                for am in active_models:
+                    if am.get("model") == model_name:
+                        last_date = am.get("last_date")
+                        break
+            return last_date and last_date >= active_cutoff
+
+        # Separate active vs inactive alerts
+        active_alerts = [a for a in alert_models if is_active_model(a)]
+        inactive_alerts = [a for a in alert_models if not is_active_model(a)]
+
         # Calculate summary stats
         total_models = len(active_models)
         total_samples = sum(m["total"] for m in active_models)
         avg_pass_rate = sum(m["pass_rate"] for m in active_models) / total_models if total_models > 0 else 0
         avg_sigma_rate = sum(m.get("sigma_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
         avg_linearity_rate = sum(m.get("linearity_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
-        models_at_risk = len(alert_models)
+        models_at_risk = len(active_alerts)  # Only count active models at risk
 
         # Best and worst models
         sorted_by_rate = sorted(active_models, key=lambda x: x["pass_rate"], reverse=True)
@@ -1103,13 +1163,19 @@ class TrendsPage(ctk.CTkFrame):
             text_color="#e74c3c" if worst_rate < 80 else "#f39c12"
         )
 
-        # Update alerts chart
-        if alert_models:
-            alert_model_names = [a["model"] for a in alert_models[:10]]
+        # Update alerts chart - show active alerts first, then inactive in separate section
+        if active_alerts:
             self.alerts_chart.plot_alert_summary(
-                models=alert_model_names,
-                alerts=alert_models[:10],
-                title=f"Models Requiring Attention ({len(alert_models)} total)"
+                models=[a["model"] for a in active_alerts[:10]],
+                alerts=active_alerts[:10],
+                title=f"Models Requiring Attention ({len(active_alerts)} active)"
+            )
+        elif inactive_alerts:
+            # Only inactive alerts exist
+            self.alerts_chart.plot_alert_summary(
+                models=[f"{a['model']} (inactive)" for a in inactive_alerts[:10]],
+                alerts=inactive_alerts[:10],
+                title=f"Inactive Models with Issues ({len(inactive_alerts)} total)"
             )
         else:
             self.alerts_chart.show_placeholder("All models performing well - no alerts!")
@@ -1129,10 +1195,12 @@ class TrendsPage(ctk.CTkFrame):
             self.best_chart.show_placeholder("No models with 20+ samples")
 
         # Recent Issues: models with data in last 30 days AND pass_rate < 80% (filtered to 20+ samples)
-        recent_cutoff = datetime.now() - timedelta(days=30)
+        # Only show active models (MPS or recently active)
+        recent_cutoff_30d = datetime.now() - timedelta(days=30)
         recent_issues = [
             m for m in models_with_data
-            if m.get("last_date") and m["last_date"] >= recent_cutoff and m["pass_rate"] < 80
+            if m.get("last_date") and m["last_date"] >= recent_cutoff_30d and m["pass_rate"] < 80
+            and (m["model"] in mps_set or (m.get("last_date") and m["last_date"] >= active_cutoff))
         ]
         recent_issues = sorted(recent_issues, key=lambda x: x["pass_rate"])[:5]  # Worst first
 
@@ -1147,16 +1215,24 @@ class TrendsPage(ctk.CTkFrame):
         else:
             self.recent_issues_chart.show_placeholder("No recent issues - great!")
 
-        # Trending Worse section
+        # Trending Worse section - filter to active models only
         if trending_worse and len(trending_worse) > 0:
-            top_trending = trending_worse[:5]
-            self.trending_chart.plot_trending_worse(
-                models=[m["model"] for m in top_trending],
-                pass_rates=[m["pass_rate"] for m in top_trending],
-                declines=[m["decline"] for m in top_trending],
-                sample_counts=[m["total_samples"] for m in top_trending],
-                title="Trending Worse (>10% decline)"
-            )
+            # Filter to active models only
+            active_trending = [
+                m for m in trending_worse
+                if m["model"] in mps_set or is_active_model(m)
+            ]
+            top_trending = active_trending[:5]
+            if top_trending:
+                self.trending_chart.plot_trending_worse(
+                    models=[m["model"] for m in top_trending],
+                    pass_rates=[m["pass_rate"] for m in top_trending],
+                    declines=[m["decline"] for m in top_trending],
+                    sample_counts=[m["total_samples"] for m in top_trending],
+                    title="Trending Worse (>10% decline)"
+                )
+            else:
+                self.trending_chart.show_placeholder("No active models trending worse - stable!")
         else:
             self.trending_chart.show_placeholder("No models trending worse - stable!")
 

@@ -13,7 +13,7 @@ DESIGN DECISION: Self-contained deployment
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass, field
 import yaml
 import logging
@@ -101,6 +101,13 @@ class ModelsConfig:
 
 
 @dataclass
+class ActiveModelsConfig:
+    """Configuration for active model prioritization."""
+    mps_models: List[str] = field(default_factory=list)  # User-managed MPS list
+    recent_days: int = 90  # Days to consider "recently active"
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
@@ -108,6 +115,7 @@ class Config:
     ml: MLConfig = field(default_factory=MLConfig)
     gui: GUIConfig = field(default_factory=GUIConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
+    active_models: ActiveModelsConfig = field(default_factory=ActiveModelsConfig)
 
     # Version info
     version: str = "3.0.0"
@@ -154,6 +162,11 @@ class Config:
                         if hasattr(config.gui, key):
                             setattr(config.gui, key, value)
 
+                if "active_models" in data:
+                    for key, value in data["active_models"].items():
+                        if hasattr(config.active_models, key):
+                            setattr(config.active_models, key, value)
+
                 logger.info(f"Loaded config from {config_path}")
 
             except Exception as e:
@@ -193,6 +206,10 @@ class Config:
                 "window_height": self.gui.window_height,
                 "remember_last_directory": self.gui.remember_last_directory,
                 "last_directory": self.gui.last_directory,
+            },
+            "active_models": {
+                "mps_models": self.active_models.mps_models,
+                "recent_days": self.active_models.recent_days,
             },
         }
 

@@ -15,6 +15,7 @@ from typing import Optional, List, Dict, Any, Set, TYPE_CHECKING
 import numpy as np
 
 from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.threads import get_thread_manager
 from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
 
@@ -367,6 +368,9 @@ class ComparePage(ctk.CTkFrame):
                 model = self.model_filter.get()
                 if model == "All Models":
                     model = None
+                elif " (inactive)" in model:
+                    # Strip inactive suffix before query
+                    model = model.replace(" (inactive)", "")
 
                 # Parse date range
                 date_from = None
@@ -411,8 +415,26 @@ class ComparePage(ctk.CTkFrame):
                     limit=500
                 )
 
-                # Get models for filter dropdown
-                models = db.get_final_test_models_list()
+                # Get models for filter dropdown with MPS prioritization
+                config = get_config()
+                mps_set = set(config.active_models.mps_models)
+                recent_days = config.active_models.recent_days
+                active_cutoff = datetime.now() - timedelta(days=recent_days)
+
+                # Get final test models and categorize them
+                raw_models = db.get_final_test_models_list()
+
+                # Helper for numerical sorting
+                def model_sort_key(m):
+                    base = m.split('-')[0] if m else ''
+                    num = int(''.join(c for c in base if c.isdigit()) or '0')
+                    return (num, m)
+
+                # Categorize: MPS first, then rest numerically
+                # For Compare page, we don't have last_date info easily, so use simple MPS prioritization
+                mps_list = sorted([m for m in raw_models if m in mps_set], key=model_sort_key)
+                other_list = sorted([m for m in raw_models if m not in mps_set], key=model_sort_key)
+                models = mps_list + other_list
 
                 self.after(0, lambda: self._display_comparisons(pairs, models))
 

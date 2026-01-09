@@ -66,6 +66,9 @@ class SettingsPage(ctk.CTkFrame):
         # ML section
         self._create_ml_section(container)
 
+        # Active Models section
+        self._create_active_models_section(container)
+
         # Appearance section
         self._create_appearance_section(container)
 
@@ -256,6 +259,123 @@ class SettingsPage(ctk.CTkFrame):
             justify="left"
         )
         self.model_status_label.grid(row=6, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
+
+    def _create_active_models_section(self, container):
+        """Create Active Models (MPS) configuration section."""
+        frame = ctk.CTkFrame(container)
+        frame.grid(sticky="ew", padx=10, pady=10)
+        frame.grid_columnconfigure(0, weight=1)
+
+        # Title
+        title = ctk.CTkLabel(
+            frame,
+            text="Active Models (MPS Schedule)",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        title.grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+
+        # Description
+        desc = ctk.CTkLabel(
+            frame,
+            text="Models on MPS schedule are prioritized in dropdowns and Trends page alerts.\nEnter one model number per line. Recently active models (with data in last N days) are also prioritized.",
+            text_color="gray",
+            justify="left",
+            font=ctk.CTkFont(size=11)
+        )
+        desc.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
+
+        # Text area for model list
+        self.mps_textbox = ctk.CTkTextbox(
+            frame,
+            height=120,
+            font=ctk.CTkFont(family="Consolas", size=12)
+        )
+        self.mps_textbox.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
+
+        # Load current models
+        current_models = self.app.config.active_models.mps_models
+        if current_models:
+            self.mps_textbox.insert("1.0", "\n".join(current_models))
+
+        # Button row
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, padx=15, pady=5, sticky="ew")
+
+        save_btn = ctk.CTkButton(
+            btn_frame,
+            text="Save",
+            width=80,
+            command=self._save_mps_models
+        )
+        save_btn.pack(side="left", padx=(0, 10))
+
+        clear_btn = ctk.CTkButton(
+            btn_frame,
+            text="Clear All",
+            width=80,
+            fg_color="gray",
+            command=self._clear_mps_models
+        )
+        clear_btn.pack(side="left")
+
+        # Count label
+        self.mps_count_label = ctk.CTkLabel(
+            btn_frame,
+            text=f"{len(current_models)} models configured",
+            text_color="gray"
+        )
+        self.mps_count_label.pack(side="right")
+
+        # Recent days setting
+        recent_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        recent_frame.grid(row=4, column=0, padx=15, pady=(10, 15), sticky="w")
+
+        ctk.CTkLabel(
+            recent_frame,
+            text="Also prioritize models with data in last"
+        ).pack(side="left")
+
+        self.recent_days_entry = ctk.CTkEntry(
+            recent_frame,
+            width=50,
+            justify="center"
+        )
+        self.recent_days_entry.pack(side="left", padx=5)
+        self.recent_days_entry.insert(0, str(self.app.config.active_models.recent_days))
+
+        ctk.CTkLabel(recent_frame, text="days").pack(side="left")
+
+    def _save_mps_models(self):
+        """Save MPS model list to config."""
+        text = self.mps_textbox.get("1.0", "end-1c")
+        models = [m.strip() for m in text.split("\n") if m.strip()]
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_models = []
+        for m in models:
+            if m not in seen:
+                seen.add(m)
+                unique_models.append(m)
+
+        self.app.config.active_models.mps_models = unique_models
+
+        # Save recent days
+        try:
+            days = int(self.recent_days_entry.get())
+            self.app.config.active_models.recent_days = max(1, min(365, days))
+        except ValueError:
+            pass
+
+        self.app.config.save()
+        self.mps_count_label.configure(text=f"{len(unique_models)} models configured")
+
+        messagebox.showinfo("Saved", f"MPS model list saved ({len(unique_models)} models)")
+
+    def _clear_mps_models(self):
+        """Clear all MPS models."""
+        self.mps_textbox.delete("1.0", "end")
+        self.mps_count_label.configure(text="0 models configured")
 
     def _create_appearance_section(self, container):
         """Create appearance settings section."""

@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from laser_trim_analyzer.core.models import AnalysisResult, AnalysisStatus, TrackData
 from laser_trim_analyzer.core.processor import Processor
 from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.threads import get_thread_manager
 from laser_trim_analyzer.export import (
     export_single_result, export_batch_results,
@@ -514,6 +515,9 @@ class AnalyzePage(ctk.CTkFrame):
 
             # Get filter values
             model = self.model_filter.get()
+            # Strip (inactive) suffix if present
+            if " (inactive)" in model:
+                model = model.replace(" (inactive)", "")
             status = self.status_filter.get()
             serial = self.serial_filter.get().strip()
 
@@ -573,7 +577,18 @@ class AnalyzePage(ctk.CTkFrame):
 
             # Get models list for dropdown - separate try to ensure dropdown works even if data fails
             try:
-                models = db.get_models_list()
+                config = get_config()
+                prioritized = db.get_models_list_prioritized(
+                    mps_models=config.active_models.mps_models,
+                    recent_days=config.active_models.recent_days
+                )
+                # Build model list with inactive suffix
+                models = []
+                for m in prioritized:
+                    if m['status'] == 'inactive':
+                        models.append(f"{m['model']} (inactive)")
+                    else:
+                        models.append(m['model'])
             except Exception as e:
                 logger.error(f"Failed to get models list: {e}")
                 models = []
