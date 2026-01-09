@@ -1223,7 +1223,10 @@ class ChartWidget(ctk.CTkFrame):
 
         # Plot detection period (colored by drift status)
         if detection_x:
-            detection_color = COLORS['fail'] if is_drifting else COLORS['pass']
+            if is_drifting:
+                detection_color = COLORS['fail'] if drift_direction == 'up' else COLORS['warning']
+            else:
+                detection_color = COLORS['pass']
             ax.scatter(detection_x, detection_y, color=detection_color, s=30, alpha=0.8,
                       label=f'Detection ({len(detection_x)} samples)', zorder=3)
 
@@ -1257,12 +1260,20 @@ class ChartWidget(ctk.CTkFrame):
                            alpha=0.1, color=COLORS['pass'])
 
         # Drift status annotation
-        status_text = "DRIFTING" if is_drifting else "STABLE"
-        status_color = COLORS['fail'] if is_drifting else COLORS['pass']
-        direction_text = f" ({drift_direction})" if drift_direction else ""
+        if is_drifting:
+            if drift_direction == 'up':
+                status_text = "DRIFTING (up)"
+                status_color = COLORS['fail']  # Red - degrading
+            else:
+                status_text = "DRIFTING (down)"
+                status_color = COLORS['warning']  # Yellow - improving
+        else:
+            status_text = "STABLE"
+            status_color = COLORS['pass']  # Green
+        
 
         # Info box in upper right
-        info_lines = [f"Status: {status_text}{direction_text}"]
+        info_lines = [f"Status: {status_text}"]
         if ewma_value is not None and center is not None:
             # Show EWMA relative to mean
             diff = ewma_value - center
