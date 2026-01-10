@@ -893,6 +893,77 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw()
 
+    def plot_line_chart(
+        self,
+        dates: List[str],
+        values: List[float],
+        rolling_avg: Optional[List[float]] = None,
+        title: str = "Trend",
+        ylabel: str = "Value",
+        y_range: Optional[tuple] = None,
+        threshold: Optional[float] = None,
+    ) -> None:
+        """
+        Plot line chart with optional rolling average and threshold.
+
+        Args:
+            dates: X-axis date labels
+            values: Y-axis values
+            rolling_avg: Rolling average values (optional)
+            title: Chart title
+            ylabel: Y-axis label
+            y_range: Tuple of (min, max) for Y-axis, or None for auto
+            threshold: Horizontal threshold line (optional)
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not values or len(values) < 2:
+            self.show_placeholder("Insufficient data for line chart")
+            return
+
+        x = list(range(len(values)))
+
+        # Plot main line
+        ax.plot(x, values, color=COLORS['info'], linewidth=2,
+               marker='o', markersize=4, alpha=0.8, label='Daily Value')
+
+        # Plot rolling average if provided
+        if rolling_avg and len(rolling_avg) == len(values):
+            ax.plot(x, rolling_avg, color=COLORS['pass'], linewidth=3,
+                   alpha=0.7, label='Rolling Average')
+
+        # Add threshold line if provided
+        if threshold is not None:
+            ax.axhline(y=threshold, color=COLORS['warning'], linestyle='--',
+                      linewidth=2, alpha=0.7, label=f'Target: {threshold}%')
+
+        # Set Y-axis range
+        if y_range:
+            ax.set_ylim(y_range)
+        else:
+            # Auto range with padding
+            v_min, v_max = min(values), max(values)
+            padding = (v_max - v_min) * 0.1 if v_max > v_min else 5
+            ax.set_ylim(max(0, v_min - padding), v_max + padding)
+
+        # X-axis styling
+        step = max(1, len(x) // 10)  # Show ~10 date labels
+        ax.set_xticks(x[::step])
+        ax.set_xticklabels([dates[i] for i in x[::step]],
+                          rotation=45, ha='right', fontsize=self.style.font_size - 1)
+
+        # Labels and styling
+        ax.set_xlabel('Date', fontsize=self.style.font_size)
+        ax.set_ylabel(ylabel, fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+        ax.legend(loc='best', fontsize=self.style.font_size - 2)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
     def plot_trending_worse(
         self,
         models: List[str],

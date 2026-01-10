@@ -15,6 +15,7 @@ Features:
 import customtkinter as ctk
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 from laser_trim_analyzer.utils.threads import get_thread_manager
@@ -141,6 +142,15 @@ class TrendsPage(ctk.CTkFrame):
             width=100
         )
         refresh_btn.pack(side="right", padx=15, pady=15)
+
+        # Export PDF button
+        export_pdf_btn = ctk.CTkButton(
+            controls,
+            text="Export PDF",
+            command=self._export_summary_pdf,
+            width=120
+        )
+        export_pdf_btn.pack(side="right", padx=15, pady=15)
 
         # Status label
         self.status_label = ctk.CTkLabel(
@@ -513,9 +523,10 @@ class TrendsPage(ctk.CTkFrame):
             widget.destroy()
 
         self.content.grid_rowconfigure(0, weight=0)  # Stats row - compact
-        self.content.grid_rowconfigure(1, weight=2, minsize=300)  # Main scatter chart
-        self.content.grid_rowconfigure(2, weight=1, minsize=200)  # Distribution
-        self.content.grid_rowconfigure(3, weight=0)  # Alerts/ML - compact
+        self.content.grid_rowconfigure(1, weight=1, minsize=250)  # Sigma scatter
+        self.content.grid_rowconfigure(2, weight=1, minsize=250)  # Linearity scatter - NEW
+        self.content.grid_rowconfigure(3, weight=1, minsize=200)  # Distribution
+        self.content.grid_rowconfigure(4, weight=0)  # Alerts/ML - compact
 
         # Model stats at top
         stats_frame = ctk.CTkFrame(self.content)
@@ -581,6 +592,15 @@ class TrendsPage(ctk.CTkFrame):
         self.timeline_dropdown.set("All Data")
         self.timeline_dropdown.pack(side="left")
 
+        export_pdf_btn = ctk.CTkButton(
+            timeline_frame,
+            text="Export PDF",
+            command=self._export_detail_pdf,
+            width=100,
+            height=28
+        )
+        export_pdf_btn.pack(side="right", padx=(10, 0))
+
         self._scatter_placeholder = ctk.CTkLabel(
             self._scatter_frame,
             text="Loading trend data...",
@@ -589,9 +609,32 @@ class TrendsPage(ctk.CTkFrame):
         self._scatter_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.scatter_chart = None
 
+        # Linearity scatter chart - placeholder
+        self._linearity_frame = ctk.CTkFrame(self.content)
+        self._linearity_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+
+        # Header row
+        linearity_header = ctk.CTkFrame(self._linearity_frame, fg_color="transparent")
+        linearity_header.pack(fill="x", padx=15, pady=(15, 5))
+
+        linearity_label = ctk.CTkLabel(
+            linearity_header,
+            text="Linearity Pass Rate Trend",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        linearity_label.pack(side="left", anchor="w")
+
+        self._linearity_placeholder = ctk.CTkLabel(
+            self._linearity_frame,
+            text="Loading linearity trend data...",
+            text_color="gray"
+        )
+        self._linearity_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.linearity_chart = None
+
         # Distribution chart - placeholder
         self._dist_frame = ctk.CTkFrame(self.content)
-        self._dist_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self._dist_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
 
         dist_label = ctk.CTkLabel(
             self._dist_frame,
@@ -610,7 +653,7 @@ class TrendsPage(ctk.CTkFrame):
 
         # Bottom row: Alerts and ML side by side
         bottom_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        bottom_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 10))
+        bottom_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
         bottom_frame.grid_columnconfigure(0, weight=1)
         bottom_frame.grid_columnconfigure(1, weight=1)
 
@@ -661,6 +704,18 @@ class TrendsPage(ctk.CTkFrame):
         self._chart_widgets.append(self.scatter_chart)
         self.scatter_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.scatter_chart.show_placeholder("Loading trend data...")
+
+        # Create linearity chart
+        if self._linearity_placeholder and self._linearity_placeholder.winfo_exists():
+            self._linearity_placeholder.destroy()
+        if not self.linearity_chart:
+            self.linearity_chart = ChartWidget(
+                self._linearity_frame,
+                style=ChartStyle(figure_size=(10, 4), dpi=100)
+            )
+            self._chart_widgets.append(self.linearity_chart)
+            self.linearity_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+            self.linearity_chart.show_placeholder("Loading linearity trend data...")
 
         # Create distribution chart
         if self._dist_placeholder:
@@ -820,6 +875,7 @@ class TrendsPage(ctk.CTkFrame):
         # Re-render charts with filtered data (no need to reload from DB)
         if self.model_trend_data:
             self._update_scatter_chart_with_filter()
+            self._update_linearity_chart_with_filter()
 
     def _update_scatter_chart_with_filter(self):
         """Update the scatter chart with current timeline filter applied."""
@@ -884,6 +940,68 @@ class TrendsPage(ctk.CTkFrame):
             rolling_avg=rolling_vals,
             title=f"Sigma Gradient Trend - {self.selected_model}{filter_suffix}",
             ylabel="Sigma Gradient",
+        )
+
+    def _update_linearity_chart_with_filter(self):
+        """Update linearity chart with aggregated pass rate by day."""
+        if not self.model_trend_data or not self.linearity_chart:
+            return
+
+        # Get linearity pass rates by day from database
+        linearity_pass_rates = self.model_trend_data.get("linearity_pass_rates_by_day", [])
+
+        if not linearity_pass_rates:
+            self.linearity_chart.show_placeholder("No linearity data available")
+            return
+
+        # Apply timeline filter - use RELATIVE to data, not absolute calendar dates
+        if self.chart_timeline_days > 0 and linearity_pass_rates:
+            # Find the most recent date in the data
+            most_recent_str = max(pr["date"] for pr in linearity_pass_rates)
+            most_recent = datetime.strptime(most_recent_str, "%Y-%m-%d")
+            cutoff_date = most_recent - timedelta(days=self.chart_timeline_days)
+            linearity_pass_rates = [
+                pr for pr in linearity_pass_rates
+                if datetime.strptime(pr["date"], "%Y-%m-%d") >= cutoff_date
+            ]
+
+        if len(linearity_pass_rates) < 2:
+            self.linearity_chart.show_placeholder("Insufficient linearity data for selected range")
+            return
+
+        # Extract dates and pass rates
+        dates = [pr["date"] for pr in linearity_pass_rates]
+        pass_rates = [pr["pass_rate"] for pr in linearity_pass_rates]
+        totals = [pr["total"] for pr in linearity_pass_rates]
+
+        # Format dates for display
+        display_dates = [datetime.strptime(d, "%Y-%m-%d").strftime("%m/%d/%y") for d in dates]
+
+        # Calculate rolling average of pass rates
+        rolling_avg = None
+        window_size = min(self.rolling_window, len(pass_rates))
+        if window_size > 1 and pass_rates:
+            rolling_avg = []
+            for i in range(len(pass_rates)):
+                start_idx = max(0, i - window_size + 1)
+                # Weighted average by totals
+                window_rates = pass_rates[start_idx:i + 1]
+                window_totals = totals[start_idx:i + 1]
+                weighted_avg = sum(r * t for r, t in zip(window_rates, window_totals)) / sum(window_totals)
+                rolling_avg.append(weighted_avg)
+
+        # Determine title suffix based on filter
+        filter_suffix = f" (Last {self.chart_timeline_days} Days)" if self.chart_timeline_days > 0 else ""
+
+        # Plot as line chart (not scatter)
+        self.linearity_chart.plot_line_chart(
+            dates=display_dates,
+            values=pass_rates,
+            rolling_avg=rolling_avg,
+            title=f"Linearity Pass Rate - {self.selected_model}{filter_suffix}",
+            ylabel="Pass Rate (%)",
+            y_range=(0, 100),  # Pass rate is 0-100%
+            threshold=80,  # Optional: target pass rate line
         )
 
     def _refresh_data(self):
@@ -1405,6 +1523,9 @@ class TrendsPage(ctk.CTkFrame):
 
         # Update scatter chart using the filter method (applies timeline filter)
         self._update_scatter_chart_with_filter()
+
+        # Update linearity chart
+        self._update_linearity_chart_with_filter()
 
         # Update distribution - only show histogram for 20+ samples
         # For small sample sizes, the trend chart above shows everything needed
@@ -1968,3 +2089,79 @@ class TrendsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=10)
         )
         error_label.pack(padx=10, pady=20)
+
+    def _export_summary_pdf(self):
+        """Export summary view to PDF."""
+        from tkinter import filedialog, messagebox
+        from laser_trim_analyzer.export.trends_pdf import export_trends_summary_pdf
+
+        if not self.active_models_data:
+            logger.warning("No summary data to export")
+            messagebox.showwarning("No Data", "No summary data available to export.")
+            return
+
+        # File dialog
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_name = f"trends_summary_{timestamp}.pdf"
+
+        file_path = filedialog.asksaveasfilename(
+            title="Export Summary to PDF",
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            export_trends_summary_pdf(self.active_models_data, Path(file_path))
+            logger.info(f"Exported summary PDF to: {file_path}")
+            messagebox.showinfo("Export Complete", f"PDF exported successfully to:\n{file_path}")
+        except Exception as e:
+            logger.error(f"Failed to export summary PDF: {e}", exc_info=True)
+            messagebox.showerror("Export Failed", f"Failed to export PDF:\n{str(e)}")
+
+    def _export_detail_pdf(self):
+        """Export detail view to PDF."""
+        from tkinter import filedialog, messagebox
+        from laser_trim_analyzer.export.trends_pdf import export_trends_detail_pdf
+
+        if not self.model_trend_data or not self.selected_model:
+            logger.warning("No model data to export")
+            messagebox.showwarning("No Data", "No model data available to export.")
+            return
+
+        # Gather stats from UI labels
+        model_stats = {
+            key: label.cget("text")
+            for key, label in self.detail_stat_labels.items()
+        }
+
+        # File dialog
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        model_safe = self.selected_model.replace(" ", "_")
+        default_name = f"trends_{model_safe}_{timestamp}.pdf"
+
+        file_path = filedialog.asksaveasfilename(
+            title="Export Model Trends to PDF",
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            export_trends_detail_pdf(
+                self.selected_model,
+                self.model_trend_data,
+                model_stats,
+                Path(file_path)
+            )
+            logger.info(f"Exported detail PDF to: {file_path}")
+            messagebox.showinfo("Export Complete", f"PDF exported successfully to:\n{file_path}")
+        except Exception as e:
+            logger.error(f"Failed to export detail PDF: {e}", exc_info=True)
+            messagebox.showerror("Export Failed", f"Failed to export PDF:\n{str(e)}")

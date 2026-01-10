@@ -1668,7 +1668,7 @@ class DatabaseManager:
                 .distinct()
                 .all()
             )
-            model_list = [m[0] for m in models if m[0]]
+            model_list = [m[0] for m in models if m[0] and m[0] != "Unknown"]
             return sorted(model_list, key=_model_sort_key)
 
     def get_models_list_prioritized(
@@ -1711,7 +1711,7 @@ class DatabaseManager:
             inactive_list = []
 
             for model, last_date, count in results:
-                if not model:
+                if not model or model == "Unknown":
                     continue
 
                 entry = {
@@ -1800,7 +1800,7 @@ class DatabaseManager:
                 sigma_passed = row.sigma_passed or 0
                 linearity_passed = row.linearity_passed or 0
 
-                if not model or total == 0:
+                if not model or total == 0 or model == "Unknown":
                     continue
 
                 pass_rate = (passed / total * 100)
@@ -2104,6 +2104,10 @@ class DatabaseManager:
                     DBTrackResult.sigma_threshold,
                     DBTrackResult.sigma_pass,
                     DBTrackResult.is_anomaly,
+                    DBTrackResult.final_linearity_error_shifted,
+                    DBTrackResult.linearity_spec,
+                    DBTrackResult.linearity_pass,
+                    DBTrackResult.linearity_fail_points,
                 )
                 .join(DBTrackResult)
                 .filter(
@@ -2125,7 +2129,8 @@ class DatabaseManager:
 
             # Extract data points
             data_points = []
-            for file_date, status, sigma_gradient, sigma_threshold, sigma_pass, is_anomaly in results:
+            for file_date, status, sigma_gradient, sigma_threshold, sigma_pass, is_anomaly, \
+                linearity_error, linearity_spec, linearity_pass, fail_points in results:
                 if file_date and sigma_gradient is not None:
                     data_points.append({
                         "date": file_date,
@@ -2134,11 +2139,19 @@ class DatabaseManager:
                         "sigma_pass": sigma_pass,
                         "status": status.value if status else "UNKNOWN",
                         "is_anomaly": is_anomaly or False,
+                        "linearity_error": linearity_error,
+                        "linearity_spec": linearity_spec,
+                        "linearity_pass": linearity_pass,
+                        "fail_points": fail_points or 0,
                     })
 
             # Calculate threshold (use mode of thresholds)
             thresholds = [d["sigma_threshold"] for d in data_points if d["sigma_threshold"]]
             threshold = max(set(thresholds), key=thresholds.count) if thresholds else None
+
+            # Calculate linearity spec (use mode of specs)
+            linearity_specs = [d["linearity_spec"] for d in data_points if d["linearity_spec"]]
+            linearity_spec = max(set(linearity_specs), key=linearity_specs.count) if linearity_specs else None
 
             # Calculate daily pass rates for rolling average
             from collections import defaultdict
@@ -2156,6 +2169,27 @@ class DatabaseManager:
             for day in sorted_days:
                 d = daily_data[day]
                 pass_rates_by_day.append({
+                    "date": day,
+                    "pass_rate": (d["passed"] / d["total"] * 100) if d["total"] > 0 else 0,
+                    "total": d["total"],
+                })
+
+            # Calculate daily LINEARITY pass rates
+            linearity_daily_data = defaultdict(lambda: {"passed": 0, "total": 0})
+
+            for dp in data_points:
+                if dp["linearity_pass"] is not None:  # Only count units with linearity data
+                    day_key = dp["date"].strftime("%Y-%m-%d")
+                    linearity_daily_data[day_key]["total"] += 1
+                    if dp["linearity_pass"]:
+                        linearity_daily_data[day_key]["passed"] += 1
+
+            # Sort by date and calculate linearity pass rates
+            sorted_lin_days = sorted(linearity_daily_data.keys())
+            linearity_pass_rates_by_day = []
+            for day in sorted_lin_days:
+                d = linearity_daily_data[day]
+                linearity_pass_rates_by_day.append({
                     "date": day,
                     "pass_rate": (d["passed"] / d["total"] * 100) if d["total"] > 0 else 0,
                     "total": d["total"],
@@ -2185,7 +2219,9 @@ class DatabaseManager:
                 "data_points": data_points,
                 "rolling_averages": rolling_averages,
                 "pass_rates_by_day": pass_rates_by_day,
+                "linearity_pass_rates_by_day": linearity_pass_rates_by_day,
                 "threshold": threshold,
+                "linearity_spec": linearity_spec,
                 "total_samples": len(data_points),
             }
 
