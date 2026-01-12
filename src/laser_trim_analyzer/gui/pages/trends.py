@@ -1938,8 +1938,13 @@ class TrendsPage(ctk.CTkFrame):
             elif is_drifting:
                 indicator = "●"  # Filled circle - drifting
                 direction = status.get("direction", "")
-                color = "#e74c3c"  # Red
-                status_text = f"DRIFTING ({direction})" if direction else "DRIFTING"
+                
+                if direction == "up":
+                    color = "#e74c3c"  # Red - quality degrading
+                    status_text = "DRIFTING (up) ↑"
+                else:  # down
+                    color = "#f39c12"  # Yellow/Orange - quality improving
+                    status_text = "DRIFTING (down) ↓"
             else:
                 indicator = "●"  # Filled circle - stable
                 color = "#27ae60"  # Green
