@@ -85,12 +85,12 @@ class DashboardPage(ctk.CTkFrame):
         content.grid_rowconfigure(1, weight=1, minsize=200)  # Main row - expandable
         content.grid_rowconfigure(2, weight=0, minsize=100)  # Model breakdown - fixed
 
-        # Health Score Card
+        # Linearity Quality Card (primary metric)
         self.health_card = self._create_metric_card(content)
         self.health_card.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         self._update_card(
             self.health_card,
-            title="Overall Health",
+            title="Linearity Quality",
             value="--",
             subtitle="Loading...",
             color="gray"
@@ -107,13 +107,13 @@ class DashboardPage(ctk.CTkFrame):
             color="gray"
         )
 
-        # Last Batch Stats Card
+        # Sigma Process Health Card (leading indicator)
         self.batch_card = self._create_metric_card(content)
         self.batch_card.grid(row=0, column=2, padx=10, pady=10, sticky="nsew")
         self._update_card(
             self.batch_card,
-            title="Last Batch",
-            value="0",
+            title="Sigma Process Health",
+            value="--",
             subtitle="Loading...",
             color="gray"
         )
@@ -167,7 +167,7 @@ class DashboardPage(ctk.CTkFrame):
 
         chart_label = ctk.CTkLabel(
             chart_frame,
-            text="Pass Rate Trend (7 Days)",
+            text="Linearity Pass Rate Trend (90 Days)",
             font=ctk.CTkFont(size=16, weight="bold")
         )
         chart_label.pack(padx=15, pady=15, anchor="w")
@@ -231,7 +231,7 @@ class DashboardPage(ctk.CTkFrame):
 
         model_label = ctk.CTkLabel(
             self.model_frame,
-            text="Top Models by Volume",
+            text="Where to Focus (Impact Ranking)",
             font=ctk.CTkFont(size=16, weight="bold")
         )
         model_label.pack(padx=15, pady=15, anchor="w")
@@ -316,7 +316,7 @@ class DashboardPage(ctk.CTkFrame):
         """Load data from database in background."""
         try:
             db = get_database()
-            stats = db.get_dashboard_stats()
+            stats = db.get_dashboard_stats(days_back=90)
             self.stats = stats
 
             # Get last batch stats
@@ -328,14 +328,18 @@ class DashboardPage(ctk.CTkFrame):
             # Also get recent alerts
             alerts = db.get_alerts(limit=5)
 
-            # Get model breakdown
-            model_stats = db.get_model_stats(limit=5)
+            # Get impact-ranked model prioritization (linearity-focused)
+            try:
+                priority_models = db.get_linearity_prioritization(days_back=90, min_samples=10)
+            except Exception as e:
+                logger.debug(f"Could not load prioritization: {e}")
+                priority_models = []
 
             # Get ML drift status
             drift_alerts = self._get_drift_alerts(db)
 
             # Update UI on main thread
-            self.after(0, lambda: self._update_display(stats, alerts, model_stats, drift_alerts, batch_stats, overall_stats))
+            self.after(0, lambda: self._update_display(stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats))
 
         except Exception as e:
             logger.error(f"Failed to load dashboard data: {e}")
@@ -373,7 +377,7 @@ class DashboardPage(ctk.CTkFrame):
         self,
         stats: Dict[str, Any],
         alerts: List[Dict[str, Any]],
-        model_stats: List[Dict[str, Any]],
+        priority_models: List[Dict[str, Any]],
         drift_alerts: Optional[List[Dict[str, Any]]] = None,
         batch_stats: Optional[Dict[str, Any]] = None,
         overall_stats: Optional[Dict[str, Any]] = None
@@ -399,33 +403,32 @@ class DashboardPage(ctk.CTkFrame):
             newest_date = None
             unique_models = 0
 
-        # Health card color based on pass rate
-        if pass_rate >= 95:
+        # Linearity is the primary quality metric
+        linearity_pass_rate = 0.0
+        sigma_pass_rate = 0.0
+        if overall_stats:
+            linearity_pass_rate = overall_stats.get("linearity_pass_rate", 0)
+            sigma_pass_rate = overall_stats.get("sigma_pass_rate", 0)
+
+        # Linearity quality card with realistic thresholds
+        if linearity_pass_rate >= 80:
             health_color = "#27ae60"  # Green
-        elif pass_rate >= 85:
+        elif linearity_pass_rate >= 65:
+            health_color = "#2ecc71"  # Light green
+        elif linearity_pass_rate >= 50:
             health_color = "#f39c12"  # Orange
-        elif pass_rate >= 70:
-            health_color = "#e67e22"  # Dark orange
         else:
             health_color = "#e74c3c"  # Red
 
-        # Update health card with overall pass rate
-        sigma_pass_rate = overall_stats.get("sigma_pass_rate", 0)
-        linearity_pass_rate = overall_stats.get("linearity_pass_rate", 0)
         self._update_card(
             self.health_card,
-            title="Overall Health",
-            value=f"{pass_rate:.1f}%",
-            subtitle=f"Sigma: {sigma_pass_rate:.1f}% | Lin: {linearity_pass_rate:.1f}%",
+            title="Linearity Quality",
+            value=f"{linearity_pass_rate:.1f}%",
+            subtitle=f"Sigma: {sigma_pass_rate:.1f}% | Overall: {pass_rate:.1f}%",
             color=health_color
         )
 
         # Update files card with overall stats
-        if oldest_date and newest_date:
-            date_range = f"{oldest_date.strftime('%m/%d/%y')} - {newest_date.strftime('%m/%d/%y')}"
-        else:
-            date_range = "No data"
-
         self._update_card(
             self.files_card,
             title="Database Total",
@@ -434,34 +437,21 @@ class DashboardPage(ctk.CTkFrame):
             color="white"
         )
 
-        # Update batch card with last batch stats
-        if batch_stats and batch_stats.get("has_batch"):
-            batch_files = batch_stats.get("files_processed", 0)
-            batch_passed = batch_stats.get("passed", 0)
-            batch_warnings = batch_stats.get("warnings", 0)
-            batch_failed = batch_stats.get("failed", 0)
-            batch_end = batch_stats.get("batch_end")
-
-            if batch_end:
-                batch_time = batch_end.strftime("%m/%d %H:%M")
-            else:
-                batch_time = "Unknown"
-
-            self._update_card(
-                self.batch_card,
-                title="Last Batch",
-                value=f"{batch_files:,}",
-                subtitle=f"✓{batch_passed} ⚠{batch_warnings} ✗{batch_failed} | {batch_time}",
-                color="white"
-            )
+        # Sigma Process Health card (leading indicator)
+        if sigma_pass_rate >= 80:
+            sigma_color = "#27ae60"  # Green
+        elif sigma_pass_rate >= 60:
+            sigma_color = "#f39c12"  # Orange
         else:
-            self._update_card(
-                self.batch_card,
-                title="Last Batch",
-                value="0",
-                subtitle="No recent processing",
-                color="gray"
-            )
+            sigma_color = "#e74c3c"  # Red
+
+        self._update_card(
+            self.batch_card,
+            title="Sigma Process Health",
+            value=f"{sigma_pass_rate:.1f}%",
+            subtitle="Leading indicator — watch for trends",
+            color=sigma_color
+        )
 
         # Update alerts
         self._update_alerts_display(alerts)
@@ -469,11 +459,11 @@ class DashboardPage(ctk.CTkFrame):
         # Update drift alerts
         self._update_drift_display(drift_alerts or [])
 
-        # Update trend chart
+        # Update trend chart with linearity trend
         self._update_trend_chart(stats)
 
-        # Update model breakdown
-        self._update_model_display(model_stats)
+        # Update model prioritization display
+        self._update_model_display(priority_models)
 
         # Update timestamp
         self.last_update_label.configure(
@@ -522,14 +512,22 @@ class DashboardPage(ctk.CTkFrame):
         self.drift_list.configure(state="disabled")
 
     def _update_trend_chart(self, stats: Dict[str, Any]):
-        """Update trend chart with pass rate data."""
+        """Update trend chart with linearity pass rate data."""
         # Ensure chart is initialized before use
         self._ensure_chart_initialized()
 
-        trend_data = stats.get("daily_trend", [])
+        # Use linearity-specific daily trend, fall back to overall
+        trend_data = stats.get("linearity_daily_trend", []) or stats.get("daily_trend", [])
 
         if not trend_data:
             self.trend_chart.show_placeholder("No trend data available")
+            return
+
+        # Filter to only days with actual data (skip zero-total days)
+        trend_data = [d for d in trend_data if d.get("total", 0) > 0]
+
+        if not trend_data:
+            self.trend_chart.show_placeholder("No data in selected period")
             return
 
         # Extract dates and pass rates
@@ -537,7 +535,7 @@ class DashboardPage(ctk.CTkFrame):
         pass_rates = [d.get("pass_rate", 0) for d in trend_data]
 
         if len(pass_rates) < 2:
-            self.trend_chart.show_placeholder("Insufficient data for trend")
+            self.trend_chart.show_placeholder("Insufficient data for trend (need 2+ days)")
             return
 
         # Plot SPC-style chart
@@ -551,22 +549,30 @@ class DashboardPage(ctk.CTkFrame):
             ylabel="Pass Rate %"
         )
 
-    def _update_model_display(self, model_stats: List[Dict[str, Any]]):
-        """Update model breakdown display."""
+    def _update_model_display(self, priority_models: List[Dict[str, Any]]):
+        """Update model breakdown with impact-ranked prioritization."""
         self.model_text.configure(state="normal")
         self.model_text.delete("1.0", "end")
 
-        if not model_stats:
-            self.model_text.insert("end", "No model data available")
+        if not priority_models:
+            self.model_text.insert("end", "No model data available (need 10+ samples per model)")
         else:
             lines = []
-            for stat in model_stats:
-                model = stat.get("model", "Unknown")
-                count = stat.get("count", 0)
-                pass_rate = stat.get("pass_rate", 0)
-                sigma_rate = stat.get("sigma_pass_rate", 0)
-                lin_rate = stat.get("linearity_pass_rate", 0)
-                lines.append(f"  {model}: {count} files | Pass: {pass_rate:.0f}% | Sigma: {sigma_rate:.0f}% | Lin: {lin_rate:.0f}%")
+            for i, m in enumerate(priority_models[:10]):  # Top 10
+                model = m.get("model", "Unknown")
+                lin_rate = m.get("linearity_pass_rate", 0)
+                failed = m.get("failed_units", 0)
+                near_miss = m.get("near_miss_count", 0)
+                impact = m.get("impact_score", 0)
+                rec = m.get("recommendation", "")
+                total = m.get("total_units", 0)
+
+                rank = f"#{i+1}"
+                lines.append(f"  {rank}  {model}  [Impact: {impact:.0f}]")
+                lines.append(f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss")
+                if rec:
+                    lines.append(f"      >> {rec}")
+                lines.append("")
             self.model_text.insert("end", "\n".join(lines))
 
         self.model_text.configure(state="disabled")
@@ -575,7 +581,7 @@ class DashboardPage(ctk.CTkFrame):
         """Show error state."""
         self._update_card(
             self.health_card,
-            title="Overall Health",
+            title="Linearity Quality",
             value="--",
             subtitle=f"Error: {error[:30]}...",
             color="red"

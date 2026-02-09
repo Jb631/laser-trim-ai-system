@@ -396,6 +396,34 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
                 ws[f"A{row}"] = "Trimmed R:"
                 ws[f"B{row}"] = f"{track.trimmed_resistance}"
                 row += 1
+            if track.resistance_change is not None:
+                pct = track.resistance_change_percent
+                pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
+                ws[f"A{row}"] = "R Change:"
+                ws[f"B{row}"] = f"{track.resistance_change:+.2f}{pct_str}"
+                row += 1
+
+        # Trim Effectiveness (if calculated)
+        if track.trim_improvement_percent is not None or track.untrimmed_rms_error is not None:
+            ws[f"A{row}"] = "Trim Effectiveness"
+            ws[f"A{row}"].font = Font(bold=True)
+            row += 1
+            if track.untrimmed_rms_error is not None:
+                ws[f"A{row}"] = "Untrimmed RMS Error:"
+                ws[f"B{row}"] = f"{track.untrimmed_rms_error:.4f}"
+                row += 1
+            if track.trimmed_rms_error is not None:
+                ws[f"A{row}"] = "Trimmed RMS Error:"
+                ws[f"B{row}"] = f"{track.trimmed_rms_error:.4f}"
+                row += 1
+            if track.trim_improvement_percent is not None:
+                ws[f"A{row}"] = "Trim Improvement:"
+                ws[f"B{row}"] = f"{track.trim_improvement_percent:.1f}%"
+                row += 1
+            if track.max_error_reduction_percent is not None:
+                ws[f"A{row}"] = "Max Error Reduction:"
+                ws[f"B{row}"] = f"{track.max_error_reduction_percent:.1f}%"
+                row += 1
 
         row += 2  # Space before next track
 
@@ -504,6 +532,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         "Sigma Pass", "Linearity Error (max)", "Linearity Spec", "Fail Points (sum)",
         "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Anomaly",
         "Travel Length", "Untrimmed R", "Trimmed R", "R Change %",
+        "Trim Improvement %", "Max Error Reduction %",
         "Filename"
     ]
 
@@ -554,6 +583,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 untrimmed_r = track.untrimmed_resistance
                 trimmed_r = track.trimmed_resistance
                 r_change_pct = track.resistance_change_percent
+                trim_imp = track.trim_improvement_percent
+                max_err_red = track.max_error_reduction_percent
                 is_anomaly = getattr(track, 'is_anomaly', False)
             else:
                 # Multi-track: use worst-case values for sigma, sum for fail points
@@ -575,6 +606,11 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 untrimmed_r = result.tracks[0].untrimmed_resistance
                 trimmed_r = result.tracks[0].trimmed_resistance
                 r_change_pct = result.tracks[0].resistance_change_percent
+                # Trim effectiveness: average across tracks
+                trim_imps = [t.trim_improvement_percent for t in result.tracks if t.trim_improvement_percent is not None]
+                trim_imp = sum(trim_imps) / len(trim_imps) if trim_imps else None
+                max_errs = [t.max_error_reduction_percent for t in result.tracks if t.max_error_reduction_percent is not None]
+                max_err_red = sum(max_errs) / len(max_errs) if max_errs else None
                 # Anomaly if ANY track is anomalous
                 is_anomaly = any(getattr(t, 'is_anomaly', False) for t in result.tracks)
 
@@ -607,6 +643,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             f"{untrimmed_r:.2f}" if untrimmed_r is not None else "",
             f"{trimmed_r:.2f}" if trimmed_r is not None else "",
             f"{r_change_pct:.2f}%" if r_change_pct is not None else "",
+            f"{trim_imp:.1f}%" if trim_imp is not None else "",
+            f"{max_err_red:.1f}%" if max_err_red is not None else "",
             result.metadata.filename,  # Filename at end
         ]
 

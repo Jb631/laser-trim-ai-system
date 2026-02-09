@@ -119,6 +119,12 @@ class Analyzer:
         else:
             status = AnalysisStatus.FAIL
 
+        # Calculate trim effectiveness metrics
+        trim_metrics = self._calculate_trim_effectiveness(
+            errors, track_data.get("untrimmed_errors", []),
+            untrimmed_resistance, trimmed_resistance
+        )
+
         return TrackData(
             track_id=track_id,
             status=status,
@@ -143,6 +149,8 @@ class Analyzer:
             # Anomaly detection
             is_anomaly=is_anomaly,
             anomaly_reason=anomaly_reason,
+            # Trim effectiveness
+            **trim_metrics,
             # Raw data (for plotting)
             position_data=positions,
             error_data=errors,
@@ -492,6 +500,52 @@ class Analyzer:
         except Exception as e:
             logger.debug(f"Anomaly detection error: {e}")
             return False, None
+
+    def _calculate_trim_effectiveness(
+        self,
+        trimmed_errors: List[float],
+        untrimmed_errors: List[float],
+        untrimmed_resistance: Optional[float],
+        trimmed_resistance: Optional[float],
+    ) -> Dict[str, Any]:
+        """
+        Calculate trim effectiveness metrics by comparing pre/post trim data.
+
+        Returns dict of metrics to unpack into TrackData.
+        """
+        result: Dict[str, Any] = {}
+
+        # Resistance change
+        if untrimmed_resistance and trimmed_resistance and untrimmed_resistance > 0:
+            result["resistance_change"] = trimmed_resistance - untrimmed_resistance
+
+        # Linearity improvement from trim
+        if untrimmed_errors and len(untrimmed_errors) > 0:
+            valid_untrimmed = [e for e in untrimmed_errors
+                               if e is not None and not np.isnan(e)]
+            valid_trimmed = [e for e in trimmed_errors
+                             if e is not None and not np.isnan(e)]
+
+            if valid_untrimmed and valid_trimmed:
+                untrimmed_rms = float(np.sqrt(np.mean(np.array(valid_untrimmed) ** 2)))
+                trimmed_rms = float(np.sqrt(np.mean(np.array(valid_trimmed) ** 2)))
+
+                result["untrimmed_rms_error"] = untrimmed_rms
+                result["trimmed_rms_error"] = trimmed_rms
+
+                if untrimmed_rms > 0:
+                    result["trim_improvement_percent"] = (
+                        (untrimmed_rms - trimmed_rms) / untrimmed_rms
+                    ) * 100
+
+                    max_untrimmed = max(abs(e) for e in valid_untrimmed)
+                    max_trimmed = max(abs(e) for e in valid_trimmed)
+                    if max_untrimmed > 0:
+                        result["max_error_reduction_percent"] = (
+                            (max_untrimmed - max_trimmed) / max_untrimmed
+                        ) * 100
+
+        return result
 
     def _create_failed_track(self, track_id: str, reason: str) -> TrackData:
         """Create a failed track result."""

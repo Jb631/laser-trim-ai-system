@@ -899,6 +899,7 @@ class AnalyzePage(ctk.CTkFrame):
             title=title,
             fail_points=fail_indices,
             serial_number=serial,
+            trim_improvement_percent=track.trim_improvement_percent,
             trim_date=trim_date
         )
 
@@ -1007,6 +1008,23 @@ class AnalyzePage(ctk.CTkFrame):
                         lines.append(f"    Untrimmed R: {track.untrimmed_resistance:.2f}")
                     if track.trimmed_resistance:
                         lines.append(f"    Trimmed R:   {track.trimmed_resistance:.2f}")
+                    if track.resistance_change is not None:
+                        pct = track.resistance_change_percent
+                        pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
+                        lines.append(f"    R Change:    {track.resistance_change:+.2f}{pct_str}")
+                    lines.append("")
+
+                # Trim Effectiveness (if calculated)
+                if track.trim_improvement_percent is not None or track.untrimmed_rms_error is not None:
+                    lines.append("  TRIM EFFECTIVENESS:")
+                    if track.untrimmed_rms_error is not None:
+                        lines.append(f"    Untrimmed RMS Error: {track.untrimmed_rms_error:.4f}")
+                    if track.trimmed_rms_error is not None:
+                        lines.append(f"    Trimmed RMS Error:   {track.trimmed_rms_error:.4f}")
+                    if track.trim_improvement_percent is not None:
+                        lines.append(f"    Improvement:         {track.trim_improvement_percent:.1f}%")
+                    if track.max_error_reduction_percent is not None:
+                        lines.append(f"    Max Error Reduction: {track.max_error_reduction_percent:.1f}%")
                     lines.append("")
 
             self._update_metrics("\n".join(lines))
@@ -1622,6 +1640,12 @@ class AnalyzePage(ctk.CTkFrame):
             info_lines.append(f"Untrimmed R: {track.untrimmed_resistance}")
         if track.trimmed_resistance:
             info_lines.append(f"Trimmed R: {track.trimmed_resistance}")
+        if track.resistance_change is not None:
+            pct = track.resistance_change_percent
+            pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
+            info_lines.append(f"R Change: {track.resistance_change:+.2f}{pct_str}")
+        if track.trim_improvement_percent is not None:
+            info_lines.append(f"Trim Improvement: {track.trim_improvement_percent:.1f}%")
 
         y_pos = 0.95
         ax.text(0.05, 0.98, "Unit Information", fontsize=11, fontweight='bold',

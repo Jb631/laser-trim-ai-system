@@ -276,11 +276,24 @@ class ModelThresholdOptimizer:
             # Normalize to [0,1] range for percentile lookup
             cumsum_norm = cumsum / cumsum[-1]
 
-            # 3. Find weighted 10th percentile of failures
+            # 3. Find weighted 10th percentile of failures with interpolation
             # This captures the low-sigma failures that severe failures "pull down"
             # More severe failures = more weight = shifts distribution toward low sigma
             p10_idx = np.searchsorted(cumsum_norm, 0.10)
-            weighted_fail_low = sorted_sigma[min(p10_idx, len(sorted_sigma) - 1)]
+            p10_idx = min(p10_idx, len(sorted_sigma) - 1)
+            # Linear interpolation between adjacent values for true percentile
+            if p10_idx > 0 and p10_idx < len(sorted_sigma):
+                lower_cum = cumsum_norm[p10_idx - 1] if p10_idx > 0 else 0.0
+                upper_cum = cumsum_norm[p10_idx]
+                if upper_cum > lower_cum:
+                    frac = (0.10 - lower_cum) / (upper_cum - lower_cum)
+                    weighted_fail_low = float(
+                        sorted_sigma[p10_idx - 1] + frac * (sorted_sigma[p10_idx] - sorted_sigma[p10_idx - 1])
+                    )
+                else:
+                    weighted_fail_low = float(sorted_sigma[p10_idx])
+            else:
+                weighted_fail_low = float(sorted_sigma[p10_idx])
         else:
             logger.debug(f"Using fallback fail_sigma_min for {self.model_name}")
             weighted_fail_low = self.fail_sigma_min

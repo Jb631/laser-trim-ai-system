@@ -203,10 +203,11 @@ class TrendsPage(ctk.CTkFrame):
 
         self.content.grid_rowconfigure(0, weight=0)  # Stats row - compact
         self.content.grid_rowconfigure(1, weight=1, minsize=200)  # Alerts chart
-        self.content.grid_rowconfigure(2, weight=1, minsize=180)  # Top 5 / Recent Issues
-        self.content.grid_rowconfigure(3, weight=1, minsize=180)  # Trending Worse / Low Data
-        self.content.grid_rowconfigure(4, weight=1, minsize=250)  # Drift Detection section
-        self.content.grid_rowconfigure(5, weight=0)  # ML section - compact
+        self.content.grid_rowconfigure(2, weight=0, minsize=120)  # Impact Prioritization
+        self.content.grid_rowconfigure(3, weight=1, minsize=180)  # Top 5 / Recent Issues
+        self.content.grid_rowconfigure(4, weight=1, minsize=180)  # Trending Worse / Low Data
+        self.content.grid_rowconfigure(5, weight=1, minsize=250)  # Drift Detection section
+        self.content.grid_rowconfigure(6, weight=0)  # ML section - compact
 
         # Summary stats at top
         stats_frame = ctk.CTkFrame(self.content)
@@ -224,12 +225,12 @@ class TrendsPage(ctk.CTkFrame):
         stat_names = [
             ("active_models", "Active Models"),
             ("total_samples", "Total Samples"),
-            ("avg_pass_rate", "Avg Pass Rate"),
-            ("avg_sigma_rate", "Avg Sigma Pass"),
-            ("avg_linearity_rate", "Avg Lin Pass"),
-            ("models_at_risk", "Models at Risk"),
-            ("best_model", "Best Model"),
-            ("worst_model", "Worst Model"),
+            ("avg_linearity_rate", "Linearity Pass"),
+            ("avg_sigma_rate", "Sigma Pass"),
+            ("avg_pass_rate", "Combined Pass"),
+            ("models_at_risk", "Needs Attention"),
+            ("best_model", "Best (Linearity)"),
+            ("worst_model", "Worst (Linearity)"),
         ]
 
         for idx, (key, label) in enumerate(stat_names):
@@ -261,9 +262,24 @@ class TrendsPage(ctk.CTkFrame):
         self._alerts_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.alerts_chart = None
 
+        # Impact Prioritization section (linearity-focused)
+        self._impact_frame = ctk.CTkFrame(self.content)
+        self._impact_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+
+        impact_label = ctk.CTkLabel(
+            self._impact_frame,
+            text="Where to Focus (Impact Ranking)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        impact_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self.impact_text = ctk.CTkTextbox(self._impact_frame, height=100)
+        self.impact_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.impact_text.configure(state="disabled")
+
         # Best/Worst models side by side
         self._models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        self._models_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self._models_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
         self._models_frame.grid_columnconfigure(0, weight=1)
         self._models_frame.grid_columnconfigure(1, weight=1)
 
@@ -305,9 +321,9 @@ class TrendsPage(ctk.CTkFrame):
         self._recent_issues_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.recent_issues_chart = None
 
-        # Row 3: Trending Worse / Low Data Models
+        # Row 4: Trending Worse / Low Data Models
         self._row3_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        self._row3_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        self._row3_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
         self._row3_frame.grid_columnconfigure(0, weight=1)
         self._row3_frame.grid_columnconfigure(1, weight=1)
 
@@ -354,7 +370,7 @@ class TrendsPage(ctk.CTkFrame):
 
         # Drift Detection section
         self._drift_frame = ctk.CTkFrame(self.content)
-        self._drift_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
+        self._drift_frame.grid(row=5, column=0, sticky="nsew", padx=10, pady=5)
         self._drift_frame.grid_columnconfigure(0, weight=0, minsize=200)  # Model list
         self._drift_frame.grid_columnconfigure(1, weight=1)  # Chart area
 
@@ -426,7 +442,7 @@ class TrendsPage(ctk.CTkFrame):
 
         # ML Recommendations at bottom
         ml_frame = ctk.CTkFrame(self.content)
-        ml_frame.grid(row=5, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ml_frame.grid(row=6, column=0, sticky="ew", padx=10, pady=(5, 10))
 
         ml_header = ctk.CTkFrame(ml_frame, fg_color="transparent")
         ml_header.pack(fill="x", padx=15, pady=(15, 5))
@@ -544,11 +560,11 @@ class TrendsPage(ctk.CTkFrame):
         stat_names = [
             ("total_samples", "Total Samples"),
             ("anomalies", "Anomalies"),
-            ("sigma_pass_rate", "Sigma Pass"),
             ("linearity_pass_rate", "Linearity Pass"),
+            ("sigma_pass_rate", "Sigma Pass"),
             ("overall_pass_rate", "Overall Pass"),
-            ("avg_sigma", "Avg Sigma"),
-            ("threshold", "Threshold"),
+            ("near_miss", "Near-Miss"),
+            ("avg_trim_improvement", "Avg Trim Imp."),
             ("trend", "Trend"),
         ]
 
@@ -1038,13 +1054,14 @@ class TrendsPage(ctk.CTkFrame):
             min_samples=5
         )
 
-        # Get models requiring attention (filter to 20+ samples)
+        # Get models requiring attention (filter to 20+ samples, linearity-focused)
         alert_models = db.get_models_requiring_attention(
             days_back=self.selected_days,
             min_samples=20,  # Increased to filter out low-data models
             pass_rate_threshold=80.0,
             trend_threshold=10.0,
-            rolling_days=self.rolling_window
+            rolling_days=self.rolling_window,
+            metric="linearity"
         )
 
         # Get trending worse models
@@ -1054,6 +1071,13 @@ class TrendsPage(ctk.CTkFrame):
             trend_threshold=10.0,
             rolling_days=self.rolling_window
         )
+
+        # Get impact-ranked prioritization (linearity-focused)
+        try:
+            priority_models = db.get_linearity_prioritization(days_back=self.selected_days, min_samples=10)
+        except Exception as e:
+            logger.debug(f"Could not load prioritization: {e}")
+            priority_models = []
 
         # Get prioritized model list for dropdown (MPS first, then active, then inactive)
         prioritized_models = db.get_models_list_prioritized(
@@ -1072,7 +1096,8 @@ class TrendsPage(ctk.CTkFrame):
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
             active_models, alert_models, model_names, trending_worse,
-            mps_models=mps_models, recent_days=recent_days
+            mps_models=mps_models, recent_days=recent_days,
+            priority_models=priority_models
         ))
 
     def _load_detail_data(self, db):
@@ -1094,13 +1119,14 @@ class TrendsPage(ctk.CTkFrame):
             rolling_window=self.rolling_window
         )
 
-        # Get alerts for this model
+        # Get alerts for this model (linearity-focused)
         alert_models = db.get_models_requiring_attention(
             days_back=self.selected_days,
             min_samples=5,
             pass_rate_threshold=80.0,
             trend_threshold=10.0,
-            rolling_days=self.rolling_window
+            rolling_days=self.rolling_window,
+            metric="linearity"
         )
         model_alerts = next((a for a in alert_models if a["model"] == clean_model), None)
 
@@ -1125,9 +1151,23 @@ class TrendsPage(ctk.CTkFrame):
         active_models = db.get_active_models_summary(self.selected_days, 5)
         model_stats = next((m for m in active_models if m["model"] == clean_model), None)
 
+        # Get linearity margin analysis and prioritization data for this model
+        try:
+            margin_data = db.get_linearity_margin_analysis(clean_model, days_back=self.selected_days)
+        except Exception as e:
+            logger.debug(f"Could not load margin analysis: {e}")
+            margin_data = {}
+        model_priority = None
+        try:
+            prio_list = db.get_linearity_prioritization(days_back=self.selected_days, min_samples=5)
+            model_priority = next((m for m in prio_list if m["model"] == clean_model), None)
+        except Exception as e:
+            logger.debug(f"Could not load prioritization: {e}")
+
         # Update UI on main thread
         self.after(0, lambda: self._update_detail_display(
-            trend_data, model_alerts, ml_recommendations, model_names, model_stats
+            trend_data, model_alerts, ml_recommendations, model_names, model_stats,
+            margin_data=margin_data, model_priority=model_priority
         ))
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1142,13 +1182,14 @@ class TrendsPage(ctk.CTkFrame):
             # Try to load trained state
             ml_manager.load_all()
 
-            # Get threshold from per-model optimizer
-            threshold = ml_manager.get_threshold(self.selected_model)
+            # Get threshold from per-model optimizer (strip inactive suffix)
+            clean_model_name = self.selected_model.replace(" (inactive)", "")
+            threshold = ml_manager.get_threshold(clean_model_name)
 
             if threshold is not None:
-                optimizer = ml_manager.threshold_optimizers.get(self.selected_model)
-                profiler = ml_manager.profilers.get(self.selected_model)
-                detector = ml_manager.drift_detectors.get(self.selected_model)
+                optimizer = ml_manager.threshold_optimizers.get(clean_model_name)
+                profiler = ml_manager.profilers.get(clean_model_name)
+                detector = ml_manager.drift_detectors.get(clean_model_name)
 
                 result = {
                     "recommended_threshold": threshold,
@@ -1185,7 +1226,8 @@ class TrendsPage(ctk.CTkFrame):
         model_names: List[str],
         trending_worse: Optional[List[Dict[str, Any]]] = None,
         mps_models: Optional[List[str]] = None,
-        recent_days: int = 90
+        recent_days: int = 90,
+        priority_models: Optional[List[Dict[str, Any]]] = None
     ):
         """Update summary display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -1247,11 +1289,11 @@ class TrendsPage(ctk.CTkFrame):
         models_at_risk = len(active_alerts)  # Only count active models at risk
 
         # Best and worst models
-        sorted_by_rate = sorted(active_models, key=lambda x: x["pass_rate"], reverse=True)
+        sorted_by_rate = sorted(active_models, key=lambda x: x.get("linearity_pass_rate", 0), reverse=True)
         best_model = sorted_by_rate[0]["model"] if sorted_by_rate else "--"
         worst_model = sorted_by_rate[-1]["model"] if sorted_by_rate else "--"
-        best_rate = sorted_by_rate[0]["pass_rate"] if sorted_by_rate else 0
-        worst_rate = sorted_by_rate[-1]["pass_rate"] if sorted_by_rate else 0
+        best_rate = sorted_by_rate[0].get("linearity_pass_rate", 0) if sorted_by_rate else 0
+        worst_rate = sorted_by_rate[-1].get("linearity_pass_rate", 0) if sorted_by_rate else 0
 
         # Update stat labels
         self.summary_stat_labels["active_models"].configure(text=str(total_models))
@@ -1298,15 +1340,18 @@ class TrendsPage(ctk.CTkFrame):
         else:
             self.alerts_chart.show_placeholder("All models performing well - no alerts!")
 
-        # Update best models chart (filtered to 20+ samples)
-        sorted_with_data = sorted(models_with_data, key=lambda x: x["pass_rate"], reverse=True)
+        # Update impact prioritization section
+        self._update_impact_display(priority_models or [])
+
+        # Update best models chart (filtered to 20+ samples, sorted by linearity)
+        sorted_with_data = sorted(models_with_data, key=lambda x: x.get("linearity_pass_rate", 0), reverse=True)
         best_5 = sorted_with_data[:5]
         if best_5:
             self.best_chart.plot_pass_rate_bars(
                 models=[m["model"] for m in best_5],
-                pass_rates=[m["pass_rate"] for m in best_5],
+                pass_rates=[m.get("linearity_pass_rate", 0) for m in best_5],
                 sample_counts=[m["total"] for m in best_5],
-                title="Top 5 Performing Models",
+                title="Top 5 by Linearity",
                 highlight_threshold=80.0
             )
         else:
@@ -1402,13 +1447,41 @@ class TrendsPage(ctk.CTkFrame):
             )
             label.pack(padx=10, pady=2, anchor="w")
 
+    def _update_impact_display(self, priority_models: List[Dict[str, Any]]):
+        """Update impact prioritization section with linearity-focused data."""
+        self.impact_text.configure(state="normal")
+        self.impact_text.delete("1.0", "end")
+
+        if not priority_models:
+            self.impact_text.insert("end", "No prioritization data (need 10+ samples per model)")
+        else:
+            for i, m in enumerate(priority_models[:8]):
+                model = m.get("model", "Unknown")
+                lin_rate = m.get("linearity_pass_rate", 0)
+                failed = m.get("failed_units", 0)
+                near_miss = m.get("near_miss_count", 0)
+                impact = m.get("impact_score", 0)
+                rec = m.get("recommendation", "")
+                total = m.get("total_units", 0)
+
+                rank = f"#{i+1}"
+                self.impact_text.insert("end", f"  {rank}  {model}  [Impact: {impact:.0f}]\n")
+                self.impact_text.insert("end", f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss\n")
+                if rec:
+                    self.impact_text.insert("end", f"      >> {rec}\n")
+                self.impact_text.insert("end", "\n")
+
+        self.impact_text.configure(state="disabled")
+
     def _update_detail_display(
         self,
         trend_data: Dict[str, Any],
         model_alerts: Optional[Dict[str, Any]],
         ml_recommendations: Optional[Dict[str, Any]],
         model_names: List[str],
-        model_stats: Optional[Dict[str, Any]] = None
+        model_stats: Optional[Dict[str, Any]] = None,
+        margin_data: Optional[Dict[str, Any]] = None,
+        model_priority: Optional[Dict[str, Any]] = None
     ):
         """Update detail display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -1515,9 +1588,16 @@ class TrendsPage(ctk.CTkFrame):
             text=f"{overall_pass_rate:.1f}%",
             text_color="#27ae60" if overall_pass_rate >= 90 else "#f39c12" if overall_pass_rate >= 80 else "#e74c3c"
         )
-        self.detail_stat_labels["avg_sigma"].configure(text=f"{avg_sigma:.6f}")
-        self.detail_stat_labels["threshold"].configure(
-            text=f"{threshold:.6f}" if threshold else "--"
+        # Near-miss and trim effectiveness from prioritization data
+        near_miss = model_priority.get("near_miss_count", 0) if model_priority else 0
+        avg_trim_imp = model_priority.get("avg_trim_improvement", None) if model_priority else None
+        self.detail_stat_labels["near_miss"].configure(
+            text=f"{near_miss}",
+            text_color="#f39c12" if near_miss > 0 else "gray"
+        )
+        self.detail_stat_labels["avg_trim_improvement"].configure(
+            text=f"{avg_trim_imp:.1f}%" if avg_trim_imp is not None else "N/A",
+            text_color="white"
         )
         self.detail_stat_labels["trend"].configure(text=trend, text_color=trend_color)
 
@@ -1555,6 +1635,12 @@ class TrendsPage(ctk.CTkFrame):
         """Reset summary statistics to default values."""
         for key in self.summary_stat_labels:
             self.summary_stat_labels[key].configure(text="--", text_color="white")
+        # Also reset impact display if it exists
+        if hasattr(self, 'impact_text'):
+            self.impact_text.configure(state="normal")
+            self.impact_text.delete("1.0", "end")
+            self.impact_text.insert("end", "No data available")
+            self.impact_text.configure(state="disabled")
 
     def _reset_detail_stats(self):
         """Reset detail statistics to default values."""

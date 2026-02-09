@@ -31,6 +31,7 @@ COLORS = {
     'fail': '#e74c3c',       # Red
     'warning': '#f39c12',    # Orange
     'info': '#3498db',       # Blue
+    'secondary': '#9b59b6',  # Purple (for 4th track in comparisons)
     'untrimmed': '#3498db',  # Blue
     'trimmed': '#27ae60',    # Green
     'spec_limit': '#e74c3c', # Red
@@ -186,6 +187,7 @@ class ChartWidget(ctk.CTkFrame):
         fail_points: Optional[List[int]] = None,
         serial_number: Optional[str] = None,
         trim_date: Optional[str] = None,
+        trim_improvement_percent: Optional[float] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -212,13 +214,16 @@ class ChartWidget(ctk.CTkFrame):
 
         # Plot untrimmed data if available
         if untrimmed_positions and untrimmed_errors:
+            label_text = 'Untrimmed'
+            if trim_improvement_percent is not None:
+                label_text = f'Untrimmed (trim improved {trim_improvement_percent:.0f}%)'
             ax.plot(
                 untrimmed_positions, untrimmed_errors,
                 color=COLORS['untrimmed'],
                 linestyle='--',
                 linewidth=self.style.line_width,
                 alpha=0.7,
-                label='Untrimmed'
+                label=label_text
             )
 
         # Plot trimmed data
@@ -364,6 +369,14 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_title(title, fontsize=self.style.title_size)
         ax.legend(loc='best', fontsize=self.style.font_size - 2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        # Rotate x-axis labels and thin them if too many
+        if dates and len(dates) > 10:
+            step = max(1, len(dates) // 10)
+            ax.set_xticks(range(0, len(dates), step))
+            ax.set_xticklabels([dates[i] for i in range(0, len(dates), step)], rotation=45, ha='right')
+        elif dates:
+            ax.tick_params(axis='x', rotation=45)
 
         self.figure.tight_layout()
         self.canvas.draw()

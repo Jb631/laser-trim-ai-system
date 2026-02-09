@@ -867,6 +867,37 @@ class DatabaseManager:
                     "pass_rate": day_pass_rate,
                 })
 
+            # Linearity daily trend (track-level, independent of sigma)
+            linearity_daily_data = (
+                session.query(
+                    func.date(DBAnalysisResult.file_date).label('day'),
+                    func.count(DBTrackResult.id).label('total'),
+                    func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('passed')
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(DBAnalysisResult.file_date >= trend_start)
+                .group_by(func.date(DBAnalysisResult.file_date))
+                .all()
+            )
+
+            lin_daily_dict = {str(row.day): {'total': row.total, 'passed': row.passed or 0}
+                              for row in linearity_daily_data}
+
+            linearity_daily_trend = []
+            for i in range(days_back):
+                day = trend_start + timedelta(days=i)
+                day_str = day.strftime("%Y-%m-%d")
+                day_data = lin_daily_dict.get(day_str, {'total': 0, 'passed': 0})
+                day_total = day_data['total']
+                day_passed = day_data['passed']
+                day_pass_rate = (day_passed / day_total * 100) if day_total > 0 else 0.0
+                linearity_daily_trend.append({
+                    "date": day.strftime("%m/%d"),
+                    "total": day_total,
+                    "passed": day_passed,
+                    "pass_rate": day_pass_rate,
+                })
+
             return {
                 "total_analyses": total_analyses,
                 "total_files": total_files,
@@ -882,6 +913,7 @@ class DatabaseManager:
                 "today_count": today_count,
                 "week_count": week_count,
                 "daily_trend": daily_trend,
+                "linearity_daily_trend": linearity_daily_trend,
             }
 
     def get_last_batch_stats(self) -> Dict[str, Any]:
@@ -1362,6 +1394,16 @@ class DatabaseManager:
             lower_limits=track.lower_limits,  # Store position-dependent spec limits
             untrimmed_positions=track.untrimmed_positions,  # Store untrimmed data for charts
             untrimmed_errors=track.untrimmed_errors,  # Store untrimmed data for charts
+            # Trim effectiveness metrics
+            resistance_change=track.resistance_change,
+            resistance_change_percent=track.resistance_change_percent,
+            trim_improvement_percent=track.trim_improvement_percent,
+            untrimmed_rms_error=track.untrimmed_rms_error,
+            trimmed_rms_error=track.trimmed_rms_error,
+            max_error_reduction_percent=track.max_error_reduction_percent,
+            # Computed metrics
+            gradient_margin=track.gradient_margin,
+            plot_path=str(track.plot_path) if track.plot_path else None,
         )
 
     def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> Optional[AnalysisResult]:
@@ -1831,7 +1873,8 @@ class DatabaseManager:
         min_samples: int = 5,
         pass_rate_threshold: float = 80.0,
         trend_threshold: float = 10.0,
-        rolling_days: int = 30
+        rolling_days: int = 30,
+        metric: str = "linearity",
     ) -> List[Dict[str, Any]]:
         """
         Get models that require attention based on alert criteria.
@@ -1847,6 +1890,7 @@ class DatabaseManager:
             pass_rate_threshold: Alert if pass rate below this
             trend_threshold: Alert if trend worse by this %
             rolling_days: Rolling window for trend calculation
+            metric: Which pass rate to use - "linearity", "sigma", or "overall"
 
         Returns:
             List of models requiring attention with alert details
@@ -1858,17 +1902,30 @@ class DatabaseManager:
             # Get active models
             active_models = self.get_active_models_summary(days_back, min_samples)
 
+            # Select which rate to evaluate based on metric
+            rate_key = {
+                "linearity": "linearity_pass_rate",
+                "sigma": "sigma_pass_rate",
+                "overall": "pass_rate",
+            }.get(metric, "linearity_pass_rate")
+            rate_label = {
+                "linearity": "Linearity",
+                "sigma": "Sigma",
+                "overall": "Overall",
+            }.get(metric, "Linearity")
+
             alerts = []
             for model_data in active_models:
                 model = model_data["model"]
                 alert_reasons = []
 
-                # Check 1: Low pass rate (overall = both sigma and linearity must pass)
-                if model_data["pass_rate"] < pass_rate_threshold:
+                # Check 1: Low pass rate based on selected metric
+                check_rate = model_data.get(rate_key, model_data["pass_rate"])
+                if check_rate < pass_rate_threshold:
                     alert_reasons.append({
                         "type": "LOW_PASS_RATE",
-                        "message": f"Overall pass rate {model_data['pass_rate']:.1f}% is below {pass_rate_threshold}%",
-                        "severity": "High" if model_data["pass_rate"] < 70 else "Medium"
+                        "message": f"{rate_label} pass rate {check_rate:.1f}% is below {pass_rate_threshold}%",
+                        "severity": "High" if check_rate < 70 else "Medium"
                     })
 
                 # Check 2: Trending worse
@@ -1876,43 +1933,70 @@ class DatabaseManager:
                 older_cutoff = cutoff_date
                 older_end = rolling_cutoff
 
-                older_pass_rate = (
-                    session.query(
-                        func.count(DBAnalysisResult.id),
-                        func.sum(
-                            case(
-                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
-                                else_=0
+                # Use track-level linearity query when metric is "linearity"
+                if metric == "linearity":
+                    older_trend = (
+                        session.query(
+                            func.count(DBTrackResult.id),
+                            func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0))
+                        )
+                        .join(DBAnalysisResult)
+                        .filter(
+                            DBAnalysisResult.model == model,
+                            DBAnalysisResult.file_date >= older_cutoff,
+                            DBAnalysisResult.file_date < older_end
+                        )
+                        .first()
+                    )
+                    recent_trend = (
+                        session.query(
+                            func.count(DBTrackResult.id),
+                            func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0))
+                        )
+                        .join(DBAnalysisResult)
+                        .filter(
+                            DBAnalysisResult.model == model,
+                            DBAnalysisResult.file_date >= rolling_cutoff
+                        )
+                        .first()
+                    )
+                else:
+                    older_trend = (
+                        session.query(
+                            func.count(DBAnalysisResult.id),
+                            func.sum(
+                                case(
+                                    (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                    else_=0
+                                )
                             )
                         )
+                        .filter(
+                            DBAnalysisResult.model == model,
+                            DBAnalysisResult.file_date >= older_cutoff,
+                            DBAnalysisResult.file_date < older_end
+                        )
+                        .first()
                     )
-                    .filter(
-                        DBAnalysisResult.model == model,
-                        DBAnalysisResult.file_date >= older_cutoff,
-                        DBAnalysisResult.file_date < older_end
-                    )
-                    .first()
-                )
-
-                recent_pass_rate = (
-                    session.query(
-                        func.count(DBAnalysisResult.id),
-                        func.sum(
-                            case(
-                                (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
-                                else_=0
+                    recent_trend = (
+                        session.query(
+                            func.count(DBAnalysisResult.id),
+                            func.sum(
+                                case(
+                                    (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                                    else_=0
+                                )
                             )
                         )
+                        .filter(
+                            DBAnalysisResult.model == model,
+                            DBAnalysisResult.file_date >= rolling_cutoff
+                        )
+                        .first()
                     )
-                    .filter(
-                        DBAnalysisResult.model == model,
-                        DBAnalysisResult.file_date >= rolling_cutoff
-                    )
-                    .first()
-                )
 
-                older_count, older_passed = older_pass_rate
-                recent_count, recent_passed = recent_pass_rate
+                older_count, older_passed = older_trend
+                recent_count, recent_passed = recent_trend
 
                 if older_count and older_count >= min_samples and recent_count and recent_count >= min_samples:
                     older_pct = (older_passed or 0) / older_count * 100
@@ -1921,7 +2005,7 @@ class DatabaseManager:
                     if recent_pct < older_pct - trend_threshold:
                         alert_reasons.append({
                             "type": "TRENDING_WORSE",
-                            "message": f"Pass rate dropped from {older_pct:.1f}% to {recent_pct:.1f}% ({older_pct - recent_pct:.1f}% decline)",
+                            "message": f"{rate_label} pass rate dropped from {older_pct:.1f}% to {recent_pct:.1f}% ({older_pct - recent_pct:.1f}% decline)",
                             "severity": "High" if (older_pct - recent_pct) > 20 else "Medium"
                         })
 
@@ -1967,6 +2051,234 @@ class DatabaseManager:
             alerts.sort(key=lambda x: (severity_order.get(x["severity"], 3), x["pass_rate"]))
 
             return alerts
+
+    def get_linearity_prioritization(
+        self,
+        days_back: int = 90,
+        min_samples: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get models ranked by improvement impact for linearity.
+
+        Combines failure volume, near-miss count (easy wins), and trend
+        to help users prioritize where to spend time.
+
+        Args:
+            days_back: Period to analyze
+            min_samples: Minimum track count for inclusion
+
+        Returns:
+            List of models sorted by impact_score descending
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            model_data = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBTrackResult.id).label('total_tracks'),
+                    func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('lin_passed'),
+                    func.sum(case((DBTrackResult.linearity_pass == False, 1), else_=0)).label('lin_failed'),
+                    func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
+                    # Near-miss: failed linearity with only 1-2 fail points (easy wins)
+                    func.sum(
+                        case(
+                            (and_(
+                                DBTrackResult.linearity_pass == False,
+                                DBTrackResult.linearity_fail_points <= 2,
+                                DBTrackResult.linearity_fail_points > 0,
+                            ), 1),
+                            else_=0
+                        )
+                    ).label('near_miss_count'),
+                    # Average fail points on failing tracks
+                    func.avg(
+                        case(
+                            (DBTrackResult.linearity_pass == False, DBTrackResult.linearity_fail_points),
+                            else_=None
+                        )
+                    ).label('avg_fail_points'),
+                    # Trim effectiveness (may be NULL if not yet calculated)
+                    func.avg(DBTrackResult.trim_improvement_percent).label('avg_trim_improvement'),
+                    func.avg(DBTrackResult.resistance_change_percent).label('avg_resistance_change'),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= cutoff_date,
+                )
+                .group_by(DBAnalysisResult.model)
+                .having(func.count(DBTrackResult.id) >= min_samples)
+                .all()
+            )
+
+            results = []
+            for row in model_data:
+                total = row.total_tracks or 0
+                lin_passed = row.lin_passed or 0
+                lin_failed = row.lin_failed or 0
+                sigma_passed = row.sigma_passed or 0
+                near_miss = row.near_miss_count or 0
+
+                if total == 0:
+                    continue
+
+                lin_rate = lin_passed / total * 100
+                sigma_rate = sigma_passed / total * 100
+                avg_fps = row.avg_fail_points or 0
+
+                # Impact score: volume of failures + near-miss opportunity
+                impact_score = (
+                    lin_failed * 0.5
+                    + near_miss * 0.3
+                    + (1 - lin_rate / 100) * total * 0.2
+                )
+
+                # Generate recommendation
+                recommendation = self._generate_recommendation(
+                    near_miss, lin_failed, avg_fps,
+                    row.avg_trim_improvement, row.avg_resistance_change,
+                    lin_rate, sigma_rate
+                )
+
+                results.append({
+                    "model": row.model,
+                    "total_tracks": total,
+                    "linearity_pass_rate": round(lin_rate, 1),
+                    "sigma_pass_rate": round(sigma_rate, 1),
+                    "failed_units": lin_failed,
+                    "near_miss_count": near_miss,
+                    "avg_fail_points": round(avg_fps, 1),
+                    "avg_trim_improvement": round(row.avg_trim_improvement, 1) if row.avg_trim_improvement else None,
+                    "avg_resistance_change": round(row.avg_resistance_change, 2) if row.avg_resistance_change else None,
+                    "impact_score": round(impact_score, 1),
+                    "recommendation": recommendation,
+                })
+
+            # Compute percentile ranks
+            if results:
+                sorted_by_rate = sorted(results, key=lambda x: x["linearity_pass_rate"])
+                for i, r in enumerate(sorted_by_rate):
+                    r["percentile_rank"] = round(i / len(sorted_by_rate) * 100, 0)
+
+            # Sort by impact score descending
+            results.sort(key=lambda x: x["impact_score"], reverse=True)
+            return results
+
+    def _generate_recommendation(
+        self,
+        near_miss: int,
+        lin_failed: int,
+        avg_fail_points: float,
+        avg_trim_improvement: Optional[float],
+        avg_resistance_change: Optional[float],
+        lin_rate: float,
+        sigma_rate: float,
+    ) -> str:
+        """Generate actionable recommendation based on model data."""
+        if lin_failed == 0:
+            return "Passing — monitor sigma trends"
+
+        # Check near-miss ratio (easy wins)
+        near_miss_ratio = near_miss / lin_failed if lin_failed > 0 else 0
+        if near_miss_ratio > 0.3:
+            return f"Easy-win potential — {near_miss} units within 2 fail points of passing"
+
+        # Check if trim is not effective
+        if avg_trim_improvement is not None and avg_trim_improvement < 30:
+            return "Trim not effective — investigate incoming material quality"
+
+        # Check excessive trimming
+        if avg_resistance_change is not None and abs(avg_resistance_change) > 15:
+            return "Excessive trimming — process may be over-cutting"
+
+        # Check severity
+        if avg_fail_points > 10:
+            return "Severe failures — units far from spec, may need process change"
+
+        # Sigma OK but linearity bad
+        if sigma_rate > 80 and lin_rate < 70:
+            return "Sigma healthy but linearity failing — check spec limits"
+
+        return f"Review needed — {lin_failed} linearity failures"
+
+    def get_linearity_margin_analysis(
+        self,
+        model: str,
+        days_back: int = 90,
+    ) -> Dict[str, Any]:
+        """
+        Get fail-point distribution for a specific model.
+
+        Shows how close failing tracks are to passing — highlights easy wins.
+
+        Args:
+            model: Model number
+            days_back: Period to analyze
+
+        Returns:
+            Dict with fail point distribution and easy-win analysis
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all failing tracks for this model
+            failing_tracks = (
+                session.query(DBTrackResult.linearity_fail_points)
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBTrackResult.linearity_pass == False,
+                    DBTrackResult.linearity_fail_points > 0,
+                )
+                .all()
+            )
+
+            total_tracks = (
+                session.query(func.count(DBTrackResult.id))
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                )
+                .scalar()
+            ) or 0
+
+            passing_tracks = (
+                session.query(func.count(DBTrackResult.id))
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBTrackResult.linearity_pass == True,
+                )
+                .scalar()
+            ) or 0
+
+            # Build distribution
+            fail_points = [row[0] for row in failing_tracks]
+            distribution = {
+                "1_point": sum(1 for fp in fail_points if fp == 1),
+                "2_points": sum(1 for fp in fail_points if fp == 2),
+                "3_to_5": sum(1 for fp in fail_points if 3 <= fp <= 5),
+                "6_to_10": sum(1 for fp in fail_points if 6 <= fp <= 10),
+                "over_10": sum(1 for fp in fail_points if fp > 10),
+            }
+
+            easy_wins = distribution["1_point"] + distribution["2_points"]
+            failing_count = len(fail_points)
+
+            return {
+                "model": model,
+                "total_tracks": total_tracks,
+                "passing_tracks": passing_tracks,
+                "failing_tracks": failing_count,
+                "fail_point_distribution": distribution,
+                "easy_win_count": easy_wins,
+                "easy_win_percent": round(easy_wins / failing_count * 100, 1) if failing_count > 0 else 0,
+            }
 
     def get_trending_worse_models(
         self,
