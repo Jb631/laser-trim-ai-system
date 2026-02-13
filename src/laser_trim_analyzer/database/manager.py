@@ -172,6 +172,8 @@ class DatabaseManager:
 
     def _run_migrations(self) -> None:
         """Run database migrations for schema updates."""
+        needs_rematch = False
+
         with self.session() as session:
             # Migration: Add is_anomaly and anomaly_reason columns to track_results
             try:
@@ -236,6 +238,54 @@ class DatabaseManager:
                     logger.info("Migration completed: Status values normalized")
             except Exception as e:
                 logger.warning(f"Status normalization warning: {e}")
+
+            # Migration: Clean up "-shop" model name parsing artifacts
+            # Files like "8444-shop0_date.xlsx" were incorrectly parsed with
+            # model="8444-shop0" instead of model="8444", serial="shop0"
+            try:
+                shop_count = session.execute(text(
+                    "SELECT COUNT(*) FROM analysis_results WHERE LOWER(model) LIKE '%-shop%'"
+                )).scalar()
+                if shop_count and shop_count > 0:
+                    logger.info(f"Running migration: Cleaning up {shop_count} shop model name records")
+
+                    # Fix analysis_results: split "8444-shop0" into model="8444", serial="shop0"
+                    shop_records = session.execute(text(
+                        "SELECT id, model FROM analysis_results WHERE LOWER(model) LIKE '%-shop%'"
+                    )).fetchall()
+
+                    for row in shop_records:
+                        old_model = row[1]
+                        # Find the "-shop" split point (case-insensitive)
+                        lower = old_model.lower()
+                        shop_idx = lower.find('-shop')
+                        if shop_idx > 0:
+                            base_model = old_model[:shop_idx]
+                            new_serial = old_model[shop_idx + 1:]  # "shop0", "shop101", etc.
+                            session.execute(text(
+                                "UPDATE analysis_results SET model = :model, serial = :serial WHERE id = :id"
+                            ), {"model": base_model, "serial": new_serial, "id": row[0]})
+
+                    # Delete model_ml_state entries for fake shop model names
+                    ml_deleted = session.execute(text(
+                        "DELETE FROM model_ml_state WHERE LOWER(model) LIKE '%-shop%'"
+                    )).rowcount
+                    logger.info(f"Deleted {ml_deleted} fake ML state entries for shop models")
+
+                    session.commit()
+                    needs_rematch = True
+                    logger.info(f"Migration completed: Cleaned up {shop_count} shop model name records")
+            except Exception as e:
+                logger.warning(f"Shop model cleanup warning: {e}")
+
+        # After session closes, re-run FT matching if model names were corrected
+        if needs_rematch:
+            try:
+                logger.info("Re-matching Final Test records after model name cleanup...")
+                stats = self.rematch_final_tests()
+                logger.info(f"Post-cleanup FT rematch: {stats}")
+            except Exception as e:
+                logger.warning(f"FT rematch after cleanup failed: {e}")
 
     @contextmanager
     def session(self) -> Iterator[Session]:

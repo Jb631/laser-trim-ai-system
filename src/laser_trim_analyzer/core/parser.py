@@ -160,6 +160,8 @@ class ExcelParser:
         - "12345_8340-1.xls"
         - "8877_5_deg_1_TEST DATA_12-2-2024.xls" (with degree designator)
         - "1844202_10_TA_Test Data_11-22-2024.xls"
+        - "8444-shop0_12-7-2021 10-14-41 AM.xlsx" (shop serial, not model suffix)
+        - "8340sn209.xls" (concatenated model+serial)
 
         Model numbers can have suffixes like 8340-1, 8340-3, etc.
         Handles degree designators (e.g., "5_deg", "10_deg") which should NOT be the serial.
@@ -169,79 +171,135 @@ class ExcelParser:
         # Split only on underscores and spaces, NOT hyphens (to preserve model suffixes like 8340-1)
         parts = re.split(r'[_\s]+', name)
 
+        # Handle concatenated model+serial (e.g., "8340sn209" with no separator)
+        if len(parts) == 1:
+            concat_match = re.match(r'^(\d{4,})[sS][nN](\d+[a-zA-Z]?)$', parts[0])
+            if concat_match:
+                return concat_match.group(1), concat_match.group(2)
+
         if len(parts) >= 2:
             model = "Unknown"
             serial = "Unknown"
 
             # First pass: find the model (4+ digit number, possibly with hyphen suffix)
             for i, part in enumerate(parts):
-                # Model pattern: starts with 4+ digits, may have hyphen suffix with letters/numbers
-                # Examples: 8340, 8340-1, 7063-A, 5409A, 7953-1A, 8711-S, 8736-outer
-                if re.match(r'^\d{4,}(-[A-Za-z0-9]+)?[A-Za-z]?$', part):
-                    model = part
-                    break
+                # Model pattern: starts with 4+ digits, may have hyphen suffix
+                # Examples: 8340, 8340-1, 7063-A, 5409A, 7953-1A, 8711-S
+                model_match = re.match(r'^(\d{4,}[A-Za-z]?)(?:-([A-Za-z0-9]+))?$', part)
+                if model_match:
+                    base, suffix = model_match.group(1), model_match.group(2)
+                    if suffix is None:
+                        # No hyphen suffix (e.g., "8340", "5409A")
+                        model = part
+                        break
+                    elif self._is_valid_model_suffix(suffix):
+                        # Valid suffix like "1", "1A", "CT", "S"
+                        model = part
+                        break
+                    else:
+                        # Invalid suffix (e.g., "shop0") - base is model, suffix is serial
+                        model = base
+                        serial = suffix
+                        break
 
-            # Second pass: find the serial
-            # Skip parts that are: the model, degree designators, known keywords, dates
-            skip_keywords = {'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct', 'scrap', 'cut', 'wiper', 'path', 'am', 'pm'}
+            # Second pass: find the serial (only if not already found from suffix split)
+            if serial == "Unknown":
+                # Skip parts that are: the model, degree designators, known keywords, dates
+                skip_keywords = {'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct', 'scrap', 'cut', 'wiper', 'path', 'am', 'pm'}
 
-            for i, part in enumerate(parts):
-                part_lower = part.lower()
-
-                # Skip the model itself
-                if part == model:
-                    continue
-
-                # Skip known keywords
-                if part_lower in skip_keywords:
-                    continue
-
-                # Skip if this is part of a degree designator (e.g., "5" followed by "deg")
-                # Check if next part is "deg"
-                if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
-                    continue
-
-                # Skip the "deg" part itself
-                if part_lower == 'deg':
-                    continue
-
-                # Skip date patterns (e.g., "12-2-2024", "11-22-2024")
-                if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', part):
-                    continue
-
-                # Skip time patterns (e.g., "4-05", "9-08")
-                if re.match(r'^\d{1,2}-\d{2}$', part):
-                    continue
-
-                # Serial pattern: letter prefix + digits (SN12345, AB12345, TA, TB)
-                if re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
-                    serial = part
-                    break
-
-                # Pure numeric serial (only if model is already found)
-                elif re.match(r'^\d+$', part) and model != "Unknown":
-                    serial = part
-                    break
-
-            # Fallback: if serial still unknown, use first non-model, non-keyword part
-            if serial == "Unknown" and len(parts) > 1:
                 for i, part in enumerate(parts):
                     part_lower = part.lower()
-                    if part != model and part_lower not in skip_keywords:
-                        # Skip degree designator pattern
-                        if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
-                            continue
-                        if part_lower == 'deg':
-                            continue
-                        # Skip date/time patterns
-                        if re.match(r'^\d{1,2}-\d{1,2}(-\d{4})?$', part):
-                            continue
+
+                    # Skip the model itself (check both full part and base model)
+                    if part == model:
+                        continue
+
+                    # Skip the original unsplit part that contained model-suffix
+                    # (e.g., "8444-shop0" when model is "8444")
+                    if '-' in part and part.startswith(model + '-'):
+                        continue
+
+                    # Skip known keywords
+                    if part_lower in skip_keywords:
+                        continue
+
+                    # Skip if this is part of a degree designator (e.g., "5" followed by "deg")
+                    # Check if next part is "deg"
+                    if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                        continue
+
+                    # Skip the "deg" part itself
+                    if part_lower == 'deg':
+                        continue
+
+                    # Skip date patterns (e.g., "12-2-2024", "11-22-2024")
+                    if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', part):
+                        continue
+
+                    # Skip time patterns (e.g., "4-05", "9-08")
+                    if re.match(r'^\d{1,2}-\d{2}$', part):
+                        continue
+
+                    # Serial pattern: letter prefix + digits (SN12345, AB12345, TA, TB)
+                    if re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
                         serial = part
                         break
+
+                    # Pure numeric serial (only if model is already found)
+                    elif re.match(r'^\d+$', part) and model != "Unknown":
+                        serial = part
+                        break
+
+                # Fallback: if serial still unknown, use first non-model, non-keyword part
+                if serial == "Unknown" and len(parts) > 1:
+                    for i, part in enumerate(parts):
+                        part_lower = part.lower()
+                        if part != model and part_lower not in skip_keywords:
+                            if '-' in part and part.startswith(model + '-'):
+                                continue
+                            # Skip degree designator pattern
+                            if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                                continue
+                            if part_lower == 'deg':
+                                continue
+                            # Skip date/time patterns
+                            if re.match(r'^\d{1,2}-\d{1,2}(-\d{4})?$', part):
+                                continue
+                            serial = part
+                            break
 
             return model, serial
 
         return name, "Unknown"
+
+    @staticmethod
+    def _is_valid_model_suffix(suffix: str) -> bool:
+        """
+        Validate whether a hyphenated suffix is a legitimate model variant.
+
+        Valid suffixes (from production data):
+        - Single digit: "1", "3", "4"
+        - Digit + letter: "1A"
+        - Single letter: "S", "A"
+        - 2-letter code: "CT"
+        - "outer" for backwards compatibility
+
+        Invalid suffixes:
+        - "shop0", "shop", "shoptest" - location/serial identifiers
+        """
+        # Reject "shop" prefixed suffixes
+        if suffix.lower().startswith('shop'):
+            return False
+
+        # Valid: 1-3 characters of digits and/or letters
+        if re.match(r'^[A-Za-z0-9]{1,3}$', suffix):
+            return True
+
+        # Allow "outer" for backwards compatibility (8736-outer)
+        if suffix.lower() == 'outer':
+            return True
+
+        return False
 
     def _extract_test_date(
         self, xl: pd.ExcelFile, file_path: Path, system_type: SystemType

@@ -51,6 +51,7 @@ class ProcessPage(ctk.CTkFrame):
         self._anomaly_count = 0
         self._last_ui_update = 0  # Throttle UI updates
         self._processing_start_time = 0  # Track batch start time for ETA calculation
+        self._date_filter: Optional[datetime] = None  # Date filter for file selection
 
         self._create_ui()
 
@@ -90,6 +91,36 @@ class ProcessPage(ctk.CTkFrame):
             variable=self.save_db_var
         )
         save_db_check.pack(side="left", padx=15, pady=15)
+
+        # Date filter (packed to right side of options frame)
+        date_filter_frame = ctk.CTkFrame(options_frame, fg_color="transparent")
+        date_filter_frame.pack(side="right", padx=15, pady=15)
+
+        self.clear_date_btn = ctk.CTkButton(
+            date_filter_frame,
+            text="X",
+            width=28,
+            command=self._clear_date_filter,
+            fg_color="gray",
+            hover_color="darkgray"
+        )
+        self.clear_date_btn.pack(side="right")
+
+        self.date_filter_var = ctk.StringVar(value="")
+        self.date_filter_entry = ctk.CTkEntry(
+            date_filter_frame,
+            textvariable=self.date_filter_var,
+            placeholder_text="MM/DD/YYYY",
+            width=110
+        )
+        self.date_filter_entry.pack(side="right", padx=(0, 5))
+
+        date_label = ctk.CTkLabel(
+            date_filter_frame,
+            text="Process files from:",
+            font=ctk.CTkFont(size=12)
+        )
+        date_label.pack(side="right", padx=(0, 5))
 
         # File selection area
         file_frame = ctk.CTkFrame(self)
@@ -214,6 +245,47 @@ class ProcessPage(ctk.CTkFrame):
             # Incremental mode turned OFF - show total count
             self._update_file_count_label()
 
+    def _parse_date_filter(self) -> Optional[datetime]:
+        """Parse the date filter entry value."""
+        date_str = self.date_filter_var.get().strip()
+        if not date_str:
+            return None
+
+        for fmt in ['%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d', '%m/%d/%y']:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+
+        logger.warning(f"Invalid date filter format: {date_str}")
+        return None
+
+    def _apply_date_filter(self, files: List[Path]) -> List[Path]:
+        """Filter files by modification date. Uses os.stat for speed."""
+        if self._date_filter is None:
+            return files
+
+        cutoff = self._date_filter
+        filtered = []
+        for f in files:
+            try:
+                mtime = datetime.fromtimestamp(f.stat().st_mtime)
+                if mtime >= cutoff:
+                    filtered.append(f)
+            except OSError:
+                filtered.append(f)  # Include if we can't stat
+
+        return filtered
+
+    def _clear_date_filter(self):
+        """Clear the date filter and refresh file count."""
+        self.date_filter_var.set("")
+        self._date_filter = None
+        if self.selected_files:
+            self._update_file_count_label()
+            if self.incremental_var.get():
+                self._check_incremental_count()
+
     def _select_files(self):
         """Open file dialog to select files."""
         files = filedialog.askopenfilenames(
@@ -221,7 +293,11 @@ class ProcessPage(ctk.CTkFrame):
             filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
         )
         if files:
-            self.selected_files = [Path(f) for f in files]
+            self._date_filter = self._parse_date_filter()
+            selected = [Path(f) for f in files]
+            if self._date_filter:
+                selected = self._apply_date_filter(selected)
+            self.selected_files = selected
             self._update_file_list()
             # Check incremental count if mode is on
             if self.incremental_var.get():
@@ -233,13 +309,20 @@ class ProcessPage(ctk.CTkFrame):
         if folder:
             folder_path = Path(folder)
 
+            # Parse date filter on main thread (UI variable access)
+            self._date_filter = self._parse_date_filter()
+
             # Show loading indicator
-            self.file_count_label.configure(text="Scanning folder...")
+            date_info = f" (from {self._date_filter.strftime('%m/%d/%Y')})" if self._date_filter else ""
+            self.file_count_label.configure(text=f"Scanning folder{date_info}...")
             self.file_list.configure(state="normal")
             self.file_list.delete("1.0", "end")
             self.file_list.insert("end", f"Scanning {folder_path.name}...\nThis may take a moment for large folders.")
             self.file_list.configure(state="disabled")
             self.process_btn.configure(state="disabled")
+
+            # Capture date filter for background thread (avoid accessing UI vars from thread)
+            date_filter = self._date_filter
 
             # Run file discovery in background thread to avoid UI freeze
             def discover_files():
@@ -249,6 +332,12 @@ class ProcessPage(ctk.CTkFrame):
                     xls_files = list(folder_path.rglob("*.xls"))
                     xlsx_files = list(folder_path.rglob("*.xlsx"))
                     all_files = xls_files + xlsx_files
+
+                    # Apply date filter if set (uses file modification time for speed)
+                    if date_filter:
+                        all_files = [f for f in all_files
+                                     if datetime.fromtimestamp(f.stat().st_mtime) >= date_filter]
+
                     # Sort by path for consistent ordering (groups files by subfolder)
                     all_files.sort(key=lambda f: (f.parent, f.name))
 
@@ -298,14 +387,15 @@ class ProcessPage(ctk.CTkFrame):
         total = len(self.selected_files)
         unique_folders = len(set(f.parent for f in self.selected_files))
         folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
+        date_info = f" from {self._date_filter.strftime('%m/%d/%Y')}" if self._date_filter else ""
 
         if already_processed > 0:
             self.file_count_label.configure(
-                text=f"{unprocessed} new files to process ({already_processed} already in DB){folder_info}"
+                text=f"{unprocessed} new files to process ({already_processed} already in DB){date_info}{folder_info}"
             )
         else:
             self.file_count_label.configure(
-                text=f"{total} files selected{folder_info}"
+                text=f"{total} files selected{date_info}{folder_info}"
             )
 
     def _update_file_count_label(self):
@@ -317,7 +407,8 @@ class ProcessPage(ctk.CTkFrame):
         total = len(self.selected_files)
         unique_folders = len(set(f.parent for f in self.selected_files))
         folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
-        self.file_count_label.configure(text=f"{total} files selected{folder_info}")
+        date_info = f" from {self._date_filter.strftime('%m/%d/%Y')}" if self._date_filter else ""
+        self.file_count_label.configure(text=f"{total} files selected{date_info}{folder_info}")
 
     def _on_folder_scan_error(self, error: str):
         """Called when folder scan fails."""
