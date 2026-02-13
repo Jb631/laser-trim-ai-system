@@ -782,9 +782,17 @@ class AnalyzePage(ctk.CTkFrame):
         )
         date_label.pack(anchor="w")
 
-        # Bind click event
+        # Bind click event - wrap in try/except to prevent silent failures
         def on_click(event, a=analysis):
-            self._show_analysis_details(a)
+            try:
+                self._show_analysis_details(a)
+            except Exception as e:
+                logger.error(f"Error showing analysis details: {e}")
+                import traceback
+                traceback.print_exc()
+                self._update_metrics(f"Error loading analysis:\n{e}")
+                self.status_text.configure(text="Display Error", text_color="white")
+                self.status_banner.configure(fg_color="#8B0000")
 
         item_frame.bind("<Button-1>", on_click)
         status_indicator.bind("<Button-1>", on_click)
@@ -832,12 +840,25 @@ class AnalyzePage(ctk.CTkFrame):
             self.track_selector.set(track_values[0])
 
             # Show appropriate chart
-            if len(analysis.tracks) > 1:
-                # If multiple tracks, show comparison by default
-                self._display_comparison_chart(analysis.tracks)
-            else:
-                # Single track
-                self._display_track_chart(analysis.tracks[0])
+            try:
+                if len(analysis.tracks) > 1:
+                    # If multiple tracks, show comparison by default
+                    self._display_comparison_chart(analysis.tracks)
+                else:
+                    # Single track
+                    self._display_track_chart(analysis.tracks[0])
+            except Exception as e:
+                logger.error(f"Error displaying chart: {e}")
+                self._ensure_chart_initialized()
+                self.chart.show_placeholder(f"Chart error: {e}")
+        else:
+            # No track data available - show message
+            self.track_selector.configure(values=["No Tracks"], state="disabled")
+            self._ensure_chart_initialized()
+            self.chart.show_placeholder(
+                "No track data available for this analysis.\n\n"
+                "Try re-analyzing the file if the original file is accessible."
+            )
 
         # Update metrics and info
         self._display_metrics(analysis)

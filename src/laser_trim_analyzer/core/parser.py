@@ -752,6 +752,15 @@ def detect_file_type(file_path: Path) -> str:
         logger.debug(f"Detected final_test (Rout_ prefix): {filename}")
         return "final_test"
 
+    # Check for FT filename pattern: "model final serial_date.xls"
+    # e.g., "8340-1 final 215_6-4-2025_7-38 PM.xls"
+    # Pattern: word "final" followed by a number (serial) — distinct from trim files
+    import re
+    filename_lower = filename.lower()
+    if re.search(r'\bfinal\s+\d', filename_lower):
+        logger.debug(f"Detected final_test (model-final-serial pattern): {filename}")
+        return "final_test"
+
     # Check filename for trim indicators
     for indicator in TRIM_FILE_INDICATORS:
         if indicator in filename:

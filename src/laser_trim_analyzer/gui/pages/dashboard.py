@@ -20,6 +20,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _make_sparkline(values: List[float], length: int = 7) -> str:
+    """Generate unicode sparkline from recent values.
+
+    Uses block characters to show trend at a glance.
+    """
+    blocks = " ▁▂▃▄▅▆▇█"
+    if not values:
+        return ""
+    recent = values[-length:]
+    if len(recent) < 2:
+        return ""
+    v_min = min(recent)
+    v_max = max(recent)
+    v_range = v_max - v_min
+    if v_range == 0:
+        return blocks[4] * len(recent)  # Flat line at middle
+    chars = []
+    for v in recent:
+        idx = int((v - v_min) / v_range * 7) + 1
+        idx = max(1, min(8, idx))
+        chars.append(blocks[idx])
+    return "".join(chars)
+
+
 class DashboardPage(ctk.CTkFrame):
     """
     Dashboard page showing:
@@ -261,9 +285,27 @@ class DashboardPage(ctk.CTkFrame):
         )
         settings_btn.pack(padx=15, pady=(5, 15), fill="x")
 
-        # Model breakdown
+        # Row 3: Pareto chart (left+center) + Model breakdown text (right)
+        content.grid_rowconfigure(3, weight=1, minsize=250)
+
+        # Pareto chart frame
+        self._pareto_frame = ctk.CTkFrame(content)
+        self._pareto_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+        pareto_label = ctk.CTkLabel(
+            self._pareto_frame, text="Failure Pareto (Impact Ranking)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        pareto_label.pack(padx=15, pady=(15, 5), anchor="w")
+        self._pareto_placeholder = ctk.CTkLabel(
+            self._pareto_frame, text="Loading...", text_color="gray"
+        )
+        self._pareto_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.pareto_chart = None
+        self.confusion_chart = None  # Not used as chart — text summary in system info row
+        self.scatter_chart = None    # Not used as chart — data in system info row
+
         self.model_frame = ctk.CTkFrame(content)
-        self.model_frame.grid(row=3, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        self.model_frame.grid(row=3, column=2, padx=10, pady=10, sticky="nsew")
 
         model_label = ctk.CTkLabel(
             self.model_frame,
@@ -345,6 +387,24 @@ class DashboardPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Failed to initialize chart (matplotlib issue?): {e}")
             self._chart_initialized = True  # Don't retry on every refresh
+
+    def _ensure_pareto_chart_initialized(self):
+        """Lazily initialize Pareto chart."""
+        if self.pareto_chart is not None:
+            return
+
+        try:
+            from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+
+            self._pareto_placeholder.destroy()
+            self.pareto_chart = ChartWidget(
+                self._pareto_frame,
+                style=ChartStyle(figure_size=(5, 3), dpi=80)
+            )
+            self.pareto_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+            self.pareto_chart.show_placeholder("Loading Pareto data...")
+        except Exception as e:
+            logger.error(f"Failed to initialize Pareto chart: {e}")
 
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
@@ -483,6 +543,11 @@ class DashboardPage(ctk.CTkFrame):
             linearity_pass_rate = overall_stats.get("linearity_pass_rate", 0)
             sigma_pass_rate = overall_stats.get("sigma_pass_rate", 0)
 
+        # Build sparklines from daily trend data
+        lin_trend = stats.get("linearity_daily_trend", []) or []
+        lin_trend = [d for d in lin_trend if d.get("total", 0) > 0]
+        lin_sparkline = _make_sparkline([d.get("pass_rate", 0) for d in lin_trend])
+
         # Linearity quality card with realistic thresholds
         if linearity_pass_rate >= 80:
             health_color = "#27ae60"  # Green
@@ -497,7 +562,7 @@ class DashboardPage(ctk.CTkFrame):
             self.health_card,
             title="Linearity Quality",
             value=f"{linearity_pass_rate:.1f}%",
-            subtitle=f"Sigma: {sigma_pass_rate:.1f}% | Overall: {pass_rate:.1f}%",
+            subtitle=f"Sigma: {sigma_pass_rate:.1f}% | Overall: {pass_rate:.1f}%  {lin_sparkline}",
             color=health_color
         )
 
@@ -540,6 +605,9 @@ class DashboardPage(ctk.CTkFrame):
 
         # Update model prioritization display
         self._update_model_display(priority_models, trending_worse)
+
+        # Update Pareto chart
+        self._update_pareto_chart(priority_models)
 
         # Update timestamp
         self.last_update_label.configure(
@@ -682,21 +750,20 @@ class DashboardPage(ctk.CTkFrame):
             self.trend_chart.show_placeholder("No data in selected period")
             return
 
-        # Extract dates and pass rates
+        # Extract dates, pass rates, and sample sizes
         dates = [d.get("date", "") for d in trend_data]
         pass_rates = [d.get("pass_rate", 0) for d in trend_data]
+        sample_sizes = [d.get("total", 1) for d in trend_data]
 
         if len(pass_rates) < 2:
             self.trend_chart.show_placeholder("Insufficient data for trend (need 2+ days)")
             return
 
-        # Plot SPC-style chart
-        self.trend_chart.plot_spc_control(
-            values=pass_rates,
+        # Plot P-chart with variable binomial control limits
+        self.trend_chart.plot_pchart(
             dates=dates,
-            ucl=100,  # Pass rate can't exceed 100%
-            lcl=max(0, min(pass_rates) - 10),  # Show some context below min
-            center=sum(pass_rates) / len(pass_rates),
+            pass_rates=pass_rates,
+            sample_sizes=sample_sizes,
             title="",
             ylabel="Pass Rate %"
         )
@@ -740,6 +807,28 @@ class DashboardPage(ctk.CTkFrame):
 
         self.model_text.configure(state="disabled")
 
+    def _update_pareto_chart(self, priority_models: List[Dict[str, Any]]):
+        """Update Pareto chart with failure data from prioritization."""
+        try:
+            self._ensure_pareto_chart_initialized()
+            if not self.pareto_chart:
+                return
+
+            if not priority_models:
+                self.pareto_chart.show_placeholder("No failure data for Pareto chart")
+                return
+
+            labels = [m.get("model", "?") for m in priority_models if m.get("failed_units", 0) > 0]
+            values = [m.get("failed_units", 0) for m in priority_models if m.get("failed_units", 0) > 0]
+
+            if not labels:
+                self.pareto_chart.show_placeholder("No failures to display")
+                return
+
+            self.pareto_chart.plot_pareto(labels=labels, values=values)
+        except Exception as e:
+            logger.debug(f"Pareto chart update error: {e}")
+
     def _show_error(self, error: str):
         """Show error state."""
         self._update_card(
@@ -759,9 +848,10 @@ class DashboardPage(ctk.CTkFrame):
 
     def on_hide(self):
         """Called when page becomes hidden - cleanup to free memory."""
-        # Clear chart to free matplotlib resources
-        if self.trend_chart and hasattr(self.trend_chart, 'figure'):
-            try:
-                self.trend_chart.clear()
-            except Exception as e:
-                logger.debug(f"Chart cleanup warning: {e}")
+        # Clear charts to free matplotlib resources
+        for chart in [self.trend_chart, self.pareto_chart]:
+            if chart and hasattr(chart, 'figure'):
+                try:
+                    chart.clear()
+                except Exception as e:
+                    logger.debug(f"Chart cleanup warning: {e}")

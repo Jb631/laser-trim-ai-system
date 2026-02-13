@@ -1412,7 +1412,8 @@ class DatabaseManager:
             total = len(linked_data)
             escapes = 0
             overkills = 0
-            agreements = 0
+            true_positives = 0  # Both pass
+            true_negatives = 0  # Both fail
             model_escapes = {}
 
             for row in linked_data:
@@ -1424,9 +1425,12 @@ class DatabaseManager:
                     model_escapes[row.model] = model_escapes.get(row.model, 0) + 1
                 elif not trim_pass and ft_pass:
                     overkills += 1
+                elif trim_pass and ft_pass:
+                    true_positives += 1
                 else:
-                    agreements += 1
+                    true_negatives += 1
 
+            agreements = true_positives + true_negatives
             worst_models = sorted(model_escapes.items(), key=lambda x: x[1], reverse=True)[:5]
 
             return {
@@ -1434,10 +1438,136 @@ class DatabaseManager:
                 "escapes": escapes,
                 "overkills": overkills,
                 "agreements": agreements,
+                "true_positives": true_positives,
+                "true_negatives": true_negatives,
                 "escape_rate": (escapes / total * 100) if total > 0 else 0,
                 "overkill_rate": (overkills / total * 100) if total > 0 else 0,
                 "agreement_rate": (agreements / total * 100) if total > 0 else 0,
                 "worst_escape_models": [{"model": m, "count": c} for m, c in worst_models],
+            }
+
+    def get_heatmap_data(
+        self, days_back: int = 90, period: str = 'week', min_samples: int = 10
+    ) -> Dict[str, Any]:
+        """Get model x time period pass rate matrix for heat map visualization.
+
+        Returns:
+            {models: [str], periods: [str], values: [[float]]}
+            values[i][j] = pass rate for model i in period j (NaN if no data)
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Group by model and week/month period
+            if period == 'month':
+                period_expr = func.strftime('%Y-%m', DBAnalysisResult.file_date)
+            else:
+                # Week: use Monday of the week
+                period_expr = func.strftime('%Y-W%W', DBAnalysisResult.file_date)
+
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    period_expr.label('period'),
+                    func.count(DBTrackResult.id).label('total'),
+                    func.sum(case(
+                        (DBTrackResult.linearity_pass == True, 1), else_=0
+                    )).label('passed'),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(DBAnalysisResult.file_date >= cutoff_date)
+                .group_by(DBAnalysisResult.model, period_expr)
+                .having(func.count(DBTrackResult.id) >= min_samples)
+                .all()
+            )
+
+            if not rows:
+                return {"models": [], "periods": [], "values": []}
+
+            # Build sets of unique models and periods
+            model_set = set()
+            period_set = set()
+            data_map = {}  # (model, period) -> pass_rate
+
+            for row in rows:
+                model_set.add(row.model)
+                period_set.add(row.period)
+                rate = (row.passed / row.total * 100) if row.total > 0 else float('nan')
+                data_map[(row.model, row.period)] = rate
+
+            # Sort models by worst average pass rate (worst first)
+            model_avgs = {}
+            for model in model_set:
+                rates = [data_map[(model, p)] for p in period_set if (model, p) in data_map]
+                model_avgs[model] = sum(rates) / len(rates) if rates else 100
+            models = sorted(model_set, key=lambda m: model_avgs[m])[:25]  # Top 25 worst
+            periods = sorted(period_set)
+
+            # Build matrix
+            values = []
+            for model in models:
+                row = []
+                for p in periods:
+                    val = data_map.get((model, p), float('nan'))
+                    row.append(val)
+                values.append(row)
+
+            return {"models": models, "periods": periods, "values": values}
+
+    def get_escape_scatter_data(
+        self, days_back: int = 90, max_points: int = 500
+    ) -> Dict[str, Any]:
+        """Get paired trim/FT linearity errors for scatter plot.
+
+        Returns:
+            {trim_errors: [float], ft_errors: [float], spec_limit: float}
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Join trim tracks with FT tracks via linked_trim_id
+            rows = (
+                session.query(
+                    DBTrackResult.final_linearity_error_shifted.label('trim_lin_error'),
+                    DBFinalTestTrack.linearity_error.label('ft_lin_error'),
+                )
+                .join(DBAnalysisResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                .join(DBFinalTestResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
+                .join(DBFinalTestTrack, DBFinalTestTrack.final_test_id == DBFinalTestResult.id)
+                .filter(
+                    DBFinalTestResult.file_date >= cutoff_date,
+                    DBTrackResult.final_linearity_error_shifted.isnot(None),
+                    DBFinalTestTrack.linearity_error.isnot(None),
+                    # Match track IDs (A=A, B=B)
+                    DBTrackResult.track_id == DBFinalTestTrack.track_id,
+                )
+                .limit(max_points)
+                .all()
+            )
+
+            if not rows:
+                return {"trim_errors": [], "ft_errors": [], "spec_limit": 0.5}
+
+            trim_errors = [float(r.trim_lin_error) for r in rows]
+            ft_errors = [float(r.ft_lin_error) for r in rows]
+
+            # Estimate spec limit from data (use 75th percentile as proxy)
+            all_errors = sorted(trim_errors + ft_errors)
+            if all_errors:
+                idx = int(len(all_errors) * 0.75)
+                spec_limit = float(all_errors[min(idx, len(all_errors) - 1)])
+            else:
+                spec_limit = 0.5
+
+            return {
+                "trim_errors": trim_errors,
+                "ft_errors": ft_errors,
+                "spec_limit": spec_limit,
             }
 
     def get_alerts(self, limit: int = 10, include_resolved: bool = False) -> List[Dict[str, Any]]:
@@ -1763,6 +1893,32 @@ class DatabaseManager:
             plot_path=str(track.plot_path) if track.plot_path else None,
         )
 
+    @staticmethod
+    def _map_status_enum(db_status, default=None):
+        """Map DB status to AnalysisStatus, handling both enum and string values.
+
+        SQLAlchemy Enum columns may return the actual enum, the enum name ('PASS'),
+        or the enum value ('Pass') depending on the database and driver.
+        """
+        if default is None:
+            default = AnalysisStatus.ERROR
+
+        status_map = {
+            DBStatusType.PASS: AnalysisStatus.PASS,
+            DBStatusType.FAIL: AnalysisStatus.FAIL,
+            DBStatusType.WARNING: AnalysisStatus.WARNING,
+            DBStatusType.ERROR: AnalysisStatus.ERROR,
+        }
+
+        if isinstance(db_status, DBStatusType):
+            return status_map.get(db_status, default)
+        elif isinstance(db_status, str):
+            # Check enum names (PASS, FAIL) and values (Pass, Fail)
+            for db_enum, analysis_enum in status_map.items():
+                if db_status == db_enum.name or db_status == db_enum.value:
+                    return analysis_enum
+        return default
+
     def _map_db_to_analysis(self, db_analysis: DBAnalysisResult) -> Optional[AnalysisResult]:
         """Map SQLAlchemy model back to Pydantic AnalysisResult.
 
@@ -1773,14 +1929,8 @@ class DatabaseManager:
         # Map system type
         system_type = SystemType.A if db_analysis.system == DBSystemType.A else SystemType.B
 
-        # Map status
-        status_map = {
-            DBStatusType.PASS: AnalysisStatus.PASS,
-            DBStatusType.FAIL: AnalysisStatus.FAIL,
-            DBStatusType.WARNING: AnalysisStatus.WARNING,
-            DBStatusType.ERROR: AnalysisStatus.ERROR,
-        }
-        overall_status = status_map.get(db_analysis.overall_status, AnalysisStatus.ERROR)
+        # Map status - handle both enum and string values from DB
+        overall_status = self._map_status_enum(db_analysis.overall_status)
 
         # Create metadata
         metadata = FileMetadata(
@@ -1817,13 +1967,8 @@ class DatabaseManager:
 
         Returns None if required fields are missing (corrupted/incomplete data).
         """
-        status_map = {
-            DBStatusType.PASS: AnalysisStatus.PASS,
-            DBStatusType.FAIL: AnalysisStatus.FAIL,
-            DBStatusType.WARNING: AnalysisStatus.WARNING,
-            DBStatusType.ERROR: AnalysisStatus.ERROR,
-        }
-        status = status_map.get(db_track.status, AnalysisStatus.ERROR)
+        # Use robust status mapping that handles both enum and string values
+        status = self._map_status_enum(db_track.status)
 
         risk_map = {
             DBRiskCategory.HIGH: RiskCategory.HIGH,
@@ -1859,7 +2004,7 @@ class DatabaseManager:
                 sigma_threshold=sigma_threshold,
                 sigma_pass=sigma_pass,
                 optimal_offset=db_track.optimal_offset or 0.0,
-                linearity_error=db_track.final_linearity_error_shifted or 0.0,
+                linearity_error=abs(db_track.final_linearity_error_shifted or 0.0),
                 linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else True,
                 linearity_fail_points=db_track.linearity_fail_points or 0,
                 unit_length=db_track.unit_length,

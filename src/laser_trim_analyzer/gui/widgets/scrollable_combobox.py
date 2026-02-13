@@ -1,11 +1,12 @@
 """
-Scrollable ComboBox Widget for Laser Trim Analyzer v3.
+Scrollable ComboBox Widget for Laser Trim Analyzer.
 
 CTkComboBox doesn't support scrolling in its dropdown when there are many items.
 This widget creates a proper scrollable dropdown using CTkScrollableFrame.
 """
 
 import logging
+import time
 from typing import List, Callable, Optional
 import customtkinter as ctk
 
@@ -18,6 +19,8 @@ class ScrollableComboBox(ctk.CTkFrame):
 
     Replaces CTkComboBox for cases with many options (e.g., model lists).
     Shows a button with current value, clicking opens a scrollable dropdown.
+    Uses grab_set() for outside-click detection to avoid interfering with
+    other widgets' focus/click handling (especially CTkEntry fields).
     """
 
     def __init__(
@@ -40,8 +43,9 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._current_value = self._values[0] if self._values else ""
         self._dropdown_window = None
         self._is_open = False
-        self._toplevel_bind_id = None  # Track our bind ID for proper cleanup
-        self._option_buttons = []  # [(value, btn)] for search filtering
+        self._option_buttons = []
+        self._search_entry = None
+        self._open_time = 0
 
         # Main button that shows current value and opens dropdown
         self._button = ctk.CTkButton(
@@ -82,6 +86,7 @@ class ScrollableComboBox(ctk.CTkFrame):
             return
 
         self._is_open = True
+        self._open_time = time.time()
         self._arrow_label.configure(text="\u25B2")  # Up arrow
 
         # Create toplevel window for dropdown
@@ -89,6 +94,12 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._dropdown_window.withdraw()  # Hide initially
         self._dropdown_window.overrideredirect(True)  # No window decorations
         self._dropdown_window.attributes("-topmost", True)
+
+        # Link as transient child (helps OS focus management)
+        try:
+            self._dropdown_window.wm_transient(self.winfo_toplevel())
+        except Exception:
+            pass
 
         # Calculate position (below the button)
         x = self._button.winfo_rootx()
@@ -99,14 +110,14 @@ class ScrollableComboBox(ctk.CTkFrame):
         container.pack(fill="both", expand=True, padx=2, pady=2)
 
         # Search entry at top of dropdown
-        search_entry = ctk.CTkEntry(
+        self._search_entry = ctk.CTkEntry(
             container,
             placeholder_text="Type to filter...",
             width=self._width - 14,
             height=28,
         )
-        search_entry.pack(padx=5, pady=(5, 2), fill="x")
-        search_entry.bind("<KeyRelease>", lambda e: self._filter_options(search_entry.get()))
+        self._search_entry.pack(padx=5, pady=(5, 2), fill="x")
+        self._search_entry.bind("<KeyRelease>", lambda e: self._filter_options(self._search_entry.get()))
 
         # Create scrollable frame for options
         scroll_frame = ctk.CTkScrollableFrame(
@@ -135,60 +146,51 @@ class ScrollableComboBox(ctk.CTkFrame):
             btn.pack(fill="x", padx=2, pady=1)
             self._option_buttons.append((value, btn))
 
+        # Bind click on dropdown to detect outside clicks (via grab redirect)
+        self._dropdown_window.bind("<Button-1>", self._on_grab_click)
+
+        # Bind escape to close
+        self._dropdown_window.bind("<Escape>", lambda e: self._close_dropdown())
+
         # Position and show window (extra height for search entry)
         dropdown_h = min(self._dropdown_height + 40, len(self._values) * 28 + 40)
         self._dropdown_window.geometry(f"{self._width}x{dropdown_h}+{x}+{y}")
         self._dropdown_window.deiconify()
 
-        # Focus the search entry (deferred for macOS/overrideredirect compatibility)
-        search_entry.after(10, search_entry.focus_set)
+        # Focus search entry and set grab (captures outside clicks)
+        def _setup_dropdown():
+            try:
+                if self._dropdown_window and self._is_open:
+                    self._dropdown_window.lift()
+                    self._search_entry.focus_set()
+                    # grab_set redirects all app clicks to this window
+                    # so outside clicks can be detected and used to close
+                    self._dropdown_window.grab_set()
+            except Exception:
+                logger.debug("Dropdown grab/focus setup failed")
+        self._dropdown_window.after(100, _setup_dropdown)
 
-        # Bind escape to close
-        self._dropdown_window.bind("<Escape>", lambda e: self._close_dropdown())
-
-        # Close when clicking outside - bind to toplevel losing focus
-        self._dropdown_window.bind("<FocusOut>", self._on_focus_out)
-
-        # Also close if the main window is clicked - track the bind ID for cleanup
-        self._toplevel_bind_id = self.winfo_toplevel().bind("<Button-1>", self._on_toplevel_click, add="+")
-
-    def _on_focus_out(self, event):
-        """Handle focus out - close dropdown after a short delay."""
-        # Use after to allow button clicks to register first
-        if self._dropdown_window:
-            self._dropdown_window.after(100, self._check_and_close)
-
-    def _on_toplevel_click(self, event):
-        """Handle click on main window - close dropdown if open."""
-        if not self._is_open:
-            return
-
-        # Check if click is on our button
-        try:
-            bx = self._button.winfo_rootx()
-            by = self._button.winfo_rooty()
-            bw = self._button.winfo_width()
-            bh = self._button.winfo_height()
-
-            if bx <= event.x_root <= bx + bw and by <= event.y_root <= by + bh:
-                return  # Click on button, let toggle handle it
-
-            self._close_dropdown()
-        except Exception as e:
-            logger.debug(f"Click handling error (ignored): {e}")
-
-    def _check_and_close(self):
-        """Check if we should close the dropdown."""
+    def _on_grab_click(self, event):
+        """Handle click while dropdown has grab. Closes if click is outside."""
         if not self._is_open or not self._dropdown_window:
             return
 
+        # Don't close if dropdown just opened (prevents race)
+        if time.time() - self._open_time < 0.3:
+            return
+
+        # Clicks inside the dropdown have normal coordinates;
+        # clicks outside (redirected by grab) have out-of-bounds coordinates
         try:
-            # Check if focus is still in the dropdown
-            focused = self._dropdown_window.focus_get()
-            if focused is None:
-                self._close_dropdown()
+            w = self._dropdown_window.winfo_width()
+            h = self._dropdown_window.winfo_height()
+            if 0 <= event.x <= w and 0 <= event.y <= h:
+                return  # Click inside dropdown, let child widgets handle it
         except Exception:
-            self._close_dropdown()
+            pass
+
+        # Click was outside the dropdown — close it
+        self._close_dropdown()
 
     def _filter_options(self, search_text: str):
         """Filter dropdown options based on search text."""
@@ -200,25 +202,29 @@ class ScrollableComboBox(ctk.CTkFrame):
                 btn.pack_forget()
 
     def _close_dropdown(self):
-        """Close the dropdown list."""
+        """Close the dropdown list and restore main window focus."""
         if not self._is_open:
             return
 
         self._is_open = False
         self._option_buttons = []
+        self._search_entry = None
         self._arrow_label.configure(text="\u25BC")  # Down arrow
 
-        # Unbind only our toplevel click handler (not all Button-1 handlers)
-        try:
-            if self._toplevel_bind_id:
-                self.winfo_toplevel().unbind("<Button-1>", self._toplevel_bind_id)
-                self._toplevel_bind_id = None
-        except Exception as e:
-            logger.debug(f"Failed to unbind toplevel click handler: {e}")
-
         if self._dropdown_window:
+            try:
+                self._dropdown_window.grab_release()
+            except Exception:
+                pass
             self._dropdown_window.destroy()
             self._dropdown_window = None
+
+        # Restore main window focus so CTkEntry fields work properly
+        try:
+            top = self.winfo_toplevel()
+            top.focus_force()
+        except Exception:
+            pass
 
     def _select_value(self, value: str):
         """Select a value from the dropdown."""

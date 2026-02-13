@@ -371,21 +371,32 @@ class FinalTestParser:
             position_col = cols["electrical_angle"]  # Default: Col E (4)
 
             if df.shape[1] > 5:
-                # Check if Col E is empty (NaN) or duplicates Col D (error)
+                # Check if Col E is empty (NaN), duplicates Col D, or is constant
                 col_e_empty_count = 0
                 similar_count = 0
+                col_e_values = []
                 for i in range(data_start, min(data_start + 10, len(df))):
                     col_d = df.iloc[i, cols["error"]]
                     col_e = df.iloc[i, cols["electrical_angle"]]
 
                     if not is_numeric(col_e):
                         col_e_empty_count += 1
-                    elif is_numeric(col_d) and is_numeric(col_e):
-                        if abs(float(col_d) - float(col_e)) < 0.0001:
-                            similar_count += 1
+                    else:
+                        col_e_values.append(float(col_e))
+                        if is_numeric(col_d):
+                            if abs(float(col_d) - float(col_e)) < 0.0001:
+                                similar_count += 1
 
-                # Col E is unusable if mostly empty or duplicates error
-                col_e_unusable = col_e_empty_count >= 5 or similar_count >= 5
+                # Check if Col E is mostly constant (e.g., all zeros)
+                # A valid position column should have varying values
+                constant_count = 0
+                if len(col_e_values) >= 5:
+                    ref = col_e_values[0]
+                    constant_count = sum(1 for v in col_e_values if abs(v - ref) < 0.0001)
+
+                # Col E is unusable if mostly empty, duplicates error, or constant
+                col_e_unusable = (col_e_empty_count >= 5 or similar_count >= 5
+                                  or constant_count >= 7)
 
                 if col_e_unusable:
                     # Col E is empty or duplicates error - need to find position elsewhere

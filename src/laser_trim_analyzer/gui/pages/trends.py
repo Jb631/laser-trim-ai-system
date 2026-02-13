@@ -220,7 +220,7 @@ class TrendsPage(ctk.CTkFrame):
         self.content.grid_rowconfigure(3, weight=1, minsize=180)  # Top 5 / Recent Issues
         self.content.grid_rowconfigure(4, weight=1, minsize=180)  # Trending Worse / Low Data
         self.content.grid_rowconfigure(5, weight=1, minsize=250)  # Drift Detection section
-        self.content.grid_rowconfigure(6, weight=0)  # ML section - compact
+        # Rows 6 (Heat Map) and 7 (ML) configured below with their widgets
 
         # Summary stats at top
         stats_frame = ctk.CTkFrame(self.content)
@@ -453,9 +453,28 @@ class TrendsPage(ctk.CTkFrame):
         )
         self._drift_details_label.grid(row=2, column=1, sticky="w", padx=15, pady=(0, 10))
 
+        # Heat Map section
+        self.content.grid_rowconfigure(6, weight=1, minsize=250)  # Heat map
+        self._heatmap_frame = ctk.CTkFrame(self.content)
+        self._heatmap_frame.grid(row=6, column=0, sticky="nsew", padx=10, pady=5)
+
+        heatmap_label = ctk.CTkLabel(
+            self._heatmap_frame,
+            text="Model Pass Rate Heat Map (by Week)",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        heatmap_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        self._heatmap_placeholder = ctk.CTkLabel(
+            self._heatmap_frame, text="Loading heat map...", text_color="gray"
+        )
+        self._heatmap_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.heatmap_chart = None
+
         # ML Recommendations at bottom
+        self.content.grid_rowconfigure(7, weight=0)  # ML section - compact
         ml_frame = ctk.CTkFrame(self.content)
-        ml_frame.grid(row=6, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ml_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(5, 10))
 
         ml_header = ctk.CTkFrame(ml_frame, fg_color="transparent")
         ml_header.pack(fill="x", padx=15, pady=(15, 5))
@@ -534,6 +553,17 @@ class TrendsPage(ctk.CTkFrame):
         self._chart_widgets.append(self.trending_chart)
         self.trending_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.trending_chart.show_placeholder("Loading trending data...")
+
+        # Create heatmap chart
+        if self._heatmap_placeholder and self._heatmap_placeholder.winfo_exists():
+            self._heatmap_placeholder.destroy()
+        self.heatmap_chart = ChartWidget(
+            self._heatmap_frame,
+            style=ChartStyle(figure_size=(10, 4), dpi=100)
+        )
+        self._chart_widgets.append(self.heatmap_chart)
+        self.heatmap_chart.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.heatmap_chart.show_placeholder("Loading heat map data...")
 
         self._summary_charts_initialized = True
         logger.debug("Summary charts initialized (matplotlib loaded)")
@@ -1026,15 +1056,13 @@ class TrendsPage(ctk.CTkFrame):
         # Determine title suffix based on filter
         filter_suffix = f" (Last {self.chart_timeline_days} Days)" if self.chart_timeline_days > 0 else ""
 
-        # Plot as line chart (not scatter)
-        self.linearity_chart.plot_line_chart(
+        # Plot as P-chart with binomial control limits
+        self.linearity_chart.plot_pchart(
             dates=display_dates,
-            values=pass_rates,
-            rolling_avg=rolling_avg,
-            title=f"Linearity Pass Rate - {self.selected_model}{filter_suffix}",
+            pass_rates=pass_rates,
+            sample_sizes=totals,
+            title=f"Linearity P-Chart - {self.selected_model}{filter_suffix}",
             ylabel="Pass Rate (%)",
-            y_range=(0, 100),  # Pass rate is 0-100%
-            threshold=80,  # Optional: target pass rate line
         )
 
     def _refresh_data(self):
@@ -1112,11 +1140,18 @@ class TrendsPage(ctk.CTkFrame):
             else:
                 model_names.append(m['model'])
 
+        # Get heatmap data
+        try:
+            heatmap_data = db.get_heatmap_data(days_back=self.selected_days)
+        except Exception as e:
+            logger.debug(f"Could not load heatmap data: {e}")
+            heatmap_data = None
+
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
             active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
-            priority_models=priority_models
+            priority_models=priority_models, heatmap_data=heatmap_data
         ))
 
     def _load_detail_data(self, db):
@@ -1248,7 +1283,8 @@ class TrendsPage(ctk.CTkFrame):
         trending_worse: Optional[List[Dict[str, Any]]] = None,
         mps_models: Optional[List[str]] = None,
         recent_days: int = 90,
-        priority_models: Optional[List[Dict[str, Any]]] = None
+        priority_models: Optional[List[Dict[str, Any]]] = None,
+        heatmap_data: Optional[Dict[str, Any]] = None,
     ):
         """Update summary display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -1423,6 +1459,9 @@ class TrendsPage(ctk.CTkFrame):
         # Low Data Models section
         self._update_low_data_list(low_data_models)
 
+        # Update heatmap
+        self._update_heatmap(heatmap_data)
+
         # Update ML summary
         self._update_ml_summary(alert_models)
 
@@ -1431,6 +1470,26 @@ class TrendsPage(ctk.CTkFrame):
 
         # Update status
         self.status_label.configure(text=f"Updated: {datetime.now().strftime('%H:%M:%S')}")
+
+    def _update_heatmap(self, heatmap_data: Optional[Dict[str, Any]]):
+        """Update the heat map chart with model x week pass rate data."""
+        try:
+            if not self.heatmap_chart:
+                return
+
+            if not heatmap_data or not heatmap_data.get("models"):
+                self.heatmap_chart.show_placeholder("No data for heat map")
+                return
+
+            self.heatmap_chart.plot_heatmap(
+                models=heatmap_data["models"],
+                periods=heatmap_data["periods"],
+                values=heatmap_data["values"],
+            )
+        except Exception as e:
+            logger.debug(f"Heatmap update error: {e}")
+            if self.heatmap_chart:
+                self.heatmap_chart.show_placeholder("Error loading heat map")
 
     def _update_low_data_list(self, low_data_models: List[Dict[str, Any]]):
         """Update the low data models list section."""

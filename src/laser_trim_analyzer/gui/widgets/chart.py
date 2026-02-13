@@ -1402,6 +1402,359 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw()
 
+    def plot_pchart(
+        self,
+        dates: List[str],
+        pass_rates: List[float],
+        sample_sizes: List[int],
+        title: str = "P-Chart (Linearity Pass Rate)",
+        ylabel: str = "Pass Rate %",
+    ) -> None:
+        """
+        Plot P-chart with variable binomial control limits.
+
+        Control limits: p-bar +/- 3*sqrt(p-bar*(1-p-bar)/n_i)
+        Limits vary per day based on sample size n_i.
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not pass_rates or len(pass_rates) < 2:
+            self.show_placeholder("Insufficient data for P-chart")
+            return
+
+        x = list(range(len(pass_rates)))
+        rates = np.array(pass_rates) / 100.0  # Convert % to proportion
+        sizes = np.array(sample_sizes, dtype=float)
+        sizes = np.maximum(sizes, 1)  # Avoid division by zero
+
+        p_bar = np.average(rates, weights=sizes)
+
+        # Variable control limits per day
+        ucl = np.clip(p_bar + 3 * np.sqrt(p_bar * (1 - p_bar) / sizes), 0, 1)
+        lcl = np.clip(p_bar - 3 * np.sqrt(p_bar * (1 - p_bar) / sizes), 0, 1)
+
+        # Plot data line
+        ax.plot(x, rates * 100, 'o-', color=COLORS['info'],
+                linewidth=self.style.line_width, markersize=3, label='Daily Pass Rate')
+
+        # Center line
+        ax.axhline(y=p_bar * 100, color=COLORS['warning'], linestyle='-',
+                   linewidth=1.5, label=f'p-bar: {p_bar*100:.1f}%')
+
+        # Variable UCL/LCL as stepped lines
+        ax.step(x, ucl * 100, where='mid', color=COLORS['fail'],
+                linestyle='--', linewidth=1, alpha=0.8, label='UCL/LCL (3-sigma)')
+        ax.step(x, lcl * 100, where='mid', color=COLORS['fail'],
+                linestyle='--', linewidth=1, alpha=0.8)
+
+        # Fill between control limits
+        ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.08, color=COLORS['pass'],
+                        step='mid')
+
+        # Highlight out-of-control points
+        for i, r in enumerate(rates):
+            if r > ucl[i] or r < lcl[i]:
+                ax.scatter([i], [r * 100], color=COLORS['fail'], s=80, zorder=5,
+                          marker='x', linewidths=2)
+
+        # X-axis labels
+        if dates and len(dates) > 10:
+            step = max(1, len(dates) // 10)
+            ax.set_xticks(range(0, len(dates), step))
+            ax.set_xticklabels([dates[i] for i in range(0, len(dates), step)],
+                              rotation=45, ha='right', fontsize=self.style.font_size - 2)
+        elif dates:
+            ax.set_xticks(x)
+            ax.set_xticklabels(dates, rotation=45, ha='right',
+                              fontsize=self.style.font_size - 2)
+
+        ax.set_xlabel('Date', fontsize=self.style.font_size)
+        ax.set_ylabel(ylabel, fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.legend(loc='best', fontsize=self.style.font_size - 2)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+        ax.set_ylim(bottom=max(0, (lcl.min() * 100) - 5),
+                    top=min(100, (ucl.max() * 100) + 5))
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_pareto(
+        self,
+        labels: List[str],
+        values: List[float],
+        title: str = "Pareto Chart — Failure Sources",
+    ) -> None:
+        """
+        Plot Pareto chart: horizontal bars sorted descending + cumulative % line.
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not labels or not values:
+            self.show_placeholder("No data for Pareto chart")
+            return
+
+        # Sort descending and limit to top 15
+        pairs = sorted(zip(labels, values), key=lambda x: x[1], reverse=True)[:15]
+        labels_sorted = [p[0] for p in pairs]
+        values_sorted = [p[1] for p in pairs]
+
+        total = sum(values_sorted)
+        if total == 0:
+            self.show_placeholder("No failures to display")
+            return
+
+        y_pos = np.arange(len(labels_sorted))
+
+        # Horizontal bars
+        ax.barh(y_pos, values_sorted, color=COLORS['fail'], alpha=0.8, edgecolor='white')
+
+        # Cumulative % line on secondary axis
+        ax2 = ax.twiny()
+        cumulative = np.cumsum(values_sorted) / total * 100
+        ax2.plot(cumulative, y_pos, 'o-', color=COLORS['warning'], linewidth=2,
+                markersize=4, label='Cumulative %')
+        ax2.axvline(x=80, color=COLORS['warning'], linestyle=':', linewidth=1.5,
+                   alpha=0.7, label='80% line')
+        ax2.set_xlim(0, 105)
+        ax2.set_xlabel('Cumulative %', fontsize=self.style.font_size - 1,
+                      color=COLORS['warning'])
+        ax2.tick_params(axis='x', colors=COLORS['warning'])
+
+        # Value labels on bars
+        for i, (bar_val, cum_val) in enumerate(zip(values_sorted, cumulative)):
+            ax.text(bar_val + total * 0.01, i, f'{bar_val:.0f}',
+                   va='center', fontsize=self.style.font_size - 2,
+                   color=COLORS['text'] if self.style.dark_mode else 'black')
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels_sorted, fontsize=self.style.font_size - 1)
+        ax.set_xlabel('Failure Count', fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
+        ax.invert_yaxis()
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_confusion_matrix(
+        self,
+        tp: int,
+        tn: int,
+        fp_overkill: int,
+        fn_escape: int,
+        title: str = "Trim vs Final Test — Confusion Matrix",
+    ) -> None:
+        """
+        Plot 2x2 confusion matrix for trim prediction vs FT outcome.
+
+        TP = both pass (green), TN = both fail (blue),
+        FP = overkill/trim fail+FT pass (orange), FN = escape/trim pass+FT fail (red)
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        total = tp + tn + fp_overkill + fn_escape
+        if total == 0:
+            self.show_placeholder("No linked trim/FT data for confusion matrix")
+            return
+
+        # 2x2 matrix: rows=Trim result, cols=FT result
+        # [Trim Pass, FT Pass]=TP  [Trim Pass, FT Fail]=FN(escape)
+        # [Trim Fail, FT Pass]=FP  [Trim Fail, FT Fail]=TN
+        matrix = np.array([[tp, fn_escape], [fp_overkill, tn]])
+        cell_colors = np.array([
+            [COLORS['pass'], COLORS['fail']],       # Trim Pass row
+            [COLORS['warning'], COLORS['info']],     # Trim Fail row
+        ])
+        cell_labels = np.array([
+            ['Both Pass\n(Correct)', 'Escape\n(Missed Defect)'],
+            ['Overkill\n(False Reject)', 'Both Fail\n(Correct)'],
+        ])
+
+        # Draw colored rectangles
+        for i in range(2):
+            for j in range(2):
+                count = matrix[i, j]
+                pct = count / total * 100 if total > 0 else 0
+                color = cell_colors[i, j]
+                label = cell_labels[i, j]
+
+                rect = plt.Rectangle((j, 1 - i), 1, -1, facecolor=color, alpha=0.3,
+                                    edgecolor='white', linewidth=2)
+                ax.add_patch(rect)
+
+                # Count and percentage
+                ax.text(j + 0.5, 0.5 - i + 0.15, f'{count:,}',
+                       ha='center', va='center', fontsize=20, fontweight='bold',
+                       color=COLORS['text'] if self.style.dark_mode else 'black')
+                ax.text(j + 0.5, 0.5 - i - 0.1, f'({pct:.1f}%)',
+                       ha='center', va='center', fontsize=12,
+                       color=COLORS['text'] if self.style.dark_mode else 'black')
+                ax.text(j + 0.5, 0.5 - i - 0.3, label,
+                       ha='center', va='center', fontsize=9,
+                       color='gray')
+
+        ax.set_xlim(0, 2)
+        ax.set_ylim(-1, 1)
+        ax.set_xticks([0.5, 1.5])
+        ax.set_xticklabels(['FT Pass', 'FT Fail'], fontsize=self.style.font_size)
+        ax.set_yticks([0.5, -0.5])
+        ax.set_yticklabels(['Trim Pass', 'Trim Fail'], fontsize=self.style.font_size)
+        ax.set_title(f"{title}\n(n={total:,})", fontsize=self.style.title_size)
+
+        # Remove grid for matrix
+        ax.grid(False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_heatmap(
+        self,
+        models: List[str],
+        periods: List[str],
+        values: List[List[float]],
+        title: str = "Model Pass Rate Heat Map",
+    ) -> None:
+        """
+        Plot heat map: models (Y) x time periods (X), color = pass rate.
+
+        Args:
+            models: Y-axis labels (model names)
+            periods: X-axis labels (week/month labels)
+            values: 2D list [model_idx][period_idx] of pass rates (0-100), NaN for no data
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not models or not periods or not values:
+            self.show_placeholder("No data for heat map")
+            return
+
+        data = np.array(values)
+
+        # Use RdYlGn colormap (red=bad, yellow=mid, green=good)
+        from matplotlib.colors import LinearSegmentedColormap
+        cmap = LinearSegmentedColormap.from_list('rylg',
+            [(0, COLORS['fail']), (0.5, COLORS['warning']), (1.0, COLORS['pass'])])
+        cmap.set_bad(color=COLORS['background'], alpha=0.3)
+
+        masked_data = np.ma.masked_invalid(data)
+
+        im = ax.imshow(masked_data, cmap=cmap, aspect='auto', vmin=0, vmax=100)
+
+        # Add colorbar
+        cbar = self.figure.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+        cbar.set_label('Pass Rate %', fontsize=self.style.font_size - 1)
+        if self.style.dark_mode:
+            cbar.ax.yaxis.set_tick_params(color=COLORS['text'])
+            cbar.ax.yaxis.label.set_color(COLORS['text'])
+            for label in cbar.ax.get_yticklabels():
+                label.set_color(COLORS['text'])
+
+        # Labels
+        ax.set_xticks(range(len(periods)))
+        ax.set_xticklabels(periods, rotation=45, ha='right',
+                          fontsize=self.style.font_size - 2)
+        ax.set_yticks(range(len(models)))
+        ax.set_yticklabels(models, fontsize=self.style.font_size - 2)
+        ax.set_title(title, fontsize=self.style.title_size)
+
+        # Add text values in cells (only for small grids)
+        if len(models) <= 20 and len(periods) <= 15:
+            for i in range(len(models)):
+                for j in range(len(periods)):
+                    val = data[i][j]
+                    if not np.isnan(val):
+                        text_color = 'white' if val < 40 or val > 85 else 'black'
+                        ax.text(j, i, f'{val:.0f}', ha='center', va='center',
+                               fontsize=max(6, self.style.font_size - 3), color=text_color)
+
+        ax.grid(False)
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_escape_scatter(
+        self,
+        trim_errors: List[float],
+        ft_errors: List[float],
+        spec_limit: float,
+        title: str = "Trim vs Final Test — Escape/Overkill Scatter",
+    ) -> None:
+        """
+        Plot scatter: trim linearity error (X) vs FT linearity error (Y).
+        Spec limit lines create 4 quadrants colored by outcome.
+        """
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        if not trim_errors or not ft_errors:
+            self.show_placeholder("No linked trim/FT track data for scatter")
+            return
+
+        trim_arr = np.array(trim_errors)
+        ft_arr = np.array(ft_errors)
+
+        # Classify each point into quadrants
+        both_pass = (trim_arr <= spec_limit) & (ft_arr <= spec_limit)
+        escape = (trim_arr <= spec_limit) & (ft_arr > spec_limit)
+        overkill = (trim_arr > spec_limit) & (ft_arr <= spec_limit)
+        both_fail = (trim_arr > spec_limit) & (ft_arr > spec_limit)
+
+        # Plot each quadrant
+        if both_pass.any():
+            ax.scatter(trim_arr[both_pass], ft_arr[both_pass], c=COLORS['pass'],
+                      s=15, alpha=0.5, label=f'Both Pass ({both_pass.sum()})')
+        if escape.any():
+            ax.scatter(trim_arr[escape], ft_arr[escape], c=COLORS['fail'],
+                      s=25, alpha=0.7, label=f'Escape ({escape.sum()})')
+        if overkill.any():
+            ax.scatter(trim_arr[overkill], ft_arr[overkill], c=COLORS['warning'],
+                      s=25, alpha=0.7, label=f'Overkill ({overkill.sum()})')
+        if both_fail.any():
+            ax.scatter(trim_arr[both_fail], ft_arr[both_fail], c=COLORS['info'],
+                      s=15, alpha=0.5, label=f'Both Fail ({both_fail.sum()})')
+
+        # Spec limit lines
+        ax.axvline(x=spec_limit, color=COLORS['spec_limit'], linestyle='--',
+                  linewidth=1.5, alpha=0.7)
+        ax.axhline(y=spec_limit, color=COLORS['spec_limit'], linestyle='--',
+                  linewidth=1.5, alpha=0.7)
+
+        # Quadrant fill (very subtle)
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        ax.fill_between([xlim[0], spec_limit], ylim[0], spec_limit,
+                        alpha=0.03, color=COLORS['pass'])
+        ax.fill_between([xlim[0], spec_limit], spec_limit, ylim[1],
+                        alpha=0.03, color=COLORS['fail'])
+        ax.fill_between([spec_limit, xlim[1]], ylim[0], spec_limit,
+                        alpha=0.03, color=COLORS['warning'])
+        ax.fill_between([spec_limit, xlim[1]], spec_limit, ylim[1],
+                        alpha=0.03, color=COLORS['info'])
+
+        # Diagonal reference (perfect correlation)
+        diag_max = max(xlim[1], ylim[1])
+        ax.plot([0, diag_max], [0, diag_max], ':', color='gray', alpha=0.4, linewidth=1)
+
+        ax.set_xlabel('Trim Linearity Error', fontsize=self.style.font_size)
+        ax.set_ylabel('FT Linearity Error', fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.legend(loc='best', fontsize=self.style.font_size - 2, markerscale=1.5)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
     def destroy(self):
         """Clean up matplotlib resources."""
         self._destroyed = True  # Prevent pending after() callbacks from executing

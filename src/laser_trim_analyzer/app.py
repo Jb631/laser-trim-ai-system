@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import logging
 from pathlib import Path
 
+from laser_trim_analyzer import __version__
 from laser_trim_analyzer.config import Config
 from laser_trim_analyzer.utils.threads import get_thread_manager
 
@@ -53,7 +54,7 @@ class LaserTrimApp(ctk.CTk):
 
     def _setup_window(self):
         """Configure the main window."""
-        self.title("Laser Trim Analyzer v3")
+        self.title(f"Laser Trim Analyzer v{__version__}")
         self.geometry(f"{self.config.gui.window_width}x{self.config.gui.window_height}")
         self.minsize(800, 600)
 
@@ -79,7 +80,7 @@ class LaserTrimApp(ctk.CTk):
         # Version label
         self.version_label = ctk.CTkLabel(
             self.sidebar,
-            text="v3.0.0",
+            text=f"v{__version__}",
             font=ctk.CTkFont(size=12),
             text_color="gray"
         )
