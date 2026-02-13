@@ -140,8 +140,8 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._dropdown_window.geometry(f"{self._width}x{dropdown_h}+{x}+{y}")
         self._dropdown_window.deiconify()
 
-        # Focus the search entry
-        search_entry.focus_set()
+        # Focus the search entry (deferred for macOS/overrideredirect compatibility)
+        search_entry.after(10, search_entry.focus_set)
 
         # Bind escape to close
         self._dropdown_window.bind("<Escape>", lambda e: self._close_dropdown())

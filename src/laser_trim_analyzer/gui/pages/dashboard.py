@@ -325,22 +325,26 @@ class DashboardPage(ctk.CTkFrame):
         if self._chart_initialized:
             return
 
-        # Import matplotlib-dependent ChartWidget only when needed
-        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+        try:
+            # Import matplotlib-dependent ChartWidget only when needed
+            from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
-        # Remove placeholder
-        self._chart_placeholder.destroy()
+            # Remove placeholder
+            self._chart_placeholder.destroy()
 
-        # Create actual chart widget
-        self.trend_chart = ChartWidget(
-            self._chart_frame,
-            style=ChartStyle(figure_size=(4, 2.5), dpi=80)
-        )
-        self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.trend_chart.show_placeholder("Loading trend data...")
+            # Create actual chart widget
+            self.trend_chart = ChartWidget(
+                self._chart_frame,
+                style=ChartStyle(figure_size=(4, 2.5), dpi=80)
+            )
+            self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+            self.trend_chart.show_placeholder("Loading trend data...")
 
-        self._chart_initialized = True
-        logger.debug("ChartWidget initialized (matplotlib loaded)")
+            self._chart_initialized = True
+            logger.debug("ChartWidget initialized (matplotlib loaded)")
+        except Exception as e:
+            logger.error(f"Failed to initialize chart (matplotlib issue?): {e}")
+            self._chart_initialized = True  # Don't retry on every refresh
 
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
@@ -660,6 +664,9 @@ class DashboardPage(ctk.CTkFrame):
         """Update trend chart with linearity pass rate data."""
         # Ensure chart is initialized before use
         self._ensure_chart_initialized()
+
+        if not self.trend_chart:
+            return  # matplotlib failed to load
 
         # Use linearity-specific daily trend, fall back to overall
         trend_data = stats.get("linearity_daily_trend", []) or stats.get("daily_trend", [])

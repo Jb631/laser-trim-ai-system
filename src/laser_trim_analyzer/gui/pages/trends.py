@@ -1513,6 +1513,12 @@ class TrendsPage(ctk.CTkFrame):
         self.model_dropdown.configure(values=model_names)
         if current_model in model_names:
             self.model_dropdown.set(current_model)
+        else:
+            # Current model was filtered out (e.g. Active Only) — switch to summary
+            self.model_dropdown.set("All Models")
+            self.selected_model = "All Models"
+            self.after(50, lambda: self._on_model_change("All Models"))
+            return
 
         self.model_trend_data = trend_data
 

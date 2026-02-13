@@ -1288,9 +1288,11 @@ class DatabaseManager:
 
             result = {"system_a": None, "system_b": None}
             for row in system_data:
-                if _status_matches(row.system, DBSystemType.A):
+                # Direct comparison — _status_matches is for DBStatusType only
+                sys_val = row.system.value if isinstance(row.system, DBSystemType) else str(row.system)
+                if sys_val == DBSystemType.A.value:
                     key = "system_a"
-                elif _status_matches(row.system, DBSystemType.B):
+                elif sys_val == DBSystemType.B.value:
                     key = "system_b"
                 else:
                     continue

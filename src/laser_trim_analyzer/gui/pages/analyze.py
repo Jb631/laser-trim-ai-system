@@ -637,6 +637,8 @@ class AnalyzePage(ctk.CTkFrame):
         self.model_filter.configure(values=model_values)
         if current in model_values:
             self.model_filter.set(current)
+        else:
+            self.model_filter.set("All Models")
 
         # Update count
         self.count_label.configure(text=f"{len(analyses)} results")
