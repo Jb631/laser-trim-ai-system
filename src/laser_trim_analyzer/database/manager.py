@@ -170,6 +170,106 @@ class DatabaseManager:
             logger.error(f"Failed to initialize database: {e}")
             raise DatabaseError(f"Database initialization failed: {e}")
 
+    @staticmethod
+    def _reparse_filename(filename: str) -> tuple:
+        """Re-parse a filename to extract model and serial using improved logic.
+
+        Standalone version of ExcelParser._parse_filename() for use in migrations
+        without importing the parser (avoids circular dependencies).
+        """
+        import re
+        from pathlib import Path
+
+        def _is_valid_suffix(suffix):
+            if suffix.lower().startswith('shop'):
+                return False
+            if re.match(r'^[A-Za-z0-9]{1,3}$', suffix):
+                return True
+            if suffix.lower() == 'outer':
+                return True
+            return False
+
+        name = Path(filename).stem
+        parts = re.split(r'[_\s]+', name)
+
+        # Concatenated model+sn+serial (e.g., "7928sn1040", "8340-1-sn201")
+        if parts:
+            concat_match = re.match(
+                r'^(\d{4,}[A-Za-z]?(?:-\d+[A-Za-z]?)?)-?[sS][nN](\d+[a-zA-Z]?)$',
+                parts[0]
+            )
+            if concat_match:
+                return concat_match.group(1), concat_match.group(2)
+
+        if len(parts) >= 2:
+            model = "Unknown"
+            serial = "Unknown"
+
+            for part in parts:
+                model_match = re.match(r'^(\d{4,}[A-Za-z]?)((?:-[A-Za-z0-9]+)*)$', part)
+                if model_match:
+                    base = model_match.group(1)
+                    suffixes_str = model_match.group(2)
+
+                    if not suffixes_str:
+                        model = part
+                        break
+
+                    suffixes = suffixes_str.split('-')[1:]
+
+                    if suffixes[-1].lower() == 'sn':
+                        model = base + '-'.join([''] + suffixes[:-1]) if len(suffixes) > 1 else base
+                        break
+
+                    valid_parts = [base]
+                    for s in suffixes:
+                        if _is_valid_suffix(s):
+                            valid_parts.append(s)
+                        else:
+                            model = '-'.join(valid_parts)
+                            serial = s
+                            break
+                    else:
+                        model = part
+                    break
+
+            if serial == "Unknown" and model != "Unknown":
+                skip_keywords = {
+                    'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct',
+                    'scrap', 'cut', 'wiper', 'path', 'am', 'pm',
+                    'fail', 'pass', 'final', 'template', 'primary',
+                    'customer', 'report', 'master', 'noise', 'copy', 'of',
+                    'pre', 'outer', 'redunat', 'redundant',
+                }
+                for i, part in enumerate(parts):
+                    if part == model:
+                        continue
+                    if '-' in part and part.startswith(model + '-'):
+                        continue
+                    if part.lower() in skip_keywords:
+                        continue
+                    if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                        continue
+                    if re.match(r'^\d{1,4}-\d{1,2}-\d{1,4}$', part):
+                        continue
+                    if re.match(r'^\d{1,2}-\d{2}(-\d{2})?$', part):
+                        continue
+                    if re.match(r'^\d{8,}', part):
+                        continue
+                    if re.match(r'^[A-Z]{1,3}\d+', part, re.IGNORECASE):
+                        serial = part
+                        break
+                    elif re.match(r'^\d+$', part):
+                        serial = part
+                        break
+
+            return model, serial
+
+        # Single-part filename: only return as model if it looks like a valid model number
+        if re.match(r'^\d{4,}[A-Za-z]?$', name):
+            return name, "Unknown"
+        return "Unknown", "Unknown"
+
     def _run_migrations(self) -> None:
         """Run database migrations for schema updates."""
         needs_rematch = False
@@ -277,6 +377,33 @@ class DatabaseManager:
                     logger.info(f"Migration completed: Cleaned up {shop_count} shop model name records")
             except Exception as e:
                 logger.warning(f"Shop model cleanup warning: {e}")
+
+            # Migration: Re-parse "Unknown" model records with improved parser logic
+            # Handles: multi-hyphen models (7280-1-CT), -sn serial indicators,
+            # concatenated sn patterns, "final NNN" serials, etc.
+            try:
+                unknown_records = session.execute(text(
+                    "SELECT id, filename FROM analysis_results WHERE model = 'Unknown'"
+                )).fetchall()
+                if unknown_records:
+                    logger.info(f"Running migration: Re-parsing {len(unknown_records)} Unknown model records")
+                    fixed = 0
+                    for row in unknown_records:
+                        rec_id, filename = row[0], row[1]
+                        model, serial = self._reparse_filename(filename)
+                        if model != "Unknown":
+                            session.execute(text(
+                                "UPDATE analysis_results SET model = :model, serial = :serial WHERE id = :id"
+                            ), {"model": model, "serial": serial, "id": rec_id})
+                            fixed += 1
+                    if fixed > 0:
+                        session.commit()
+                        needs_rematch = True
+                        logger.info(f"Migration completed: Fixed {fixed} of {len(unknown_records)} Unknown model records")
+                    else:
+                        logger.info("Migration: No Unknown records could be re-parsed")
+            except Exception as e:
+                logger.warning(f"Unknown model re-parse warning: {e}")
 
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:

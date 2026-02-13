@@ -162,8 +162,11 @@ class ExcelParser:
         - "1844202_10_TA_Test Data_11-22-2024.xls"
         - "8444-shop0_12-7-2021 10-14-41 AM.xlsx" (shop serial, not model suffix)
         - "8340sn209.xls" (concatenated model+serial)
+        - "7280-1-CT_date.xls" (multi-hyphen model)
+        - "8340-1-sn201_date.xls" (model with -sn serial indicator)
+        - "8397-2_ SN10_ date.xlsx" (model with space-separated SN serial)
 
-        Model numbers can have suffixes like 8340-1, 8340-3, etc.
+        Model numbers can have suffixes like 8340-1, 8340-3, 7280-1-CT, etc.
         Handles degree designators (e.g., "5_deg", "10_deg") which should NOT be the serial.
         """
         name = Path(filename).stem
@@ -171,9 +174,13 @@ class ExcelParser:
         # Split only on underscores and spaces, NOT hyphens (to preserve model suffixes like 8340-1)
         parts = re.split(r'[_\s]+', name)
 
-        # Handle concatenated model+serial (e.g., "8340sn209" with no separator)
-        if len(parts) == 1:
-            concat_match = re.match(r'^(\d{4,})[sS][nN](\d+[a-zA-Z]?)$', parts[0])
+        # Handle concatenated model+sn+serial (e.g., "8340sn209", "7928sn1040", "8340-1-sn201")
+        # Works with any number of parts (not just single-part filenames)
+        if parts:
+            concat_match = re.match(
+                r'^(\d{4,}[A-Za-z]?(?:-\d+[A-Za-z]?)?)-?[sS][nN](\d+[a-zA-Z]?)$',
+                parts[0]
+            )
             if concat_match:
                 return concat_match.group(1), concat_match.group(2)
 
@@ -181,31 +188,54 @@ class ExcelParser:
             model = "Unknown"
             serial = "Unknown"
 
-            # First pass: find the model (4+ digit number, possibly with hyphen suffix)
+            # First pass: find the model (4+ digit number, possibly with hyphen suffixes)
             for i, part in enumerate(parts):
-                # Model pattern: starts with 4+ digits, may have hyphen suffix
-                # Examples: 8340, 8340-1, 7063-A, 5409A, 7953-1A, 8711-S
-                model_match = re.match(r'^(\d{4,}[A-Za-z]?)(?:-([A-Za-z0-9]+))?$', part)
+                # Model pattern: starts with 4+ digits, may have multiple hyphen suffixes
+                # Examples: 8340, 8340-1, 7063-A, 5409A, 7953-1A, 8711-S, 7280-1-CT
+                model_match = re.match(r'^(\d{4,}[A-Za-z]?)((?:-[A-Za-z0-9]+)*)$', part)
                 if model_match:
-                    base, suffix = model_match.group(1), model_match.group(2)
-                    if suffix is None:
+                    base = model_match.group(1)
+                    suffixes_str = model_match.group(2)  # e.g., "-1-CT" or "-shop0" or ""
+
+                    if not suffixes_str:
                         # No hyphen suffix (e.g., "8340", "5409A")
                         model = part
                         break
-                    elif self._is_valid_model_suffix(suffix):
-                        # Valid suffix like "1", "1A", "CT", "S"
-                        model = part
+
+                    # Parse individual suffixes
+                    suffixes = suffixes_str.split('-')[1:]  # ['1', 'CT'] from "-1-CT"
+
+                    # Check if last suffix is a serial number indicator (-sn)
+                    if suffixes[-1].lower() == 'sn':
+                        # "-sn" alone = serial placeholder, model is everything before
+                        model = base + '-'.join([''] + suffixes[:-1]) if len(suffixes) > 1 else base
                         break
+
+                    # Validate all suffixes
+                    valid_parts = [base]
+                    for s in suffixes:
+                        if self._is_valid_model_suffix(s):
+                            valid_parts.append(s)
+                        else:
+                            # Invalid suffix — everything before is model, this suffix is serial
+                            model = '-'.join(valid_parts)
+                            serial = s
+                            break
                     else:
-                        # Invalid suffix (e.g., "shop0") - base is model, suffix is serial
-                        model = base
-                        serial = suffix
-                        break
+                        # All suffixes valid — full part is the model
+                        model = part
+                    break
 
             # Second pass: find the serial (only if not already found from suffix split)
             if serial == "Unknown":
                 # Skip parts that are: the model, degree designators, known keywords, dates
-                skip_keywords = {'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct', 'scrap', 'cut', 'wiper', 'path', 'am', 'pm'}
+                skip_keywords = {
+                    'test', 'data', 'deg', 'ta', 'tb', 'trimmed', 'correct',
+                    'scrap', 'cut', 'wiper', 'path', 'am', 'pm',
+                    'fail', 'pass', 'final', 'template', 'primary',
+                    'customer', 'report', 'master', 'noise', 'copy', 'of',
+                    'pre', 'outer', 'redunat', 'redundant',
+                }
 
                 for i, part in enumerate(parts):
                     part_lower = part.lower()
@@ -232,12 +262,16 @@ class ExcelParser:
                     if part_lower == 'deg':
                         continue
 
-                    # Skip date patterns (e.g., "12-2-2024", "11-22-2024")
-                    if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', part):
+                    # Skip date patterns (e.g., "12-2-2024", "11-22-2024", "2025-12-17")
+                    if re.match(r'^\d{1,4}-\d{1,2}-\d{1,4}$', part):
                         continue
 
-                    # Skip time patterns (e.g., "4-05", "9-08")
-                    if re.match(r'^\d{1,2}-\d{2}$', part):
+                    # Skip time patterns (e.g., "4-05", "9-08", "01-08-06")
+                    if re.match(r'^\d{1,2}-\d{2}(-\d{2})?$', part):
+                        continue
+
+                    # Skip YYYYMMDD-style timestamps (e.g., "20220908-72801-01")
+                    if re.match(r'^\d{8,}', part):
                         continue
 
                     # Serial pattern: letter prefix + digits (SN12345, AB12345, TA, TB)
@@ -262,8 +296,10 @@ class ExcelParser:
                                 continue
                             if part_lower == 'deg':
                                 continue
-                            # Skip date/time patterns
-                            if re.match(r'^\d{1,2}-\d{1,2}(-\d{4})?$', part):
+                            # Skip date/time/timestamp patterns
+                            if re.match(r'^\d{1,4}-\d{1,2}(-\d{1,4})?$', part):
+                                continue
+                            if re.match(r'^\d{8,}', part):
                                 continue
                             serial = part
                             break
