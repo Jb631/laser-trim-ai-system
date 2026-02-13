@@ -1260,6 +1260,184 @@ class DatabaseManager:
                 "linearity_pass_rate": (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0,
             }
 
+    def get_system_comparison(self, days_back: int = 90) -> Dict[str, Any]:
+        """Get System A vs System B comparison statistics."""
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            system_data = (
+                session.query(
+                    DBAnalysisResult.system,
+                    func.count(func.distinct(DBAnalysisResult.id)).label('total_files'),
+                    func.count(DBTrackResult.id).label('total_tracks'),
+                    func.sum(case(
+                        (DBTrackResult.linearity_pass == True, 1), else_=0
+                    )).label('lin_passed'),
+                    func.sum(case(
+                        (DBTrackResult.sigma_pass == True, 1), else_=0
+                    )).label('sigma_passed'),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBAnalysisResult.system.isnot(None),
+                )
+                .group_by(DBAnalysisResult.system)
+                .all()
+            )
+
+            result = {"system_a": None, "system_b": None}
+            for row in system_data:
+                if _status_matches(row.system, DBSystemType.A):
+                    key = "system_a"
+                elif _status_matches(row.system, DBSystemType.B):
+                    key = "system_b"
+                else:
+                    continue
+                total_tracks = row.total_tracks or 0
+                result[key] = {
+                    "total_files": row.total_files or 0,
+                    "total_tracks": total_tracks,
+                    "linearity_pass_rate": (row.lin_passed or 0) / total_tracks * 100 if total_tracks > 0 else 0,
+                    "sigma_pass_rate": (row.sigma_passed or 0) / total_tracks * 100 if total_tracks > 0 else 0,
+                }
+            return result
+
+    def get_ft_dashboard_stats(self, days_back: int = 90) -> Dict[str, Any]:
+        """Get Final Test statistics for dashboard display."""
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            total_ft = (
+                session.query(func.count(DBFinalTestResult.id))
+                .filter(DBFinalTestResult.file_date >= cutoff_date)
+                .scalar()
+            ) or 0
+
+            if total_ft == 0:
+                return {"total": 0, "pass_rate": 0, "linearity_pass_rate": 0,
+                        "linked_count": 0, "link_rate": 0}
+
+            ft_passed = (
+                session.query(func.count(DBFinalTestResult.id))
+                .filter(
+                    DBFinalTestResult.file_date >= cutoff_date,
+                    DBFinalTestResult.overall_status == DBStatusType.PASS,
+                )
+                .scalar()
+            ) or 0
+
+            linked_count = (
+                session.query(func.count(DBFinalTestResult.id))
+                .filter(
+                    DBFinalTestResult.file_date >= cutoff_date,
+                    DBFinalTestResult.linked_trim_id.isnot(None),
+                )
+                .scalar()
+            ) or 0
+
+            # Track-level linearity pass rate
+            ft_track_stats = (
+                session.query(
+                    func.count(DBFinalTestTrack.id).label('total'),
+                    func.sum(case(
+                        (DBFinalTestTrack.linearity_pass == True, 1), else_=0
+                    )).label('passed'),
+                )
+                .join(DBFinalTestResult)
+                .filter(DBFinalTestResult.file_date >= cutoff_date)
+                .first()
+            )
+
+            ft_total_tracks = (ft_track_stats.total or 0) if ft_track_stats else 0
+            ft_lin_passed = (ft_track_stats.passed or 0) if ft_track_stats else 0
+
+            return {
+                "total": total_ft,
+                "pass_rate": (ft_passed / total_ft * 100) if total_ft > 0 else 0,
+                "linearity_pass_rate": (ft_lin_passed / ft_total_tracks * 100) if ft_total_tracks > 0 else 0,
+                "linked_count": linked_count,
+                "link_rate": (linked_count / total_ft * 100) if total_ft > 0 else 0,
+            }
+
+    def get_escape_overkill_analysis(self, days_back: int = 90) -> Dict[str, Any]:
+        """Analyze escapes and overkills by comparing trim vs FT linearity results.
+
+        Escape = trim passed linearity but FT failed (bad unit shipped)
+        Overkill = trim failed linearity but FT passed (unnecessarily rejected)
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # File-level comparison: FT linearity_pass vs trim ALL-tracks-pass
+            # For each linked FT record, check if trim linearity passed (all tracks)
+            linked_data = (
+                session.query(
+                    DBFinalTestResult.model,
+                    DBFinalTestResult.linearity_pass.label('ft_lin_pass'),
+                    # Trim passed linearity if minimum track pass is 1 (all passed)
+                    func.min(case(
+                        (DBTrackResult.linearity_pass == True, 1), else_=0
+                    )).label('trim_all_pass'),
+                )
+                .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBFinalTestResult.file_date >= cutoff_date,
+                    DBFinalTestResult.linked_trim_id.isnot(None),
+                    DBFinalTestResult.linearity_pass.isnot(None),
+                )
+                .group_by(DBFinalTestResult.id, DBFinalTestResult.model, DBFinalTestResult.linearity_pass)
+                .all()
+            )
+
+            if not linked_data:
+                return {
+                    "total_linked": 0, "escapes": 0, "overkills": 0,
+                    "agreements": 0, "escape_rate": 0, "overkill_rate": 0,
+                    "agreement_rate": 0, "worst_escape_models": [],
+                }
+
+            total = len(linked_data)
+            escapes = 0
+            overkills = 0
+            agreements = 0
+            model_escapes = {}
+
+            for row in linked_data:
+                trim_pass = bool(row.trim_all_pass)
+                ft_pass = bool(row.ft_lin_pass)
+
+                if trim_pass and not ft_pass:
+                    escapes += 1
+                    model_escapes[row.model] = model_escapes.get(row.model, 0) + 1
+                elif not trim_pass and ft_pass:
+                    overkills += 1
+                else:
+                    agreements += 1
+
+            worst_models = sorted(model_escapes.items(), key=lambda x: x[1], reverse=True)[:5]
+
+            return {
+                "total_linked": total,
+                "escapes": escapes,
+                "overkills": overkills,
+                "agreements": agreements,
+                "escape_rate": (escapes / total * 100) if total > 0 else 0,
+                "overkill_rate": (overkills / total * 100) if total > 0 else 0,
+                "agreement_rate": (agreements / total * 100) if total > 0 else 0,
+                "worst_escape_models": [{"model": m, "count": c} for m, c in worst_models],
+            }
+
     def get_alerts(self, limit: int = 10, include_resolved: bool = False) -> List[Dict[str, Any]]:
         """
         Get recent alerts.

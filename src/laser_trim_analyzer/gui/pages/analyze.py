@@ -100,6 +100,19 @@ class AnalyzePage(ctk.CTkFrame):
         self.model_filter.set("All Models")
         self.model_filter.pack(side="left", padx=5, pady=15)
 
+        # Active Only filter - hide inactive models from dropdown
+        self.active_only_var = ctk.BooleanVar(value=True)
+        self.active_only_check = ctk.CTkCheckBox(
+            filter_frame,
+            text="Active Only",
+            variable=self.active_only_var,
+            command=self._on_filter_change,
+            width=100,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.active_only_check.pack(side="left", padx=(5, 5), pady=15)
+
         # Date range filter (filters by trim date, not processing date)
         ctk.CTkLabel(filter_frame, text="From:").pack(side="left", padx=(20, 5), pady=15)
         self.date_from = ctk.CTkEntry(
@@ -583,10 +596,12 @@ class AnalyzePage(ctk.CTkFrame):
                     recent_days=config.active_models.recent_days
                 )
                 # Build model list with inactive suffix
+                active_only = self.active_only_var.get()
                 models = []
                 for m in prioritized:
                     if m['status'] == 'inactive':
-                        models.append(f"{m['model']} (inactive)")
+                        if not active_only:
+                            models.append(f"{m['model']} (inactive)")
                     else:
                         models.append(m['model'])
             except Exception as e:

@@ -82,8 +82,9 @@ class DashboardPage(ctk.CTkFrame):
         content.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
         content.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
         content.grid_rowconfigure(0, weight=0, minsize=120)  # Metric cards - fixed height
-        content.grid_rowconfigure(1, weight=1, minsize=200)  # Main row - expandable
-        content.grid_rowconfigure(2, weight=0, minsize=100)  # Model breakdown - fixed
+        content.grid_rowconfigure(1, weight=0, minsize=60)   # System/FT/Escape info - compact
+        content.grid_rowconfigure(2, weight=1, minsize=200)  # Main row - expandable
+        content.grid_rowconfigure(3, weight=0, minsize=100)  # Model breakdown - fixed
 
         # Linearity Quality Card (primary metric)
         self.health_card = self._create_metric_card(content)
@@ -118,9 +119,44 @@ class DashboardPage(ctk.CTkFrame):
             color="gray"
         )
 
+        # System Comparison / FT / Escape-Overkill info row (compact)
+        self.system_info_frame = ctk.CTkFrame(content)
+        self.system_info_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=(5, 5), sticky="ew")
+
+        info_header = ctk.CTkLabel(
+            self.system_info_frame,
+            text="System Comparison",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        info_header.pack(padx=15, pady=(10, 2), anchor="w")
+
+        self.system_a_label = ctk.CTkLabel(
+            self.system_info_frame, text="System A: Loading...",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.system_a_label.pack(padx=15, pady=0, anchor="w", fill="x")
+
+        self.system_b_label = ctk.CTkLabel(
+            self.system_info_frame, text="System B: Loading...",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.system_b_label.pack(padx=15, pady=0, anchor="w", fill="x")
+
+        self.ft_info_label = ctk.CTkLabel(
+            self.system_info_frame, text="Final Test: Loading...",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.ft_info_label.pack(padx=15, pady=(4, 0), anchor="w", fill="x")
+
+        self.escape_info_label = ctk.CTkLabel(
+            self.system_info_frame, text="Prediction Accuracy: Loading...",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.escape_info_label.pack(padx=15, pady=(0, 10), anchor="w", fill="x")
+
         # Alerts Cards Frame (side by side: Recent Alerts + Drift Alerts)
         alerts_container = ctk.CTkFrame(content, fg_color="transparent")
-        alerts_container.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        alerts_container.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
         alerts_container.grid_columnconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(1, weight=1)
@@ -163,7 +199,7 @@ class DashboardPage(ctk.CTkFrame):
 
         # Trend Chart
         chart_frame = ctk.CTkFrame(content)
-        chart_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+        chart_frame.grid(row=2, column=1, padx=10, pady=10, sticky="nsew")
 
         chart_label = ctk.CTkLabel(
             chart_frame,
@@ -183,7 +219,7 @@ class DashboardPage(ctk.CTkFrame):
 
         # Quick Actions Card
         actions_frame = ctk.CTkFrame(content)
-        actions_frame.grid(row=1, column=2, padx=10, pady=10, sticky="nsew")
+        actions_frame.grid(row=2, column=2, padx=10, pady=10, sticky="nsew")
 
         actions_label = ctk.CTkLabel(
             actions_frame,
@@ -227,7 +263,7 @@ class DashboardPage(ctk.CTkFrame):
 
         # Model breakdown
         self.model_frame = ctk.CTkFrame(content)
-        self.model_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        self.model_frame.grid(row=3, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
         model_label = ctk.CTkLabel(
             self.model_frame,
@@ -338,8 +374,37 @@ class DashboardPage(ctk.CTkFrame):
             # Get ML drift status
             drift_alerts = self._get_drift_alerts(db)
 
+            # Get system comparison, FT stats, and escape/overkill data
+            try:
+                system_comparison = db.get_system_comparison(days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load system comparison: {e}")
+                system_comparison = None
+
+            try:
+                ft_stats = db.get_ft_dashboard_stats(days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load FT stats: {e}")
+                ft_stats = None
+
+            try:
+                escape_stats = db.get_escape_overkill_analysis(days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load escape/overkill: {e}")
+                escape_stats = None
+
+            # Get trending worse for model display markers
+            try:
+                trending_worse = db.get_trending_worse_models(days_back=90, min_samples=20)
+            except Exception as e:
+                logger.debug(f"Could not load trending worse: {e}")
+                trending_worse = []
+
             # Update UI on main thread
-            self.after(0, lambda: self._update_display(stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats))
+            self.after(0, lambda: self._update_display(
+                stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats,
+                system_comparison, ft_stats, escape_stats, trending_worse
+            ))
 
         except Exception as e:
             logger.error(f"Failed to load dashboard data: {e}")
@@ -380,7 +445,11 @@ class DashboardPage(ctk.CTkFrame):
         priority_models: List[Dict[str, Any]],
         drift_alerts: Optional[List[Dict[str, Any]]] = None,
         batch_stats: Optional[Dict[str, Any]] = None,
-        overall_stats: Optional[Dict[str, Any]] = None
+        overall_stats: Optional[Dict[str, Any]] = None,
+        system_comparison: Optional[Dict[str, Any]] = None,
+        ft_stats: Optional[Dict[str, Any]] = None,
+        escape_stats: Optional[Dict[str, Any]] = None,
+        trending_worse: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update display with loaded data."""
         # Use overall_stats for health card if available, otherwise fall back to period stats
@@ -453,6 +522,9 @@ class DashboardPage(ctk.CTkFrame):
             color=sigma_color
         )
 
+        # Update system comparison / FT / escape info
+        self._update_system_ft_display(system_comparison, ft_stats, escape_stats)
+
         # Update alerts
         self._update_alerts_display(alerts)
 
@@ -463,7 +535,7 @@ class DashboardPage(ctk.CTkFrame):
         self._update_trend_chart(stats)
 
         # Update model prioritization display
-        self._update_model_display(priority_models)
+        self._update_model_display(priority_models, trending_worse)
 
         # Update timestamp
         self.last_update_label.configure(
@@ -471,6 +543,79 @@ class DashboardPage(ctk.CTkFrame):
         )
 
         logger.debug("Dashboard data refreshed")
+
+    def _update_system_ft_display(
+        self,
+        system_comparison: Optional[Dict[str, Any]],
+        ft_stats: Optional[Dict[str, Any]],
+        escape_stats: Optional[Dict[str, Any]],
+    ):
+        """Update the System A/B, Final Test, and Escape/Overkill info labels."""
+        # System A
+        try:
+            if system_comparison and "system_a" in system_comparison:
+                a = system_comparison["system_a"]
+                self.system_a_label.configure(
+                    text=f"System A: {a.get('linearity_pass_rate', 0):.1f}% linearity | "
+                         f"{a.get('sigma_pass_rate', 0):.1f}% sigma | "
+                         f"{a.get('total_files', 0):,} files",
+                    text_color=("gray10", "gray90")
+                )
+            else:
+                self.system_a_label.configure(text="System A: No data", text_color="gray")
+        except Exception as e:
+            logger.debug(f"System A display error: {e}")
+            self.system_a_label.configure(text="System A: No data", text_color="gray")
+
+        # System B
+        try:
+            if system_comparison and "system_b" in system_comparison:
+                b = system_comparison["system_b"]
+                self.system_b_label.configure(
+                    text=f"System B: {b.get('linearity_pass_rate', 0):.1f}% linearity | "
+                         f"{b.get('sigma_pass_rate', 0):.1f}% sigma | "
+                         f"{b.get('total_files', 0):,} files",
+                    text_color=("gray10", "gray90")
+                )
+            else:
+                self.system_b_label.configure(text="System B: No data", text_color="gray")
+        except Exception as e:
+            logger.debug(f"System B display error: {e}")
+            self.system_b_label.configure(text="System B: No data", text_color="gray")
+
+        # Final Test
+        try:
+            if ft_stats and ft_stats.get("total", 0) > 0:
+                ft = ft_stats
+                self.ft_info_label.configure(
+                    text=f"Final Test: {ft.get('linearity_pass_rate', 0):.1f}% linearity pass | "
+                         f"{ft.get('total', 0):,} tests | "
+                         f"{ft.get('link_rate', 0):.0f}% linked to trim",
+                    text_color=("gray10", "gray90")
+                )
+            else:
+                self.ft_info_label.configure(text="Final Test: No FT data", text_color="gray")
+        except Exception as e:
+            logger.debug(f"FT display error: {e}")
+            self.ft_info_label.configure(text="Final Test: No data", text_color="gray")
+
+        # Escape / Overkill
+        try:
+            if escape_stats and escape_stats.get("total_linked", 0) > 0:
+                esc = escape_stats
+                self.escape_info_label.configure(
+                    text=f"Prediction Accuracy: {esc.get('agreement_rate', 0):.1f}% agreement | "
+                         f"{esc.get('escape_rate', 0):.1f}% escapes ({esc.get('escapes', 0)}) | "
+                         f"{esc.get('overkill_rate', 0):.1f}% overkill ({esc.get('overkills', 0)})",
+                    text_color=("gray10", "gray90")
+                )
+            else:
+                self.escape_info_label.configure(
+                    text="Prediction Accuracy: No linked trim/FT data", text_color="gray"
+                )
+        except Exception as e:
+            logger.debug(f"Escape display error: {e}")
+            self.escape_info_label.configure(text="Prediction Accuracy: No data", text_color="gray")
 
     def _update_alerts_display(self, alerts: List[Dict[str, Any]]):
         """Update alerts list."""
@@ -549,10 +694,20 @@ class DashboardPage(ctk.CTkFrame):
             ylabel="Pass Rate %"
         )
 
-    def _update_model_display(self, priority_models: List[Dict[str, Any]]):
+    def _update_model_display(
+        self,
+        priority_models: List[Dict[str, Any]],
+        trending_worse: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Update model breakdown with impact-ranked prioritization."""
         self.model_text.configure(state="normal")
         self.model_text.delete("1.0", "end")
+
+        # Build set of declining model names for quick lookup
+        declining_models = set()
+        if trending_worse:
+            for tw in trending_worse:
+                declining_models.add(tw.get("model", ""))
 
         if not priority_models:
             self.model_text.insert("end", "No model data available (need 10+ samples per model)")
@@ -568,7 +723,8 @@ class DashboardPage(ctk.CTkFrame):
                 total = m.get("total_units", 0)
 
                 rank = f"#{i+1}"
-                lines.append(f"  {rank}  {model}  [Impact: {impact:.0f}]")
+                declining_tag = "  [DECLINING]" if model in declining_models else ""
+                lines.append(f"  {rank}  {model}  [Impact: {impact:.0f}]{declining_tag}")
                 lines.append(f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss")
                 if rec:
                     lines.append(f"      >> {rec}")

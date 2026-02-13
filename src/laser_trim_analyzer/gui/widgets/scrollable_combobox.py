@@ -41,6 +41,7 @@ class ScrollableComboBox(ctk.CTkFrame):
         self._dropdown_window = None
         self._is_open = False
         self._toplevel_bind_id = None  # Track our bind ID for proper cleanup
+        self._option_buttons = []  # [(value, btn)] for search filtering
 
         # Main button that shows current value and opens dropdown
         self._button = ctk.CTkButton(
@@ -76,7 +77,7 @@ class ScrollableComboBox(ctk.CTkFrame):
             self._open_dropdown()
 
     def _open_dropdown(self):
-        """Open the dropdown list."""
+        """Open the dropdown list with search filtering."""
         if self._is_open or not self._values:
             return
 
@@ -93,16 +94,31 @@ class ScrollableComboBox(ctk.CTkFrame):
         x = self._button.winfo_rootx()
         y = self._button.winfo_rooty() + self._button.winfo_height()
 
+        # Container frame for search + scrollable list
+        container = ctk.CTkFrame(self._dropdown_window, fg_color=("gray90", "gray20"))
+        container.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # Search entry at top of dropdown
+        search_entry = ctk.CTkEntry(
+            container,
+            placeholder_text="Type to filter...",
+            width=self._width - 14,
+            height=28,
+        )
+        search_entry.pack(padx=5, pady=(5, 2), fill="x")
+        search_entry.bind("<KeyRelease>", lambda e: self._filter_options(search_entry.get()))
+
         # Create scrollable frame for options
         scroll_frame = ctk.CTkScrollableFrame(
-            self._dropdown_window,
+            container,
             width=self._width - 20,
-            height=min(self._dropdown_height, len(self._values) * 28),
-            fg_color=("gray90", "gray20"),
+            height=min(self._dropdown_height - 36, len(self._values) * 28),
+            fg_color="transparent",
         )
-        scroll_frame.pack(fill="both", expand=True, padx=2, pady=2)
+        scroll_frame.pack(fill="both", expand=True, padx=2, pady=(0, 2))
 
         # Add option buttons
+        self._option_buttons = []
         for value in self._values:
             is_selected = value == self._current_value
             btn = ctk.CTkButton(
@@ -117,10 +133,15 @@ class ScrollableComboBox(ctk.CTkFrame):
                 command=lambda v=value: self._select_value(v),
             )
             btn.pack(fill="x", padx=2, pady=1)
+            self._option_buttons.append((value, btn))
 
-        # Position and show window
-        self._dropdown_window.geometry(f"{self._width}x{min(self._dropdown_height + 4, len(self._values) * 28 + 4)}+{x}+{y}")
+        # Position and show window (extra height for search entry)
+        dropdown_h = min(self._dropdown_height + 40, len(self._values) * 28 + 40)
+        self._dropdown_window.geometry(f"{self._width}x{dropdown_h}+{x}+{y}")
         self._dropdown_window.deiconify()
+
+        # Focus the search entry
+        search_entry.focus_set()
 
         # Bind escape to close
         self._dropdown_window.bind("<Escape>", lambda e: self._close_dropdown())
@@ -169,12 +190,22 @@ class ScrollableComboBox(ctk.CTkFrame):
         except Exception:
             self._close_dropdown()
 
+    def _filter_options(self, search_text: str):
+        """Filter dropdown options based on search text."""
+        search_lower = search_text.lower().strip()
+        for value, btn in self._option_buttons:
+            if not search_lower or search_lower in value.lower():
+                btn.pack(fill="x", padx=2, pady=1)
+            else:
+                btn.pack_forget()
+
     def _close_dropdown(self):
         """Close the dropdown list."""
         if not self._is_open:
             return
 
         self._is_open = False
+        self._option_buttons = []
         self._arrow_label.configure(text="\u25BC")  # Down arrow
 
         # Unbind only our toplevel click handler (not all Button-1 handlers)

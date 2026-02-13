@@ -110,6 +110,19 @@ class TrendsPage(ctk.CTkFrame):
         self.model_dropdown.set("All Models")
         self.model_dropdown.pack(side="left", padx=5, pady=15)
 
+        # Active Only filter - hide inactive models from dropdown
+        self.active_only_var = ctk.BooleanVar(value=True)
+        self.active_only_check = ctk.CTkCheckBox(
+            controls,
+            text="Active Only",
+            variable=self.active_only_var,
+            command=self._on_active_filter_change,
+            width=100,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.active_only_check.pack(side="left", padx=(5, 5), pady=15)
+
         # Date range for active models consideration (by trim date)
         date_label = ctk.CTkLabel(controls, text="Trim Date:")
         date_label.pack(side="left", padx=(20, 5), pady=15)
@@ -853,6 +866,10 @@ class TrendsPage(ctk.CTkFrame):
 
         self._refresh_data()
 
+    def _on_active_filter_change(self):
+        """Handle Active Only checkbox change - refresh to update model list."""
+        self._refresh_data()
+
     def _on_date_change(self, date_range: str):
         """Handle date range change."""
         days_map = {
@@ -1086,10 +1103,12 @@ class TrendsPage(ctk.CTkFrame):
         )
 
         # Build model names list with inactive suffix
+        active_only = self.active_only_var.get()
         model_names = ["All Models"]
         for m in prioritized_models:
             if m['status'] == 'inactive':
-                model_names.append(f"{m['model']} (inactive)")
+                if not active_only:
+                    model_names.append(f"{m['model']} (inactive)")
             else:
                 model_names.append(m['model'])
 
@@ -1140,10 +1159,12 @@ class TrendsPage(ctk.CTkFrame):
         )
 
         # Build model names list with inactive suffix
+        active_only = self.active_only_var.get()
         model_names = ["All Models"]
         for m in prioritized_models:
             if m['status'] == 'inactive':
-                model_names.append(f"{m['model']} (inactive)")
+                if not active_only:
+                    model_names.append(f"{m['model']} (inactive)")
             else:
                 model_names.append(m['model'])
 
