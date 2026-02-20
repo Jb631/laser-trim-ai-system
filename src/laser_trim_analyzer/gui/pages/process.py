@@ -7,6 +7,8 @@ Wired to the actual Processor for real analysis.
 
 import customtkinter as ctk
 import logging
+import os
+import time
 from pathlib import Path
 from tkinter import filedialog
 from typing import Optional, List
@@ -52,6 +54,7 @@ class ProcessPage(ctk.CTkFrame):
         self._last_ui_update = 0  # Throttle UI updates
         self._processing_start_time = 0  # Track batch start time for ETA calculation
         self._date_filter: Optional[datetime] = None  # Date filter for file selection
+        self._is_scanning = False  # Track folder scan state for cancellation
 
         self._create_ui()
 
@@ -311,6 +314,7 @@ class ProcessPage(ctk.CTkFrame):
 
             # Parse date filter on main thread (UI variable access)
             self._date_filter = self._parse_date_filter()
+            self._is_scanning = True
 
             # Show loading indicator
             date_info = f" (from {self._date_filter.strftime('%m/%d/%Y')})" if self._date_filter else ""
@@ -320,30 +324,75 @@ class ProcessPage(ctk.CTkFrame):
             self.file_list.insert("end", f"Scanning {folder_path.name}...\nThis may take a moment for large folders.")
             self.file_list.configure(state="disabled")
             self.process_btn.configure(state="disabled")
+            self.cancel_btn.configure(state="normal")
 
             # Capture date filter for background thread (avoid accessing UI vars from thread)
-            date_filter = self._date_filter
+            # Convert to timestamp once for fast comparison (avoids datetime objects per file)
+            date_cutoff_ts = self._date_filter.timestamp() if self._date_filter else None
 
             # Run file discovery in background thread to avoid UI freeze
             def discover_files():
                 try:
-                    # Find all Excel files recursively in folder and all subfolders
-                    # Using rglob for recursive search - supports master folder with model subfolders
-                    xls_files = list(folder_path.rglob("*.xls"))
-                    xlsx_files = list(folder_path.rglob("*.xlsx"))
-                    all_files = xls_files + xlsx_files
+                    all_files = []
+                    last_progress_time = time.monotonic()
 
-                    # Apply date filter if set (uses file modification time for speed)
-                    if date_filter:
-                        all_files = [f for f in all_files
-                                     if datetime.fromtimestamp(f.stat().st_mtime) >= date_filter]
+                    # Single recursive walk using os.scandir for efficiency:
+                    # 1. Walks the tree ONCE (old code did two rglob passes)
+                    # 2. Matches both .xls and .xlsx in one pass
+                    # 3. Date filter uses DirEntry.stat() which is cached on Windows
+                    #    (no extra network round-trip per file on network drives)
+                    # 4. Reports progress to UI periodically
+                    dirs_to_scan = [str(folder_path)]
+                    while dirs_to_scan:
+                        if not self._is_scanning:
+                            self.after(0, self._on_folder_scan_cancelled)
+                            return
+
+                        current_dir = dirs_to_scan.pop()
+                        try:
+                            with os.scandir(current_dir) as entries:
+                                for entry in entries:
+                                    if not self._is_scanning:
+                                        self.after(0, self._on_folder_scan_cancelled)
+                                        return
+
+                                    try:
+                                        if entry.is_dir(follow_symlinks=False):
+                                            dirs_to_scan.append(entry.path)
+                                        elif entry.is_file(follow_symlinks=False):
+                                            name_lower = entry.name.lower()
+                                            if name_lower.endswith('.xls') or name_lower.endswith('.xlsx'):
+                                                # Date filter using DirEntry.stat() - cached on Windows
+                                                if date_cutoff_ts:
+                                                    try:
+                                                        if entry.stat().st_mtime < date_cutoff_ts:
+                                                            continue
+                                                    except OSError:
+                                                        pass  # Include if we can't stat
+                                                all_files.append(Path(entry.path))
+                                    except OSError:
+                                        continue
+                        except (PermissionError, OSError):
+                            continue
+
+                        # Progress update every ~1 second
+                        now = time.monotonic()
+                        if now - last_progress_time >= 1.0:
+                            last_progress_time = now
+                            count = len(all_files)
+                            remaining = len(dirs_to_scan)
+                            self.after(0, lambda c=count, r=remaining:
+                                       self.file_count_label.configure(
+                                           text=f"Scanning... {c:,} files found ({r:,} folders queued)"))
 
                     # Sort by path for consistent ordering (groups files by subfolder)
                     all_files.sort(key=lambda f: (f.parent, f.name))
 
+                    self._is_scanning = False
                     # Update UI on main thread
                     self.after(0, lambda: self._on_folder_scanned(all_files))
                 except Exception as e:
+                    self._is_scanning = False
                     logger.error(f"Error scanning folder: {e}")
                     self.after(0, lambda: self._on_folder_scan_error(str(e)))
 
@@ -352,6 +401,7 @@ class ProcessPage(ctk.CTkFrame):
     def _on_folder_scanned(self, files: list):
         """Called when folder scan completes - updates UI with found files."""
         self.selected_files = files
+        self.cancel_btn.configure(state="disabled")
         self._update_file_list()
 
         # If incremental mode is ON, check how many files are already processed
@@ -417,6 +467,16 @@ class ProcessPage(ctk.CTkFrame):
         self.file_list.insert("end", f"Error scanning folder: {error}")
         self.file_list.configure(state="disabled")
         self.file_count_label.configure(text="Scan failed")
+        self.cancel_btn.configure(state="disabled")
+
+    def _on_folder_scan_cancelled(self):
+        """Called when folder scan is cancelled by user."""
+        self.file_list.configure(state="normal")
+        self.file_list.delete("1.0", "end")
+        self.file_list.insert("end", "Scan cancelled.")
+        self.file_list.configure(state="disabled")
+        self.file_count_label.configure(text="Scan cancelled")
+        self.cancel_btn.configure(state="disabled")
 
     def _update_file_list(self):
         """Update the file list display."""
@@ -523,12 +583,14 @@ class ProcessPage(ctk.CTkFrame):
             f"{'-' * 40}\n"
         )
 
+        # Capture UI state on main thread for thread safety
+        self._save_to_db = self.save_db_var.get()
+
         # Start processing in background thread (tracked for graceful shutdown)
         get_thread_manager().start_thread(target=self._process_files, name="file-processing")
 
     def _process_files(self):
         """Process files in background thread."""
-        import time
         import gc
 
         try:
@@ -583,8 +645,8 @@ class ProcessPage(ctk.CTkFrame):
                 if any(getattr(t, 'is_anomaly', False) for t in result.tracks):
                     self._anomaly_count += 1
 
-                # Save to database if enabled
-                if self.save_db_var.get():
+                # Save to database if enabled (captured on main thread)
+                if self._save_to_db:
                     try:
                         db = get_database()
                         db.save_analysis(result)
@@ -613,8 +675,6 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_progress_update(self, status: ProcessingStatus):
         """Handle progress update (called on main thread)."""
-        import time
-
         if not self.is_processing:
             return
 
@@ -729,11 +789,14 @@ class ProcessPage(ctk.CTkFrame):
         logger.error(f"Processing failed: {error}")
 
     def _cancel_processing(self):
-        """Cancel processing."""
+        """Cancel processing or folder scanning."""
         if self.is_processing:
             self.is_processing = False
+            self.cancel_btn.configure(state="disabled")
             self.progress_label.configure(text="Cancelling...")
             self._append_result("\n[CANCELLED] Processing cancelled by user.\n")
+        elif self._is_scanning:
+            self._is_scanning = False  # Signal background thread to stop
 
     def _export_results(self):
         """Export batch results to Excel."""

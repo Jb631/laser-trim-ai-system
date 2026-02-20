@@ -2024,9 +2024,9 @@ class TrendsPage(ctk.CTkFrame):
     def _show_error(self, error: str):
         """Show error state."""
         self.status_label.configure(text="Error loading data")
-        if hasattr(self, 'alerts_chart'):
+        if getattr(self, 'alerts_chart', None):
             self.alerts_chart.show_placeholder(f"Error: {error}")
-        if hasattr(self, 'scatter_chart'):
+        if getattr(self, 'scatter_chart', None):
             self.scatter_chart.show_placeholder(f"Error: {error}")
 
     def on_show(self):

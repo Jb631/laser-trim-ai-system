@@ -519,6 +519,15 @@ class AnalyzePage(ctk.CTkFrame):
         """Load recent analyses from database."""
         self.count_label.configure(text="Loading...")
 
+        # Capture filter values on main thread for thread safety
+        self._filter_model = self.model_filter.get()
+        if " (inactive)" in self._filter_model:
+            self._filter_model = self._filter_model.replace(" (inactive)", "")
+        self._filter_status = self.status_filter.get()
+        self._filter_serial = self.serial_filter.get().strip()
+        self._filter_date_from = self.date_from.get().strip()
+        self._filter_date_to = self.date_to.get().strip()
+
         get_thread_manager().start_thread(target=self._fetch_analyses, name="fetch-analyses")
 
     def _fetch_analyses(self):
@@ -526,20 +535,17 @@ class AnalyzePage(ctk.CTkFrame):
         try:
             db = get_database()
 
-            # Get filter values
-            model = self.model_filter.get()
-            # Strip (inactive) suffix if present
-            if " (inactive)" in model:
-                model = model.replace(" (inactive)", "")
-            status = self.status_filter.get()
-            serial = self.serial_filter.get().strip()
+            # Use filter values captured on main thread
+            model = self._filter_model
+            status = self._filter_status
+            serial = self._filter_serial
 
             # Parse date range
             date_from = None
             date_to = None
 
-            from_str = self.date_from.get().strip()
-            to_str = self.date_to.get().strip()
+            from_str = self._filter_date_from
+            to_str = self._filter_date_to
 
             # Parse From date
             if from_str:
@@ -1085,7 +1091,10 @@ class AnalyzePage(ctk.CTkFrame):
         lines.append(f"  System:      {analysis.metadata.system.value}")
         lines.append("")
 
-        lines.append(f"  Trim Date:   {analysis.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        if analysis.metadata.file_date:
+            lines.append(f"  Trim Date:   {analysis.metadata.file_date.strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            lines.append(f"  Trim Date:   Unknown")
         lines.append("")
 
         lines.append(f"  Multi-Track: {'Yes' if analysis.metadata.has_multi_tracks else 'No'}")

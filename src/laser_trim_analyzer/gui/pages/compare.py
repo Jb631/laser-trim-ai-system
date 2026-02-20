@@ -360,24 +360,31 @@ class ComparePage(ctk.CTkFrame):
         """Load Final Test comparison pairs from database."""
         self.count_label.configure(text="Loading...")
 
+        # Capture filter values on main thread for thread safety
+        _model = self.model_filter.get()
+        if _model == "All Models":
+            _model = None
+        elif " (inactive)" in _model:
+            _model = _model.replace(" (inactive)", "")
+        _from_str = self.date_from.get().strip()
+        _to_str = self.date_to.get().strip()
+        _serial = self.serial_filter.get().strip()
+        _status = self.status_filter.get()
+        _linked_only = self.linked_only_var.get()
+
         def fetch():
             try:
                 db = get_database()
 
-                # Get filter values
-                model = self.model_filter.get()
-                if model == "All Models":
-                    model = None
-                elif " (inactive)" in model:
-                    # Strip inactive suffix before query
-                    model = model.replace(" (inactive)", "")
+                # Use filter values captured on main thread
+                model = _model
 
                 # Parse date range
                 date_from = None
                 date_to = None
 
-                from_str = self.date_from.get().strip()
-                to_str = self.date_to.get().strip()
+                from_str = _from_str
+                to_str = _to_str
 
                 # Parse From date
                 if from_str:
@@ -399,10 +406,10 @@ class ComparePage(ctk.CTkFrame):
                         except ValueError:
                             logger.warning(f"Invalid To date format: {to_str}")
 
-                # Get other filters
-                serial = self.serial_filter.get().strip()
-                status = self.status_filter.get()
-                linked_only = self.linked_only_var.get()
+                # Use captured filter values
+                serial = _serial
+                status = _status
+                linked_only = _linked_only
 
                 # Get comparison pairs using new search method
                 pairs = db.search_final_tests(
@@ -978,7 +985,7 @@ Match Confidence: {confidence_str}"""
         """Re-parse Final Test and Trim files that have missing track data."""
         from pathlib import Path
         from laser_trim_analyzer.core.final_test_parser import FinalTestParser
-        from laser_trim_analyzer.core.processor import AnalysisProcessor
+        from laser_trim_analyzer.core.processor import Processor
 
         self.fix_tracks_btn.configure(state="disabled", text="Fixing...")
         self.count_label.configure(text="Finding records with missing tracks...")
@@ -987,7 +994,7 @@ Match Confidence: {confidence_str}"""
             try:
                 db = get_database()
                 ft_parser = FinalTestParser()
-                trim_processor = AnalysisProcessor()
+                trim_processor = Processor(use_ml=False)
 
                 fixed_ft = 0
                 failed_ft = 0

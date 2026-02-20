@@ -531,7 +531,7 @@ class SettingsPage(ctk.CTkFrame):
 
     def _apply_ml_to_db(self):
         """Apply learned ML to database."""
-        if not hasattr(self, '_ml_manager') or not self._ml_manager.trained_models:
+        if self._ml_manager is None or not self._ml_manager.trained_models:
             from tkinter import messagebox
             messagebox.showwarning(
                 "No Trained Models",
