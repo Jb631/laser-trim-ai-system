@@ -915,7 +915,11 @@ class TrendsPage(ctk.CTkFrame):
         """Handle Active Only checkbox change - refresh to update model list."""
         self._refresh_data()
 
-    def _filter_model_list(self, prioritized_models: List[Dict]) -> List[str]:
+    def _filter_model_list(
+        self,
+        prioritized_models: List[Dict],
+        priority_data: Optional[List[Dict]] = None,
+    ) -> List[str]:
         """
         Build filtered model list from prioritized models.
 
@@ -937,6 +941,13 @@ class TrendsPage(ctk.CTkFrame):
 
         mps_set = set(self.app.config.active_models.mps_models)
 
+        # Build fail rate lookup from priority data if available
+        fail_rates = {}
+        if priority_data:
+            for p in priority_data:
+                rate = 100 - p.get("linearity_pass_rate", 100)
+                fail_rates[p.get("model", "")] = rate
+
         model_names = ["All Models"]
         for m in prioritized_models:
             model = m['model']
@@ -951,6 +962,11 @@ class TrendsPage(ctk.CTkFrame):
             # Min samples filter (MPS models bypass)
             if not is_mps and min_samples > 0 and count < min_samples:
                 continue
+
+            # Min fail rate filter (MPS models bypass)
+            if not is_mps and min_fail_rate > 0 and model in fail_rates:
+                if fail_rates[model] < min_fail_rate:
+                    continue
 
             # Suffix for inactive models
             if status == 'inactive':
@@ -1191,7 +1207,7 @@ class TrendsPage(ctk.CTkFrame):
         )
 
         # Build model names list with filtering
-        model_names = self._filter_model_list(prioritized_models)
+        model_names = self._filter_model_list(prioritized_models, priority_data=priority_models)
 
         # Get heatmap data
         try:

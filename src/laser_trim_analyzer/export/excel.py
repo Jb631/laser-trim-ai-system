@@ -668,8 +668,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     num_cols = len(headers)
     ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}{len(results) + 1}"
 
-    # Adjust column widths (22 columns now with Anomaly)
-    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 12, 12, 12, 10, 35]
+    # Adjust column widths (24 columns)
+    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 12, 12, 12, 10, 14, 14, 35]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 

@@ -375,7 +375,7 @@ class DashboardPage(ctk.CTkFrame):
 
     def _ensure_pareto_chart_initialized(self):
         """Lazily initialize Pareto chart."""
-        if self.pareto_chart is not None:
+        if self.pareto_chart is not None or getattr(self, '_pareto_init_failed', False):
             return
 
         try:
@@ -390,6 +390,7 @@ class DashboardPage(ctk.CTkFrame):
             self.pareto_chart.show_placeholder("Loading Pareto data...")
         except Exception as e:
             logger.error(f"Failed to initialize Pareto chart: {e}")
+            self._pareto_init_failed = True  # Don't retry on every refresh
 
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
@@ -585,7 +586,9 @@ class DashboardPage(ctk.CTkFrame):
         )
 
         # Update system comparison / FT / escape info
-        self._update_system_ft_display(system_comparison, ft_stats, escape_stats)
+        self._update_system_ft_display(
+            system_comparison, ft_stats, escape_stats, near_miss_data, priority_models
+        )
 
         # Update alerts
         self._update_alerts_display(alerts)
@@ -614,8 +617,10 @@ class DashboardPage(ctk.CTkFrame):
         system_comparison: Optional[Dict[str, Any]],
         ft_stats: Optional[Dict[str, Any]],
         escape_stats: Optional[Dict[str, Any]],
+        near_miss_data: Optional[Dict[str, Any]] = None,
+        priority_models: Optional[List[Dict[str, Any]]] = None,
     ):
-        """Update the System A/B, Final Test, and Escape/Overkill info labels."""
+        """Update the System A/B, Final Test, Escape/Overkill, Near-Miss, and Cost info labels."""
         # System A
         try:
             if system_comparison and "system_a" in system_comparison:
@@ -735,6 +740,7 @@ class DashboardPage(ctk.CTkFrame):
                 )
         except Exception as e:
             logger.debug(f"Cost impact display error: {e}")
+            self.cost_impact_label.configure(text="", text_color="gray")
 
     def _update_alerts_display(self, alerts: List[Dict[str, Any]]):
         """Update alerts list."""

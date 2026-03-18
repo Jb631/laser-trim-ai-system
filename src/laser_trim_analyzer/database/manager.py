@@ -1805,18 +1805,6 @@ class DatabaseManager:
                 for r in results
             ]
 
-    def get_models_list(self) -> List[str]:
-        """Get list of all unique model numbers, sorted numerically."""
-        with self.session() as session:
-            models = (
-                session.query(DBAnalysisResult.model)
-                .filter(DBAnalysisResult.model.isnot(None))
-                .distinct()
-                .all()
-            )
-            model_list = [m[0] for m in models if m[0]]
-            return sorted(model_list, key=_model_sort_key)
-
     def search_for_export(
         self,
         model: Optional[str] = None,
@@ -3407,7 +3395,7 @@ class DatabaseManager:
             lin_rate = m.get("linearity_pass_rate", 100)
             fail_rate = 100 - lin_rate
             failed = m.get("failed_units", 0)
-            total = m.get("total_units", 0)
+            total = m.get("total_tracks", 0)
             near_miss = m.get("near_miss_count", 0)
             near_miss_ratio = near_miss / failed if failed > 0 else 0
 

@@ -1579,7 +1579,10 @@ class ChartWidget(ctk.CTkFrame):
         # Add some top padding for value labels
         ax.set_ylim(bottom=0, top=max(values_sorted) * 1.15)
 
-        self.figure.tight_layout()
+        try:
+            self.figure.tight_layout()
+        except Exception:
+            pass  # tight_layout can fail with twin axes
         self.canvas.draw()
 
     def plot_confusion_matrix(
