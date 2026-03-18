@@ -188,6 +188,10 @@ class AnalysisResult(BaseAnalysisModel):
     file_type: str = Field(default="trim", description="File type: 'trim' or 'final_test'")
     final_test_id: Optional[int] = Field(None, description="Database ID for final test records")
 
+    # Data quality flags — validation issues found during ingest
+    data_quality: str = Field(default="good", description="Data quality: 'good' or 'suspect'")
+    data_quality_issues: List[str] = Field(default_factory=list, description="List of validation issues found")
+
     @field_validator('tracks')
     @classmethod
     def validate_tracks(cls, v: List[TrackData], info) -> List[TrackData]:

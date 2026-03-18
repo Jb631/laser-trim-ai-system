@@ -448,6 +448,23 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Index migration warning: {e}")
 
+            # Migration: Add data_quality columns to analysis_results
+            try:
+                session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding data_quality columns")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE analysis_results ADD COLUMN data_quality VARCHAR(20) DEFAULT 'good'"
+                    ))
+                    session.execute(text(
+                        "ALTER TABLE analysis_results ADD COLUMN data_quality_issues TEXT"
+                    ))
+                    session.commit()
+                    logger.info("Migration completed: Added data_quality columns")
+                except Exception as e:
+                    logger.warning(f"Data quality migration warning (may already exist): {e}")
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -1872,6 +1889,8 @@ class DatabaseManager:
             overall_status=overall_status,
             processing_time=analysis.processing_time,
             timestamp=datetime.now(),
+            data_quality=getattr(analysis, 'data_quality', 'good'),
+            data_quality_issues=','.join(getattr(analysis, 'data_quality_issues', [])) or None,
         )
 
         # Add track results

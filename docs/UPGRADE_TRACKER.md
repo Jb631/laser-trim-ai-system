@@ -44,14 +44,14 @@ Before each Claude Code session:
 - **Notes:** Added NON_TRIM_FILENAME_PATTERNS to constants.py. detect_file_type() now checks filename patterns first (cheapest), then sheet names for non-trim patterns, then validates sheet structure (must have System A or B sheets). Processor returns None for non_trim, both sequential and parallel paths handle it. GUI shows "[SKIP] filename - Non-trim file skipped".
 
 ### Task 1.4 — Ingest Validation
-- [ ] Add post-parse validation: sigma_gradient >= 0
-- [ ] Add post-parse validation: error data not all zeros
-- [ ] Add post-parse validation: position array length >= 10
-- [ ] Add post-parse validation: error length matches position length
-- [ ] Add `data_quality` field to flag suspect records (don't reject — flag)
-- [ ] Test: process known good and known bad files, verify flags
-- **Date completed:**
-- **Notes:**
+- [x] Add post-parse validation: sigma_gradient >= 0
+- [x] Add post-parse validation: error data not all zeros
+- [x] Add post-parse validation: position array length >= 10
+- [x] Add post-parse validation: error length matches position length
+- [x] Add `data_quality` field to flag suspect records (don't reject — flag)
+- [x] Test: process known good and known bad files, verify flags
+- **Date completed:** 2026-03-17
+- **Notes:** Added data_quality ('good'/'suspect') and data_quality_issues columns to analysis_results. Validation in processor._validate_track_data() runs after analysis, before save. Flags but does not reject — records are preserved for investigation. Migration adds columns to existing DB. Existing records default to 'good' (will be flagged on reprocessing).
 
 ### Task 1.2 — Database Cleanup Tool
 - [ ] Add "Database Cleanup" section to Settings page
@@ -243,6 +243,7 @@ Record each coding session here so context carries between sessions.
 | 2026-03-17 | Planning | Created V4 upgrade plan and tracker | c5367d2 | Initial analysis in Cowork identified data quality issues, near-miss patterns, cost impact |
 | 2026-03-17 | Task 1.3 | Database indexing — 24 indexes via startup migration | — | Added idx_file_date standalone index, CREATE INDEX IF NOT EXISTS migration in manager.py |
 | 2026-03-17 | Task 1.1 | Parser file type filtering — non-trim detection | — | Filename + sheet name + sheet structure validation. Processor skips non_trim files. |
+| 2026-03-17 | Task 1.4 | Ingest validation — data quality flags | — | 4 checks per track, data_quality column, migration for existing DB |
 | | | | | |
 
 ---

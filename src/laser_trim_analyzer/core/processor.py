@@ -171,6 +171,14 @@ class Processor:
             # Determine overall status
             overall_status = self._determine_overall_status(analyzed_tracks)
 
+            # Validate track data quality
+            quality_issues = self._validate_track_data(analyzed_tracks)
+            data_quality = "suspect" if quality_issues else "good"
+            if quality_issues:
+                logger.warning(
+                    f"Data quality issues in {file_path.name}: {', '.join(quality_issues)}"
+                )
+
             processing_time = time.time() - start_time
 
             result = AnalysisResult(
@@ -178,6 +186,8 @@ class Processor:
                 overall_status=overall_status,
                 processing_time=processing_time,
                 tracks=analyzed_tracks,
+                data_quality=data_quality,
+                data_quality_issues=quality_issues,
             )
 
             logger.info(f"Completed: {file_path.name} - {overall_status.value} "
@@ -604,6 +614,46 @@ class Processor:
             return psutil.virtual_memory().percent > MEMORY_WARNING_PERCENT
         except Exception:
             return False
+
+    @staticmethod
+    def _validate_track_data(tracks: List[TrackData]) -> List[str]:
+        """
+        Validate analyzed track data for quality issues.
+
+        Checks each track for signs of bad/corrupt data. Returns a list of
+        issue descriptions. Empty list = all checks passed.
+
+        These checks flag suspect data — they don't reject records. The
+        data_quality field lets downstream analyses filter them out.
+        """
+        issues = []
+
+        for track in tracks:
+            tid = track.track_id
+
+            # Check 1: Negative sigma gradient (should always be >= 0)
+            if track.sigma_gradient < 0:
+                issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
+
+            # Check 2: All-zero error data (element wasn't actually measured)
+            if track.error_data:
+                if all(v == 0 or v is None for v in track.error_data):
+                    issues.append(f"{tid}: all-zero error data")
+
+            # Check 3: Position array too short (incomplete measurement)
+            if track.position_data:
+                if len(track.position_data) < 10:
+                    issues.append(f"{tid}: position array too short ({len(track.position_data)} points)")
+
+            # Check 4: Position and error array length mismatch
+            if track.position_data and track.error_data:
+                if len(track.position_data) != len(track.error_data):
+                    issues.append(
+                        f"{tid}: array length mismatch "
+                        f"(position={len(track.position_data)}, error={len(track.error_data)})"
+                    )
+
+        return issues
 
     def _determine_overall_status(self, tracks: List[TrackData]) -> AnalysisStatus:
         """Determine overall file status from track results."""

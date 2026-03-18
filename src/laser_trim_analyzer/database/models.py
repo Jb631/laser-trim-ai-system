@@ -193,6 +193,11 @@ class AnalysisResult(Base):
     sigma_scaling_factor = Column(Float)
     filter_cutoff_frequency = Column(Float)
 
+    # Data quality flags — set during ingest validation
+    # 'good' = all checks passed, 'suspect' = one or more issues found
+    data_quality = Column(String(20), default='good')
+    data_quality_issues = Column(Text)  # Comma-separated list of issues
+
     # Relationships with proper cascade for production
     tracks = relationship(
         "TrackResult", 
