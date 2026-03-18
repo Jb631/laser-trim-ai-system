@@ -13,7 +13,7 @@ DESIGN DECISION: Self-contained deployment
 import os
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 import yaml
 import logging
@@ -105,6 +105,8 @@ class ActiveModelsConfig:
     """Configuration for active model prioritization."""
     mps_models: List[str] = field(default_factory=list)  # User-managed MPS list
     recent_days: int = 90  # Days to consider "recently active"
+    model_prices: Dict[str, float] = field(default_factory=dict)  # Model → unit price ($)
+    cost_ratio: float = 0.50  # Fraction of unit price representing invested labor+material
 
 
 @dataclass
@@ -210,6 +212,8 @@ class Config:
             "active_models": {
                 "mps_models": self.active_models.mps_models,
                 "recent_days": self.active_models.recent_days,
+                "model_prices": self.active_models.model_prices,
+                "cost_ratio": self.active_models.cost_ratio,
             },
         }
 

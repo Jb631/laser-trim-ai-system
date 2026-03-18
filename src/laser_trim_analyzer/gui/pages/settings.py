@@ -348,6 +348,72 @@ class SettingsPage(ctk.CTkFrame):
 
         ctk.CTkLabel(recent_frame, text="days").pack(side="left")
 
+        # --- Pricing Section ---
+        pricing_label = ctk.CTkLabel(
+            frame,
+            text="Model Pricing",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        pricing_label.grid(row=5, column=0, padx=15, pady=(15, 5), sticky="w")
+
+        pricing_desc = ctk.CTkLabel(
+            frame,
+            text="Import unit prices from Excel/CSV (columns: model/Item ID, price/Unit Price).\n"
+                 "Prices are used for cost impact analysis on Dashboard and Trends pages.",
+            text_color="gray",
+            justify="left",
+            font=ctk.CTkFont(size=11)
+        )
+        pricing_desc.grid(row=6, column=0, padx=15, pady=(0, 5), sticky="w")
+
+        pricing_btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        pricing_btn_frame.grid(row=7, column=0, padx=15, pady=5, sticky="ew")
+
+        ctk.CTkButton(
+            pricing_btn_frame,
+            text="Import Pricing from File",
+            width=160,
+            command=self._import_pricing,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            pricing_btn_frame,
+            text="Clear Pricing",
+            width=100,
+            fg_color="gray",
+            command=self._clear_pricing,
+        ).pack(side="left", padx=(0, 10))
+
+        self.pricing_count_label = ctk.CTkLabel(
+            pricing_btn_frame,
+            text=self._pricing_summary_text(),
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        )
+        self.pricing_count_label.pack(side="right")
+
+        # Cost ratio setting
+        cost_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        cost_frame.grid(row=8, column=0, padx=15, pady=(5, 15), sticky="w")
+
+        ctk.CTkLabel(
+            cost_frame,
+            text="Cost ratio (fraction of unit price = invested cost):"
+        ).pack(side="left")
+
+        self.cost_ratio_entry = ctk.CTkEntry(cost_frame, width=60, justify="center")
+        self.cost_ratio_entry.pack(side="left", padx=5)
+        self.cost_ratio_entry.insert(0, str(self.app.config.active_models.cost_ratio))
+
+        ctk.CTkLabel(cost_frame, text="(default 0.50 = 50%)").pack(side="left")
+
+    def _pricing_summary_text(self) -> str:
+        """Get summary text for pricing status."""
+        prices = self.app.config.active_models.model_prices
+        if not prices:
+            return "No pricing data loaded"
+        return f"{len(prices)} models with pricing"
+
     def _save_mps_models(self):
         """Save MPS model list to config."""
         text = self.mps_textbox.get("1.0", "end-1c")
@@ -370,6 +436,13 @@ class SettingsPage(ctk.CTkFrame):
         except ValueError:
             pass
 
+        # Save cost ratio
+        try:
+            ratio = float(self.cost_ratio_entry.get())
+            self.app.config.active_models.cost_ratio = max(0.01, min(1.0, ratio))
+        except (ValueError, AttributeError):
+            pass
+
         self.app.config.save()
         self.mps_count_label.configure(text=f"{len(unique_models)} models configured")
 
@@ -379,6 +452,87 @@ class SettingsPage(ctk.CTkFrame):
         """Clear all MPS models."""
         self.mps_textbox.delete("1.0", "end")
         self.mps_count_label.configure(text="0 models configured")
+
+    def _import_pricing(self):
+        """Import model pricing from an Excel or CSV file."""
+        file_path = filedialog.askopenfilename(
+            title="Select Pricing File",
+            filetypes=[
+                ("Excel files", "*.xlsx *.xls"),
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ]
+        )
+        if not file_path:
+            return
+
+        try:
+            import pandas as pd
+
+            file_path = Path(file_path)
+            if file_path.suffix.lower() == '.csv':
+                df = pd.read_csv(file_path)
+            else:
+                df = pd.read_excel(file_path)
+
+            # Find model and price columns (flexible matching)
+            model_col = None
+            price_col = None
+            for col in df.columns:
+                col_lower = str(col).lower()
+                if col_lower in ('model', 'item id', 'item_id', 'itemid', 'part', 'part number'):
+                    model_col = col
+                elif col_lower in ('price', 'unit price', 'unit_price', 'unitprice', 'cost', 'unit cost'):
+                    price_col = col
+
+            if model_col is None or price_col is None:
+                messagebox.showerror(
+                    "Column Not Found",
+                    f"Could not find model and price columns.\n\n"
+                    f"Found columns: {list(df.columns)}\n\n"
+                    f"Expected: 'Item ID'/'Model' and 'Unit Price'/'Price'"
+                )
+                return
+
+            # Extract unique model → price mapping
+            # Use the most common non-zero price for each model (handles duplicates)
+            prices = {}
+            for model_val, group in df.groupby(model_col):
+                model = str(model_val).strip()
+                if not model:
+                    continue
+                non_zero = group[group[price_col] > 0][price_col]
+                if len(non_zero) > 0:
+                    # Use mode (most common) price, or median if no clear mode
+                    mode_vals = non_zero.mode()
+                    prices[model] = float(mode_vals.iloc[0]) if len(mode_vals) > 0 else float(non_zero.median())
+
+            if not prices:
+                messagebox.showwarning("No Pricing Data", "No valid model/price pairs found in file.")
+                return
+
+            # Merge with existing prices (new values overwrite)
+            existing = self.app.config.active_models.model_prices
+            existing.update(prices)
+            self.app.config.active_models.model_prices = existing
+            self.app.config.save()
+
+            self.pricing_count_label.configure(text=self._pricing_summary_text())
+            messagebox.showinfo(
+                "Pricing Imported",
+                f"Imported {len(prices)} model prices from {file_path.name}.\n"
+                f"Total: {len(existing)} models with pricing."
+            )
+
+        except Exception as e:
+            messagebox.showerror("Import Error", f"Failed to import pricing:\n{e}")
+
+    def _clear_pricing(self):
+        """Clear all pricing data."""
+        self.app.config.active_models.model_prices = {}
+        self.app.config.save()
+        self.pricing_count_label.configure(text=self._pricing_summary_text())
+        messagebox.showinfo("Cleared", "All pricing data cleared.")
 
     def _create_database_cleanup_section(self, container):
         """Create database cleanup section for removing legacy/contaminated records."""

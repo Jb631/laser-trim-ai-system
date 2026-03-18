@@ -116,14 +116,14 @@ Before each Claude Code session:
 **Prerequisite:** Phase 1 complete (clean data)
 
 ### Task 2.1 — Model Management with Pricing
-- [ ] Design storage: config.yaml vs database table for pricing
-- [ ] Add "Unit Price" column to MPS model list in Settings
-- [ ] Add "Import from Excel/CSV" button for bulk model+price import
-- [ ] Add filtering capability for import (select which models to include)
-- [ ] Make pricing accessible to Dashboard and Trends pages
-- [ ] Test: import pricing from backlog export, verify values accessible
-- **Date completed:**
-- **Notes:**
+- [x] Design storage: config.yaml vs database table for pricing
+- [x] Add "Unit Price" column to MPS model list in Settings
+- [x] Add "Import from Excel/CSV" button for bulk model+price import
+- [x] Add filtering capability for import (select which models to include)
+- [x] Make pricing accessible to Dashboard and Trends pages
+- [x] Test: import pricing from backlog export, verify values accessible
+- **Date completed:** 2026-03-17
+- **Notes:** Stored in config.yaml as active_models.model_prices dict. Import from Excel/CSV with flexible column matching (Item ID/Model, Unit Price/Price). Handles duplicates by using most common non-zero price. Tested against real Model_cost.xlsx: 164 models imported. Cost ratio configurable (default 50%). Accessible via app.config.active_models.model_prices from any page.
 
 ### Task 2.5 — Failure Margin Tracking
 - [ ] Calculate `max_violation` in analyzer.py for failed tracks
