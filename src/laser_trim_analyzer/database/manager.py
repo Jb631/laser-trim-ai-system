@@ -3336,6 +3336,137 @@ class DatabaseManager:
                     pass
                 raise
 
+    def get_ml_staleness(self) -> List[Dict[str, Any]]:
+        """
+        Get ML training staleness info for each trained model.
+
+        Compares training_samples at training time vs current record count.
+        Models with 50+ new records since training are flagged for retrain.
+
+        Returns:
+            List of dicts: model, training_date, training_samples,
+            current_samples, new_since_training, needs_retrain, days_since_training
+        """
+        from laser_trim_analyzer.database.models import ModelMLState as DBModelMLState
+
+        results = []
+        with self.session() as session:
+            # Get all trained models
+            ml_states = session.query(DBModelMLState).filter(
+                DBModelMLState.is_trained == True
+            ).all()
+
+            for state in ml_states:
+                current_count = session.query(
+                    func.count(DBAnalysisResult.id)
+                ).filter(
+                    DBAnalysisResult.model == state.model
+                ).scalar() or 0
+
+                training_samples = state.training_samples or 0
+                new_records = max(0, current_count - training_samples)
+                days_since = (datetime.now() - state.training_date).days if state.training_date else 999
+
+                results.append({
+                    "model": state.model,
+                    "training_date": state.training_date,
+                    "training_samples": training_samples,
+                    "current_samples": current_count,
+                    "new_since_training": new_records,
+                    "needs_retrain": new_records >= 50,
+                    "days_since_training": days_since,
+                })
+
+        # Sort by most stale first
+        results.sort(key=lambda x: x["new_since_training"], reverse=True)
+        return results
+
+    def get_model_cpk(self, model: str, days_back: int = 90) -> Dict[str, Any]:
+        """
+        Calculate process capability (Cpk) for a model.
+
+        Cpk = min(USL - mean, mean - LSL) / (3 * sigma)
+
+        For sigma gradient: LSL=0, USL=threshold (one-sided: Cpk = (USL - mean) / (3*std))
+        For linearity: based on pass rate as a capability proxy
+
+        Args:
+            model: Model number
+            days_back: Period to analyze
+
+        Returns:
+            Dict with sigma_cpk, sigma_cpk_color, sample_count
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get sigma gradient data for this model
+            data = (
+                session.query(
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.sigma_threshold,
+                )
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBTrackResult.sigma_gradient.isnot(None),
+                    DBTrackResult.sigma_threshold.isnot(None),
+                )
+                .all()
+            )
+
+            result = {
+                "model": model,
+                "sample_count": len(data),
+                "sigma_cpk": None,
+                "sigma_cpk_color": "gray",
+            }
+
+            if len(data) < 10:
+                return result
+
+            gradients = [float(d[0]) for d in data]
+            threshold = float(data[0][1])  # Threshold is same for all tracks of a model
+
+            import numpy as np
+            mean = np.mean(gradients)
+            std = np.std(gradients, ddof=1)  # Sample std dev
+
+            if std > 0 and threshold > 0:
+                # One-sided Cpk: process must stay BELOW threshold
+                # Cpk = (USL - mean) / (3 * sigma)
+                cpk = (threshold - mean) / (3 * std)
+                result["sigma_cpk"] = round(cpk, 2)
+
+                if cpk < 1.0:
+                    result["sigma_cpk_color"] = "#e74c3c"  # Red — incapable
+                elif cpk < 1.33:
+                    result["sigma_cpk_color"] = "#f39c12"  # Yellow — marginal
+                else:
+                    result["sigma_cpk_color"] = "#27ae60"  # Green — capable
+
+            return result
+
+    @staticmethod
+    def _normalize_serial(serial: str) -> str:
+        """
+        Normalize a serial number for fuzzy matching.
+
+        Handles common formatting differences between trim and FT files:
+        - Strip leading zeros (007 → 7)
+        - Lowercase
+        - Strip whitespace
+        - Remove common prefixes (sn, s/n, #)
+        """
+        import re
+        s = serial.lower().strip()
+        # Remove common prefixes
+        s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
+        # Strip leading zeros (but keep at least one digit for "0" itself)
+        s = s.lstrip('0') or '0'
+        return s
+
     def _find_matching_trim(
         self,
         session: Session,
@@ -3347,9 +3478,8 @@ class DatabaseManager:
         Find the matching trim result for a final test.
 
         Logic:
-        - Same model and serial
-        - Trim date < final test date
-        - Closest trim date within 60 days
+        1. Exact serial match (case-insensitive) — highest confidence
+        2. Fuzzy serial match (strip zeros, prefixes) — slightly lower confidence
 
         Returns:
             Tuple of (trim_id, confidence, days_since_trim)
@@ -3359,47 +3489,198 @@ class DatabaseManager:
         if not model or not serial or not test_date:
             return None, None, None
 
-        # Normalize serial for matching (some have prefix variations)
         serial_clean = serial.lower().strip()
-
-        # Query for matching trim results
-        # Must be: same model, same serial, trim date <= test date (same day allowed), within 60 days
         cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
 
+        # Attempt 1: Exact serial match (case-insensitive)
         candidates = (
             session.query(DBAnalysisResult)
             .filter(
                 DBAnalysisResult.model == model,
                 func.lower(DBAnalysisResult.serial) == serial_clean,
                 DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date <= test_date,  # Allow same-day matches
+                DBAnalysisResult.file_date <= test_date,
                 DBAnalysisResult.file_date >= cutoff_date,
             )
-            .order_by(desc(DBAnalysisResult.file_date))  # Most recent first
+            .order_by(desc(DBAnalysisResult.file_date))
             .limit(5)
             .all()
         )
 
-        if not candidates:
-            # No match found - require both model AND serial to match
-            return None, None, None
+        if candidates:
+            match = candidates[0]
+            days_diff = (test_date - match.file_date).days
+            confidence = self._calculate_match_confidence(days_diff, exact_serial=True)
+            return match.id, confidence, days_diff
 
-        # Found candidates with matching serial
-        match = candidates[0]  # Most recent before test date
-        days_diff = (test_date - match.file_date).days
+        # Attempt 2: Fuzzy serial match — normalize both sides
+        ft_serial_norm = self._normalize_serial(serial)
 
-        # Calculate confidence based on time proximity
-        # 0-7 days: high confidence (0.9-1.0)
-        # 8-30 days: medium confidence (0.7-0.9)
-        # 31-60 days: low confidence (0.5-0.7)
+        # Get all trims for this model in the date window, then fuzzy-match in Python
+        model_trims = (
+            session.query(DBAnalysisResult.id, DBAnalysisResult.serial, DBAnalysisResult.file_date)
+            .filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date.isnot(None),
+                DBAnalysisResult.file_date <= test_date,
+                DBAnalysisResult.file_date >= cutoff_date,
+            )
+            .order_by(desc(DBAnalysisResult.file_date))
+            .all()
+        )
+
+        for trim_id, trim_serial, trim_date in model_trims:
+            if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
+                days_diff = (test_date - trim_date).days
+                confidence = self._calculate_match_confidence(days_diff, exact_serial=False)
+                logger.debug(
+                    f"Fuzzy match: FT serial '{serial}' → trim serial '{trim_serial}' "
+                    f"(normalized: '{ft_serial_norm}'), {days_diff} days"
+                )
+                return trim_id, confidence, days_diff
+
+        return None, None, None
+
+    @staticmethod
+    def _calculate_match_confidence(days_diff: int, exact_serial: bool = True) -> float:
+        """Calculate match confidence based on time proximity and match type."""
+        # Time-based confidence
         if days_diff <= 7:
-            confidence = 1.0 - (days_diff * 0.01)  # 0.93-1.0
+            time_conf = 1.0 - (days_diff * 0.01)
         elif days_diff <= 30:
-            confidence = 0.9 - ((days_diff - 7) * 0.01)  # 0.67-0.9
+            time_conf = 0.9 - ((days_diff - 7) * 0.01)
         else:
-            confidence = 0.7 - ((days_diff - 30) * 0.007)  # 0.5-0.7
+            time_conf = 0.7 - ((days_diff - 30) * 0.007)
 
-        return match.id, max(0.5, confidence), days_diff
+        # Reduce confidence slightly for fuzzy matches
+        if not exact_serial:
+            time_conf *= 0.95
+
+        return max(0.5, time_conf)
+
+    def get_unmatched_ft_diagnostics(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Diagnose why Final Test records are unmatched.
+
+        For each unmatched FT record, checks:
+        - Does the model exist in trim data?
+        - Does the serial exist for that model?
+        - Are there trims but outside the date window?
+
+        Returns:
+            List of dicts with FT info and reason for no match
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
+
+        results = []
+
+        with self.session() as session:
+            unmatched = (
+                session.query(DBFinalTestResult)
+                .filter(DBFinalTestResult.linked_trim_id.is_(None))
+                .order_by(desc(DBFinalTestResult.file_date))
+                .limit(limit)
+                .all()
+            )
+
+            for ft in unmatched:
+                diag = {
+                    "ft_id": ft.id,
+                    "filename": ft.filename,
+                    "model": ft.model,
+                    "serial": ft.serial,
+                    "test_date": ft.file_date or ft.test_date,
+                    "reason": "unknown",
+                }
+
+                # Check 1: Does model exist in trim data?
+                model_exists = session.query(
+                    func.count(DBAnalysisResult.id)
+                ).filter(
+                    DBAnalysisResult.model == ft.model
+                ).scalar() or 0
+
+                if model_exists == 0:
+                    diag["reason"] = "no_model_in_trims"
+                    diag["detail"] = f"Model '{ft.model}' has no trim records"
+                    results.append(diag)
+                    continue
+
+                # Check 2: Does serial exist for this model?
+                serial_clean = ft.serial.lower().strip() if ft.serial else ""
+                serial_exists = session.query(
+                    func.count(DBAnalysisResult.id)
+                ).filter(
+                    DBAnalysisResult.model == ft.model,
+                    func.lower(DBAnalysisResult.serial) == serial_clean,
+                ).scalar() or 0
+
+                if serial_exists == 0:
+                    # Check fuzzy match
+                    ft_norm = self._normalize_serial(ft.serial) if ft.serial else ""
+                    all_serials = session.query(
+                        DBAnalysisResult.serial
+                    ).filter(
+                        DBAnalysisResult.model == ft.model
+                    ).distinct().limit(5).all()
+                    sample = [s[0] for s in all_serials]
+                    diag["reason"] = "no_serial_match"
+                    diag["detail"] = (
+                        f"Serial '{ft.serial}' (norm: '{ft_norm}') not found. "
+                        f"Sample trim serials: {sample}"
+                    )
+                    results.append(diag)
+                    continue
+
+                # Check 3: Serial exists but outside date window
+                test_date = ft.file_date or ft.test_date
+                if test_date:
+                    cutoff = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+                    in_window = session.query(
+                        func.count(DBAnalysisResult.id)
+                    ).filter(
+                        DBAnalysisResult.model == ft.model,
+                        func.lower(DBAnalysisResult.serial) == serial_clean,
+                        DBAnalysisResult.file_date.isnot(None),
+                        DBAnalysisResult.file_date <= test_date,
+                        DBAnalysisResult.file_date >= cutoff,
+                    ).scalar() or 0
+
+                    if in_window == 0:
+                        # Find nearest trim date
+                        nearest = session.query(
+                            DBAnalysisResult.file_date
+                        ).filter(
+                            DBAnalysisResult.model == ft.model,
+                            func.lower(DBAnalysisResult.serial) == serial_clean,
+                            DBAnalysisResult.file_date.isnot(None),
+                        ).order_by(
+                            func.abs(func.julianday(DBAnalysisResult.file_date) - func.julianday(test_date))
+                        ).first()
+
+                        if nearest and nearest[0]:
+                            gap = abs((test_date - nearest[0]).days)
+                            diag["reason"] = "outside_date_window"
+                            diag["detail"] = (
+                                f"Nearest trim is {gap} days away "
+                                f"(max allowed: {FINAL_TEST_MAX_DAYS_FROM_TRIM})"
+                            )
+                        else:
+                            diag["reason"] = "no_dated_trims"
+                            diag["detail"] = "Matching trims have no file_date"
+                    else:
+                        diag["reason"] = "trim_after_test"
+                        diag["detail"] = "Trims exist but all are after the FT date"
+                else:
+                    diag["reason"] = "no_test_date"
+                    diag["detail"] = "FT record has no date"
+
+                results.append(diag)
+
+        return results
 
     def rematch_final_tests(self) -> Dict[str, int]:
         """

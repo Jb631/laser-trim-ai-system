@@ -261,7 +261,17 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=11),
             justify="left"
         )
-        self.model_status_label.grid(row=6, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
+        self.model_status_label.grid(row=6, column=0, columnspan=3, padx=15, pady=(5, 5), sticky="w")
+
+        # ML Staleness indicator
+        self.ml_staleness_label = ctk.CTkLabel(
+            frame,
+            text="",
+            text_color="gray",
+            font=ctk.CTkFont(size=11),
+            justify="left"
+        )
+        self.ml_staleness_label.grid(row=7, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="w")
 
     def _create_active_models_section(self, container):
         """Create Active Models (MPS) configuration section."""
@@ -1023,3 +1033,27 @@ class SettingsPage(ctk.CTkFrame):
                 self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
         except Exception:
             self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
+
+        # Update staleness info
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            staleness = db.get_ml_staleness()
+            needs_retrain = [s for s in staleness if s["needs_retrain"]]
+            if needs_retrain:
+                models_str = ", ".join(s["model"] for s in needs_retrain[:5])
+                if len(needs_retrain) > 5:
+                    models_str += f" (+{len(needs_retrain) - 5} more)"
+                self.ml_staleness_label.configure(
+                    text=f"Retrain needed: {len(needs_retrain)} models with 50+ new records — {models_str}",
+                    text_color="#f39c12"
+                )
+            elif staleness:
+                self.ml_staleness_label.configure(
+                    text=f"All {len(staleness)} trained models are up to date",
+                    text_color="#27ae60"
+                )
+            else:
+                self.ml_staleness_label.configure(text="", text_color="gray")
+        except Exception:
+            self.ml_staleness_label.configure(text="", text_color="gray")

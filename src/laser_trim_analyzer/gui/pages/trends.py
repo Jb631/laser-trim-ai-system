@@ -620,6 +620,7 @@ class TrendsPage(ctk.CTkFrame):
             ("linearity_pass_rate", "Linearity Pass"),
             ("sigma_pass_rate", "Sigma Pass"),
             ("overall_pass_rate", "Overall Pass"),
+            ("sigma_cpk", "Sigma Cpk"),
             ("near_miss", "Near-Miss"),
             ("avg_trim_improvement", "Avg Trim Imp."),
             ("trend", "Trend"),
@@ -1265,10 +1266,17 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.debug(f"Could not load prioritization: {e}")
 
+        # Get Cpk
+        try:
+            cpk_data = db.get_model_cpk(clean_model, days_back=self.selected_days)
+        except Exception as e:
+            logger.debug(f"Could not load Cpk: {e}")
+            cpk_data = None
+
         # Update UI on main thread
         self.after(0, lambda: self._update_detail_display(
             trend_data, model_alerts, ml_recommendations, model_names, model_stats,
-            margin_data=margin_data, model_priority=model_priority
+            margin_data=margin_data, model_priority=model_priority, cpk_data=cpk_data
         ))
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1606,7 +1614,8 @@ class TrendsPage(ctk.CTkFrame):
         model_names: List[str],
         model_stats: Optional[Dict[str, Any]] = None,
         margin_data: Optional[Dict[str, Any]] = None,
-        model_priority: Optional[Dict[str, Any]] = None
+        model_priority: Optional[Dict[str, Any]] = None,
+        cpk_data: Optional[Dict[str, Any]] = None,
     ):
         """Update detail display with loaded data."""
         # Ensure charts are initialized before use (lazy matplotlib loading)
@@ -1731,6 +1740,17 @@ class TrendsPage(ctk.CTkFrame):
             text_color="white"
         )
         self.detail_stat_labels["trend"].configure(text=trend, text_color=trend_color)
+
+        # Cpk
+        if cpk_data and cpk_data.get("sigma_cpk") is not None:
+            cpk_val = cpk_data["sigma_cpk"]
+            cpk_color = cpk_data.get("sigma_cpk_color", "gray")
+            self.detail_stat_labels["sigma_cpk"].configure(
+                text=f"{cpk_val:.2f}",
+                text_color=cpk_color
+            )
+        else:
+            self.detail_stat_labels["sigma_cpk"].configure(text="N/A", text_color="gray")
 
         # Update scatter chart using the filter method (applies timeline filter)
         self._update_scatter_chart_with_filter()
