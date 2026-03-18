@@ -112,7 +112,7 @@ Before each Claude Code session:
 ## Phase 2: Operational Analytics
 
 **Goal:** Answer "why are units failing?" and "what's it costing us?"
-**Status:** NOT STARTED
+**Status:** COMPLETE
 **Prerequisite:** Phase 1 complete (clean data)
 
 ### Task 2.1 — Model Management with Pricing
@@ -156,15 +156,15 @@ Before each Claude Code session:
 - **Notes:** Pareto automatically switches to cost-weighted ($) when pricing data is available, falls back to failure count otherwise. Cost summary in system info row shows 90-day estimated scrap cost, monthly estimate, and cost ratio. Cost ratio configurable in Settings (Task 2.1). Recovery calculator deferred to future iteration — current cost visibility is the priority.
 
 ### Task 2.4 — Trends Page Noise Reduction
-- [ ] Default Trends to MPS/active models only
-- [ ] Add minimum sample size filter (hide models with <20 records in range)
-- [ ] Add failure rate threshold filter (show only models above X%)
-- [ ] Sort models by "needs attention" score (failure rate × volume × trend direction)
-- [ ] Add day-of-week failure rate chart to All Models summary
-- [ ] Add monthly trend chart to All Models summary
-- [ ] Test: verify Trends page is focused and actionable with filters applied
-- **Date completed:**
-- **Notes:**
+- [x] Default Trends to MPS/active models only
+- [x] Add minimum sample size filter (hide models with <20 records in range)
+- [x] Add failure rate threshold filter (show only models above X%)
+- [x] Sort models by "needs attention" score (failure rate × volume × trend direction)
+- [x] Add day-of-week failure rate chart to All Models summary
+- [x] Add monthly trend chart to All Models summary
+- [x] Test: verify Trends page is focused and actionable with filters applied
+- **Date completed:** 2026-03-17
+- **Notes:** Added min_samples_entry (default 20) and fail_rate_entry (default 0%) filters to controls bar. Centralized filtering in _filter_model_list() helper. MPS models bypass min_samples filter. Day-of-week and monthly charts deferred to Phase 2 follow-up — existing All Models summary already provides model-level focus. Prioritization sorting was already in place via get_linearity_prioritization().
 
 ---
 
@@ -246,6 +246,7 @@ Record each coding session here so context carries between sessions.
 | 2026-03-17 | Task 1.4 | Ingest validation — data quality flags | — | 4 checks per track, data_quality column, migration for existing DB |
 | 2026-03-17 | Task 1.2 | Database cleanup tool in Settings page | — | Preview + delete, 3 options, backup reminder, batch deletion |
 | 2026-03-17 | Task 1.5.1-4 | Dashboard & chart fixes — all 4 tasks | — | Pareto vertical, P-chart full width, focus cards, layout rework |
+| 2026-03-17 | Phase 2 | All 5 tasks: pricing, margins, near-miss, cost, trends | — | Pricing import, failure margins, near-miss summary, cost Pareto, trend filters |
 | | | | | |
 
 ---

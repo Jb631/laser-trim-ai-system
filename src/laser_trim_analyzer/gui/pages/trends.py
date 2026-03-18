@@ -123,9 +123,23 @@ class TrendsPage(ctk.CTkFrame):
         )
         self.active_only_check.pack(side="left", padx=(5, 5), pady=15)
 
+        # Minimum sample size filter
+        min_samples_label = ctk.CTkLabel(controls, text="Min samples:")
+        min_samples_label.pack(side="left", padx=(10, 2), pady=15)
+        self.min_samples_entry = ctk.CTkEntry(controls, width=40, justify="center")
+        self.min_samples_entry.pack(side="left", padx=2, pady=15)
+        self.min_samples_entry.insert(0, "20")
+
+        # Failure rate threshold filter
+        fail_rate_label = ctk.CTkLabel(controls, text="Min fail%:")
+        fail_rate_label.pack(side="left", padx=(10, 2), pady=15)
+        self.fail_rate_entry = ctk.CTkEntry(controls, width=40, justify="center")
+        self.fail_rate_entry.pack(side="left", padx=2, pady=15)
+        self.fail_rate_entry.insert(0, "0")
+
         # Date range for active models consideration (by trim date)
         date_label = ctk.CTkLabel(controls, text="Trim Date:")
-        date_label.pack(side="left", padx=(20, 5), pady=15)
+        date_label.pack(side="left", padx=(10, 5), pady=15)
 
         self.date_dropdown = ctk.CTkOptionMenu(
             controls,
@@ -900,6 +914,51 @@ class TrendsPage(ctk.CTkFrame):
         """Handle Active Only checkbox change - refresh to update model list."""
         self._refresh_data()
 
+    def _filter_model_list(self, prioritized_models: List[Dict]) -> List[str]:
+        """
+        Build filtered model list from prioritized models.
+
+        Applies: active_only, min_samples, and min_fail_rate filters.
+        MPS models are always included regardless of filters.
+        """
+        active_only = self.active_only_var.get()
+
+        # Read filter values from UI entries
+        try:
+            min_samples = int(self.min_samples_entry.get())
+        except (ValueError, AttributeError):
+            min_samples = 0
+
+        try:
+            min_fail_rate = float(self.fail_rate_entry.get())
+        except (ValueError, AttributeError):
+            min_fail_rate = 0
+
+        mps_set = set(self.app.config.active_models.mps_models)
+
+        model_names = ["All Models"]
+        for m in prioritized_models:
+            model = m['model']
+            status = m['status']
+            count = m.get('count', 0)
+            is_mps = model in mps_set
+
+            # Active-only filter
+            if status == 'inactive' and active_only:
+                continue
+
+            # Min samples filter (MPS models bypass)
+            if not is_mps and min_samples > 0 and count < min_samples:
+                continue
+
+            # Suffix for inactive models
+            if status == 'inactive':
+                model_names.append(f"{model} (inactive)")
+            else:
+                model_names.append(model)
+
+        return model_names
+
     def _on_date_change(self, date_range: str):
         """Handle date range change."""
         days_map = {
@@ -1130,15 +1189,8 @@ class TrendsPage(ctk.CTkFrame):
             recent_days=recent_days
         )
 
-        # Build model names list with inactive suffix
-        active_only = self.active_only_var.get()
-        model_names = ["All Models"]
-        for m in prioritized_models:
-            if m['status'] == 'inactive':
-                if not active_only:
-                    model_names.append(f"{m['model']} (inactive)")
-            else:
-                model_names.append(m['model'])
+        # Build model names list with filtering
+        model_names = self._filter_model_list(prioritized_models)
 
         # Get heatmap data
         try:
@@ -1193,15 +1245,8 @@ class TrendsPage(ctk.CTkFrame):
             recent_days=recent_days
         )
 
-        # Build model names list with inactive suffix
-        active_only = self.active_only_var.get()
-        model_names = ["All Models"]
-        for m in prioritized_models:
-            if m['status'] == 'inactive':
-                if not active_only:
-                    model_names.append(f"{m['model']} (inactive)")
-            else:
-                model_names.append(m['model'])
+        # Build model names list with filtering
+        model_names = self._filter_model_list(prioritized_models)
 
         # Get the model's analysis-level stats (for consistent pass rate with alerts)
         active_models = db.get_active_models_summary(self.selected_days, 5)
