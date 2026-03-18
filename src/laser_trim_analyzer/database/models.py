@@ -334,6 +334,11 @@ class TrackResult(Base):
     max_deviation_position = Column(Float)
     deviation_uniformity = Column(Float)
 
+    # Failure margin metrics
+    max_violation = Column(Float)     # Max spec exceedance (absolute)
+    avg_violation = Column(Float)     # Average violation across fail points
+    margin_to_spec = Column(Float)    # Closest margin to spec (% of spec width, passing tracks)
+
     # Trim effectiveness
     trim_improvement_percent = Column(Float)
     untrimmed_rms_error = Column(Float)

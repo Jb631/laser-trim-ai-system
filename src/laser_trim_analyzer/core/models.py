@@ -129,6 +129,11 @@ class TrackData(BaseAnalysisModel):
     untrimmed_positions: Optional[List[float]] = Field(None, description="Untrimmed positions")
     untrimmed_errors: Optional[List[float]] = Field(None, description="Untrimmed errors")
 
+    # Failure margin metrics — how far from spec limits
+    max_violation: Optional[float] = Field(None, ge=0, description="Max amount any point exceeded spec (absolute)")
+    avg_violation: Optional[float] = Field(None, ge=0, description="Average violation across all fail points")
+    margin_to_spec: Optional[float] = Field(None, description="For passing tracks: closest margin to spec limit (% of spec width)")
+
     # Trim effectiveness metrics (calculated when untrimmed data available)
     resistance_change: Optional[float] = Field(None, description="Resistance change (ohms)")
     trim_improvement_percent: Optional[float] = Field(None, description="RMS error improvement from trim (%)")

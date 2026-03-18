@@ -125,6 +125,12 @@ class Analyzer:
             untrimmed_resistance, trimmed_resistance
         )
 
+        # Calculate failure margin metrics
+        shifted_errors = [e + optimal_offset for e in errors]
+        margin_metrics = self._calculate_failure_margins(
+            shifted_errors, upper_limits, lower_limits
+        )
+
         return TrackData(
             track_id=track_id,
             status=status,
@@ -149,6 +155,8 @@ class Analyzer:
             # Anomaly detection
             is_anomaly=is_anomaly,
             anomaly_reason=anomaly_reason,
+            # Failure margin metrics
+            **margin_metrics,
             # Trim effectiveness
             **trim_metrics,
             # Raw data (for plotting)
@@ -383,6 +391,67 @@ class Analyzer:
                         count += 1
 
         return count
+
+    def _calculate_failure_margins(
+        self,
+        shifted_errors: List[float],
+        upper_limits: List[float],
+        lower_limits: List[float],
+    ) -> Dict[str, Optional[float]]:
+        """
+        Calculate how far points are from spec limits.
+
+        For failed tracks: max_violation and avg_violation (how far out of spec)
+        For passing tracks: margin_to_spec (how close to the nearest limit, as % of spec width)
+
+        Returns:
+            Dict with max_violation, avg_violation, margin_to_spec
+        """
+        result = {"max_violation": None, "avg_violation": None, "margin_to_spec": None}
+
+        if not upper_limits or not lower_limits:
+            return result
+
+        n = min(len(shifted_errors), len(upper_limits), len(lower_limits))
+        if n == 0:
+            return result
+
+        violations = []
+        margins = []
+
+        for i in range(n):
+            ul = upper_limits[i]
+            ll = lower_limits[i]
+            if ul is None or ll is None:
+                continue
+            if np.isnan(ul) or np.isnan(ll):
+                continue
+
+            e = shifted_errors[i]
+            spec_width = ul - ll
+            if spec_width <= 0:
+                continue
+
+            # Check if point is outside limits
+            if e > ul:
+                violations.append(e - ul)
+            elif e < ll:
+                violations.append(ll - e)
+            else:
+                # Point is within limits — calculate margin to nearest limit
+                margin_upper = ul - e
+                margin_lower = e - ll
+                nearest_margin = min(margin_upper, margin_lower)
+                margins.append(nearest_margin / spec_width * 100)  # As % of spec width
+
+        if violations:
+            result["max_violation"] = max(violations)
+            result["avg_violation"] = sum(violations) / len(violations)
+        elif margins:
+            # Only set margin_to_spec for passing tracks (no violations)
+            result["margin_to_spec"] = min(margins)
+
+        return result
 
     def _assess_risk(
         self,

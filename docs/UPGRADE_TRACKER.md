@@ -126,15 +126,15 @@ Before each Claude Code session:
 - **Notes:** Stored in config.yaml as active_models.model_prices dict. Import from Excel/CSV with flexible column matching (Item ID/Model, Unit Price/Price). Handles duplicates by using most common non-zero price. Tested against real Model_cost.xlsx: 164 models imported. Cost ratio configurable (default 50%). Accessible via app.config.active_models.model_prices from any page.
 
 ### Task 2.5 — Failure Margin Tracking
-- [ ] Calculate `max_violation` in analyzer.py for failed tracks
-- [ ] Calculate `avg_violation` for failed tracks
-- [ ] Calculate `margin_to_spec` for passing tracks
-- [ ] Add columns to track_results database table
-- [ ] Update processor to store new metrics
-- [ ] Backfill: re-analyze existing records to populate new columns (or calculate on demand)
-- [ ] Test: verify margin values make sense for known pass/fail units
-- **Date completed:**
-- **Notes:**
+- [x] Calculate `max_violation` in analyzer.py for failed tracks
+- [x] Calculate `avg_violation` for failed tracks
+- [x] Calculate `margin_to_spec` for passing tracks
+- [x] Add columns to track_results database table
+- [x] Update processor to store new metrics
+- [x] Backfill: re-analyze existing records to populate new columns (or calculate on demand)
+- [x] Test: verify margin values make sense for known pass/fail units
+- **Date completed:** 2026-03-17
+- **Notes:** margin_to_spec is % of spec width (50%=centered, 2%=tight pass). max/avg_violation are absolute values. Calculated from shifted errors (after optimal offset). Migration adds 3 columns to track_results. Existing records populate on reprocessing (uncheck Incremental Mode).
 
 ### Task 2.2 — Near-Miss Analysis View
 - [ ] Add near-miss distribution chart (fail points histogram)

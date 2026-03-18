@@ -448,6 +448,20 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Index migration warning: {e}")
 
+            # Migration: Add failure margin columns to track_results
+            try:
+                session.execute(text("SELECT max_violation FROM track_results LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding failure margin columns")
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_violation FLOAT"))
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN avg_violation FLOAT"))
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN margin_to_spec FLOAT"))
+                    session.commit()
+                    logger.info("Migration completed: Added failure margin columns")
+                except Exception as e:
+                    logger.warning(f"Failure margin migration warning (may already exist): {e}")
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
@@ -1950,6 +1964,10 @@ class DatabaseManager:
             untrimmed_rms_error=track.untrimmed_rms_error,
             trimmed_rms_error=track.trimmed_rms_error,
             max_error_reduction_percent=track.max_error_reduction_percent,
+            # Failure margin metrics
+            max_violation=getattr(track, 'max_violation', None),
+            avg_violation=getattr(track, 'avg_violation', None),
+            margin_to_spec=getattr(track, 'margin_to_spec', None),
             # Computed metrics
             gradient_margin=track.gradient_margin,
             plot_path=str(track.plot_path) if track.plot_path else None,
