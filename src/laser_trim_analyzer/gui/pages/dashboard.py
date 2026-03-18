@@ -176,7 +176,13 @@ class DashboardPage(ctk.CTkFrame):
             self.system_info_frame, text="Prediction Accuracy: Loading...",
             text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
         )
-        self.escape_info_label.pack(padx=15, pady=(0, 10), anchor="w", fill="x")
+        self.escape_info_label.pack(padx=15, pady=0, anchor="w", fill="x")
+
+        self.near_miss_label = ctk.CTkLabel(
+            self.system_info_frame, text="Near-Miss: Loading...",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.near_miss_label.pack(padx=15, pady=(4, 10), anchor="w", fill="x")
 
         # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability
         chart_frame = ctk.CTkFrame(content)
@@ -428,10 +434,17 @@ class DashboardPage(ctk.CTkFrame):
                 logger.debug(f"Could not load trending worse: {e}")
                 trending_worse = []
 
+            # Get near-miss summary
+            try:
+                near_miss_data = db.get_near_miss_summary(days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load near-miss data: {e}")
+                near_miss_data = None
+
             # Update UI on main thread
             self.after(0, lambda: self._update_display(
                 stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats,
-                system_comparison, ft_stats, escape_stats, trending_worse
+                system_comparison, ft_stats, escape_stats, trending_worse, near_miss_data
             ))
 
         except Exception as e:
@@ -478,6 +491,7 @@ class DashboardPage(ctk.CTkFrame):
         ft_stats: Optional[Dict[str, Any]] = None,
         escape_stats: Optional[Dict[str, Any]] = None,
         trending_worse: Optional[List[Dict[str, Any]]] = None,
+        near_miss_data: Optional[Dict[str, Any]] = None,
     ):
         """Update display with loaded data."""
         # Use overall_stats for health card if available, otherwise fall back to period stats
@@ -652,6 +666,25 @@ class DashboardPage(ctk.CTkFrame):
         except Exception as e:
             logger.debug(f"Escape display error: {e}")
             self.escape_info_label.configure(text="Prediction Accuracy: No data", text_color="gray")
+
+        # Near-Miss Analysis
+        try:
+            if near_miss_data and near_miss_data.get("total_failing", 0) > 0:
+                nm = near_miss_data
+                nm_color = "#e74c3c" if nm["near_miss_percent"] > 40 else "#f39c12" if nm["near_miss_percent"] > 20 else "gray"
+                self.near_miss_label.configure(
+                    text=f"Near-Miss (90d): {nm['near_miss_percent']:.0f}% of failures are near-miss "
+                         f"({nm['near_miss_count']}/{nm['total_failing']} have 1-3 fail points) | "
+                         f"{nm['hard_fail_percent']:.0f}% hard fail ({nm['hard_fail_count']})",
+                    text_color=nm_color
+                )
+            else:
+                self.near_miss_label.configure(
+                    text="Near-Miss: No failure data", text_color="gray"
+                )
+        except Exception as e:
+            logger.debug(f"Near-miss display error: {e}")
+            self.near_miss_label.configure(text="Near-Miss: No data", text_color="gray")
 
     def _update_alerts_display(self, alerts: List[Dict[str, Any]]):
         """Update alerts list."""

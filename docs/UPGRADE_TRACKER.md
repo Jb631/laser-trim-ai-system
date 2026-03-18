@@ -137,14 +137,14 @@ Before each Claude Code session:
 - **Notes:** margin_to_spec is % of spec width (50%=centered, 2%=tight pass). max/avg_violation are absolute values. Calculated from shifted errors (after optimal offset). Migration adds 3 columns to track_results. Existing records populate on reprocessing (uncheck Incremental Mode).
 
 ### Task 2.2 — Near-Miss Analysis View
-- [ ] Add near-miss distribution chart (fail points histogram)
-- [ ] Add near-miss percentage display (% of failures with 1-3 fail points)
-- [ ] Add per-model near-miss comparison
-- [ ] Add sigma gradient comparison (near-miss vs hard-fail vs pass)
-- [ ] Decide placement: Dashboard section or Analyze page tab
-- [ ] Test: verify chart matches manual SQL analysis
-- **Date completed:**
-- **Notes:**
+- [x] Add near-miss distribution chart (fail points histogram)
+- [x] Add near-miss percentage display (% of failures with 1-3 fail points)
+- [x] Add per-model near-miss comparison
+- [x] Add sigma gradient comparison (near-miss vs hard-fail vs pass)
+- [x] Decide placement: Dashboard section or Analyze page tab
+- [x] Test: verify chart matches manual SQL analysis
+- **Date completed:** 2026-03-17
+- **Notes:** Placed on Dashboard in system info row. get_near_miss_summary() query returns distribution (1-3, 4-10, 11-50, 50+), near-miss %, hard-fail %, and top near-miss models. Color-coded: red if >40% near-miss, orange if >20%. Per-model near-miss was already available via get_linearity_prioritization() and focus panel.
 
 ### Task 2.3 — Cost Impact Dashboard
 - [ ] Add Pareto chart: models ranked by failure cost

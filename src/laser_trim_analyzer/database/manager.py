@@ -2862,6 +2862,79 @@ class DatabaseManager:
                 "easy_win_percent": round(easy_wins / failing_count * 100, 1) if failing_count > 0 else 0,
             }
 
+    def get_near_miss_summary(self, days_back: int = 90) -> Dict[str, Any]:
+        """
+        Get overall near-miss analysis across all models.
+
+        Returns:
+            Dict with fail-point distribution, near-miss percentage,
+            and top models by near-miss count.
+        """
+        with self.session() as session:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Get all failing tracks with fail point counts
+            failing = (
+                session.query(
+                    DBTrackResult.linearity_fail_points,
+                    DBAnalysisResult.model,
+                )
+                .join(DBAnalysisResult)
+                .filter(
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBTrackResult.linearity_pass == False,
+                    DBTrackResult.linearity_fail_points > 0,
+                )
+                .all()
+            )
+
+            total_failing = len(failing)
+            if total_failing == 0:
+                return {
+                    "total_failing": 0,
+                    "distribution": {},
+                    "near_miss_count": 0,
+                    "near_miss_percent": 0,
+                    "hard_fail_count": 0,
+                    "hard_fail_percent": 0,
+                    "top_near_miss_models": [],
+                }
+
+            # Distribution buckets
+            buckets = {"1-3 points": 0, "4-10 points": 0, "11-50 points": 0, "50+ points": 0}
+            near_miss_by_model = {}
+
+            for fp, model in failing:
+                if fp <= 3:
+                    buckets["1-3 points"] += 1
+                    near_miss_by_model[model] = near_miss_by_model.get(model, 0) + 1
+                elif fp <= 10:
+                    buckets["4-10 points"] += 1
+                elif fp <= 50:
+                    buckets["11-50 points"] += 1
+                else:
+                    buckets["50+ points"] += 1
+
+            near_miss = buckets["1-3 points"]
+            hard_fail = buckets["11-50 points"] + buckets["50+ points"]
+
+            # Top models by near-miss count
+            top_models = sorted(
+                near_miss_by_model.items(), key=lambda x: x[1], reverse=True
+            )[:10]
+
+            return {
+                "total_failing": total_failing,
+                "distribution": buckets,
+                "near_miss_count": near_miss,
+                "near_miss_percent": round(near_miss / total_failing * 100, 1),
+                "hard_fail_count": hard_fail,
+                "hard_fail_percent": round(hard_fail / total_failing * 100, 1),
+                "top_near_miss_models": [
+                    {"model": m, "near_miss_count": c} for m, c in top_models
+                ],
+            }
+
     def get_trending_worse_models(
         self,
         days_back: int = 90,
