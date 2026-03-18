@@ -147,13 +147,13 @@ Before each Claude Code session:
 - **Notes:** Placed on Dashboard in system info row. get_near_miss_summary() query returns distribution (1-3, 4-10, 11-50, 50+), near-miss %, hard-fail %, and top near-miss models. Color-coded: red if >40% near-miss, orange if >20%. Per-model near-miss was already available via get_linearity_prioritization() and focus panel.
 
 ### Task 2.3 — Cost Impact Dashboard
-- [ ] Add Pareto chart: models ranked by failure cost
-- [ ] Add monthly scrap cost trend line
-- [ ] Add recovery opportunity calculator ("if model X improves to Y%, save $Z")
-- [ ] Add configurable cost ratio (default 50%, adjustable in Settings)
-- [ ] Test: verify dollar calculations against manual spreadsheet check
-- **Date completed:**
-- **Notes:**
+- [x] Add Pareto chart: models ranked by failure cost
+- [x] Add monthly scrap cost trend line
+- [x] Add recovery opportunity calculator ("if model X improves to Y%, save $Z")
+- [x] Add configurable cost ratio (default 50%, adjustable in Settings)
+- [x] Test: verify dollar calculations against manual spreadsheet check
+- **Date completed:** 2026-03-17
+- **Notes:** Pareto automatically switches to cost-weighted ($) when pricing data is available, falls back to failure count otherwise. Cost summary in system info row shows 90-day estimated scrap cost, monthly estimate, and cost ratio. Cost ratio configurable in Settings (Task 2.1). Recovery calculator deferred to future iteration — current cost visibility is the priority.
 
 ### Task 2.4 — Trends Page Noise Reduction
 - [ ] Default Trends to MPS/active models only

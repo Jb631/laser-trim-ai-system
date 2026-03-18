@@ -182,7 +182,13 @@ class DashboardPage(ctk.CTkFrame):
             self.system_info_frame, text="Near-Miss: Loading...",
             text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
         )
-        self.near_miss_label.pack(padx=15, pady=(4, 10), anchor="w", fill="x")
+        self.near_miss_label.pack(padx=15, pady=(4, 0), anchor="w", fill="x")
+
+        self.cost_impact_label = ctk.CTkLabel(
+            self.system_info_frame, text="",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.cost_impact_label.pack(padx=15, pady=(4, 10), anchor="w", fill="x")
 
         # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability
         chart_frame = ctk.CTkFrame(content)
@@ -686,6 +692,41 @@ class DashboardPage(ctk.CTkFrame):
             logger.debug(f"Near-miss display error: {e}")
             self.near_miss_label.configure(text="Near-Miss: No data", text_color="gray")
 
+        # Cost Impact Summary (requires pricing data)
+        try:
+            prices = self.app.config.active_models.model_prices
+            cost_ratio = self.app.config.active_models.cost_ratio
+            if prices and priority_models:
+                total_cost = 0
+                priced_failures = 0
+                for m in priority_models:
+                    model = m.get("model", "")
+                    failed = m.get("failed_units", 0)
+                    price = prices.get(model, 0)
+                    if price > 0 and failed > 0:
+                        total_cost += failed * price * cost_ratio
+                        priced_failures += failed
+
+                if total_cost > 0:
+                    monthly_est = total_cost / 3  # 90-day data → monthly estimate
+                    self.cost_impact_label.configure(
+                        text=f"Cost Impact (90d): ${total_cost:,.0f} estimated scrap cost "
+                             f"({priced_failures} priced failures) | "
+                             f"~${monthly_est:,.0f}/month | "
+                             f"Cost ratio: {cost_ratio:.0%}",
+                        text_color="#e74c3c"
+                    )
+                else:
+                    self.cost_impact_label.configure(
+                        text="Cost Impact: No priced failures in period", text_color="gray"
+                    )
+            else:
+                self.cost_impact_label.configure(
+                    text="Cost Impact: Import pricing in Settings to enable", text_color="gray"
+                )
+        except Exception as e:
+            logger.debug(f"Cost impact display error: {e}")
+
     def _update_alerts_display(self, alerts: List[Dict[str, Any]]):
         """Update alerts list."""
         self.alerts_list.configure(state="normal")
@@ -853,7 +894,7 @@ class DashboardPage(ctk.CTkFrame):
             stats_label.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 5), sticky="w")
 
     def _update_pareto_chart(self, priority_models: List[Dict[str, Any]]):
-        """Update Pareto chart with failure data from prioritization."""
+        """Update Pareto chart with cost-weighted failure data when pricing available."""
         try:
             self._ensure_pareto_chart_initialized()
             if not self.pareto_chart:
@@ -863,14 +904,46 @@ class DashboardPage(ctk.CTkFrame):
                 self.pareto_chart.show_placeholder("No failure data for Pareto chart")
                 return
 
-            labels = [m.get("model", "?") for m in priority_models if m.get("failed_units", 0) > 0]
-            values = [m.get("failed_units", 0) for m in priority_models if m.get("failed_units", 0) > 0]
+            # Get pricing data for cost-weighted Pareto
+            prices = self.app.config.active_models.model_prices
+            cost_ratio = self.app.config.active_models.cost_ratio
 
-            if not labels:
+            failing_models = [m for m in priority_models if m.get("failed_units", 0) > 0]
+            if not failing_models:
                 self.pareto_chart.show_placeholder("No failures to display")
                 return
 
-            self.pareto_chart.plot_pareto(labels=labels, values=values)
+            if prices:
+                # Cost-weighted Pareto: failure_count * unit_price * cost_ratio
+                labels = []
+                values = []
+                for m in failing_models:
+                    model = m.get("model", "?")
+                    failed = m.get("failed_units", 0)
+                    price = prices.get(model, 0)
+                    cost = failed * price * cost_ratio
+                    if cost > 0:
+                        labels.append(model)
+                        values.append(cost)
+                    elif price == 0:
+                        # No price — still include by failure count (as $0)
+                        labels.append(model)
+                        values.append(0)
+
+                if any(v > 0 for v in values):
+                    # Format as $K for readability
+                    title = "Failure Cost Impact ($)"
+                    self.pareto_chart.plot_pareto(labels=labels, values=values, title=title)
+                else:
+                    # All prices are 0 — fall back to failure count
+                    labels = [m.get("model", "?") for m in failing_models]
+                    values = [m.get("failed_units", 0) for m in failing_models]
+                    self.pareto_chart.plot_pareto(labels=labels, values=values)
+            else:
+                # No pricing — use failure count
+                labels = [m.get("model", "?") for m in failing_models]
+                values = [m.get("failed_units", 0) for m in failing_models]
+                self.pareto_chart.plot_pareto(labels=labels, values=values)
         except Exception as e:
             logger.debug(f"Pareto chart update error: {e}")
 
