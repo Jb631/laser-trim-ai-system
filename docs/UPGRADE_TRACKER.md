@@ -69,43 +69,43 @@ Before each Claude Code session:
 ## Phase 1.5: Dashboard & Chart Fixes
 
 **Goal:** Make charts readable and useful.
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 ### Task 1.5.1 — Fix Pareto Chart Layout
-- [ ] Rewrite `plot_pareto()` as vertical bar chart (standard Pareto orientation)
-- [ ] Move cumulative % to right Y-axis (`ax.twinx()`)
-- [ ] Limit to top 10 models, rotate X labels 45 degrees
-- [ ] Add 80% cumulative line as horizontal dashed line
-- [ ] Color bars by severity gradient (darkest red for #1)
-- [ ] Test: verify chart is readable with real data
-- **Date completed:**
-- **Notes:**
+- [x] Rewrite `plot_pareto()` as vertical bar chart (standard Pareto orientation)
+- [x] Move cumulative % to right Y-axis (`ax.twinx()`)
+- [x] Limit to top 10 models, rotate X labels 45 degrees
+- [x] Add 80% cumulative line as horizontal dashed line
+- [x] Color bars by severity gradient (darkest red for #1)
+- [x] Test: verify chart is readable with real data
+- **Date completed:** 2026-03-17
+- **Notes:** Bars go from dark red (#c0392b) to orange (#f39c12) using RGB interpolation. Value labels above bars. Standard Pareto layout matches industry norms.
 
 ### Task 1.5.2 — Improve Dashboard Layout
-- [ ] Expand P-chart trend to full width (3 columns), increase figure size
-- [ ] Rearrange rows: metric cards → system info → P-chart (full width) → Pareto + focus panel
-- [ ] Move alerts/drift to collapsible section or separate row
-- [ ] Test: verify layout works on different screen sizes
-- **Date completed:**
-- **Notes:**
+- [x] Expand P-chart trend to full width (3 columns), increase figure size
+- [x] Rearrange rows: metric cards → system info → P-chart (full width) → Pareto + focus panel
+- [x] Move alerts/drift to collapsible section or separate row
+- [x] Test: verify layout works on different screen sizes
+- **Date completed:** 2026-03-17
+- **Notes:** P-chart now full width at (10,3) figure size. Row 3: [Alerts+Drift | Pareto | Focus]. Removed Quick Actions panel (just navigation links, low value). Alerts moved to row 3 col 0.
 
 ### Task 1.5.3 — Fix P-Chart Readability
-- [ ] Make control limit lines more visible (thicker, distinct color)
-- [ ] Make out-of-control markers larger and more prominent
-- [ ] Reduce date labels to max 8 with month-day format
-- [ ] Add visual fill between data and center line
-- [ ] Test: verify chart is readable at dashboard size
-- **Date completed:**
-- **Notes:**
+- [x] Make control limit lines more visible (thicker, distinct color)
+- [x] Make out-of-control markers larger and more prominent
+- [x] Reduce date labels to max 8 with month-day format
+- [x] Add visual fill between data and center line
+- [x] Test: verify chart is readable at dashboard size
+- **Date completed:** 2026-03-17
+- **Notes:** UCL/LCL linewidth 1→1.5, alpha 0.8→0.9. Out-of-control markers: x→circle, s=80→120 with white edge. Date labels: max 8, format "M/D". Fill between data and p-bar line (alpha 0.15).
 
 ### Task 1.5.4 — Clean Up "Where to Focus" Panel
-- [ ] Replace raw textbox with structured formatted entries
-- [ ] Limit to top 5 models (not 10)
-- [ ] Color-code entries by severity
-- [ ] Make DECLINING tag visually prominent
-- [ ] Test: verify panel is scannable at a glance
-- **Date completed:**
-- **Notes:**
+- [x] Replace raw textbox with structured formatted entries
+- [x] Limit to top 5 models (not 10)
+- [x] Color-code entries by severity
+- [x] Make DECLINING tag visually prominent
+- [x] Test: verify panel is scannable at a glance
+- **Date completed:** 2026-03-17
+- **Notes:** Replaced CTkTextbox with CTkScrollableFrame containing mini cards per model. Color-coded borders: dark red (<50%), red (<70%), orange (<85%), green (>85%). DECLINING tag uses white-on-red label. Each card shows rank, model, pass rate, failure count, near-miss count.
 
 ---
 
@@ -245,6 +245,7 @@ Record each coding session here so context carries between sessions.
 | 2026-03-17 | Task 1.1 | Parser file type filtering — non-trim detection | — | Filename + sheet name + sheet structure validation. Processor skips non_trim files. |
 | 2026-03-17 | Task 1.4 | Ingest validation — data quality flags | — | 4 checks per track, data_quality column, migration for existing DB |
 | 2026-03-17 | Task 1.2 | Database cleanup tool in Settings page | — | Preview + delete, 3 options, backup reminder, batch deletion |
+| 2026-03-17 | Task 1.5.1-4 | Dashboard & chart fixes — all 4 tasks | — | Pareto vertical, P-chart full width, focus cards, layout rework |
 | | | | | |
 
 ---

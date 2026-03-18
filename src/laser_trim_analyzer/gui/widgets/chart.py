@@ -1437,38 +1437,55 @@ class ChartWidget(ctk.CTkFrame):
 
         # Plot data line
         ax.plot(x, rates * 100, 'o-', color=COLORS['info'],
-                linewidth=self.style.line_width, markersize=3, label='Daily Pass Rate')
+                linewidth=self.style.line_width, markersize=4, label='Daily Pass Rate')
 
         # Center line
         ax.axhline(y=p_bar * 100, color=COLORS['warning'], linestyle='-',
-                   linewidth=1.5, label=f'p-bar: {p_bar*100:.1f}%')
+                   linewidth=2, label=f'p-bar: {p_bar*100:.1f}%')
 
-        # Variable UCL/LCL as stepped lines
+        # Variable UCL/LCL — thicker, distinct color for visibility
         ax.step(x, ucl * 100, where='mid', color=COLORS['fail'],
-                linestyle='--', linewidth=1, alpha=0.8, label='UCL/LCL (3-sigma)')
+                linestyle='--', linewidth=1.5, alpha=0.9, label='UCL/LCL (3-sigma)')
         ax.step(x, lcl * 100, where='mid', color=COLORS['fail'],
-                linestyle='--', linewidth=1, alpha=0.8)
+                linestyle='--', linewidth=1.5, alpha=0.9)
 
-        # Fill between control limits
-        ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.08, color=COLORS['pass'],
+        # Fill between data and center line to show deviation visually
+        ax.fill_between(x, rates * 100, p_bar * 100, alpha=0.15,
+                        color=COLORS['info'])
+
+        # Fill between control limits (subtle background)
+        ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.05, color=COLORS['pass'],
                         step='mid')
 
-        # Highlight out-of-control points
+        # Highlight out-of-control points — large red circles with border
         for i, r in enumerate(rates):
             if r > ucl[i] or r < lcl[i]:
-                ax.scatter([i], [r * 100], color=COLORS['fail'], s=80, zorder=5,
-                          marker='x', linewidths=2)
+                ax.scatter([i], [r * 100], color=COLORS['fail'], s=120, zorder=5,
+                           marker='o', linewidths=2, edgecolors='white')
 
-        # X-axis labels
-        if dates and len(dates) > 10:
-            step = max(1, len(dates) // 10)
-            ax.set_xticks(range(0, len(dates), step))
-            ax.set_xticklabels([dates[i] for i in range(0, len(dates), step)],
-                              rotation=45, ha='right', fontsize=self.style.font_size - 2)
-        elif dates:
-            ax.set_xticks(x)
-            ax.set_xticklabels(dates, rotation=45, ha='right',
-                              fontsize=self.style.font_size - 2)
+        # X-axis labels: max 8 labels with month-day format for readability
+        max_labels = 8
+        if dates:
+            if len(dates) > max_labels:
+                step = max(1, len(dates) // max_labels)
+                tick_positions = list(range(0, len(dates), step))
+                ax.set_xticks(tick_positions)
+                # Format as month-day only (strip year if present)
+                tick_labels = []
+                for i in tick_positions:
+                    d = dates[i]
+                    # Try to shorten "2026-03-15" to "3/15" or "Mar-15"
+                    parts = d.split('-')
+                    if len(parts) == 3:
+                        tick_labels.append(f'{int(parts[1])}/{int(parts[2])}')
+                    else:
+                        tick_labels.append(d)
+                ax.set_xticklabels(tick_labels, rotation=45, ha='right',
+                                   fontsize=self.style.font_size - 1)
+            else:
+                ax.set_xticks(x)
+                ax.set_xticklabels(dates, rotation=45, ha='right',
+                                   fontsize=self.style.font_size - 1)
 
         ax.set_xlabel('Date', fontsize=self.style.font_size)
         ax.set_ylabel(ylabel, fontsize=self.style.font_size)
@@ -1485,10 +1502,15 @@ class ChartWidget(ctk.CTkFrame):
         self,
         labels: List[str],
         values: List[float],
-        title: str = "Pareto Chart — Failure Sources",
+        title: str = "Failure Pareto",
     ) -> None:
         """
-        Plot Pareto chart: horizontal bars sorted descending + cumulative % line.
+        Standard vertical Pareto chart: bars (left Y) + cumulative % line (right Y).
+
+        - Top 10 models, sorted by failure count descending
+        - Bars colored by severity gradient (darkest red for #1)
+        - 80% cumulative line as horizontal dashed reference
+        - X-axis labels rotated 45 degrees for readability
         """
         self.clear()
         ax = self.figure.add_subplot(111)
@@ -1498,8 +1520,8 @@ class ChartWidget(ctk.CTkFrame):
             self.show_placeholder("No data for Pareto chart")
             return
 
-        # Sort descending and limit to top 15
-        pairs = sorted(zip(labels, values), key=lambda x: x[1], reverse=True)[:15]
+        # Sort descending and limit to top 10
+        pairs = sorted(zip(labels, values), key=lambda x: x[1], reverse=True)[:10]
         labels_sorted = [p[0] for p in pairs]
         values_sorted = [p[1] for p in pairs]
 
@@ -1508,35 +1530,54 @@ class ChartWidget(ctk.CTkFrame):
             self.show_placeholder("No failures to display")
             return
 
-        y_pos = np.arange(len(labels_sorted))
+        x_pos = np.arange(len(labels_sorted))
 
-        # Horizontal bars
-        ax.barh(y_pos, values_sorted, color=COLORS['fail'], alpha=0.8, edgecolor='white')
+        # Color bars by severity: darkest red (#c0392b) for #1, fading to orange (#f39c12)
+        n = len(labels_sorted)
+        bar_colors = []
+        for i in range(n):
+            # Interpolate from dark red to orange based on rank
+            t = i / max(n - 1, 1)  # 0 = worst, 1 = least bad
+            r = int(0xc0 + (0xf3 - 0xc0) * t)
+            g = int(0x39 + (0x9c - 0x39) * t)
+            b = int(0x2b + (0x12 - 0x2b) * t)
+            bar_colors.append(f'#{r:02x}{g:02x}{b:02x}')
 
-        # Cumulative % line on secondary axis
-        ax2 = ax.twiny()
+        # Vertical bars on primary Y-axis
+        bars = ax.bar(x_pos, values_sorted, color=bar_colors, alpha=0.9,
+                      edgecolor='white', linewidth=0.5)
+
+        # Value labels on top of bars
+        for i, val in enumerate(values_sorted):
+            ax.text(i, val + total * 0.008, f'{val:.0f}',
+                    ha='center', va='bottom', fontsize=self.style.font_size - 2,
+                    color=COLORS['text'] if self.style.dark_mode else 'black')
+
+        # Cumulative % line on secondary Y-axis (right side)
+        ax2 = ax.twinx()
         cumulative = np.cumsum(values_sorted) / total * 100
-        ax2.plot(cumulative, y_pos, 'o-', color=COLORS['warning'], linewidth=2,
-                markersize=4, label='Cumulative %')
-        ax2.axvline(x=80, color=COLORS['warning'], linestyle=':', linewidth=1.5,
-                   alpha=0.7, label='80% line')
-        ax2.set_xlim(0, 105)
-        ax2.set_xlabel('Cumulative %', fontsize=self.style.font_size - 1,
-                      color=COLORS['warning'])
-        ax2.tick_params(axis='x', colors=COLORS['warning'])
+        ax2.plot(x_pos, cumulative, 'o-', color=COLORS['warning'], linewidth=2,
+                 markersize=5, label='Cumulative %', zorder=5)
 
-        # Value labels on bars
-        for i, (bar_val, cum_val) in enumerate(zip(values_sorted, cumulative)):
-            ax.text(bar_val + total * 0.01, i, f'{bar_val:.0f}',
-                   va='center', fontsize=self.style.font_size - 2,
-                   color=COLORS['text'] if self.style.dark_mode else 'black')
+        # 80% reference line
+        ax2.axhline(y=80, color=COLORS['warning'], linestyle='--', linewidth=1.5,
+                     alpha=0.6, label='80% line')
 
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(labels_sorted, fontsize=self.style.font_size - 1)
-        ax.set_xlabel('Failure Count', fontsize=self.style.font_size)
+        ax2.set_ylim(0, 105)
+        ax2.set_ylabel('Cumulative %', fontsize=self.style.font_size - 1,
+                        color=COLORS['warning'])
+        ax2.tick_params(axis='y', colors=COLORS['warning'])
+
+        # X-axis: rotated model labels
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(labels_sorted, rotation=45, ha='right',
+                           fontsize=self.style.font_size - 1)
+        ax.set_ylabel('Failure Count', fontsize=self.style.font_size)
         ax.set_title(title, fontsize=self.style.title_size)
-        ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
-        ax.invert_yaxis()
+        ax.grid(True, alpha=0.2, color=COLORS['grid'], axis='y')
+
+        # Add some top padding for value labels
+        ax.set_ylim(bottom=0, top=max(values_sorted) * 1.15)
 
         self.figure.tight_layout()
         self.canvas.draw()

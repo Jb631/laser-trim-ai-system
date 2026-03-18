@@ -178,9 +178,32 @@ class DashboardPage(ctk.CTkFrame):
         )
         self.escape_info_label.pack(padx=15, pady=(0, 10), anchor="w", fill="x")
 
-        # Alerts Cards Frame (side by side: Recent Alerts + Drift Alerts)
+        # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability
+        chart_frame = ctk.CTkFrame(content)
+        chart_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+
+        chart_label = ctk.CTkLabel(
+            chart_frame,
+            text="Linearity Pass Rate Trend (90 Days)",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+
+        # Placeholder frame for chart - actual ChartWidget created lazily on first show
+        self._chart_frame = chart_frame
+        self._chart_placeholder = ctk.CTkLabel(
+            chart_frame,
+            text="Loading trend data...",
+            text_color="gray"
+        )
+        self._chart_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+        # Row 3: [Alerts+Drift | Pareto chart | Where to Focus]
+        content.grid_rowconfigure(3, weight=1, minsize=250)
+
+        # Alerts + Drift (column 0) — stacked vertically
         alerts_container = ctk.CTkFrame(content, fg_color="transparent")
-        alerts_container.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+        alerts_container.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
         alerts_container.grid_columnconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(1, weight=1)
@@ -221,78 +244,11 @@ class DashboardPage(ctk.CTkFrame):
         self.drift_list.configure(state="disabled")
         self._update_drift_display([])
 
-        # Trend Chart
-        chart_frame = ctk.CTkFrame(content)
-        chart_frame.grid(row=2, column=1, padx=10, pady=10, sticky="nsew")
-
-        chart_label = ctk.CTkLabel(
-            chart_frame,
-            text="Linearity Pass Rate Trend (90 Days)",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        chart_label.pack(padx=15, pady=15, anchor="w")
-
-        # Placeholder frame for chart - actual ChartWidget created lazily on first show
-        self._chart_frame = chart_frame
-        self._chart_placeholder = ctk.CTkLabel(
-            chart_frame,
-            text="Loading trend data...",
-            text_color="gray"
-        )
-        self._chart_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-
-        # Quick Actions Card
-        actions_frame = ctk.CTkFrame(content)
-        actions_frame.grid(row=2, column=2, padx=10, pady=10, sticky="nsew")
-
-        actions_label = ctk.CTkLabel(
-            actions_frame,
-            text="Quick Actions",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        actions_label.pack(padx=15, pady=15, anchor="w")
-
-        process_btn = ctk.CTkButton(
-            actions_frame,
-            text="📁 Process New Files",
-            command=lambda: self.app._show_page("process"),
-            height=40
-        )
-        process_btn.pack(padx=15, pady=5, fill="x")
-
-        analyze_btn = ctk.CTkButton(
-            actions_frame,
-            text="🔍 Analyze Results",
-            command=lambda: self.app._show_page("analyze"),
-            height=40
-        )
-        analyze_btn.pack(padx=15, pady=5, fill="x")
-
-        trends_btn = ctk.CTkButton(
-            actions_frame,
-            text="📈 View Trends",
-            command=lambda: self.app._show_page("trends"),
-            height=40
-        )
-        trends_btn.pack(padx=15, pady=5, fill="x")
-
-        settings_btn = ctk.CTkButton(
-            actions_frame,
-            text="⚙️ Settings",
-            command=lambda: self.app._show_page("settings"),
-            height=40,
-            fg_color="gray"
-        )
-        settings_btn.pack(padx=15, pady=(5, 15), fill="x")
-
-        # Row 3: Pareto chart (left+center) + Model breakdown text (right)
-        content.grid_rowconfigure(3, weight=1, minsize=250)
-
-        # Pareto chart frame
+        # Pareto chart (column 1)
         self._pareto_frame = ctk.CTkFrame(content)
-        self._pareto_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+        self._pareto_frame.grid(row=3, column=1, padx=10, pady=10, sticky="nsew")
         pareto_label = ctk.CTkLabel(
-            self._pareto_frame, text="Failure Pareto (Impact Ranking)",
+            self._pareto_frame, text="Failure Pareto",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         pareto_label.pack(padx=15, pady=(15, 5), anchor="w")
@@ -304,18 +260,26 @@ class DashboardPage(ctk.CTkFrame):
         self.confusion_chart = None  # Not used as chart — text summary in system info row
         self.scatter_chart = None    # Not used as chart — data in system info row
 
+        # Where to Focus panel (column 2)
         self.model_frame = ctk.CTkFrame(content)
         self.model_frame.grid(row=3, column=2, padx=10, pady=10, sticky="nsew")
 
         model_label = ctk.CTkLabel(
             self.model_frame,
-            text="Where to Focus (Impact Ranking)",
-            font=ctk.CTkFont(size=16, weight="bold")
+            text="Where to Focus",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        model_label.pack(padx=15, pady=15, anchor="w")
+        model_label.pack(padx=15, pady=(15, 5), anchor="w")
 
-        self.model_text = ctk.CTkTextbox(self.model_frame, height=80)
-        self.model_text.pack(fill="x", padx=15, pady=(0, 15))
+        # Container for model focus cards (replaces raw textbox)
+        self._focus_container = ctk.CTkScrollableFrame(
+            self.model_frame, fg_color="transparent"
+        )
+        self._focus_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._focus_container.grid_columnconfigure(0, weight=1)
+
+        # Keep model_text for backwards compat — hidden, used only if focus cards fail
+        self.model_text = ctk.CTkTextbox(self.model_frame, height=0)
         self.model_text.configure(state="disabled")
 
     def _create_metric_card(self, parent) -> ctk.CTkFrame:
@@ -377,7 +341,7 @@ class DashboardPage(ctk.CTkFrame):
             # Create actual chart widget
             self.trend_chart = ChartWidget(
                 self._chart_frame,
-                style=ChartStyle(figure_size=(4, 2.5), dpi=80)
+                style=ChartStyle(figure_size=(10, 3), dpi=80)
             )
             self.trend_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
             self.trend_chart.show_placeholder("Loading trend data...")
@@ -773,9 +737,10 @@ class DashboardPage(ctk.CTkFrame):
         priority_models: List[Dict[str, Any]],
         trending_worse: Optional[List[Dict[str, Any]]] = None,
     ):
-        """Update model breakdown with impact-ranked prioritization."""
-        self.model_text.configure(state="normal")
-        self.model_text.delete("1.0", "end")
+        """Update model focus panel with structured, color-coded entries."""
+        # Clear existing focus cards
+        for widget in self._focus_container.winfo_children():
+            widget.destroy()
 
         # Build set of declining model names for quick lookup
         declining_models = set()
@@ -784,28 +749,75 @@ class DashboardPage(ctk.CTkFrame):
                 declining_models.add(tw.get("model", ""))
 
         if not priority_models:
-            self.model_text.insert("end", "No model data available (need 10+ samples per model)")
-        else:
-            lines = []
-            for i, m in enumerate(priority_models[:10]):  # Top 10
-                model = m.get("model", "Unknown")
-                lin_rate = m.get("linearity_pass_rate", 0)
-                failed = m.get("failed_units", 0)
-                near_miss = m.get("near_miss_count", 0)
-                impact = m.get("impact_score", 0)
-                rec = m.get("recommendation", "")
-                total = m.get("total_units", 0)
+            ctk.CTkLabel(
+                self._focus_container,
+                text="No model data available\n(need 10+ samples per model)",
+                text_color="gray",
+                font=ctk.CTkFont(size=11),
+            ).grid(row=0, column=0, padx=10, pady=20)
+            return
 
-                rank = f"#{i+1}"
-                declining_tag = "  [DECLINING]" if model in declining_models else ""
-                lines.append(f"  {rank}  {model}  [Impact: {impact:.0f}]{declining_tag}")
-                lines.append(f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss")
-                if rec:
-                    lines.append(f"      >> {rec}")
-                lines.append("")
-            self.model_text.insert("end", "\n".join(lines))
+        # Top 5 models only — focus attention
+        for i, m in enumerate(priority_models[:5]):
+            model = m.get("model", "Unknown")
+            lin_rate = m.get("linearity_pass_rate", 0)
+            failed = m.get("failed_units", 0)
+            near_miss = m.get("near_miss_count", 0)
+            total = m.get("total_units", 0)
+            rec = m.get("recommendation", "")
+            is_declining = model in declining_models
 
-        self.model_text.configure(state="disabled")
+            # Color by severity: red for high-impact, orange for medium, muted for lower
+            if lin_rate < 50:
+                border_color = "#c0392b"  # Dark red
+            elif lin_rate < 70:
+                border_color = "#e74c3c"  # Red
+            elif lin_rate < 85:
+                border_color = "#f39c12"  # Orange
+            else:
+                border_color = "#27ae60"  # Green (improving)
+
+            # Mini card for each model
+            card = ctk.CTkFrame(self._focus_container, border_width=2,
+                                border_color=border_color)
+            card.grid(row=i, column=0, padx=2, pady=3, sticky="ew")
+            card.grid_columnconfigure(1, weight=1)
+
+            # Rank badge
+            rank_label = ctk.CTkLabel(
+                card, text=f"#{i+1}",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color=border_color, width=30,
+            )
+            rank_label.grid(row=0, column=0, rowspan=2, padx=(8, 4), pady=5)
+
+            # Model name + declining tag
+            name_text = model
+            name_label = ctk.CTkLabel(
+                card, text=name_text,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                anchor="w",
+            )
+            name_label.grid(row=0, column=1, padx=4, pady=(5, 0), sticky="w")
+
+            # Declining tag — visually prominent
+            if is_declining:
+                decline_label = ctk.CTkLabel(
+                    card, text=" DECLINING ",
+                    font=ctk.CTkFont(size=9, weight="bold"),
+                    text_color="white", fg_color="#c0392b",
+                    corner_radius=4,
+                )
+                decline_label.grid(row=0, column=2, padx=(4, 8), pady=(5, 0), sticky="e")
+
+            # Stats line
+            stats_text = f"Pass: {lin_rate:.0f}%  |  {failed} fail / {total} total  |  {near_miss} near-miss"
+            stats_label = ctk.CTkLabel(
+                card, text=stats_text,
+                font=ctk.CTkFont(size=10),
+                text_color="gray", anchor="w",
+            )
+            stats_label.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 5), sticky="w")
 
     def _update_pareto_chart(self, priority_models: List[Dict[str, Any]]):
         """Update Pareto chart with failure data from prioritization."""
