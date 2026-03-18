@@ -94,16 +94,16 @@ src/laser_trim_analyzer/
 
 ## Active Development
 
-### V4 Upgrade — Operational Analytics & Data Quality
-**Status:** Phase 1 - Data Foundation (NOT STARTED)
+### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
 **Plan:** `docs/UPGRADE_PLAN_V4.md`
 **Tracker:** `docs/UPGRADE_TRACKER.md`
 
-V4 transforms the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. Four phases:
-- **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation)
-- **Phase 2:** Operational Analytics (pricing, near-miss analysis, cost dashboard, trends noise reduction)
-- **Phase 3:** Predictive Improvements (FT matching, Cpk, ML retraining)
-- **Phase 4:** Operational Integration (executive export, screening recommendations)
+V4 transforms the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
+- **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation) — COMPLETE
+- **Phase 1.5:** Dashboard & Chart Fixes (Pareto, P-chart, layout, focus panel) — COMPLETE
+- **Phase 2:** Operational Analytics (pricing, near-miss, cost dashboard, trends filters) — COMPLETE
+- **Phase 3:** Predictive Improvements (FT fuzzy matching, Cpk, ML staleness) — COMPLETE
+- **Phase 4:** Operational Integration (executive export, screening recommendations) — COMPLETE
 
 ### Per-Model ML System - **COMPLETE**
 Per-model ML is fully implemented with threshold optimization and drift detection using Final Test data as ground truth. Train models in Settings page.

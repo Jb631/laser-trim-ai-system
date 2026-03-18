@@ -85,13 +85,22 @@ class DashboardPage(ctk.CTkFrame):
         )
         header.grid(row=0, column=0, sticky="w")
 
+        export_btn = ctk.CTkButton(
+            header_frame,
+            text="Export Summary",
+            width=120,
+            fg_color="#2980b9",
+            command=self._export_executive_summary
+        )
+        export_btn.grid(row=0, column=1, sticky="e", padx=(0, 10))
+
         refresh_btn = ctk.CTkButton(
             header_frame,
             text="⟳ Refresh",
             width=100,
             command=self._refresh_data
         )
-        refresh_btn.grid(row=0, column=1, sticky="e")
+        refresh_btn.grid(row=0, column=2, sticky="e")
 
         self.last_update_label = ctk.CTkLabel(
             header_frame,
@@ -99,7 +108,7 @@ class DashboardPage(ctk.CTkFrame):
             text_color="gray",
             font=ctk.CTkFont(size=10)
         )
-        self.last_update_label.grid(row=0, column=2, sticky="e", padx=(10, 0))
+        self.last_update_label.grid(row=0, column=3, sticky="e", padx=(10, 0))
 
         # Content frame - use scrollable for smaller screens
         content = ctk.CTkScrollableFrame(self)
@@ -946,6 +955,44 @@ class DashboardPage(ctk.CTkFrame):
                 self.pareto_chart.plot_pareto(labels=labels, values=values)
         except Exception as e:
             logger.debug(f"Pareto chart update error: {e}")
+
+    def _export_executive_summary(self):
+        """Export executive summary report to Excel."""
+        from tkinter import filedialog, messagebox
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save Executive Summary",
+            defaultextension=".xlsx",
+            initialfile=f"quality_summary_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+        )
+        if not file_path:
+            return
+
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.export.excel import export_executive_summary
+
+            db = get_database()
+            stats = db.get_dashboard_stats(days_back=90)
+            priority_models = db.get_linearity_prioritization(days_back=90, min_samples=10)
+            near_miss_data = db.get_near_miss_summary(days_back=90)
+            recommendations = db.get_screening_recommendations(days_back=90)
+            pricing = self.app.config.active_models.model_prices
+            cost_ratio = self.app.config.active_models.cost_ratio
+
+            output = export_executive_summary(
+                output_path=file_path,
+                stats=stats,
+                priority_models=priority_models,
+                near_miss_data=near_miss_data,
+                recommendations=recommendations,
+                pricing=pricing,
+                cost_ratio=cost_ratio,
+            )
+            messagebox.showinfo("Export Complete", f"Executive summary saved to:\n{output}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export:\n{e}")
 
     def _show_error(self, error: str):
         """Show error state."""

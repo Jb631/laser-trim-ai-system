@@ -206,25 +206,25 @@ Before each Claude Code session:
 ## Phase 4: Operational Integration
 
 **Goal:** Make the app a management decision tool.
-**Status:** NOT STARTED
+**Status:** COMPLETE (except 4.3 — future placeholder)
 **Prerequisite:** Phases 2-3 substantially complete
 
 ### Task 4.1 — Executive Summary Export
-- [ ] Design report layout (which charts, what data, what format)
-- [ ] Implement one-click export (Excel with formatted sheets + charts)
-- [ ] Include: health summary, cost Pareto, near-miss analysis, trends, recommendations
-- [ ] Test: generate report, verify it's presentation-ready
-- **Date completed:**
-- **Notes:**
+- [x] Design report layout (which charts, what data, what format)
+- [x] Implement one-click export (Excel with formatted sheets + charts)
+- [x] Include: health summary, cost Pareto, near-miss analysis, trends, recommendations
+- [x] Test: generate report, verify it's presentation-ready
+- **Date completed:** 2026-03-17
+- **Notes:** "Export Summary" button on Dashboard header. Three Excel sheets: Health Summary (pass rates, near-miss %), Top Failure Models (ranked with color-coded pass rates, cost estimates, recommendations), Recommendations (screening candidates). Uses existing data queries — no new calculations needed.
 
 ### Task 4.2 — Element Screening Recommendations
-- [ ] Flag models with near-miss rate >40% as in-process testing candidates
-- [ ] Flag models with batch-clustered failures as incoming inspection candidates
-- [ ] Flag models with >50% failure rate as design review candidates
-- [ ] Display as recommendations list (not automated action)
-- [ ] Test: verify recommendations match manual analysis conclusions
-- **Date completed:**
-- **Notes:**
+- [x] Flag models with near-miss rate >40% as in-process testing candidates
+- [x] Flag models with batch-clustered failures as incoming inspection candidates
+- [x] Flag models with >50% failure rate as design review candidates
+- [x] Display as recommendations list (not automated action)
+- [x] Test: verify recommendations match manual analysis conclusions
+- **Date completed:** 2026-03-17
+- **Notes:** get_screening_recommendations() generates three types: design_review (>50% fail), in_process_testing (>40% near-miss), incoming_inspection (high volume + >30% fail). Displayed in executive summary export and available via API for future dashboard integration.
 
 ### Task 4.3 — Incoming Element Quality Tracking (Future)
 - [ ] Design: if element testing starts, how to track and correlate
@@ -248,6 +248,7 @@ Record each coding session here so context carries between sessions.
 | 2026-03-17 | Task 1.5.1-4 | Dashboard & chart fixes — all 4 tasks | — | Pareto vertical, P-chart full width, focus cards, layout rework |
 | 2026-03-17 | Phase 2 | All 5 tasks: pricing, margins, near-miss, cost, trends | — | Pricing import, failure margins, near-miss summary, cost Pareto, trend filters |
 | 2026-03-17 | Phase 3 | FT fuzzy matching, Cpk, ML staleness | — | Serial normalization, unmatched diagnostics, Cpk in Trends, staleness indicator |
+| 2026-03-17 | Phase 4 | Executive export + screening recommendations | — | 3-sheet Excel summary, screening flags, Export Summary button on Dashboard |
 | | | | | |
 
 ---

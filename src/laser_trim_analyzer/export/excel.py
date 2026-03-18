@@ -697,3 +697,156 @@ def generate_batch_export_filename(
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     count = len(results)
     return f"{prefix}_{count}_files_{date_str}.xlsx"
+
+
+def export_executive_summary(
+    output_path: Union[str, Path],
+    stats: Dict[str, Any],
+    priority_models: List[Dict[str, Any]],
+    near_miss_data: Optional[Dict[str, Any]] = None,
+    recommendations: Optional[List[Dict[str, Any]]] = None,
+    pricing: Optional[Dict[str, float]] = None,
+    cost_ratio: float = 0.50,
+) -> Path:
+    """
+    Generate a formatted executive summary Excel report.
+
+    Includes: health overview, top failure models, near-miss analysis,
+    cost impact, and screening recommendations.
+
+    Args:
+        output_path: Output file path
+        stats: Dashboard stats dict
+        priority_models: From get_linearity_prioritization()
+        near_miss_data: From get_near_miss_summary()
+        recommendations: From get_screening_recommendations()
+        pricing: Model price dict
+        cost_ratio: Cost ratio for scrap calculation
+
+    Returns:
+        Path to created file
+    """
+    if not HAS_OPENPYXL:
+        raise ExcelExportError("openpyxl not installed")
+
+    output_path = Path(output_path)
+    wb = Workbook()
+
+    # Styles
+    header_font = Font(bold=True, size=14)
+    subheader_font = Font(bold=True, size=11)
+    bold_font = Font(bold=True)
+    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    yellow_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_text = Font(bold=True, color="FFFFFF")
+
+    # === Sheet 1: Health Summary ===
+    ws = wb.active
+    ws.title = "Health Summary"
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 20
+
+    ws["A1"] = "Laser Trim Quality — Executive Summary"
+    ws["A1"].font = Font(bold=True, size=16)
+    ws["A2"] = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    ws["A2"].font = Font(color="808080")
+
+    row = 4
+    ws[f"A{row}"] = "Overall Health (90 Days)"
+    ws[f"A{row}"].font = header_font
+    row += 1
+
+    daily = stats.get("daily_stats", [])
+    total_pass = sum(d.get("pass", 0) for d in daily)
+    total_count = sum(d.get("total", 0) for d in daily)
+    pass_rate = (total_pass / total_count * 100) if total_count > 0 else 0
+
+    metrics = [
+        ("Total Files Analyzed", f"{total_count:,}"),
+        ("Linearity Pass Rate", f"{pass_rate:.1f}%"),
+        ("Models Tracked", f"{len(priority_models)}"),
+    ]
+
+    if near_miss_data and near_miss_data.get("total_failing", 0) > 0:
+        metrics.append(("Near-Miss Failures (1-3 pts)", f"{near_miss_data['near_miss_percent']:.0f}%"))
+        metrics.append(("Hard Failures (10+ pts)", f"{near_miss_data['hard_fail_percent']:.0f}%"))
+
+    for label, value in metrics:
+        ws[f"A{row}"] = label
+        ws[f"A{row}"].font = bold_font
+        ws[f"B{row}"] = value
+        row += 1
+
+    # === Sheet 2: Top Failure Models ===
+    ws2 = wb.create_sheet("Top Failure Models")
+    ws2.column_dimensions['A'].width = 15
+    ws2.column_dimensions['B'].width = 15
+    ws2.column_dimensions['C'].width = 15
+    ws2.column_dimensions['D'].width = 15
+    ws2.column_dimensions['E'].width = 15
+    ws2.column_dimensions['F'].width = 20
+    ws2.column_dimensions['G'].width = 30
+
+    headers = ["Model", "Pass Rate", "Failed Units", "Total Units", "Near-Miss", "Est. Cost", "Recommendation"]
+    for col, h in enumerate(headers, 1):
+        cell = ws2.cell(row=1, column=col, value=h)
+        cell.font = header_text
+        cell.fill = header_fill
+
+    for i, m in enumerate(priority_models[:15], start=2):
+        model = m.get("model", "?")
+        lin_rate = m.get("linearity_pass_rate", 0)
+        failed = m.get("failed_units", 0)
+        total = m.get("total_units", 0)
+        near_miss = m.get("near_miss_count", 0)
+        rec = m.get("recommendation", "")
+
+        price = pricing.get(model, 0) if pricing else 0
+        cost = failed * price * cost_ratio
+
+        ws2.cell(row=i, column=1, value=model)
+        rate_cell = ws2.cell(row=i, column=2, value=f"{lin_rate:.1f}%")
+        if lin_rate < 50:
+            rate_cell.fill = red_fill
+        elif lin_rate < 80:
+            rate_cell.fill = yellow_fill
+        else:
+            rate_cell.fill = green_fill
+        ws2.cell(row=i, column=3, value=failed)
+        ws2.cell(row=i, column=4, value=total)
+        ws2.cell(row=i, column=5, value=near_miss)
+        cost_cell = ws2.cell(row=i, column=6, value=f"${cost:,.0f}" if cost > 0 else "No price")
+        ws2.cell(row=i, column=7, value=rec)
+
+    # === Sheet 3: Recommendations ===
+    if recommendations:
+        ws3 = wb.create_sheet("Recommendations")
+        ws3.column_dimensions['A'].width = 15
+        ws3.column_dimensions['B'].width = 15
+        ws3.column_dimensions['C'].width = 12
+        ws3.column_dimensions['D'].width = 50
+
+        rec_headers = ["Model", "Fail Rate", "Priority", "Recommendation"]
+        for col, h in enumerate(rec_headers, 1):
+            cell = ws3.cell(row=1, column=col, value=h)
+            cell.font = header_text
+            cell.fill = header_fill
+
+        row = 2
+        for rec in recommendations:
+            for r in rec["recommendations"]:
+                ws3.cell(row=row, column=1, value=rec["model"])
+                ws3.cell(row=row, column=2, value=f"{rec['fail_rate']:.0f}%")
+                priority_cell = ws3.cell(row=row, column=3, value=r["priority"].upper())
+                if r["priority"] == "high":
+                    priority_cell.fill = red_fill
+                else:
+                    priority_cell.fill = yellow_fill
+                ws3.cell(row=row, column=4, value=r["text"])
+                row += 1
+
+    wb.save(output_path)
+    logger.info(f"Executive summary exported to {output_path}")
+    return output_path

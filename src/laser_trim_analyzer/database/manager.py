@@ -3381,6 +3381,71 @@ class DatabaseManager:
         results.sort(key=lambda x: x["new_since_training"], reverse=True)
         return results
 
+    def get_screening_recommendations(self, days_back: int = 90, min_samples: int = 20) -> List[Dict[str, Any]]:
+        """
+        Generate element screening recommendations based on failure patterns.
+
+        Flags:
+        - Near-miss rate >40%: candidate for in-process testing
+        - Failure rate >50%: candidate for design review
+        - High volume + high failure: candidate for incoming inspection
+
+        Returns:
+            List of recommendation dicts sorted by priority
+        """
+        recommendations = []
+
+        try:
+            priority_models = self.get_linearity_prioritization(
+                days_back=days_back, min_samples=min_samples
+            )
+        except Exception:
+            return recommendations
+
+        for m in priority_models:
+            model = m.get("model", "Unknown")
+            lin_rate = m.get("linearity_pass_rate", 100)
+            fail_rate = 100 - lin_rate
+            failed = m.get("failed_units", 0)
+            total = m.get("total_units", 0)
+            near_miss = m.get("near_miss_count", 0)
+            near_miss_ratio = near_miss / failed if failed > 0 else 0
+
+            rec = {
+                "model": model,
+                "fail_rate": fail_rate,
+                "total_units": total,
+                "failed_units": failed,
+                "near_miss_count": near_miss,
+                "recommendations": [],
+            }
+
+            if fail_rate > 50:
+                rec["recommendations"].append({
+                    "type": "design_review",
+                    "text": f"Design review — {fail_rate:.0f}% failure rate",
+                    "priority": "high",
+                })
+
+            if near_miss_ratio > 0.4 and near_miss >= 3:
+                rec["recommendations"].append({
+                    "type": "in_process_testing",
+                    "text": f"In-process testing candidate — {near_miss} near-miss ({near_miss_ratio:.0%} of failures)",
+                    "priority": "medium",
+                })
+
+            if failed >= 10 and fail_rate > 30:
+                rec["recommendations"].append({
+                    "type": "incoming_inspection",
+                    "text": f"Incoming element inspection — {failed} failures, high volume",
+                    "priority": "medium",
+                })
+
+            if rec["recommendations"]:
+                recommendations.append(rec)
+
+        return recommendations
+
     def get_model_cpk(self, model: str, days_back: int = 90) -> Dict[str, Any]:
         """
         Calculate process capability (Cpk) for a model.
