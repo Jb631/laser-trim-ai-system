@@ -20,7 +20,7 @@ Before each Claude Code session:
 ## Phase 1: Data Foundation
 
 **Goal:** Make the data trustworthy.
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 ### Task 1.3 — Database Indexing (Quick Win)
 - [x] Add index on `analysis_results.model`
@@ -54,15 +54,15 @@ Before each Claude Code session:
 - **Notes:** Added data_quality ('good'/'suspect') and data_quality_issues columns to analysis_results. Validation in processor._validate_track_data() runs after analysis, before save. Flags but does not reject — records are preserved for investigation. Migration adds columns to existing DB. Existing records default to 'good' (will be flagged on reprocessing).
 
 ### Task 1.2 — Database Cleanup Tool
-- [ ] Add "Database Cleanup" section to Settings page
-- [ ] Add option: delete records for models NOT in MPS list
-- [ ] Add option: delete records older than specified date
-- [ ] Add preview mode (show what would be deleted before committing)
-- [ ] Add confirmation dialog with record count
-- [ ] Add backup reminder
-- [ ] Test: preview and execute cleanup on test database
-- **Date completed:**
-- **Notes:**
+- [x] Add "Database Cleanup" section to Settings page
+- [x] Add option: delete records for models NOT in MPS list
+- [x] Add option: delete records older than specified date
+- [x] Add preview mode (show what would be deleted before committing)
+- [x] Add confirmation dialog with record count
+- [x] Add backup reminder
+- [x] Test: preview and execute cleanup on test database
+- **Date completed:** 2026-03-17
+- **Notes:** Three cleanup options: non-MPS models, before-date, suspect quality. Preview shows counts and affected models before delete. Confirmation dialog includes backup reminder. Also added suspect quality option (uses data_quality field from Task 1.4). Batch deletion in groups of 500 to avoid SQLite variable limits.
 
 ---
 
@@ -244,6 +244,7 @@ Record each coding session here so context carries between sessions.
 | 2026-03-17 | Task 1.3 | Database indexing — 24 indexes via startup migration | — | Added idx_file_date standalone index, CREATE INDEX IF NOT EXISTS migration in manager.py |
 | 2026-03-17 | Task 1.1 | Parser file type filtering — non-trim detection | — | Filename + sheet name + sheet structure validation. Processor skips non_trim files. |
 | 2026-03-17 | Task 1.4 | Ingest validation — data quality flags | — | 4 checks per track, data_quality column, migration for existing DB |
+| 2026-03-17 | Task 1.2 | Database cleanup tool in Settings page | — | Preview + delete, 3 options, backup reminder, batch deletion |
 | | | | | |
 
 ---

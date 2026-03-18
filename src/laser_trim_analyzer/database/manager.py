@@ -4010,6 +4010,171 @@ class DatabaseManager:
             logger.error(f"Error updating Trim tracks from FT: {e}")
             return False
 
+    # =========================================================================
+    # Database Cleanup
+    # =========================================================================
+
+    def preview_cleanup(
+        self,
+        delete_non_mps: bool = False,
+        mps_models: Optional[List[str]] = None,
+        delete_before_date: Optional[datetime] = None,
+        delete_suspect_quality: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Preview what a cleanup operation would delete WITHOUT actually deleting.
+
+        Args:
+            delete_non_mps: Delete records for models not in the MPS list
+            mps_models: List of active MPS model numbers
+            delete_before_date: Delete records with file_date before this date
+            delete_suspect_quality: Delete records flagged as data_quality='suspect'
+
+        Returns:
+            Dict with counts and model lists for what would be deleted
+        """
+        preview = {
+            "total_records": 0,
+            "records_to_delete": 0,
+            "models_to_delete": [],
+            "by_reason": {},
+        }
+
+        with self.session() as session:
+            preview["total_records"] = (
+                session.query(func.count(DBAnalysisResult.id)).scalar() or 0
+            )
+
+            ids_to_delete = set()
+
+            if delete_non_mps and mps_models:
+                # Find records whose model is NOT in the MPS list
+                mps_set = set(m.strip() for m in mps_models if m.strip())
+                non_mps = session.query(
+                    DBAnalysisResult.id, DBAnalysisResult.model
+                ).filter(
+                    DBAnalysisResult.model.notin_(mps_set)
+                ).all()
+                non_mps_ids = {r[0] for r in non_mps}
+                non_mps_models = sorted(set(r[1] for r in non_mps))
+                ids_to_delete |= non_mps_ids
+                preview["by_reason"]["non_mps_models"] = {
+                    "count": len(non_mps_ids),
+                    "models": non_mps_models,
+                }
+
+            if delete_before_date:
+                old_records = session.query(
+                    DBAnalysisResult.id
+                ).filter(
+                    DBAnalysisResult.file_date < delete_before_date
+                ).all()
+                old_ids = {r[0] for r in old_records}
+                ids_to_delete |= old_ids
+                preview["by_reason"]["before_date"] = {
+                    "count": len(old_ids),
+                    "date": delete_before_date.strftime("%Y-%m-%d"),
+                }
+
+            if delete_suspect_quality:
+                suspect = session.query(
+                    DBAnalysisResult.id
+                ).filter(
+                    DBAnalysisResult.data_quality == "suspect"
+                ).all()
+                suspect_ids = {r[0] for r in suspect}
+                ids_to_delete |= suspect_ids
+                preview["by_reason"]["suspect_quality"] = {
+                    "count": len(suspect_ids),
+                }
+
+            preview["records_to_delete"] = len(ids_to_delete)
+            # Get unique models in the deletion set
+            if ids_to_delete:
+                models = session.query(
+                    DBAnalysisResult.model
+                ).filter(
+                    DBAnalysisResult.id.in_(ids_to_delete)
+                ).distinct().all()
+                preview["models_to_delete"] = sorted(m[0] for m in models)
+
+        return preview
+
+    def execute_cleanup(
+        self,
+        delete_non_mps: bool = False,
+        mps_models: Optional[List[str]] = None,
+        delete_before_date: Optional[datetime] = None,
+        delete_suspect_quality: bool = False,
+    ) -> Dict[str, int]:
+        """
+        Execute database cleanup — permanently delete matching records.
+
+        Uses the same filters as preview_cleanup(). Deletes analysis records
+        and all associated tracks, alerts, and processed file records.
+
+        Returns:
+            Dict with deletion counts
+        """
+        deleted = {"analyses": 0, "tracks": 0, "alerts": 0, "processed_files": 0}
+
+        with self._write_lock:
+            with self.session() as session:
+                ids_to_delete = set()
+
+                if delete_non_mps and mps_models:
+                    mps_set = set(m.strip() for m in mps_models if m.strip())
+                    non_mps = session.query(DBAnalysisResult.id).filter(
+                        DBAnalysisResult.model.notin_(mps_set)
+                    ).all()
+                    ids_to_delete |= {r[0] for r in non_mps}
+
+                if delete_before_date:
+                    old = session.query(DBAnalysisResult.id).filter(
+                        DBAnalysisResult.file_date < delete_before_date
+                    ).all()
+                    ids_to_delete |= {r[0] for r in old}
+
+                if delete_suspect_quality:
+                    suspect = session.query(DBAnalysisResult.id).filter(
+                        DBAnalysisResult.data_quality == "suspect"
+                    ).all()
+                    ids_to_delete |= {r[0] for r in suspect}
+
+                if not ids_to_delete:
+                    return deleted
+
+                # Delete in batches to avoid SQLite variable limits
+                id_list = list(ids_to_delete)
+                batch_size = 500
+
+                for i in range(0, len(id_list), batch_size):
+                    batch = id_list[i:i + batch_size]
+
+                    deleted["tracks"] += session.query(DBTrackResult).filter(
+                        DBTrackResult.analysis_id.in_(batch)
+                    ).delete(synchronize_session=False)
+
+                    deleted["alerts"] += session.query(DBQAAlert).filter(
+                        DBQAAlert.analysis_id.in_(batch)
+                    ).delete(synchronize_session=False)
+
+                    deleted["processed_files"] += session.query(DBProcessedFile).filter(
+                        DBProcessedFile.analysis_id.in_(batch)
+                    ).delete(synchronize_session=False)
+
+                    deleted["analyses"] += session.query(DBAnalysisResult).filter(
+                        DBAnalysisResult.id.in_(batch)
+                    ).delete(synchronize_session=False)
+
+                logger.info(
+                    f"Database cleanup: deleted {deleted['analyses']} analyses, "
+                    f"{deleted['tracks']} tracks, {deleted['alerts']} alerts, "
+                    f"{deleted['processed_files']} processed files"
+                )
+
+        return deleted
+
 
 # Global instance for convenience
 _db_manager: Optional[DatabaseManager] = None

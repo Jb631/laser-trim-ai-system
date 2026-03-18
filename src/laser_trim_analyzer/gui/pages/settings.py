@@ -69,6 +69,9 @@ class SettingsPage(ctk.CTkFrame):
         # Active Models section
         self._create_active_models_section(container)
 
+        # Database Cleanup section
+        self._create_database_cleanup_section(container)
+
         # Appearance section
         self._create_appearance_section(container)
 
@@ -376,6 +379,220 @@ class SettingsPage(ctk.CTkFrame):
         """Clear all MPS models."""
         self.mps_textbox.delete("1.0", "end")
         self.mps_count_label.configure(text="0 models configured")
+
+    def _create_database_cleanup_section(self, container):
+        """Create database cleanup section for removing legacy/contaminated records."""
+        frame = ctk.CTkFrame(container)
+        frame.grid(sticky="ew", padx=10, pady=10)
+        frame.grid_columnconfigure(1, weight=1)
+
+        # Title
+        title = ctk.CTkLabel(
+            frame,
+            text="Database Cleanup",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        title.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
+
+        # Description
+        desc = ctk.CTkLabel(
+            frame,
+            text="Remove legacy or contaminated records. Always preview before deleting.\nBackup your database first: copy the .db file from the path shown above.",
+            text_color="gray",
+            justify="left",
+            font=ctk.CTkFont(size=11)
+        )
+        desc.grid(row=1, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+
+        # Option 1: Delete non-MPS models
+        self.cleanup_non_mps_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Delete records for models NOT in MPS list",
+            variable=self.cleanup_non_mps_var,
+        ).grid(row=2, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        # Option 2: Delete before date
+        self.cleanup_date_var = ctk.BooleanVar(value=False)
+        date_row = ctk.CTkFrame(frame, fg_color="transparent")
+        date_row.grid(row=3, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        ctk.CTkCheckBox(
+            date_row,
+            text="Delete records older than:",
+            variable=self.cleanup_date_var,
+        ).pack(side="left")
+
+        self.cleanup_date_entry = ctk.CTkEntry(
+            date_row,
+            width=100,
+            placeholder_text="YYYY-MM-DD"
+        )
+        self.cleanup_date_entry.pack(side="left", padx=(10, 0))
+
+        # Option 3: Delete suspect quality
+        self.cleanup_suspect_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Delete records with suspect data quality",
+            variable=self.cleanup_suspect_var,
+        ).grid(row=4, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        # Button row
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=5, column=0, columnspan=3, padx=15, pady=(10, 5), sticky="w")
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Preview",
+            width=100,
+            command=self._preview_cleanup,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Delete Records",
+            width=120,
+            fg_color="#c0392b",
+            hover_color="#e74c3c",
+            command=self._execute_cleanup,
+        ).pack(side="left")
+
+        # Preview results area
+        self.cleanup_preview_label = ctk.CTkLabel(
+            frame,
+            text="",
+            text_color="gray",
+            justify="left",
+            font=ctk.CTkFont(size=11)
+        )
+        self.cleanup_preview_label.grid(
+            row=6, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w"
+        )
+
+    def _get_cleanup_options(self):
+        """Get the current cleanup options from the UI checkboxes."""
+        from datetime import datetime
+
+        options = {
+            "delete_non_mps": self.cleanup_non_mps_var.get(),
+            "mps_models": None,
+            "delete_before_date": None,
+            "delete_suspect_quality": self.cleanup_suspect_var.get(),
+        }
+
+        # Get MPS models from config
+        if options["delete_non_mps"]:
+            options["mps_models"] = self.app.config.active_models.mps_models
+            if not options["mps_models"]:
+                messagebox.showwarning(
+                    "No MPS Models",
+                    "No MPS models configured. Add models in the Active Models section first."
+                )
+                return None
+
+        # Parse date
+        if self.cleanup_date_var.get():
+            date_str = self.cleanup_date_entry.get().strip()
+            if not date_str:
+                messagebox.showwarning("No Date", "Enter a date in YYYY-MM-DD format.")
+                return None
+            try:
+                options["delete_before_date"] = datetime.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("Invalid Date", f"'{date_str}' is not a valid date.\nUse YYYY-MM-DD format.")
+                return None
+
+        # Check at least one option selected
+        if not any([options["delete_non_mps"], options["delete_before_date"], options["delete_suspect_quality"]]):
+            messagebox.showinfo("No Options", "Select at least one cleanup option.")
+            return None
+
+        return options
+
+    def _preview_cleanup(self):
+        """Preview what would be deleted without actually deleting."""
+        options = self._get_cleanup_options()
+        if not options:
+            return
+
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+
+        preview = db.preview_cleanup(
+            delete_non_mps=options["delete_non_mps"],
+            mps_models=options["mps_models"],
+            delete_before_date=options["delete_before_date"],
+            delete_suspect_quality=options["delete_suspect_quality"],
+        )
+
+        # Format preview results
+        lines = [f"Preview: {preview['records_to_delete']} of {preview['total_records']} records would be deleted"]
+
+        for reason, info in preview.get("by_reason", {}).items():
+            if reason == "non_mps_models":
+                models_str = ", ".join(info["models"][:10])
+                if len(info["models"]) > 10:
+                    models_str += f" ... (+{len(info['models']) - 10} more)"
+                lines.append(f"  Non-MPS models: {info['count']} records ({len(info['models'])} models: {models_str})")
+            elif reason == "before_date":
+                lines.append(f"  Before {info['date']}: {info['count']} records")
+            elif reason == "suspect_quality":
+                lines.append(f"  Suspect quality: {info['count']} records")
+
+        self.cleanup_preview_label.configure(text="\n".join(lines))
+
+    def _execute_cleanup(self):
+        """Execute the cleanup after confirmation."""
+        options = self._get_cleanup_options()
+        if not options:
+            return
+
+        # First run preview to get counts
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+
+        preview = db.preview_cleanup(
+            delete_non_mps=options["delete_non_mps"],
+            mps_models=options["mps_models"],
+            delete_before_date=options["delete_before_date"],
+            delete_suspect_quality=options["delete_suspect_quality"],
+        )
+
+        if preview["records_to_delete"] == 0:
+            messagebox.showinfo("Nothing to Delete", "No records match the selected criteria.")
+            return
+
+        # Backup reminder + confirmation
+        confirm = messagebox.askyesno(
+            "Confirm Deletion",
+            f"This will permanently delete {preview['records_to_delete']} records "
+            f"(out of {preview['total_records']} total).\n\n"
+            f"Have you backed up your database?\n"
+            f"(Copy the .db file before proceeding)\n\n"
+            f"This cannot be undone. Continue?",
+            icon="warning"
+        )
+        if not confirm:
+            return
+
+        # Execute
+        result = db.execute_cleanup(
+            delete_non_mps=options["delete_non_mps"],
+            mps_models=options["mps_models"],
+            delete_before_date=options["delete_before_date"],
+            delete_suspect_quality=options["delete_suspect_quality"],
+        )
+
+        self.cleanup_preview_label.configure(
+            text=f"Deleted: {result['analyses']} analyses, {result['tracks']} tracks, "
+                 f"{result['alerts']} alerts, {result['processed_files']} processed file records"
+        )
+        messagebox.showinfo(
+            "Cleanup Complete",
+            f"Deleted {result['analyses']} analysis records and associated data.\n"
+            f"Refresh Dashboard/Trends to see updated counts."
+        )
 
     def _create_appearance_section(self, container):
         """Create appearance settings section."""
