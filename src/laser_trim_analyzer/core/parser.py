@@ -22,7 +22,7 @@ from laser_trim_analyzer.utils.constants import (
     SYSTEM_A_IDENTIFIER, SYSTEM_B_IDENTIFIERS,
     EXCEL_EXTENSIONS,
     FINAL_TEST_SHEET_PATTERNS, FINAL_TEST_ROUT_PREFIX,
-    TRIM_FILE_INDICATORS,
+    TRIM_FILE_INDICATORS, NON_TRIM_FILENAME_PATTERNS,
 )
 
 logger = logging.getLogger(__name__)
@@ -730,22 +730,34 @@ class ExcelParser:
 
 def detect_file_type(file_path: Path) -> str:
     """
-    Detect whether a file is a 'trim' or 'final_test' file.
+    Detect whether a file is a 'trim', 'final_test', or 'non_trim' file.
 
-    Detection logic:
-    1. Check filename for Rout_ prefix (Format 2 final test)
-    2. Check filename for trim indicators (_Trimmed, etc.)
-    3. Check sheet names for trim patterns (SEC1 TRK, Lin Error)
-    4. Check sheet names for final test patterns (Data Table)
+    Detection logic (order matters — cheapest checks first):
+    1. Check filename for non-trim patterns (scrap, noise, smoothness)
+    2. Check filename for Rout_ prefix (Format 2 final test)
+    3. Check filename for FT pattern (model final serial)
+    4. Check filename for trim indicators (_Trimmed, etc.)
+    5. Open file and check sheet names for trim/FT patterns
+    6. Check sheet structure — reject files without expected trim data sheets
 
     Args:
         file_path: Path to Excel file
 
     Returns:
-        'trim' or 'final_test'
+        'trim', 'final_test', or 'non_trim'
     """
     file_path = Path(file_path)
     filename = file_path.name
+    filename_lower = filename.lower()
+
+    # --- Filename-based checks (fast, no file I/O needed) ---
+
+    # Check for non-trim files first — scrap, noise, smoothness tests
+    # These files contaminate the database if processed as trim data
+    for pattern in NON_TRIM_FILENAME_PATTERNS:
+        if pattern in filename_lower:
+            logger.info(f"Skipping non-trim file ('{pattern}' in filename): {filename}")
+            return "non_trim"
 
     # Check for Rout_ prefix (Format 2 final test)
     if filename.startswith(FINAL_TEST_ROUT_PREFIX):
@@ -755,8 +767,6 @@ def detect_file_type(file_path: Path) -> str:
     # Check for FT filename pattern: "model final serial_date.xls"
     # e.g., "8340-1 final 215_6-4-2025_7-38 PM.xls"
     # Pattern: word "final" followed by a number (serial) — distinct from trim files
-    import re
-    filename_lower = filename.lower()
     if re.search(r'\bfinal\s+\d', filename_lower):
         logger.debug(f"Detected final_test (model-final-serial pattern): {filename}")
         return "final_test"
@@ -767,10 +777,19 @@ def detect_file_type(file_path: Path) -> str:
             logger.debug(f"Detected trim (filename indicator '{indicator}'): {filename}")
             return "trim"
 
-    # Need to check sheet names - use context manager to prevent file handle leaks
+    # --- Sheet-based checks (requires opening the Excel file) ---
     try:
         with pd.ExcelFile(file_path) as xl:
             sheet_names = xl.sheet_names
+            sheet_names_lower = [s.lower() for s in sheet_names]
+
+            # Check for non-trim sheet names (smoothness tests often don't
+            # have "smoothness" in the filename but do in sheet names)
+            for sheet_lower in sheet_names_lower:
+                for pattern in NON_TRIM_FILENAME_PATTERNS:
+                    if pattern in sheet_lower:
+                        logger.info(f"Skipping non-trim file ('{pattern}' in sheet name): {filename}")
+                        return "non_trim"
 
             # Check for trim indicators in sheet names
             for sheet in sheet_names:
@@ -813,7 +832,24 @@ def detect_file_type(file_path: Path) -> str:
                 except Exception:
                     pass
 
-            # Default to trim (existing behavior)
+            # Sheet structure validation: if we get here and the file has no
+            # recognizable trim or FT sheet patterns, it's likely not trim data.
+            # Real trim files always have System A sheets (SEC1 TRK) or
+            # System B sheets (test/Lin Error).
+            has_system_a = any(SYSTEM_A_IDENTIFIER in s for s in sheet_names)
+            has_system_b = any(
+                ident.lower() in s.lower()
+                for s in sheet_names
+                for ident in SYSTEM_B_IDENTIFIERS
+            )
+            if not has_system_a and not has_system_b:
+                logger.info(
+                    f"Skipping non-trim file (no System A/B sheet structure): {filename} "
+                    f"sheets={sheet_names}"
+                )
+                return "non_trim"
+
+            # Default to trim (has System A or B sheets but didn't match earlier)
             logger.debug(f"Defaulting to trim: {filename}")
             return "trim"
 

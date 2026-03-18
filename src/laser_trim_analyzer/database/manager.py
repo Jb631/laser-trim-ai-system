@@ -405,6 +405,49 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Unknown model re-parse warning: {e}")
 
+            # Migration: Ensure all performance indexes exist
+            # create_all() only creates indexes for NEW tables. Existing databases
+            # may be missing indexes that were added to models.py later.
+            # CREATE INDEX IF NOT EXISTS is idempotent — safe to run every startup.
+            try:
+                index_statements = [
+                    # analysis_results indexes
+                    "CREATE INDEX IF NOT EXISTS idx_filename_date ON analysis_results(filename, file_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_file_date ON analysis_results(file_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_model_serial ON analysis_results(model, serial)",
+                    "CREATE INDEX IF NOT EXISTS idx_model_serial_date ON analysis_results(model, serial, file_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_timestamp ON analysis_results(timestamp)",
+                    "CREATE INDEX IF NOT EXISTS idx_status ON analysis_results(overall_status)",
+                    "CREATE INDEX IF NOT EXISTS idx_system ON analysis_results(system)",
+                    "CREATE INDEX IF NOT EXISTS idx_status_timestamp ON analysis_results(overall_status, timestamp)",
+                    "CREATE INDEX IF NOT EXISTS idx_model_status ON analysis_results(model, overall_status)",
+                    # track_results indexes
+                    "CREATE INDEX IF NOT EXISTS idx_track_analysis ON track_results(analysis_id, track_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_sigma_gradient ON track_results(sigma_gradient)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_sigma_pass ON track_results(sigma_pass)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_linearity_pass ON track_results(linearity_pass)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_risk_category ON track_results(risk_category)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_failure_probability ON track_results(failure_probability)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_status ON track_results(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_analysis_prob ON track_results(analysis_id, failure_probability)",
+                    # final_test_results indexes
+                    "CREATE INDEX IF NOT EXISTS idx_ft_filename_date ON final_test_results(filename, file_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_model_serial ON final_test_results(model, serial)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_model_serial_date ON final_test_results(model, serial, file_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_timestamp ON final_test_results(timestamp)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_status ON final_test_results(overall_status)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_linked_trim ON final_test_results(linked_trim_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_ft_test_date ON final_test_results(test_date)",
+                ]
+                created = 0
+                for stmt in index_statements:
+                    session.execute(text(stmt))
+                    created += 1
+                session.commit()
+                logger.info(f"Index migration: ensured {created} indexes exist")
+            except Exception as e:
+                logger.warning(f"Index migration warning: {e}")
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:

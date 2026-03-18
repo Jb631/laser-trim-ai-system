@@ -23,25 +23,25 @@ Before each Claude Code session:
 **Status:** NOT STARTED
 
 ### Task 1.3 — Database Indexing (Quick Win)
-- [ ] Add index on `analysis_results.model`
-- [ ] Add index on `analysis_results.file_date`
-- [ ] Add index on `analysis_results.overall_status`
-- [ ] Add index on `track_results.analysis_id`
-- [ ] Add index on `track_results.linearity_pass`
-- [ ] Add index on `final_test_results.model`
-- [ ] Add index on `final_test_results.linked_trim_id`
-- [ ] Test: verify page load times improve
-- **Date completed:**
-- **Notes:**
+- [x] Add index on `analysis_results.model`
+- [x] Add index on `analysis_results.file_date`
+- [x] Add index on `analysis_results.overall_status`
+- [x] Add index on `track_results.analysis_id`
+- [x] Add index on `track_results.linearity_pass`
+- [x] Add index on `final_test_results.model`
+- [x] Add index on `final_test_results.linked_trim_id`
+- [x] Test: verify page load times improve
+- **Date completed:** 2026-03-17
+- **Notes:** Added 24 indexes total via startup migration using CREATE INDEX IF NOT EXISTS (idempotent). Also added standalone idx_file_date for date-range queries. Models.py already defined many indexes but create_all() doesn't retroactively add them to existing tables — the migration ensures they exist.
 
 ### Task 1.1 — Parser File Type Filtering
-- [ ] Add filename pattern checks in `detect_file_type()` for scrap, noise, smoothness files
-- [ ] Add sheet-structure validation (reject files without expected trim data sheets)
-- [ ] Return `non_trim` file type for rejected files
-- [ ] Update processor to skip `non_trim` files with log message
-- [ ] Test: process mixed folder, verify only trim/FT files create records
-- **Date completed:**
-- **Notes:**
+- [x] Add filename pattern checks in `detect_file_type()` for scrap, noise, smoothness files
+- [x] Add sheet-structure validation (reject files without expected trim data sheets)
+- [x] Return `non_trim` file type for rejected files
+- [x] Update processor to skip `non_trim` files with log message
+- [x] Test: process mixed folder, verify only trim/FT files create records
+- **Date completed:** 2026-03-17
+- **Notes:** Added NON_TRIM_FILENAME_PATTERNS to constants.py. detect_file_type() now checks filename patterns first (cheapest), then sheet names for non-trim patterns, then validates sheet structure (must have System A or B sheets). Processor returns None for non_trim, both sequential and parallel paths handle it. GUI shows "[SKIP] filename - Non-trim file skipped".
 
 ### Task 1.4 — Ingest Validation
 - [ ] Add post-parse validation: sigma_gradient >= 0
@@ -240,7 +240,9 @@ Record each coding session here so context carries between sessions.
 
 | Date | Phase/Task | What Was Done | Commits | Notes |
 |------|-----------|---------------|---------|-------|
-| 2026-03-17 | Planning | Created V4 upgrade plan and tracker | — | Initial analysis in Cowork identified data quality issues, near-miss patterns, cost impact |
+| 2026-03-17 | Planning | Created V4 upgrade plan and tracker | c5367d2 | Initial analysis in Cowork identified data quality issues, near-miss patterns, cost impact |
+| 2026-03-17 | Task 1.3 | Database indexing — 24 indexes via startup migration | — | Added idx_file_date standalone index, CREATE INDEX IF NOT EXISTS migration in manager.py |
+| 2026-03-17 | Task 1.1 | Parser file type filtering — non-trim detection | — | Filename + sheet name + sheet structure validation. Processor skips non_trim files. |
 | | | | | |
 
 ---

@@ -216,6 +216,7 @@ class AnalysisResult(Base):
     # Production-ready indexes for performance
     __table_args__ = (
         Index('idx_filename_date', 'filename', 'file_date'),
+        Index('idx_file_date', 'file_date'),  # Standalone for date-range queries
         Index('idx_model_serial', 'model', 'serial'),
         Index('idx_model_serial_date', 'model', 'serial', 'file_date'),
         Index('idx_timestamp', 'timestamp'),

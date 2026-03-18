@@ -139,6 +139,10 @@ class Processor:
         # Detect file type
         file_type = detect_file_type(file_path)
 
+        if file_type == "non_trim":
+            logger.info(f"Skipping non-trim file: {file_path.name}")
+            return None
+
         if file_type == "final_test":
             return self._process_final_test_file(file_path, start_time)
 
@@ -409,6 +413,18 @@ class Processor:
             # Process
             result = self.process_file(file_path)
 
+            # Skip non-trim files (process_file returns None for these)
+            if result is None:
+                summary.skipped += 1
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename=file_path.name,
+                        status="skipped",
+                        message="Non-trim file skipped",
+                        progress_percent=(i + 1) / len(file_paths) * 100,
+                    ))
+                continue
+
             # Update summary
             self._update_summary(summary, result)
 
@@ -504,6 +520,19 @@ class Processor:
 
                     try:
                         result = future.result()
+
+                        # Skip non-trim files (process_file returns None)
+                        if result is None:
+                            summary.skipped += 1
+                            if progress_callback:
+                                progress_callback(ProcessingStatus(
+                                    filename=Path(file_path).name,
+                                    status="skipped",
+                                    message="Non-trim file skipped",
+                                    progress_percent=completed / len(files_to_process) * 100,
+                                ))
+                            continue
+
                         self._update_summary(summary, result)
 
                         if progress_callback:

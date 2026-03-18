@@ -725,7 +725,8 @@ class ProcessPage(ctk.CTkFrame):
                 f"{result.processing_time:.2f}s\n"
             )
         elif status.status == "skipped":
-            self._append_result(f"[SKIP] {status.filename} - Already processed\n")
+            skip_reason = status.message or "Already processed"
+            self._append_result(f"[SKIP] {status.filename} - {skip_reason}\n")
         elif status.status == "failed":
             self._append_result(f"[ERROR] {status.filename} - {status.message}\n")
 

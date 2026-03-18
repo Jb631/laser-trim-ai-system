@@ -141,5 +141,15 @@ TRIM_FILE_INDICATORS: Final[list] = [
     "_Untrimmed",         # Untrimmed file suffix
 ]
 
+# Non-trim file detection — filename substrings (case-insensitive) that indicate
+# the file is NOT laser trim data and should be skipped during processing.
+# These are scrap investigations, output smoothness tests, noise/vibration tests, etc.
+NON_TRIM_FILENAME_PATTERNS: Final[list] = [
+    "scrap",              # Scrap investigation files
+    "noise",              # Noise/vibration test files
+    "smoothness",         # Output smoothness test files
+    "output smooth",      # Alternate smoothness naming
+]
+
 # Matching parameters for Final Test to Trim linking
 FINAL_TEST_MAX_DAYS_FROM_TRIM: Final[int] = 60  # Maximum days between trim and final test
