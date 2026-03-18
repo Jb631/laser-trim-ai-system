@@ -1,16 +1,18 @@
-# Claude Code Configuration for Laser Trim Analyzer V3
+# Claude Code Configuration for Laser Trim Analyzer V4
 
 ## Session Checklist
 
 **Before starting work:**
-1. Read `docs/ML_PROGRESS.md` - Check current phase and pending tasks
-2. Continue from where we left off - don't start new work without checking progress
+1. Read `docs/UPGRADE_TRACKER.md` - Check current phase and next pending task
+2. Read the corresponding section in `docs/UPGRADE_PLAN_V4.md` for full details on the task
+3. Continue from where we left off - don't start new work without checking progress
+4. Explain code changes so James can learn and modify things himself
 
 ---
 
 ## Project Overview
 
-**Laser Trim Analyzer v3** - Production quality analysis platform for potentiometer laser trim data.
+**Laser Trim Analyzer v4** - Production quality analysis platform for potentiometer laser trim data.
 
 ### Key Features
 - **6 pages**: Dashboard, Process, Analyze, Compare, Trends, Settings
@@ -92,10 +94,32 @@ src/laser_trim_analyzer/
 
 ## Active Development
 
+### V4 Upgrade — Operational Analytics & Data Quality
+**Status:** Phase 1 - Data Foundation (NOT STARTED)
+**Plan:** `docs/UPGRADE_PLAN_V4.md`
+**Tracker:** `docs/UPGRADE_TRACKER.md`
+
+V4 transforms the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. Four phases:
+- **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation)
+- **Phase 2:** Operational Analytics (pricing, near-miss analysis, cost dashboard, trends noise reduction)
+- **Phase 3:** Predictive Improvements (FT matching, Cpk, ML retraining)
+- **Phase 4:** Operational Integration (executive export, screening recommendations)
+
 ### Per-Model ML System - **COMPLETE**
 Per-model ML is fully implemented with threshold optimization and drift detection using Final Test data as ground truth. Train models in Settings page.
 
 Design docs archived in `archive/completed_docs/`.
+
+---
+
+## Domain Context
+
+**Product:** Potentiometers (variable resistors) for aerospace/defense customers
+**Company:** AS9100 certified manufacturer, VC/PE owned
+**Key process:** Carbon track elements are laser-trimmed to achieve linearity spec, then units go through final electrical testing
+**Critical issue:** High failure rate at final linearity testing (~40% fail+warning). Most expensive place to catch defects because maximum labor/material already invested.
+**Data note:** Same serial number can appear multiple times — this is VALID (unit trimmed multiple times). Do not treat as duplicates.
+**Linearity spec:** Zero-tolerance — every single measurement point must be in-spec. This is a customer requirement, not configurable.
 
 ---
 

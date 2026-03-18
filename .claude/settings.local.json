@@ -46,7 +46,21 @@
       "Bash(git worktree:*)",
       "Bash(.venv/bin/python:*)",
       "Bash(.venv/bin/pip install psutil)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(sqlite3:*)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --oneline -20)",
+      "Bash(wc:*)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --all --pretty=format:\"%h %ad %s\" --date=short)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --all --oneline)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log -1 --pretty=format:\"%ad\" --date=iso)",
+      "Bash(xargs:*)",
+      "Bash(/Users/jb631/projects/laser-trim-ai-system/.venv/bin/python3:*)",
+      "Bash(kill:*)",
+      "WebSearch",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system add src/laser_trim_analyzer/app.py src/laser_trim_analyzer/core/final_test_parser.py src/laser_trim_analyzer/core/parser.py src/laser_trim_analyzer/database/manager.py src/laser_trim_analyzer/gui/pages/analyze.py src/laser_trim_analyzer/gui/pages/dashboard.py src/laser_trim_analyzer/gui/pages/trends.py src/laser_trim_analyzer/gui/widgets/chart.py src/laser_trim_analyzer/gui/widgets/scrollable_combobox.py)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system push)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system status)",
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --oneline -10)"
     ],
     "deny": [],
     "ask": []
