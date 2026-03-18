@@ -2100,6 +2100,16 @@ class DatabaseManager:
                 lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
                 untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
                 untrimmed_errors=db_track.untrimmed_errors,  # Retrieve untrimmed data for charts
+                # Trim effectiveness metrics
+                resistance_change=db_track.resistance_change,
+                trim_improvement_percent=db_track.trim_improvement_percent,
+                untrimmed_rms_error=db_track.untrimmed_rms_error,
+                trimmed_rms_error=db_track.trimmed_rms_error,
+                max_error_reduction_percent=db_track.max_error_reduction_percent,
+                # Failure margin metrics
+                max_violation=getattr(db_track, 'max_violation', None),
+                avg_violation=getattr(db_track, 'avg_violation', None),
+                margin_to_spec=getattr(db_track, 'margin_to_spec', None),
             )
         except Exception as e:
             logger.error(f"Failed to map track {db_track.track_id}: {e}")
