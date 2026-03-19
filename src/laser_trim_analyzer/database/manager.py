@@ -4900,6 +4900,36 @@ class DatabaseManager:
 
         return deleted
 
+    def count_skipped_files(self) -> int:
+        """Count non-trim/non-FT files that were skipped and recorded."""
+        with self.session() as session:
+            return session.query(func.count(DBProcessedFile.id)).filter(
+                DBProcessedFile.analysis_id.is_(None),
+                DBProcessedFile.success == True,
+            ).scalar() or 0
+
+    def reset_skipped_files(self) -> int:
+        """
+        Remove processed_files entries for skipped non-trim files so they
+        get re-evaluated on the next processing run.
+
+        Only clears entries with analysis_id=NULL (no analysis was created),
+        which are files that were detected as non-trim and skipped.
+
+        Returns:
+            Number of entries cleared
+        """
+        with self._write_lock:
+            with self.session() as session:
+                count = session.query(DBProcessedFile).filter(
+                    DBProcessedFile.analysis_id.is_(None),
+                    DBProcessedFile.success == True,
+                ).delete(synchronize_session=False)
+
+                logger.info(f"Reset {count} skipped file entries for reprocessing")
+
+        return count
+
 
 # Global instance for convenience
 _db_manager: Optional[DatabaseManager] = None

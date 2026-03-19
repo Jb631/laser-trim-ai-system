@@ -694,8 +694,33 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=11)
         )
         self.cleanup_preview_label.grid(
-            row=12, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w"
+            row=12, column=0, columnspan=3, padx=15, pady=(5, 10), sticky="w"
         )
+
+        # --- Reset skipped files ---
+        reset_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        reset_frame.grid(row=13, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
+
+        self.reset_skipped_btn = ctk.CTkButton(
+            reset_frame,
+            text="Reset Skipped Files",
+            width=150,
+            fg_color="#e67e22",
+            hover_color="#f39c12",
+            command=self._reset_skipped_files,
+        )
+        self.reset_skipped_btn.pack(side="left", padx=(0, 10))
+
+        self.skipped_count_label = ctk.CTkLabel(
+            reset_frame,
+            text="",
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        )
+        self.skipped_count_label.pack(side="left")
+
+        # Load skipped count on init
+        self.after(500, self._update_skipped_count)
 
     def _scan_database(self):
         """Scan database for dirty data and flag suspect records."""
@@ -731,6 +756,47 @@ class SettingsPage(ctk.CTkFrame):
             self.scan_results_label.configure(text=f"Scan error: {e}")
         finally:
             self.scan_btn.configure(state="normal")
+
+    def _update_skipped_count(self):
+        """Update the skipped file count label."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            count = db.count_skipped_files()
+            self.skipped_count_label.configure(
+                text=f"{count} skipped files — clears them so they get reprocessed next run"
+            )
+        except Exception:
+            self.skipped_count_label.configure(text="")
+
+    def _reset_skipped_files(self):
+        """Reset skipped non-trim files so they can be reprocessed."""
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+
+        count = db.count_skipped_files()
+        if count == 0:
+            messagebox.showinfo("No Skipped Files", "There are no skipped files to reset.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Reset Skipped Files",
+            f"This will reset {count} skipped files so they get re-evaluated\n"
+            f"on the next processing run.\n\n"
+            f"Use this after fixing files that were previously detected as\n"
+            f"non-trim (wrong format, missing sheets, etc.).\n\n"
+            f"Continue?",
+        )
+        if not confirm:
+            return
+
+        cleared = db.reset_skipped_files()
+        self._update_skipped_count()
+        messagebox.showinfo(
+            "Files Reset",
+            f"Reset {cleared} files. They will be re-evaluated next time\n"
+            f"you process that folder."
+        )
 
     def _get_cleanup_options(self):
         """Get the current cleanup options from the UI checkboxes."""
