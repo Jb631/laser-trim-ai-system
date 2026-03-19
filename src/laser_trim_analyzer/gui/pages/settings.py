@@ -551,39 +551,78 @@ class SettingsPage(ctk.CTkFrame):
         frame.grid_columnconfigure(1, weight=1)
 
         # Title
-        title = ctk.CTkLabel(
+        ctk.CTkLabel(
             frame,
             text="Database Cleanup",
             font=ctk.CTkFont(size=16, weight="bold")
-        )
-        title.grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
+        ).grid(row=0, column=0, columnspan=3, padx=15, pady=(15, 5), sticky="w")
 
         # Description
-        desc = ctk.CTkLabel(
+        ctk.CTkLabel(
             frame,
-            text="Remove legacy or contaminated records. Always preview before deleting.\nBackup your database first: copy the .db file from the path shown above.",
+            text="Scan finds dirty data, then use checkboxes to select what to delete.\n"
+                 "Backup your database first: copy the .db file from the path shown above.",
+            text_color="gray",
+            justify="left",
+            font=ctk.CTkFont(size=11)
+        ).grid(row=1, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+
+        # --- Step 1: Scan button ---
+        scan_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        scan_frame.grid(row=2, column=0, columnspan=3, padx=15, pady=(5, 5), sticky="w")
+
+        self.scan_btn = ctk.CTkButton(
+            scan_frame,
+            text="Scan Database",
+            width=140,
+            fg_color="#2980b9",
+            hover_color="#3498db",
+            command=self._scan_database,
+        )
+        self.scan_btn.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(
+            scan_frame,
+            text="Step 1: Find dirty records (Unknown models, missing dates, bad data, etc.)",
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left")
+
+        # Scan results area
+        self.scan_results_label = ctk.CTkLabel(
+            frame,
+            text="",
             text_color="gray",
             justify="left",
             font=ctk.CTkFont(size=11)
         )
-        desc.grid(row=1, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+        self.scan_results_label.grid(
+            row=3, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w"
+        )
+
+        # --- Step 2: Cleanup options ---
+        ctk.CTkLabel(
+            frame,
+            text="Step 2: Select what to delete",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=4, column=0, columnspan=3, padx=15, pady=(5, 3), sticky="w")
 
         # Option 1: Delete non-MPS models
         self.cleanup_non_mps_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             frame,
-            text="Delete records for models NOT in MPS list",
+            text="Records for models NOT in MPS list",
             variable=self.cleanup_non_mps_var,
-        ).grid(row=2, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+        ).grid(row=5, column=0, columnspan=3, padx=15, pady=3, sticky="w")
 
         # Option 2: Delete before date
         self.cleanup_date_var = ctk.BooleanVar(value=False)
         date_row = ctk.CTkFrame(frame, fg_color="transparent")
-        date_row.grid(row=3, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+        date_row.grid(row=6, column=0, columnspan=3, padx=15, pady=3, sticky="w")
 
         ctk.CTkCheckBox(
             date_row,
-            text="Delete records older than:",
+            text="Records older than:",
             variable=self.cleanup_date_var,
         ).pack(side="left")
 
@@ -594,17 +633,41 @@ class SettingsPage(ctk.CTkFrame):
         )
         self.cleanup_date_entry.pack(side="left", padx=(10, 0))
 
-        # Option 3: Delete suspect quality
+        # Option 3: Delete suspect quality (now works after scan)
         self.cleanup_suspect_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             frame,
-            text="Delete records with suspect data quality",
+            text="Suspect data quality (run Scan first to flag records)",
             variable=self.cleanup_suspect_var,
-        ).grid(row=4, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+        ).grid(row=7, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        # Option 4: Delete Unknown model/serial
+        self.cleanup_unknown_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Records with Unknown model or serial",
+            variable=self.cleanup_unknown_var,
+        ).grid(row=8, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        # Option 5: Delete ERROR status
+        self.cleanup_error_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Records with ERROR status (processing failed)",
+            variable=self.cleanup_error_var,
+        ).grid(row=9, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
+        # Option 6: Delete empty analyses (no track data)
+        self.cleanup_no_tracks_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Empty analyses (no track data)",
+            variable=self.cleanup_no_tracks_var,
+        ).grid(row=10, column=0, columnspan=3, padx=15, pady=3, sticky="w")
 
         # Button row
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=5, column=0, columnspan=3, padx=15, pady=(10, 5), sticky="w")
+        btn_frame.grid(row=11, column=0, columnspan=3, padx=15, pady=(10, 5), sticky="w")
 
         ctk.CTkButton(
             btn_frame,
@@ -631,8 +694,43 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=11)
         )
         self.cleanup_preview_label.grid(
-            row=6, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w"
+            row=12, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w"
         )
+
+    def _scan_database(self):
+        """Scan database for dirty data and flag suspect records."""
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+
+        self.scan_results_label.configure(text="Scanning...")
+        self.scan_btn.configure(state="disabled")
+        self.update_idletasks()
+
+        try:
+            # First run retroactive validation to update data_quality flags
+            validate_result = db.retroactive_validate()
+
+            # Then get the health summary
+            health = db.scan_database_health()
+
+            # Format results
+            lines = [
+                f"Scanned {validate_result['scanned']} records - "
+                f"found {health['total_dirty_records']} with issues "
+                f"({validate_result['flagged']} newly flagged)"
+            ]
+
+            if health["issues"]:
+                for key, info in health["issues"].items():
+                    lines.append(f"  {info['label']}: {info['count']}")
+            else:
+                lines.append("  Database is clean!")
+
+            self.scan_results_label.configure(text="\n".join(lines))
+        except Exception as e:
+            self.scan_results_label.configure(text=f"Scan error: {e}")
+        finally:
+            self.scan_btn.configure(state="normal")
 
     def _get_cleanup_options(self):
         """Get the current cleanup options from the UI checkboxes."""
@@ -643,6 +741,9 @@ class SettingsPage(ctk.CTkFrame):
             "mps_models": None,
             "delete_before_date": None,
             "delete_suspect_quality": self.cleanup_suspect_var.get(),
+            "delete_unknown": self.cleanup_unknown_var.get(),
+            "delete_error_status": self.cleanup_error_var.get(),
+            "delete_no_tracks": self.cleanup_no_tracks_var.get(),
         }
 
         # Get MPS models from config
@@ -656,7 +757,7 @@ class SettingsPage(ctk.CTkFrame):
                 return None
 
         # Parse date
-        if self.cleanup_date_var.get():
+        if options.get("delete_before_date") is None and self.cleanup_date_var.get():
             date_str = self.cleanup_date_entry.get().strip()
             if not date_str:
                 messagebox.showwarning("No Date", "Enter a date in YYYY-MM-DD format.")
@@ -668,7 +769,12 @@ class SettingsPage(ctk.CTkFrame):
                 return None
 
         # Check at least one option selected
-        if not any([options["delete_non_mps"], options["delete_before_date"], options["delete_suspect_quality"]]):
+        has_option = any([
+            options["delete_non_mps"], options["delete_before_date"],
+            options["delete_suspect_quality"], options["delete_unknown"],
+            options["delete_error_status"], options["delete_no_tracks"],
+        ])
+        if not has_option:
             messagebox.showinfo("No Options", "Select at least one cleanup option.")
             return None
 
@@ -688,6 +794,9 @@ class SettingsPage(ctk.CTkFrame):
             mps_models=options["mps_models"],
             delete_before_date=options["delete_before_date"],
             delete_suspect_quality=options["delete_suspect_quality"],
+            delete_unknown=options["delete_unknown"],
+            delete_error_status=options["delete_error_status"],
+            delete_no_tracks=options["delete_no_tracks"],
         )
 
         # Format preview results
@@ -703,6 +812,12 @@ class SettingsPage(ctk.CTkFrame):
                 lines.append(f"  Before {info['date']}: {info['count']} records")
             elif reason == "suspect_quality":
                 lines.append(f"  Suspect quality: {info['count']} records")
+            elif reason == "unknown_model_serial":
+                lines.append(f"  Unknown model/serial: {info['count']} records")
+            elif reason == "error_status":
+                lines.append(f"  ERROR status: {info['count']} records")
+            elif reason == "no_tracks":
+                lines.append(f"  No track data: {info['count']} records")
 
         self.cleanup_preview_label.configure(text="\n".join(lines))
 
@@ -721,6 +836,9 @@ class SettingsPage(ctk.CTkFrame):
             mps_models=options["mps_models"],
             delete_before_date=options["delete_before_date"],
             delete_suspect_quality=options["delete_suspect_quality"],
+            delete_unknown=options["delete_unknown"],
+            delete_error_status=options["delete_error_status"],
+            delete_no_tracks=options["delete_no_tracks"],
         )
 
         if preview["records_to_delete"] == 0:
@@ -746,6 +864,9 @@ class SettingsPage(ctk.CTkFrame):
             mps_models=options["mps_models"],
             delete_before_date=options["delete_before_date"],
             delete_suspect_quality=options["delete_suspect_quality"],
+            delete_unknown=options["delete_unknown"],
+            delete_error_status=options["delete_error_status"],
+            delete_no_tracks=options["delete_no_tracks"],
         )
 
         self.cleanup_preview_label.configure(

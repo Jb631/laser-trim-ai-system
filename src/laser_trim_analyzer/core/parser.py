@@ -854,8 +854,8 @@ def detect_file_type(file_path: Path) -> str:
             return "trim"
 
     except Exception as e:
-        logger.warning(f"Error detecting file type for {filename}: {e}, defaulting to trim")
-        return "trim"
+        logger.warning(f"Error detecting file type for {filename}: {e}, treating as non-trim")
+        return "non_trim"
 
 
 def is_final_test_file(file_path: Path) -> bool:

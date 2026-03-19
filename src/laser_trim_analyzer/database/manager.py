@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, func, and_, or_, desc, text, case
+from sqlalchemy import create_engine, exists, func, and_, or_, desc, text, case
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -4446,8 +4446,338 @@ class DatabaseManager:
             return False
 
     # =========================================================================
-    # Database Cleanup
+    # Database Health & Cleanup
     # =========================================================================
+
+    def scan_database_health(self) -> Dict[str, Any]:
+        """
+        Scan the entire database and return a health report.
+
+        Identifies dirty/suspect records across multiple categories without
+        modifying anything. Returns counts and record IDs for each issue.
+        """
+        health = {
+            "total_analyses": 0,
+            "total_tracks": 0,
+            "issues": {},
+            "total_dirty_records": 0,
+        }
+
+        with self.session() as session:
+            health["total_analyses"] = (
+                session.query(func.count(DBAnalysisResult.id)).scalar() or 0
+            )
+            health["total_tracks"] = (
+                session.query(func.count(DBTrackResult.id)).scalar() or 0
+            )
+
+            dirty_ids = set()
+
+            # 1. Unknown model
+            unknown_model = session.query(DBAnalysisResult.id).filter(
+                DBAnalysisResult.model == "Unknown"
+            ).all()
+            if unknown_model:
+                ids = {r[0] for r in unknown_model}
+                dirty_ids |= ids
+                health["issues"]["unknown_model"] = {
+                    "count": len(ids),
+                    "label": "Unknown model (parser couldn't extract)",
+                }
+
+            # 2. Unknown serial
+            unknown_serial = session.query(DBAnalysisResult.id).filter(
+                DBAnalysisResult.serial == "Unknown"
+            ).all()
+            if unknown_serial:
+                ids = {r[0] for r in unknown_serial}
+                dirty_ids |= ids
+                health["issues"]["unknown_serial"] = {
+                    "count": len(ids),
+                    "label": "Unknown serial number",
+                }
+
+            # 3. Missing file date
+            null_date = session.query(DBAnalysisResult.id).filter(
+                DBAnalysisResult.file_date.is_(None)
+            ).all()
+            if null_date:
+                ids = {r[0] for r in null_date}
+                dirty_ids |= ids
+                health["issues"]["missing_file_date"] = {
+                    "count": len(ids),
+                    "label": "Missing file date",
+                }
+
+            # 4. ERROR status records
+            error_records = session.query(DBAnalysisResult.id).filter(
+                DBAnalysisResult.overall_status == DBStatusType.ERROR
+            ).all()
+            if error_records:
+                ids = {r[0] for r in error_records}
+                dirty_ids |= ids
+                health["issues"]["error_status"] = {
+                    "count": len(ids),
+                    "label": "ERROR status (processing failed)",
+                }
+
+            # 5. Analyses with no tracks (orphaned)
+            analyses_no_tracks = session.query(DBAnalysisResult.id).filter(
+                ~exists().where(DBTrackResult.analysis_id == DBAnalysisResult.id)
+            ).all()
+            if analyses_no_tracks:
+                ids = {r[0] for r in analyses_no_tracks}
+                dirty_ids |= ids
+                health["issues"]["no_tracks"] = {
+                    "count": len(ids),
+                    "label": "No track data (empty analyses)",
+                }
+
+            # 6. Track-level quality issues (negative sigma, all-zero data, etc.)
+            bad_sigma = session.query(
+                DBTrackResult.analysis_id
+            ).filter(
+                DBTrackResult.sigma_gradient < 0
+            ).distinct().all()
+            if bad_sigma:
+                ids = {r[0] for r in bad_sigma}
+                dirty_ids |= ids
+                health["issues"]["negative_sigma"] = {
+                    "count": len(ids),
+                    "label": "Negative sigma gradient (impossible value)",
+                }
+
+            # 7. Tracks with no spec limits (can't determine pass/fail)
+            no_limits = session.query(
+                DBTrackResult.analysis_id
+            ).filter(
+                DBTrackResult.upper_limits.is_(None),
+                DBTrackResult.lower_limits.is_(None),
+                DBTrackResult.linearity_spec.is_(None),
+            ).distinct().all()
+            if no_limits:
+                ids = {r[0] for r in no_limits}
+                dirty_ids |= ids
+                health["issues"]["no_spec_limits"] = {
+                    "count": len(ids),
+                    "label": "No spec limits (can't verify pass/fail)",
+                }
+
+            # 8. Already-flagged suspect quality
+            suspect = session.query(DBAnalysisResult.id).filter(
+                DBAnalysisResult.data_quality == "suspect"
+            ).all()
+            if suspect:
+                ids = {r[0] for r in suspect}
+                dirty_ids |= ids
+                health["issues"]["suspect_quality"] = {
+                    "count": len(ids),
+                    "label": "Previously flagged as suspect",
+                }
+
+            health["total_dirty_records"] = len(dirty_ids)
+
+        return health
+
+    def retroactive_validate(self) -> Dict[str, Any]:
+        """
+        Retroactively validate ALL records in the database and update
+        data_quality flags.
+
+        Checks analysis-level and track-level quality issues, then
+        updates the data_quality and data_quality_issues columns.
+
+        Returns summary of what was found and updated.
+        """
+        summary = {"scanned": 0, "flagged": 0, "already_suspect": 0, "issues_by_type": {}}
+
+        with self._write_lock:
+            with self.session() as session:
+                # Load all analyses with their tracks
+                analyses = session.query(DBAnalysisResult).options(
+                    joinedload(DBAnalysisResult.tracks)
+                ).all()
+
+                summary["scanned"] = len(analyses)
+
+                for analysis in analyses:
+                    issues = []
+
+                    # Analysis-level checks
+                    if analysis.model == "Unknown":
+                        issues.append("Unknown model")
+                    if analysis.serial == "Unknown":
+                        issues.append("Unknown serial")
+                    if analysis.file_date is None:
+                        issues.append("Missing file date")
+                    if not analysis.tracks:
+                        issues.append("No track data")
+
+                    # Track-level checks
+                    for track in analysis.tracks:
+                        tid = track.track_id or "?"
+
+                        if track.sigma_gradient is not None and track.sigma_gradient < 0:
+                            issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
+
+                        if track.upper_limits is None and track.lower_limits is None and track.linearity_spec is None:
+                            issues.append(f"{tid}: no spec limits")
+
+                        # Check for all-zero error data
+                        if track.error_data:
+                            try:
+                                if all(v == 0 or v is None for v in track.error_data):
+                                    issues.append(f"{tid}: all-zero error data")
+                            except (TypeError, ValueError):
+                                issues.append(f"{tid}: corrupt error data")
+
+                        # Check for very short position arrays
+                        if track.position_data:
+                            try:
+                                if len(track.position_data) < 10:
+                                    issues.append(f"{tid}: too few data points ({len(track.position_data)})")
+                            except TypeError:
+                                issues.append(f"{tid}: corrupt position data")
+
+                        # Check position/error array length mismatch
+                        if track.position_data and track.error_data:
+                            try:
+                                if len(track.position_data) != len(track.error_data):
+                                    issues.append(
+                                        f"{tid}: array mismatch (pos={len(track.position_data)}, err={len(track.error_data)})"
+                                    )
+                            except TypeError:
+                                pass
+
+                    # Update the record
+                    if issues:
+                        was_suspect = analysis.data_quality == "suspect"
+                        analysis.data_quality = "suspect"
+                        analysis.data_quality_issues = ", ".join(issues)
+                        if was_suspect:
+                            summary["already_suspect"] += 1
+                        else:
+                            summary["flagged"] += 1
+
+                        # Count by issue type
+                        for issue in issues:
+                            # Normalize to category
+                            category = issue.split(":")[0].strip() if ":" in issue else issue
+                            summary["issues_by_type"][category] = summary["issues_by_type"].get(category, 0) + 1
+                    else:
+                        # Clear false positives from previous scans
+                        if analysis.data_quality == "suspect":
+                            analysis.data_quality = "good"
+                            analysis.data_quality_issues = None
+
+                logger.info(
+                    f"Retroactive validation: scanned {summary['scanned']}, "
+                    f"flagged {summary['flagged']} new, "
+                    f"{summary['already_suspect']} already suspect"
+                )
+
+        return summary
+
+    def _collect_cleanup_ids(
+        self,
+        session,
+        delete_non_mps: bool = False,
+        mps_models: Optional[List[str]] = None,
+        delete_before_date: Optional[datetime] = None,
+        delete_suspect_quality: bool = False,
+        delete_unknown: bool = False,
+        delete_error_status: bool = False,
+        delete_no_tracks: bool = False,
+    ) -> tuple:
+        """
+        Collect record IDs matching cleanup criteria. Shared by preview and execute.
+
+        Returns:
+            (ids_to_delete set, by_reason dict)
+        """
+        ids_to_delete = set()
+        by_reason = {}
+
+        if delete_non_mps and mps_models:
+            mps_set = set(m.strip() for m in mps_models if m.strip())
+            non_mps = session.query(
+                DBAnalysisResult.id, DBAnalysisResult.model
+            ).filter(
+                DBAnalysisResult.model.notin_(mps_set)
+            ).all()
+            non_mps_ids = {r[0] for r in non_mps}
+            non_mps_models = sorted(set(r[1] for r in non_mps))
+            ids_to_delete |= non_mps_ids
+            by_reason["non_mps_models"] = {
+                "count": len(non_mps_ids),
+                "models": non_mps_models,
+            }
+
+        if delete_before_date:
+            old_records = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                DBAnalysisResult.file_date < delete_before_date
+            ).all()
+            old_ids = {r[0] for r in old_records}
+            ids_to_delete |= old_ids
+            by_reason["before_date"] = {
+                "count": len(old_ids),
+                "date": delete_before_date.strftime("%Y-%m-%d"),
+            }
+
+        if delete_suspect_quality:
+            suspect = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                DBAnalysisResult.data_quality == "suspect"
+            ).all()
+            suspect_ids = {r[0] for r in suspect}
+            ids_to_delete |= suspect_ids
+            by_reason["suspect_quality"] = {
+                "count": len(suspect_ids),
+            }
+
+        if delete_unknown:
+            unknown = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                or_(
+                    DBAnalysisResult.model == "Unknown",
+                    DBAnalysisResult.serial == "Unknown",
+                )
+            ).all()
+            unknown_ids = {r[0] for r in unknown}
+            ids_to_delete |= unknown_ids
+            by_reason["unknown_model_serial"] = {
+                "count": len(unknown_ids),
+            }
+
+        if delete_error_status:
+            errors = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                DBAnalysisResult.overall_status == DBStatusType.ERROR
+            ).all()
+            error_ids = {r[0] for r in errors}
+            ids_to_delete |= error_ids
+            by_reason["error_status"] = {
+                "count": len(error_ids),
+            }
+
+        if delete_no_tracks:
+            no_tracks = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                ~exists().where(DBTrackResult.analysis_id == DBAnalysisResult.id)
+            ).all()
+            no_track_ids = {r[0] for r in no_tracks}
+            ids_to_delete |= no_track_ids
+            by_reason["no_tracks"] = {
+                "count": len(no_track_ids),
+            }
+
+        return ids_to_delete, by_reason
 
     def preview_cleanup(
         self,
@@ -4455,15 +4785,12 @@ class DatabaseManager:
         mps_models: Optional[List[str]] = None,
         delete_before_date: Optional[datetime] = None,
         delete_suspect_quality: bool = False,
+        delete_unknown: bool = False,
+        delete_error_status: bool = False,
+        delete_no_tracks: bool = False,
     ) -> Dict[str, Any]:
         """
         Preview what a cleanup operation would delete WITHOUT actually deleting.
-
-        Args:
-            delete_non_mps: Delete records for models not in the MPS list
-            mps_models: List of active MPS model numbers
-            delete_before_date: Delete records with file_date before this date
-            delete_suspect_quality: Delete records flagged as data_quality='suspect'
 
         Returns:
             Dict with counts and model lists for what would be deleted
@@ -4480,51 +4807,20 @@ class DatabaseManager:
                 session.query(func.count(DBAnalysisResult.id)).scalar() or 0
             )
 
-            ids_to_delete = set()
+            ids_to_delete, by_reason = self._collect_cleanup_ids(
+                session,
+                delete_non_mps=delete_non_mps,
+                mps_models=mps_models,
+                delete_before_date=delete_before_date,
+                delete_suspect_quality=delete_suspect_quality,
+                delete_unknown=delete_unknown,
+                delete_error_status=delete_error_status,
+                delete_no_tracks=delete_no_tracks,
+            )
 
-            if delete_non_mps and mps_models:
-                # Find records whose model is NOT in the MPS list
-                mps_set = set(m.strip() for m in mps_models if m.strip())
-                non_mps = session.query(
-                    DBAnalysisResult.id, DBAnalysisResult.model
-                ).filter(
-                    DBAnalysisResult.model.notin_(mps_set)
-                ).all()
-                non_mps_ids = {r[0] for r in non_mps}
-                non_mps_models = sorted(set(r[1] for r in non_mps))
-                ids_to_delete |= non_mps_ids
-                preview["by_reason"]["non_mps_models"] = {
-                    "count": len(non_mps_ids),
-                    "models": non_mps_models,
-                }
-
-            if delete_before_date:
-                old_records = session.query(
-                    DBAnalysisResult.id
-                ).filter(
-                    DBAnalysisResult.file_date < delete_before_date
-                ).all()
-                old_ids = {r[0] for r in old_records}
-                ids_to_delete |= old_ids
-                preview["by_reason"]["before_date"] = {
-                    "count": len(old_ids),
-                    "date": delete_before_date.strftime("%Y-%m-%d"),
-                }
-
-            if delete_suspect_quality:
-                suspect = session.query(
-                    DBAnalysisResult.id
-                ).filter(
-                    DBAnalysisResult.data_quality == "suspect"
-                ).all()
-                suspect_ids = {r[0] for r in suspect}
-                ids_to_delete |= suspect_ids
-                preview["by_reason"]["suspect_quality"] = {
-                    "count": len(suspect_ids),
-                }
-
+            preview["by_reason"] = by_reason
             preview["records_to_delete"] = len(ids_to_delete)
-            # Get unique models in the deletion set
+
             if ids_to_delete:
                 models = session.query(
                     DBAnalysisResult.model
@@ -4541,6 +4837,9 @@ class DatabaseManager:
         mps_models: Optional[List[str]] = None,
         delete_before_date: Optional[datetime] = None,
         delete_suspect_quality: bool = False,
+        delete_unknown: bool = False,
+        delete_error_status: bool = False,
+        delete_no_tracks: bool = False,
     ) -> Dict[str, int]:
         """
         Execute database cleanup — permanently delete matching records.
@@ -4555,26 +4854,16 @@ class DatabaseManager:
 
         with self._write_lock:
             with self.session() as session:
-                ids_to_delete = set()
-
-                if delete_non_mps and mps_models:
-                    mps_set = set(m.strip() for m in mps_models if m.strip())
-                    non_mps = session.query(DBAnalysisResult.id).filter(
-                        DBAnalysisResult.model.notin_(mps_set)
-                    ).all()
-                    ids_to_delete |= {r[0] for r in non_mps}
-
-                if delete_before_date:
-                    old = session.query(DBAnalysisResult.id).filter(
-                        DBAnalysisResult.file_date < delete_before_date
-                    ).all()
-                    ids_to_delete |= {r[0] for r in old}
-
-                if delete_suspect_quality:
-                    suspect = session.query(DBAnalysisResult.id).filter(
-                        DBAnalysisResult.data_quality == "suspect"
-                    ).all()
-                    ids_to_delete |= {r[0] for r in suspect}
+                ids_to_delete, _ = self._collect_cleanup_ids(
+                    session,
+                    delete_non_mps=delete_non_mps,
+                    mps_models=mps_models,
+                    delete_before_date=delete_before_date,
+                    delete_suspect_quality=delete_suspect_quality,
+                    delete_unknown=delete_unknown,
+                    delete_error_status=delete_error_status,
+                    delete_no_tracks=delete_no_tracks,
+                )
 
                 if not ids_to_delete:
                     return deleted
