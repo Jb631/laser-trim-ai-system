@@ -871,11 +871,12 @@ class SettingsPage(ctk.CTkFrame):
 
         self.cleanup_preview_label.configure(
             text=f"Deleted: {result['analyses']} analyses, {result['tracks']} tracks, "
-                 f"{result['alerts']} alerts, {result['processed_files']} processed file records"
+                 f"{result['alerts']} alerts (files stay marked so they won't reprocess)"
         )
         messagebox.showinfo(
             "Cleanup Complete",
             f"Deleted {result['analyses']} analysis records and associated data.\n"
+            f"Cleaned files won't be reprocessed.\n"
             f"Refresh Dashboard/Trends to see updated counts."
         )
 

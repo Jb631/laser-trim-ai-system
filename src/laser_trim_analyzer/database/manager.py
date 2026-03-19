@@ -4845,12 +4845,14 @@ class DatabaseManager:
         Execute database cleanup — permanently delete matching records.
 
         Uses the same filters as preview_cleanup(). Deletes analysis records
-        and all associated tracks, alerts, and processed file records.
+        and associated tracks and alerts. Keeps processed_files records so
+        the same bad files won't be reprocessed next time (the FK has
+        ondelete=SET NULL so the link is safely cleared).
 
         Returns:
             Dict with deletion counts
         """
-        deleted = {"analyses": 0, "tracks": 0, "alerts": 0, "processed_files": 0}
+        deleted = {"analyses": 0, "tracks": 0, "alerts": 0}
 
         with self._write_lock:
             with self.session() as session:
@@ -4883,9 +4885,8 @@ class DatabaseManager:
                         DBQAAlert.analysis_id.in_(batch)
                     ).delete(synchronize_session=False)
 
-                    deleted["processed_files"] += session.query(DBProcessedFile).filter(
-                        DBProcessedFile.analysis_id.in_(batch)
-                    ).delete(synchronize_session=False)
+                    # Keep processed_files records — prevents reprocessing
+                    # the same bad files. FK ondelete=SET NULL clears the link.
 
                     deleted["analyses"] += session.query(DBAnalysisResult).filter(
                         DBAnalysisResult.id.in_(batch)
@@ -4893,8 +4894,8 @@ class DatabaseManager:
 
                 logger.info(
                     f"Database cleanup: deleted {deleted['analyses']} analyses, "
-                    f"{deleted['tracks']} tracks, {deleted['alerts']} alerts, "
-                    f"{deleted['processed_files']} processed files"
+                    f"{deleted['tracks']} tracks, {deleted['alerts']} alerts "
+                    f"(processed_files kept to prevent reprocessing)"
                 )
 
         return deleted
