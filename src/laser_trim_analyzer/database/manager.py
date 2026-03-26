@@ -1965,6 +1965,10 @@ class DatabaseManager:
             untrimmed_rms_error=track.untrimmed_rms_error,
             trimmed_rms_error=track.trimmed_rms_error,
             max_error_reduction_percent=track.max_error_reduction_percent,
+            # Max deviation metrics
+            max_deviation=getattr(track, 'max_deviation', None),
+            max_deviation_position=getattr(track, 'max_deviation_position', None),
+            deviation_uniformity=getattr(track, 'deviation_uniformity', None),
             # Failure margin metrics
             max_violation=getattr(track, 'max_violation', None),
             avg_violation=getattr(track, 'avg_violation', None),
@@ -3525,13 +3529,41 @@ class DatabaseManager:
         - Lowercase
         - Strip whitespace
         - Remove common prefixes (sn, s/n, #)
+        - Strip trailing track suffixes (A/B/C/D/P/R) that trim files
+          use to identify track position but FT files omit.
+          e.g. 32A → 32, 10P → 10, 125B → 125
         """
         import re
         s = serial.lower().strip()
         # Remove common prefixes
         s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
+        # Strip trailing single-letter track/position suffixes
+        # Only strip if there are digits before the letter (don't strip "A" alone)
+        # Handles: 32A, 32B, 10P, 10R, 125A, 1004a, 1D, 5A
+        s = re.sub(r'^(\d+)[a-z]$', r'\1', s)
         # Strip leading zeros (but keep at least one digit for "0" itself)
         s = s.lstrip('0') or '0'
+        return s
+
+    @staticmethod
+    def _normalize_model(model: str) -> str:
+        """
+        Normalize a model number to its base form for variant matching.
+
+        Strips trailing letter suffixes that indicate product variants:
+        - 8275A, 8275B, 8275C → 8275
+        - 8508-A, 8508-B → 8508
+
+        Does NOT strip numeric suffixes (8340-1 stays 8340-1) since
+        those are distinct model configurations.
+        """
+        import re
+        if not model:
+            return model
+        # Strip trailing letter-only variant: "8275A" → "8275"
+        s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', model)
+        # Strip trailing hyphen + single letter: "8508-A" → "8508"
+        s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]$', r'\1', s)
         return s
 
     def _find_matching_trim(
@@ -3545,8 +3577,9 @@ class DatabaseManager:
         Find the matching trim result for a final test.
 
         Logic:
-        1. Exact serial match (case-insensitive) — highest confidence
-        2. Fuzzy serial match (strip zeros, prefixes) — slightly lower confidence
+        1. Exact model + exact serial match (case-insensitive) — highest confidence
+        2. Exact model + fuzzy serial match (strip zeros, prefixes, track suffixes)
+        3. Normalized model + fuzzy serial match (8275A trim matches 8275 FT)
 
         Returns:
             Tuple of (trim_id, confidence, days_since_trim)
@@ -3559,7 +3592,7 @@ class DatabaseManager:
         serial_clean = serial.lower().strip()
         cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
 
-        # Attempt 1: Exact serial match (case-insensitive)
+        # Attempt 1: Exact model + exact serial match (case-insensitive)
         candidates = (
             session.query(DBAnalysisResult)
             .filter(
@@ -3580,10 +3613,9 @@ class DatabaseManager:
             confidence = self._calculate_match_confidence(days_diff, exact_serial=True)
             return match.id, confidence, days_diff
 
-        # Attempt 2: Fuzzy serial match — normalize both sides
+        # Attempt 2: Exact model + fuzzy serial match
         ft_serial_norm = self._normalize_serial(serial)
 
-        # Get all trims for this model in the date window, then fuzzy-match in Python
         model_trims = (
             session.query(DBAnalysisResult.id, DBAnalysisResult.serial, DBAnalysisResult.file_date)
             .filter(
@@ -3605,6 +3637,65 @@ class DatabaseManager:
                     f"(normalized: '{ft_serial_norm}'), {days_diff} days"
                 )
                 return trim_id, confidence, days_diff
+
+        # Attempt 3: Model variant matching — normalize model on both sides
+        # This handles cases like FT model "8275" matching trim model "8275A"
+        # or FT model "8508" matching trim model "8508-A"
+        ft_model_norm = self._normalize_model(model)
+
+        if ft_model_norm != model:
+            # FT model itself has a suffix — try base model in trim
+            variant_trims = (
+                session.query(DBAnalysisResult.id, DBAnalysisResult.serial,
+                              DBAnalysisResult.file_date, DBAnalysisResult.model)
+                .filter(
+                    DBAnalysisResult.model == ft_model_norm,
+                    DBAnalysisResult.file_date.isnot(None),
+                    DBAnalysisResult.file_date <= test_date,
+                    DBAnalysisResult.file_date >= cutoff_date,
+                )
+                .order_by(desc(DBAnalysisResult.file_date))
+                .all()
+            )
+            for trim_id, trim_serial, trim_date, trim_model in variant_trims:
+                if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
+                    days_diff = (test_date - trim_date).days
+                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.95
+                    logger.debug(
+                        f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
+                        f"(normalized model: '{ft_model_norm}'), {days_diff} days"
+                    )
+                    return trim_id, max(0.5, confidence), days_diff
+
+        # Try reverse: trim has variant suffixes, FT has base model
+        # Find all trim models that normalize to our FT model
+        # Use LIKE to find variants efficiently (e.g. "8275%" for FT model "8275")
+        variant_trims = (
+            session.query(DBAnalysisResult.id, DBAnalysisResult.serial,
+                          DBAnalysisResult.file_date, DBAnalysisResult.model)
+            .filter(
+                DBAnalysisResult.model.like(f"{model}%"),
+                DBAnalysisResult.model != model,  # Skip exact (already tried)
+                DBAnalysisResult.file_date.isnot(None),
+                DBAnalysisResult.file_date <= test_date,
+                DBAnalysisResult.file_date >= cutoff_date,
+            )
+            .order_by(desc(DBAnalysisResult.file_date))
+            .all()
+        )
+
+        for trim_id, trim_serial, trim_date, trim_model in variant_trims:
+            # Verify this is actually a variant (normalizes to same base)
+            if self._normalize_model(trim_model) != ft_model_norm:
+                continue
+            if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
+                days_diff = (test_date - trim_date).days
+                confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.90
+                logger.debug(
+                    f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
+                    f"(base model: '{ft_model_norm}'), {days_diff} days"
+                )
+                return trim_id, max(0.5, confidence), days_diff
 
         return None, None, None
 
@@ -4943,6 +5034,89 @@ class DatabaseManager:
                 logger.info(f"Reset {count} skipped file entries for reprocessing")
 
         return count
+
+    def backfill_max_deviation(self, batch_size: int = 1000) -> int:
+        """
+        Backfill max_deviation, max_deviation_position, and deviation_uniformity
+        for existing tracks that have error_data but no max_deviation.
+
+        Returns:
+            Number of tracks updated
+        """
+        import json
+        import statistics as stats_module
+
+        updated = 0
+        with self._write_lock:
+            with self.session() as session:
+                # Get total count first
+                total = session.execute(text(
+                    "SELECT COUNT(*) FROM track_results "
+                    "WHERE max_deviation IS NULL AND error_data IS NOT NULL"
+                )).scalar()
+
+                if total == 0:
+                    logger.info("No tracks need max_deviation backfill")
+                    return 0
+
+                logger.info(f"Backfilling max_deviation for {total} tracks...")
+
+                last_id = 0
+                while True:
+                    rows = session.execute(text(
+                        "SELECT id, error_data, position_data, optimal_offset "
+                        "FROM track_results "
+                        "WHERE max_deviation IS NULL AND error_data IS NOT NULL "
+                        "AND id > :last_id "
+                        "ORDER BY id LIMIT :limit"
+                    ), {"limit": batch_size, "last_id": last_id}).fetchall()
+
+                    if not rows:
+                        break
+                    last_id = rows[-1].id
+
+                    for row in rows:
+                        try:
+                            errors = json.loads(row.error_data) if isinstance(row.error_data, str) else row.error_data
+                            positions = json.loads(row.position_data) if isinstance(row.position_data, str) else row.position_data
+                            opt_offset = row.optimal_offset or 0.0
+
+                            if not errors or not positions:
+                                continue
+
+                            shifted = [e + opt_offset for e in errors]
+                            abs_errs = [abs(e) for e in shifted]
+                            max_dev = max(abs_errs)
+                            max_idx = abs_errs.index(max_dev)
+                            max_dev_pos = positions[max_idx] if max_idx < len(positions) else None
+
+                            dev_unif = None
+                            if len(abs_errs) > 1:
+                                mean_abs = stats_module.mean(abs_errs)
+                                if mean_abs > 0:
+                                    dev_unif = stats_module.stdev(abs_errs) / mean_abs
+
+                            session.execute(text(
+                                "UPDATE track_results SET "
+                                "max_deviation = :max_dev, "
+                                "max_deviation_position = :max_dev_pos, "
+                                "deviation_uniformity = :dev_unif "
+                                "WHERE id = :id"
+                            ), {
+                                "max_dev": max_dev,
+                                "max_dev_pos": max_dev_pos,
+                                "dev_unif": dev_unif,
+                                "id": row.id
+                            })
+                            updated += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to backfill track {row.id}: {e}")
+
+                    session.commit()
+                    logger.info(f"Backfilled {updated}/{total} tracks...")
+
+        logger.info(f"Backfill complete: {updated} tracks updated")
+        return updated
 
 
 # Global instance for convenience

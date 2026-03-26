@@ -62,7 +62,7 @@ class ComparePage(ctk.CTkFrame):
         """Create the compare page UI."""
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -86,10 +86,10 @@ class ComparePage(ctk.CTkFrame):
 
         # Filter controls
         filter_frame = ctk.CTkFrame(self)
-        filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
+        filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 0))
 
         # Model filter
-        ctk.CTkLabel(filter_frame, text="Model:").pack(side="left", padx=(15, 5), pady=15)
+        ctk.CTkLabel(filter_frame, text="Model:").pack(side="left", padx=(15, 5), pady=10)
         self.model_filter = ScrollableComboBox(
             filter_frame,
             values=["All Models"],
@@ -98,34 +98,34 @@ class ComparePage(ctk.CTkFrame):
             dropdown_height=300,
         )
         self.model_filter.set("All Models")
-        self.model_filter.pack(side="left", padx=5, pady=15)
+        self.model_filter.pack(side="left", padx=5, pady=10)
 
         # Date range filter (filters by test date)
-        ctk.CTkLabel(filter_frame, text="From:").pack(side="left", padx=(20, 5), pady=15)
+        ctk.CTkLabel(filter_frame, text="From:").pack(side="left", padx=(20, 5), pady=10)
         self.date_from = ctk.CTkEntry(
             filter_frame,
             placeholder_text="MM/DD/YYYY",
             width=90
         )
-        self.date_from.pack(side="left", padx=2, pady=15)
+        self.date_from.pack(side="left", padx=2, pady=10)
         self.date_from.bind("<Return>", lambda e: self._load_comparisons())
         # Set default to 30 days ago
         default_from = (datetime.now() - timedelta(days=30)).strftime("%m/%d/%Y")
         self.date_from.insert(0, default_from)
 
-        ctk.CTkLabel(filter_frame, text="To:").pack(side="left", padx=(10, 5), pady=15)
+        ctk.CTkLabel(filter_frame, text="To:").pack(side="left", padx=(10, 5), pady=10)
         self.date_to = ctk.CTkEntry(
             filter_frame,
             placeholder_text="MM/DD/YYYY",
             width=90
         )
-        self.date_to.pack(side="left", padx=2, pady=15)
+        self.date_to.pack(side="left", padx=2, pady=10)
         self.date_to.bind("<Return>", lambda e: self._load_comparisons())
         # Set default to today
         self.date_to.insert(0, datetime.now().strftime("%m/%d/%Y"))
 
         # Status filter
-        ctk.CTkLabel(filter_frame, text="Status:").pack(side="left", padx=(15, 5), pady=15)
+        ctk.CTkLabel(filter_frame, text="Status:").pack(side="left", padx=(15, 5), pady=10)
         self.status_filter = ctk.CTkOptionMenu(
             filter_frame,
             values=["All", "Pass", "Fail"],
@@ -133,16 +133,16 @@ class ComparePage(ctk.CTkFrame):
             width=80
         )
         self.status_filter.set("All")
-        self.status_filter.pack(side="left", padx=5, pady=15)
+        self.status_filter.pack(side="left", padx=5, pady=10)
 
         # Serial filter (partial match)
-        ctk.CTkLabel(filter_frame, text="Serial:").pack(side="left", padx=(15, 5), pady=15)
+        ctk.CTkLabel(filter_frame, text="Serial:").pack(side="left", padx=(15, 5), pady=10)
         self.serial_filter = ctk.CTkEntry(
             filter_frame,
             placeholder_text="Search...",
             width=80
         )
-        self.serial_filter.pack(side="left", padx=5, pady=15)
+        self.serial_filter.pack(side="left", padx=5, pady=10)
         self.serial_filter.bind("<Return>", lambda e: self._load_comparisons())
 
         # Linked only filter
@@ -153,58 +153,62 @@ class ComparePage(ctk.CTkFrame):
             variable=self.linked_only_var,
             command=self._on_filter_change
         )
-        linked_check.pack(side="left", padx=10, pady=15)
+        linked_check.pack(side="left", padx=10, pady=10)
 
-        # Refresh button
+        # Refresh button (stays in filter row)
         refresh_btn = ctk.CTkButton(
             filter_frame,
             text="Refresh",
             command=self._load_comparisons,
             width=80
         )
-        refresh_btn.pack(side="right", padx=10, pady=15)
+        refresh_btn.pack(side="right", padx=10, pady=10)
+
+        # Action buttons row (separate from filters to prevent crowding)
+        action_frame = ctk.CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 10))
 
         # Re-match button (re-link Final Tests to Trim data)
         self.rematch_btn = ctk.CTkButton(
-            filter_frame,
+            action_frame,
             text="Re-match",
             command=self._rematch_final_tests,
-            width=80,
+            width=100,
             fg_color="#3498db",
             hover_color="#2980b9"
         )
-        self.rematch_btn.pack(side="right", padx=5, pady=15)
-
-        # Export Selected button
-        self.export_selected_btn = ctk.CTkButton(
-            filter_frame,
-            text="Export Selected",
-            command=self._export_selected,
-            width=120,
-            state="disabled"
-        )
-        self.export_selected_btn.pack(side="right", padx=5, pady=15)
-
-        # Export Current button
-        self.export_current_btn = ctk.CTkButton(
-            filter_frame,
-            text="Export Chart",
-            command=self._export_current,
-            width=100,
-            state="disabled"
-        )
-        self.export_current_btn.pack(side="right", padx=5, pady=15)
+        self.rematch_btn.pack(side="left", padx=(0, 5), pady=5)
 
         # Fix Missing Tracks button
         self.fix_tracks_btn = ctk.CTkButton(
-            filter_frame,
+            action_frame,
             text="Fix Missing Tracks",
             command=self._fix_missing_tracks,
             width=140,
             fg_color="#f39c12",
             hover_color="#e67e22"
         )
-        self.fix_tracks_btn.pack(side="right", padx=5, pady=15)
+        self.fix_tracks_btn.pack(side="left", padx=5, pady=5)
+
+        # Export Current button
+        self.export_current_btn = ctk.CTkButton(
+            action_frame,
+            text="Export Chart",
+            command=self._export_current,
+            width=110,
+            state="disabled"
+        )
+        self.export_current_btn.pack(side="right", padx=5, pady=5)
+
+        # Export Selected button
+        self.export_selected_btn = ctk.CTkButton(
+            action_frame,
+            text="Export Selected",
+            command=self._export_selected,
+            width=130,
+            state="disabled"
+        )
+        self.export_selected_btn.pack(side="right", padx=5, pady=5)
 
         # Results count
         self.count_label = ctk.CTkLabel(
@@ -216,7 +220,7 @@ class ComparePage(ctk.CTkFrame):
 
         # Main content - split view
         content = ctk.CTkFrame(self)
-        content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        content.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
         content.grid_columnconfigure(0, weight=1, minsize=300)
         content.grid_columnconfigure(1, weight=3)
         content.grid_rowconfigure(0, weight=1)

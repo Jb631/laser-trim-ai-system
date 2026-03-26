@@ -67,7 +67,7 @@ class LaserTrimApp(ctk.CTk):
         # Sidebar frame
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(8, weight=1)  # Spacer row (adjusted for Export)
+        self.sidebar.grid_rowconfigure(9, weight=1)  # Spacer row (adjusted for Quality Health + Export)
 
         # App title
         self.title_label = ctk.CTkLabel(
@@ -89,11 +89,12 @@ class LaserTrimApp(ctk.CTk):
         # Navigation buttons
         nav_items = [
             ("dashboard", "Dashboard", 2),
-            ("process", "Process Files", 3),
-            ("analyze", "Analyze Trim", 4),
-            ("compare", "Final Test", 5),
-            ("trends", "Trends", 6),
-            ("export", "Export", 7),
+            ("quality_health", "Quality Health", 3),
+            ("process", "Process Files", 4),
+            ("analyze", "Analyze Trim", 5),
+            ("compare", "Final Test", 6),
+            ("trends", "Trends", 7),
+            ("export", "Export", 8),
         ]
 
         for page_id, label, row in nav_items:
@@ -123,7 +124,7 @@ class LaserTrimApp(ctk.CTk):
             text_color=("gray10", "gray90"),
             hover_color=("gray70", "gray30")
         )
-        settings_btn.grid(row=9, column=0, padx=10, pady=(5, 20), sticky="ew")
+        settings_btn.grid(row=10, column=0, padx=10, pady=(5, 20), sticky="ew")
         self._nav_buttons["settings"] = settings_btn
 
     def _create_main_content(self):
@@ -137,6 +138,7 @@ class LaserTrimApp(ctk.CTk):
         """Create all pages."""
         # Import pages here to avoid circular imports
         from laser_trim_analyzer.gui.pages.dashboard import DashboardPage
+        from laser_trim_analyzer.gui.pages.quality_health import QualityHealthPage
         from laser_trim_analyzer.gui.pages.process import ProcessPage
         from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
         from laser_trim_analyzer.gui.pages.compare import ComparePage
@@ -146,6 +148,7 @@ class LaserTrimApp(ctk.CTk):
 
         # Create page instances
         self._pages["dashboard"] = DashboardPage(self.main_frame, self)
+        self._pages["quality_health"] = QualityHealthPage(self.main_frame, self)
         self._pages["process"] = ProcessPage(self.main_frame, self)
         self._pages["analyze"] = AnalyzePage(self.main_frame, self)
         self._pages["compare"] = ComparePage(self.main_frame, self)

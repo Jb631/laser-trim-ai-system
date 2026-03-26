@@ -132,6 +132,22 @@ class Analyzer:
             shifted_errors, upper_limits, lower_limits
         )
 
+        # Calculate max deviation position and uniformity
+        max_deviation = linearity_error  # Already max(abs(e)) from shifted errors
+        max_deviation_position = None
+        deviation_uniformity = None
+        if shifted_errors and positions:
+            abs_errors = [abs(e) for e in shifted_errors]
+            max_idx = abs_errors.index(max(abs_errors))
+            if max_idx < len(positions):
+                max_deviation_position = positions[max_idx]
+            # Deviation uniformity: std/mean of absolute errors (0=uniform, higher=concentrated)
+            if len(abs_errors) > 1:
+                import statistics
+                mean_abs = statistics.mean(abs_errors)
+                if mean_abs > 0:
+                    deviation_uniformity = statistics.stdev(abs_errors) / mean_abs
+
         return TrackData(
             track_id=track_id,
             status=status,
@@ -157,6 +173,10 @@ class Analyzer:
             # Anomaly detection
             is_anomaly=is_anomaly,
             anomaly_reason=anomaly_reason,
+            # Max deviation metrics
+            max_deviation=max_deviation,
+            max_deviation_position=max_deviation_position,
+            deviation_uniformity=deviation_uniformity,
             # Failure margin metrics
             **margin_metrics,
             # Trim effectiveness

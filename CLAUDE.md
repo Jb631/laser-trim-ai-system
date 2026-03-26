@@ -3,10 +3,11 @@
 ## Session Checklist
 
 **Before starting work:**
-1. Read `docs/UPGRADE_TRACKER.md` - Check current phase and next pending task
-2. Read the corresponding section in `docs/UPGRADE_PLAN_V4.md` for full details on the task
-3. Continue from where we left off - don't start new work without checking progress
-4. Explain code changes so James can learn and modify things himself
+1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
+2. Read `docs/UPGRADE_TRACKER.md` - Check current phase and next pending task
+3. Read the corresponding section in `docs/UPGRADE_PLAN_V4.md` for full details on the task
+4. Continue from where we left off - don't start new work without checking progress
+5. Explain code changes so James can learn and modify things himself
 
 ---
 

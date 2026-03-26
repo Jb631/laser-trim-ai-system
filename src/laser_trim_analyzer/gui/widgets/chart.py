@@ -1356,17 +1356,17 @@ class ChartWidget(ctk.CTkFrame):
             status_color = COLORS['pass']  # Green
         
 
-        # Info box in upper right
+        # Info box in upper right — plain language for non-technical users
         info_lines = [f"Status: {status_text}"]
         if ewma_value is not None and center is not None:
-            # Show EWMA relative to mean
+            # Show current vs baseline with percentage change
             diff = ewma_value - center
             diff_pct = (diff / center * 100) if center != 0 else 0
             trend = "↑" if diff > 0 else "↓" if diff < 0 else "→"
             info_lines.append(f"Current: {ewma_value:.4f} ({trend}{abs(diff_pct):.1f}%)")
             info_lines.append(f"Baseline: {center:.4f}")
         elif ewma_value is not None:
-            info_lines.append(f"EWMA: {ewma_value:.4f}")
+            info_lines.append(f"Current Trend: {ewma_value:.4f}")
         info_text = "\n".join(info_lines)
 
         text_color = COLORS['text'] if self.style.dark_mode else 'black'
@@ -1391,7 +1391,7 @@ class ChartWidget(ctk.CTkFrame):
         # Styling
         chart_title = f"{title}: {model_name}" if model_name else title
         ax.set_xlabel('Sample', fontsize=self.style.font_size)
-        ax.set_ylabel('Sigma Gradient', fontsize=self.style.font_size)
+        ax.set_ylabel('Linearity Error Rate', fontsize=self.style.font_size)
         ax.set_title(chart_title, fontsize=self.style.title_size, color=status_color)
         ax.legend(loc='upper left', fontsize=self.style.font_size - 2, ncol=2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
@@ -1435,33 +1435,67 @@ class ChartWidget(ctk.CTkFrame):
         ucl = np.clip(p_bar + 3 * np.sqrt(p_bar * (1 - p_bar) / sizes), 0, 1)
         lcl = np.clip(p_bar - 3 * np.sqrt(p_bar * (1 - p_bar) / sizes), 0, 1)
 
-        # Plot data line
-        ax.plot(x, rates * 100, 'o-', color=COLORS['info'],
-                linewidth=self.style.line_width, markersize=4, label='Daily Pass Rate')
+        # Adapt visual density based on data volume
+        many_points = len(rates) > 60  # Years of daily data vs recent weeks
 
-        # Center line
-        ax.axhline(y=p_bar * 100, color=COLORS['warning'], linestyle='-',
-                   linewidth=2, label=f'p-bar: {p_bar*100:.1f}%')
+        if many_points:
+            # --- Dense data mode: rolling average as primary, raw data as subtle background ---
+            # Raw daily data - subtle, no markers
+            ax.plot(x, rates * 100, '-', color=COLORS['info'],
+                    linewidth=0.5, alpha=0.3, label='_nolegend_')
 
-        # Variable UCL/LCL — thicker, distinct color for visibility
-        ax.step(x, ucl * 100, where='mid', color=COLORS['fail'],
-                linestyle='--', linewidth=1.5, alpha=0.9, label='UCL/LCL (3-sigma)')
-        ax.step(x, lcl * 100, where='mid', color=COLORS['fail'],
-                linestyle='--', linewidth=1.5, alpha=0.9)
+            # Rolling average (30-day window) as the main trend line
+            window = min(30, len(rates) // 4)
+            if window >= 3:
+                rolling_avg = np.convolve(rates, np.ones(window)/window, mode='valid') * 100
+                rolling_x = list(range(window - 1, len(rates)))
+                ax.plot(rolling_x, rolling_avg, '-', color=COLORS['info'],
+                        linewidth=2.5, alpha=0.9, label=f'30-Day Trend')
 
-        # Fill between data and center line to show deviation visually
-        ax.fill_between(x, rates * 100, p_bar * 100, alpha=0.15,
-                        color=COLORS['info'])
+            # Center line (average pass rate)
+            ax.axhline(y=p_bar * 100, color=COLORS['warning'], linestyle='-',
+                       linewidth=2, label=f'Average: {p_bar*100:.1f}%')
 
-        # Fill between control limits (subtle background)
-        ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.05, color=COLORS['pass'],
-                        step='mid')
+            # Control limits - subtle in background
+            ax.step(x, ucl * 100, where='mid', color=COLORS['fail'],
+                    linestyle='--', linewidth=1, alpha=0.4, label='Control Limits')
+            ax.step(x, lcl * 100, where='mid', color=COLORS['fail'],
+                    linestyle='--', linewidth=1, alpha=0.4)
+
+            # Fill between control limits (very subtle)
+            ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.03, color=COLORS['pass'],
+                            step='mid')
+
+        else:
+            # --- Sparse data mode: show individual daily points clearly ---
+            ax.plot(x, rates * 100, 'o-', color=COLORS['info'],
+                    linewidth=self.style.line_width, markersize=4, label='Daily Pass Rate')
+
+            # Center line (average pass rate)
+            ax.axhline(y=p_bar * 100, color=COLORS['warning'], linestyle='-',
+                       linewidth=2, label=f'Average: {p_bar*100:.1f}%')
+
+            # Variable UCL/LCL
+            ax.step(x, ucl * 100, where='mid', color=COLORS['fail'],
+                    linestyle='--', linewidth=1.5, alpha=0.9, label='Control Limits')
+            ax.step(x, lcl * 100, where='mid', color=COLORS['fail'],
+                    linestyle='--', linewidth=1.5, alpha=0.9)
+
+            # Fill between data and center line
+            ax.fill_between(x, rates * 100, p_bar * 100, alpha=0.15,
+                            color=COLORS['info'])
+
+            # Fill between control limits (subtle background)
+            ax.fill_between(x, lcl * 100, ucl * 100, alpha=0.05, color=COLORS['pass'],
+                            step='mid')
 
         # Highlight out-of-control points — large red circles with border
         for i, r in enumerate(rates):
             if r > ucl[i] or r < lcl[i]:
-                ax.scatter([i], [r * 100], color=COLORS['fail'], s=120, zorder=5,
-                           marker='o', linewidths=2, edgecolors='white')
+                ax.scatter([i], [r * 100], color=COLORS['fail'],
+                           s=80 if many_points else 120, zorder=5,
+                           marker='o', linewidths=1.5, edgecolors='white',
+                           alpha=0.7 if many_points else 1.0)
 
         # X-axis labels: max 8 labels with month-day format for readability
         max_labels = 8
@@ -1704,10 +1738,19 @@ class ChartWidget(ctk.CTkFrame):
             for label in cbar.ax.get_yticklabels():
                 label.set_color(COLORS['text'])
 
-        # Labels
-        ax.set_xticks(range(len(periods)))
-        ax.set_xticklabels(periods, rotation=45, ha='right',
-                          fontsize=self.style.font_size - 2)
+        # Labels - thin out X-axis ticks if too many periods to prevent overlap
+        if len(periods) > 20:
+            # Show every Nth label to keep ~12-15 visible
+            step = max(1, len(periods) // 12)
+            tick_positions = list(range(0, len(periods), step))
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels([periods[i] for i in tick_positions],
+                              rotation=45, ha='right',
+                              fontsize=self.style.font_size - 2)
+        else:
+            ax.set_xticks(range(len(periods)))
+            ax.set_xticklabels(periods, rotation=45, ha='right',
+                              fontsize=self.style.font_size - 2)
         ax.set_yticks(range(len(models)))
         ax.set_yticklabels(models, fontsize=self.style.font_size - 2)
         ax.set_title(title, fontsize=self.style.title_size)

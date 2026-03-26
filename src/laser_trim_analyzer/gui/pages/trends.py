@@ -1781,8 +1781,8 @@ class TrendsPage(ctk.CTkFrame):
             self.dist_chart.plot_histogram(
                 values=sigma_values,
                 bins=min(30, len(sigma_values) // 3 + 1),
-                title="Sigma Distribution",
-                xlabel="Sigma Gradient",
+                title="Linearity Error Distribution",
+                xlabel="Linearity Error Rate",
                 spec_limit=threshold
             )
         else:
@@ -2064,10 +2064,17 @@ class TrendsPage(ctk.CTkFrame):
             method = ml_recommendations.get("method", "unknown")
             is_legacy = ml_recommendations.get("legacy", False)
 
-            # Threshold section
+            # Threshold section — explain in plain language
             self.detail_ml_text.insert("end", f"Recommended Threshold: {threshold:.6f}\n")
             self.detail_ml_text.insert("end", f"  Method: {method}, Confidence: {confidence:.0%}\n")
             self.detail_ml_text.insert("end", f"  Based on: {basis}\n")
+            # Add plain-English interpretation
+            if confidence >= 0.7:
+                self.detail_ml_text.insert("end", f"  → High confidence — consider using this threshold\n")
+            elif confidence >= 0.4:
+                self.detail_ml_text.insert("end", f"  → Moderate confidence — review before applying\n")
+            else:
+                self.detail_ml_text.insert("end", f"  → Low confidence — more data needed\n")
 
             if is_legacy:
                 self.detail_ml_text.insert("end", "  (Using legacy optimizer - retrain for per-model ML)\n")
@@ -2320,11 +2327,13 @@ class TrendsPage(ctk.CTkFrame):
                 baseline_std = detector.baseline_std or 0
                 ewma_display = f"{ewma_value:.4f}" if ewma_value is not None else "N/A"
                 peak_cusum = detector._peak_cusum
+                # Determine drift summary in plain language
+                drift_exceeded = cusum_value > detector.cusum_h
+                drift_summary = "Change detected" if drift_exceeded else "Within normal range"
                 details_text = (
-                    f"CUSUM: {cusum_value:.2f} / {detector.cusum_h:.1f} threshold  |  "
-                    f"Peak CUSUM: {peak_cusum:.2f}  |  "
-                    f"EWMA: {ewma_display}  |  "
-                    f"Baseline Std: {baseline_std:.4f}"
+                    f"Drift Score: {cusum_value:.1f} / {detector.cusum_h:.1f} limit ({drift_summary})  |  "
+                    f"Current Trend: {ewma_display}  |  "
+                    f"Baseline Variation: {baseline_std:.4f}"
                 )
                 self._drift_details_label.configure(text=details_text)
             else:

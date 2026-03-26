@@ -130,6 +130,11 @@ class TrackData(BaseAnalysisModel):
     untrimmed_positions: Optional[List[float]] = Field(None, description="Untrimmed positions")
     untrimmed_errors: Optional[List[float]] = Field(None, description="Untrimmed errors")
 
+    # Max deviation metrics
+    max_deviation: Optional[float] = Field(None, ge=0, description="Max absolute error after offset (same as linearity_error)")
+    max_deviation_position: Optional[float] = Field(None, description="Position where max deviation occurs")
+    deviation_uniformity: Optional[float] = Field(None, ge=0, description="Coefficient of variation of absolute errors (std/mean)")
+
     # Failure margin metrics — how far from spec limits
     max_violation: Optional[float] = Field(None, ge=0, description="Max amount any point exceeded spec (absolute)")
     avg_violation: Optional[float] = Field(None, ge=0, description="Average violation across all fail points")

@@ -576,6 +576,12 @@ class ExcelParser:
 
             del df  # Free memory immediately
 
+            # Sanity checks on extracted data
+            self._validate_track_data(
+                file_path, trimmed_sheet, track_id,
+                positions, errors, upper_limits, lower_limits
+            )
+
             # Calculate travel length
             travel_length = max(positions) - min(positions) if positions else 0.0
 
@@ -603,6 +609,84 @@ class ExcelParser:
         except Exception as e:
             logger.error(f"Error extracting track data from {trimmed_sheet}: {e}")
             return None
+
+    def _validate_track_data(
+        self,
+        file_path: Path,
+        sheet_name: str,
+        track_id: str,
+        positions: List[float],
+        errors: List[float],
+        upper_limits: List[Optional[float]],
+        lower_limits: List[Optional[float]],
+    ) -> None:
+        """
+        Validate extracted track data for sanity. Logs warnings for suspect data.
+
+        Checks:
+        1. Positions should be mostly monotonically increasing
+        2. Errors should be small (linearity errors, not resistance values)
+        3. Upper limits should be >= lower limits where both exist
+        4. Data arrays should have reasonable length
+        """
+        fname = file_path.name
+
+        # Check 1: Position monotonicity
+        if len(positions) > 2:
+            increasing = sum(1 for i in range(1, len(positions)) if positions[i] > positions[i-1])
+            ratio = increasing / (len(positions) - 1)
+            if ratio < 0.8:
+                logger.warning(
+                    f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                    f"positions not monotonically increasing ({ratio:.0%} increasing). "
+                    f"Possible wrong column mapping."
+                )
+
+        # Check 2: Error plausibility - linearity errors are typically < 1.0
+        if errors:
+            max_abs_error = max(abs(e) for e in errors)
+            median_abs_error = sorted(abs(e) for e in errors)[len(errors) // 2]
+            if max_abs_error > 10.0:
+                logger.warning(
+                    f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                    f"max error = {max_abs_error:.3f} (expected < 1.0). "
+                    f"Possible wrong column — reading resistance or voltage instead of linearity error?"
+                )
+            elif median_abs_error > 1.0:
+                logger.warning(
+                    f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                    f"median error = {median_abs_error:.3f} (expected < 0.1). "
+                    f"Error values seem unusually large."
+                )
+
+        # Check 3: Limit consistency - upper should be >= lower
+        if upper_limits and lower_limits:
+            inversions = 0
+            checked = 0
+            for u, l in zip(upper_limits, lower_limits):
+                if u is not None and l is not None:
+                    checked += 1
+                    if u < l:
+                        inversions += 1
+            if inversions > 0:
+                logger.warning(
+                    f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                    f"{inversions}/{checked} limit inversions (upper < lower). "
+                    f"Possible swapped limit columns."
+                )
+
+        # Check 4: Reasonable data length (typical trim files have 20-500 data points)
+        n = len(positions)
+        if n < 5:
+            logger.warning(
+                f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                f"only {n} data points (expected 20+). File may be incomplete."
+            )
+        elif n > 5000:
+            logger.warning(
+                f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                f"{n} data points (expected < 1000). Possible header row included in data."
+            )
 
     def _find_data_start(self, df: pd.DataFrame, position_col: int) -> Optional[int]:
         """Find the first row with numeric data."""
