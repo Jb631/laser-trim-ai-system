@@ -81,6 +81,7 @@ class Analyzer:
         unit_length = track_data.get("unit_length")
         untrimmed_resistance = track_data.get("untrimmed_resistance")
         trimmed_resistance = track_data.get("trimmed_resistance")
+        measured_electrical_angle = track_data.get("measured_electrical_angle")
 
         logger.info(f"Analyzing track {track_id}: {len(positions)} points")
 
@@ -149,6 +150,7 @@ class Analyzer:
             unit_length=unit_length if unit_length and unit_length >= 0 else None,
             untrimmed_resistance=untrimmed_resistance,
             trimmed_resistance=trimmed_resistance,
+            measured_electrical_angle=measured_electrical_angle,
             # Risk
             failure_probability=failure_probability,
             risk_category=risk_category,

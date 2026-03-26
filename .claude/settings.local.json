@@ -60,7 +60,10 @@
       "Bash(git -C /Users/jb631/projects/laser-trim-ai-system add src/laser_trim_analyzer/app.py src/laser_trim_analyzer/core/final_test_parser.py src/laser_trim_analyzer/core/parser.py src/laser_trim_analyzer/database/manager.py src/laser_trim_analyzer/gui/pages/analyze.py src/laser_trim_analyzer/gui/pages/dashboard.py src/laser_trim_analyzer/gui/pages/trends.py src/laser_trim_analyzer/gui/widgets/chart.py src/laser_trim_analyzer/gui/widgets/scrollable_combobox.py)",
       "Bash(git -C /Users/jb631/projects/laser-trim-ai-system push)",
       "Bash(git -C /Users/jb631/projects/laser-trim-ai-system status)",
-      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --oneline -10)"
+      "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --oneline -10)",
+      "Bash(PYTHONPATH=src python3 -c \"from laser_trim_analyzer.utils.constants import NON_TRIM_FILENAME_PATTERNS; print\\('NON_TRIM_FILENAME_PATTERNS:', NON_TRIM_FILENAME_PATTERNS\\)\")",
+      "Bash(pip3 list:*)",
+      "Bash(PYTHONPATH=src python3 -c \"\nfrom laser_trim_analyzer.core.models import AnalysisResult\nfields = [f for f in AnalysisResult.model_fields if 'quality' in f]\nprint\\('AnalysisResult quality fields:', fields\\)\nfor f in fields:\n    info = AnalysisResult.model_fields[f]\n    print\\(f'  {f}: default={info.default}, annotation={info.annotation}'\\)\n\")"
     ],
     "deny": [],
     "ask": []

@@ -375,11 +375,15 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             row += 1
 
         # Unit properties (if available)
-        if track.travel_length or track.unit_length:
+        if track.travel_length or track.unit_length or track.measured_electrical_angle is not None:
             ws[f"A{row}"] = "Unit Properties"
             ws[f"A{row}"].font = Font(bold=True)
             row += 1
 
+            if track.measured_electrical_angle is not None:
+                ws[f"A{row}"] = "Meas. Elec. Angle:"
+                ws[f"B{row}"] = track.measured_electrical_angle
+                row += 1
             if track.travel_length:
                 ws[f"A{row}"] = "Travel Length:"
                 ws[f"B{row}"] = f"{track.travel_length}"
@@ -531,7 +535,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         "Tracks", "Sigma Gradient (max)", "Sigma Threshold (min)", "Sigma Margin %",
         "Sigma Pass", "Linearity Error (max)", "Linearity Spec", "Fail Points (sum)",
         "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Anomaly",
-        "Travel Length", "Untrimmed R", "Trimmed R", "R Change %",
+        "Meas. Elec. Angle", "Travel Length", "Untrimmed R", "Trimmed R", "R Change %",
         "Trim Improvement %", "Max Error Reduction %",
         "Filename"
     ]
@@ -559,6 +563,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         risk = "Unknown"
         fail_prob = None
         is_anomaly = False
+        mea_elec_angle = None
         untrimmed_r = None
         trimmed_r = None
         r_change_pct = None
@@ -586,6 +591,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 trim_imp = track.trim_improvement_percent
                 max_err_red = track.max_error_reduction_percent
                 is_anomaly = getattr(track, 'is_anomaly', False)
+                mea_elec_angle = getattr(track, 'measured_electrical_angle', None)
             else:
                 # Multi-track: use worst-case values for sigma, sum for fail points
                 sigma_gradient = max(t.sigma_gradient for t in result.tracks)
@@ -613,6 +619,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 max_err_red = sum(max_errs) / len(max_errs) if max_errs else None
                 # Anomaly if ANY track is anomalous
                 is_anomaly = any(getattr(t, 'is_anomaly', False) for t in result.tracks)
+                # Use first track's measured electrical angle (same unit)
+                mea_elec_angle = getattr(result.tracks[0], 'measured_electrical_angle', None)
 
             # Calculate sigma margin percentage
             if sigma_threshold > 0:
@@ -639,6 +647,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             risk,
             f"{fail_prob:.1%}" if fail_prob is not None else "N/A",
             "YES" if is_anomaly else "",  # Anomaly flag
+            mea_elec_angle if mea_elec_angle is not None else "",
             f"{travel_length:.1f}" if travel_length else "",
             f"{untrimmed_r:.2f}" if untrimmed_r is not None else "",
             f"{trimmed_r:.2f}" if trimmed_r is not None else "",
@@ -668,8 +677,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     num_cols = len(headers)
     ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}{len(results) + 1}"
 
-    # Adjust column widths (24 columns)
-    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 12, 12, 12, 10, 14, 14, 35]
+    # Adjust column widths (25 columns)
+    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 14, 12, 12, 12, 10, 14, 14, 35]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 

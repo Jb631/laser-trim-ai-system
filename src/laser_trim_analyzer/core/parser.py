@@ -552,6 +552,11 @@ class ExcelParser:
             trimmed_resistance = self._get_cell_from_df(df, cells["trimmed_resistance"])
             unit_length = self._get_cell_from_df(df, cells["unit_length"])
 
+            # Extract measured electrical angle if cell reference exists
+            measured_electrical_angle = None
+            if "measured_electrical_angle" in cells:
+                measured_electrical_angle = self._get_cell_from_df(df, cells["measured_electrical_angle"])
+
             # Extract untrimmed data if available
             untrimmed_positions = None
             untrimmed_errors = None
@@ -592,6 +597,7 @@ class ExcelParser:
                 "unit_length": unit_length,
                 "untrimmed_resistance": untrimmed_resistance,
                 "trimmed_resistance": trimmed_resistance,
+                "measured_electrical_angle": measured_electrical_angle,
             }
 
         except Exception as e:

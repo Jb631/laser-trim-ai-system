@@ -1044,8 +1044,10 @@ class AnalyzePage(ctk.CTkFrame):
                     lines.append("")
 
                 # Unit Properties (if available)
-                if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance:
+                if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance or track.measured_electrical_angle:
                     lines.append("  UNIT PROPERTIES:")
+                    if track.measured_electrical_angle is not None:
+                        lines.append(f"    Meas. Elec. Angle: {track.measured_electrical_angle}")
                     if track.unit_length:
                         lines.append(f"    Unit Length: {track.unit_length:.4f}")
                     if track.untrimmed_resistance:
@@ -1676,6 +1678,9 @@ class AnalyzePage(ctk.CTkFrame):
             f"Travel Length: {track.travel_length:.3f}" if track.travel_length else "Travel Length: N/A",
             f"Unit Length: {track.unit_length}" if track.unit_length else "Unit Length: N/A",
         ]
+
+        if track.measured_electrical_angle is not None:
+            info_lines.append(f"Meas. Elec. Angle: {track.measured_electrical_angle}")
 
         # Trim date
         trim_date = result.metadata.file_date or result.metadata.test_date

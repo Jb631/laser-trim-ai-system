@@ -109,6 +109,7 @@ class TrackData(BaseAnalysisModel):
     unit_length: Optional[float] = Field(None, ge=0, description="Unit length")
     untrimmed_resistance: Optional[float] = Field(None, ge=0, description="Untrimmed resistance")
     trimmed_resistance: Optional[float] = Field(None, ge=0, description="Trimmed resistance")
+    measured_electrical_angle: Optional[float] = Field(None, description="Measured electrical angle from trim sheet")
 
     # Risk assessment (from ML)
     failure_probability: Optional[float] = Field(None, ge=0, le=1, description="Failure probability")

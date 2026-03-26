@@ -321,6 +321,7 @@ class TrackResult(Base):
     trimmed_resistance = Column(Float)
     resistance_change = Column(Float)
     resistance_change_percent = Column(Float)
+    measured_electrical_angle = Column(Float)  # From trim sheet metadata cell
 
     # Linearity analysis
     optimal_offset = Column(Float)

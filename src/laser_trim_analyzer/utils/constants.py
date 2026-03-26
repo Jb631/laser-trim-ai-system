@@ -38,13 +38,15 @@ SYSTEM_B_COLUMNS: Final[Dict[str, int]] = {
 SYSTEM_A_CELLS: Final[Dict[str, str]] = {
     "unit_length": "B26",
     "untrimmed_resistance": "B10",
-    "trimmed_resistance": "B10"
+    "trimmed_resistance": "B10",
+    "measured_electrical_angle": "L1",
 }
 
 SYSTEM_B_CELLS: Final[Dict[str, str]] = {
     "unit_length": "K1",
     "untrimmed_resistance": "R1",
-    "trimmed_resistance": "R1"
+    "trimmed_resistance": "R1",
+    "measured_electrical_angle": "B9",
 }
 
 # Sheet name patterns

@@ -462,6 +462,18 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Failure margin migration warning (may already exist): {e}")
 
+            # Migration: Add measured_electrical_angle column to track_results
+            try:
+                session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding measured_electrical_angle column")
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN measured_electrical_angle FLOAT"))
+                    session.commit()
+                    logger.info("Migration completed: Added measured_electrical_angle column")
+                except Exception as e:
+                    logger.warning(f"measured_electrical_angle migration warning (may already exist): {e}")
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
@@ -1931,6 +1943,7 @@ class DatabaseManager:
             unit_length=track.unit_length,
             untrimmed_resistance=track.untrimmed_resistance,
             trimmed_resistance=track.trimmed_resistance,
+            measured_electrical_angle=track.measured_electrical_angle,
             optimal_offset=track.optimal_offset,
             final_linearity_error_shifted=track.linearity_error,
             linearity_pass=track.linearity_pass,
@@ -2078,6 +2091,7 @@ class DatabaseManager:
                 unit_length=db_track.unit_length,
                 untrimmed_resistance=db_track.untrimmed_resistance,
                 trimmed_resistance=db_track.trimmed_resistance,
+                measured_electrical_angle=getattr(db_track, 'measured_electrical_angle', None),
                 failure_probability=db_track.failure_probability,
                 risk_category=risk_category,
                 is_anomaly=db_track.is_anomaly or False,  # Retrieve anomaly flag
