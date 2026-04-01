@@ -294,6 +294,12 @@ class FinalTestParser:
         sn_match = re.search(r'[-_]sn([a-zA-Z0-9]+)', base, re.IGNORECASE)
         if sn_match:
             metadata["serial"] = sn_match.group(1)
+        else:
+            # Fallback: "model final serial" pattern (e.g., "8340-1 final 215_6-4-2025")
+            # The word "final" separates model from serial number
+            final_match = re.search(r'\bfinal\s+(\d+)', base, re.IGNORECASE)
+            if final_match:
+                metadata["serial"] = final_match.group(1)
 
         # Try to extract date - multiple patterns:
         # Pattern 1: M-D-YYYY (e.g., 3-16-2011)
