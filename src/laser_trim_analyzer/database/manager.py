@@ -3682,12 +3682,12 @@ class DatabaseManager:
             for trim_id, trim_serial, trim_date, trim_model in variant_trims:
                 if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
                     days_diff = (test_date - trim_date).days
-                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.95
+                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
                     logger.debug(
                         f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
                         f"(normalized model: '{ft_model_norm}'), {days_diff} days"
                     )
-                    return trim_id, max(0.5, confidence), days_diff
+                    return trim_id, confidence, days_diff
 
         # Try reverse: trim has variant suffixes, FT has base model
         # Find all trim models that normalize to our FT model
@@ -3712,18 +3712,26 @@ class DatabaseManager:
                 continue
             if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
                 days_diff = (test_date - trim_date).days
-                confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.90
+                confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
                 logger.debug(
                     f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
                     f"(base model: '{ft_model_norm}'), {days_diff} days"
                 )
-                return trim_id, max(0.5, confidence), days_diff
+                return trim_id, confidence, days_diff
 
         return None, None, None
 
     @staticmethod
-    def _calculate_match_confidence(days_diff: int, exact_serial: bool = True) -> float:
-        """Calculate match confidence based on time proximity and match type."""
+    def _calculate_match_confidence(days_diff: int, exact_serial: bool = True,
+                                     model_variant: bool = False) -> float:
+        """Calculate match confidence based on time proximity and match quality.
+
+        Confidence bands:
+        - Exact model + exact serial, same week: 0.93-1.00
+        - Exact model + fuzzy serial, same week: 0.84-0.90
+        - Model variant + fuzzy serial, same week: 0.71-0.77
+        - Any match beyond 30 days: drops significantly
+        """
         # Time-based confidence
         if days_diff <= 7:
             time_conf = 1.0 - (days_diff * 0.01)
@@ -3732,11 +3740,14 @@ class DatabaseManager:
         else:
             time_conf = 0.7 - ((days_diff - 30) * 0.007)
 
-        # Reduce confidence slightly for fuzzy matches
+        # Match quality penalties (applied multiplicatively)
         if not exact_serial:
-            time_conf *= 0.95
+            time_conf *= 0.90  # was 0.95 — fuzzy serial is less certain
 
-        return max(0.5, time_conf)
+        if model_variant:
+            time_conf *= 0.85  # model variant adds uncertainty
+
+        return max(0.40, time_conf)
 
     def get_unmatched_ft_diagnostics(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
