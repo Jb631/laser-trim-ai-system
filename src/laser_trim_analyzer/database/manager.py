@@ -3551,10 +3551,10 @@ class DatabaseManager:
         s = serial.lower().strip()
         # Remove common prefixes
         s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
-        # Strip trailing track/position suffixes (A-D for tracks, P/R for position)
+        # Strip any trailing single letter suffix (track positions, rotary positions, etc.)
         # Only strip if there are digits before the letter (don't strip "A" alone)
-        # Handles: 32A, 32B, 10P, 10R, 125A, 1004a, 1D, 5A
-        s = re.sub(r'^(\d+)[a-dp-r]$', r'\1', s)
+        # Handles: 32A, 32B, 10P, 10R, 125E, 1004s, 32T, etc.
+        s = re.sub(r'^(\d+)[a-z]$', r'\1', s)
         # Strip leading zeros (but keep at least one digit for "0" itself)
         s = s.lstrip('0') or '0'
         return s
