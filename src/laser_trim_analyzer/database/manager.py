@@ -3567,6 +3567,7 @@ class DatabaseManager:
         Strips trailing letter suffixes that indicate product variants:
         - 8275A, 8275B, 8275C → 8275
         - 8508-A, 8508-B → 8508
+        - 7280-1-CT, 7280-1-AB → 7280-1
 
         Does NOT strip numeric suffixes (8340-1 stays 8340-1) since
         those are distinct model configurations.
@@ -3576,8 +3577,8 @@ class DatabaseManager:
             return model
         # Strip trailing letter-only variant: "8275A" → "8275"
         s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', model)
-        # Strip trailing hyphen + single letter: "8508-A" → "8508"
-        s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]$', r'\1', s)
+        # Strip trailing hyphen + letter(s) variant: "8508-A" → "8508", "7280-1-CT" → "7280-1"
+        s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]+$', r'\1', s)
         return s
 
     def _find_matching_trim(
