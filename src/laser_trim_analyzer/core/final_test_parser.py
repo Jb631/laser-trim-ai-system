@@ -250,6 +250,7 @@ class FinalTestParser:
         - 1081313-sn108_3-16-2011_12-17 PM.xls
         - Rout_1091701_sn1695a_vo.xls
         - 1844202-sn1004a_7-27-2022_1-26 PM.xls
+        - 8340-1 final 215_6-4-2025_7-38 PM.xls
         """
         metadata = {
             "filename": filename,
