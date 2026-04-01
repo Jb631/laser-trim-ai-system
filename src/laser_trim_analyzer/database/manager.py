@@ -1616,7 +1616,8 @@ class DatabaseManager:
             return {"models": models, "periods": periods, "values": values}
 
     def get_escape_scatter_data(
-        self, days_back: int = 90, max_points: int = 500
+        self, days_back: int = 90, max_points: int = 500,
+        min_confidence: float = 0.70
     ) -> Dict[str, Any]:
         """Get paired trim/FT linearity errors for scatter plot.
 
@@ -1642,6 +1643,7 @@ class DatabaseManager:
                 .join(DBFinalTestTrack, DBFinalTestTrack.final_test_id == DBFinalTestResult.id)
                 .filter(
                     DBFinalTestResult.file_date >= cutoff_date,
+                    DBFinalTestResult.match_confidence >= min_confidence,
                     DBTrackResult.final_linearity_error_shifted.isnot(None),
                     DBFinalTestTrack.linearity_error.isnot(None),
                     # Match track IDs: exact match (A=A, B=B) or FT single-track maps to trim track A
@@ -3550,9 +3552,9 @@ class DatabaseManager:
         - Lowercase
         - Strip whitespace
         - Remove common prefixes (sn, s/n, #)
-        - Strip trailing track suffixes (A/B/C/D/P/R) that trim files
-          use to identify track position but FT files omit.
-          e.g. 32A → 32, 10P → 10, 125B → 125
+        - Strip any trailing single letter suffix from digit-prefixed serials
+          (track positions, rotary positions, etc.)
+          e.g. 32A → 32, 10P → 10, 125E → 125, 32T → 32
         """
         import re
         s = serial.lower().strip()
