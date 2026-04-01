@@ -1644,8 +1644,14 @@ class DatabaseManager:
                     DBFinalTestResult.file_date >= cutoff_date,
                     DBTrackResult.final_linearity_error_shifted.isnot(None),
                     DBFinalTestTrack.linearity_error.isnot(None),
-                    # Match track IDs (A=A, B=B)
-                    DBTrackResult.track_id == DBFinalTestTrack.track_id,
+                    # Match track IDs: exact match (A=A, B=B) or FT single-track maps to trim track A
+                    or_(
+                        DBTrackResult.track_id == DBFinalTestTrack.track_id,
+                        and_(
+                            DBFinalTestTrack.track_id == "default",
+                            DBTrackResult.track_id == "A",
+                        ),
+                    ),
                 )
                 .limit(max_points)
                 .all()
