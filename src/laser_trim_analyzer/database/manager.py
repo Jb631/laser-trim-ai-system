@@ -1467,7 +1467,7 @@ class DatabaseManager:
                 "link_rate": (linked_count / total_ft * 100) if total_ft > 0 else 0,
             }
 
-    def get_escape_overkill_analysis(self, days_back: int = 90) -> Dict[str, Any]:
+    def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
         """Analyze escapes and overkills by comparing trim vs FT linearity results.
 
         Escape = trim passed linearity but FT failed (bad unit shipped)
@@ -1497,6 +1497,7 @@ class DatabaseManager:
                     DBFinalTestResult.file_date >= cutoff_date,
                     DBFinalTestResult.linked_trim_id.isnot(None),
                     DBFinalTestResult.linearity_pass.isnot(None),
+                    DBFinalTestResult.match_confidence >= min_confidence,
                 )
                 .group_by(DBFinalTestResult.id, DBFinalTestResult.model, DBFinalTestResult.linearity_pass)
                 .all()
