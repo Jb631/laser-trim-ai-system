@@ -474,6 +474,20 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"measured_electrical_angle migration warning (may already exist): {e}")
 
+            # Migration: Add max deviation columns to track_results
+            try:
+                session.execute(text("SELECT max_deviation FROM track_results LIMIT 1"))
+            except OperationalError:
+                logger.info("Running migration: Adding max deviation columns")
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_deviation FLOAT"))
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN max_deviation_position FLOAT"))
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN deviation_uniformity FLOAT"))
+                    session.commit()
+                    logger.info("Migration completed: Added max deviation columns")
+                except Exception as e:
+                    logger.warning(f"Max deviation migration warning (may already exist): {e}")
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
@@ -3537,10 +3551,10 @@ class DatabaseManager:
         s = serial.lower().strip()
         # Remove common prefixes
         s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
-        # Strip trailing single-letter track/position suffixes
+        # Strip trailing track/position suffixes (A-D for tracks, P/R for position)
         # Only strip if there are digits before the letter (don't strip "A" alone)
         # Handles: 32A, 32B, 10P, 10R, 125A, 1004a, 1D, 5A
-        s = re.sub(r'^(\d+)[a-z]$', r'\1', s)
+        s = re.sub(r'^(\d+)[a-dp-r]$', r'\1', s)
         # Strip leading zeros (but keep at least one digit for "0" itself)
         s = s.lstrip('0') or '0'
         return s
@@ -5035,20 +5049,47 @@ class DatabaseManager:
 
         return count
 
+    def mark_file_skipped(self, filename: str, file_path: str,
+                          file_hash: str, file_size: int,
+                          file_modified_date) -> None:
+        """Record a non-trim file so it's skipped on future processing runs."""
+        with self._write_lock:
+            with self.session() as session:
+                existing = session.query(DBProcessedFile).filter(
+                    DBProcessedFile.file_hash == file_hash
+                ).first()
+                if existing:
+                    return
+
+                session.add(DBProcessedFile(
+                    filename=filename,
+                    file_path=file_path,
+                    file_hash=file_hash,
+                    file_size=file_size,
+                    file_modified_date=file_modified_date,
+                    analysis_id=None,
+                    success=True,
+                ))
+
     def backfill_max_deviation(self, batch_size: int = 1000) -> int:
         """
         Backfill max_deviation, max_deviation_position, and deviation_uniformity
         for existing tracks that have error_data but no max_deviation.
 
+        Commits in batches so that partial progress is preserved if an error
+        occurs mid-way.  This is intentional — a backfill that saves 900 of
+        1000 rows is better than one that saves 0.
+
         Returns:
-            Number of tracks updated
+            Number of tracks updated (may be partial on error)
         """
         import json
         import statistics as stats_module
 
         updated = 0
         with self._write_lock:
-            with self.session() as session:
+            session = self._SessionFactory()
+            try:
                 # Get total count first
                 total = session.execute(text(
                     "SELECT COUNT(*) FROM track_results "
@@ -5114,6 +5155,12 @@ class DatabaseManager:
 
                     session.commit()
                     logger.info(f"Backfilled {updated}/{total} tracks...")
+
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Backfill error after {updated} updates: {e}")
+            finally:
+                session.close()
 
         logger.info(f"Backfill complete: {updated} tracks updated")
         return updated

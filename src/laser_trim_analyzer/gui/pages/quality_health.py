@@ -10,6 +10,7 @@ Designed for non-technical users who need a quick read on quality.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -173,7 +174,6 @@ class QualityHealthPage(ctk.CTkFrame):
                 ft_info = ft_map.get(name)
                 if not ft_info:
                     # Try normalized model (e.g. trim "8275A" → FT "8275")
-                    import re
                     base = re.sub(r'^(\d+)[A-Za-z]$', r'\1', name)
                     base = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]$', r'\1', base)
                     if base != name:
@@ -206,7 +206,7 @@ class QualityHealthPage(ctk.CTkFrame):
         decline > 0 means quality got worse; decline < 0 means improved.
         """
         from datetime import timedelta
-        from sqlalchemy import func, case
+        from sqlalchemy import func, case, literal_column
         from laser_trim_analyzer.database.models import (
             AnalysisResult as DBAnalysisResult,
             TrackResult as DBTrackResult,
@@ -216,72 +216,74 @@ class QualityHealthPage(ctk.CTkFrame):
 
         try:
             with db.session() as session:
-                for model in models:
-                    # Find date range for this model
-                    date_range = (
-                        session.query(
-                            func.min(DBAnalysisResult.file_date),
-                            func.max(DBAnalysisResult.file_date),
-                        )
-                        .filter(
-                            DBAnalysisResult.model == model,
-                            DBAnalysisResult.file_date.isnot(None),
-                        )
-                        .first()
+                # Single query: get date range per model
+                date_ranges = (
+                    session.query(
+                        DBAnalysisResult.model,
+                        func.min(DBAnalysisResult.file_date).label("min_date"),
+                        func.max(DBAnalysisResult.file_date).label("max_date"),
                     )
+                    .filter(
+                        DBAnalysisResult.model.in_(models),
+                        DBAnalysisResult.file_date.isnot(None),
+                    )
+                    .group_by(DBAnalysisResult.model)
+                    .all()
+                )
 
-                    if not date_range or not date_range[0] or not date_range[1]:
+                # Build midpoints, filter out models with <14 day span
+                model_midpoints = {}
+                for row in date_ranges:
+                    if not row.min_date or not row.max_date:
                         continue
-
-                    min_date, max_date = date_range
-                    # Need reasonable span to compute a trend
-                    span = (max_date - min_date).days
+                    span = (row.max_date - row.min_date).days
                     if span < 14:
                         continue
+                    model_midpoints[row.model] = row.min_date + timedelta(days=span // 2)
 
-                    midpoint = min_date + timedelta(days=span // 2)
+                if not model_midpoints:
+                    return result
 
-                    # First half (older): linearity pass rate
-                    older = (
-                        session.query(
-                            func.count(DBTrackResult.id),
-                            func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)),
-                        )
-                        .join(DBAnalysisResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
-                        .filter(
-                            DBAnalysisResult.model == model,
-                            DBAnalysisResult.file_date < midpoint,
-                        )
-                        .first()
+                # Single query: get counts per model split by older/recent
+                # using each model's midpoint via CASE
+                mid_models = list(model_midpoints.keys())
+                rows = (
+                    session.query(
+                        DBAnalysisResult.model,
+                        DBAnalysisResult.file_date,
+                        DBTrackResult.linearity_pass,
                     )
-
-                    # Second half (recent): linearity pass rate
-                    recent = (
-                        session.query(
-                            func.count(DBTrackResult.id),
-                            func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)),
-                        )
-                        .join(DBAnalysisResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
-                        .filter(
-                            DBAnalysisResult.model == model,
-                            DBAnalysisResult.file_date >= midpoint,
-                        )
-                        .first()
+                    .join(DBAnalysisResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                    .filter(
+                        DBAnalysisResult.model.in_(mid_models),
+                        DBAnalysisResult.file_date.isnot(None),
                     )
+                    .all()
+                )
 
-                    recent_total, recent_passed = recent or (0, 0)
-                    older_total, older_passed = older or (0, 0)
-                    recent_total = recent_total or 0
-                    recent_passed = recent_passed or 0
-                    older_total = older_total or 0
-                    older_passed = older_passed or 0
-
-                    # Need data in both halves
-                    if recent_total < 5 or older_total < 5:
+                # Aggregate in Python — avoids complex per-model CASE in SQL
+                from collections import defaultdict
+                counts = defaultdict(lambda: {"older_total": 0, "older_passed": 0,
+                                               "recent_total": 0, "recent_passed": 0})
+                for row in rows:
+                    mid = model_midpoints.get(row.model)
+                    if mid is None:
                         continue
+                    bucket = counts[row.model]
+                    if row.file_date < mid:
+                        bucket["older_total"] += 1
+                        if row.linearity_pass:
+                            bucket["older_passed"] += 1
+                    else:
+                        bucket["recent_total"] += 1
+                        if row.linearity_pass:
+                            bucket["recent_passed"] += 1
 
-                    recent_rate = recent_passed / recent_total * 100
-                    older_rate = older_passed / older_total * 100
+                for model, c in counts.items():
+                    if c["recent_total"] < 5 or c["older_total"] < 5:
+                        continue
+                    recent_rate = c["recent_passed"] / c["recent_total"] * 100
+                    older_rate = c["older_passed"] / c["older_total"] * 100
                     decline = older_rate - recent_rate  # positive = got worse
 
                     result[model] = {

@@ -768,29 +768,18 @@ class Processor:
         """
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.database.models import ProcessedFile as DBProcessedFile
 
             db = get_database()
             file_hash = self._calculate_file_hash(file_path)
+            stat = file_path.stat()
 
-            with db.session() as session:
-                # Check if already recorded
-                existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_hash == file_hash
-                ).first()
-                if existing:
-                    return
-
-                processed_file = DBProcessedFile(
-                    filename=file_path.name,
-                    file_path=str(file_path),
-                    file_hash=file_hash,
-                    file_size=file_path.stat().st_size,
-                    file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
-                    analysis_id=None,
-                    success=True,  # Marks as "handled" for incremental skip
-                )
-                session.add(processed_file)
+            db.mark_file_skipped(
+                filename=file_path.name,
+                file_path=str(file_path),
+                file_hash=file_hash,
+                file_size=stat.st_size,
+                file_modified_date=datetime.fromtimestamp(stat.st_mtime),
+            )
 
             # Update in-memory cache if loaded
             if self._processed_filenames is not None:
