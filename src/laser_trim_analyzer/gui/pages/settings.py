@@ -1147,6 +1147,31 @@ class SettingsPage(ctk.CTkFrame):
             logger.exception(f"ML apply failed: {e}")
             self.after(0, lambda: self._on_apply_complete(False, str(e)))
 
+    def _refresh_staleness(self):
+        """Refresh the ML staleness label with current data."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            staleness = db.get_ml_staleness()
+            needs_retrain = [s for s in staleness if s["needs_retrain"]]
+            if needs_retrain:
+                models_str = ", ".join(s["model"] for s in needs_retrain[:5])
+                if len(needs_retrain) > 5:
+                    models_str += f" (+{len(needs_retrain) - 5} more)"
+                self.ml_staleness_label.configure(
+                    text=f"Retrain needed: {len(needs_retrain)} models with 50+ new records — {models_str}",
+                    text_color="#f39c12"
+                )
+            elif staleness:
+                self.ml_staleness_label.configure(
+                    text=f"All {len(staleness)} trained models are up to date",
+                    text_color="#27ae60"
+                )
+            else:
+                self.ml_staleness_label.configure(text="", text_color="gray")
+        except Exception:
+            self.ml_staleness_label.configure(text="", text_color="gray")
+
     def _on_apply_complete(self, success: bool, message: str):
         """Handle apply completion."""
         self.train_btn.configure(state="normal")
@@ -1173,6 +1198,8 @@ class SettingsPage(ctk.CTkFrame):
             if status_details:
                 self.model_status_label.configure(text=status_details)
             logger.info(f"ML training successful: {message}")
+            # Refresh staleness label so "Retrain needed" clears
+            self._refresh_staleness()
         else:
             self.ml_status_label.configure(text=f"Status: Failed - {message[:40]}...", text_color="#e74c3c")
             logger.error(f"ML training failed: {message}")
@@ -1223,25 +1250,4 @@ class SettingsPage(ctk.CTkFrame):
             self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
 
         # Update staleness info
-        try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            staleness = db.get_ml_staleness()
-            needs_retrain = [s for s in staleness if s["needs_retrain"]]
-            if needs_retrain:
-                models_str = ", ".join(s["model"] for s in needs_retrain[:5])
-                if len(needs_retrain) > 5:
-                    models_str += f" (+{len(needs_retrain) - 5} more)"
-                self.ml_staleness_label.configure(
-                    text=f"Retrain needed: {len(needs_retrain)} models with 50+ new records — {models_str}",
-                    text_color="#f39c12"
-                )
-            elif staleness:
-                self.ml_staleness_label.configure(
-                    text=f"All {len(staleness)} trained models are up to date",
-                    text_color="#27ae60"
-                )
-            else:
-                self.ml_staleness_label.configure(text="", text_color="gray")
-        except Exception:
-            self.ml_staleness_label.configure(text="", text_color="gray")
+        self._refresh_staleness()

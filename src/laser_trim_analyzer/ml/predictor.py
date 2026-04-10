@@ -234,7 +234,19 @@ class ModelPredictor:
 
             # Evaluate
             y_pred = self.classifier.predict(X_test_scaled)
-            y_proba = self.classifier.predict_proba(X_test_scaled)[:, 1]
+            proba = self.classifier.predict_proba(X_test_scaled)
+            # Handle single-class case: predict_proba returns 1 column when
+            # only one class is present in training data
+            if proba.shape[1] == 1:
+                # Only one class seen - use the probability directly
+                # If the only class is True (fail), proba is P(fail)
+                # If the only class is False (pass), proba is P(pass), so P(fail) = 1 - proba
+                if self.classifier.classes_[0]:
+                    y_proba = proba[:, 0]
+                else:
+                    y_proba = 1 - proba[:, 0]
+            else:
+                y_proba = proba[:, 1]
 
             # Calculate metrics
             metrics = PredictorMetrics(

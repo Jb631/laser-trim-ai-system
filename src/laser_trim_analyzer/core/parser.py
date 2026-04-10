@@ -22,6 +22,7 @@ from laser_trim_analyzer.utils.constants import (
     SYSTEM_A_IDENTIFIER, SYSTEM_B_IDENTIFIERS,
     EXCEL_EXTENSIONS,
     FINAL_TEST_SHEET_PATTERNS, FINAL_TEST_ROUT_PREFIX,
+    FINAL_TEST_FILENAME_PATTERNS, FINAL_TEST_FOLDER_INDICATORS,
     TRIM_FILE_INDICATORS, NON_TRIM_FILENAME_PATTERNS,
 )
 
@@ -861,6 +862,19 @@ def detect_file_type(file_path: Path) -> str:
         logger.debug(f"Detected final_test (model-final-serial pattern): {filename}")
         return "final_test"
 
+    # Check for FT filename substrings (_Redundant_, _Primary_)
+    for pattern in FINAL_TEST_FILENAME_PATTERNS:
+        if pattern in filename_lower:
+            logger.debug(f"Detected final_test ('{pattern}' in filename): {filename}")
+            return "final_test"
+
+    # Check if file is in a Final Test folder (e.g., "Test Station")
+    file_path_lower = str(file_path).lower()
+    for folder in FINAL_TEST_FOLDER_INDICATORS:
+        if folder in file_path_lower:
+            logger.debug(f"Detected final_test ('{folder}' in path): {filename}")
+            return "final_test"
+
     # Check filename for trim indicators
     for indicator in TRIM_FILE_INDICATORS:
         if indicator in filename:
@@ -927,8 +941,10 @@ def detect_file_type(file_path: Path) -> str:
             # Real trim files always have System A sheets (SEC1 TRK) or
             # System B sheets (test/Lin Error).
             has_system_a = any(SYSTEM_A_IDENTIFIER in s for s in sheet_names)
+            # Use exact sheet name match for System B to avoid false positives.
+            # "test" as a substring would match FT sheets like "TEST RESULTS DATA".
             has_system_b = any(
-                ident.lower() in s.lower()
+                s.lower() == ident.lower()
                 for s in sheet_names
                 for ident in SYSTEM_B_IDENTIFIERS
             )

@@ -133,6 +133,18 @@ FINAL_TEST_SHEET_PATTERNS: Final[list] = [
 ]
 FINAL_TEST_ROUT_PREFIX: Final[str] = "Rout_"  # Prefix for Format 2 files
 
+# Final Test filename substrings — if present, the file is almost certainly a FT file
+# _Redundant_ and _Primary_ refer to redundant/primary windings tested at final test
+FINAL_TEST_FILENAME_PATTERNS: Final[list] = [
+    "_redundant_",        # Redundant winding FT file
+    "_primary_",          # Primary winding FT file
+]
+
+# Folder names that indicate Final Test data (not trim data)
+FINAL_TEST_FOLDER_INDICATORS: Final[list] = [
+    "test station",       # Test Station folder on the network share
+]
+
 # Trim file detection (things that indicate it's NOT a final test)
 TRIM_FILE_INDICATORS: Final[list] = [
     "SEC1 TRK",           # System A multi-track

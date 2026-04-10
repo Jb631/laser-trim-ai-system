@@ -567,6 +567,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         untrimmed_r = None
         trimmed_r = None
         r_change_pct = None
+        trim_imp = None
+        max_err_red = None
 
         if result.tracks:
             num_tracks = len(result.tracks)

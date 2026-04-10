@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, exists, func, and_, or_, desc, text, case
-from sqlalchemy.orm import sessionmaker, Session, joinedload
+from sqlalchemy.orm import sessionmaker, Session, joinedload, subqueryload
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -4727,88 +4727,98 @@ class DatabaseManager:
         Checks analysis-level and track-level quality issues, then
         updates the data_quality and data_quality_issues columns.
 
+        Processes in batches to avoid loading all records into memory at once.
+
         Returns summary of what was found and updated.
         """
         summary = {"scanned": 0, "flagged": 0, "already_suspect": 0, "issues_by_type": {}}
+        batch_size = 1000
 
         with self._write_lock:
             with self.session() as session:
-                # Load all analyses with their tracks
-                analyses = session.query(DBAnalysisResult).options(
-                    joinedload(DBAnalysisResult.tracks)
-                ).all()
+                total = session.query(func.count(DBAnalysisResult.id)).scalar() or 0
+                summary["scanned"] = total
 
-                summary["scanned"] = len(analyses)
+                # Process in batches to avoid memory issues with large databases
+                # Use subqueryload (not joinedload) because joinedload + limit
+                # produces incorrect results due to JOIN row multiplication
+                for offset in range(0, total, batch_size):
+                    analyses = session.query(DBAnalysisResult).options(
+                        subqueryload(DBAnalysisResult.tracks)
+                    ).order_by(DBAnalysisResult.id).offset(offset).limit(batch_size).all()
 
-                for analysis in analyses:
-                    issues = []
+                    for analysis in analyses:
+                        issues = []
 
-                    # Analysis-level checks
-                    if analysis.model == "Unknown":
-                        issues.append("Unknown model")
-                    if analysis.serial == "Unknown":
-                        issues.append("Unknown serial")
-                    if analysis.file_date is None:
-                        issues.append("Missing file date")
-                    if not analysis.tracks:
-                        issues.append("No track data")
+                        # Analysis-level checks
+                        if analysis.model == "Unknown":
+                            issues.append("Unknown model")
+                        if analysis.serial == "Unknown":
+                            issues.append("Unknown serial")
+                        if analysis.file_date is None:
+                            issues.append("Missing file date")
+                        if not analysis.tracks:
+                            issues.append("No track data")
 
-                    # Track-level checks
-                    for track in analysis.tracks:
-                        tid = track.track_id or "?"
+                        # Track-level checks
+                        for track in analysis.tracks:
+                            tid = track.track_id or "?"
 
-                        if track.sigma_gradient is not None and track.sigma_gradient < 0:
-                            issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
+                            if track.sigma_gradient is not None and track.sigma_gradient < 0:
+                                issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
 
-                        if track.upper_limits is None and track.lower_limits is None and track.linearity_spec is None:
-                            issues.append(f"{tid}: no spec limits")
+                            if track.upper_limits is None and track.lower_limits is None and track.linearity_spec is None:
+                                issues.append(f"{tid}: no spec limits")
 
-                        # Check for all-zero error data
-                        if track.error_data:
-                            try:
-                                if all(v == 0 or v is None for v in track.error_data):
-                                    issues.append(f"{tid}: all-zero error data")
-                            except (TypeError, ValueError):
-                                issues.append(f"{tid}: corrupt error data")
+                            # Check for all-zero error data
+                            if track.error_data:
+                                try:
+                                    if all(v == 0 or v is None for v in track.error_data):
+                                        issues.append(f"{tid}: all-zero error data")
+                                except (TypeError, ValueError):
+                                    issues.append(f"{tid}: corrupt error data")
 
-                        # Check for very short position arrays
-                        if track.position_data:
-                            try:
-                                if len(track.position_data) < 10:
-                                    issues.append(f"{tid}: too few data points ({len(track.position_data)})")
-                            except TypeError:
-                                issues.append(f"{tid}: corrupt position data")
+                            # Check for very short position arrays
+                            if track.position_data:
+                                try:
+                                    if len(track.position_data) < 10:
+                                        issues.append(f"{tid}: too few data points ({len(track.position_data)})")
+                                except TypeError:
+                                    issues.append(f"{tid}: corrupt position data")
 
-                        # Check position/error array length mismatch
-                        if track.position_data and track.error_data:
-                            try:
-                                if len(track.position_data) != len(track.error_data):
-                                    issues.append(
-                                        f"{tid}: array mismatch (pos={len(track.position_data)}, err={len(track.error_data)})"
-                                    )
-                            except TypeError:
-                                pass
+                            # Check position/error array length mismatch
+                            if track.position_data and track.error_data:
+                                try:
+                                    if len(track.position_data) != len(track.error_data):
+                                        issues.append(
+                                            f"{tid}: array mismatch (pos={len(track.position_data)}, err={len(track.error_data)})"
+                                        )
+                                except TypeError:
+                                    pass
 
-                    # Update the record
-                    if issues:
-                        was_suspect = analysis.data_quality == "suspect"
-                        analysis.data_quality = "suspect"
-                        analysis.data_quality_issues = ", ".join(issues)
-                        if was_suspect:
-                            summary["already_suspect"] += 1
+                        # Update the record
+                        if issues:
+                            was_suspect = analysis.data_quality == "suspect"
+                            analysis.data_quality = "suspect"
+                            analysis.data_quality_issues = ", ".join(issues)
+                            if was_suspect:
+                                summary["already_suspect"] += 1
+                            else:
+                                summary["flagged"] += 1
+
+                            # Count by issue type
+                            for issue in issues:
+                                # Normalize to category
+                                category = issue.split(":")[0].strip() if ":" in issue else issue
+                                summary["issues_by_type"][category] = summary["issues_by_type"].get(category, 0) + 1
                         else:
-                            summary["flagged"] += 1
+                            # Clear false positives from previous scans
+                            if analysis.data_quality == "suspect":
+                                analysis.data_quality = "good"
+                                analysis.data_quality_issues = None
 
-                        # Count by issue type
-                        for issue in issues:
-                            # Normalize to category
-                            category = issue.split(":")[0].strip() if ":" in issue else issue
-                            summary["issues_by_type"][category] = summary["issues_by_type"].get(category, 0) + 1
-                    else:
-                        # Clear false positives from previous scans
-                        if analysis.data_quality == "suspect":
-                            analysis.data_quality = "good"
-                            analysis.data_quality_issues = None
+                    # Flush each batch to free memory
+                    session.flush()
 
                 logger.info(
                     f"Retroactive validation: scanned {summary['scanned']}, "

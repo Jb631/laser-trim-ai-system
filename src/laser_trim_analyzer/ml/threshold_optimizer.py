@@ -124,9 +124,19 @@ class ModelThresholdOptimizer:
         Returns:
             ThresholdResult with calculated threshold and metadata
         """
-        # Convert to numpy for calculations
-        sigma = np.array(sigma_values)
-        is_pass = np.array(passed).astype(bool)
+        # Convert to numpy for calculations, filtering out None/NaN values
+        sigma_raw = np.array(sigma_values, dtype=object)
+        is_pass_raw = np.array(passed).astype(bool)
+
+        # Filter out None/NaN sigma values (some models have no sigma data)
+        valid_mask = np.array([v is not None and not (isinstance(v, float) and np.isnan(v))
+                               for v in sigma_raw])
+        if not np.any(valid_mask):
+            logger.warning(f"ThresholdOptimizer[{self.model_name}] no valid sigma values, using fallback")
+            return self._fallback_threshold(linearity_spec)
+
+        sigma = sigma_raw[valid_mask].astype(float)
+        is_pass = is_pass_raw[valid_mask]
 
         # Get pass/fail groups
         pass_sigma = sigma[is_pass]
@@ -156,6 +166,11 @@ class ModelThresholdOptimizer:
         # Determine threshold using appropriate strategy
         if self.n_samples < self.MIN_SAMPLES:
             # Insufficient data - use fallback
+            result = self._fallback_threshold(linearity_spec)
+        elif self.n_pass == 0:
+            # No passing samples (0% pass rate) - can't learn a meaningful
+            # threshold from failures alone, use fallback
+            logger.info(f"ThresholdOptimizer[{self.model_name}] no passing samples, using fallback")
             result = self._fallback_threshold(linearity_spec)
         elif self.n_fail < self.MIN_FAILURES:
             # No/few failures - use percentile of passing
