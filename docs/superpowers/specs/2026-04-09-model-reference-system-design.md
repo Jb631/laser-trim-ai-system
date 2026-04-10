@@ -77,30 +77,40 @@ Import logic in `database/manager.py`:
 
 ---
 
-## 3. Settings Page: Model Specs Editor
+## 3. Model Specs Page (New — 7th Page)
 
-Add a "Model Specifications" section to the Settings page with:
+A dedicated page in the app navigation (Dashboard, Process, Analyze, Compare, Trends, **Specs**, Settings).
 
-### Model List
-- Scrollable table showing all models with key fields (model, element type, product class, linearity type)
+### Model List View
+- Scrollable table showing all models with key columns: model, element type, product class, linearity type, resistance range, electrical angle
 - Search/filter box to find models quickly
 - Sort by any column
+- Color-coded completeness: highlight models missing key fields (linearity type, element type)
 
-### Add/Edit Model
-- Modal or inline form with all fields from the model_specs table
+### Edit Model (Inline or Detail Panel)
+- Click a model row to edit its fields
 - Element type: dropdown with known values + free text option
 - Product class: dropdown with known values
 - Linearity type: dropdown (Absolute, Independent, Term Base, Zero-Based, VR Max, Custom)
-- Resistance range: two number fields (min/max)
+- Linearity spec text: free text for the raw spec description
+- Resistance range: two number fields (min/max Ohms)
 - Electrical angle: number + tolerance + unit dropdown (in/deg)
+- Output smoothness: free text
+- Circuit type: Open/Closed dropdown
 - Notes: free text
+- Save/Cancel buttons
+
+### Add New Model
+- "Add Model" button at top
+- Same form as edit, with model number field editable
 
 ### Delete Model
 - Delete with confirmation
 
-### Import Button
-- "Import from Excel" button opens file picker
-- Merges with existing data (update + add, no delete)
+### Initial Seed
+- One-time "Import from Excel" button in Settings page to seed the database from the reference spreadsheet
+- After initial import, all management happens on the Specs page
+- Re-import option available but merges only (updates existing, adds new, never deletes)
 
 ---
 
