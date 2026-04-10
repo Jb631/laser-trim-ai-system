@@ -1,19 +1,63 @@
-# Phase 1: Model Reference System — Design Spec
+# Laser Trim Analyzer v5 — Accuracy & Analytics Upgrade
 
 **Date:** 2026-04-09
 **Status:** Draft
 **Branch:** To be created from main (tag v4.0.0 as safety net first)
 
-## Goal
+## Vision
 
-Add a model reference system so the app knows the engineering specs for each model — element type, product class, linearity type, resistance range, electrical angle, etc. This data enriches the Analyze page, enables filtering/grouping on Dashboard and Trends, and provides the foundation for Phase 2's spec-aware analysis engine.
+Transform the app into a definitive manufacturing quality platform where **anyone** can open it and immediately understand: what are the quality issues, where should we focus, and what's getting better or worse. The app should surface insights that drive action — not just record measurements.
 
-## Non-Goals
+### Design Principles
 
-- No customer data anywhere in the app
-- No changes to the linearity calculation engine (Phase 2)
-- No FT compensation parsing (Phase 2)
-- No slope/angle optimization (Phase 2)
+1. **Accuracy first** — Pass/fail determinations must match what a skilled operator would conclude after applying all allowed adjustments. Inaccurate data undermines trust in everything else.
+2. **Actionable at a glance** — Dashboard shows the 3-5 things that need attention right now, ranked by impact. No digging required for the critical stuff.
+3. **Layered depth** — Executive summary → model-level detail → unit-level detail. Each layer answers different questions.
+4. **Keep everything, enhance everything** — Sigma analysis, ML thresholds, drift detection, ML insights, recommendations all stay and get better. Nothing is removed.
+5. **No customer data** — Technical specs and quality metrics only.
+
+### Existing Features to Preserve and Enhance
+
+| Feature | Current State | Enhancement Direction |
+|---------|--------------|----------------------|
+| Sigma analysis | Per-track sigma gradient | Keep as leading indicator, contextualize with spec-aware thresholds |
+| ML per-model thresholds | Trained from historical data | Add spec-aware baseline comparison, improve with accurate pass/fail |
+| Drift detection (CUSUM/EWMA) | Detects process shifts | Add element-type and product-class drift groupings |
+| ML failure prediction | Per-model classifiers | Improve accuracy with spec-aware features |
+| Risk categories | Low/Medium/High | Tie to cost impact and production volume |
+| Trim effectiveness | Linearity improvement % | Show before/after optimization comparison |
+| Near-miss analysis | Units close to threshold | Enhance with spec-aware margin calculation |
+| Pareto charts | Top failing models | Add element type and product class breakdowns |
+| P-charts | Process control | Add control limits per element type |
+| Executive export | Excel summary | Add spec-aware pass/fail comparison |
+
+### New Analytics to Add
+
+- **Spec-aware pass rate** — "Station says 60% pass, but with proper adjustment 78% actually pass" — this is the key metric that shows the real quality picture
+- **Adjustment impact analysis** — Which models benefit most from offset/slope optimization? Where is the gap between station and optimal?
+- **Element type performance comparison** — Ceramic vs Winding vs Black element failure rates and trends
+- **Product class performance** — Runner vs Low Vol vs Space quality levels
+- **Model-level scorecards** — At-a-glance health for each model: pass rate trend, Cpk, drift status, ML confidence, spec margins
+- **Resistance/angle tracking** — Are measured values within spec? Trends over time.
+- **Cpk/Ppk analysis** — Process capability indices per model using spec-aware limits
+- **First-pass yield vs adjusted yield** — How many pass on first trim vs require re-trim?
+- **Cost-weighted prioritization** — Combine failure rate × production volume × product class to rank where to focus
+
+---
+
+## Phased Implementation
+
+### Constraints
+- Keep current app (v4.0.0) as safety net — tag before starting
+- Each phase delivers working value independently
+- No breaking changes to existing data or functionality
+
+---
+
+## Phase 1: Model Reference System
+
+### Goal
+Add model engineering specs to the app so it knows what each model is, how it should be evaluated, and how to categorize it for analysis.
 
 ---
 
@@ -277,3 +321,83 @@ New analysis output fields:
 - Compare file-parsed linearity limits against reference spec
 - Flag mismatches (possible test station misconfiguration)
 - Compare file's electrical angle against reference spec angle + tolerance
+
+---
+
+## Phase 4: Advanced Analytics & Visualization
+
+**Goal:** Make the app the single source of truth for manufacturing quality. Anyone opens it and knows exactly what's wrong, what's improving, and where to focus — without needing to ask anyone.
+
+### 4.1 Dashboard Overhaul — "Open and Know"
+
+The dashboard should answer these questions at a glance:
+
+**Top section — What needs attention right now?**
+- Top 3-5 models ranked by impact (failure rate × volume × product class priority)
+- Each card shows: model, pass rate trend arrow, fail count this week, element type badge
+- Color-coded: red = getting worse, yellow = stable-bad, green = improving
+
+**Middle section — How are we doing overall?**
+- Spec-aware pass rate: "Station: 62% → Optimized: 74%" showing the gap between reported and actual
+- First-pass yield trend (pass on first trim vs re-trim needed)
+- Pass rate by element type (bar chart: Ceramic vs Winding vs Black etc.)
+- Pass rate by product class (Runner vs Low Vol vs Space)
+
+**Bottom section — Process health**
+- Drift alerts: models where CUSUM/EWMA detected a shift (existing, enhanced with element type grouping)
+- ML confidence summary: how many models have reliable predictions vs need more data
+- Sigma process health (existing, preserved)
+
+### 4.2 Model Scorecards
+
+Accessible from Dashboard (click a model) or Analyze page — a single-page summary for any model:
+
+- **Pass rate:** Current, 30-day trend, 90-day trend, all-time
+- **Spec-aware pass rate:** Station vs optimized (Phase 2 data)
+- **Cpk/Ppk:** Process capability index calculated from linearity error distribution vs spec limits
+- **Sigma health:** Current sigma gradient distribution, ML threshold, margin
+- **Drift status:** CUSUM/EWMA indicators, when last shift detected
+- **ML confidence:** Predictor accuracy, training samples, staleness
+- **Failure pattern:** Where on the travel do failures cluster? (position-based fail heatmap)
+- **Trim effectiveness:** Average linearity improvement from trimming
+- **Volume:** Units processed per week/month
+
+### 4.3 Enhanced Trends Page
+
+- **Comparative trends:** Overlay multiple models, element types, or product classes on one chart
+- **Cpk trend:** Process capability over time per model
+- **Yield trend:** First-pass yield vs adjusted yield over time
+- **Drift timeline:** Visual timeline showing when drift events occurred per model
+- **Spec-aware vs station trend:** Gap between station-reported and optimized pass rates over time
+
+### 4.4 Cpk/Ppk Process Capability
+
+Add process capability analysis:
+
+- **Cpk** (within-subgroup): How well the process performs relative to spec limits, accounting for centering
+- **Ppk** (overall): Long-term process performance
+- Calculated from linearity error distribution vs upper/lower spec limits
+- For bowtie specs: use the tightest spec point (minimum band width) as the capability reference
+- Display on model scorecards and trends
+- Color-coded: Cpk < 1.0 = red (not capable), 1.0-1.33 = yellow (marginal), > 1.33 = green (capable)
+
+### 4.5 Failure Pattern Analysis
+
+- **Position-based fail heatmap:** For each model, show where on the travel linearity failures cluster. Do failures happen at the ends, center, or specific positions? This tells the engineer WHERE the trim process needs improvement.
+- **Failure mode categorization:** Offset issue (all points shifted) vs shape issue (specific region fails) vs overall (scattered failures)
+- **Before/after trim comparison:** Show the improvement distribution — which positions improved most from trimming?
+
+### 4.6 ML Enhancements
+
+- **ML recommendations preserved and enhanced:** Keep existing failure predictions and risk categories
+- **Spec-aware ML features:** Add linearity type, element type, product class as features to the predictor
+- **Adjustment recommendation:** "This model typically benefits from +0.003 offset adjustment" based on historical optimal adjustments
+- **Drift detection per category:** Detect drift across all Ceramic models or all Runners, not just per-model
+- **Anomaly detection context:** Flag anomalies with context — "This unit's sigma is 3x the model average, and it's a Ceramic element which typically has tighter distributions"
+
+### 4.7 Reporting & Export Enhancements
+
+- **Executive summary export:** One-page PDF/Excel showing overall quality health, top issues, trend direction
+- **Model scorecard export:** Detailed per-model report for engineering review
+- **Spec-aware pass/fail export:** Export with both station and optimized determinations
+- **Scheduled reports:** Weekly/monthly auto-generated summaries (if feasible with current architecture)
