@@ -209,16 +209,18 @@ Using the `linearity_type` from the model_specs table, apply the correct calcula
 | VR Max | TBD | TBD | Verify meaning — likely same as Absolute expressed as voltage ratio |
 | Custom (bowtie etc.) | Per model | Per model | Use per-point limits from file, optimize offset within those |
 
-### 2.2 Offset + Slope Optimization
+### 2.2 Offset + Slope Optimization (Trim AND Final Test)
 
 Upgrade `_calculate_optimal_offset` in `analyzer.py` to `_calculate_optimal_adjustment`:
 
+- **Applies to both trim file analysis AND Final Test analysis** — the same optimization logic runs on any linearity error data regardless of source
 - **Current:** Optimizes offset only (1 DOF) — shifts error curve up/down
 - **New:** Optimizes offset + slope (2 DOF for Independent) or slope within bounds (for Absolute + angle tolerance)
 - Slope adjustment = rotating the reference line, mathematically equivalent to adjusting electrical angle
 - For each model, the allowed DOF comes from `linearity_type` and `electrical_angle_tol`
 - Optimization goal: minimize fail points (same as current), then minimize max error as tiebreaker
 - For non-uniform (bowtie) limits: constrained optimization against per-point upper/lower limits
+- Store both raw and optimized results so users can see the improvement
 
 ### 2.3 FT Compensation Parsing
 
