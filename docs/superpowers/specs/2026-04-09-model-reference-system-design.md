@@ -291,9 +291,9 @@ New analysis output fields:
 
 ---
 
-## Phase 3: Format Audit & Parsing Fixes
+## Phase 3: Format Audit, Parsing Fixes & Output Smoothness
 
-**Goal:** Ensure every file format variant is correctly parsed with accurate data extraction.
+**Goal:** Ensure every file format variant is correctly parsed with accurate data extraction. Add output smoothness analysis as a new data type.
 
 ### 3.1 Format Documentation
 
@@ -321,6 +321,48 @@ New analysis output fields:
 - Compare file-parsed linearity limits against reference spec
 - Flag mismatches (possible test station misconfiguration)
 - Compare file's electrical angle against reference spec angle + tolerance
+
+### 3.5 Output Smoothness Integration
+
+Add output smoothness as a new data type in the app. OS files live alongside linearity files in the Test Station folder (in an "Output Smoothness" or "OS" subfolder per model).
+
+**File format (consistent across all models):**
+- Excel (.xlsx) with sheets: Test Data, Report, Rev History
+- Test Data sheet layout:
+  - Metadata (rows 0-7, cols A-C): Model, Serial, Pot Type (Rotary/Linear), Gear Ratio, Input Voltage, Deviation Spec %, Electrical Travel (deg or in), Sample Rate (Hz)
+  - Result (row 1, cols G-I): Max Deviation (V), Max Spec Deviation (V), PASSED/FAILED
+  - Time-series (rows 1+, cols D-E): Time (s), Filtered Volts (V) — 1000 Hz sampled data
+- Filename pattern: `model-snSerial_OS_date_time.xlsx` (the `_OS_` identifies it as output smoothness)
+
+**New database table: `smoothness_results`**
+- model, serial, test_date, pot_type, gear_ratio, input_voltage
+- deviation_spec_pct, electrical_travel, electrical_travel_unit
+- max_deviation, max_spec_deviation, pass/fail
+- Time-series data stored as JSON array
+- Linked to trim analysis by model+serial (same as FT matching)
+
+**New database table: `smoothness_data`** (optional — or store time-series inline)
+- Foreign key to smoothness_results
+- Time-series arrays: time_data, voltage_data
+
+**Parser:** New `SmoothnessParser` in `core/smoothness_parser.py`
+- Detect OS files by `_OS_` in filename
+- Extract metadata from rows 0-7
+- Extract result from row 1
+- Extract time-series from cols D-E
+- Simple, consistent format — no variant handling needed
+
+**UI — New Smoothness page (8th page):**
+- List view of OS test results by model
+- Chart: Filtered voltage vs time with spec deviation band overlay
+- Pass/fail summary per model
+- Trends: OS pass rate over time, per model
+- Link to corresponding trim/FT data for the same serial
+
+**Dashboard integration:**
+- OS pass rate card alongside linearity pass rate
+- Models failing OS highlighted in the attention list
+- OS trends in the Trends page filters
 
 ---
 
