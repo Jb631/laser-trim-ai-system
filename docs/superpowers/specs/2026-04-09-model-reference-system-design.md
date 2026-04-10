@@ -191,11 +191,87 @@ The `model_specs.model` must match the parsed model from trim/FT files. The exis
 
 ---
 
-## Phase 2 Preview (Not In Scope)
+## Phase 2: Spec-Aware Analysis Engine
 
-For context on why Phase 1 matters, Phase 2 will use the `linearity_type` field to:
-- Apply the correct optimization per model (offset-only for Absolute, offset+slope for Independent)
-- Parse FT compensation values and compare against optimal
-- Optimize within angle tolerance bounds using `electrical_angle_tol`
-- Report true pass/fail after all allowed adjustments
-- Show "station result vs optimized result" comparisons
+**Goal:** Make pass/fail determination as accurate as possible by doing what operators do manually — optimizing offset and slope within allowed tolerances per linearity type.
+
+### 2.1 Linearity Type-Aware Optimization
+
+Using the `linearity_type` from the model_specs table, apply the correct calculation:
+
+| Linearity Type | Offset | Slope | What the engine does |
+|---------------|--------|-------|---------------------|
+| Absolute | Fixed (index point) | Fixed | No optimization — raw error vs fixed reference line |
+| Absolute + angle tol | Fixed | Within tolerance | Optimize slope within `electrical_angle_tol` bounds |
+| Term Base | Fixed (endpoints) | Fixed | Same as Absolute (reference pinned at 0% and 100%) |
+| Zero-Based | Fixed at zero | Free | Optimize slope only, offset pinned at zero |
+| Independent | Free | Free | Optimize both slope + offset (best-fit line, minimax) |
+| VR Max | TBD | TBD | Verify meaning — likely same as Absolute expressed as voltage ratio |
+| Custom (bowtie etc.) | Per model | Per model | Use per-point limits from file, optimize offset within those |
+
+### 2.2 Offset + Slope Optimization
+
+Upgrade `_calculate_optimal_offset` in `analyzer.py` to `_calculate_optimal_adjustment`:
+
+- **Current:** Optimizes offset only (1 DOF) — shifts error curve up/down
+- **New:** Optimizes offset + slope (2 DOF for Independent) or slope within bounds (for Absolute + angle tolerance)
+- Slope adjustment = rotating the reference line, mathematically equivalent to adjusting electrical angle
+- For each model, the allowed DOF comes from `linearity_type` and `electrical_angle_tol`
+- Optimization goal: minimize fail points (same as current), then minimize max error as tiebreaker
+- For non-uniform (bowtie) limits: constrained optimization against per-point upper/lower limits
+
+### 2.3 FT Compensation Parsing
+
+Parse the compensation value from Final Test files:
+- Format 1 (Sheet1-based): Cell M4 labeled "Compensation" — the offset the test station applied
+- Other formats: investigate and document where compensation lives in each format variant
+- Store parsed compensation as `ft_compensation` on the FinalTestResult record
+
+### 2.4 Station vs Optimal Comparison
+
+New analysis output fields:
+- `station_fail_points` — fail count using the FT station's compensation (what the station reported)
+- `optimal_fail_points` — fail count after app's optimal offset+slope adjustment
+- `optimal_offset` — the app's calculated best offset
+- `optimal_slope_adj` — the app's calculated best slope adjustment (if allowed by linearity type)
+- `could_pass` — boolean: could this unit pass with optimal adjustments?
+
+### 2.5 UI Changes
+
+- Analyze page: show "Station: 14 fails → Optimized: 0 fails (PASS)" comparison
+- Compare page: show station vs optimized side-by-side for trim-to-FT pairs
+- Dashboard: option to show pass rates using "optimized" determination vs "station" determination
+- Chart: overlay the optimized reference line against the station reference line
+
+---
+
+## Phase 3: Format Audit & Parsing Fixes
+
+**Goal:** Ensure every file format variant is correctly parsed with accurate data extraction.
+
+### 3.1 Format Documentation
+
+- Catalog all file format variants across System A, System B, and Final Test
+- Document column layouts, metadata cell locations, and sheet structures for each variant
+- Bring home example files for each format and build a test suite
+
+### 3.2 Pre-Trim Chart Fix
+
+- Investigate the "straight line down" issue on pre-trim linearity charts
+- Verify column mapping for untrimmed sheets across all System B variants
+- Fix `allow_nan` inconsistency between trimmed and untrimmed error extraction
+- Handle scale mismatch when pre-trim error range overwhelms post-trim (separate Y axis or auto-scale)
+
+### 3.3 FT Matching Improvements
+
+- Audit matching accuracy using work database
+- Fix serial normalization collision risk (trailing letter stripping)
+- Consider closest-in-time matching vs most-recent-before
+- Add match quality indicators visible in Compare page
+
+### 3.4 Cross-Format Spec Verification
+
+- When processing a file, look up its model in `model_specs`
+- Compare file-parsed linearity limits against reference spec
+- Flag mismatches (possible test station misconfiguration)
+- Compare file's electrical angle against reference spec angle + tolerance
