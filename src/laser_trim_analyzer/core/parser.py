@@ -255,12 +255,18 @@ class ExcelParser:
                         continue
 
                     # Skip if this is part of a degree designator (e.g., "5" followed by "deg")
-                    # Check if next part is "deg"
-                    if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                    # Check if next part starts with "deg" (may be "deg" or "deg-sn16")
+                    if i + 1 < len(parts) and re.match(r'^deg\b', parts[i + 1], re.IGNORECASE):
                         continue
 
-                    # Skip the "deg" part itself
-                    if part_lower == 'deg':
+                    # Skip the "deg" part itself, but extract serial if embedded (e.g., "deg-sn16")
+                    if part_lower == 'deg' or part_lower.startswith('deg-'):
+                        if '-' in part and part_lower.startswith('deg-'):
+                            # "deg-sn16" → extract "sn16" as potential serial
+                            remainder = part[4:]  # after "deg-"
+                            if re.match(r'^[sS][nN]\d+', remainder):
+                                serial = remainder
+                                break
                         continue
 
                     # Skip date patterns (e.g., "12-2-2024", "11-22-2024", "2025-12-17")
@@ -293,9 +299,9 @@ class ExcelParser:
                             if '-' in part and part.startswith(model + '-'):
                                 continue
                             # Skip degree designator pattern
-                            if i + 1 < len(parts) and parts[i + 1].lower() == 'deg':
+                            if i + 1 < len(parts) and re.match(r'^deg\b', parts[i + 1], re.IGNORECASE):
                                 continue
-                            if part_lower == 'deg':
+                            if part_lower == 'deg' or part_lower.startswith('deg-'):
                                 continue
                             # Skip date/time/timestamp patterns
                             if re.match(r'^\d{1,4}-\d{1,2}(-\d{1,4})?$', part):

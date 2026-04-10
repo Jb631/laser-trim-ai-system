@@ -3578,14 +3578,20 @@ class DatabaseManager:
         - 8508-A, 8508-B → 8508
         - 7280-1-CT, 7280-1-AB → 7280-1
 
+        Strips leading zeros in hyphenated suffixes:
+        - 2475-08 → 2475-8
+        - 8867-01 → 8867-1
+
         Does NOT strip numeric suffixes (8340-1 stays 8340-1) since
         those are distinct model configurations.
         """
         import re
         if not model:
             return model
+        # Strip leading zeros in hyphenated numeric suffixes: "2475-08" → "2475-8"
+        s = re.sub(r'-0+(\d)', r'-\1', model)
         # Strip trailing letter-only variant: "8275A" → "8275"
-        s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', model)
+        s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', s)
         # Strip trailing hyphen + letter(s) variant: "8508-A" → "8508", "7280-1-CT" → "7280-1"
         s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]+$', r'\1', s)
         return s
@@ -4838,6 +4844,7 @@ class DatabaseManager:
         delete_unknown: bool = False,
         delete_error_status: bool = False,
         delete_no_tracks: bool = False,
+        delete_misclassified_ft: bool = False,
     ) -> tuple:
         """
         Collect record IDs matching cleanup criteria. Shared by preview and execute.
@@ -4927,6 +4934,40 @@ class DatabaseManager:
                 "count": len(no_track_ids),
             }
 
+        if delete_misclassified_ft:
+            # Find trim records that are actually Final Test files:
+            # 1. Files from "Test Station" paths
+            # 2. Files with _Redundant_ or _Primary_ in filename
+            # 3. Files with "final" followed by a number in filename
+            ft_patterns = [
+                DBAnalysisResult.filename.like("%Test Station%"),
+                DBAnalysisResult.filename.like("%test station%"),
+                DBAnalysisResult.filename.like("%_Redundant_%"),
+                DBAnalysisResult.filename.like("%_redundant_%"),
+                DBAnalysisResult.filename.like("%_Primary_%"),
+                DBAnalysisResult.filename.like("%_primary_%"),
+            ]
+            misclassified = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                or_(*ft_patterns)
+            ).all()
+            misc_ids = {r[0] for r in misclassified}
+
+            # Also find "model final NNN" pattern files in trim table
+            final_pattern = session.query(
+                DBAnalysisResult.id
+            ).filter(
+                DBAnalysisResult.filename.like("% final %")
+            ).all()
+            final_ids = {r[0] for r in final_pattern}
+            misc_ids |= final_ids
+
+            ids_to_delete |= misc_ids
+            by_reason["misclassified_ft"] = {
+                "count": len(misc_ids),
+            }
+
         return ids_to_delete, by_reason
 
     def preview_cleanup(
@@ -4938,6 +4979,7 @@ class DatabaseManager:
         delete_unknown: bool = False,
         delete_error_status: bool = False,
         delete_no_tracks: bool = False,
+        delete_misclassified_ft: bool = False,
     ) -> Dict[str, Any]:
         """
         Preview what a cleanup operation would delete WITHOUT actually deleting.
@@ -4966,6 +5008,7 @@ class DatabaseManager:
                 delete_unknown=delete_unknown,
                 delete_error_status=delete_error_status,
                 delete_no_tracks=delete_no_tracks,
+                delete_misclassified_ft=delete_misclassified_ft,
             )
 
             preview["by_reason"] = by_reason
@@ -4990,6 +5033,7 @@ class DatabaseManager:
         delete_unknown: bool = False,
         delete_error_status: bool = False,
         delete_no_tracks: bool = False,
+        delete_misclassified_ft: bool = False,
     ) -> Dict[str, int]:
         """
         Execute database cleanup — permanently delete matching records.
@@ -5015,6 +5059,7 @@ class DatabaseManager:
                     delete_unknown=delete_unknown,
                     delete_error_status=delete_error_status,
                     delete_no_tracks=delete_no_tracks,
+                    delete_misclassified_ft=delete_misclassified_ft,
                 )
 
                 if not ids_to_delete:

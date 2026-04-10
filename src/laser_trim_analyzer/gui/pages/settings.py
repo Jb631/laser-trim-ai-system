@@ -665,9 +665,17 @@ class SettingsPage(ctk.CTkFrame):
             variable=self.cleanup_no_tracks_var,
         ).grid(row=10, column=0, columnspan=3, padx=15, pady=3, sticky="w")
 
+        # Option 7: Delete misclassified FT files (Test Station, Redundant, Primary, Final)
+        self.cleanup_misclassified_ft_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            frame,
+            text="Misclassified Final Test files (Test Station, Redundant, Primary)",
+            variable=self.cleanup_misclassified_ft_var,
+        ).grid(row=11, column=0, columnspan=3, padx=15, pady=3, sticky="w")
+
         # Button row
         btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        btn_frame.grid(row=11, column=0, columnspan=3, padx=15, pady=(10, 5), sticky="w")
+        btn_frame.grid(row=12, column=0, columnspan=3, padx=15, pady=(10, 5), sticky="w")
 
         ctk.CTkButton(
             btn_frame,
@@ -810,6 +818,7 @@ class SettingsPage(ctk.CTkFrame):
             "delete_unknown": self.cleanup_unknown_var.get(),
             "delete_error_status": self.cleanup_error_var.get(),
             "delete_no_tracks": self.cleanup_no_tracks_var.get(),
+            "delete_misclassified_ft": self.cleanup_misclassified_ft_var.get(),
         }
 
         # Get MPS models from config
@@ -855,35 +864,32 @@ class SettingsPage(ctk.CTkFrame):
         from laser_trim_analyzer.database import get_database
         db = get_database()
 
-        preview = db.preview_cleanup(
-            delete_non_mps=options["delete_non_mps"],
-            mps_models=options["mps_models"],
-            delete_before_date=options["delete_before_date"],
-            delete_suspect_quality=options["delete_suspect_quality"],
-            delete_unknown=options["delete_unknown"],
-            delete_error_status=options["delete_error_status"],
-            delete_no_tracks=options["delete_no_tracks"],
-        )
+        preview = db.preview_cleanup(**options)
 
         # Format preview results
         lines = [f"Preview: {preview['records_to_delete']} of {preview['total_records']} records would be deleted"]
 
+        reason_labels = {
+            "non_mps_models": "Non-MPS models",
+            "before_date": "Before date",
+            "suspect_quality": "Suspect quality",
+            "unknown_model_serial": "Unknown model/serial",
+            "error_status": "ERROR status",
+            "no_tracks": "No track data",
+            "misclassified_ft": "Misclassified FT files",
+        }
+
         for reason, info in preview.get("by_reason", {}).items():
+            label = reason_labels.get(reason, reason)
             if reason == "non_mps_models":
                 models_str = ", ".join(info["models"][:10])
                 if len(info["models"]) > 10:
                     models_str += f" ... (+{len(info['models']) - 10} more)"
-                lines.append(f"  Non-MPS models: {info['count']} records ({len(info['models'])} models: {models_str})")
+                lines.append(f"  {label}: {info['count']} records ({len(info['models'])} models: {models_str})")
             elif reason == "before_date":
                 lines.append(f"  Before {info['date']}: {info['count']} records")
-            elif reason == "suspect_quality":
-                lines.append(f"  Suspect quality: {info['count']} records")
-            elif reason == "unknown_model_serial":
-                lines.append(f"  Unknown model/serial: {info['count']} records")
-            elif reason == "error_status":
-                lines.append(f"  ERROR status: {info['count']} records")
-            elif reason == "no_tracks":
-                lines.append(f"  No track data: {info['count']} records")
+            else:
+                lines.append(f"  {label}: {info['count']} records")
 
         self.cleanup_preview_label.configure(text="\n".join(lines))
 
@@ -897,15 +903,7 @@ class SettingsPage(ctk.CTkFrame):
         from laser_trim_analyzer.database import get_database
         db = get_database()
 
-        preview = db.preview_cleanup(
-            delete_non_mps=options["delete_non_mps"],
-            mps_models=options["mps_models"],
-            delete_before_date=options["delete_before_date"],
-            delete_suspect_quality=options["delete_suspect_quality"],
-            delete_unknown=options["delete_unknown"],
-            delete_error_status=options["delete_error_status"],
-            delete_no_tracks=options["delete_no_tracks"],
-        )
+        preview = db.preview_cleanup(**options)
 
         if preview["records_to_delete"] == 0:
             messagebox.showinfo("Nothing to Delete", "No records match the selected criteria.")
@@ -925,15 +923,7 @@ class SettingsPage(ctk.CTkFrame):
             return
 
         # Execute
-        result = db.execute_cleanup(
-            delete_non_mps=options["delete_non_mps"],
-            mps_models=options["mps_models"],
-            delete_before_date=options["delete_before_date"],
-            delete_suspect_quality=options["delete_suspect_quality"],
-            delete_unknown=options["delete_unknown"],
-            delete_error_status=options["delete_error_status"],
-            delete_no_tracks=options["delete_no_tracks"],
-        )
+        result = db.execute_cleanup(**options)
 
         self.cleanup_preview_label.configure(
             text=f"Deleted: {result['analyses']} analyses, {result['tracks']} tracks, "
