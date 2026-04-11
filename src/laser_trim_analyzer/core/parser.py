@@ -560,9 +560,12 @@ class ExcelParser:
             unit_length = self._get_cell_from_df(df, cells["unit_length"])
 
             # Extract measured electrical angle if cell reference exists
+            # Falls back to unit_length (nominal angle) if measured is unavailable
             measured_electrical_angle = None
             if "measured_electrical_angle" in cells:
                 measured_electrical_angle = self._get_cell_from_df(df, cells["measured_electrical_angle"])
+            if measured_electrical_angle is None and unit_length is not None:
+                measured_electrical_angle = unit_length
 
             # Extract untrimmed data if available
             untrimmed_positions = None
