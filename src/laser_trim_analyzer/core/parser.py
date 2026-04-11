@@ -577,6 +577,12 @@ class ExcelParser:
                         untrimmed_positions = self._get_column_data(df_untrim, columns["position"], untrim_start)
                         untrimmed_errors = self._get_column_data(df_untrim, columns["error"], untrim_start)
                     untrimmed_resistance = self._get_cell_from_df(df_untrim, cells["untrimmed_resistance"])
+                    # For System B, measured electrical angle is in the "test" (untrimmed)
+                    # sheet at K1, not in the trimmed sheet where it reads a spec limit
+                    if system_type == SystemType.B and "measured_electrical_angle" in cells:
+                        mea_from_untrim = self._get_cell_from_df(df_untrim, cells["measured_electrical_angle"])
+                        if mea_from_untrim is not None:
+                            measured_electrical_angle = mea_from_untrim
                     del df_untrim  # Free memory immediately
                 except Exception as e:
                     logger.debug(f"Could not read untrimmed sheet: {e}")

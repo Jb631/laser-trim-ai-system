@@ -35,19 +35,36 @@ SYSTEM_B_COLUMNS: Final[Dict[str, int]] = {
 }
 
 # Cell references for metadata
+# System A (DLTS): metadata in rows 7-9 of SEC1 TRK sheets
+#   B8 (row 7) = "length value" = nominal electrical angle (100% valid across 515 files)
+#   B9 (row 8) = "meas value" = measured electrical angle (90.3% valid, 9.7% "NaN" text)
+#   B10 (row 9) = "resistance" = resistance in Ohms (99.6% valid)
+#   L1 was wrong — always contains "trim target" header text, never an angle
+#   B26 was misleading — "Calc. Angle" duplicate of B9, missing on pre-2020 files
 SYSTEM_A_CELLS: Final[Dict[str, str]] = {
-    "unit_length": "B26",
+    "unit_length": "B8",
     "untrimmed_resistance": "B10",
     "trimmed_resistance": "B10",
-    "measured_electrical_angle": "L1",
+    "measured_electrical_angle": "B9",
+    "compensation": "B7",
 }
 
+# System B (LTS): metadata in row 0 of data sheets
+#   Lin Error L1 (col 11, row 0) = theoretical electrical angle (96.8% valid)
+#   test sheet K1 (col 10, row 0) = measured electrical angle — read separately in parser
+#   R1 (col 17, row 0) = resistance in Ohms (untrimmed in "test", trimmed in "Lin Error")
+#   Old B9 was wrong — reads data index value, not angle
+#   Old K1 was wrong for Lin Error — reads NaN or lower spec limit
 SYSTEM_B_CELLS: Final[Dict[str, str]] = {
-    "unit_length": "K1",
+    "unit_length": "L1",
     "untrimmed_resistance": "R1",
     "trimmed_resistance": "R1",
-    "measured_electrical_angle": "B9",
+    "measured_electrical_angle": "K1",
+    "compensation": "O1",
 }
+
+# System B compensation is in the "Lin Chart" sheet, not the data sheets
+SYSTEM_B_COMPENSATION_SHEET: Final[str] = "Lin Chart"
 
 # Sheet name patterns
 SYSTEM_A_UNTRIMMED_PATTERNS: Final[list] = ["{track} 0", "SEC1 {track} 0", "{track}_0"]
