@@ -156,3 +156,9 @@ LaserTrimAnalyzer-v*/
 # Test files (may contain sensitive data and are large)
 test_files/
 Model_cost.xlsx
+
+# Work files brought home (database, samples, specs)
+work files/
+
+# Mac launcher
+launch_app.command
