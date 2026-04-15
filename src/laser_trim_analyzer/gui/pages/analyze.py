@@ -894,7 +894,8 @@ class AnalyzePage(ctk.CTkFrame):
         fail_indices = []
         actual_fail_count = 0
         if upper_limits and lower_limits:
-            shifted_errors = [e + track.optimal_offset for e in track.error_data]
+            _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     # Only check positions that have spec limits (not None)
@@ -940,11 +941,13 @@ class AnalyzePage(ctk.CTkFrame):
             untrimmed_positions=track.untrimmed_positions,
             untrimmed_errors=track.untrimmed_errors,
             offset=track.optimal_offset,
+            slope=getattr(track, 'optimal_slope', 1.0) or 1.0,
             title=title,
             fail_points=fail_indices,
             serial_number=serial,
             trim_improvement_percent=track.trim_improvement_percent,
-            trim_date=trim_date
+            trim_date=trim_date,
+            station_compensation=getattr(track, 'station_compensation', None),
         )
 
     def _display_metrics(self, analysis: AnalysisResult):
@@ -989,7 +992,8 @@ class AnalyzePage(ctk.CTkFrame):
                 # Calculate actual fail points (skip None = no limit at that position)
                 actual_fail_count = 0
                 if actual_upper and actual_lower and track.error_data:
-                    shifted_errors = [e + track.optimal_offset for e in track.error_data]
+                    _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+                    shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(actual_upper) and i < len(actual_lower):
                             # Skip positions with no spec limit (None = unlimited)
@@ -1144,6 +1148,43 @@ class AnalyzePage(ctk.CTkFrame):
                     lines.append(f"  Circuit:         {spec['circuit_type']}")
         except Exception:
             pass  # Model specs not available — no problem
+
+        # Show spec-aware optimization results from first track
+        try:
+            if analysis.tracks:
+                track = analysis.tracks[0]
+                has_optimization = (
+                    hasattr(track, 'linearity_type') and track.linearity_type
+                ) or (
+                    hasattr(track, 'station_compensation') and track.station_compensation is not None
+                ) or (
+                    hasattr(track, 'raw_linearity_error') and track.raw_linearity_error is not None
+                )
+                if has_optimization:
+                    lines.append("")
+                    lines.append("───────────────────────────────────────")
+                    lines.append("  LINEARITY OPTIMIZATION")
+                    lines.append("───────────────────────────────────────")
+                    lines.append("")
+                    if track.linearity_type:
+                        lines.append(f"  Linearity Type:    {track.linearity_type}")
+                    if track.station_compensation is not None:
+                        lines.append(f"  Station Comp:      {track.station_compensation:.6f}")
+                    lines.append(f"  Optimal Offset:    {track.optimal_offset:.6f}")
+                    if hasattr(track, 'optimal_slope') and track.optimal_slope != 1.0:
+                        lines.append(f"  Optimal Slope:     {track.optimal_slope:.6f}")
+                    if track.raw_linearity_error is not None and track.optimized_linearity_error is not None:
+                        lines.append(f"  Raw Error:         {track.raw_linearity_error:.6f}")
+                        lines.append(f"  Optimized Error:   {track.optimized_linearity_error:.6f}")
+                        if track.raw_linearity_error > 0:
+                            improvement = ((track.raw_linearity_error - track.optimized_linearity_error)
+                                           / track.raw_linearity_error * 100)
+                            lines.append(f"  Error Reduction:   {improvement:.1f}%")
+                    if track.raw_fail_points is not None:
+                        lines.append(f"  Raw Fail Points:   {track.raw_fail_points}")
+                        lines.append(f"  Opt. Fail Points:  {track.linearity_fail_points}")
+        except Exception:
+            pass
 
         self._update_info("\n".join(lines))
 
@@ -1547,7 +1588,8 @@ class AnalyzePage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            shifted_errors = [e + track.optimal_offset for e in track.error_data]
+            _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     # Skip positions with no spec limit (None = unlimited)
@@ -1613,9 +1655,10 @@ class AnalyzePage(ctk.CTkFrame):
         positions = np.array(track.position_data)
         errors = np.array(track.error_data)
 
-        # Apply offset
+        # Apply offset and slope
         offset = track.optimal_offset
-        errors_shifted = errors + offset
+        slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+        errors_shifted = errors * slope + offset
 
         # Plot untrimmed data if available
         if track.untrimmed_positions and track.untrimmed_errors:

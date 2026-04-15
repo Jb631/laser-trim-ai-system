@@ -183,11 +183,13 @@ class ChartWidget(ctk.CTkFrame):
         untrimmed_positions: Optional[List[float]] = None,
         untrimmed_errors: Optional[List[float]] = None,
         offset: float = 0.0,
+        slope: float = 1.0,
         title: str = "Error vs Position Analysis",
         fail_points: Optional[List[int]] = None,
         serial_number: Optional[str] = None,
         trim_date: Optional[str] = None,
         trim_improvement_percent: Optional[float] = None,
+        station_compensation: Optional[float] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -209,8 +211,11 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
-        # Apply offset to trimmed errors
-        shifted_errors = [e + offset for e in trimmed_errors]
+        # Apply offset and slope to trimmed errors
+        if slope != 1.0:
+            shifted_errors = [e * slope + offset for e in trimmed_errors]
+        else:
+            shifted_errors = [e + offset for e in trimmed_errors]
 
         # Plot untrimmed data if available
         if untrimmed_positions and untrimmed_errors:
@@ -226,12 +231,24 @@ class ChartWidget(ctk.CTkFrame):
                 label=label_text
             )
 
-        # Plot trimmed data
+        # If slope adjustment applied, show raw errors as faded line
+        if slope != 1.0:
+            ax.plot(
+                positions, [e + offset for e in trimmed_errors],
+                '--', color='gray', alpha=0.4, linewidth=0.8,
+                label='Offset only'
+            )
+
+        # Plot trimmed data (optimized)
+        if slope != 1.0:
+            label = f'Optimized (offset: {offset:.4f}, slope: {slope:.4f})'
+        else:
+            label = f'Trimmed (offset: {offset:.6f})'
         ax.plot(
             positions, shifted_errors,
             color=COLORS['trimmed'],
             linewidth=self.style.line_width,
-            label=f'Trimmed (offset: {offset:.6f})'
+            label=label
         )
 
         # Plot specification limits (handle None = no limit at that position)
@@ -279,6 +296,14 @@ class ChartWidget(ctk.CTkFrame):
                 linewidths=2,
                 label='Fail Points',
                 zorder=5
+            )
+
+        # Station compensation annotation
+        if station_compensation is not None:
+            ax.annotate(
+                f'Station comp: {station_compensation:.4f}',
+                xy=(0.02, 0.02), xycoords='axes fraction',
+                fontsize=self.style.font_size - 2, color='gray', alpha=0.7,
             )
 
         # Styling
@@ -599,7 +624,8 @@ class ChartWidget(ctk.CTkFrame):
         def get_status_str(track):
             fail_count = 0
             if track.upper_limits and track.lower_limits:
-                shifted = [e + track.optimal_offset for e in track.error_data]
+                slope_val = getattr(track, 'optimal_slope', 1.0) or 1.0
+                shifted = [e * slope_val + track.optimal_offset for e in track.error_data]
                 for i, e in enumerate(shifted):
                     if i < len(track.upper_limits) and i < len(track.lower_limits):
                         # Skip positions with no spec limit (None = unlimited)
@@ -627,7 +653,8 @@ class ChartWidget(ctk.CTkFrame):
                 continue
 
             positions = np.array(track.position_data)
-            errors = np.array(track.error_data) + track.optimal_offset
+            slope_val = getattr(track, 'optimal_slope', 1.0) or 1.0
+            errors = np.array(track.error_data) * slope_val + track.optimal_offset
 
             # Plot trimmed data
             ax.plot(positions, errors, color=color, linewidth=self.style.line_width,

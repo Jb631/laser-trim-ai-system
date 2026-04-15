@@ -590,6 +590,24 @@ class ExcelParser:
                 except Exception as e:
                     logger.debug(f"Could not read untrimmed sheet: {e}")
 
+            # Extract station compensation value before freeing df
+            station_compensation = None
+            if "compensation" in cells:
+                if system_type == SystemType.B:
+                    # System B compensation is on the "Lin Chart" sheet, not the data sheet
+                    from laser_trim_analyzer.utils.constants import SYSTEM_B_COMPENSATION_SHEET
+                    try:
+                        comp_sheet = SYSTEM_B_COMPENSATION_SHEET
+                        if comp_sheet in xl.sheet_names:
+                            df_comp = pd.read_excel(xl, sheet_name=comp_sheet, header=None, nrows=5)
+                            station_compensation = self._get_cell_from_df(df_comp, cells["compensation"])
+                            del df_comp
+                    except Exception as e:
+                        logger.debug(f"Could not read LTS compensation from Lin Chart: {e}")
+                else:
+                    # System A: compensation cell is on the same sheet we already have loaded
+                    station_compensation = self._get_cell_from_df(df, cells["compensation"])
+
             del df  # Free memory immediately
 
             # Sanity checks on extracted data
@@ -620,6 +638,7 @@ class ExcelParser:
                 "untrimmed_resistance": untrimmed_resistance,
                 "trimmed_resistance": trimmed_resistance,
                 "measured_electrical_angle": measured_electrical_angle,
+                "station_compensation": station_compensation,
             }
 
         except Exception as e:

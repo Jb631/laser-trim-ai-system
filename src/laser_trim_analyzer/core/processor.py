@@ -160,12 +160,17 @@ class Processor:
                     metadata, "No valid track data found", start_time
                 )
 
+            # Look up linearity type for this model
+            linearity_type = self._get_linearity_type(metadata.model)
+
             # Analyze each track (pass model for ML threshold lookup)
             analyzed_tracks: List[TrackData] = []
             for track_data in tracks_data:
                 track_result = self.analyzer.analyze_track(
                     track_data,
-                    model=metadata.model  # For ML threshold lookup
+                    model=metadata.model,
+                    linearity_type=linearity_type,
+                    station_compensation=track_data.get("station_compensation"),
                 )
                 analyzed_tracks.append(track_result)
 
@@ -277,6 +282,11 @@ class Processor:
             elif any(not t.get("linearity_pass", True) for t in tracks):
                 overall_status = AnalysisStatus.FAIL
 
+            # Look up linearity type and compensation for FT analysis
+            ft_model = metadata.get("model", "unknown")
+            ft_linearity_type = self._get_linearity_type(ft_model)
+            ft_compensation = metadata.get("station_compensation")
+
             # Create minimal track data for display
             analyzed_tracks = []
             for track in tracks:
@@ -285,23 +295,50 @@ class Processor:
                 if linearity_pass is None:
                     linearity_pass = True  # Default to pass if unknown
 
-                # Create a minimal TrackData for the result
-                track_data = TrackData(
-                    track_id=track.get("track_id", "default"),
-                    status=AnalysisStatus.PASS if linearity_pass else AnalysisStatus.FAIL,
-                    travel_length=1.0,  # Not applicable for final test
-                    linearity_spec=track.get("linearity_spec") or 0.01,
-                    sigma_gradient=0.0,  # Not applicable for final test
-                    sigma_threshold=0.01,
-                    sigma_pass=True,  # Not applicable for final test
-                    optimal_offset=0.0,
-                    linearity_error=track.get("linearity_error") or 0.0,
-                    linearity_pass=linearity_pass,
-                    linearity_fail_points=track.get("linearity_fail_points") or 0,
-                    position_data=track.get("positions") or [],
-                    error_data=track.get("errors") or [],
-                )
-                analyzed_tracks.append(track_data)
+                # Use analyzer for spec-aware optimization when we have error data
+                positions = track.get("positions") or track.get("electrical_angles") or []
+                errors = track.get("errors") or []
+                upper_lims = track.get("upper_limits") or []
+                lower_lims = track.get("lower_limits") or []
+
+                if positions and errors and upper_lims and lower_lims:
+                    # Full analysis through analyzer
+                    track_dict = {
+                        "track_id": track.get("track_id", "default"),
+                        "positions": positions,
+                        "errors": errors,
+                        "upper_limits": upper_lims,
+                        "lower_limits": lower_lims,
+                        "travel_length": max(positions) - min(positions) if positions else 1.0,
+                        "linearity_spec": track.get("linearity_spec") or 0.01,
+                    }
+                    track_result = self.analyzer.analyze_track(
+                        track_dict,
+                        model=ft_model,
+                        linearity_type=ft_linearity_type,
+                        station_compensation=track.get("station_compensation") or ft_compensation,
+                    )
+                    analyzed_tracks.append(track_result)
+                else:
+                    # Minimal TrackData when no error data available
+                    track_data = TrackData(
+                        track_id=track.get("track_id", "default"),
+                        status=AnalysisStatus.PASS if linearity_pass else AnalysisStatus.FAIL,
+                        travel_length=1.0,
+                        linearity_spec=track.get("linearity_spec") or 0.01,
+                        sigma_gradient=0.0,
+                        sigma_threshold=0.01,
+                        sigma_pass=True,
+                        optimal_offset=0.0,
+                        linearity_error=track.get("linearity_error") or 0.0,
+                        linearity_pass=linearity_pass,
+                        linearity_fail_points=track.get("linearity_fail_points") or 0,
+                        linearity_type=ft_linearity_type,
+                        station_compensation=track.get("station_compensation") or ft_compensation,
+                        position_data=positions,
+                        error_data=errors,
+                    )
+                    analyzed_tracks.append(track_data)
 
             result = AnalysisResult(
                 metadata=minimal_metadata,
@@ -655,6 +692,18 @@ class Processor:
                     )
 
         return issues
+
+    def _get_linearity_type(self, model: str) -> Optional[str]:
+        """Look up linearity type from model_specs table."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            spec = db.get_model_spec(model)
+            if spec:
+                return spec.get("linearity_type")
+        except Exception as e:
+            logger.debug(f"Could not look up model spec for {model}: {e}")
+        return None
 
     def _determine_overall_status(self, tracks: List[TrackData]) -> AnalysisStatus:
         """Determine overall file status from track results."""

@@ -167,6 +167,17 @@ class FinalTestParser:
                         except Exception:
                             pass
 
+            # Extract compensation from cell M4 (column 12, row 3)
+            from laser_trim_analyzer.utils.constants import FINAL_TEST_FORMAT1_COMPENSATION
+            comp_info = FINAL_TEST_FORMAT1_COMPENSATION
+            if df.shape[0] > comp_info["row"] and df.shape[1] > comp_info["col"]:
+                comp_val = df.iloc[comp_info["row"], comp_info["col"]]
+                if pd.notna(comp_val):
+                    try:
+                        metadata["station_compensation"] = float(comp_val)
+                    except (ValueError, TypeError):
+                        pass
+
         except Exception as e:
             logger.warning(f"Error extracting metadata from content: {e}")
         finally:

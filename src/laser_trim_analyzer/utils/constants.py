@@ -4,7 +4,7 @@ Constants for Laser Trim Analyzer v3.
 Consolidated from v2's scattered constants.
 """
 
-from typing import Final, Dict
+from typing import Any, Final, Dict
 
 # Application info
 APP_NAME: Final[str] = "Laser Trim Analyzer"
@@ -125,6 +125,14 @@ FINAL_TEST_FORMAT1_METADATA: Final[Dict[str, str]] = {
     "model_cell": "L1",       # Model/shop number location
     "datetime_cell": "N1",    # Test datetime location
     "data_start_row": 2,      # First row of actual data (0-indexed)
+}
+
+# Final Test compensation cell location (Format 1)
+# Cell M4 on Sheet1 contains the compensation/offset value applied by the test station
+FINAL_TEST_FORMAT1_COMPENSATION: Final[Dict[str, Any]] = {
+    "cell": "M4",       # Column M (12), Row 4 (3 zero-indexed)
+    "col": 12,
+    "row": 3,
 }
 
 # Final Test Data Table sheet - test results summary

@@ -57,6 +57,8 @@ class Analyzer:
         self,
         track_data: Dict[str, Any],
         model: Optional[str] = None,
+        linearity_type: Optional[str] = None,
+        station_compensation: Optional[float] = None,
     ) -> TrackData:
         """
         Perform complete analysis on a track.
@@ -97,9 +99,11 @@ class Analyzer:
         )
         sigma_pass = sigma_gradient <= sigma_threshold
 
-        # Linearity analysis
-        optimal_offset, linearity_error, linearity_pass, fail_points = self._calculate_linearity(
-            errors, upper_limits, lower_limits, linearity_spec
+        # Linearity analysis (spec-aware)
+        (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+         fail_points, raw_linearity_error, raw_fail_points) = self._calculate_linearity(
+            positions, errors, upper_limits, lower_limits, linearity_spec,
+            linearity_type=linearity_type
         )
 
         # Risk assessment
@@ -127,7 +131,7 @@ class Analyzer:
         )
 
         # Calculate failure margin metrics
-        shifted_errors = [e + optimal_offset for e in errors]
+        shifted_errors = [e * optimal_slope + optimal_offset for e in errors]
         margin_metrics = self._calculate_failure_margins(
             shifted_errors, upper_limits, lower_limits
         )
@@ -159,9 +163,16 @@ class Analyzer:
             sigma_pass=sigma_pass,
             # Linearity results
             optimal_offset=optimal_offset,
+            optimal_slope=optimal_slope,
             linearity_error=linearity_error,
             linearity_pass=linearity_pass,
             linearity_fail_points=fail_points,
+            # Spec-aware optimization
+            station_compensation=station_compensation,
+            linearity_type=linearity_type,
+            raw_linearity_error=raw_linearity_error,
+            optimized_linearity_error=linearity_error,
+            raw_fail_points=raw_fail_points,
             # Unit properties (sanitize invalid values)
             unit_length=unit_length if unit_length and unit_length >= 0 else None,
             untrimmed_resistance=untrimmed_resistance,
@@ -305,36 +316,180 @@ class Analyzer:
 
     def _calculate_linearity(
         self,
+        positions: List[float],
         errors: List[float],
         upper_limits: List[float],
         lower_limits: List[float],
-        linearity_spec: float
-    ) -> Tuple[float, float, bool, int]:
+        linearity_spec: float,
+        linearity_type: Optional[str] = None,
+    ) -> Tuple[float, float, float, bool, int, float, int]:
         """
-        Calculate linearity metrics with optimal offset.
+        Calculate linearity metrics with spec-aware optimal adjustment.
 
         Returns:
-            (optimal_offset, linearity_error, linearity_pass, fail_points)
+            (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+             fail_points, raw_linearity_error, raw_fail_points)
         """
-        # Calculate optimal offset to minimize violations
-        optimal_offset = self._calculate_optimal_offset(errors, upper_limits, lower_limits)
+        # Calculate raw results (no adjustment)
+        raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits)
+        raw_linearity_error = max(abs(e) for e in errors) if errors else 0.0
 
-        # Apply offset
-        shifted_errors = [e + optimal_offset for e in errors]
+        # Calculate optimal adjustment (constrained by linearity type)
+        optimal_offset, optimal_slope = self._calculate_optimal_adjustment(
+            positions, errors, upper_limits, lower_limits, linearity_type
+        )
 
-        # Calculate max error after shift
+        # Apply adjustment: adjusted = error * slope + offset
+        shifted_errors = [e * optimal_slope + optimal_offset for e in errors]
+
+        # Calculate optimized max error
         linearity_error = max(abs(e) for e in shifted_errors) if shifted_errors else 0.0
 
-        # Count fail points (points outside limits after offset)
+        # Count fail points after adjustment
         fail_points = self._count_fail_points(shifted_errors, upper_limits, lower_limits)
 
         # Linearity passes only if ALL points are within limits (zero tolerance)
         linearity_pass = fail_points == 0
 
-        logger.debug(f"Linearity: offset={optimal_offset:.6f}, error={linearity_error:.6f}, "
-                    f"fail_points={fail_points}, pass={linearity_pass}")
+        logger.debug(
+            f"Linearity: type={linearity_type}, offset={optimal_offset:.6f}, "
+            f"slope={optimal_slope:.6f}, error={linearity_error:.6f}, "
+            f"fail_points={fail_points} (raw={raw_fail_points}), pass={linearity_pass}"
+        )
 
-        return optimal_offset, linearity_error, linearity_pass, fail_points
+        return (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+                fail_points, raw_linearity_error, raw_fail_points)
+
+    def _calculate_optimal_adjustment(
+        self,
+        positions: List[float],
+        errors: List[float],
+        upper_limits: List[float],
+        lower_limits: List[float],
+        linearity_type: Optional[str] = None,
+    ) -> Tuple[float, float]:
+        """
+        Calculate optimal offset and slope adjustment, constrained by linearity type.
+
+        Linearity types control which degrees of freedom are available:
+        - Absolute / Term Base: No adjustment (offset=0, slope=1.0)
+        - Independent: Free offset + slope optimization (most common)
+        - Zero-Based: Slope optimization only (offset=0)
+        - None/unknown: Falls back to offset-only (legacy behavior)
+
+        Returns:
+            (optimal_offset, optimal_slope) tuple
+        """
+        lin_type = (linearity_type or "").strip().lower()
+
+        # Absolute and Term Base: no adjustment allowed
+        if lin_type in ("absolute", "term base"):
+            return 0.0, 1.0
+
+        # Zero-Based: slope only (offset locked at 0)
+        if lin_type == "zero-based":
+            slope = self._optimize_slope_only(errors, upper_limits, lower_limits)
+            return 0.0, slope
+
+        # Independent: full offset + slope optimization
+        if lin_type == "independent":
+            return self._optimize_offset_and_slope(errors, upper_limits, lower_limits)
+
+        # Unknown/None: legacy offset-only behavior for backwards compatibility
+        offset = self._calculate_optimal_offset(errors, upper_limits, lower_limits)
+        return offset, 1.0
+
+    def _optimize_slope_only(
+        self,
+        errors: List[float],
+        upper_limits: List[float],
+        lower_limits: List[float],
+    ) -> float:
+        """Optimize slope with offset fixed at zero."""
+        n = min(len(errors), len(upper_limits), len(lower_limits))
+        if n == 0:
+            return 1.0
+
+        def objective(slope_val: float) -> float:
+            violations = 0
+            max_err = 0.0
+            for i in range(n):
+                adjusted = errors[i] * slope_val
+                ul = upper_limits[i]
+                ll = lower_limits[i]
+                if ul is not None and ll is not None:
+                    if not (np.isnan(ul) or np.isnan(ll)):
+                        if adjusted > ul or adjusted < ll:
+                            violations += 1
+                        max_err = max(max_err, abs(adjusted))
+            return violations * 1e6 + max_err
+
+        try:
+            result = optimize.minimize_scalar(
+                objective, bounds=(0.8, 1.2), method='bounded',
+                options={'xatol': 1e-6}
+            )
+            return float(result.x)
+        except Exception:
+            return 1.0
+
+    def _optimize_offset_and_slope(
+        self,
+        errors: List[float],
+        upper_limits: List[float],
+        lower_limits: List[float],
+    ) -> Tuple[float, float]:
+        """Optimize both offset and slope for Independent linearity."""
+        n = min(len(errors), len(upper_limits), len(lower_limits))
+        if n == 0:
+            return 0.0, 1.0
+
+        # Calculate band center differences for initial offset guess
+        differences = []
+        for i in range(n):
+            ul = upper_limits[i]
+            ll = lower_limits[i]
+            if ul is not None and ll is not None:
+                if not (np.isnan(ul) or np.isnan(ll)):
+                    midpoint = (ul + ll) / 2
+                    differences.append(midpoint - errors[i])
+        initial_offset = float(np.median(differences)) if differences else 0.0
+
+        def objective(params):
+            offset, slope = params
+            violations = 0
+            max_err = 0.0
+            for i in range(n):
+                adjusted = errors[i] * slope + offset
+                ul = upper_limits[i]
+                ll = lower_limits[i]
+                if ul is not None and ll is not None:
+                    if not (np.isnan(ul) or np.isnan(ll)):
+                        if adjusted > ul or adjusted < ll:
+                            violations += 1
+                        max_err = max(max_err, abs(adjusted))
+            return violations * 1e6 + max_err
+
+        try:
+            # Stage 1: coarse grid search
+            best_params = (initial_offset, 1.0)
+            best_cost = objective(best_params)
+            offset_range = abs(initial_offset) + 0.02
+            for slope_candidate in [0.90, 0.95, 0.98, 1.0, 1.02, 1.05, 1.10]:
+                for offset_factor in np.linspace(-offset_range, offset_range, 11):
+                    cost = objective((offset_factor, slope_candidate))
+                    if cost < best_cost:
+                        best_cost = cost
+                        best_params = (offset_factor, slope_candidate)
+
+            # Stage 2: Nelder-Mead refinement
+            result = optimize.minimize(
+                objective, x0=best_params, method='Nelder-Mead',
+                options={'xatol': 1e-7, 'fatol': 1e-7, 'maxiter': 500}
+            )
+            return float(result.x[0]), float(result.x[1])
+        except Exception:
+            return initial_offset, 1.0
 
     def _calculate_optimal_offset(
         self,

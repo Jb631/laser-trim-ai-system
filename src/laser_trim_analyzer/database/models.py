@@ -330,6 +330,14 @@ class TrackResult(Base):
     linearity_pass = Column(Boolean)
     linearity_fail_points = Column(Integer)
 
+    # Spec-aware optimization (Phase 2)
+    optimal_slope = Column(Float, default=1.0)
+    station_compensation = Column(Float)
+    linearity_type = Column(String(30))
+    raw_linearity_error = Column(Float)
+    optimized_linearity_error = Column(Float)
+    raw_fail_points = Column(Integer)
+
     # Advanced analytics
     max_deviation = Column(Float)
     max_deviation_position = Column(Float)

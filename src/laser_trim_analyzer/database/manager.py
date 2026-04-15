@@ -506,6 +506,28 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Data quality migration warning (may already exist): {e}")
 
+            # Migration: Add Phase 2 spec-aware optimization columns to track_results
+            phase2_columns = {
+                "optimal_slope": "FLOAT DEFAULT 1.0",
+                "station_compensation": "FLOAT",
+                "linearity_type": "VARCHAR(30)",
+                "raw_linearity_error": "FLOAT",
+                "optimized_linearity_error": "FLOAT",
+                "raw_fail_points": "INTEGER",
+            }
+            for col_name, col_type in phase2_columns.items():
+                try:
+                    session.execute(text(
+                        f"ALTER TABLE track_results ADD COLUMN {col_name} {col_type}"
+                    ))
+                except Exception:
+                    pass  # Column already exists
+            try:
+                session.commit()
+                logger.info("Phase 2 migration: ensured spec-aware columns exist")
+            except Exception:
+                pass
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -2082,6 +2104,13 @@ class DatabaseManager:
             max_violation=getattr(track, 'max_violation', None),
             avg_violation=getattr(track, 'avg_violation', None),
             margin_to_spec=getattr(track, 'margin_to_spec', None),
+            # Spec-aware optimization fields (Phase 2)
+            optimal_slope=getattr(track, 'optimal_slope', 1.0),
+            station_compensation=getattr(track, 'station_compensation', None),
+            linearity_type=getattr(track, 'linearity_type', None),
+            raw_linearity_error=getattr(track, 'raw_linearity_error', None),
+            optimized_linearity_error=getattr(track, 'optimized_linearity_error', None),
+            raw_fail_points=getattr(track, 'raw_fail_points', None),
             # Computed metrics
             gradient_margin=track.gradient_margin,
             plot_path=str(track.plot_path) if track.plot_path else None,

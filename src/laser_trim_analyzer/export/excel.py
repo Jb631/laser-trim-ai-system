@@ -322,11 +322,25 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
 
         linearity_data = [
             ("Optimal Offset:", f"{track.optimal_offset:.6f}"),
+            ("Optimal Slope:", f"{getattr(track, 'optimal_slope', 1.0):.6f}"),
             ("Max Error:", f"{track.linearity_error:.6f}"),
             ("Linearity Spec:", f"{track.linearity_spec:.6f}"),
             ("Fail Points:", str(track.linearity_fail_points)),
             ("Linearity Pass:", "YES" if track.linearity_pass else "NO"),
         ]
+        # Add spec-aware optimization fields if available
+        lin_type = getattr(track, 'linearity_type', None)
+        if lin_type:
+            linearity_data.append(("Linearity Type:", lin_type))
+        comp = getattr(track, 'station_compensation', None)
+        if comp is not None:
+            linearity_data.append(("Station Compensation:", f"{comp:.6f}"))
+        raw_err = getattr(track, 'raw_linearity_error', None)
+        if raw_err is not None:
+            linearity_data.append(("Raw Error:", f"{raw_err:.6f}"))
+        raw_fp = getattr(track, 'raw_fail_points', None)
+        if raw_fp is not None:
+            linearity_data.append(("Raw Fail Points:", str(raw_fp)))
 
         for label, value in linearity_data:
             ws[f"A{row}"] = label
