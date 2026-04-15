@@ -5411,8 +5411,8 @@ class DatabaseManager:
                 "notes": spec.notes,
             }
 
-    def save_model_spec(self, data: Dict[str, Any]) -> int:
-        """Create or update a model spec. Returns the spec ID."""
+    def save_model_spec(self, data: Dict[str, Any]) -> Tuple[int, bool]:
+        """Create or update a model spec. Returns (spec_id, was_update)."""
         with self._write_lock:
             with self.session() as session:
                 existing = session.query(ModelSpec).filter(
@@ -5421,16 +5421,16 @@ class DatabaseManager:
 
                 if existing:
                     for key, value in data.items():
-                        if key not in ("id", "model", "created_at"):
+                        if key not in ("id", "model", "created_at", "updated_at"):
                             setattr(existing, key, value)
-                    existing.updated_at = datetime.now()
+                    # updated_at handled automatically by onupdate=utc_now
                     session.flush()
-                    return existing.id
+                    return existing.id, True
                 else:
                     spec = ModelSpec(**{k: v for k, v in data.items() if k != "id"})
                     session.add(spec)
                     session.flush()
-                    return spec.id
+                    return spec.id, False
 
     def delete_model_spec(self, model: str) -> bool:
         """Delete a model spec. Returns True if found and deleted."""
@@ -5480,6 +5480,8 @@ class DatabaseManager:
         if "Model Reference" in wb.sheetnames:
             ws = wb["Model Reference"]
             for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row or len(row) < 9:
+                    continue
                 model = str(row[1]).strip() if row[1] else None
                 if not model:
                     continue
@@ -5600,19 +5602,13 @@ class DatabaseManager:
 
         wb.close()
 
-        # Save to database (merge logic)
+        # Save to database (merge logic — save_model_spec handles upsert atomically)
         for model_name, data in model_data.items():
             try:
-                with self.session() as session:
-                    existing = session.query(ModelSpec).filter(
-                        ModelSpec.model == model_name
-                    ).first()
-
-                if existing:
-                    self.save_model_spec(data)
+                _, was_update = self.save_model_spec(data)
+                if was_update:
                     result["updated"] += 1
                 else:
-                    self.save_model_spec(data)
                     result["added"] += 1
             except Exception as e:
                 logger.warning(f"Skipping model spec {model_name}: {e}")

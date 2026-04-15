@@ -952,23 +952,15 @@ class TrendsPage(ctk.CTkFrame):
         Applies: active_only, min_samples, min_fail_rate, element_type,
         and product_class filters.
         MPS models are always included regardless of filters.
+        Uses cached filter values captured on main thread (tkinter is not thread-safe).
         """
-        active_only = self.active_only_var.get()
+        active_only = getattr(self, '_cached_active_only', True)
+        min_samples = getattr(self, '_cached_min_samples', 0)
+        min_fail_rate = getattr(self, '_cached_min_fail_rate', 0)
 
-        # Read filter values from UI entries
-        try:
-            min_samples = int(self.min_samples_entry.get())
-        except (ValueError, AttributeError):
-            min_samples = 0
-
-        try:
-            min_fail_rate = float(self.fail_rate_entry.get())
-        except (ValueError, AttributeError):
-            min_fail_rate = 0
-
-        # Element type / product class filter from spec dropdowns
-        et = self._element_filter.get() if hasattr(self, '_element_filter') else "All"
-        pc = self._class_filter.get() if hasattr(self, '_class_filter') else "All"
+        # Element type / product class filter from cached values
+        et = getattr(self, '_cached_element_filter', "All")
+        pc = getattr(self, '_cached_class_filter', "All")
         spec_filter_models = None
         if (et and et != "All") or (pc and pc != "All"):
             try:
@@ -1193,6 +1185,18 @@ class TrendsPage(ctk.CTkFrame):
     def _refresh_data(self):
         """Refresh data from database."""
         self.status_label.configure(text="Loading...")
+        # Capture UI filter values on main thread (tkinter is not thread-safe)
+        self._cached_active_only = self.active_only_var.get()
+        try:
+            self._cached_min_samples = int(self.min_samples_entry.get())
+        except (ValueError, AttributeError):
+            self._cached_min_samples = 0
+        try:
+            self._cached_min_fail_rate = float(self.fail_rate_entry.get())
+        except (ValueError, AttributeError):
+            self._cached_min_fail_rate = 0
+        self._cached_element_filter = self._element_filter.get() if hasattr(self, '_element_filter') else "All"
+        self._cached_class_filter = self._class_filter.get() if hasattr(self, '_class_filter') else "All"
         get_thread_manager().start_thread(target=self._load_data, name="trends-load-data")
 
     def _load_data(self):

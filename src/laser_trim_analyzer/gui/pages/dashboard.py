@@ -454,21 +454,25 @@ class DashboardPage(ctk.CTkFrame):
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
         self.last_update_label.configure(text="Refreshing...")
-
-        get_thread_manager().start_thread(target=self._load_data, name="dashboard-load-data")
+        # Capture filter values on main thread (tkinter is not thread-safe)
+        element_type, product_class = self._get_active_filters()
+        get_thread_manager().start_thread(
+            target=self._load_data,
+            args=(element_type, product_class),
+            name="dashboard-load-data"
+        )
 
     def _get_active_filters(self):
-        """Get current filter selections (None if 'All')."""
+        """Get current filter selections (None if 'All'). Must be called from main thread."""
         et = self._element_filter.get() if hasattr(self, '_element_filter') else None
         pc = self._class_filter.get() if hasattr(self, '_class_filter') else None
         element_type = et if et and et != "All Element Types" else None
         product_class = pc if pc and pc != "All Product Classes" else None
         return element_type, product_class
 
-    def _load_data(self):
+    def _load_data(self, element_type=None, product_class=None):
         """Load data from database in background."""
         try:
-            element_type, product_class = self._get_active_filters()
             db = get_database()
             stats = db.get_dashboard_stats(
                 days_back=90,
