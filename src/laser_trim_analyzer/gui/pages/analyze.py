@@ -1110,6 +1110,41 @@ class AnalyzePage(ctk.CTkFrame):
         lines.append(f"  Processing Time: {analysis.processing_time:.2f}s")
         lines.append(f"  File Path: {analysis.metadata.file_path}")
 
+        # Look up model specs
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            spec = db.get_model_spec(analysis.metadata.model)
+            if spec:
+                lines.append("")
+                lines.append("───────────────────────────────────────")
+                lines.append("  MODEL SPECIFICATIONS")
+                lines.append("───────────────────────────────────────")
+                lines.append("")
+                if spec["element_type"]:
+                    lines.append(f"  Element Type:    {spec['element_type']}")
+                if spec["product_class"]:
+                    lines.append(f"  Product Class:   {spec['product_class']}")
+                if spec["linearity_type"]:
+                    lines.append(f"  Linearity Type:  {spec['linearity_type']}")
+                if spec["linearity_spec_text"]:
+                    lines.append(f"  Linearity Spec:  {spec['linearity_spec_text']}")
+                if spec["total_resistance_min"] and spec["total_resistance_max"]:
+                    lines.append(f"  Resistance:      {spec['total_resistance_min']:.0f} - {spec['total_resistance_max']:.0f} Ω")
+                if spec["electrical_angle"]:
+                    angle_str = f"{spec['electrical_angle']}"
+                    if spec["electrical_angle_tol"]:
+                        angle_str += f" ± {spec['electrical_angle_tol']}"
+                    if spec["electrical_angle_unit"]:
+                        angle_str += f" {spec['electrical_angle_unit']}"
+                    lines.append(f"  Elec. Angle:     {angle_str}")
+                if spec["output_smoothness"]:
+                    lines.append(f"  Smoothness:      {spec['output_smoothness']}")
+                if spec["circuit_type"]:
+                    lines.append(f"  Circuit:         {spec['circuit_type']}")
+        except Exception:
+            pass  # Model specs not available — no problem
+
         self._update_info("\n".join(lines))
 
     def _on_track_selected(self, selection: str):

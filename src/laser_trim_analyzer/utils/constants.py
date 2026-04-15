@@ -8,7 +8,7 @@ from typing import Final, Dict
 
 # Application info
 APP_NAME: Final[str] = "Laser Trim Analyzer"
-APP_VERSION: Final[str] = "3.0.0"
+APP_VERSION: Final[str] = "5.0.0"
 
 # File patterns
 EXCEL_EXTENSIONS: Final[tuple] = (".xlsx", ".xls")

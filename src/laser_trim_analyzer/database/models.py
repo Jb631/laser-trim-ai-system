@@ -1348,3 +1348,33 @@ class ModelMLState(Base):
 
     def __repr__(self):
         return f"<ModelMLState(model='{self.model}', trained={self.is_trained}, threshold={self.sigma_threshold})>"
+
+
+# =============================================================================
+# Model Specifications - Engineering specs for each model
+# =============================================================================
+
+class ModelSpec(Base):
+    """Model engineering specifications — element type, linearity type, resistance, angle, etc."""
+    __tablename__ = "model_specs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String(50), unique=True, nullable=False, index=True)
+    element_type = Column(String(30), nullable=True)
+    product_class = Column(String(20), nullable=True)
+    linearity_type = Column(String(30), nullable=True)
+    linearity_spec_text = Column(String(100), nullable=True)
+    linearity_spec_pct = Column(Float, nullable=True)
+    total_resistance_min = Column(Float, nullable=True)
+    total_resistance_max = Column(Float, nullable=True)
+    electrical_angle = Column(Float, nullable=True)
+    electrical_angle_tol = Column(Float, nullable=True)
+    electrical_angle_unit = Column(String(10), nullable=True)
+    output_smoothness = Column(String(50), nullable=True)
+    circuit_type = Column(String(10), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
+
+    def __repr__(self):
+        return f"<ModelSpec(model='{self.model}', element='{self.element_type}', class='{self.product_class}')>"

@@ -69,9 +69,9 @@ class DashboardPage(ctk.CTkFrame):
 
     def _create_ui(self):
         """Create the dashboard UI."""
-        # Configure grid
+        # Configure grid: row 0=header, row 1=filters, row 2=content
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         # Header with refresh button
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -110,9 +110,35 @@ class DashboardPage(ctk.CTkFrame):
         )
         self.last_update_label.grid(row=0, column=3, sticky="e", padx=(10, 0))
 
+        # Filter row
+        filter_frame = ctk.CTkFrame(self, fg_color="transparent")
+        filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
+
+        ctk.CTkLabel(filter_frame, text="Filter:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 5))
+
+        self._element_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["All Element Types"],
+            command=self._on_filter_changed,
+            width=160,
+            font=ctk.CTkFont(size=11)
+        )
+        self._element_filter.pack(side="left", padx=5)
+        self._element_filter.set("All Element Types")
+
+        self._class_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["All Product Classes"],
+            command=self._on_filter_changed,
+            width=160,
+            font=ctk.CTkFont(size=11)
+        )
+        self._class_filter.pack(side="left", padx=5)
+        self._class_filter.set("All Product Classes")
+
         # Content frame - use scrollable for smaller screens
         content = ctk.CTkScrollableFrame(self)
-        content.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
         content.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
         content.grid_rowconfigure(0, weight=0, minsize=120)  # Metric cards - fixed height
         content.grid_rowconfigure(1, weight=0, minsize=60)   # System/FT/Escape info - compact
@@ -303,6 +329,39 @@ class DashboardPage(ctk.CTkFrame):
         self.model_text = ctk.CTkTextbox(self.model_frame, height=0)
         self.model_text.configure(state="disabled")
 
+        # Row 4: Performance by Element Type and Product Class
+        content.grid_rowconfigure(4, weight=0, minsize=200)
+
+        self._breakdown_frame = ctk.CTkFrame(content)
+        self._breakdown_frame.grid(row=4, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        self._breakdown_frame.grid_columnconfigure((0, 1), weight=1, uniform="bk")
+        self._breakdown_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self._breakdown_frame,
+            text="Performance by Category (90 Days)",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=0, column=0, columnspan=2, padx=15, pady=(15, 5), sticky="w")
+
+        # Element type breakdown placeholder
+        self._element_breakdown_frame = ctk.CTkFrame(self._breakdown_frame, fg_color="transparent")
+        self._element_breakdown_frame.grid(row=1, column=0, padx=10, pady=(0, 15), sticky="nsew")
+        self._element_breakdown_label = ctk.CTkLabel(
+            self._element_breakdown_frame, text="Loading element type data...",
+            text_color="gray"
+        )
+        self._element_breakdown_label.pack(fill="both", expand=True)
+        self._element_chart = None
+
+        # Product class breakdown placeholder
+        self._class_breakdown_frame = ctk.CTkFrame(self._breakdown_frame, fg_color="transparent")
+        self._class_breakdown_frame.grid(row=1, column=1, padx=10, pady=(0, 15), sticky="nsew")
+        self._class_breakdown_label = ctk.CTkLabel(
+            self._class_breakdown_frame, text="Loading product class data...",
+            text_color="gray"
+        )
+        self._class_breakdown_label.pack(fill="both", expand=True)
+
     def _create_metric_card(self, parent) -> ctk.CTkFrame:
         """Create a metric card frame."""
         card = ctk.CTkFrame(parent)
@@ -398,11 +457,24 @@ class DashboardPage(ctk.CTkFrame):
 
         get_thread_manager().start_thread(target=self._load_data, name="dashboard-load-data")
 
+    def _get_active_filters(self):
+        """Get current filter selections (None if 'All')."""
+        et = self._element_filter.get() if hasattr(self, '_element_filter') else None
+        pc = self._class_filter.get() if hasattr(self, '_class_filter') else None
+        element_type = et if et and et != "All Element Types" else None
+        product_class = pc if pc and pc != "All Product Classes" else None
+        return element_type, product_class
+
     def _load_data(self):
         """Load data from database in background."""
         try:
+            element_type, product_class = self._get_active_filters()
             db = get_database()
-            stats = db.get_dashboard_stats(days_back=90)
+            stats = db.get_dashboard_stats(
+                days_back=90,
+                element_type=element_type,
+                product_class=product_class
+            )
             self.stats = stats
 
             # Get last batch stats
@@ -457,10 +529,23 @@ class DashboardPage(ctk.CTkFrame):
                 logger.debug(f"Could not load near-miss data: {e}")
                 near_miss_data = None
 
+            # Get performance by element type and product class
+            try:
+                element_breakdown = db.get_pass_rate_by_category("element_type", days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load element breakdown: {e}")
+                element_breakdown = []
+            try:
+                class_breakdown = db.get_pass_rate_by_category("product_class", days_back=90)
+            except Exception as e:
+                logger.debug(f"Could not load class breakdown: {e}")
+                class_breakdown = []
+
             # Update UI on main thread
             self.after(0, lambda: self._update_display(
                 stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats,
-                system_comparison, ft_stats, escape_stats, trending_worse, near_miss_data
+                system_comparison, ft_stats, escape_stats, trending_worse, near_miss_data,
+                element_breakdown, class_breakdown
             ))
 
         except Exception as e:
@@ -508,6 +593,8 @@ class DashboardPage(ctk.CTkFrame):
         escape_stats: Optional[Dict[str, Any]] = None,
         trending_worse: Optional[List[Dict[str, Any]]] = None,
         near_miss_data: Optional[Dict[str, Any]] = None,
+        element_breakdown: Optional[List[Dict[str, Any]]] = None,
+        class_breakdown: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update display with loaded data."""
         # Use overall_stats for health card if available, otherwise fall back to period stats
@@ -604,6 +691,9 @@ class DashboardPage(ctk.CTkFrame):
 
         # Update Pareto chart
         self._update_pareto_chart(priority_models)
+
+        # Update category breakdown charts
+        self._update_breakdown_charts(element_breakdown or [], class_breakdown or [])
 
         # Update timestamp
         self.last_update_label.configure(
@@ -1000,6 +1090,46 @@ class DashboardPage(ctk.CTkFrame):
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export:\n{e}")
 
+    def _update_breakdown_charts(
+        self,
+        element_data: List[Dict[str, Any]],
+        class_data: List[Dict[str, Any]],
+    ):
+        """Update category breakdown text displays."""
+        # Element type breakdown
+        try:
+            if element_data:
+                lines = []
+                for item in sorted(element_data, key=lambda x: x["pass_rate"]):
+                    cat = item["category"]
+                    rate = item["pass_rate"]
+                    total = item["total"]
+                    color_indicator = "🟢" if rate >= 70 else ("🟡" if rate >= 50 else "🔴")
+                    lines.append(f"{color_indicator} {cat}: {rate:.1f}% ({total:,} units)")
+                text = "BY ELEMENT TYPE\n\n" + "\n".join(lines)
+            else:
+                text = "No element type data.\nImport model specs to enable."
+            self._element_breakdown_label.configure(text=text)
+        except Exception as e:
+            logger.debug(f"Element breakdown error: {e}")
+
+        # Product class breakdown
+        try:
+            if class_data:
+                lines = []
+                for item in sorted(class_data, key=lambda x: x["pass_rate"]):
+                    cat = item["category"]
+                    rate = item["pass_rate"]
+                    total = item["total"]
+                    color_indicator = "🟢" if rate >= 70 else ("🟡" if rate >= 50 else "🔴")
+                    lines.append(f"{color_indicator} {cat}: {rate:.1f}% ({total:,} units)")
+                text = "BY PRODUCT CLASS\n\n" + "\n".join(lines)
+            else:
+                text = "No product class data.\nImport model specs to enable."
+            self._class_breakdown_label.configure(text=text)
+        except Exception as e:
+            logger.debug(f"Class breakdown error: {e}")
+
     def _show_error(self, error: str):
         """Show error state."""
         self._update_card(
@@ -1014,7 +1144,24 @@ class DashboardPage(ctk.CTkFrame):
     def on_show(self):
         """Called when the page is shown."""
         logger.debug("Dashboard page shown")
+        # Populate filter dropdowns
+        self._populate_filters()
         # Refresh data when page is shown
+        self._refresh_data()
+
+    def _populate_filters(self):
+        """Populate element type and product class filter dropdowns."""
+        try:
+            db = get_database()
+            etypes = ["All Element Types"] + db.get_distinct_element_types()
+            pclasses = ["All Product Classes"] + db.get_distinct_product_classes()
+            self._element_filter.configure(values=etypes)
+            self._class_filter.configure(values=pclasses)
+        except Exception as e:
+            logger.debug(f"Could not populate filters: {e}")
+
+    def _on_filter_changed(self, _=None):
+        """Handle filter dropdown change."""
         self._refresh_data()
 
     def on_hide(self):

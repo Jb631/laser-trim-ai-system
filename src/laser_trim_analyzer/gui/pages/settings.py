@@ -69,6 +69,9 @@ class SettingsPage(ctk.CTkFrame):
         # Active Models section
         self._create_active_models_section(container)
 
+        # Model Specs Import section
+        self._create_model_specs_import_section(container)
+
         # Database Cleanup section
         self._create_database_cleanup_section(container)
 
@@ -543,6 +546,60 @@ class SettingsPage(ctk.CTkFrame):
         self.app.config.save()
         self.pricing_count_label.configure(text=self._pricing_summary_text())
         messagebox.showinfo("Cleared", "All pricing data cleared.")
+
+    def _create_model_specs_import_section(self, container):
+        """Create model specs import section."""
+        frame = ctk.CTkFrame(container)
+        frame.grid(sticky="ew", padx=10, pady=10)
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame, text="Model Specifications",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+
+        ctk.CTkLabel(
+            frame, text="Import model engineering specs from the reference Excel file.",
+            font=ctk.CTkFont(size=11), text_color="gray"
+        ).grid(row=1, column=0, padx=15, pady=(0, 10), sticky="w")
+
+        btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, padx=15, pady=(0, 15), sticky="w")
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Import from Excel",
+            width=150,
+            command=self._import_model_specs,
+        ).pack(side="left", padx=(0, 10))
+
+        self._import_specs_label = ctk.CTkLabel(
+            btn_frame, text="", text_color="gray", font=ctk.CTkFont(size=11)
+        )
+        self._import_specs_label.pack(side="left")
+
+    def _import_model_specs(self):
+        """Import model specs from Excel file."""
+        file_path = filedialog.askopenfilename(
+            title="Select Model Reference Excel",
+            filetypes=[("Excel files", "*.xlsx *.xls")]
+        )
+        if not file_path:
+            return
+
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            result = db.import_model_specs_from_excel(file_path)
+            msg = f"Added: {result['added']}, Updated: {result['updated']}"
+            if result['skipped']:
+                msg += f", Skipped: {result['skipped']}"
+            self._import_specs_label.configure(text=msg, text_color="#27ae60")
+            messagebox.showinfo("Import Complete", msg)
+        except Exception as e:
+            logger.error(f"Model specs import failed: {e}")
+            self._import_specs_label.configure(text=f"Error: {e}", text_color="#e74c3c")
+            messagebox.showerror("Import Error", str(e))
 
     def _create_database_cleanup_section(self, container):
         """Create database cleanup section for removing legacy/contaminated records."""

@@ -33,6 +33,7 @@ from laser_trim_analyzer.database.models import (
     QAAlert as DBQAAlert,
     BatchInfo as DBBatchInfo,
     ProcessedFile as DBProcessedFile,
+    ModelSpec,
     SystemType as DBSystemType,
     StatusType as DBStatusType,
     RiskCategory as DBRiskCategory,
@@ -1003,14 +1004,19 @@ class DatabaseManager:
     # Dashboard Queries
     # =========================================================================
 
-    def get_dashboard_stats(self, days_back: int = 7) -> Dict[str, Any]:
+    def get_dashboard_stats(self, days_back: int = 7,
+                            element_type: Optional[str] = None,
+                            product_class: Optional[str] = None) -> Dict[str, Any]:
         """
         Get statistics for dashboard display.
 
         Filters by trim date (file_date), not processing date.
+        Optionally filters by element type and/or product class via model_specs join.
 
         Args:
             days_back: Number of days to include (based on trim date)
+            element_type: Filter to models with this element type
+            product_class: Filter to models with this product class
 
         Returns:
             Dictionary with dashboard statistics
@@ -1018,23 +1024,48 @@ class DatabaseManager:
         with self.session() as session:
             cutoff_date = datetime.now() - timedelta(days=days_back)
 
+            # Build model filter list from model_specs if filters are active
+            filter_models = None
+            if element_type or product_class:
+                q = session.query(ModelSpec.model)
+                if element_type:
+                    q = q.filter(ModelSpec.element_type == element_type)
+                if product_class:
+                    q = q.filter(ModelSpec.product_class == product_class)
+                filter_models = [r[0] for r in q.all()]
+                if not filter_models:
+                    # No models match — return empty stats
+                    return {
+                        "total_analyses": 0, "total_files": 0,
+                        "passed": 0, "failed": 0, "pass_rate": 0.0,
+                        "sigma_pass_rate": 0.0, "linearity_pass_rate": 0.0,
+                        "total_tracks": 0, "unresolved_alerts": 0,
+                        "high_risk_count": 0, "period_days": days_back,
+                        "today_count": 0, "week_count": 0,
+                        "daily_trend": [], "linearity_daily_trend": [],
+                    }
+
+            def _base_filter(query):
+                """Apply date and optional model filters."""
+                query = query.filter(DBAnalysisResult.file_date >= cutoff_date)
+                if filter_models is not None:
+                    query = query.filter(DBAnalysisResult.model.in_(filter_models))
+                return query
+
             # Count analyses - filter by trim date
             total_analyses = (
-                session.query(func.count(DBAnalysisResult.id))
-                .filter(DBAnalysisResult.file_date >= cutoff_date)
+                _base_filter(session.query(func.count(DBAnalysisResult.id)))
                 .scalar()
             ) or 0
 
             # Count by status - filter by trim date
-            status_counts = (
-                session.query(
-                    DBAnalysisResult.overall_status,
-                    func.count(DBAnalysisResult.id)
-                )
-                .filter(DBAnalysisResult.file_date >= cutoff_date)
-                .group_by(DBAnalysisResult.overall_status)
-                .all()
-            )
+            status_q = session.query(
+                DBAnalysisResult.overall_status,
+                func.count(DBAnalysisResult.id)
+            ).filter(DBAnalysisResult.file_date >= cutoff_date)
+            if filter_models is not None:
+                status_q = status_q.filter(DBAnalysisResult.model.in_(filter_models))
+            status_counts = status_q.group_by(DBAnalysisResult.overall_status).all()
 
             passed = 0
             failed = 0
@@ -1052,20 +1083,22 @@ class DatabaseManager:
             ) or 0
 
             # Get high-risk count - filter by trim date
-            high_risk = (
+            high_risk_q = (
                 session.query(func.count(DBTrackResult.id))
                 .join(DBAnalysisResult)
                 .filter(
                     DBAnalysisResult.file_date >= cutoff_date,
                     DBTrackResult.risk_category == DBRiskCategory.HIGH
                 )
-                .scalar()
-            ) or 0
+            )
+            if filter_models is not None:
+                high_risk_q = high_risk_q.filter(DBAnalysisResult.model.in_(filter_models))
+            high_risk = high_risk_q.scalar() or 0
 
             pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
 
             # Get track-level sigma and linearity pass rates - filter by trim date
-            track_stats = (
+            track_stats_q = (
                 session.query(
                     func.count(DBTrackResult.id).label('total_tracks'),
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
@@ -1073,8 +1106,10 @@ class DatabaseManager:
                 )
                 .join(DBAnalysisResult)
                 .filter(DBAnalysisResult.file_date >= cutoff_date)
-                .first()
             )
+            if filter_models is not None:
+                track_stats_q = track_stats_q.filter(DBAnalysisResult.model.in_(filter_models))
+            track_stats = track_stats_q.first()
 
             total_tracks = track_stats.total_tracks or 0
             sigma_passed = track_stats.sigma_passed or 0
@@ -1091,25 +1126,23 @@ class DatabaseManager:
 
             # Today's count (by trim date)
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_count = (
-                session.query(func.count(DBAnalysisResult.id))
-                .filter(DBAnalysisResult.file_date >= today)
-                .scalar()
-            ) or 0
+            today_q = session.query(func.count(DBAnalysisResult.id)).filter(DBAnalysisResult.file_date >= today)
+            if filter_models is not None:
+                today_q = today_q.filter(DBAnalysisResult.model.in_(filter_models))
+            today_count = today_q.scalar() or 0
 
             # This week's count (by trim date)
             week_start = today - timedelta(days=today.weekday())
-            week_count = (
-                session.query(func.count(DBAnalysisResult.id))
-                .filter(DBAnalysisResult.file_date >= week_start)
-                .scalar()
-            ) or 0
+            week_q = session.query(func.count(DBAnalysisResult.id)).filter(DBAnalysisResult.file_date >= week_start)
+            if filter_models is not None:
+                week_q = week_q.filter(DBAnalysisResult.model.in_(filter_models))
+            week_count = week_q.scalar() or 0
 
             # Daily trend for the past N days (by trim date) - optimized single query
             trend_start = today - timedelta(days=days_back - 1)
 
             # Single query with GROUP BY date to get all days at once
-            daily_data = (
+            daily_q = (
                 session.query(
                     func.date(DBAnalysisResult.file_date).label('day'),
                     func.count(DBAnalysisResult.id).label('total'),
@@ -1121,6 +1154,11 @@ class DatabaseManager:
                     ).label('passed')
                 )
                 .filter(DBAnalysisResult.file_date >= trend_start)
+            )
+            if filter_models is not None:
+                daily_q = daily_q.filter(DBAnalysisResult.model.in_(filter_models))
+            daily_data = (
+                daily_q
                 .group_by(func.date(DBAnalysisResult.file_date))
                 .all()
             )
@@ -1145,7 +1183,7 @@ class DatabaseManager:
                 })
 
             # Linearity daily trend (track-level, independent of sigma)
-            linearity_daily_data = (
+            lin_daily_q = (
                 session.query(
                     func.date(DBAnalysisResult.file_date).label('day'),
                     func.count(DBTrackResult.id).label('total'),
@@ -1153,6 +1191,11 @@ class DatabaseManager:
                 )
                 .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
                 .filter(DBAnalysisResult.file_date >= trend_start)
+            )
+            if filter_models is not None:
+                lin_daily_q = lin_daily_q.filter(DBAnalysisResult.model.in_(filter_models))
+            linearity_daily_data = (
+                lin_daily_q
                 .group_by(func.date(DBAnalysisResult.file_date))
                 .all()
             )
@@ -1192,6 +1235,49 @@ class DatabaseManager:
                 "daily_trend": daily_trend,
                 "linearity_daily_trend": linearity_daily_trend,
             }
+
+    def get_pass_rate_by_category(self, category: str = "element_type",
+                                  days_back: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get pass rate grouped by element_type or product_class.
+
+        Args:
+            category: "element_type" or "product_class"
+            days_back: Number of days to look back
+
+        Returns:
+            List of dicts with keys: category, total, passed, pass_rate
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            spec_col = ModelSpec.element_type if category == "element_type" else ModelSpec.product_class
+
+            results = session.query(
+                spec_col.label("category"),
+                func.count(DBAnalysisResult.id).label("total"),
+                func.sum(
+                    case(
+                        (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
+                        else_=0
+                    )
+                ).label("passed")
+            ).join(
+                ModelSpec,
+                DBAnalysisResult.model == ModelSpec.model
+            ).filter(
+                DBAnalysisResult.file_date >= cutoff,
+                spec_col.isnot(None)
+            ).group_by(spec_col).all()
+
+            return [
+                {
+                    "category": r.category,
+                    "total": r.total,
+                    "passed": r.passed or 0,
+                    "pass_rate": ((r.passed or 0) / r.total * 100) if r.total > 0 else 0
+                }
+                for r in results
+            ]
 
     def get_last_batch_stats(self) -> Dict[str, Any]:
         """
@@ -5240,6 +5326,274 @@ class DatabaseManager:
 
         logger.info(f"Backfill complete: {updated} tracks updated")
         return updated
+
+    # =========================================================================
+    # Model Specifications
+    # =========================================================================
+
+    def get_all_model_specs(self) -> List[Dict[str, Any]]:
+        """Get all model specs as dicts."""
+        with self.session() as session:
+            specs = session.query(ModelSpec).order_by(ModelSpec.model).all()
+            return [
+                {
+                    "id": s.id,
+                    "model": s.model,
+                    "element_type": s.element_type,
+                    "product_class": s.product_class,
+                    "linearity_type": s.linearity_type,
+                    "linearity_spec_text": s.linearity_spec_text,
+                    "linearity_spec_pct": s.linearity_spec_pct,
+                    "total_resistance_min": s.total_resistance_min,
+                    "total_resistance_max": s.total_resistance_max,
+                    "electrical_angle": s.electrical_angle,
+                    "electrical_angle_tol": s.electrical_angle_tol,
+                    "electrical_angle_unit": s.electrical_angle_unit,
+                    "output_smoothness": s.output_smoothness,
+                    "circuit_type": s.circuit_type,
+                    "notes": s.notes,
+                }
+                for s in specs
+            ]
+
+    def get_model_spec(self, model: str) -> Optional[Dict[str, Any]]:
+        """Get spec for a specific model."""
+        with self.session() as session:
+            spec = session.query(ModelSpec).filter(
+                ModelSpec.model == model
+            ).first()
+            if not spec:
+                return None
+            return {
+                "id": spec.id,
+                "model": spec.model,
+                "element_type": spec.element_type,
+                "product_class": spec.product_class,
+                "linearity_type": spec.linearity_type,
+                "linearity_spec_text": spec.linearity_spec_text,
+                "linearity_spec_pct": spec.linearity_spec_pct,
+                "total_resistance_min": spec.total_resistance_min,
+                "total_resistance_max": spec.total_resistance_max,
+                "electrical_angle": spec.electrical_angle,
+                "electrical_angle_tol": spec.electrical_angle_tol,
+                "electrical_angle_unit": spec.electrical_angle_unit,
+                "output_smoothness": spec.output_smoothness,
+                "circuit_type": spec.circuit_type,
+                "notes": spec.notes,
+            }
+
+    def save_model_spec(self, data: Dict[str, Any]) -> int:
+        """Create or update a model spec. Returns the spec ID."""
+        with self._write_lock:
+            with self.session() as session:
+                existing = session.query(ModelSpec).filter(
+                    ModelSpec.model == data["model"]
+                ).first()
+
+                if existing:
+                    for key, value in data.items():
+                        if key not in ("id", "model", "created_at"):
+                            setattr(existing, key, value)
+                    existing.updated_at = datetime.now()
+                    session.flush()
+                    return existing.id
+                else:
+                    spec = ModelSpec(**{k: v for k, v in data.items() if k != "id"})
+                    session.add(spec)
+                    session.flush()
+                    return spec.id
+
+    def delete_model_spec(self, model: str) -> bool:
+        """Delete a model spec. Returns True if found and deleted."""
+        with self._write_lock:
+            with self.session() as session:
+                spec = session.query(ModelSpec).filter(
+                    ModelSpec.model == model
+                ).first()
+                if spec:
+                    session.delete(spec)
+                    return True
+                return False
+
+    def get_distinct_element_types(self) -> List[str]:
+        """Get all distinct element types from model_specs."""
+        with self.session() as session:
+            results = session.query(ModelSpec.element_type).filter(
+                ModelSpec.element_type.isnot(None)
+            ).distinct().order_by(ModelSpec.element_type).all()
+            return [r[0] for r in results]
+
+    def get_distinct_product_classes(self) -> List[str]:
+        """Get all distinct product classes from model_specs."""
+        with self.session() as session:
+            results = session.query(ModelSpec.product_class).filter(
+                ModelSpec.product_class.isnot(None)
+            ).distinct().order_by(ModelSpec.product_class).all()
+            return [r[0] for r in results]
+
+    def import_model_specs_from_excel(self, file_path: str) -> Dict[str, int]:
+        """
+        Import model specs from the reference Excel file.
+        Merges: updates existing, adds new, never deletes.
+
+        Returns: {"updated": N, "added": N, "skipped": N}
+        """
+        import re
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, read_only=True)
+        result = {"updated": 0, "added": 0, "skipped": 0}
+
+        # Collect data from all three sheets
+        model_data = {}  # model -> dict of fields
+
+        # Sheet 1: Model Reference (primary, most complete)
+        if "Model Reference" in wb.sheetnames:
+            ws = wb["Model Reference"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                model = str(row[1]).strip() if row[1] else None
+                if not model:
+                    continue
+
+                # Skip Customer (row[2]) and Operator (row[9])
+                element_type = str(row[3]).strip() if row[3] else None
+                linearity_text = str(row[4]).strip() if row[4] else None
+                resistance_text = str(row[5]).strip() if row[5] else None
+                angle_text = str(row[6]).strip() if row[6] else None
+                smoothness = str(row[7]).strip() if row[7] else None
+                circuit = str(row[8]).strip() if row[8] else None
+                product_class = str(row[10]).strip() if len(row) > 10 and row[10] else None
+
+                # Parse linearity type from text
+                linearity_type = None
+                linearity_pct = None
+                if linearity_text:
+                    # Extract type: look for (Absolute), (Independent), etc.
+                    type_match = re.search(
+                        r'\((Absolute|Independent|Term Base|Zero-Based|VR Max)\)',
+                        linearity_text, re.IGNORECASE
+                    )
+                    if type_match:
+                        linearity_type = type_match.group(1)
+                    elif any(kw in linearity_text.lower() for kw in
+                             ['see chart', 'see table', 'function', 'trim according']):
+                        linearity_type = "Custom"
+
+                    # Extract percentage: look for ± N.N% or +/- N.N%
+                    pct_match = re.search(r'[±]\s*(\d+\.?\d*)\s*%', linearity_text)
+                    if not pct_match:
+                        pct_match = re.search(r'\+/?-?\s*\.?(\d+\.?\d*)\s*%', linearity_text)
+                    if pct_match:
+                        try:
+                            linearity_pct = float(pct_match.group(1))
+                        except ValueError:
+                            pass
+
+                # Parse resistance: "950 - 1,050 Ω" → min=950, max=1050
+                r_min = None
+                r_max = None
+                if resistance_text:
+                    r_match = re.search(
+                        r'([\d,]+\.?\d*)\s*[-–]\s*([\d,]+\.?\d*)',
+                        resistance_text
+                    )
+                    if r_match:
+                        try:
+                            r_min = float(r_match.group(1).replace(',', ''))
+                            r_max = float(r_match.group(2).replace(',', ''))
+                        except ValueError:
+                            pass
+
+                # Parse angle: '1.31" ± .005"' or '240° ± 2°'
+                angle_val = None
+                angle_tol = None
+                angle_unit = None
+                if angle_text:
+                    # Try inches format: N.NN" ± .NNN"
+                    a_match = re.search(r'([\d.]+)"?\s*[±]\s*\.?([\d.]+)', angle_text)
+                    if a_match:
+                        try:
+                            angle_val = float(a_match.group(1))
+                            tol_str = a_match.group(2)
+                            angle_tol = float('0.' + tol_str) if '.' not in tol_str else float(tol_str)
+                            angle_unit = "in"
+                        except ValueError:
+                            pass
+                    if angle_val is None:
+                        # Try just a number (degrees or inches)
+                        num_match = re.search(r'([\d.]+)', angle_text)
+                        if num_match:
+                            try:
+                                angle_val = float(num_match.group(1))
+                                angle_unit = "in" if '"' in angle_text else "deg"
+                            except ValueError:
+                                pass
+
+                model_data[model] = {
+                    "model": model,
+                    "element_type": element_type if element_type and element_type != 'None' else None,
+                    "product_class": product_class if product_class and product_class != 'None' else None,
+                    "linearity_type": linearity_type,
+                    "linearity_spec_text": linearity_text if linearity_text and linearity_text != 'None' else None,
+                    "linearity_spec_pct": linearity_pct,
+                    "total_resistance_min": r_min,
+                    "total_resistance_max": r_max,
+                    "electrical_angle": angle_val,
+                    "electrical_angle_tol": angle_tol,
+                    "electrical_angle_unit": angle_unit,
+                    "output_smoothness": smoothness if smoothness and smoothness != 'None' else None,
+                    "circuit_type": circuit if circuit and circuit != 'None' else None,
+                }
+
+        # Sheet 2: Element Type (supplement — broader coverage)
+        if "Element Type" in wb.sheetnames:
+            ws = wb["Element Type"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                model = str(row[0]).strip() if row[0] else None
+                etype = str(row[1]).strip() if row[1] else None
+                if model and etype and etype != 'None':
+                    if model not in model_data:
+                        model_data[model] = {"model": model, "element_type": etype}
+                    elif not model_data[model].get("element_type"):
+                        model_data[model]["element_type"] = etype
+
+        # Sheet 3: Product Class (supplement — broadest coverage)
+        if "Product Class" in wb.sheetnames:
+            ws = wb["Product Class"]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                model = str(row[0]).strip() if row[0] else None
+                pclass = str(row[1]).strip() if row[1] else None
+                if model and pclass and pclass != 'None':
+                    if model not in model_data:
+                        model_data[model] = {"model": model, "product_class": pclass}
+                    elif not model_data[model].get("product_class"):
+                        model_data[model]["product_class"] = pclass
+
+        wb.close()
+
+        # Save to database (merge logic)
+        for model_name, data in model_data.items():
+            try:
+                with self.session() as session:
+                    existing = session.query(ModelSpec).filter(
+                        ModelSpec.model == model_name
+                    ).first()
+
+                if existing:
+                    self.save_model_spec(data)
+                    result["updated"] += 1
+                else:
+                    self.save_model_spec(data)
+                    result["added"] += 1
+            except Exception as e:
+                logger.warning(f"Skipping model spec {model_name}: {e}")
+                result["skipped"] += 1
+
+        logger.info(
+            f"Model specs import: {result['added']} added, "
+            f"{result['updated']} updated, {result['skipped']} skipped"
+        )
+        return result
 
 
 # Global instance for convenience

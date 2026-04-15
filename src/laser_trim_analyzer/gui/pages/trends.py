@@ -149,6 +149,32 @@ class TrendsPage(ctk.CTkFrame):
         self.date_dropdown.set("All Time")
         self.date_dropdown.pack(side="left", padx=5, pady=15)
 
+        # Element type filter
+        et_label = ctk.CTkLabel(controls, text="Element:")
+        et_label.pack(side="left", padx=(10, 2), pady=15)
+        self._element_filter = ctk.CTkComboBox(
+            controls,
+            values=["All"],
+            command=self._on_spec_filter_change,
+            width=100,
+            font=ctk.CTkFont(size=11)
+        )
+        self._element_filter.set("All")
+        self._element_filter.pack(side="left", padx=2, pady=15)
+
+        # Product class filter
+        pc_label = ctk.CTkLabel(controls, text="Class:")
+        pc_label.pack(side="left", padx=(5, 2), pady=15)
+        self._class_filter = ctk.CTkComboBox(
+            controls,
+            values=["All"],
+            command=self._on_spec_filter_change,
+            width=100,
+            font=ctk.CTkFont(size=11)
+        )
+        self._class_filter.set("All")
+        self._class_filter.pack(side="left", padx=2, pady=15)
+
         # Rolling average window (only shown in detail mode)
         self.rolling_label = ctk.CTkLabel(controls, text="Rolling Avg:")
         self.rolling_label.pack(side="left", padx=(20, 5), pady=15)
@@ -923,7 +949,8 @@ class TrendsPage(ctk.CTkFrame):
         """
         Build filtered model list from prioritized models.
 
-        Applies: active_only, min_samples, and min_fail_rate filters.
+        Applies: active_only, min_samples, min_fail_rate, element_type,
+        and product_class filters.
         MPS models are always included regardless of filters.
         """
         active_only = self.active_only_var.get()
@@ -938,6 +965,24 @@ class TrendsPage(ctk.CTkFrame):
             min_fail_rate = float(self.fail_rate_entry.get())
         except (ValueError, AttributeError):
             min_fail_rate = 0
+
+        # Element type / product class filter from spec dropdowns
+        et = self._element_filter.get() if hasattr(self, '_element_filter') else "All"
+        pc = self._class_filter.get() if hasattr(self, '_class_filter') else "All"
+        spec_filter_models = None
+        if (et and et != "All") or (pc and pc != "All"):
+            try:
+                db = get_database()
+                all_specs = db.get_all_model_specs()
+                spec_filter_models = set()
+                for s in all_specs:
+                    if et and et != "All" and s.get("element_type") != et:
+                        continue
+                    if pc and pc != "All" and s.get("product_class") != pc:
+                        continue
+                    spec_filter_models.add(s["model"])
+            except Exception:
+                spec_filter_models = None
 
         mps_set = set(self.app.config.active_models.mps_models)
 
@@ -957,6 +1002,10 @@ class TrendsPage(ctk.CTkFrame):
 
             # Active-only filter
             if status == 'inactive' and active_only:
+                continue
+
+            # Element type / product class filter
+            if spec_filter_models is not None and model not in spec_filter_models:
                 continue
 
             # Min samples filter (MPS models bypass)
@@ -2120,12 +2169,29 @@ class TrendsPage(ctk.CTkFrame):
     def on_show(self):
         """Called when the page is shown."""
         logger.debug("Trends page shown")
+        # Populate spec filter dropdowns
+        self._populate_spec_filters()
         # Recreate view if charts were cleaned up
         if not self._summary_charts_initialized and not self._detail_charts_initialized:
             if self.selected_model == "All Models":
                 self._create_summary_view()
             else:
                 self._create_detail_view()
+        self._refresh_data()
+
+    def _populate_spec_filters(self):
+        """Populate element type and product class filter dropdowns."""
+        try:
+            db = get_database()
+            etypes = ["All"] + db.get_distinct_element_types()
+            pclasses = ["All"] + db.get_distinct_product_classes()
+            self._element_filter.configure(values=etypes)
+            self._class_filter.configure(values=pclasses)
+        except Exception as e:
+            logger.debug(f"Could not populate spec filters: {e}")
+
+    def _on_spec_filter_change(self, _=None):
+        """Handle element type or product class filter change."""
         self._refresh_data()
 
     def on_hide(self):
