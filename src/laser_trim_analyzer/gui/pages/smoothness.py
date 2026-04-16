@@ -46,13 +46,13 @@ class SmoothnessPage(ctk.CTkFrame):
                     font=ctk.CTkFont(size=18, weight="bold")).pack(side="left", padx=10)
 
         ctk.CTkLabel(bar, text="Model:").pack(side="left", padx=(20, 5))
-        self.model_var = ctk.StringVar(value="All Models")
         self.model_dropdown = ScrollableComboBox(
-            bar, variable=self.model_var,
+            bar,
             values=["All Models"],
             command=lambda _: self._load_results(),
             width=120
         )
+        self.model_dropdown.set("All Models")
         self.model_dropdown.pack(side="left", padx=5)
 
         ctk.CTkButton(bar, text="Refresh", width=80,
@@ -129,7 +129,7 @@ class SmoothnessPage(ctk.CTkFrame):
     def _load_results(self):
         """Load smoothness results from database in background."""
         # Capture filter on main thread
-        model = self.model_var.get()
+        model = self.model_dropdown.get()
         if model == "All Models":
             model = None
 
