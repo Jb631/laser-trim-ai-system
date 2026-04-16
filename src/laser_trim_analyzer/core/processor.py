@@ -43,6 +43,7 @@ from laser_trim_analyzer.core.models import (
 )
 from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+from laser_trim_analyzer.core.smoothness_parser import SmoothnessParser, is_smoothness_file
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class Processor:
         self.config = config or get_config()
         self.parser = ExcelParser()
         self.final_test_parser = FinalTestParser()  # For Final Test files
+        self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
         self._processed_hashes: set = set()
         self._processed_filenames: Optional[set] = None  # None = not loaded yet
 
@@ -146,6 +148,9 @@ class Processor:
 
         if file_type == "final_test":
             return self._process_final_test_file(file_path, start_time)
+
+        if file_type == "smoothness":
+            return self._process_smoothness_file(file_path, start_time)
 
         # Process as trim file (existing logic)
         try:
@@ -692,6 +697,69 @@ class Processor:
                     )
 
         return issues
+
+    def _process_smoothness_file(self, file_path: Path, start_time: float) -> AnalysisResult:
+        """Process an Output Smoothness file."""
+        from laser_trim_analyzer.database import get_database
+
+        try:
+            parsed = self.smoothness_parser.parse_file(file_path)
+            metadata = parsed["metadata"]
+            tracks = parsed["tracks"]
+            file_hash = parsed["file_hash"]
+
+            db = get_database()
+            result_id = db.save_smoothness_result(
+                metadata=metadata, tracks=tracks, file_hash=file_hash
+            )
+
+            processing_time = time.time() - start_time
+
+            minimal_metadata = FileMetadata(
+                filename=metadata.get("filename", file_path.name),
+                file_path=str(file_path),
+                model=metadata.get("model", "unknown"),
+                serial=metadata.get("serial", "unknown"),
+                system=SystemType.UNKNOWN,
+                file_date=metadata.get("file_date"),
+            )
+
+            overall_status = AnalysisStatus.PASS
+            if any(not t.get("smoothness_pass", True) for t in tracks):
+                overall_status = AnalysisStatus.FAIL
+
+            # Create minimal track data for result
+            analyzed_tracks = [
+                TrackData(
+                    track_id=t.get("track_id", "default"),
+                    status=AnalysisStatus.PASS if t.get("smoothness_pass", True) else AnalysisStatus.FAIL,
+                    travel_length=1.0, linearity_spec=0.01,
+                    sigma_gradient=0.0, sigma_threshold=0.01, sigma_pass=True,
+                    optimal_offset=0.0, linearity_error=0.0,
+                    linearity_pass=True, linearity_fail_points=0,
+                )
+                for t in (tracks or [{"track_id": "default", "smoothness_pass": True}])
+            ]
+
+            result = AnalysisResult(
+                metadata=minimal_metadata, overall_status=overall_status,
+                processing_time=processing_time, tracks=analyzed_tracks,
+            )
+            result.file_type = "smoothness"
+            result.smoothness_id = result_id
+
+            logger.info(
+                f"Processed Smoothness: {file_path.name} - {overall_status.value} "
+                f"(ID: {result_id}, {processing_time:.2f}s)"
+            )
+            return result
+
+        except Exception as e:
+            logger.exception(f"Error processing Smoothness {file_path.name}: {e}")
+            return self._create_error_result(
+                self._create_minimal_metadata(file_path),
+                f"Smoothness error: {e}", start_time
+            )
 
     def _get_linearity_type(self, model: str) -> Optional[str]:
         """Look up linearity type from model_specs table."""

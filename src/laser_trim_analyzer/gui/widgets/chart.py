@@ -217,17 +217,42 @@ class ChartWidget(ctk.CTkFrame):
         else:
             shifted_errors = [e + offset for e in trimmed_errors]
 
+        # Determine if we need dual Y-axes for untrimmed data
+        use_dual_axis = False
+        ax2 = None
+
+        if untrimmed_positions and untrimmed_errors:
+            trimmed_range = max(shifted_errors) - min(shifted_errors) if shifted_errors else 0
+            untrimmed_range = max(untrimmed_errors) - min(untrimmed_errors) if untrimmed_errors else 0
+            # Include spec limits in range calculation
+            spec_max = trimmed_range
+            if upper_limits and lower_limits:
+                valid_upper = [u for u in upper_limits if u is not None]
+                valid_lower = [l for l in lower_limits if l is not None]
+                if valid_upper and valid_lower:
+                    spec_range = max(valid_upper) - min(valid_lower)
+                    spec_max = max(trimmed_range, spec_range)
+            # Use dual axes when untrimmed range is > 3x the trimmed+spec range
+            if spec_max > 0 and untrimmed_range > 3.0 * spec_max:
+                use_dual_axis = True
+                ax2 = ax.twinx()
+                self._style_axis(ax2)
+                ax2.set_ylabel('Pre-Trim Error', fontsize=self.style.font_size,
+                              color=COLORS['untrimmed'])
+                ax2.tick_params(axis='y', colors=COLORS['untrimmed'])
+
         # Plot untrimmed data if available
         if untrimmed_positions and untrimmed_errors:
             label_text = 'Untrimmed'
             if trim_improvement_percent is not None:
                 label_text = f'Untrimmed (trim improved {trim_improvement_percent:.0f}%)'
-            ax.plot(
+            target_ax = ax2 if use_dual_axis else ax
+            target_ax.plot(
                 untrimmed_positions, untrimmed_errors,
                 color=COLORS['untrimmed'],
                 linestyle='--',
                 linewidth=self.style.line_width,
-                alpha=0.7,
+                alpha=0.5 if use_dual_axis else 0.7,
                 label=label_text
             )
 
@@ -309,9 +334,18 @@ class ChartWidget(ctk.CTkFrame):
         # Styling
         ax.set_xlabel('Position', fontsize=self.style.font_size)
         ax.set_ylabel('Error', fontsize=self.style.font_size)
-        ax.set_title(title, fontsize=self.style.title_size)
-        ax.legend(loc='best', fontsize=self.style.font_size - 2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        # Combine legends from both axes when using dual scale
+        if use_dual_axis and ax2:
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2,
+                     loc='best', fontsize=self.style.font_size - 2)
+            ax.set_title(f"{title} (dual scale)", fontsize=self.style.title_size)
+        else:
+            ax.legend(loc='best', fontsize=self.style.font_size - 2)
+            ax.set_title(title, fontsize=self.style.title_size)
 
         # Add SN and Trim Date info box in upper right corner
         if serial_number or trim_date:
@@ -326,6 +360,60 @@ class ChartWidget(ctk.CTkFrame):
             text_color = COLORS['text'] if self.style.dark_mode else 'black'
             bg_color = '#3d3d3d' if self.style.dark_mode else 'lightyellow'
             ax.text(0.98, 0.98, info_text,
+                   transform=ax.transAxes, fontsize=self.style.font_size - 1,
+                   va='top', ha='right',
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9, edgecolor='gray'),
+                   color=text_color)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def plot_smoothness(
+        self,
+        positions: List[float],
+        smoothness_values: List[float],
+        spec_limit: Optional[float] = None,
+        title: str = "Output Smoothness",
+        serial_number: Optional[str] = None,
+        test_date: Optional[str] = None,
+        element_label: Optional[str] = None,
+    ) -> None:
+        """Plot output smoothness vs position with spec limit."""
+        self.clear()
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
+
+        label = f'{element_label} Smoothness' if element_label else 'Smoothness'
+        ax.plot(positions, smoothness_values, color=COLORS['trimmed'],
+                linewidth=self.style.line_width, label=label)
+
+        if spec_limit is not None:
+            ax.axhline(y=spec_limit, color=COLORS['spec_limit'], linestyle='--',
+                       linewidth=1, alpha=0.8, label=f'Spec Limit ({spec_limit})')
+            # Mark points exceeding spec
+            fail_x = [p for p, v in zip(positions, smoothness_values) if v > spec_limit]
+            fail_y = [v for v in smoothness_values if v > spec_limit]
+            if fail_x:
+                ax.scatter(fail_x, fail_y, color=COLORS['fail'], marker='x',
+                          s=50, linewidths=2, label=f'Exceeds Spec ({len(fail_x)} pts)', zorder=5)
+
+        ax.set_xlabel('Position', fontsize=self.style.font_size)
+        ax.set_ylabel('Output Smoothness', fontsize=self.style.font_size)
+        ax.set_title(title, fontsize=self.style.title_size)
+        ax.legend(loc='best', fontsize=self.style.font_size - 2)
+        ax.grid(True, alpha=0.3, color=COLORS['grid'])
+
+        if serial_number or test_date:
+            info_lines = []
+            if serial_number:
+                info_lines.append(f"SN: {serial_number}")
+            if test_date:
+                info_lines.append(f"Date: {test_date}")
+            if element_label:
+                info_lines.append(f"Element: {element_label}")
+            text_color = COLORS['text'] if self.style.dark_mode else 'black'
+            bg_color = '#3d3d3d' if self.style.dark_mode else 'lightyellow'
+            ax.text(0.98, 0.98, "\n".join(info_lines),
                    transform=ax.transAxes, fontsize=self.style.font_size - 1,
                    va='top', ha='right',
                    bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9, edgecolor='gray'),

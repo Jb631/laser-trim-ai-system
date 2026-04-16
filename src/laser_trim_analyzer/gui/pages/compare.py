@@ -643,9 +643,18 @@ Linearity: {"PASS" if linearity_pass else "FAIL" if linearity_pass is False else
             linked_trim = pair.get("linked_trim", {})
             trim_file = linked_trim.get("filename", "Unknown") if linked_trim else "Unknown"
             confidence_str = f"{confidence*100:.0f}%" if confidence else "N/A"
+            # Match method label
+            method_labels = {
+                "exact": "Exact Match",
+                "fuzzy_serial": "Fuzzy Serial",
+                "fuzzy_serial_aggressive": "Fuzzy Serial (aggressive)",
+                "model_variant": "Model Variant",
+            }
+            match_method = pair.get("match_method")
+            method_label = method_labels.get(match_method, match_method or "Unknown")
             info_text += f"""Linked Trim: {trim_file}
 Days Since Trim: {days_since if days_since else 'N/A'}
-Match Confidence: {confidence_str}"""
+Match: {method_label} ({confidence_str})"""
         else:
             info_text += "No linked trim result found"
 
@@ -1603,9 +1612,18 @@ Match Confidence: {confidence_str}"""
         days_since = data.get("days_since_trim")
         confidence = data.get("match_confidence")
 
+        # Match method label
+        method_labels = {
+            "exact": "Exact", "fuzzy_serial": "Fuzzy",
+            "fuzzy_serial_aggressive": "Fuzzy (agg)", "model_variant": "Variant",
+        }
+        match_method = data.get("match_method")
+        method_str = method_labels.get(match_method, match_method or "N/A")
+        conf_str = f"{confidence*100:.0f}%" if confidence else "N/A"
+
         metrics = [
             f"Days Since Trim: {days_since}" if days_since is not None else "Days Since Trim: N/A",
-            f"Match Confidence: {confidence*100:.0f}%" if confidence else "Match Confidence: N/A",
+            f"Match: {method_str} ({conf_str})",
             "",
         ]
 

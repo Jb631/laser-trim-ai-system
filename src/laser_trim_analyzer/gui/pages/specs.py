@@ -66,6 +66,14 @@ class SpecsPage(ctk.CTkFrame):
             command=self._add_new
         ).grid(row=0, column=2, padx=5)
 
+        ctk.CTkButton(
+            header_frame,
+            text="Check Discrepancies",
+            width=140,
+            fg_color="#2980b9",
+            command=self._check_discrepancies
+        ).grid(row=0, column=3, padx=5)
+
         # Search bar
         search_frame = ctk.CTkFrame(self, fg_color="transparent")
         search_frame.grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="ew")
@@ -395,3 +403,34 @@ class SpecsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Failed to delete model spec: {e}")
             messagebox.showerror("Delete Error", str(e))
+
+    def _check_discrepancies(self):
+        """Check for spec discrepancies between file-parsed and reference specs."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            discrepancies = db.get_spec_discrepancies()
+
+            if not discrepancies:
+                messagebox.showinfo(
+                    "Spec Check",
+                    "No discrepancies found.\n\n"
+                    "All file-parsed linearity specs match model reference specs within 5%."
+                )
+                return
+
+            # Build report
+            lines = [f"Found {len(discrepancies)} spec discrepancies:\n"]
+            for d in discrepancies[:20]:  # Limit to top 20
+                lines.append(
+                    f"  {d['model']}: file={d['file_spec_avg']:.4f}, "
+                    f"ref={d['reference_spec_decimal']:.4f} "
+                    f"({d['difference_pct']:.0f}% off, {d['sample_count']} samples)"
+                )
+            if len(discrepancies) > 20:
+                lines.append(f"\n  ... and {len(discrepancies) - 20} more")
+
+            messagebox.showinfo("Spec Discrepancies", "\n".join(lines))
+        except Exception as e:
+            logger.error(f"Failed to check discrepancies: {e}")
+            messagebox.showerror("Error", str(e))

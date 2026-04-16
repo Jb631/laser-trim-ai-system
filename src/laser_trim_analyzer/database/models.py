@@ -1045,6 +1045,7 @@ class FinalTestResult(Base):
     linked_trim_id = Column(Integer, ForeignKey('analysis_results.id', ondelete='SET NULL'))
     match_confidence = Column(Float)  # 0-1, how confident the match is
     days_since_trim = Column(Integer)  # Days between trim and final test
+    match_method = Column(String(30))  # 'exact', 'fuzzy_serial', 'model_variant', or None
 
     # Relationships
     linked_trim = relationship("AnalysisResult", backref="final_test_results", foreign_keys=[linked_trim_id])
@@ -1386,3 +1387,85 @@ class ModelSpec(Base):
 
     def __repr__(self):
         return f"<ModelSpec(model='{self.model}', element='{self.element_type}', class='{self.product_class}')>"
+
+
+# =============================================================================
+# Output Smoothness Tables
+# =============================================================================
+
+class SmoothnessResult(Base):
+    """Output Smoothness test file-level results."""
+    __tablename__ = 'smoothness_results'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    filename = Column(String(255), nullable=False)
+    file_path = Column(Text)
+    file_hash = Column(String(64))
+    file_date = Column(DateTime)
+    model = Column(String(50), nullable=False)
+    serial = Column(String(100), nullable=False)
+    element_label = Column(String(30))
+    test_date = Column(DateTime)
+    overall_status = Column(Enum(StatusType), nullable=False)
+    smoothness_spec = Column(Float)
+    max_smoothness_value = Column(Float)
+    avg_smoothness_value = Column(Float)
+    smoothness_pass = Column(Boolean)
+    timestamp = Column(DateTime, default=utc_now, nullable=False)
+    processing_time = Column(Float)
+    software_version = Column(String(20))
+    linked_trim_id = Column(Integer, ForeignKey('analysis_results.id', ondelete='SET NULL'))
+    match_confidence = Column(Float)
+    match_method = Column(String(30))
+    days_since_trim = Column(Integer)
+
+    linked_trim = relationship("AnalysisResult", backref="smoothness_results", foreign_keys=[linked_trim_id])
+    tracks = relationship(
+        "SmoothnessTrack", back_populates="smoothness_result",
+        cascade="all, delete-orphan", lazy="select"
+    )
+
+    __table_args__ = (
+        Index('idx_os_filename_date', 'filename', 'file_date'),
+        Index('idx_os_model_serial', 'model', 'serial'),
+        Index('idx_os_model_serial_date', 'model', 'serial', 'file_date'),
+        Index('idx_os_timestamp', 'timestamp'),
+        Index('idx_os_status', 'overall_status'),
+        Index('idx_os_linked_trim', 'linked_trim_id'),
+        UniqueConstraint('filename', 'file_date', 'model', 'serial', name='uq_smoothness_file'),
+        CheckConstraint("LENGTH(TRIM(filename)) > 0", name='check_os_filename_not_empty'),
+        CheckConstraint("LENGTH(TRIM(model)) > 0", name='check_os_model_not_empty'),
+        CheckConstraint("LENGTH(TRIM(serial)) > 0", name='check_os_serial_not_empty'),
+    )
+
+    def __repr__(self):
+        return f"<SmoothnessResult(id={self.id}, model='{self.model}', serial='{self.serial}', pass={self.smoothness_pass})>"
+
+
+class SmoothnessTrack(Base):
+    """Output Smoothness track-level data."""
+    __tablename__ = 'smoothness_tracks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    smoothness_id = Column(Integer, ForeignKey('smoothness_results.id'), nullable=False)
+    track_id = Column(String(20), nullable=False, default='default')
+    status = Column(Enum(StatusType), nullable=False)
+    smoothness_spec = Column(Float)
+    max_smoothness = Column(Float)
+    avg_smoothness = Column(Float)
+    smoothness_pass = Column(Boolean)
+    position_data = Column(SafeJSON, nullable=True)
+    smoothness_data = Column(SafeJSON, nullable=True)
+    upper_limit_data = Column(SafeJSON, nullable=True)
+
+    smoothness_result = relationship("SmoothnessResult", back_populates="tracks")
+
+    __table_args__ = (
+        Index('idx_ost_smoothness', 'smoothness_id', 'track_id'),
+        Index('idx_ost_status', 'status'),
+        UniqueConstraint('smoothness_id', 'track_id', name='uq_smoothness_track'),
+        CheckConstraint("LENGTH(TRIM(track_id)) > 0", name='check_ost_track_id_not_empty'),
+    )
+
+    def __repr__(self):
+        return f"<SmoothnessTrack(id={self.id}, smoothness_id={self.smoothness_id}, track_id='{self.track_id}')>"

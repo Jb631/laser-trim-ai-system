@@ -877,6 +877,11 @@ def detect_file_type(file_path: Path) -> str:
 
     # --- Filename-based checks (fast, no file I/O needed) ---
 
+    # Check for Output Smoothness files first (before non-trim check)
+    if '_OS_' in filename:
+        logger.debug(f"Detected smoothness file (_OS_ in filename): {filename}")
+        return "smoothness"
+
     # Check for non-trim files first — scrap, noise, smoothness tests
     # These files contaminate the database if processed as trim data
     for pattern in NON_TRIM_FILENAME_PATTERNS:

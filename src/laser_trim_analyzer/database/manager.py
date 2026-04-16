@@ -528,6 +528,17 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            # Migration: Add match_method column to final_test_results
+            try:
+                session.execute(text("SELECT match_method FROM final_test_results LIMIT 1"))
+            except OperationalError:
+                try:
+                    session.execute(text("ALTER TABLE final_test_results ADD COLUMN match_method VARCHAR(30)"))
+                    session.commit()
+                    logger.info("Migration: Added match_method column to final_test_results")
+                except Exception:
+                    pass
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -576,6 +587,11 @@ class DatabaseManager:
         if getattr(analysis, 'file_type', 'trim') == 'final_test':
             logger.debug(f"Skipping save_analysis for Final Test: {analysis.metadata.filename}")
             return getattr(analysis, 'final_test_id', -1) or -1
+
+        # Skip Smoothness files - they're already saved in processor via save_smoothness_result
+        if getattr(analysis, 'file_type', 'trim') == 'smoothness':
+            logger.debug(f"Skipping save_analysis for Smoothness: {analysis.metadata.filename}")
+            return getattr(analysis, 'smoothness_id', -1) or -1
 
         # Use write lock for thread safety with SQLite
         with self._write_lock:
@@ -811,7 +827,23 @@ class DatabaseManager:
                 .first()
             ) is not None
 
-            return exists
+            if exists:
+                return True
+
+            # Also check Output Smoothness files
+            try:
+                from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+                exists = (
+                    session.query(DBSmoothnessResult)
+                    .filter(DBSmoothnessResult.file_hash == file_hash)
+                    .first()
+                ) is not None
+                if exists:
+                    return True
+            except Exception:
+                pass  # Table may not exist yet
+
+            return False
 
     def get_unprocessed_files(self, file_paths: List[Path]) -> List[Path]:
         """
@@ -838,14 +870,38 @@ class DatabaseManager:
         if not file_hashes:
             return []
 
-        # Query for existing hashes
+        # Query for existing hashes across all file type tables
+        hash_list = list(file_hashes.keys())
         with self.session() as session:
             existing_hashes = set(
                 row.file_hash for row in
                 session.query(DBProcessedFile.file_hash)
-                .filter(DBProcessedFile.file_hash.in_(list(file_hashes.keys())))
+                .filter(DBProcessedFile.file_hash.in_(hash_list))
                 .all()
             )
+
+            # Also check Final Test hashes
+            from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
+            existing_hashes.update(
+                row.file_hash for row in
+                session.query(DBFinalTestResult.file_hash)
+                .filter(DBFinalTestResult.file_hash.in_(hash_list))
+                .all()
+                if row.file_hash
+            )
+
+            # Also check Smoothness hashes
+            try:
+                from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+                existing_hashes.update(
+                    row.file_hash for row in
+                    session.query(DBSmoothnessResult.file_hash)
+                    .filter(DBSmoothnessResult.file_hash.in_(hash_list))
+                    .all()
+                    if row.file_hash
+                )
+            except Exception:
+                pass  # Table may not exist yet
 
         # Return files whose hash is not in database
         return [
@@ -3401,7 +3457,7 @@ class DatabaseManager:
                                 break
 
                     # Find matching trim result
-                    linked_trim_id, match_confidence, days_since_trim = self._find_matching_trim(
+                    linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
                         session,
                         metadata.get("model"),
                         metadata.get("serial"),
@@ -3429,6 +3485,7 @@ class DatabaseManager:
                         linked_trim_id=linked_trim_id,
                         match_confidence=match_confidence,
                         days_since_trim=days_since_trim,
+                        match_method=match_method,
                     )
 
                     session.add(db_result)
@@ -3660,26 +3717,38 @@ class DatabaseManager:
     @staticmethod
     def _normalize_serial(serial: str) -> str:
         """
-        Normalize a serial number for fuzzy matching.
+        Normalize a serial number for fuzzy matching (selective).
 
         Handles common formatting differences between trim and FT files:
-        - Strip leading zeros (007 → 7)
+        - Strip leading zeros (007 -> 7)
         - Lowercase
         - Strip whitespace
         - Remove common prefixes (sn, s/n, #)
-        - Strip any trailing single letter suffix from digit-prefixed serials
-          (track positions, rotary positions, etc.)
-          e.g. 32A → 32, 10P → 10, 125E → 125, 32T → 32
+        - Strip known track-position suffixes only (A/B for dual-track,
+          P/R for primary/redundant, T for test)
+        - Do NOT strip other letters (25D, 31L stay as-is since they may
+          be meaningful serial identifiers)
         """
         import re
         s = serial.lower().strip()
-        # Remove common prefixes
         s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
-        # Strip any trailing single letter suffix (track positions, rotary positions, etc.)
-        # Only strip if there are digits before the letter (don't strip "A" alone)
-        # Handles: 32A, 32B, 10P, 10R, 125E, 1004s, 32T, etc.
+        # Strip only known track-indicator suffixes
+        s = re.sub(r'^(\d+)[abprt]$', r'\1', s)
+        s = s.lstrip('0') or '0'
+        return s
+
+    @staticmethod
+    def _normalize_serial_aggressive(serial: str) -> str:
+        """
+        Aggressively normalize a serial number — strips ALL trailing letters.
+
+        Used as a fallback when selective normalization fails to find a match.
+        May produce false matches (e.g. 25D matches 25E) but increases recall.
+        """
+        import re
+        s = serial.lower().strip()
+        s = re.sub(r'^(sn|s/n|s\.n\.|#)\s*', '', s)
         s = re.sub(r'^(\d+)[a-z]$', r'\1', s)
-        # Strip leading zeros (but keep at least one digit for "0" itself)
         s = s.lstrip('0') or '0'
         return s
 
@@ -3717,7 +3786,7 @@ class DatabaseManager:
         model: Optional[str],
         serial: Optional[str],
         test_date: Optional[datetime]
-    ) -> Tuple[Optional[int], Optional[float], Optional[int]]:
+    ) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[str]]:
         """
         Find the matching trim result for a final test.
 
@@ -3727,12 +3796,12 @@ class DatabaseManager:
         3. Normalized model + fuzzy serial match (8275A trim matches 8275 FT)
 
         Returns:
-            Tuple of (trim_id, confidence, days_since_trim)
+            Tuple of (trim_id, confidence, days_since_trim, match_method)
         """
         from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
 
         if not model or not serial or not test_date:
-            return None, None, None
+            return None, None, None, None
 
         serial_clean = serial.lower().strip()
         cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
@@ -3756,7 +3825,7 @@ class DatabaseManager:
             match = candidates[0]
             days_diff = (test_date - match.file_date).days
             confidence = self._calculate_match_confidence(days_diff, exact_serial=True)
-            return match.id, confidence, days_diff
+            return match.id, confidence, days_diff, "exact"
 
         # Attempt 2: Exact model + fuzzy serial match
         ft_serial_norm = self._normalize_serial(serial)
@@ -3781,7 +3850,20 @@ class DatabaseManager:
                     f"Fuzzy match: FT serial '{serial}' → trim serial '{trim_serial}' "
                     f"(normalized: '{ft_serial_norm}'), {days_diff} days"
                 )
-                return trim_id, confidence, days_diff
+                return trim_id, confidence, days_diff, "fuzzy_serial"
+
+        # Attempt 2b: Exact model + aggressively normalized serial (strips all trailing letters)
+        ft_serial_aggressive = self._normalize_serial_aggressive(serial)
+        if ft_serial_aggressive != ft_serial_norm:
+            for trim_id, trim_serial, trim_date in model_trims:
+                if trim_serial and self._normalize_serial_aggressive(trim_serial) == ft_serial_aggressive:
+                    days_diff = (test_date - trim_date).days
+                    confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.90
+                    logger.debug(
+                        f"Aggressive fuzzy match: FT serial '{serial}' -> trim serial '{trim_serial}' "
+                        f"(aggressive norm: '{ft_serial_aggressive}'), {days_diff} days"
+                    )
+                    return trim_id, confidence, days_diff, "fuzzy_serial_aggressive"
 
         # Attempt 3: Model variant matching — normalize model on both sides
         # This handles cases like FT model "8275" matching trim model "8275A"
@@ -3810,7 +3892,7 @@ class DatabaseManager:
                         f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
                         f"(normalized model: '{ft_model_norm}'), {days_diff} days"
                     )
-                    return trim_id, confidence, days_diff
+                    return trim_id, confidence, days_diff, "model_variant"
 
         # Try reverse: trim has variant suffixes, FT has base model
         # Find all trim models that normalize to our FT model
@@ -3840,9 +3922,9 @@ class DatabaseManager:
                     f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
                     f"(base model: '{ft_model_norm}'), {days_diff} days"
                 )
-                return trim_id, confidence, days_diff
+                return trim_id, confidence, days_diff, "model_variant"
 
-        return None, None, None
+        return None, None, None, None
 
     @staticmethod
     def _calculate_match_confidence(days_diff: int, exact_serial: bool = True,
@@ -4023,7 +4105,7 @@ class DatabaseManager:
                     test_date = ft.file_date or ft.test_date
 
                     # Find matching trim
-                    new_trim_id, new_confidence, new_days = self._find_matching_trim(
+                    new_trim_id, new_confidence, new_days, new_method = self._find_matching_trim(
                         session, ft.model, ft.serial, test_date
                     )
 
@@ -4038,6 +4120,7 @@ class DatabaseManager:
                         ft.linked_trim_id = new_trim_id
                         ft.match_confidence = new_confidence
                         ft.days_since_trim = new_days
+                        ft.match_method = new_method
                     else:
                         stats["unchanged"] += 1
 
@@ -4094,6 +4177,7 @@ class DatabaseManager:
                 "linked_trim_id": result.linked_trim_id,
                 "match_confidence": result.match_confidence,
                 "days_since_trim": result.days_since_trim,
+                "match_method": getattr(result, 'match_method', None),
                 "linked_trim": linked_trim,
                 "tracks": [
                     {
@@ -4231,6 +4315,7 @@ class DatabaseManager:
                     "linked_trim": linked_trim,
                     "match_confidence": ft.match_confidence,
                     "days_since_trim": ft.days_since_trim,
+                    "match_method": getattr(ft, 'match_method', None),
                     "is_linked": ft.linked_trim_id is not None,
                 })
 
@@ -4308,6 +4393,7 @@ class DatabaseManager:
                     "linked_trim": linked_trim,
                     "match_confidence": ft.match_confidence,
                     "days_since_trim": ft.days_since_trim,
+                    "match_method": getattr(ft, 'match_method', None),
                     "is_linked": ft.linked_trim_id is not None,
                 })
 
@@ -4401,6 +4487,7 @@ class DatabaseManager:
                 "trim": trim_data,
                 "match_confidence": ft.match_confidence,
                 "days_since_trim": ft.days_since_trim,
+                "match_method": getattr(ft, 'match_method', None),
             }
 
     def get_final_test_models_list(self) -> List[str]:
@@ -5619,6 +5706,246 @@ class DatabaseManager:
             f"{result['updated']} updated, {result['skipped']} skipped"
         )
         return result
+
+    # =========================================================================
+    # Output Smoothness Methods
+    # =========================================================================
+
+    def save_smoothness_result(
+        self, metadata: Dict[str, Any], tracks: List[Dict[str, Any]], file_hash: str
+    ) -> int:
+        """Save an Output Smoothness result. Returns ID."""
+        from laser_trim_analyzer.database.models import (
+            SmoothnessResult as DBSmoothnessResult,
+            SmoothnessTrack as DBSmoothnessTrack,
+        )
+
+        with self._write_lock:
+            try:
+                with self.session() as session:
+                    existing = session.query(DBSmoothnessResult).filter(
+                        DBSmoothnessResult.file_hash == file_hash
+                    ).first()
+                    if existing:
+                        return existing.id
+
+                    overall_status = DBStatusType.PASS
+                    for track in tracks:
+                        if track.get("smoothness_pass") is False:
+                            overall_status = DBStatusType.FAIL
+                            break
+
+                    max_smooth = max((t.get("max_smoothness", 0) or 0 for t in tracks), default=0)
+                    avg_smooth = sum(t.get("avg_smoothness", 0) or 0 for t in tracks) / len(tracks) if tracks else 0
+                    spec = metadata.get("smoothness_spec") or (tracks[0].get("smoothness_spec") if tracks else None)
+                    passes = all(t.get("smoothness_pass", True) for t in tracks) if tracks else None
+
+                    linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
+                        session, metadata.get("model"), metadata.get("serial"),
+                        metadata.get("file_date") or metadata.get("test_date")
+                    )
+
+                    db_result = DBSmoothnessResult(
+                        filename=metadata.get("filename", "unknown"),
+                        file_path=str(metadata.get("file_path", "")),
+                        file_hash=file_hash,
+                        file_date=metadata.get("file_date"),
+                        model=metadata.get("model", "unknown"),
+                        serial=metadata.get("serial", "unknown"),
+                        element_label=metadata.get("element_label"),
+                        test_date=metadata.get("test_date"),
+                        overall_status=overall_status,
+                        smoothness_spec=spec,
+                        max_smoothness_value=max_smooth,
+                        avg_smoothness_value=avg_smooth,
+                        smoothness_pass=passes,
+                        linked_trim_id=linked_trim_id,
+                        match_confidence=match_confidence,
+                        match_method=match_method,
+                        days_since_trim=days_since_trim,
+                    )
+                    session.add(db_result)
+                    session.flush()
+                    result_id = db_result.id
+
+                    for track_data in tracks:
+                        db_track = DBSmoothnessTrack(
+                            smoothness_id=result_id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
+                            smoothness_spec=track_data.get("smoothness_spec"),
+                            max_smoothness=track_data.get("max_smoothness"),
+                            avg_smoothness=track_data.get("avg_smoothness"),
+                            smoothness_pass=track_data.get("smoothness_pass"),
+                            position_data=track_data.get("positions"),
+                            smoothness_data=track_data.get("smoothness_values"),
+                        )
+                        session.add(db_track)
+
+                    logger.info(f"Saved Smoothness: {metadata.get('filename')} (ID: {result_id})")
+                    return result_id
+
+            except IntegrityError:
+                logger.warning(f"Smoothness duplicate: {metadata.get('filename')}")
+                with self.session() as session:
+                    existing = session.query(DBSmoothnessResult).filter(
+                        DBSmoothnessResult.file_hash == file_hash
+                    ).first()
+                    return existing.id if existing else -1
+
+    def search_smoothness_results(
+        self, model: Optional[str] = None, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Search Output Smoothness results."""
+        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+
+        with self.session() as session:
+            query = session.query(DBSmoothnessResult)
+            if model and model != "All Models":
+                query = query.filter(DBSmoothnessResult.model == model)
+            results = query.order_by(desc(DBSmoothnessResult.file_date)).limit(limit).all()
+            return [
+                {
+                    "id": r.id, "filename": r.filename, "model": r.model,
+                    "serial": r.serial, "element_label": r.element_label,
+                    "file_date": r.file_date, "test_date": r.test_date,
+                    "overall_status": r.overall_status.value if r.overall_status else "UNKNOWN",
+                    "smoothness_spec": r.smoothness_spec,
+                    "max_smoothness_value": r.max_smoothness_value,
+                    "smoothness_pass": r.smoothness_pass,
+                    "linked_trim_id": r.linked_trim_id,
+                    "match_confidence": r.match_confidence,
+                    "match_method": r.match_method,
+                }
+                for r in results
+            ]
+
+    def get_smoothness_result(self, result_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single Output Smoothness result by ID with tracks."""
+        from laser_trim_analyzer.database.models import (
+            SmoothnessResult as DBSmoothnessResult,
+            SmoothnessTrack as DBSmoothnessTrack,
+        )
+        with self.session() as session:
+            result = session.query(DBSmoothnessResult).filter(
+                DBSmoothnessResult.id == result_id
+            ).first()
+            if not result:
+                return None
+            tracks = session.query(DBSmoothnessTrack).filter(
+                DBSmoothnessTrack.smoothness_id == result_id
+            ).all()
+            return {
+                "id": result.id, "filename": result.filename,
+                "model": result.model, "serial": result.serial,
+                "element_label": result.element_label,
+                "file_date": result.file_date, "test_date": result.test_date,
+                "overall_status": result.overall_status.value if result.overall_status else "UNKNOWN",
+                "smoothness_spec": result.smoothness_spec,
+                "max_smoothness_value": result.max_smoothness_value,
+                "smoothness_pass": result.smoothness_pass,
+                "linked_trim_id": result.linked_trim_id,
+                "match_method": result.match_method,
+                "match_confidence": result.match_confidence,
+                "tracks": [
+                    {
+                        "track_id": t.track_id,
+                        "smoothness_spec": t.smoothness_spec,
+                        "max_smoothness": t.max_smoothness,
+                        "smoothness_pass": t.smoothness_pass,
+                        "positions": t.position_data or [],
+                        "smoothness_values": t.smoothness_data or [],
+                    }
+                    for t in tracks
+                ],
+            }
+
+    def get_smoothness_stats(self, days_back: int = 90) -> Dict[str, Any]:
+        """Get Output Smoothness dashboard statistics."""
+        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            total = session.query(func.count(DBSmoothnessResult.id)).filter(
+                DBSmoothnessResult.file_date >= cutoff
+            ).scalar() or 0
+            if total == 0:
+                return {"total": 0, "pass_rate": 0, "linked_count": 0, "link_rate": 0}
+            passed = session.query(func.count(DBSmoothnessResult.id)).filter(
+                DBSmoothnessResult.file_date >= cutoff,
+                DBSmoothnessResult.smoothness_pass == True,
+            ).scalar() or 0
+            linked = session.query(func.count(DBSmoothnessResult.id)).filter(
+                DBSmoothnessResult.file_date >= cutoff,
+                DBSmoothnessResult.linked_trim_id.isnot(None),
+            ).scalar() or 0
+            return {
+                "total": total,
+                "pass_rate": round(passed / total * 100, 1),
+                "linked_count": linked,
+                "link_rate": round(linked / total * 100, 1),
+            }
+
+    def get_spec_discrepancies(self, tolerance_pct: float = 5.0) -> List[Dict[str, Any]]:
+        """
+        Compare file-parsed linearity specs against model_specs reference.
+
+        Flags models where the spec parsed from trim files differs from the
+        engineering reference by more than tolerance_pct percent.
+
+        Returns:
+            List of dicts with model, file_spec, reference_spec, difference_pct
+        """
+        results = []
+
+        with self.session() as session:
+            file_specs = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.avg(DBTrackResult.linearity_spec).label('avg_file_spec'),
+                    func.min(DBTrackResult.linearity_spec).label('min_file_spec'),
+                    func.max(DBTrackResult.linearity_spec).label('max_file_spec'),
+                    func.count(DBTrackResult.id).label('sample_count'),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBTrackResult.linearity_spec.isnot(None),
+                    DBTrackResult.linearity_spec > 0,
+                )
+                .group_by(DBAnalysisResult.model)
+                .all()
+            )
+
+            for row in file_specs:
+                ref = session.query(ModelSpec).filter(
+                    ModelSpec.model == row.model
+                ).first()
+
+                if not ref or not ref.linearity_spec_pct:
+                    continue
+
+                ref_spec = ref.linearity_spec_pct / 100.0  # Convert % to decimal
+                file_spec = row.avg_file_spec
+
+                if ref_spec > 0:
+                    diff_pct = abs(file_spec - ref_spec) / ref_spec * 100
+                else:
+                    diff_pct = 0
+
+                if diff_pct > tolerance_pct:
+                    results.append({
+                        "model": row.model,
+                        "file_spec_avg": round(file_spec, 6),
+                        "file_spec_min": round(row.min_file_spec, 6),
+                        "file_spec_max": round(row.max_file_spec, 6),
+                        "reference_spec_pct": ref.linearity_spec_pct,
+                        "reference_spec_decimal": round(ref_spec, 6),
+                        "difference_pct": round(diff_pct, 1),
+                        "sample_count": row.sample_count,
+                        "linearity_type": ref.linearity_type,
+                    })
+
+        results.sort(key=lambda x: x["difference_pct"], reverse=True)
+        return results
 
 
 # Global instance for convenience

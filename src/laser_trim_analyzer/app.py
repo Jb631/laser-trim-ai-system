@@ -67,7 +67,7 @@ class LaserTrimApp(ctk.CTk):
         # Sidebar frame
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(10, weight=1)  # Spacer row
+        self.sidebar.grid_rowconfigure(11, weight=1)  # Spacer row
 
         # App title
         self.title_label = ctk.CTkLabel(
@@ -93,9 +93,10 @@ class LaserTrimApp(ctk.CTk):
             ("process", "Process Files", 4),
             ("analyze", "Analyze Trim", 5),
             ("compare", "Final Test", 6),
-            ("trends", "Trends", 7),
-            ("specs", "Model Specs", 8),
-            ("export", "Export", 9),
+            ("smoothness", "Smoothness", 7),
+            ("trends", "Trends", 8),
+            ("specs", "Model Specs", 9),
+            ("export", "Export", 10),
         ]
 
         for page_id, label, row in nav_items:
@@ -125,7 +126,7 @@ class LaserTrimApp(ctk.CTk):
             text_color=("gray10", "gray90"),
             hover_color=("gray70", "gray30")
         )
-        settings_btn.grid(row=11, column=0, padx=10, pady=(5, 20), sticky="ew")
+        settings_btn.grid(row=12, column=0, padx=10, pady=(5, 20), sticky="ew")
         self._nav_buttons["settings"] = settings_btn
 
     def _create_main_content(self):
@@ -145,6 +146,7 @@ class LaserTrimApp(ctk.CTk):
         from laser_trim_analyzer.gui.pages.compare import ComparePage
         from laser_trim_analyzer.gui.pages.trends import TrendsPage
         from laser_trim_analyzer.gui.pages.export import ExportPage
+        from laser_trim_analyzer.gui.pages.smoothness import SmoothnessPage
         from laser_trim_analyzer.gui.pages.specs import SpecsPage
         from laser_trim_analyzer.gui.pages.settings import SettingsPage
 
@@ -155,6 +157,7 @@ class LaserTrimApp(ctk.CTk):
         self._pages["analyze"] = AnalyzePage(self.main_frame, self)
         self._pages["compare"] = ComparePage(self.main_frame, self)
         self._pages["trends"] = TrendsPage(self.main_frame, self)
+        self._pages["smoothness"] = SmoothnessPage(self.main_frame, self)
         self._pages["specs"] = SpecsPage(self.main_frame, self)
         self._pages["export"] = ExportPage(self.main_frame, self)
         self._pages["settings"] = SettingsPage(self.main_frame, self)
