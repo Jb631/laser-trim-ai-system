@@ -832,7 +832,12 @@ class SettingsPage(ctk.CTkFrame):
                 result = _do_scan()
                 _on_done(result)
             except Exception as e:
-                self.after(0, lambda: self.scan_results_label.configure(text=f"Scan error: {e}"))
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"Scan database error:\n{tb}")
+                # Show traceback in UI for debugging
+                msg = f"Scan error: {e}\n\n{tb[-500:]}"
+                self.after(0, lambda: self.scan_results_label.configure(text=msg))
                 self.after(0, lambda: self.scan_btn.configure(state="normal"))
 
         get_thread_manager().start_thread(target=_run, name="settings-scan-db")
