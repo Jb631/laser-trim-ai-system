@@ -84,13 +84,23 @@ class TrendsPage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        # Header
-        header = ctk.CTkLabel(
-            self,
+        # Header with trend type selector
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=20)
+
+        ctk.CTkLabel(
+            header_frame,
             text="Trends & ML Insights",
             font=ctk.CTkFont(size=24, weight="bold")
+        ).pack(side="left")
+
+        self._trend_type = ctk.CTkSegmentedButton(
+            header_frame,
+            values=["Standard", "Comparative", "Cpk Trend", "Yield", "Drift"],
+            command=self._on_trend_type_changed,
         )
-        header.grid(row=0, column=0, padx=20, pady=20, sticky="w")
+        self._trend_type.set("Standard")
+        self._trend_type.pack(side="right", padx=10)
 
         # Controls frame
         controls = ctk.CTkFrame(self)
@@ -2182,6 +2192,185 @@ class TrendsPage(ctk.CTkFrame):
             else:
                 self._create_detail_view()
         self._refresh_data()
+
+    def _on_trend_type_changed(self, value: str):
+        """Handle trend type selector change."""
+        if value == "Standard":
+            self._refresh_data()
+        elif value == "Comparative":
+            self._show_comparative_trends()
+        elif value == "Cpk Trend":
+            self._show_cpk_trend()
+        elif value == "Yield":
+            self._show_yield_trend()
+        elif value == "Drift":
+            self._show_drift_timeline()
+
+    def _show_comparative_trends(self):
+        """Show comparative pass rate trends for top models."""
+        try:
+            db = get_database()
+            # Get top 5 models by volume
+            config = get_config()
+            mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
+            if not mps:
+                self.status_label.configure(text="No MPS models configured for comparison")
+                return
+
+            data = db.get_comparative_model_trends(mps, days_back=90, period="week")
+            if not data:
+                self.status_label.configure(text="No data for comparative trends")
+                return
+
+            if not self._summary_charts_initialized:
+                self._create_summary_view()
+
+            if hasattr(self, 'alerts_chart') and self.alerts_chart:
+                fig = self.alerts_chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+
+                for model, trend in data.items():
+                    if trend:
+                        periods = [t["period"] for t in trend]
+                        rates = [t["pass_rate"] for t in trend]
+                        ax.plot(periods, rates, marker='o', markersize=4, label=model)
+
+                ax.set_ylabel("Pass Rate (%)")
+                ax.set_title("Comparative Pass Rate Trends")
+                ax.legend(loc="best", fontsize=8)
+                ax.set_ylim(0, 105)
+                ax.tick_params(axis='x', rotation=45, labelsize=8)
+                fig.tight_layout()
+                self.alerts_chart.canvas.draw()
+                self.status_label.configure(text=f"Comparing {len(data)} models")
+        except Exception as e:
+            logger.error(f"Comparative trends error: {e}")
+            self.status_label.configure(text=f"Comparative error: {e}")
+
+    def _show_cpk_trend(self):
+        """Show Cpk trend over time for selected model."""
+        try:
+            db = get_database()
+            model = self.selected_model
+            if not model or model == "All Models":
+                self.status_label.configure(text="Select a specific model for Cpk trend")
+                return
+
+            spec = db.get_model_spec(model)
+            if not spec or not spec.get("linearity_spec_pct"):
+                self.status_label.configure(text=f"No linearity spec for {model}")
+                return
+
+            trend = db.get_cpk_trend_for_model(
+                model, spec["linearity_spec_pct"], days_back=180, period="month"
+            )
+            if not trend:
+                self.status_label.configure(text="No data for Cpk trend")
+                return
+
+            # Ensure summary charts exist for rendering
+            if not self._summary_charts_initialized:
+                self._create_summary_view()
+
+            _ChartWidget, _ = _ensure_chart_module()
+            if hasattr(self, 'alerts_chart') and self.alerts_chart:
+                fig = self.alerts_chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+
+                periods = [t["period"] for t in trend if t["cpk"] is not None]
+                cpk_values = [t["cpk"] for t in trend if t["cpk"] is not None]
+
+                ax.plot(periods, cpk_values, marker='o', color='#0d6efd', linewidth=2, label="Cpk")
+                ax.axhline(y=1.67, color='#198754', linestyle='--', alpha=0.7, label='Excellent (1.67)')
+                ax.axhline(y=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
+                ax.axhline(y=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
+                ax.set_ylabel("Cpk")
+                ax.set_title(f"Cpk Trend - {model}")
+                ax.legend(loc="best", fontsize=8)
+                ax.tick_params(axis='x', rotation=45, labelsize=8)
+                fig.tight_layout()
+                self.alerts_chart.canvas.draw()
+                self.status_label.configure(text=f"Cpk trend for {model}")
+        except Exception as e:
+            logger.error(f"Cpk trend error: {e}")
+            self.status_label.configure(text=f"Cpk trend error: {e}")
+
+    def _show_yield_trend(self):
+        """Show overall yield trend across all models."""
+        try:
+            db = get_database()
+            data = db.get_yield_trend(days_back=180, period="week")
+            if not data:
+                self.status_label.configure(text="No yield data")
+                return
+
+            if not self._summary_charts_initialized:
+                self._create_summary_view()
+
+            if hasattr(self, 'alerts_chart') and self.alerts_chart:
+                fig = self.alerts_chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+
+                periods = [d["period"] for d in data]
+                rates = [d["pass_rate"] for d in data]
+
+                ax.fill_between(range(len(periods)), rates, alpha=0.3, color='#0d6efd')
+                ax.plot(range(len(periods)), rates, marker='o', markersize=3,
+                       color='#0d6efd', linewidth=1.5)
+                ax.axhline(y=80, color='#198754', linestyle='--', alpha=0.7, label='Target (80%)')
+                step = max(1, len(periods) // 8)
+                ax.set_xticks(range(0, len(periods), step))
+                ax.set_xticklabels([periods[i] for i in range(0, len(periods), step)],
+                                  rotation=45, fontsize=8)
+                ax.set_ylabel("Yield (%)")
+                ax.set_title("Overall Yield Trend")
+                ax.set_ylim(0, 105)
+                ax.legend(loc="best", fontsize=8)
+                fig.tight_layout()
+                self.alerts_chart.canvas.draw()
+                self.status_label.configure(text="Yield trend (all models)")
+        except Exception as e:
+            logger.error(f"Yield trend error: {e}")
+            self.status_label.configure(text=f"Yield trend error: {e}")
+
+    def _show_drift_timeline(self):
+        """Show drift detection events as a timeline."""
+        try:
+            db = get_database()
+            events = db.get_drift_events_timeline(days_back=180)
+
+            if not self._summary_charts_initialized:
+                self._create_summary_view()
+
+            if hasattr(self, 'alerts_chart') and self.alerts_chart:
+                fig = self.alerts_chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+
+                if not events:
+                    ax.text(0.5, 0.5, "No drift events detected",
+                           ha='center', va='center', transform=ax.transAxes, fontsize=14)
+                else:
+                    models = list(set(e["model"] for e in events))
+                    model_y = {m: i for i, m in enumerate(models)}
+                    for e in events:
+                        y = model_y[e["model"]]
+                        x_label = e.get("date", "")[:10]
+                        ax.scatter(x_label, y, s=80, c='#dc3545', zorder=5, marker='D')
+                    ax.set_yticks(range(len(models)))
+                    ax.set_yticklabels(models, fontsize=9)
+                    ax.tick_params(axis='x', rotation=45, labelsize=8)
+
+                ax.set_title("Drift Detection Timeline")
+                fig.tight_layout()
+                self.alerts_chart.canvas.draw()
+                self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
+        except Exception as e:
+            logger.error(f"Drift timeline error: {e}")
+            self.status_label.configure(text=f"Drift error: {e}")
 
     def _populate_spec_filters(self):
         """Populate element type and product class filter dropdowns."""

@@ -270,6 +270,16 @@ class AnalyzePage(ctk.CTkFrame):
         )
         self.reanalyze_btn.pack(side="left", padx=5)
 
+        # View Scorecard button
+        self.scorecard_btn = ctk.CTkButton(
+            actions_frame,
+            text="View Scorecard",
+            command=self._view_scorecard,
+            state="disabled",
+            width=120,
+        )
+        self.scorecard_btn.pack(side="left", padx=5)
+
         # Delete button (remove from database)
         self.delete_btn = ctk.CTkButton(
             actions_frame,
@@ -834,6 +844,7 @@ class AnalyzePage(ctk.CTkFrame):
         self.export_chart_btn.configure(state="normal")
         self.export_model_btn.configure(state="normal")
         self.reanalyze_btn.configure(state="normal")
+        self.scorecard_btn.configure(state="normal")
         self.delete_btn.configure(state="normal")
 
         # Update track selector
@@ -1267,6 +1278,14 @@ class AnalyzePage(ctk.CTkFrame):
         self.info_text.delete("1.0", "end")
         self.info_text.insert("end", text)
         self.info_text.configure(state="disabled")
+
+    def _view_scorecard(self):
+        """Navigate to model scorecard for the current model."""
+        if not self.current_result:
+            return
+        model = self.current_result.metadata.model
+        if model and hasattr(self.app, 'show_model_scorecard'):
+            self.app.show_model_scorecard(model)
 
     def _reanalyze_current(self):
         """Re-analyze the current file from its original path (updates DB with corrected values)."""

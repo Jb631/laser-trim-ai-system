@@ -873,6 +873,45 @@ def export_executive_summary(
                 ws3.cell(row=row, column=4, value=r["text"])
                 row += 1
 
+    # === Sheet 4: Process Capability (Cpk) ===
+    try:
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+        cpk_data = db.get_cpk_by_model(days_back=90)
+
+        if cpk_data:
+            ws_cpk = wb.create_sheet("Process Capability")
+            ws_cpk.column_dimensions['A'].width = 15
+            ws_cpk.column_dimensions['B'].width = 12
+            ws_cpk.column_dimensions['C'].width = 12
+            ws_cpk.column_dimensions['D'].width = 12
+            ws_cpk.column_dimensions['E'].width = 12
+            ws_cpk.column_dimensions['F'].width = 12
+
+            cpk_headers = ["Model", "Cpk", "Ppk", "Rating", "Samples", "Spec (%)"]
+            for col, h in enumerate(cpk_headers, 1):
+                cell = ws_cpk.cell(row=1, column=col, value=h)
+                cell.font = header_text
+                cell.fill = header_fill
+
+            for i, c in enumerate(cpk_data[:30], start=2):
+                ws_cpk.cell(row=i, column=1, value=c["model"])
+                cpk_cell = ws_cpk.cell(row=i, column=2,
+                    value=round(c["cpk"], 3) if c["cpk"] is not None else "N/A")
+                ppk_cell = ws_cpk.cell(row=i, column=3,
+                    value=round(c["ppk"], 3) if c.get("ppk") is not None else "N/A")
+                rating_cell = ws_cpk.cell(row=i, column=4, value=c["rating"])
+                if c["rating"] == "Incapable":
+                    rating_cell.fill = red_fill
+                elif c["rating"] == "Marginal":
+                    rating_cell.fill = yellow_fill
+                elif c["rating"] in ("Capable", "Excellent"):
+                    rating_cell.fill = green_fill
+                ws_cpk.cell(row=i, column=5, value=c["n_samples"])
+                ws_cpk.cell(row=i, column=6, value=c.get("spec_pct", ""))
+    except Exception as e:
+        logger.warning(f"Could not add Cpk sheet to export: {e}")
+
     wb.save(output_path)
     logger.info(f"Executive summary exported to {output_path}")
     return output_path

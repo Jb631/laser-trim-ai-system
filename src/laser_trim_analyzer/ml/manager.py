@@ -1186,3 +1186,44 @@ class MLManager:
             ]
 
         return insights
+
+    def get_adjustment_recommendations(self, model: str) -> List[Dict[str, Any]]:
+        """
+        Generate adjustment recommendations based on model history and specs.
+
+        Returns list of {recommendation, priority, rationale} dicts.
+        """
+        recommendations = []
+
+        try:
+            # Check drift
+            detector = self.drift_detectors.get(model)
+            if detector and detector.has_baseline and detector.is_drifting:
+                direction = detector.drift_direction.value if detector.drift_direction else "unknown"
+                recommendations.append({
+                    "recommendation": "Investigate process drift",
+                    "priority": "High",
+                    "rationale": (
+                        f"Drift detection triggered for {model} (direction: {direction}). "
+                        f"Review recent process changes, material lots, or equipment."
+                    ),
+                })
+
+            # Check pass rate from profile
+            profiler = self.profilers.get(model)
+            if profiler and profiler.is_profiled:
+                pass_rate = profiler.pass_rate
+                if pass_rate is not None and pass_rate < 0.6:
+                    recommendations.append({
+                        "recommendation": "Prioritize for root cause analysis",
+                        "priority": "High",
+                        "rationale": (
+                            f"Pass rate of {pass_rate*100:.0f}% is below 60%. "
+                            f"This model is consuming significant rework resources."
+                        ),
+                    })
+
+        except Exception as e:
+            logger.debug(f"Could not generate recommendations for {model}: {e}")
+
+        return recommendations

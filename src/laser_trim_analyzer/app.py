@@ -147,6 +147,7 @@ class LaserTrimApp(ctk.CTk):
         from laser_trim_analyzer.gui.pages.trends import TrendsPage
         from laser_trim_analyzer.gui.pages.export import ExportPage
         from laser_trim_analyzer.gui.pages.smoothness import SmoothnessPage
+        from laser_trim_analyzer.gui.pages.scorecard import ScorecardPage
         from laser_trim_analyzer.gui.pages.specs import SpecsPage
         from laser_trim_analyzer.gui.pages.settings import SettingsPage
 
@@ -160,6 +161,7 @@ class LaserTrimApp(ctk.CTk):
         self._pages["smoothness"] = SmoothnessPage(self.main_frame, self)
         self._pages["specs"] = SpecsPage(self.main_frame, self)
         self._pages["export"] = ExportPage(self.main_frame, self)
+        self._pages["scorecard"] = ScorecardPage(self.main_frame, self)
         self._pages["settings"] = SettingsPage(self.main_frame, self)
 
         # Place all pages in the same grid cell (only one visible at a time)
@@ -202,6 +204,11 @@ class LaserTrimApp(ctk.CTk):
             page.on_show()
 
         logger.debug(f"Showing page: {page_id}")
+
+    def show_model_scorecard(self, model: str):
+        """Navigate to the scorecard page for a specific model."""
+        self._show_page("scorecard")
+        self._pages["scorecard"].show_model(model)
 
     def _on_closing(self):
         """Handle window close event with graceful thread shutdown."""

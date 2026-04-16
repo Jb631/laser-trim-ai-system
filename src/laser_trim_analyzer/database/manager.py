@@ -5885,6 +5885,268 @@ class DatabaseManager:
                 "link_rate": round(linked / total * 100, 1),
             }
 
+    # =========================================================================
+    # Cpk / Analytics Queries (Phase 4)
+    # =========================================================================
+
+    def get_linearity_deviations_for_cpk(
+        self, model: str, days_back: int = 90
+    ) -> List[float]:
+        """Get raw linearity deviation values for Cpk calculation."""
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            results = session.query(
+                DBTrackResult.final_linearity_error_shifted
+            ).join(DBAnalysisResult).filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date >= cutoff,
+                DBTrackResult.final_linearity_error_shifted.isnot(None),
+            ).all()
+            return [r[0] for r in results]
+
+    def get_cpk_by_model(self, days_back: int = 90) -> List[Dict[str, Any]]:
+        """Calculate Cpk for each model that has a linearity spec defined."""
+        from laser_trim_analyzer.core.cpk import calculate_cpk
+
+        with self.session() as session:
+            specs = session.query(ModelSpec).filter(
+                ModelSpec.linearity_spec_pct.isnot(None)
+            ).all()
+
+        results = []
+        for spec in specs:
+            devs = self.get_linearity_deviations_for_cpk(spec.model, days_back)
+            if len(devs) < 10:
+                continue
+            cpk_result = calculate_cpk(devs, spec.linearity_spec_pct)
+            results.append({
+                "model": spec.model,
+                "cpk": cpk_result.cpk,
+                "ppk": cpk_result.ppk,
+                "rating": cpk_result.rating,
+                "n_samples": cpk_result.n_samples,
+                "spec_pct": spec.linearity_spec_pct,
+                "mean": cpk_result.mean,
+            })
+        results.sort(key=lambda x: x["cpk"] if x["cpk"] is not None else 999)
+        return results
+
+    def get_cpk_trend_for_model(
+        self, model: str, spec_limit_pct: float,
+        days_back: int = 180, period: str = "month"
+    ) -> List[Dict[str, Any]]:
+        """Get Cpk trend over time for a specific model."""
+        from laser_trim_analyzer.core.cpk import calculate_cpk_trend
+        from collections import defaultdict
+
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            if period == "week":
+                period_expr = func.strftime('%Y-W%W', DBAnalysisResult.file_date)
+            else:
+                period_expr = func.strftime('%Y-%m', DBAnalysisResult.file_date)
+
+            results = session.query(
+                period_expr.label("period"),
+                DBTrackResult.final_linearity_error_shifted,
+            ).join(DBAnalysisResult).filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date >= cutoff,
+                DBTrackResult.final_linearity_error_shifted.isnot(None),
+            ).order_by(period_expr).all()
+
+        period_data = defaultdict(list)
+        for r in results:
+            period_data[r.period].append(r.final_linearity_error_shifted)
+
+        deviations_by_period = sorted(period_data.items())
+        return calculate_cpk_trend(deviations_by_period, spec_limit_pct)
+
+    def get_model_scorecard_data(
+        self, model: str, days_back: int = 90
+    ) -> Dict[str, Any]:
+        """Get comprehensive scorecard data for a single model."""
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+
+            total = session.query(func.count(DBAnalysisResult.id)).filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date >= cutoff,
+            ).scalar() or 0
+
+            passed = session.query(func.count(DBAnalysisResult.id)).filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date >= cutoff,
+                DBAnalysisResult.overall_status == DBStatusType.PASS,
+            ).scalar() or 0
+
+            pass_rate = (passed / total * 100) if total > 0 else 0
+
+            avg_dev = session.query(
+                func.avg(DBTrackResult.final_linearity_error_shifted)
+            ).join(DBAnalysisResult).filter(
+                DBAnalysisResult.model == model,
+                DBAnalysisResult.file_date >= cutoff,
+                DBTrackResult.final_linearity_error_shifted.isnot(None),
+            ).scalar()
+
+            spec = session.query(ModelSpec).filter(
+                ModelSpec.model == model
+            ).first()
+
+        cpk_data = None
+        if spec and spec.linearity_spec_pct:
+            from laser_trim_analyzer.core.cpk import calculate_cpk
+            devs = self.get_linearity_deviations_for_cpk(model, days_back)
+            if len(devs) >= 10:
+                cpk_result = calculate_cpk(devs, spec.linearity_spec_pct)
+                cpk_data = cpk_result.to_dict()
+
+        # Drift status from ML state
+        drift_status = None
+        try:
+            from laser_trim_analyzer.database.models import ModelMLState
+            with self.session() as session:
+                ml_state = session.query(ModelMLState).filter(
+                    ModelMLState.model == model
+                ).first()
+                if ml_state:
+                    drift_status = "drifting" if ml_state.is_drifting else "stable"
+        except Exception:
+            pass
+
+        return {
+            "model": model,
+            "total": total,
+            "passed": passed,
+            "pass_rate": pass_rate,
+            "avg_deviation": avg_dev,
+            "cpk": cpk_data,
+            "drift_status": drift_status,
+            "spec": {
+                "element_type": spec.element_type if spec else None,
+                "product_class": spec.product_class if spec else None,
+                "linearity_type": spec.linearity_type if spec else None,
+                "linearity_spec_pct": spec.linearity_spec_pct if spec else None,
+            } if spec else None,
+        }
+
+    def get_yield_trend(
+        self, days_back: int = 180, period: str = "week"
+    ) -> List[Dict[str, Any]]:
+        """Get overall yield (pass rate) trend across all models."""
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            if period == "week":
+                period_expr = func.strftime('%Y-W%W', DBAnalysisResult.file_date)
+            else:
+                period_expr = func.strftime('%Y-%m', DBAnalysisResult.file_date)
+
+            results = session.query(
+                period_expr.label("period"),
+                func.count(DBAnalysisResult.id).label("total"),
+                func.sum(
+                    case((DBAnalysisResult.overall_status == DBStatusType.PASS, 1), else_=0)
+                ).label("passed"),
+            ).filter(
+                DBAnalysisResult.file_date >= cutoff,
+            ).group_by(period_expr).order_by(period_expr).all()
+
+            return [
+                {
+                    "period": r.period,
+                    "total": r.total,
+                    "passed": r.passed or 0,
+                    "pass_rate": ((r.passed or 0) / r.total * 100) if r.total > 0 else 0,
+                }
+                for r in results
+            ]
+
+    def get_comparative_model_trends(
+        self, models: List[str], days_back: int = 90, period: str = "week"
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Get pass rate trends for multiple models for overlay comparison."""
+        result = {}
+        for model in models:
+            with self.session() as session:
+                cutoff = datetime.now() - timedelta(days=days_back)
+                if period == "week":
+                    period_expr = func.strftime('%Y-W%W', DBAnalysisResult.file_date)
+                else:
+                    period_expr = func.strftime('%Y-%m', DBAnalysisResult.file_date)
+
+                rows = session.query(
+                    period_expr.label("period"),
+                    func.count(DBAnalysisResult.id).label("total"),
+                    func.sum(
+                        case((DBAnalysisResult.overall_status == DBStatusType.PASS, 1), else_=0)
+                    ).label("passed"),
+                ).filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff,
+                ).group_by(period_expr).order_by(period_expr).all()
+
+                result[model] = [
+                    {
+                        "period": r.period,
+                        "total": r.total,
+                        "pass_rate": ((r.passed or 0) / r.total * 100) if r.total > 0 else 0,
+                    }
+                    for r in rows
+                ]
+        return result
+
+    def get_drift_events_timeline(self, days_back: int = 180) -> List[Dict[str, Any]]:
+        """Get drift detection events for timeline visualization."""
+        from laser_trim_analyzer.database.models import ModelMLState
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            results = session.query(ModelMLState).filter(
+                ModelMLState.updated_date >= cutoff,
+                ModelMLState.is_drifting == True,
+            ).order_by(ModelMLState.updated_date).all()
+            return [
+                {
+                    "model": r.model,
+                    "date": r.updated_date.isoformat() if r.updated_date else None,
+                    "direction": r.drift_direction,
+                }
+                for r in results
+            ]
+
+    def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
+        """Categorize failures by mode: linearity only, sigma only, or both."""
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            # Get track-level fail data
+            results = session.query(
+                DBTrackResult.linearity_pass,
+                DBTrackResult.sigma_pass,
+                func.count(DBTrackResult.id).label("count"),
+            ).join(DBAnalysisResult).filter(
+                DBAnalysisResult.file_date >= cutoff,
+                or_(
+                    DBTrackResult.linearity_pass == False,
+                    DBTrackResult.sigma_pass == False,
+                ),
+            ).group_by(
+                DBTrackResult.linearity_pass,
+                DBTrackResult.sigma_pass,
+            ).all()
+
+            modes = {}
+            for r in results:
+                lin_fail = r.linearity_pass is False
+                sig_fail = r.sigma_pass is False
+                if lin_fail and sig_fail:
+                    modes["Both Fail"] = modes.get("Both Fail", 0) + r.count
+                elif lin_fail:
+                    modes["Linearity Fail"] = modes.get("Linearity Fail", 0) + r.count
+                elif sig_fail:
+                    modes["Sigma Fail"] = modes.get("Sigma Fail", 0) + r.count
+
+            return [{"mode": m, "count": c} for m, c in modes.items() if c > 0]
+
     def get_spec_discrepancies(self, tolerance_pct: float = 5.0) -> List[Dict[str, Any]]:
         """
         Compare file-parsed linearity specs against model_specs reference.

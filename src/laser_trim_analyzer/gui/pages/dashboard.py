@@ -69,9 +69,9 @@ class DashboardPage(ctk.CTkFrame):
 
     def _create_ui(self):
         """Create the dashboard UI."""
-        # Configure grid: row 0=header, row 1=filters, row 2=content
+        # Configure grid: row 0=header, row 1=filters, row 2=attention, row 3=content
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         # Header with refresh button
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -136,9 +136,14 @@ class DashboardPage(ctk.CTkFrame):
         self._class_filter.pack(side="left", padx=5)
         self._class_filter.set("All Product Classes")
 
+        # Attention cards row (between filters and content)
+        self._attention_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._attention_frame.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 5))
+        self._attention_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
         # Content frame - use scrollable for smaller screens
         content = ctk.CTkScrollableFrame(self)
-        content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        content.grid(row=3, column=0, sticky="nsew", padx=20, pady=(0, 20))
         content.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
         content.grid_rowconfigure(0, weight=0, minsize=120)  # Metric cards - fixed height
         content.grid_rowconfigure(1, weight=0, minsize=60)   # System/FT/Escape info - compact
@@ -361,6 +366,37 @@ class DashboardPage(ctk.CTkFrame):
             text_color="gray"
         )
         self._class_breakdown_label.pack(fill="both", expand=True)
+
+        # Row 5: Process Health section (Cpk summary + failure modes)
+        content.grid_rowconfigure(5, weight=0, minsize=120)
+        process_frame = ctk.CTkFrame(content)
+        process_frame.grid(row=5, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
+        process_frame.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(
+            process_frame, text="Process Health",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).grid(row=0, column=0, columnspan=2, padx=15, pady=(10, 5), sticky="w")
+
+        # Cpk summary (left)
+        cpk_frame = ctk.CTkFrame(process_frame)
+        cpk_frame.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        ctk.CTkLabel(cpk_frame, text="Process Capability (Cpk)",
+                    font=ctk.CTkFont(size=13, weight="bold")).pack(padx=10, pady=(10, 5), anchor="w")
+        self._cpk_summary_label = ctk.CTkLabel(
+            cpk_frame, text="Loading...", font=ctk.CTkFont(size=11), justify="left",
+        )
+        self._cpk_summary_label.pack(padx=10, pady=(0, 10), anchor="w")
+
+        # Failure mode summary (right)
+        fail_frame = ctk.CTkFrame(process_frame)
+        fail_frame.grid(row=1, column=1, padx=10, pady=(0, 10), sticky="nsew")
+        ctk.CTkLabel(fail_frame, text="Drift Alerts",
+                    font=ctk.CTkFont(size=13, weight="bold")).pack(padx=10, pady=(10, 5), anchor="w")
+        self._drift_summary_label = ctk.CTkLabel(
+            fail_frame, text="Loading...", font=ctk.CTkFont(size=11), justify="left",
+        )
+        self._drift_summary_label.pack(padx=10, pady=(0, 10), anchor="w")
 
     def _create_metric_card(self, parent) -> ctk.CTkFrame:
         """Create a metric card frame."""
@@ -698,6 +734,12 @@ class DashboardPage(ctk.CTkFrame):
 
         # Update category breakdown charts
         self._update_breakdown_charts(element_breakdown or [], class_breakdown or [])
+
+        # Update attention cards with priority models
+        self._update_attention_cards(priority_models)
+
+        # Update process health (Cpk + drift) on main thread
+        self._update_process_health()
 
         # Update timestamp
         self.last_update_label.configure(
@@ -1133,6 +1175,124 @@ class DashboardPage(ctk.CTkFrame):
             self._class_breakdown_label.configure(text=text)
         except Exception as e:
             logger.debug(f"Class breakdown error: {e}")
+
+    def _update_attention_cards(self, priority_models):
+        """Update attention cards with models needing action."""
+        # Clear existing cards
+        for widget in self._attention_frame.winfo_children():
+            widget.destroy()
+
+        SEVERITY_COLORS = {
+            "critical": ("#dc3545", "#fff"),
+            "warning": ("#fd7e14", "#fff"),
+            "good": ("#198754", "#fff"),
+        }
+
+        items = []
+        if priority_models:
+            for m in priority_models[:3]:
+                pr = m.get("linearity_pass_rate", 100)
+                if pr < 70:
+                    severity = "critical" if pr < 50 else "warning"
+                    items.append({
+                        "title": m.get("model", "?"),
+                        "subtitle": f"{pr:.0f}% pass rate",
+                        "value": f"{m.get('total_tracks', 0)} tracks",
+                        "severity": severity,
+                    })
+
+        # Add low-Cpk models
+        try:
+            db = get_database()
+            cpk_data = db.get_cpk_by_model(days_back=90)
+            for c in cpk_data[:2]:
+                if c["cpk"] is not None and c["cpk"] < 1.0 and len(items) < 4:
+                    items.append({
+                        "title": c["model"],
+                        "subtitle": f"Cpk = {c['cpk']:.2f} ({c['rating']})",
+                        "value": f"Spec: {c['spec_pct']:.1f}%",
+                        "severity": "critical" if c["cpk"] < 0.67 else "warning",
+                    })
+        except Exception:
+            pass
+
+        # Add drift alerts
+        try:
+            drift_events = db.get_drift_events_timeline(days_back=90)
+            if drift_events and len(items) < 4:
+                drift_models = list(set(e["model"] for e in drift_events))
+                items.append({
+                    "title": f"{len(drift_models)} Drift Alerts",
+                    "subtitle": ", ".join(drift_models[:3]),
+                    "value": "Process shift detected",
+                    "severity": "warning",
+                })
+        except Exception:
+            pass
+
+        if not items:
+            items.append({
+                "title": "All Clear",
+                "subtitle": "No models need immediate attention",
+                "value": "",
+                "severity": "good",
+            })
+
+        for i, item in enumerate(items[:4]):
+            bg, fg = SEVERITY_COLORS.get(item["severity"], ("#6c757d", "#fff"))
+            card = ctk.CTkFrame(self._attention_frame, fg_color=bg, corner_radius=8)
+            card.grid(row=0, column=i, padx=5, pady=5, sticky="ew")
+            ctk.CTkLabel(card, text=item["title"],
+                        font=ctk.CTkFont(size=14, weight="bold"),
+                        text_color=fg).pack(padx=10, pady=(8, 2), anchor="w")
+            ctk.CTkLabel(card, text=item["subtitle"],
+                        font=ctk.CTkFont(size=11),
+                        text_color=fg).pack(padx=10, pady=0, anchor="w")
+            if item.get("value"):
+                ctk.CTkLabel(card, text=item["value"],
+                            font=ctk.CTkFont(size=10),
+                            text_color=fg).pack(padx=10, pady=(0, 8), anchor="w")
+            else:
+                ctk.CTkLabel(card, text="", height=4).pack()
+
+    def _update_process_health(self):
+        """Update process health section with Cpk and drift data."""
+        try:
+            db = get_database()
+            cpk_data = db.get_cpk_by_model(days_back=90)
+            if cpk_data:
+                ratings = {"Excellent": 0, "Capable": 0, "Marginal": 0, "Incapable": 0}
+                for c in cpk_data:
+                    r = c.get("rating", "Unknown")
+                    if r in ratings:
+                        ratings[r] += 1
+                text = "\n".join(f"  {r}: {n} models" for r, n in ratings.items() if n > 0)
+                self._cpk_summary_label.configure(text=text or "No Cpk data")
+            else:
+                self._cpk_summary_label.configure(text="Import model specs to enable Cpk")
+        except Exception as e:
+            self._cpk_summary_label.configure(text=f"Cpk unavailable")
+
+        # Failure mode breakdown
+        try:
+            db = get_database()
+            modes = db.get_failure_mode_summary(days_back=90)
+            drift_events = db.get_drift_events_timeline(days_back=90)
+            lines = []
+            if modes:
+                lines.append("Failure Modes:")
+                for m in modes:
+                    lines.append(f"  {m['mode']}: {m['count']}")
+            if drift_events:
+                drift_models = list(set(e["model"] for e in drift_events))
+                lines.append(f"\nDrift: {len(drift_models)} models")
+                for dm in drift_models[:3]:
+                    lines.append(f"  {dm}")
+            self._drift_summary_label.configure(
+                text="\n".join(lines) if lines else "No failures or drift detected"
+            )
+        except Exception:
+            self._drift_summary_label.configure(text="Data unavailable")
 
     def _show_error(self, error: str):
         """Show error state."""

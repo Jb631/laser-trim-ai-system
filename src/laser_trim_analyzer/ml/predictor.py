@@ -525,7 +525,7 @@ def extract_features(track_data: Dict[str, Any]) -> Dict[str, float]:
     sigma_to_spec = sigma_gradient / linearity_spec if linearity_spec else 0
     error_to_spec = abs(linearity_error) / linearity_spec if linearity_spec else 0
 
-    return {
+    features = {
         'sigma_gradient': sigma_gradient,
         'linearity_error': abs(linearity_error),
         'fail_points': fail_points,
@@ -534,3 +534,40 @@ def extract_features(track_data: Dict[str, Any]) -> Dict[str, float]:
         'sigma_to_spec': sigma_to_spec,
         'error_to_spec': error_to_spec,
     }
+
+    # Add spec-aware features if model info available
+    model = track_data.get('model')
+    if model:
+        features = _add_spec_features(features, model)
+
+    return features
+
+
+def _add_spec_features(features: dict, model: str) -> dict:
+    """
+    Enrich feature vector with model spec data.
+
+    Adds deviation_to_spec_ratio, is_tight_spec, and element_type_code
+    when model specs are available.
+    """
+    try:
+        from laser_trim_analyzer.database import get_database
+        db = get_database()
+        spec = db.get_model_spec(model)
+
+        if spec and spec.get("linearity_spec_pct"):
+            max_dev = features.get("linearity_error", 0)
+            spec_pct = spec["linearity_spec_pct"]
+            features["deviation_to_spec_ratio"] = abs(max_dev) / spec_pct if spec_pct > 0 else 0
+            features["is_tight_spec"] = 1 if spec_pct < 0.3 else 0
+            features["spec_margin"] = spec_pct - abs(max_dev)
+
+        if spec and spec.get("element_type"):
+            etype = spec["element_type"].lower()
+            element_map = {"ceramic": 1, "winding": 2, "black": 3, "blue": 4, "g11": 5, "infinatron": 6}
+            features["element_type_code"] = element_map.get(etype, 0)
+
+    except Exception:
+        pass  # Specs not available
+
+    return features
