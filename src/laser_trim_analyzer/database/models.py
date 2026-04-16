@@ -40,26 +40,18 @@ class SafeJSON(TypeDecorator):
     """A JSON type that safely handles empty strings and None values."""
 
     impl = JSON
-    cache_ok = True
+    # Disable query caching for this type — SafeJSON stores mutable default
+    # values (none_as) that are unhashable, causing "unhashable type: list"
+    # errors when SQLAlchemy tries to build cache keys.
+    cache_ok = False
 
     def __init__(self, none_as=None):
-        """Initialize with default value for None.
-
-        Stores none_as as a tuple internally so SQLAlchemy's query cache
-        can hash this type (lists are unhashable and break cache_ok=True).
-        Returns a fresh list copy from process_result_value.
-        """
+        """Initialize with default value for None."""
         super().__init__()
-        # Store as tuple (hashable) for SQLAlchemy cache compatibility
-        if none_as is not None:
-            self.none_as = tuple(none_as) if isinstance(none_as, list) else none_as
-        else:
-            self.none_as = ()  # empty tuple — will be returned as list []
+        self.none_as = none_as if none_as is not None else []
 
     def _get_none_value(self):
-        """Return the none_as value as a list (fresh copy each call)."""
-        if isinstance(self.none_as, tuple):
-            return list(self.none_as)
+        """Return the none_as default value."""
         return self.none_as
 
     def process_bind_param(self, value, dialect):
@@ -101,8 +93,8 @@ class SafeJSON(TypeDecorator):
 
                 parsed = json_lib.loads(value)
 
-                # Ensure it's the expected type (none_as is () for list-type columns)
-                if isinstance(self.none_as, tuple) and not isinstance(parsed, list):
+                # Ensure it's the expected type
+                if isinstance(self.none_as, list) and not isinstance(parsed, list):
                     logger.warning(f"Expected list but got {type(parsed)}, converting to list")
                     if isinstance(parsed, dict):
                         return [parsed]  # Wrap dict in list
