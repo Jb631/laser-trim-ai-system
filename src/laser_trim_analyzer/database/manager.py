@@ -5586,21 +5586,29 @@ class DatabaseManager:
                 linearity_type = None
                 linearity_pct = None
                 if linearity_text:
+                    lt_lower = linearity_text.lower()
                     # Extract type: look for (Absolute), (Independent), etc.
                     type_match = re.search(
-                        r'\((Absolute|Independent|Term Base|Zero-Based|VR Max)\)',
+                        r'\(?(Absolute|Independent|Term Base|Zero-Based|VR Max)\)?',
                         linearity_text, re.IGNORECASE
                     )
                     if type_match:
                         linearity_type = type_match.group(1)
-                    elif any(kw in linearity_text.lower() for kw in
-                             ['see chart', 'see table', 'function', 'trim according']):
+                        # Normalize case
+                        type_map = {"absolute": "Absolute", "independent": "Independent",
+                                    "term base": "Term Base", "zero-based": "Zero-Based",
+                                    "vr max": "VR Max"}
+                        linearity_type = type_map.get(linearity_type.lower(), linearity_type)
+                    elif any(kw in lt_lower for kw in
+                             ['see chart', 'see table', 'function', 'trim according',
+                              'logarithmic', 'logaithmic', 'bowtie', 'no linearity']):
                         linearity_type = "Custom"
 
-                    # Extract percentage: look for ± N.N% or +/- N.N%
-                    pct_match = re.search(r'[±]\s*(\d+\.?\d*)\s*%', linearity_text)
+                    # Extract percentage: handle ± N.N%, +/-N.N%, +/-.N%
+                    # Try ± first, then +/- variants
+                    pct_match = re.search(r'[±]\s*(\d*\.?\d+)\s*%', linearity_text)
                     if not pct_match:
-                        pct_match = re.search(r'\+/?-?\s*\.?(\d+\.?\d*)\s*%', linearity_text)
+                        pct_match = re.search(r'\+/?-?\s*(\d*\.?\d+)\s*%', linearity_text)
                     if pct_match:
                         try:
                             linearity_pct = float(pct_match.group(1))
@@ -5622,28 +5630,36 @@ class DatabaseManager:
                         except ValueError:
                             pass
 
-                # Parse angle: '1.31" ± .005"' or '240° ± 2°'
+                # Parse angle — handles many formats:
+                # '1.31" ± .005"', '.665" +/-.005"', '150° ± 1°', '120°', '1.25"'
                 angle_val = None
                 angle_tol = None
                 angle_unit = None
                 if angle_text:
-                    # Try inches format: N.NN" ± .NNN"
-                    a_match = re.search(r'([\d.]+)"?\s*[±]\s*\.?([\d.]+)', angle_text)
+                    # Determine unit from text
+                    has_deg = '°' in angle_text or 'deg' in angle_text.lower()
+                    has_inch = '"' in angle_text
+
+                    # Try value ± tolerance (handles both ± and +/-)
+                    a_match = re.search(
+                        r'([\d.]+)[°"]?\s*(?:[±]|\+/?-?)\s*([\d.]+)',
+                        angle_text
+                    )
                     if a_match:
                         try:
                             angle_val = float(a_match.group(1))
-                            tol_str = a_match.group(2)
-                            angle_tol = float('0.' + tol_str) if '.' not in tol_str else float(tol_str)
-                            angle_unit = "in"
+                            angle_tol = float(a_match.group(2))
+                            angle_unit = "deg" if has_deg else "in"
                         except ValueError:
                             pass
+
+                    # Fallback: just extract the first number
                     if angle_val is None:
-                        # Try just a number (degrees or inches)
                         num_match = re.search(r'([\d.]+)', angle_text)
                         if num_match:
                             try:
                                 angle_val = float(num_match.group(1))
-                                angle_unit = "in" if '"' in angle_text else "deg"
+                                angle_unit = "deg" if has_deg else "in" if has_inch else "in"
                             except ValueError:
                                 pass
 
