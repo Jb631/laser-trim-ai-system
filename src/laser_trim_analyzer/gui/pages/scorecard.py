@@ -14,6 +14,8 @@ from typing import Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.widgets.scrollable_combobox import ScrollableComboBox
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,7 @@ class ScorecardPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(side="left", padx=(0, 20))
 
-        self.model_selector = ctk.CTkComboBox(
+        self.model_selector = ScrollableComboBox(
             selector_frame,
             values=["Select a model..."],
             command=self._on_model_selected,

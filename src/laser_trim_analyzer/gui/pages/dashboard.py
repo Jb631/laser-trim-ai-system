@@ -581,11 +581,26 @@ class DashboardPage(ctk.CTkFrame):
                 logger.debug(f"Could not load class breakdown: {e}")
                 class_breakdown = []
 
+            # Load Cpk, drift, and failure mode data in background (not on main thread)
+            try:
+                cpk_data = db.get_cpk_by_model(days_back=90)
+            except Exception:
+                cpk_data = []
+            try:
+                drift_events = db.get_drift_events_timeline(days_back=90)
+            except Exception:
+                drift_events = []
+            try:
+                failure_modes = db.get_failure_mode_summary(days_back=90)
+            except Exception:
+                failure_modes = []
+
             # Update UI on main thread
             self.after(0, lambda: self._update_display(
                 stats, alerts, priority_models, drift_alerts, batch_stats, overall_stats,
                 system_comparison, ft_stats, escape_stats, trending_worse, near_miss_data,
-                element_breakdown, class_breakdown
+                element_breakdown, class_breakdown,
+                cpk_data, drift_events, failure_modes
             ))
 
         except Exception as e:
@@ -635,6 +650,9 @@ class DashboardPage(ctk.CTkFrame):
         near_miss_data: Optional[Dict[str, Any]] = None,
         element_breakdown: Optional[List[Dict[str, Any]]] = None,
         class_breakdown: Optional[List[Dict[str, Any]]] = None,
+        cpk_data: Optional[List[Dict[str, Any]]] = None,
+        drift_events: Optional[List[Dict[str, Any]]] = None,
+        failure_modes: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update display with loaded data."""
         # Use overall_stats for health card if available, otherwise fall back to period stats
@@ -735,11 +753,11 @@ class DashboardPage(ctk.CTkFrame):
         # Update category breakdown charts
         self._update_breakdown_charts(element_breakdown or [], class_breakdown or [])
 
-        # Update attention cards with priority models
-        self._update_attention_cards(priority_models)
+        # Update attention cards with priority models (using pre-loaded data)
+        self._update_attention_cards(priority_models, cpk_data or [], drift_events or [])
 
-        # Update process health (Cpk + drift) on main thread
-        self._update_process_health()
+        # Update process health (Cpk + drift) using pre-loaded data
+        self._update_process_health(cpk_data or [], drift_events or [], failure_modes or [])
 
         # Update timestamp
         self.last_update_label.configure(
@@ -1176,8 +1194,14 @@ class DashboardPage(ctk.CTkFrame):
         except Exception as e:
             logger.debug(f"Class breakdown error: {e}")
 
-    def _update_attention_cards(self, priority_models):
-        """Update attention cards with models needing action."""
+    def _update_attention_cards(self, priority_models, cpk_data=None, drift_events=None):
+        """Update attention cards with models needing action.
+
+        Args:
+            priority_models: Pre-loaded priority model data.
+            cpk_data: Pre-loaded Cpk data (from background thread).
+            drift_events: Pre-loaded drift events (from background thread).
+        """
         # Clear existing cards
         for widget in self._attention_frame.winfo_children():
             widget.destroy()
@@ -1201,10 +1225,8 @@ class DashboardPage(ctk.CTkFrame):
                         "severity": severity,
                     })
 
-        # Add low-Cpk models
-        try:
-            db = get_database()
-            cpk_data = db.get_cpk_by_model(days_back=90)
+        # Add low-Cpk models (using pre-loaded data)
+        if cpk_data:
             for c in cpk_data[:2]:
                 if c["cpk"] is not None and c["cpk"] < 1.0 and len(items) < 4:
                     items.append({
@@ -1213,22 +1235,16 @@ class DashboardPage(ctk.CTkFrame):
                         "value": f"Spec: {c['spec_pct']:.1f}%",
                         "severity": "critical" if c["cpk"] < 0.67 else "warning",
                     })
-        except Exception:
-            pass
 
-        # Add drift alerts
-        try:
-            drift_events = db.get_drift_events_timeline(days_back=90)
-            if drift_events and len(items) < 4:
-                drift_models = list(set(e["model"] for e in drift_events))
-                items.append({
-                    "title": f"{len(drift_models)} Drift Alerts",
-                    "subtitle": ", ".join(drift_models[:3]),
-                    "value": "Process shift detected",
-                    "severity": "warning",
-                })
-        except Exception:
-            pass
+        # Add drift alerts (using pre-loaded data)
+        if drift_events and len(items) < 4:
+            drift_models = list(set(e["model"] for e in drift_events))
+            items.append({
+                "title": f"{len(drift_models)} Drift Alerts",
+                "subtitle": ", ".join(drift_models[:3]),
+                "value": "Process shift detected",
+                "severity": "warning",
+            })
 
         if not items:
             items.append({
@@ -1255,11 +1271,15 @@ class DashboardPage(ctk.CTkFrame):
             else:
                 ctk.CTkLabel(card, text="", height=4).pack()
 
-    def _update_process_health(self):
-        """Update process health section with Cpk and drift data."""
+    def _update_process_health(self, cpk_data=None, drift_events=None, failure_modes=None):
+        """Update process health section with Cpk and drift data.
+
+        Args:
+            cpk_data: Pre-loaded Cpk data (from background thread).
+            drift_events: Pre-loaded drift events (from background thread).
+            failure_modes: Pre-loaded failure mode summary (from background thread).
+        """
         try:
-            db = get_database()
-            cpk_data = db.get_cpk_by_model(days_back=90)
             if cpk_data:
                 ratings = {"Excellent": 0, "Capable": 0, "Marginal": 0, "Incapable": 0}
                 for c in cpk_data:
@@ -1270,18 +1290,15 @@ class DashboardPage(ctk.CTkFrame):
                 self._cpk_summary_label.configure(text=text or "No Cpk data")
             else:
                 self._cpk_summary_label.configure(text="Import model specs to enable Cpk")
-        except Exception as e:
-            self._cpk_summary_label.configure(text=f"Cpk unavailable")
+        except Exception:
+            self._cpk_summary_label.configure(text="Cpk unavailable")
 
-        # Failure mode breakdown
+        # Failure mode breakdown (using pre-loaded data)
         try:
-            db = get_database()
-            modes = db.get_failure_mode_summary(days_back=90)
-            drift_events = db.get_drift_events_timeline(days_back=90)
             lines = []
-            if modes:
+            if failure_modes:
                 lines.append("Failure Modes:")
-                for m in modes:
+                for m in failure_modes:
                     lines.append(f"  {m['mode']}: {m['count']}")
             if drift_events:
                 drift_models = list(set(e["model"] for e in drift_events))

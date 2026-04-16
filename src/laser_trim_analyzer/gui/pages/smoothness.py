@@ -145,11 +145,13 @@ class SmoothnessPage(ctk.CTkFrame):
 
         def _on_done(results_and_stats):
             results, stats = results_and_stats
-            self.results_list = results
-            self._current_page = 0
-            self._total_pages = max(1, (len(results) + self._page_size - 1) // self._page_size)
-            self.after(0, self._display_results)
-            self.after(0, lambda: self._display_stats(stats))
+            def _apply():
+                self.results_list = results
+                self._current_page = 0
+                self._total_pages = max(1, (len(results) + self._page_size - 1) // self._page_size)
+                self._display_results()
+                self._display_stats(stats)
+            self.after(0, _apply)
 
         get_thread_manager().start_thread(
             target=lambda: _on_done(_do_load()),

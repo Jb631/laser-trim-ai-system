@@ -1212,7 +1212,7 @@ class MLManager:
             # Check pass rate from profile
             profiler = self.profilers.get(model)
             if profiler and profiler.is_profiled:
-                pass_rate = profiler.pass_rate
+                pass_rate = profiler.profile.pass_rate if profiler.profile else None
                 if pass_rate is not None and pass_rate < 0.6:
                     recommendations.append({
                         "recommendation": "Prioritize for root cause analysis",

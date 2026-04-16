@@ -2306,6 +2306,17 @@ class DatabaseManager:
                 untrimmed_rms_error=db_track.untrimmed_rms_error,
                 trimmed_rms_error=db_track.trimmed_rms_error,
                 max_error_reduction_percent=db_track.max_error_reduction_percent,
+                # Phase 2 spec-aware fields
+                optimal_slope=getattr(db_track, 'optimal_slope', 1.0),
+                station_compensation=getattr(db_track, 'station_compensation', None),
+                linearity_type=getattr(db_track, 'linearity_type', None),
+                raw_linearity_error=getattr(db_track, 'raw_linearity_error', None),
+                optimized_linearity_error=getattr(db_track, 'optimized_linearity_error', None),
+                raw_fail_points=getattr(db_track, 'raw_fail_points', None),
+                # Max deviation fields
+                max_deviation=getattr(db_track, 'max_deviation', None),
+                max_deviation_position=getattr(db_track, 'max_deviation_position', None),
+                deviation_uniformity=getattr(db_track, 'deviation_uniformity', None),
                 # Failure margin metrics
                 max_violation=getattr(db_track, 'max_violation', None),
                 avg_violation=getattr(db_track, 'avg_violation', None),
@@ -4276,11 +4287,10 @@ class DatabaseManager:
 
             # Filter by status
             if status and status != "All":
-                from laser_trim_analyzer.database.models import FinalTestStatus
                 if status == "Pass":
-                    query = query.filter(DBFinalTestResult.overall_status == FinalTestStatus.PASS)
+                    query = query.filter(DBFinalTestResult.overall_status == DBStatusType.PASS)
                 elif status == "Fail":
-                    query = query.filter(DBFinalTestResult.overall_status == FinalTestStatus.FAIL)
+                    query = query.filter(DBFinalTestResult.overall_status == DBStatusType.FAIL)
 
             # Filter by linked status
             if linked_only:

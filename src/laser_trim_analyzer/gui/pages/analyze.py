@@ -1218,8 +1218,10 @@ class AnalyzePage(ctk.CTkFrame):
 
     def _display_comparison_chart(self, tracks: List[TrackData]):
         """Display comparison chart overlaying all tracks."""
-        if not tracks or len(tracks) < 2:
-            self._display_track_chart(tracks[0] if tracks else None)
+        if not tracks:
+            return
+        if len(tracks) < 2:
+            self._display_track_chart(tracks[0])
             return
 
         # Ensure chart is initialized before use
