@@ -121,6 +121,7 @@ class DashboardPage(ctk.CTkFrame):
             values=["All Element Types"],
             command=self._on_filter_changed,
             width=160,
+            state="readonly",
             font=ctk.CTkFont(size=11)
         )
         self._element_filter.pack(side="left", padx=5)
@@ -131,6 +132,7 @@ class DashboardPage(ctk.CTkFrame):
             values=["All Product Classes"],
             command=self._on_filter_changed,
             width=160,
+            state="readonly",
             font=ctk.CTkFont(size=11)
         )
         self._class_filter.pack(side="left", padx=5)
@@ -759,9 +761,9 @@ class DashboardPage(ctk.CTkFrame):
         # Update process health (Cpk + drift) using pre-loaded data
         self._update_process_health(cpk_data or [], drift_events or [], failure_modes or [])
 
-        # Update timestamp
+        # Update timestamp (V5-15: include date for clarity)
         self.last_update_label.configure(
-            text=f"Updated: {datetime.now().strftime('%H:%M:%S')}"
+            text=f"Updated: {datetime.now().strftime('%m/%d/%Y %H:%M')}"
         )
 
         logger.debug("Dashboard data refreshed")
@@ -890,24 +892,30 @@ class DashboardPage(ctk.CTkFrame):
                     )
             else:
                 self.cost_impact_label.configure(
-                    text="Cost Impact: Import pricing in Settings to enable", text_color="gray"
+                    text="Cost Impact: No model pricing configured (set via config file)", text_color="gray"
                 )
         except Exception as e:
             logger.debug(f"Cost impact display error: {e}")
             self.cost_impact_label.configure(text="", text_color="gray")
 
     def _update_alerts_display(self, alerts: List[Dict[str, Any]]):
-        """Update alerts list."""
+        """Update alerts list (deduplicated by message)."""
         self.alerts_list.configure(state="normal")
         self.alerts_list.delete("1.0", "end")
 
         if not alerts:
             self.alerts_list.insert("end", "No active alerts - everything looks good!")
         else:
+            seen_messages = set()
             for alert in alerts:
                 severity = alert.get("severity", "INFO")
                 message = alert.get("message", "")
                 timestamp = alert.get("created_at", "")
+
+                # Deduplicate by message content
+                if message in seen_messages:
+                    continue
+                seen_messages.add(message)
 
                 icon = "⚠️" if severity == "WARNING" else "🔴" if severity == "CRITICAL" else "ℹ️"
                 self.alerts_list.insert(
@@ -966,12 +974,16 @@ class DashboardPage(ctk.CTkFrame):
             self.trend_chart.show_placeholder("Insufficient data for trend (need 2+ days)")
             return
 
+        # Add data-as-of label using the latest date in the data
+        latest_date = dates[-1] if dates else ""
+        chart_title = f"Data as of: {latest_date}" if latest_date else ""
+
         # Plot P-chart with variable binomial control limits
         self.trend_chart.plot_pchart(
             dates=dates,
             pass_rates=pass_rates,
             sample_sizes=sample_sizes,
-            title="",
+            title=chart_title,
             ylabel="Pass Rate %"
         )
 
@@ -1256,7 +1268,8 @@ class DashboardPage(ctk.CTkFrame):
 
         for i, item in enumerate(items[:4]):
             bg, fg = SEVERITY_COLORS.get(item["severity"], ("#6c757d", "#fff"))
-            card = ctk.CTkFrame(self._attention_frame, fg_color=bg, corner_radius=8)
+            card = ctk.CTkFrame(self._attention_frame, fg_color=bg, corner_radius=8,
+                               cursor="hand2")
             card.grid(row=0, column=i, padx=5, pady=5, sticky="ew")
             ctk.CTkLabel(card, text=item["title"],
                         font=ctk.CTkFont(size=14, weight="bold"),
@@ -1270,6 +1283,18 @@ class DashboardPage(ctk.CTkFrame):
                             text_color=fg).pack(padx=10, pady=(0, 8), anchor="w")
             else:
                 ctk.CTkLabel(card, text="", height=4).pack()
+
+            # Make card clickable — navigate to Analyze page for that model
+            model_name = item.get("title", "")
+            if model_name and model_name != "All Clear" and "Drift" not in model_name:
+                card.bind("<Button-1>", lambda e, m=model_name: self._navigate_to_model(m))
+                for child in card.winfo_children():
+                    child.bind("<Button-1>", lambda e, m=model_name: self._navigate_to_model(m))
+
+    def _navigate_to_model(self, model: str):
+        """Navigate to Analyze page filtered to a specific model."""
+        if hasattr(self.app, 'show_model_scorecard'):
+            self.app.show_model_scorecard(model)
 
     def _update_process_health(self, cpk_data=None, drift_events=None, failure_modes=None):
         """Update process health section with Cpk and drift data.

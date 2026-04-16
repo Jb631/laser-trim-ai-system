@@ -1731,7 +1731,8 @@ class ChartWidget(ctk.CTkFrame):
         try:
             self.figure.tight_layout()
         except Exception:
-            pass  # tight_layout can fail with twin axes
+            # tight_layout can fail with twin axes — ensure left margin for Y-axis label
+            self.figure.subplots_adjust(left=0.12, bottom=0.2)
         self.canvas.draw()
 
     def plot_confusion_matrix(

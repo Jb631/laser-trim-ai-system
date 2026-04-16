@@ -6016,16 +6016,28 @@ class DatabaseManager:
                 DBTrackResult.final_linearity_error_shifted.isnot(None),
             ).scalar()
 
-            spec = session.query(ModelSpec).filter(
+            spec_obj = session.query(ModelSpec).filter(
                 ModelSpec.model == model
             ).first()
 
+            # Extract spec data while still in session to avoid detached instance errors
+            spec_data = None
+            spec_linearity_pct = None
+            if spec_obj:
+                spec_data = {
+                    "element_type": spec_obj.element_type,
+                    "product_class": spec_obj.product_class,
+                    "linearity_type": spec_obj.linearity_type,
+                    "linearity_spec_pct": spec_obj.linearity_spec_pct,
+                }
+                spec_linearity_pct = spec_obj.linearity_spec_pct
+
         cpk_data = None
-        if spec and spec.linearity_spec_pct:
+        if spec_linearity_pct:
             from laser_trim_analyzer.core.cpk import calculate_cpk
             devs = self.get_linearity_deviations_for_cpk(model, days_back)
             if len(devs) >= 10:
-                cpk_result = calculate_cpk(devs, spec.linearity_spec_pct)
+                cpk_result = calculate_cpk(devs, spec_linearity_pct)
                 cpk_data = cpk_result.to_dict()
 
         # Drift status from ML state
@@ -6049,12 +6061,7 @@ class DatabaseManager:
             "avg_deviation": avg_dev,
             "cpk": cpk_data,
             "drift_status": drift_status,
-            "spec": {
-                "element_type": spec.element_type if spec else None,
-                "product_class": spec.product_class if spec else None,
-                "linearity_type": spec.linearity_type if spec else None,
-                "linearity_spec_pct": spec.linearity_spec_pct if spec else None,
-            } if spec else None,
+            "spec": spec_data,
         }
 
     def get_yield_trend(

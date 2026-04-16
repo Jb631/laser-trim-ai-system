@@ -555,7 +555,10 @@ class ProcessPage(ctk.CTkFrame):
 
     def _start_processing(self):
         """Start processing selected files in a background thread."""
-        if not self.selected_files or self.is_processing:
+        if not self.selected_files:
+            self.progress_label.configure(text="Please select files or a folder before processing.")
+            return
+        if self.is_processing:
             return
 
         self.is_processing = True

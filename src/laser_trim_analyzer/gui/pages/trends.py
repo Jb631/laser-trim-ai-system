@@ -185,35 +185,33 @@ class TrendsPage(ctk.CTkFrame):
         self._class_filter.set("All")
         self._class_filter.pack(side="left", padx=2, pady=15)
 
-        # Rolling average window (only shown in detail mode)
+        # Rolling average window (only shown in detail mode — hidden by default)
         self.rolling_label = ctk.CTkLabel(controls, text="Rolling Avg:")
-        self.rolling_label.pack(side="left", padx=(20, 5), pady=15)
-
         self.rolling_dropdown = ctk.CTkOptionMenu(
             controls,
             values=["7 Days", "14 Days", "30 Days", "60 Days"],
             command=self._on_rolling_change
         )
         self.rolling_dropdown.set("30 Days")
-        self.rolling_dropdown.pack(side="left", padx=5, pady=15)
+        # Not packed until detail mode is activated
 
         # Refresh button
         refresh_btn = ctk.CTkButton(
             controls,
             text="Refresh",
             command=self._refresh_data,
-            width=100
+            width=80
         )
-        refresh_btn.pack(side="right", padx=15, pady=15)
+        refresh_btn.pack(side="right", padx=5, pady=15)
 
         # Export PDF button
         export_pdf_btn = ctk.CTkButton(
             controls,
             text="Export PDF",
             command=self._export_summary_pdf,
-            width=120
+            width=90
         )
-        export_pdf_btn.pack(side="right", padx=15, pady=15)
+        export_pdf_btn.pack(side="right", padx=5, pady=15)
 
         # Status label
         self.status_label = ctk.CTkLabel(
@@ -939,10 +937,14 @@ class TrendsPage(ctk.CTkFrame):
         self.selected_model = model
         logger.debug(f"Model changed to: {model}")
 
-        # Switch view mode
+        # Show/hide rolling avg controls (only useful in detail mode)
         if model == "All Models":
+            self.rolling_label.pack_forget()
+            self.rolling_dropdown.pack_forget()
             self._create_summary_view()
         else:
+            self.rolling_label.pack(side="left", padx=(10, 2), pady=15)
+            self.rolling_dropdown.pack(side="left", padx=2, pady=15)
             self._create_detail_view()
 
         self._refresh_data()
@@ -1546,9 +1548,12 @@ class TrendsPage(ctk.CTkFrame):
         else:
             self.best_chart.show_placeholder("No models with 20+ samples")
 
-        # Recent Issues: models with data in last 30 days AND pass_rate < 80% (filtered to 20+ samples)
+        # Recent Issues: models with data in last 30 days (relative to newest data) AND pass_rate < 80%
         # Only show active models (MPS or recently active)
-        recent_cutoff_30d = datetime.now() - timedelta(days=30)
+        # Use most recent data date instead of today to handle stale datasets
+        all_dates = [m["last_date"] for m in models_with_data if m.get("last_date")]
+        latest_data_date = max(all_dates) if all_dates else datetime.now()
+        recent_cutoff_30d = latest_data_date - timedelta(days=30)
         recent_issues = [
             m for m in models_with_data
             if m.get("last_date") and m["last_date"] >= recent_cutoff_30d and m["pass_rate"] < 80
@@ -2206,11 +2211,44 @@ class TrendsPage(ctk.CTkFrame):
         elif value == "Drift":
             self._show_drift_timeline()
 
+    def _create_dedicated_chart_view(self, title: str) -> "ChartWidget":
+        """Create a dedicated full-width chart view for non-Standard tabs.
+
+        Replaces the summary view with a single titled chart, avoiding the
+        Standard tab's stats/headers bleeding into other tab views.
+        """
+        self._cleanup_charts()
+
+        for widget in self.content.winfo_children():
+            widget.destroy()
+
+        ChartWidget, ChartStyle = _ensure_chart_module()
+
+        frame = ctk.CTkFrame(self.content)
+        frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            frame, text=title,
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).grid(row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+
+        chart = ChartWidget(
+            frame,
+            style=ChartStyle(figure_size=(12, 6), dpi=100)
+        )
+        chart.grid(row=1, column=0, sticky="nsew", padx=15, pady=(5, 15))
+        self._chart_widgets.append(chart)
+
+        self.content.grid_rowconfigure(0, weight=1)
+
+        return chart
+
     def _show_comparative_trends(self):
         """Show comparative pass rate trends for top models."""
         try:
             db = get_database()
-            # Get top 5 models by volume
             config = get_config()
             mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
             if not mps:
@@ -2222,28 +2260,26 @@ class TrendsPage(ctk.CTkFrame):
                 self.status_label.configure(text="No data for comparative trends")
                 return
 
-            if not self._summary_charts_initialized:
-                self._create_summary_view()
+            chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
 
-            if hasattr(self, 'alerts_chart') and self.alerts_chart:
-                fig = self.alerts_chart.figure
-                fig.clear()
-                ax = fig.add_subplot(111)
+            for model, trend in data.items():
+                if trend:
+                    periods = [t["period"] for t in trend]
+                    rates = [t["pass_rate"] for t in trend]
+                    ax.plot(periods, rates, marker='o', markersize=4, label=model)
 
-                for model, trend in data.items():
-                    if trend:
-                        periods = [t["period"] for t in trend]
-                        rates = [t["pass_rate"] for t in trend]
-                        ax.plot(periods, rates, marker='o', markersize=4, label=model)
-
-                ax.set_ylabel("Pass Rate (%)")
-                ax.set_title("Comparative Pass Rate Trends")
-                ax.legend(loc="best", fontsize=8)
-                ax.set_ylim(0, 105)
-                ax.tick_params(axis='x', rotation=45, labelsize=8)
-                fig.tight_layout()
-                self.alerts_chart.canvas.draw()
-                self.status_label.configure(text=f"Comparing {len(data)} models")
+            ax.set_ylabel("Pass Rate (%)")
+            ax.set_title("Comparative Pass Rate Trends")
+            ax.legend(loc="best", fontsize=8)
+            ax.set_ylim(0, 105)
+            ax.tick_params(axis='x', rotation=45, labelsize=8)
+            fig.tight_layout()
+            chart.canvas.draw()
+            self.status_label.configure(text=f"Comparing {len(data)} models")
         except Exception as e:
             logger.error(f"Comparative trends error: {e}")
             self.status_label.configure(text=f"Comparative error: {e}")
@@ -2269,30 +2305,26 @@ class TrendsPage(ctk.CTkFrame):
                 self.status_label.configure(text="No data for Cpk trend")
                 return
 
-            # Ensure summary charts exist for rendering
-            if not self._summary_charts_initialized:
-                self._create_summary_view()
+            chart = self._create_dedicated_chart_view(f"Cpk Trend — {model}")
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
 
-            _ChartWidget, _ = _ensure_chart_module()
-            if hasattr(self, 'alerts_chart') and self.alerts_chart:
-                fig = self.alerts_chart.figure
-                fig.clear()
-                ax = fig.add_subplot(111)
+            periods = [t["period"] for t in trend if t["cpk"] is not None]
+            cpk_values = [t["cpk"] for t in trend if t["cpk"] is not None]
 
-                periods = [t["period"] for t in trend if t["cpk"] is not None]
-                cpk_values = [t["cpk"] for t in trend if t["cpk"] is not None]
-
-                ax.plot(periods, cpk_values, marker='o', color='#0d6efd', linewidth=2, label="Cpk")
-                ax.axhline(y=1.67, color='#198754', linestyle='--', alpha=0.7, label='Excellent (1.67)')
-                ax.axhline(y=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
-                ax.axhline(y=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
-                ax.set_ylabel("Cpk")
-                ax.set_title(f"Cpk Trend - {model}")
-                ax.legend(loc="best", fontsize=8)
-                ax.tick_params(axis='x', rotation=45, labelsize=8)
-                fig.tight_layout()
-                self.alerts_chart.canvas.draw()
-                self.status_label.configure(text=f"Cpk trend for {model}")
+            ax.plot(periods, cpk_values, marker='o', color='#0d6efd', linewidth=2, label="Cpk")
+            ax.axhline(y=1.67, color='#198754', linestyle='--', alpha=0.7, label='Excellent (1.67)')
+            ax.axhline(y=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
+            ax.axhline(y=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
+            ax.set_ylabel("Cpk")
+            ax.set_title(f"Cpk Trend - {model}")
+            ax.legend(loc="best", fontsize=8)
+            ax.tick_params(axis='x', rotation=45, labelsize=8)
+            fig.tight_layout()
+            chart.canvas.draw()
+            self.status_label.configure(text=f"Cpk trend for {model}")
         except Exception as e:
             logger.error(f"Cpk trend error: {e}")
             self.status_label.configure(text=f"Cpk trend error: {e}")
@@ -2306,32 +2338,30 @@ class TrendsPage(ctk.CTkFrame):
                 self.status_label.configure(text="No yield data")
                 return
 
-            if not self._summary_charts_initialized:
-                self._create_summary_view()
+            chart = self._create_dedicated_chart_view("Yield Trend")
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
 
-            if hasattr(self, 'alerts_chart') and self.alerts_chart:
-                fig = self.alerts_chart.figure
-                fig.clear()
-                ax = fig.add_subplot(111)
+            periods = [d["period"] for d in data]
+            rates = [d["pass_rate"] for d in data]
 
-                periods = [d["period"] for d in data]
-                rates = [d["pass_rate"] for d in data]
-
-                ax.fill_between(range(len(periods)), rates, alpha=0.3, color='#0d6efd')
-                ax.plot(range(len(periods)), rates, marker='o', markersize=3,
-                       color='#0d6efd', linewidth=1.5)
-                ax.axhline(y=80, color='#198754', linestyle='--', alpha=0.7, label='Target (80%)')
-                step = max(1, len(periods) // 8)
-                ax.set_xticks(range(0, len(periods), step))
-                ax.set_xticklabels([periods[i] for i in range(0, len(periods), step)],
-                                  rotation=45, fontsize=8)
-                ax.set_ylabel("Yield (%)")
-                ax.set_title("Overall Yield Trend")
-                ax.set_ylim(0, 105)
-                ax.legend(loc="best", fontsize=8)
-                fig.tight_layout()
-                self.alerts_chart.canvas.draw()
-                self.status_label.configure(text="Yield trend (all models)")
+            ax.fill_between(range(len(periods)), rates, alpha=0.3, color='#0d6efd')
+            ax.plot(range(len(periods)), rates, marker='o', markersize=3,
+                   color='#0d6efd', linewidth=1.5)
+            ax.axhline(y=80, color='#198754', linestyle='--', alpha=0.7, label='Target (80%)')
+            step = max(1, len(periods) // 8)
+            ax.set_xticks(range(0, len(periods), step))
+            ax.set_xticklabels([periods[i] for i in range(0, len(periods), step)],
+                              rotation=45, fontsize=8)
+            ax.set_ylabel("Yield (%)")
+            ax.set_title("Overall Yield Trend")
+            ax.set_ylim(0, 105)
+            ax.legend(loc="best", fontsize=8)
+            fig.tight_layout()
+            chart.canvas.draw()
+            self.status_label.configure(text="Yield trend (all models)")
         except Exception as e:
             logger.error(f"Yield trend error: {e}")
             self.status_label.configure(text=f"Yield trend error: {e}")
@@ -2342,32 +2372,31 @@ class TrendsPage(ctk.CTkFrame):
             db = get_database()
             events = db.get_drift_events_timeline(days_back=180)
 
-            if not self._summary_charts_initialized:
-                self._create_summary_view()
+            chart = self._create_dedicated_chart_view("Drift Detection Timeline")
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
 
-            if hasattr(self, 'alerts_chart') and self.alerts_chart:
-                fig = self.alerts_chart.figure
-                fig.clear()
-                ax = fig.add_subplot(111)
+            if not events:
+                ax.text(0.5, 0.5, "No drift events detected",
+                       ha='center', va='center', transform=ax.transAxes, fontsize=14,
+                       color='gray')
+            else:
+                models = sorted(set(e["model"] for e in events))
+                model_y = {m: i for i, m in enumerate(models)}
+                for e in events:
+                    y = model_y[e["model"]]
+                    x_label = e.get("date", "")[:10]
+                    ax.scatter(x_label, y, s=80, c='#dc3545', zorder=5, marker='D')
+                ax.set_yticks(range(len(models)))
+                ax.set_yticklabels(models, fontsize=9)
+                ax.tick_params(axis='x', rotation=45, labelsize=8)
 
-                if not events:
-                    ax.text(0.5, 0.5, "No drift events detected",
-                           ha='center', va='center', transform=ax.transAxes, fontsize=14)
-                else:
-                    models = list(set(e["model"] for e in events))
-                    model_y = {m: i for i, m in enumerate(models)}
-                    for e in events:
-                        y = model_y[e["model"]]
-                        x_label = e.get("date", "")[:10]
-                        ax.scatter(x_label, y, s=80, c='#dc3545', zorder=5, marker='D')
-                    ax.set_yticks(range(len(models)))
-                    ax.set_yticklabels(models, fontsize=9)
-                    ax.tick_params(axis='x', rotation=45, labelsize=8)
-
-                ax.set_title("Drift Detection Timeline")
-                fig.tight_layout()
-                self.alerts_chart.canvas.draw()
-                self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
+            ax.set_title("Drift Detection Timeline")
+            fig.tight_layout()
+            chart.canvas.draw()
+            self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")
             self.status_label.configure(text=f"Drift error: {e}")

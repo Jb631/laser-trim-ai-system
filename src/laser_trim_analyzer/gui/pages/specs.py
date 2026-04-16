@@ -66,13 +66,14 @@ class SpecsPage(ctk.CTkFrame):
             command=self._add_new
         ).grid(row=0, column=2, padx=5)
 
-        ctk.CTkButton(
+        self._discrepancy_btn = ctk.CTkButton(
             header_frame,
             text="Check Discrepancies",
-            width=140,
+            width=160,
             fg_color="#2980b9",
             command=self._check_discrepancies
-        ).grid(row=0, column=3, padx=5)
+        )
+        self._discrepancy_btn.grid(row=0, column=3, padx=5)
 
         # Search bar
         search_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -205,6 +206,7 @@ class SpecsPage(ctk.CTkFrame):
     def on_show(self):
         """Called when page becomes visible."""
         self._load_specs()
+        self._check_discrepancy_count()
 
     def _load_specs(self):
         """Load all specs from database."""
@@ -239,7 +241,12 @@ class SpecsPage(ctk.CTkFrame):
             frame.destroy()
         self._row_frames.clear()
 
-        self._count_label.configure(text=f"{len(specs)} models")
+        # Count incomplete specs for the summary
+        incomplete = sum(1 for s in specs if not s.get("element_type") or not s.get("linearity_type"))
+        count_text = f"{len(specs)} models"
+        if incomplete > 0:
+            count_text += f" ({incomplete} incomplete — shown in red)"
+        self._count_label.configure(text=count_text)
 
         for i, spec in enumerate(specs):
             bg = ("gray90", "gray17") if i % 2 == 0 else ("gray85", "gray20")
@@ -434,3 +441,23 @@ class SpecsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Failed to check discrepancies: {e}")
             messagebox.showerror("Error", str(e))
+
+    def _check_discrepancy_count(self):
+        """Auto-check discrepancy count on page load and update button badge."""
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            discrepancies = db.get_spec_discrepancies()
+            count = len(discrepancies) if discrepancies else 0
+            if count > 0:
+                self._discrepancy_btn.configure(
+                    text=f"Discrepancies ({count})",
+                    fg_color="#e74c3c"
+                )
+            else:
+                self._discrepancy_btn.configure(
+                    text="Check Discrepancies",
+                    fg_color="#2980b9"
+                )
+        except Exception:
+            pass

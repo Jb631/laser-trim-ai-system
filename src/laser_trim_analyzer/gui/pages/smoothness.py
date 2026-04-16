@@ -168,8 +168,11 @@ class SmoothnessPage(ctk.CTkFrame):
         page_results = self.results_list[start:end]
 
         if not page_results:
-            ctk.CTkLabel(self.results_scroll, text="No results found",
-                        text_color="gray").grid(row=0, column=0, pady=20)
+            msg = ("No smoothness data found.\n\n"
+                   "To populate this page, process Output Smoothness\n"
+                   "test files via the Process Files page.")
+            ctk.CTkLabel(self.results_scroll, text=msg,
+                        text_color="gray", justify="center").grid(row=0, column=0, pady=20)
             return
 
         for i, result in enumerate(page_results):
@@ -262,7 +265,7 @@ class SmoothnessPage(ctk.CTkFrame):
     def _display_stats(self, stats: Dict[str, Any]):
         """Display summary stats."""
         if not stats or stats.get("total", 0) == 0:
-            self.stats_label.configure(text="No data")
+            self.stats_label.configure(text="No smoothness data imported yet")
             return
         text = (
             f"Total: {stats['total']}  |  "

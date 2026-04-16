@@ -97,9 +97,15 @@ class SettingsPage(ctk.CTkFrame):
         # Current path
         ctk.CTkLabel(frame, text="Database Path:").grid(row=1, column=0, padx=15, pady=5, sticky="w")
 
+        # Show relative path to avoid exposing full local filesystem path in screenshots
+        try:
+            from pathlib import Path
+            db_display_path = str(Path(self.app.config.database.path).relative_to(Path.cwd()))
+        except (ValueError, TypeError):
+            db_display_path = Path(self.app.config.database.path).name
         self.db_path_label = ctk.CTkLabel(
             frame,
-            text=str(self.app.config.database.path),
+            text=db_display_path,
             text_color="gray",
             wraplength=400
         )

@@ -109,9 +109,7 @@ class ComparePage(ctk.CTkFrame):
         )
         self.date_from.pack(side="left", padx=2, pady=10)
         self.date_from.bind("<Return>", lambda e: self._load_comparisons())
-        # Set default to 30 days ago
-        default_from = (datetime.now() - timedelta(days=30)).strftime("%m/%d/%Y")
-        self.date_from.insert(0, default_from)
+        # Leave empty to show all data by default (placeholder guides user)
 
         ctk.CTkLabel(filter_frame, text="To:").pack(side="left", padx=(10, 5), pady=10)
         self.date_to = ctk.CTkEntry(
@@ -121,8 +119,7 @@ class ComparePage(ctk.CTkFrame):
         )
         self.date_to.pack(side="left", padx=2, pady=10)
         self.date_to.bind("<Return>", lambda e: self._load_comparisons())
-        # Set default to today
-        self.date_to.insert(0, datetime.now().strftime("%m/%d/%Y"))
+        # Leave empty to show all data by default
 
         # Status filter
         ctk.CTkLabel(filter_frame, text="Status:").pack(side="left", padx=(15, 5), pady=10)
