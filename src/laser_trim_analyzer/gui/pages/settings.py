@@ -794,39 +794,48 @@ class SettingsPage(ctk.CTkFrame):
         self.after(500, self._update_skipped_count)
 
     def _scan_database(self):
-        """Scan database for dirty data and flag suspect records."""
-        from laser_trim_analyzer.database import get_database
-        db = get_database()
-
-        self.scan_results_label.configure(text="Scanning...")
+        """Scan database for dirty data and flag suspect records (runs in background)."""
+        self.scan_results_label.configure(text="Scanning... (this may take a moment)")
         self.scan_btn.configure(state="disabled")
-        self.update_idletasks()
 
-        try:
-            # First run retroactive validation to update data_quality flags
+        def _do_scan():
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+
             validate_result = db.retroactive_validate()
-
-            # Then get the health summary
             health = db.scan_database_health()
+            return validate_result, health
 
-            # Format results
-            lines = [
-                f"Scanned {validate_result['scanned']} records - "
-                f"found {health['total_dirty_records']} with issues "
-                f"({validate_result['flagged']} newly flagged)"
-            ]
+        def _on_done(result):
+            try:
+                validate_result, health = result
+                lines = [
+                    f"Scanned {validate_result['scanned']} records - "
+                    f"found {health['total_dirty_records']} with issues "
+                    f"({validate_result['flagged']} newly flagged)"
+                ]
 
-            if health["issues"]:
-                for key, info in health["issues"].items():
-                    lines.append(f"  {info['label']}: {info['count']}")
-            else:
-                lines.append("  Database is clean!")
+                if health["issues"]:
+                    for key, info in health["issues"].items():
+                        lines.append(f"  {info['label']}: {info['count']}")
+                else:
+                    lines.append("  Database is clean!")
 
-            self.scan_results_label.configure(text="\n".join(lines))
-        except Exception as e:
-            self.scan_results_label.configure(text=f"Scan error: {e}")
-        finally:
-            self.scan_btn.configure(state="normal")
+                self.after(0, lambda: self.scan_results_label.configure(text="\n".join(lines)))
+            except Exception as e:
+                self.after(0, lambda: self.scan_results_label.configure(text=f"Scan error: {e}"))
+            finally:
+                self.after(0, lambda: self.scan_btn.configure(state="normal"))
+
+        def _run():
+            try:
+                result = _do_scan()
+                _on_done(result)
+            except Exception as e:
+                self.after(0, lambda: self.scan_results_label.configure(text=f"Scan error: {e}"))
+                self.after(0, lambda: self.scan_btn.configure(state="normal"))
+
+        get_thread_manager().start_thread(target=_run, name="settings-scan-db")
 
     def _update_skipped_count(self):
         """Update the skipped file count label."""
