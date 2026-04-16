@@ -4945,10 +4945,13 @@ class DatabaseManager:
         Checks analysis-level and track-level quality issues, then
         updates the data_quality and data_quality_issues columns.
 
-        Processes in batches to avoid loading all records into memory at once.
+        Uses raw SQL updates to avoid SQLAlchemy dirty-tracking issues
+        with JSON (list) columns that are unhashable.
 
         Returns summary of what was found and updated.
         """
+        from sqlalchemy import update as sa_update
+
         summary = {"scanned": 0, "flagged": 0, "already_suspect": 0, "issues_by_type": {}}
         batch_size = 1000
 
@@ -4958,84 +4961,106 @@ class DatabaseManager:
                 summary["scanned"] = total
 
                 # Process in batches to avoid memory issues with large databases
-                # Use subqueryload (not joinedload) because joinedload + limit
-                # produces incorrect results due to JOIN row multiplication
                 for offset in range(0, total, batch_size):
-                    analyses = session.query(DBAnalysisResult).options(
-                        subqueryload(DBAnalysisResult.tracks)
+                    # Use read-only loading — we'll update via raw SQL to avoid
+                    # SQLAlchemy dirty-tracking on JSON (list) columns
+                    analyses = session.query(
+                        DBAnalysisResult.id,
+                        DBAnalysisResult.model,
+                        DBAnalysisResult.serial,
+                        DBAnalysisResult.file_date,
+                        DBAnalysisResult.data_quality,
                     ).order_by(DBAnalysisResult.id).offset(offset).limit(batch_size).all()
 
-                    for analysis in analyses:
+                    for a_id, a_model, a_serial, a_file_date, a_dq in analyses:
                         issues = []
 
                         # Analysis-level checks
-                        if analysis.model == "Unknown":
+                        if a_model == "Unknown":
                             issues.append("Unknown model")
-                        if analysis.serial == "Unknown":
+                        if a_serial == "Unknown":
                             issues.append("Unknown serial")
-                        if analysis.file_date is None:
+                        if a_file_date is None:
                             issues.append("Missing file date")
-                        if not analysis.tracks:
+
+                        # Track-level checks — query track columns directly
+                        tracks = session.query(
+                            DBTrackResult.track_id,
+                            DBTrackResult.sigma_gradient,
+                            DBTrackResult.linearity_spec,
+                            DBTrackResult.upper_limits,
+                            DBTrackResult.lower_limits,
+                            DBTrackResult.position_data,
+                            DBTrackResult.error_data,
+                        ).filter(
+                            DBTrackResult.analysis_id == a_id
+                        ).all()
+
+                        if not tracks:
                             issues.append("No track data")
 
-                        # Track-level checks
-                        for track in analysis.tracks:
-                            tid = track.track_id or "?"
+                        for t_id, t_sigma, t_lin_spec, t_upper, t_lower, t_pos, t_err in tracks:
+                            tid = t_id or "?"
 
-                            if track.sigma_gradient is not None and track.sigma_gradient < 0:
-                                issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
+                            if t_sigma is not None and t_sigma < 0:
+                                issues.append(f"{tid}: negative sigma_gradient ({t_sigma:.4f})")
 
-                            if track.upper_limits is None and track.lower_limits is None and track.linearity_spec is None:
+                            if not t_upper and not t_lower and t_lin_spec is None:
                                 issues.append(f"{tid}: no spec limits")
 
-                            # Check for all-zero error data
-                            if track.error_data:
+                            if t_err:
                                 try:
-                                    if all(v == 0 or v is None for v in track.error_data):
+                                    if all(v == 0 or v is None for v in t_err):
                                         issues.append(f"{tid}: all-zero error data")
                                 except (TypeError, ValueError):
                                     issues.append(f"{tid}: corrupt error data")
 
-                            # Check for very short position arrays
-                            if track.position_data:
+                            if t_pos:
                                 try:
-                                    if len(track.position_data) < 10:
-                                        issues.append(f"{tid}: too few data points ({len(track.position_data)})")
+                                    if len(t_pos) < 10:
+                                        issues.append(f"{tid}: too few data points ({len(t_pos)})")
                                 except TypeError:
                                     issues.append(f"{tid}: corrupt position data")
 
-                            # Check position/error array length mismatch
-                            if track.position_data and track.error_data:
+                            if t_pos and t_err:
                                 try:
-                                    if len(track.position_data) != len(track.error_data):
+                                    if len(t_pos) != len(t_err):
                                         issues.append(
-                                            f"{tid}: array mismatch (pos={len(track.position_data)}, err={len(track.error_data)})"
+                                            f"{tid}: array mismatch (pos={len(t_pos)}, err={len(t_err)})"
                                         )
                                 except TypeError:
                                     pass
 
-                        # Update the record
+                        # Update via raw SQL to avoid unhashable-list errors from JSON columns
                         if issues:
-                            was_suspect = analysis.data_quality == "suspect"
-                            analysis.data_quality = "suspect"
-                            analysis.data_quality_issues = ", ".join(issues)
+                            was_suspect = a_dq == "suspect"
+                            session.execute(
+                                sa_update(DBAnalysisResult)
+                                .where(DBAnalysisResult.id == a_id)
+                                .values(
+                                    data_quality="suspect",
+                                    data_quality_issues=", ".join(issues),
+                                )
+                            )
                             if was_suspect:
                                 summary["already_suspect"] += 1
                             else:
                                 summary["flagged"] += 1
 
-                            # Count by issue type
                             for issue in issues:
-                                # Normalize to category
                                 category = issue.split(":")[0].strip() if ":" in issue else issue
                                 summary["issues_by_type"][category] = summary["issues_by_type"].get(category, 0) + 1
                         else:
-                            # Clear false positives from previous scans
-                            if analysis.data_quality == "suspect":
-                                analysis.data_quality = "good"
-                                analysis.data_quality_issues = None
+                            if a_dq == "suspect":
+                                session.execute(
+                                    sa_update(DBAnalysisResult)
+                                    .where(DBAnalysisResult.id == a_id)
+                                    .values(
+                                        data_quality="good",
+                                        data_quality_issues=None,
+                                    )
+                                )
 
-                    # Flush each batch to free memory
                     session.flush()
 
                 logger.info(
