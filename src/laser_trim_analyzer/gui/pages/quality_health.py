@@ -134,11 +134,11 @@ class QualityHealthPage(ctk.CTkFrame):
             db = get_database()
 
             # Core data: per-model quality stats with recommendations
-            priority = db.get_linearity_prioritization(days_back=90, min_samples=10)
+            priority = db.get_linearity_prioritization(days_back=365, min_samples=10)
 
             # Active models (for filter)
             try:
-                active_models = db.get_active_models_summary(days_back=90, min_samples=5)
+                active_models = db.get_active_models_summary(days_back=365, min_samples=5)
                 active_names = {m["model"] for m in active_models}
             except Exception:
                 active_names = set()
@@ -147,7 +147,7 @@ class QualityHealthPage(ctk.CTkFrame):
             trend_map = self._compute_linearity_trends(db, [m["model"] for m in priority])
 
             # Compute per-model Final Test linearity pass rates
-            ft_map = self._compute_ft_pass_rates(db)
+            ft_map = self._compute_ft_pass_rates(db, days_back=365)
 
             # Enrich priority data with trend info + active status + FT data
             for m in priority:
