@@ -120,7 +120,7 @@ class Config:
     active_models: ActiveModelsConfig = field(default_factory=ActiveModelsConfig)
 
     # Version info
-    version: str = "3.0.0"
+    version: str = "5.0.0"
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "Config":
