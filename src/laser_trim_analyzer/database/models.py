@@ -7,9 +7,7 @@ v3 uses the same database schema for backwards compatibility.
 Tables:
 - AnalysisResult: File-level analysis results
 - TrackResult: Track-level measurements
-- MLPrediction: ML model outputs
 - QAAlert: Quality assurance alerts
-- BatchInfo: Production batch metadata
 - ProcessedFile: Incremental processing tracking
 """
 
@@ -211,12 +209,6 @@ class AnalysisResult(Base):
         back_populates="analysis", 
         cascade="all, delete-orphan",
         lazy="select"  # Explicit loading strategy
-    )
-    ml_predictions = relationship(
-        "MLPrediction", 
-        back_populates="analysis", 
-        cascade="all, delete-orphan",
-        lazy="select"
     )
     qa_alerts = relationship(
         "QAAlert", 
@@ -513,125 +505,6 @@ class TrackResult(Base):
         return f"<TrackResult(id={self.id}, analysis_id={self.analysis_id}, track_id='{self.track_id}', status='{self.status}')>"
 
 
-class MLPrediction(Base):
-    """
-    Machine learning predictions and recommendations.
-
-    Stores ML model outputs for threshold optimization and failure prediction.
-    Production-ready with proper validation.
-    """
-    __tablename__ = 'ml_predictions'
-
-    # Primary key
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Foreign key to analysis - required
-    analysis_id = Column(Integer, ForeignKey('analysis_results.id'), nullable=False)
-
-    # Prediction metadata
-    prediction_date = Column(DateTime, default=utc_now, nullable=False)
-    model_version = Column(String(20))
-    prediction_type = Column(String(50))  # 'threshold_optimization', 'failure_prediction', etc.
-
-    # Threshold optimization
-    current_threshold = Column(Float)
-    recommended_threshold = Column(Float)
-    threshold_change_percent = Column(Float)
-    false_positives = Column(Integer)
-    false_negatives = Column(Integer)
-
-    # Failure prediction
-    predicted_failure_probability = Column(Float)
-    predicted_risk_category = Column(Enum(RiskCategory))
-    confidence_score = Column(Float)
-
-    # Feature importance
-    feature_importance = Column(JSON)  # Dict of feature names and importance scores
-
-    # Drift detection
-    drift_detected = Column(Boolean, default=False, nullable=False)
-    drift_percentage = Column(Float)
-    drift_direction = Column(String(20))  # 'increasing', 'decreasing'
-
-    # Recommendations
-    recommendations = Column(JSON)  # List of recommendation strings
-
-    # Relationships
-    analysis = relationship("AnalysisResult", back_populates="ml_predictions")
-
-    # Production-ready indexes and constraints
-    __table_args__ = (
-        Index('idx_ml_prediction_date', 'prediction_date'),
-        Index('idx_ml_analysis', 'analysis_id'),
-        Index('idx_ml_prediction_type', 'prediction_type'),
-        Index('idx_ml_drift_detected', 'drift_detected'),
-        Index('idx_ml_predicted_risk', 'predicted_risk_category'),
-        # Data validation constraints
-        CheckConstraint('predicted_failure_probability >= 0 AND predicted_failure_probability <= 1', name='check_ml_probability_range'),
-        CheckConstraint('confidence_score >= 0 AND confidence_score <= 1', name='check_confidence_range'),
-        CheckConstraint('false_positives >= 0', name='check_false_positives_positive'),
-        CheckConstraint('false_negatives >= 0', name='check_false_negatives_positive'),
-        CheckConstraint("drift_direction IN ('increasing', 'decreasing', 'stable') OR drift_direction IS NULL", name='check_drift_direction_valid'),
-    )
-
-    @validates('predicted_failure_probability')
-    def validate_predicted_failure_probability(self, key, predicted_failure_probability):
-        """Validate predicted_failure_probability is between 0 and 1."""
-        if predicted_failure_probability is not None:
-            if predicted_failure_probability < 0 or predicted_failure_probability > 1:
-                raise ValueError("Predicted failure probability must be between 0 and 1")
-        return predicted_failure_probability
-
-    @validates('confidence_score')
-    def validate_confidence_score(self, key, confidence_score):
-        """Validate confidence_score is between 0 and 1."""
-        if confidence_score is not None:
-            if confidence_score < 0 or confidence_score > 1:
-                raise ValueError("Confidence score must be between 0 and 1")
-        return confidence_score
-
-    @validates('false_positives')
-    def validate_false_positives(self, key, false_positives):
-        """Validate false_positives is non-negative."""
-        if false_positives is not None and false_positives < 0:
-            raise ValueError("False positives cannot be negative")
-        return false_positives
-
-    @validates('false_negatives')
-    def validate_false_negatives(self, key, false_negatives):
-        """Validate false_negatives is non-negative."""
-        if false_negatives is not None and false_negatives < 0:
-            raise ValueError("False negatives cannot be negative")
-        return false_negatives
-
-    @validates('drift_direction')
-    def validate_drift_direction(self, key, drift_direction):
-        """Validate drift_direction is valid."""
-        if drift_direction is not None:
-            valid_directions = ['increasing', 'decreasing', 'stable']
-            if drift_direction not in valid_directions:
-                raise ValueError(f"Drift direction must be one of: {valid_directions}")
-        return drift_direction
-    
-    @validates('predicted_risk_category')
-    def validate_predicted_risk_category(self, key, predicted_risk_category):
-        """Validate predicted_risk_category is a valid enum value."""
-        if predicted_risk_category is None:
-            # None is acceptable for predicted_risk_category
-            return None
-        if isinstance(predicted_risk_category, str):
-            # Handle lowercase or mixed case strings
-            risk_category_upper = predicted_risk_category.upper()
-            if risk_category_upper in ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']:
-                return RiskCategory[risk_category_upper]
-            # Default to UNKNOWN for invalid values
-            return RiskCategory.UNKNOWN
-        return predicted_risk_category
-
-    def __repr__(self):
-        return f"<MLPrediction(id={self.id}, analysis_id={self.analysis_id}, type='{self.prediction_type}', date='{self.prediction_date}')>"
-
-
 class QAAlert(Base):
     """
     Quality assurance alerts and maintenance notifications.
@@ -725,154 +598,6 @@ class QAAlert(Base):
         return f"<QAAlert(id={self.id}, analysis_id={self.analysis_id}, type='{self.alert_type}', severity='{self.severity}', resolved={self.resolved})>"
 
 
-class BatchInfo(Base):
-    """
-    Production batch information.
-
-    Groups analysis results by production batch for trend analysis.
-    Production-ready with proper validation.
-    """
-    __tablename__ = 'batch_info'
-
-    # Primary key
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    # Batch identification - required
-    batch_name = Column(String(100), nullable=False, unique=True)
-    batch_type = Column(String(50), nullable=False)  # 'production', 'rework', 'test'
-
-    # Batch metadata
-    created_date = Column(DateTime, default=utc_now, nullable=False)
-    production_date = Column(DateTime)
-    model = Column(String(50))
-    operator = Column(String(100))
-
-    # Batch statistics (aggregated from linked analyses)
-    total_units = Column(Integer, default=0)
-    passed_units = Column(Integer, default=0)
-    failed_units = Column(Integer, default=0)
-    average_sigma_gradient = Column(Float)
-    average_failure_probability = Column(Float)
-
-    # Quality metrics
-    sigma_pass_rate = Column(Float)
-    linearity_pass_rate = Column(Float)
-    high_risk_count = Column(Integer, default=0)
-
-    # Notes and tags
-    notes = Column(Text)
-    tags = Column(JSON)  # List of string tags
-
-    # Production-ready indexes and constraints
-    __table_args__ = (
-        Index('idx_batch_name', 'batch_name'),
-        Index('idx_batch_date', 'created_date'),
-        Index('idx_batch_model', 'model'),
-        Index('idx_batch_type', 'batch_type'),
-        Index('idx_batch_production_date', 'production_date'),
-        # Data validation constraints
-        CheckConstraint("LENGTH(TRIM(batch_name)) > 0", name='check_batch_name_not_empty'),
-        CheckConstraint("batch_type IN ('production', 'rework', 'test')", name='check_batch_type_valid'),
-        CheckConstraint('total_units >= 0', name='check_total_units_positive'),
-        CheckConstraint('passed_units >= 0', name='check_passed_units_positive'),
-        CheckConstraint('failed_units >= 0', name='check_failed_units_positive'),
-        CheckConstraint('passed_units + failed_units <= total_units', name='check_units_consistency'),
-        CheckConstraint('high_risk_count >= 0', name='check_high_risk_count_positive'),
-        CheckConstraint('sigma_pass_rate >= 0 AND sigma_pass_rate <= 100', name='check_sigma_pass_rate_range'),
-        CheckConstraint('linearity_pass_rate >= 0 AND linearity_pass_rate <= 100', name='check_linearity_pass_rate_range'),
-        CheckConstraint('average_failure_probability >= 0 AND average_failure_probability <= 1', name='check_avg_failure_prob_range'),
-    )
-
-    @validates('batch_name')
-    def validate_batch_name(self, key, batch_name):
-        """Validate batch_name is not empty."""
-        if not batch_name or not batch_name.strip():
-            raise ValueError("Batch name cannot be empty")
-        return batch_name.strip()
-
-    @validates('batch_type')
-    def validate_batch_type(self, key, batch_type):
-        """Validate batch_type is valid."""
-        if batch_type is not None:
-            valid_types = ['production', 'rework', 'test']
-            if batch_type not in valid_types:
-                raise ValueError(f"Batch type must be one of: {valid_types}")
-        return batch_type
-
-    @validates('total_units')
-    def validate_total_units(self, key, total_units):
-        """Validate total_units is non-negative."""
-        if total_units is not None and total_units < 0:
-            raise ValueError("Total units cannot be negative")
-        return total_units
-
-    @validates('passed_units')
-    def validate_passed_units(self, key, passed_units):
-        """Validate passed_units is non-negative."""
-        if passed_units is not None and passed_units < 0:
-            raise ValueError("Passed units cannot be negative")
-        return passed_units
-
-    @validates('failed_units')
-    def validate_failed_units(self, key, failed_units):
-        """Validate failed_units is non-negative."""
-        if failed_units is not None and failed_units < 0:
-            raise ValueError("Failed units cannot be negative")
-        return failed_units
-
-    @validates('sigma_pass_rate')
-    def validate_sigma_pass_rate(self, key, sigma_pass_rate):
-        """Validate sigma_pass_rate is between 0 and 100."""
-        if sigma_pass_rate is not None:
-            if sigma_pass_rate < 0 or sigma_pass_rate > 100:
-                raise ValueError("Sigma pass rate must be between 0 and 100")
-        return sigma_pass_rate
-
-    @validates('linearity_pass_rate')
-    def validate_linearity_pass_rate(self, key, linearity_pass_rate):
-        """Validate linearity_pass_rate is between 0 and 100."""
-        if linearity_pass_rate is not None:
-            if linearity_pass_rate < 0 or linearity_pass_rate > 100:
-                raise ValueError("Linearity pass rate must be between 0 and 100")
-        return linearity_pass_rate
-
-    @validates('average_failure_probability')
-    def validate_average_failure_probability(self, key, average_failure_probability):
-        """Validate average_failure_probability is between 0 and 1."""
-        if average_failure_probability is not None:
-            if average_failure_probability < 0 or average_failure_probability > 1:
-                raise ValueError("Average failure probability must be between 0 and 1")
-        return average_failure_probability
-
-    def __repr__(self):
-        return f"<BatchInfo(id={self.id}, name='{self.batch_name}', type='{self.batch_type}', units={self.total_units})>"
-
-
-# Association table for many-to-many relationship between analyses and batches
-class AnalysisBatch(Base):
-    """
-    Links analysis results to batches.
-    
-    Production-ready association table with proper constraints.
-    """
-    __tablename__ = 'analysis_batch'
-
-    # Composite primary key
-    analysis_id = Column(Integer, ForeignKey('analysis_results.id'), primary_key=True)
-    batch_id = Column(Integer, ForeignKey('batch_info.id'), primary_key=True)
-    added_date = Column(DateTime, default=utc_now, nullable=False)
-
-    # Production-ready indexes
-    __table_args__ = (
-        Index('idx_analysis_batch_analysis', 'analysis_id'),
-        Index('idx_analysis_batch_batch', 'batch_id'),
-        Index('idx_analysis_batch_date', 'added_date'),
-    )
-
-    def __repr__(self):
-        return f"<AnalysisBatch(analysis_id={self.analysis_id}, batch_id={self.batch_id})>"
-
-
 # Event listeners for production data integrity
 @event.listens_for(QAAlert, 'before_update')
 def update_alert_timestamps(mapper, connection, target):
@@ -881,14 +606,6 @@ def update_alert_timestamps(mapper, connection, target):
         target.acknowledged_date = utc_now()
     if target.resolved and not target.resolved_date:
         target.resolved_date = utc_now()
-
-
-@event.listens_for(BatchInfo, 'before_update')
-def validate_batch_units_consistency(mapper, connection, target):
-    """Ensure batch unit counts are consistent."""
-    if target.total_units is not None and target.passed_units is not None and target.failed_units is not None:
-        if target.passed_units + target.failed_units > target.total_units:
-            raise ValueError("Sum of passed and failed units cannot exceed total units")
 
 
 class ProcessedFile(Base):

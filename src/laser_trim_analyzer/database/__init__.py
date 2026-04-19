@@ -16,9 +16,7 @@ from laser_trim_analyzer.database.models import (
     AlertType,
     AnalysisResult,
     TrackResult,
-    MLPrediction,
     QAAlert,
-    BatchInfo,
     ProcessedFile,
 )
 
@@ -38,9 +36,7 @@ __all__ = [
     "AlertType",
     "AnalysisResult",
     "TrackResult",
-    "MLPrediction",
     "QAAlert",
-    "BatchInfo",
     "ProcessedFile",
     # Manager
     "DatabaseManager",
