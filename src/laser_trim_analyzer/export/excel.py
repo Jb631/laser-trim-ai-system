@@ -682,11 +682,12 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
             # Color status column
             if col == status_col:
-                if value == "Pass":
+                value_upper = str(value).upper() if value else ""
+                if value_upper == "PASS":
                     cell.fill = PASS_FILL
-                elif value == "Fail" or value == "Error":
+                elif value_upper in ("FAIL", "ERROR"):
                     cell.fill = FAIL_FILL
-                elif value == "Warning":
+                elif value_upper == "WARNING":
                     cell.fill = WARNING_FILL
 
     # Auto-filter

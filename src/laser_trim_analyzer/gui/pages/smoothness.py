@@ -183,7 +183,7 @@ class SmoothnessPage(ctk.CTkFrame):
     def _create_result_row(self, row: int, result: Dict[str, Any]):
         """Create a result row."""
         status = result.get("overall_status", "UNKNOWN")
-        is_pass = status == "PASS"
+        is_pass = status.upper() == "PASS" if status else False
 
         frame = ctk.CTkFrame(self.results_scroll, cursor="hand2")
         frame.grid(row=row, column=0, sticky="ew", padx=2, pady=1)
