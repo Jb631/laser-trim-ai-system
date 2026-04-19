@@ -158,14 +158,6 @@ class SettingsPage(ctk.CTkFrame):
             width=80
         ).grid(row=1, column=2, padx=15, pady=5)
 
-        # Include raw data checkbox
-        self.include_raw_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            frame,
-            text="Include raw position/error data in exports",
-            variable=self.include_raw_var
-        ).grid(row=2, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
-
     def _create_processing_section(self, container):
         """Create processing settings section."""
         frame = ctk.CTkFrame(container)
@@ -1086,11 +1078,15 @@ class SettingsPage(ctk.CTkFrame):
         if path:
             self.export_path = Path(path)
             self.export_path_label.configure(text=str(path))
+            if hasattr(self.app.config, 'export_path'):
+                self.app.config.export_path = str(path)
+                self.app.config.save()
             logger.info(f"Default export path set to: {path}")
 
     def _toggle_ml(self):
         """Toggle ML features."""
         self.app.config.ml.enabled = self.ml_enabled_var.get()
+        self.app.config.save()
         logger.info(f"ML features {'enabled' if self.app.config.ml.enabled else 'disabled'}")
 
     def _train_models(self):

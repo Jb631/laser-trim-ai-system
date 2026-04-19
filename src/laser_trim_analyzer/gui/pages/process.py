@@ -598,7 +598,7 @@ class ProcessPage(ctk.CTkFrame):
 
         try:
             # Initialize processor
-            self.processor = Processor()
+            self.processor = Processor(use_ml=self.app.config.ml.enabled)
 
             # Record start time for ETA calculation
             self._processing_start_time = time.time()
