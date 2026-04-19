@@ -125,8 +125,7 @@ class QualityHealthPage(ctk.CTkFrame):
 
     def on_show(self):
         """Called when the page becomes visible."""
-        if not self._loaded:
-            self.refresh()
+        self.refresh()
 
     def _load_data(self):
         """Background: pull model stats + trends from the database."""
@@ -140,7 +139,8 @@ class QualityHealthPage(ctk.CTkFrame):
             try:
                 active_models = db.get_active_models_summary(days_back=365, min_samples=5)
                 active_names = {m["model"] for m in active_models}
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Could not load active models: {e}")
                 active_names = set()
 
             # Compute linearity trend per model (recent half vs older half)
@@ -325,7 +325,7 @@ class QualityHealthPage(ctk.CTkFrame):
                         ).label('passed'),
                     )
                     .join(DBFinalTestTrack, DBFinalTestResult.id == DBFinalTestTrack.final_test_id)
-                    .filter(DBFinalTestResult.test_date >= cutoff_date)
+                    .filter(func.coalesce(DBFinalTestResult.test_date, DBFinalTestResult.file_date) >= cutoff_date)
                     .group_by(DBFinalTestResult.model)
                     .all()
                 )
