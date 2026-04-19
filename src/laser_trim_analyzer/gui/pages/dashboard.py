@@ -532,7 +532,7 @@ class DashboardPage(ctk.CTkFrame):
             try:
                 priority_models = db.get_linearity_prioritization(days_back=90, min_samples=10)
             except Exception as e:
-                logger.debug(f"Could not load prioritization: {e}")
+                logger.warning(f"Could not load prioritization: {e}")
                 priority_models = []
 
             # Get ML drift status
@@ -542,45 +542,45 @@ class DashboardPage(ctk.CTkFrame):
             try:
                 system_comparison = db.get_system_comparison(days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load system comparison: {e}")
+                logger.warning(f"Could not load system comparison: {e}")
                 system_comparison = None
 
             try:
                 ft_stats = db.get_ft_dashboard_stats(days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load FT stats: {e}")
+                logger.warning(f"Could not load FT stats: {e}")
                 ft_stats = None
 
             try:
                 escape_stats = db.get_escape_overkill_analysis(days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load escape/overkill: {e}")
+                logger.warning(f"Could not load escape/overkill: {e}")
                 escape_stats = None
 
             # Get trending worse for model display markers
             try:
                 trending_worse = db.get_trending_worse_models(days_back=90, min_samples=20)
             except Exception as e:
-                logger.debug(f"Could not load trending worse: {e}")
+                logger.warning(f"Could not load trending worse: {e}")
                 trending_worse = []
 
             # Get near-miss summary
             try:
                 near_miss_data = db.get_near_miss_summary(days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load near-miss data: {e}")
+                logger.warning(f"Could not load near-miss data: {e}")
                 near_miss_data = None
 
             # Get performance by element type and product class
             try:
                 element_breakdown = db.get_pass_rate_by_category("element_type", days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load element breakdown: {e}")
+                logger.warning(f"Could not load element breakdown: {e}")
                 element_breakdown = []
             try:
                 class_breakdown = db.get_pass_rate_by_category("product_class", days_back=90)
             except Exception as e:
-                logger.debug(f"Could not load class breakdown: {e}")
+                logger.warning(f"Could not load class breakdown: {e}")
                 class_breakdown = []
 
             # Load Cpk, drift, and failure mode data in background (not on main thread)
@@ -657,32 +657,24 @@ class DashboardPage(ctk.CTkFrame):
         failure_modes: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update display with loaded data."""
-        # Use overall_stats for health card if available, otherwise fall back to period stats
+        # Use overall_stats for the Files Processed card (all-time totals)
         if overall_stats and overall_stats.get("total_files", 0) > 0:
-            pass_rate = overall_stats.get("pass_rate", 0)
             total_files = overall_stats.get("total_files", 0)
             passed = overall_stats.get("passed", 0)
             warnings = overall_stats.get("warnings", 0)
             failed = overall_stats.get("failed", 0)
-            oldest_date = overall_stats.get("oldest_date")
-            newest_date = overall_stats.get("newest_date")
             unique_models = overall_stats.get("unique_models", 0)
         else:
-            pass_rate = stats.get("pass_rate", 0)
             total_files = stats.get("total_files", 0)
             passed = stats.get("passed", 0)
             warnings = 0
             failed = stats.get("failed", 0)
-            oldest_date = None
-            newest_date = None
             unique_models = 0
 
-        # Linearity is the primary quality metric
-        linearity_pass_rate = 0.0
-        sigma_pass_rate = 0.0
-        if overall_stats:
-            linearity_pass_rate = overall_stats.get("linearity_pass_rate", 0)
-            sigma_pass_rate = overall_stats.get("sigma_pass_rate", 0)
+        # Use 90-day stats for quality metric cards (consistent with sparklines)
+        linearity_pass_rate = stats.get("linearity_pass_rate", 0) or 0.0
+        sigma_pass_rate = stats.get("sigma_pass_rate", 0) or 0.0
+        pass_rate = stats.get("pass_rate", 0) or 0.0
 
         # Build sparklines from daily trend data
         lin_trend = stats.get("linearity_daily_trend", []) or []
