@@ -51,6 +51,8 @@ class ProcessPage(ctk.CTkFrame):
         self._fail_count = 0
         self._error_count = 0
         self._anomaly_count = 0
+        self._ft_count = 0
+        self._smoothness_count = 0
         self._last_ui_update = 0  # Throttle UI updates
         self._processing_start_time = 0  # Track batch start time for ETA calculation
         self._date_filter: Optional[datetime] = None  # Date filter for file selection
@@ -570,6 +572,8 @@ class ProcessPage(ctk.CTkFrame):
         self._fail_count = 0
         self._error_count = 0
         self._anomaly_count = 0
+        self._ft_count = 0
+        self._smoothness_count = 0
         self._last_ui_update = 0
 
         # Update UI state
@@ -643,6 +647,13 @@ class ProcessPage(ctk.CTkFrame):
                     self._fail_count += 1
                 else:
                     self._error_count += 1
+
+                # Track file types separately
+                file_type = getattr(result, 'file_type', 'trim')
+                if file_type == 'final_test':
+                    self._ft_count += 1
+                elif file_type == 'smoothness':
+                    self._smoothness_count += 1
 
                 # Count anomalies (trim failures with linear slope pattern)
                 if any(getattr(t, 'is_anomaly', False) for t in result.tracks):
@@ -751,32 +762,51 @@ class ProcessPage(ctk.CTkFrame):
         failed = self._fail_count
         errors = self._error_count
         anomalies = self._anomaly_count
+        ft_count = self._ft_count
+        smoothness_count = self._smoothness_count
+        trim_count = total - ft_count - smoothness_count
         pass_rate = (passed / total * 100) if total > 0 else 0
 
         # Note about large batch export limitations
         is_large_batch = len(self.selected_files) > 100
-        export_note = ""
-        if is_large_batch and self.results:
-            export_note = f"\n  Note: Export contains last {len(self.results)} files only (use Analyze page for full data)\n"
 
         # Anomaly note if any detected
         anomaly_note = ""
         if anomalies > 0:
             anomaly_note = f"  Anomalies: {anomalies} (trim failures excluded from stats)\n"
 
+        # File type breakdown note
+        file_type_note = ""
+        if ft_count > 0 or smoothness_count > 0:
+            type_parts = [f"Trim: {trim_count}"]
+            if ft_count > 0:
+                type_parts.append(f"Final Test: {ft_count}")
+            if smoothness_count > 0:
+                type_parts.append(f"Smoothness: {smoothness_count}")
+            file_type_note = f"  File types: {', '.join(type_parts)}\n"
+
         # Append summary
         self._append_result(
             f"\n{'-' * 40}\n"
             f"SUMMARY:\n"
             f"  Total processed: {total}\n"
+            f"{file_type_note}"
             f"  Passed: {passed}\n"
             f"  Warnings: {warnings} (partial pass)\n"
             f"  Failed: {failed}\n"
             f"  Errors: {errors}\n"
             f"{anomaly_note}"
-            f"  Pass rate: {pass_rate:.1f}%{export_note}"
+            f"  Pass rate: {pass_rate:.1f}%\n"
             f"Completed: {datetime.now().strftime('%H:%M:%S')}\n"
         )
+
+        # Large batch truncation warning
+        if is_large_batch and len(self.selected_files) > 50:
+            self._append_result(
+                f"\n[NOTE] Large batch ({len(self.selected_files)} files): "
+                f"only last {len(self.results)} results retained for export. "
+                f"All results saved to database.\n"
+            )
 
         logger.info(f"Processing complete: {total} files, {passed} passed, {warnings} warnings, {failed} failed, {anomalies} anomalies")
 
