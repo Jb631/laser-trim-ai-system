@@ -382,24 +382,26 @@ class AnalyzePage(ctk.CTkFrame):
         if self._chart_initialized:
             return
 
-        # Import matplotlib-dependent ChartWidget only when needed
-        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+        try:
+            from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
-        # Remove placeholder
-        if self._chart_placeholder:
-            self._chart_placeholder.destroy()
-            self._chart_placeholder = None
+            if self._chart_placeholder:
+                self._chart_placeholder.destroy()
+                self._chart_placeholder = None
 
-        # Create actual chart widget
-        self.chart = ChartWidget(
-            self._chart_tab,
-            style=ChartStyle(figure_size=(6, 4), dpi=100)
-        )
-        self.chart.pack(fill="both", expand=True)
-        self.chart.show_placeholder("Select an analysis to view chart")
+            self.chart = ChartWidget(
+                self._chart_tab,
+                style=ChartStyle(figure_size=(6, 4), dpi=100)
+            )
+            self.chart.pack(fill="both", expand=True)
+            self.chart.show_placeholder("Select an analysis to view chart")
 
-        self._chart_initialized = True
-        logger.debug("AnalyzePage ChartWidget initialized (matplotlib loaded)")
+            self._chart_initialized = True
+            logger.debug("AnalyzePage ChartWidget initialized (matplotlib loaded)")
+        except Exception as e:
+            logger.error(f"Failed to initialize chart widget: {e}")
+            self.chart = None
+            # Do NOT set _chart_initialized = True so it can retry next time
 
     # =========================================================================
     # Mousewheel Support
@@ -1320,11 +1322,12 @@ class AnalyzePage(ctk.CTkFrame):
                     db = get_database()
                     db.save_analysis(result)
                     logger.info(f"Re-analyzed and updated DB: {file_path}")
+                    self.after(0, lambda: self._on_reanalyze_complete(result))
                 except Exception as e:
                     logger.error(f"Failed to save to database: {e}")
-
-                # Update UI on main thread
-                self.after(0, lambda: self._on_reanalyze_complete(result))
+                    self.after(0, lambda: self.reanalyze_btn.configure(state="normal"))
+                    self.after(0, lambda: messagebox.showerror(
+                        "Save Error", f"Re-analysis completed but failed to save: {e}"))
 
             except Exception as e:
                 logger.exception(f"Re-analysis error: {e}")
@@ -1491,6 +1494,7 @@ class AnalyzePage(ctk.CTkFrame):
             logger.info(f"Exported analysis to: {output_path}")
         except ExcelExportError as e:
             logger.error(f"Export failed: {e}")
+            messagebox.showerror("Export Error", f"Failed to export: {e}")
 
     def _export_model_results(self):
         """Export all analysis results for the selected model to Excel."""
@@ -1506,6 +1510,7 @@ class AnalyzePage(ctk.CTkFrame):
 
             if not model_results:
                 logger.warning(f"No results found for model: {model}")
+                messagebox.showinfo("No Data", f"No results found for model: {model}")
                 return
 
             # Generate default filename
@@ -1527,6 +1532,7 @@ class AnalyzePage(ctk.CTkFrame):
 
         except Exception as e:
             logger.error(f"Model export failed: {e}")
+            messagebox.showerror("Export Error", f"Failed to export model results: {e}")
 
     def _export_chart(self):
         """Export the current chart to an image file with analysis info like V2."""
@@ -1560,6 +1566,7 @@ class AnalyzePage(ctk.CTkFrame):
             logger.info(f"Exported chart to: {file_path}")
         except Exception as e:
             logger.error(f"Chart export failed: {e}")
+            messagebox.showerror("Export Error", f"Failed to export chart: {e}")
 
     def _export_comprehensive_chart(self, output_path: str):
         """
