@@ -2163,7 +2163,7 @@ class TrendsPage(ctk.CTkFrame):
             if pass_rate is not None or difficulty is not None:
                 self.detail_ml_text.insert("end", "\nModel Profile:\n")
                 if pass_rate is not None:
-                    self.detail_ml_text.insert("end", f"  Pass Rate: {pass_rate:.1f}%\n")
+                    self.detail_ml_text.insert("end", f"  Pass Rate: {pass_rate * 100:.1f}%\n")
                 if difficulty is not None:
                     diff_label = "Easy" if difficulty < 0.3 else "Medium" if difficulty < 0.6 else "Hard"
                     self.detail_ml_text.insert("end", f"  Difficulty: {diff_label} ({difficulty:.2f})\n")
@@ -2173,7 +2173,8 @@ class TrendsPage(ctk.CTkFrame):
             if insights:
                 self.detail_ml_text.insert("end", "\nInsights:\n")
                 for insight in insights[:3]:
-                    self.detail_ml_text.insert("end", f"  • {insight}\n")
+                    msg = insight.message if hasattr(insight, 'message') else str(insight)
+                    self.detail_ml_text.insert("end", f"  • {msg}\n")
 
         self.detail_ml_text.configure(state="disabled")
 
