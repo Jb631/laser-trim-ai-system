@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -153,7 +152,7 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.clear()
         # Restore figure facecolor after clear (matplotlib may reset it)
         self.figure.set_facecolor(COLORS['background'] if self.style.dark_mode else 'white')
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def _style_axis(self, ax) -> None:
         """Apply consistent styling to an axis based on dark/light mode."""
@@ -366,7 +365,7 @@ class ChartWidget(ctk.CTkFrame):
                    color=text_color)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_smoothness(
         self,
@@ -420,7 +419,7 @@ class ChartWidget(ctk.CTkFrame):
                    color=text_color)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_spc_control(
         self,
@@ -492,7 +491,7 @@ class ChartWidget(ctk.CTkFrame):
             ax.tick_params(axis='x', rotation=45)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_histogram(
         self,
@@ -574,7 +573,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='y')
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_sample_scatter(
         self,
@@ -637,7 +636,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='y')
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_track_comparison(
         self,
@@ -818,7 +817,7 @@ class ChartWidget(ctk.CTkFrame):
                     color=text_color)
 
         fig.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def _plot_raw_track_comparison(
         self,
@@ -867,7 +866,7 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.suptitle(title, fontsize=self.style.title_size + 2,
                             color=COLORS['text'] if self.style.dark_mode else 'black')
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def show_placeholder(self, message: str = "No data to display") -> None:
         """Show placeholder message when no data."""
@@ -885,7 +884,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis('off')
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def show_status(
         self,
@@ -937,7 +936,7 @@ class ChartWidget(ctk.CTkFrame):
 
         ax.axis('off')
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def save_figure(self, filepath: str, dpi: int = 300) -> None:
         """Save the current figure to a file."""
@@ -1019,7 +1018,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.invert_yaxis()
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_line_chart(
         self,
@@ -1090,7 +1089,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.legend(loc='best', fontsize=self.style.font_size - 2)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_trending_worse(
         self,
@@ -1169,7 +1168,7 @@ class ChartWidget(ctk.CTkFrame):
                   linestyle='--', linewidth=1.5, alpha=0.7)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_sigma_scatter(
         self,
@@ -1277,7 +1276,7 @@ class ChartWidget(ctk.CTkFrame):
                    color=COLORS['fail'], alpha=0.8)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_alert_summary(
         self,
@@ -1356,7 +1355,7 @@ class ChartWidget(ctk.CTkFrame):
         # Don't invert - keep High severity (first in list) at top
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_drift_chart(
         self,
@@ -1515,7 +1514,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_ylim(bottom=y_min, top=y_max)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_pchart(
         self,
@@ -1645,7 +1644,7 @@ class ChartWidget(ctk.CTkFrame):
                     top=min(100, (ucl.max() * 100) + 5))
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_pareto(
         self,
@@ -1733,7 +1732,7 @@ class ChartWidget(ctk.CTkFrame):
         except Exception:
             # tight_layout can fail with twin axes — ensure left margin for Y-axis label
             self.figure.subplots_adjust(left=0.12, bottom=0.2)
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_confusion_matrix(
         self,
@@ -1808,7 +1807,7 @@ class ChartWidget(ctk.CTkFrame):
             spine.set_visible(False)
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_heatmap(
         self,
@@ -1883,7 +1882,7 @@ class ChartWidget(ctk.CTkFrame):
 
         ax.grid(False)
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def plot_escape_scatter(
         self,
@@ -1956,7 +1955,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.grid(True, alpha=0.3, color=COLORS['grid'])
 
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def destroy(self):
         """Clean up matplotlib resources."""
