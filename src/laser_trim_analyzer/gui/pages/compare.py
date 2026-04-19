@@ -100,8 +100,8 @@ class ComparePage(ctk.CTkFrame):
         self.model_filter.set("All Models")
         self.model_filter.pack(side="left", padx=5, pady=10)
 
-        # Date range filter (filters by test date)
-        ctk.CTkLabel(filter_frame, text="From:").pack(side="left", padx=(20, 5), pady=10)
+        # Date range filter (filters by file date parsed from filename)
+        ctk.CTkLabel(filter_frame, text="From (file date):").pack(side="left", padx=(20, 5), pady=10)
         self.date_from = ctk.CTkEntry(
             filter_frame,
             placeholder_text="MM/DD/YYYY",
@@ -111,7 +111,7 @@ class ComparePage(ctk.CTkFrame):
         self.date_from.bind("<Return>", lambda e: self._load_comparisons())
         # Leave empty to show all data by default (placeholder guides user)
 
-        ctk.CTkLabel(filter_frame, text="To:").pack(side="left", padx=(10, 5), pady=10)
+        ctk.CTkLabel(filter_frame, text="To (file date):").pack(side="left", padx=(10, 5), pady=10)
         self.date_to = ctk.CTkEntry(
             filter_frame,
             placeholder_text="MM/DD/YYYY",
@@ -672,6 +672,7 @@ Match: {method_label} ({confidence_str})"""
                 self.after(0, lambda: self._display_comparison_chart(data))
             except Exception as e:
                 logger.exception(f"Error loading comparison data: {e}")
+                self.after(0, lambda: self._display_comparison_chart(None))
 
         get_thread_manager().start_thread(target=fetch, name="load-comparison-chart")
 
@@ -679,6 +680,21 @@ Match: {method_label} ({confidence_str})"""
         """Display the comparison overlay chart."""
         if not data:
             logger.warning("Compare chart: No data received")
+            # Clear chart to show empty state instead of leaving previous chart frozen
+            self._ensure_chart_initialized()
+            if self.chart:
+                self.chart.clear()
+                ax = self.chart.figure.add_subplot(111)
+                self.chart._style_axis(ax)
+                ax.text(0.5, 0.5, "No comparison data available",
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, color='gray')
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                self.chart.figure.tight_layout()
+                self.chart.canvas.draw()
             return
 
         self._ensure_chart_initialized()
