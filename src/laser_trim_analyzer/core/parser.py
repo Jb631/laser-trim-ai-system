@@ -878,7 +878,7 @@ def detect_file_type(file_path: Path) -> str:
     # --- Filename-based checks (fast, no file I/O needed) ---
 
     # Check for Output Smoothness files first (before non-trim check)
-    if '_OS_' in filename:
+    if '_os_' in filename_lower:
         logger.debug(f"Detected smoothness file (_OS_ in filename): {filename}")
         return "smoothness"
 
@@ -916,7 +916,7 @@ def detect_file_type(file_path: Path) -> str:
 
     # Check filename for trim indicators
     for indicator in TRIM_FILE_INDICATORS:
-        if indicator in filename:
+        if indicator.lower() in filename_lower:
             logger.debug(f"Detected trim (filename indicator '{indicator}'): {filename}")
             return "trim"
 
@@ -935,10 +935,10 @@ def detect_file_type(file_path: Path) -> str:
                         return "non_trim"
 
             # Check for trim indicators in sheet names
-            for sheet in sheet_names:
+            for sheet_lower in sheet_names_lower:
                 for indicator in TRIM_FILE_INDICATORS:
-                    if indicator in sheet:
-                        logger.debug(f"Detected trim (sheet indicator '{indicator}' in '{sheet}'): {filename}")
+                    if indicator.lower() in sheet_lower:
+                        logger.debug(f"Detected trim (sheet indicator '{indicator}' in '{sheet_lower}'): {filename}")
                         return "trim"
 
             # Check for final test indicators in sheet names
@@ -974,6 +974,17 @@ def detect_file_type(file_path: Path) -> str:
                     del df  # Free memory
                 except Exception:
                     pass
+
+            # Check for Final Test "shop test" format:
+            # Has a sheet named exactly "test" but NO "Lin Error" or "Trim" sheets
+            # This distinguishes FT shop test files from System B trim files
+            # which also have "test" but always have "Lin Error" alongside it
+            if any(s.lower() == "test" for s in sheet_names):
+                has_lin_error = any("lin error" in s.lower() for s in sheet_names)
+                has_trim_sheet = any(s.lower().startswith("trim") for s in sheet_names)
+                if not has_lin_error and not has_trim_sheet:
+                    logger.debug(f"Detected final_test (shop test format - 'test' sheet without Lin Error): {filename}")
+                    return "final_test"
 
             # Sheet structure validation: if we get here and the file has no
             # recognizable trim or FT sheet patterns, it's likely not trim data.
