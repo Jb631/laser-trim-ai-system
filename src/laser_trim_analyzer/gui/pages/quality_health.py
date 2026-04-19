@@ -53,7 +53,6 @@ class QualityHealthPage(ctk.CTkFrame):
         self._model_data: List[Dict[str, Any]] = []
         self._trending_data: List[Dict[str, Any]] = []
         self._active_only = True
-        self._loaded = False
         self._create_ui()
 
     # ── UI construction ───────────────────────────────────────────
@@ -353,7 +352,6 @@ class QualityHealthPage(ctk.CTkFrame):
     def _update_display(self, priority: List[Dict[str, Any]]):
         """Store data and render."""
         self._model_data = priority
-        self._loaded = True
         self._update_label.configure(
             text=f"Updated: {datetime.now().strftime('%H:%M:%S')}"
         )

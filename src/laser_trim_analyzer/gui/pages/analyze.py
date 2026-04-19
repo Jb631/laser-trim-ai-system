@@ -1314,7 +1314,7 @@ class AnalyzePage(ctk.CTkFrame):
         # Process in background thread
         def process():
             try:
-                processor = Processor()
+                processor = Processor(use_ml=self.app.config.ml.enabled)
                 result = processor.process_file(Path(file_path))
 
                 # Save to database (will update existing record)

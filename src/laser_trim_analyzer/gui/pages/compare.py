@@ -694,7 +694,7 @@ Match: {method_label} ({confidence_str})"""
                 ax.set_xticks([])
                 ax.set_yticks([])
                 self.chart.figure.tight_layout()
-                self.chart.canvas.draw()
+                self.chart.canvas.draw_idle()
             return
 
         self._ensure_chart_initialized()
@@ -727,7 +727,7 @@ Match: {method_label} ({confidence_str})"""
                 ax.set_xticks([])
                 ax.set_yticks([])
                 self.chart.figure.tight_layout()
-                self.chart.canvas.draw()
+                self.chart.canvas.draw_idle()
             return
 
         ft_track = ft_tracks[0]  # Use first track
@@ -828,7 +828,7 @@ Match: {method_label} ({confidence_str})"""
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
             self.chart.figure.tight_layout()
-            self.chart.canvas.draw()
+            self.chart.canvas.draw_idle()
             return
 
         # Normalize positions to 0-100% for alignment (different systems use different scales)
@@ -934,7 +934,7 @@ Match: {method_label} ({confidence_str})"""
         ax.grid(True, alpha=0.3, color=COLORS.get('grid', 'gray'))
 
         self.chart.figure.tight_layout()
-        self.chart.canvas.draw()
+        self.chart.canvas.draw_idle()
 
     def _update_pagination(self):
         """Update pagination controls."""

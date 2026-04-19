@@ -17,7 +17,6 @@ ML Integration:
 
 import gc
 import time
-import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Callable, Generator
@@ -44,6 +43,7 @@ from laser_trim_analyzer.core.models import (
 from laser_trim_analyzer.config import Config, get_config
 from laser_trim_analyzer.core.final_test_parser import FinalTestParser
 from laser_trim_analyzer.core.smoothness_parser import SmoothnessParser, is_smoothness_file
+from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -887,7 +887,7 @@ class Processor:
             from laser_trim_analyzer.database import get_database
 
             db = get_database()
-            file_hash = self._calculate_file_hash(file_path)
+            file_hash = calculate_file_hash(file_path)
             stat = file_path.stat()
 
             db.mark_file_skipped(
@@ -904,14 +904,6 @@ class Processor:
 
         except Exception as e:
             logger.debug(f"Could not record skipped file {file_path.name}: {e}")
-
-    def _calculate_file_hash(self, file_path: Path) -> str:
-        """Calculate SHA-256 hash of a file (matches database format)."""
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
 
     def _load_processed_hashes(self) -> None:
         """Load processed file info from database into memory cache.

@@ -2285,7 +2285,7 @@ class TrendsPage(ctk.CTkFrame):
             ax.set_ylim(0, 105)
             ax.tick_params(axis='x', rotation=45, labelsize=8)
             fig.tight_layout()
-            chart.canvas.draw()
+            chart.canvas.draw_idle()
             self.status_label.configure(text=f"Comparing {len(data)} models")
         except Exception as e:
             logger.error(f"Comparative trends error: {e}")
@@ -2330,7 +2330,7 @@ class TrendsPage(ctk.CTkFrame):
             ax.legend(loc="best", fontsize=8)
             ax.tick_params(axis='x', rotation=45, labelsize=8)
             fig.tight_layout()
-            chart.canvas.draw()
+            chart.canvas.draw_idle()
             self.status_label.configure(text=f"Cpk trend for {model}")
         except Exception as e:
             logger.error(f"Cpk trend error: {e}")
@@ -2367,7 +2367,7 @@ class TrendsPage(ctk.CTkFrame):
             ax.set_ylim(0, 105)
             ax.legend(loc="best", fontsize=8)
             fig.tight_layout()
-            chart.canvas.draw()
+            chart.canvas.draw_idle()
             self.status_label.configure(text="Yield trend (all models)")
         except Exception as e:
             logger.error(f"Yield trend error: {e}")
@@ -2402,7 +2402,7 @@ class TrendsPage(ctk.CTkFrame):
 
             ax.set_title("Drift Detection Timeline")
             fig.tight_layout()
-            chart.canvas.draw()
+            chart.canvas.draw_idle()
             self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")

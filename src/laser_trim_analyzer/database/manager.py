@@ -12,7 +12,6 @@ Operations:
 - QA alerts management
 """
 
-import hashlib
 import logging
 import threading
 from datetime import datetime, timedelta
@@ -45,6 +44,7 @@ from laser_trim_analyzer.core.models import (
     RiskCategory,
 )
 from laser_trim_analyzer.config import get_config
+from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -727,56 +727,6 @@ class DatabaseManager:
 
             return results
 
-    def get_model_statistics(self, model: str, days_back: int = 30) -> Dict[str, Any]:
-        """
-        Get aggregated statistics for a model.
-
-        Filters by trim date (file_date), not processing date.
-
-        Args:
-            model: Model number
-            days_back: Days to include in statistics (based on trim date)
-
-        Returns:
-            Dictionary with statistics
-        """
-        with self.session() as session:
-            cutoff_date = datetime.now() - timedelta(days=days_back)
-
-            # Query track results for this model - filter by trim date
-            results = (
-                session.query(DBTrackResult)
-                .join(DBAnalysisResult)
-                .filter(
-                    DBAnalysisResult.model == model,
-                    DBAnalysisResult.file_date >= cutoff_date
-                )
-                .all()
-            )
-
-            if not results:
-                return {
-                    "model": model,
-                    "count": 0,
-                    "pass_rate": 0.0,
-                    "avg_sigma_gradient": None,
-                    "avg_failure_probability": None,
-                }
-
-            # Calculate statistics
-            total_tracks = len(results)
-            passed_tracks = sum(1 for r in results if r.linearity_pass)
-            sigma_values = [r.sigma_gradient for r in results if r.sigma_gradient is not None]
-            prob_values = [r.failure_probability for r in results if r.failure_probability is not None]
-
-            return {
-                "model": model,
-                "count": total_tracks,
-                "pass_rate": (passed_tracks / total_tracks * 100) if total_tracks > 0 else 0.0,
-                "avg_sigma_gradient": sum(sigma_values) / len(sigma_values) if sigma_values else None,
-                "avg_failure_probability": sum(prob_values) / len(prob_values) if prob_values else None,
-            }
-
     # =========================================================================
     # Incremental Processing
     # =========================================================================
@@ -800,7 +750,7 @@ class DatabaseManager:
         if not file_path.exists():
             return False
 
-        file_hash = self._calculate_file_hash(file_path)
+        file_hash = calculate_file_hash(file_path)
 
         from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
 
@@ -863,7 +813,7 @@ class DatabaseManager:
         for path in file_paths:
             path = Path(path)
             if path.exists():
-                file_hashes[self._calculate_file_hash(path)] = path
+                file_hashes[calculate_file_hash(path)] = path
 
         if not file_hashes:
             return []
@@ -907,14 +857,6 @@ class DatabaseManager:
             if hash_val not in existing_hashes
         ]
 
-    def _calculate_file_hash(self, file_path: Path) -> str:
-        """Calculate SHA-256 hash of a file."""
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
-
     def _record_processed_file(
         self,
         session: Session,
@@ -931,7 +873,7 @@ class DatabaseManager:
             processed_file = DBProcessedFile(
                 filename=file_path.name,
                 file_path=str(file_path),
-                file_hash=self._calculate_file_hash(file_path),
+                file_hash=calculate_file_hash(file_path),
                 file_size=file_path.stat().st_size,
                 file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
                 analysis_id=analysis_id,
