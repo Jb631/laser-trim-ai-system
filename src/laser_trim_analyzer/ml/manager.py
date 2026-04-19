@@ -463,6 +463,7 @@ class MLManager:
                     model_start_time = time.time()
                     track_count = 0
                     analysis_updates = 0
+                    analysis_subquery = None  # Defined here so prediction block can use it
 
                     try:
                         from sqlalchemy import select
@@ -623,7 +624,7 @@ class MLManager:
 
                     # OPTIMIZATION 3.5: Update failure_probability using ML predictor
                     predictor = self.predictors.get(model_name)
-                    if predictor and predictor.is_trained:
+                    if predictor and predictor.is_trained and analysis_subquery is not None:
                         try:
                             # Load tracks with features needed for prediction
                             tracks = (
