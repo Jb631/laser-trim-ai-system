@@ -84,8 +84,9 @@ class Processor:
         self._processed_hashes: set = set()
         self._processed_filenames: Optional[set] = None  # None = not loaded yet
 
-        # Load per-model thresholds from database
+        # Load per-model thresholds and predictors from database
         self._model_thresholds: Dict[str, float] = {}
+        self._model_predictors: Dict = {}  # model_name -> ModelPredictor
         if use_ml:
             self._load_ml_thresholds()
 
@@ -110,10 +111,18 @@ class Processor:
                 if optimizer and optimizer.is_calculated:
                     self._model_thresholds[model_name] = optimizer.threshold
 
+            # Extract trained predictors for failure probability
+            for model_name, predictor in ml_manager.predictors.items():
+                if predictor.is_trained:
+                    self._model_predictors[model_name] = predictor
+
             if self._model_thresholds:
                 logger.info(f"Loaded ML thresholds for {len(self._model_thresholds)} models")
             else:
                 logger.debug("No trained ML thresholds found, using formula")
+
+            if self._model_predictors:
+                logger.info(f"Loaded ML predictors for {len(self._model_predictors)} models")
 
         except Exception as e:
             logger.debug(f"Could not load ML thresholds: {e}")
@@ -170,6 +179,7 @@ class Processor:
 
             # Analyze each track (pass model for ML threshold lookup)
             analyzed_tracks: List[TrackData] = []
+            predictor = self._model_predictors.get(metadata.model)
             for track_data in tracks_data:
                 track_result = self.analyzer.analyze_track(
                     track_data,
@@ -177,6 +187,39 @@ class Processor:
                     linearity_type=linearity_type,
                     station_compensation=track_data.get("station_compensation"),
                 )
+
+                # Override failure_probability with ML predictor if available
+                if predictor:
+                    try:
+                        lin_error = abs(track_result.linearity_error or 0.0)
+                        lin_spec = track_result.linearity_spec or 0.01
+                        sigma = track_result.sigma_gradient or 0.0
+                        features = {
+                            'sigma_gradient': sigma,
+                            'linearity_error': lin_error,
+                            'fail_points': track_result.linearity_fail_points or 0,
+                            'optimal_offset': track_result.optimal_offset or 0.0,
+                            'linearity_spec': lin_spec,
+                            'sigma_to_spec': sigma / lin_spec if lin_spec > 0 else 0.0,
+                            'error_to_spec': lin_error / lin_spec if lin_spec > 0 else 0.0,
+                        }
+                        prob = predictor.predict_failure_probability(features)
+                        if prob is not None:
+                            track_result.failure_probability = prob
+                            # Update risk category to match new probability
+                            from laser_trim_analyzer.core.models import RiskCategory
+                            from laser_trim_analyzer.utils.constants import (
+                                HIGH_RISK_THRESHOLD, MEDIUM_RISK_THRESHOLD
+                            )
+                            if prob >= HIGH_RISK_THRESHOLD:
+                                track_result.risk_category = RiskCategory.HIGH
+                            elif prob >= MEDIUM_RISK_THRESHOLD:
+                                track_result.risk_category = RiskCategory.MEDIUM
+                            else:
+                                track_result.risk_category = RiskCategory.LOW
+                    except Exception as e:
+                        logger.debug(f"ML predictor failed for track {track_result.track_id}: {e}")
+
                 analyzed_tracks.append(track_result)
 
             # Determine overall status

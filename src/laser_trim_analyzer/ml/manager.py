@@ -621,6 +621,53 @@ class MLManager:
                     except Exception as e:
                         logger.warning(f"Error updating analysis status for {model_name}: {e}")
 
+                    # OPTIMIZATION 3.5: Update failure_probability using ML predictor
+                    predictor = self.predictors.get(model_name)
+                    if predictor and predictor.is_trained:
+                        try:
+                            # Load tracks with features needed for prediction
+                            tracks = (
+                                session.query(
+                                    TrackResult.id,
+                                    TrackResult.sigma_gradient,
+                                    TrackResult.final_linearity_error_shifted,
+                                    TrackResult.linearity_fail_points,
+                                    TrackResult.optimal_offset,
+                                    TrackResult.linearity_spec,
+                                )
+                                .filter(TrackResult.analysis_id.in_(analysis_subquery))
+                                .filter(TrackResult.sigma_gradient.isnot(None))
+                                .all()
+                            )
+
+                            prediction_count = 0
+                            for track in tracks:
+                                sigma = track.sigma_gradient or 0.0
+                                lin_error = abs(track.final_linearity_error_shifted or 0.0)
+                                lin_spec = track.linearity_spec or 0.01
+                                features = {
+                                    'sigma_gradient': sigma,
+                                    'linearity_error': lin_error,
+                                    'fail_points': track.linearity_fail_points or 0,
+                                    'optimal_offset': track.optimal_offset or 0.0,
+                                    'linearity_spec': lin_spec,
+                                    'sigma_to_spec': sigma / lin_spec if lin_spec > 0 else 0.0,
+                                    'error_to_spec': lin_error / lin_spec if lin_spec > 0 else 0.0,
+                                }
+                                prob = predictor.predict_failure_probability(features)
+                                if prob is not None:
+                                    session.execute(
+                                        update(TrackResult)
+                                        .where(TrackResult.id == track.id)
+                                        .values(failure_probability=prob)
+                                    )
+                                    prediction_count += 1
+
+                            logger.info(f"Updated {prediction_count} failure predictions for {model_name}")
+
+                        except Exception as e:
+                            logger.warning(f"Error updating failure predictions for {model_name}: {e}")
+
                     # OPTIMIZATION 4: Drift detection - only load detection-period tracks
                     if run_drift_detection and detector and detector.has_baseline:
                         try:
