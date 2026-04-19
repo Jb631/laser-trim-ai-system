@@ -119,6 +119,9 @@ class Config:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     active_models: ActiveModelsConfig = field(default_factory=ActiveModelsConfig)
 
+    # Export settings
+    export_path: Optional[str] = None
+
     # Version info
     version: str = "5.0.0"
 
@@ -169,6 +172,9 @@ class Config:
                         if hasattr(config.active_models, key):
                             setattr(config.active_models, key, value)
 
+                if "export_path" in data:
+                    config.export_path = data["export_path"]
+
                 logger.info(f"Loaded config from {config_path}")
 
             except Exception as e:
@@ -215,6 +221,7 @@ class Config:
                 "model_prices": self.active_models.model_prices,
                 "cost_ratio": self.active_models.cost_ratio,
             },
+            "export_path": self.export_path,
         }
 
         with open(config_path, "w") as f:

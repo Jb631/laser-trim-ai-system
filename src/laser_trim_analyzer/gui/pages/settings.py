@@ -1290,6 +1290,10 @@ class SettingsPage(ctk.CTkFrame):
     def on_show(self):
         """Called when the page is shown."""
         logger.debug("Settings page shown")
+        # Restore export path from config
+        if self.app.config.export_path:
+            self.export_path = Path(self.app.config.export_path)
+            self.export_path_label.configure(text=self.app.config.export_path)
         # Update database info
         self._update_database_info()
 

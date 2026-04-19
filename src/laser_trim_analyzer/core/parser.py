@@ -890,7 +890,7 @@ def detect_file_type(file_path: Path) -> str:
             return "non_trim"
 
     # Check for Rout_ prefix (Format 2 final test)
-    if filename.startswith(FINAL_TEST_ROUT_PREFIX):
+    if filename_lower.startswith(FINAL_TEST_ROUT_PREFIX.lower()):
         logger.debug(f"Detected final_test (Rout_ prefix): {filename}")
         return "final_test"
 

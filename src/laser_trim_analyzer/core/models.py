@@ -204,7 +204,7 @@ class AnalysisResult(BaseAnalysisModel):
     db_id: Optional[int] = Field(None, description="Database record ID")
 
     # File type marker (for distinguishing trim vs final test)
-    file_type: str = Field(default="trim", description="File type: 'trim' or 'final_test'")
+    file_type: str = Field(default="trim", description="File type: 'trim', 'final_test', or 'smoothness'")
     final_test_id: Optional[int] = Field(None, description="Database ID for final test records")
 
     # Data quality flags — validation issues found during ingest

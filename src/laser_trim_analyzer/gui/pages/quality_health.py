@@ -53,6 +53,7 @@ class QualityHealthPage(ctk.CTkFrame):
         self._model_data: List[Dict[str, Any]] = []
         self._trending_data: List[Dict[str, Any]] = []
         self._active_only = True
+        self._last_refresh_time = 0
         self._create_ui()
 
     # ── UI construction ───────────────────────────────────────────
@@ -117,6 +118,8 @@ class QualityHealthPage(ctk.CTkFrame):
 
     def refresh(self):
         """Kick off a background data load."""
+        import time
+        self._last_refresh_time = time.time()
         self._update_label.configure(text="Refreshing…")
         get_thread_manager().start_thread(
             target=self._load_data, name="quality-health-load"
@@ -124,6 +127,10 @@ class QualityHealthPage(ctk.CTkFrame):
 
     def on_show(self):
         """Called when the page becomes visible."""
+        import time
+        # Debounce: skip refresh if last one was < 5 seconds ago
+        if time.time() - self._last_refresh_time < 5:
+            return
         self.refresh()
 
     def _load_data(self):

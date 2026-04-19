@@ -801,7 +801,7 @@ class ProcessPage(ctk.CTkFrame):
         )
 
         # Large batch truncation warning
-        if is_large_batch and len(self.selected_files) > 50:
+        if is_large_batch:
             self._append_result(
                 f"\n[NOTE] Large batch ({len(self.selected_files)} files): "
                 f"only last {len(self.results)} results retained for export. "
