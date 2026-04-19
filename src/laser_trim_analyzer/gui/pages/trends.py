@@ -1421,6 +1421,8 @@ class TrendsPage(ctk.CTkFrame):
         heatmap_data: Optional[Dict[str, Any]] = None,
     ):
         """Update summary display with loaded data."""
+        if not self.winfo_exists():
+            return
         # Ensure charts are initialized before use (lazy matplotlib loading)
         self._ensure_summary_charts_initialized()
 
@@ -1702,6 +1704,8 @@ class TrendsPage(ctk.CTkFrame):
         cpk_data: Optional[Dict[str, Any]] = None,
     ):
         """Update detail display with loaded data."""
+        if not self.winfo_exists():
+            return
         # Ensure charts are initialized before use (lazy matplotlib loading)
         self._ensure_detail_charts_initialized()
 
@@ -2180,6 +2184,8 @@ class TrendsPage(ctk.CTkFrame):
 
     def _show_error(self, error: str):
         """Show error state."""
+        if not self.winfo_exists():
+            return
         self.status_label.configure(text="Error loading data")
         if getattr(self, 'alerts_chart', None):
             self.alerts_chart.show_placeholder(f"Error: {error}")
@@ -2448,6 +2454,8 @@ class TrendsPage(ctk.CTkFrame):
 
     def _update_drift_display(self, drift_status: Dict[str, Dict[str, Any]], ml_manager):
         """Update drift detection display with data."""
+        if not self.winfo_exists():
+            return
         # Clear model list
         for widget in self._drift_model_list.winfo_children():
             widget.destroy()
@@ -2635,6 +2643,8 @@ class TrendsPage(ctk.CTkFrame):
 
     def _show_drift_error(self, error: str):
         """Show error in drift section."""
+        if not self.winfo_exists():
+            return
         for widget in self._drift_model_list.winfo_children():
             widget.destroy()
 

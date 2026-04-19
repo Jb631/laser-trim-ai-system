@@ -84,8 +84,8 @@ class ScorecardPage(ctk.CTkFrame):
             models = db.get_models_list()
             if models:
                 self.model_selector.configure(values=models)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load model list: {e}")
 
     def _on_model_selected(self, model: str):
         if model and model != "Select a model...":
