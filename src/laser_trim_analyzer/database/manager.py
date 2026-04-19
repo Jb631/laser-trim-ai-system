@@ -767,7 +767,7 @@ class DatabaseManager:
 
             # Calculate statistics
             total_tracks = len(results)
-            passed_tracks = sum(1 for r in results if r.sigma_pass)
+            passed_tracks = sum(1 for r in results if r.linearity_pass)
             sigma_values = [r.sigma_gradient for r in results if r.sigma_gradient is not None]
             prob_values = [r.failure_probability for r in results if r.failure_probability is not None]
 
@@ -2284,7 +2284,7 @@ class DatabaseManager:
                 sigma_pass=sigma_pass,
                 optimal_offset=db_track.optimal_offset or 0.0,
                 linearity_error=abs(db_track.final_linearity_error_shifted or 0.0),
-                linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else True,
+                linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else False,
                 linearity_fail_points=db_track.linearity_fail_points or 0,
                 unit_length=db_track.unit_length,
                 untrimmed_resistance=db_track.untrimmed_resistance,
