@@ -655,6 +655,30 @@ class MLManager:
                                                 'severity': drift_result.severity,
                                             })
 
+                                            # Persist drift alert to DB
+                                            try:
+                                                # Map float severity (0-1) to string category
+                                                if drift_result.severity >= 0.75:
+                                                    severity_str = "Critical"
+                                                elif drift_result.severity >= 0.5:
+                                                    severity_str = "High"
+                                                elif drift_result.severity >= 0.25:
+                                                    severity_str = "Medium"
+                                                else:
+                                                    severity_str = "Low"
+
+                                                alert = QAAlert(
+                                                    analysis_id=analysis_id,
+                                                    alert_type=AlertType.DRIFT_DETECTED,
+                                                    severity=severity_str,
+                                                    message=drift_result.message,
+                                                    metric_name="sigma_gradient",
+                                                    metric_value=drift_result.cusum_value,
+                                                )
+                                                session.add(alert)
+                                            except Exception as e:
+                                                logger.warning(f"Failed to persist drift alert: {e}")
+
                         except Exception as e:
                             logger.warning(f"Error in drift detection for {model_name}: {e}")
 
@@ -1097,6 +1121,11 @@ class MLManager:
 
                         profiler.profile = profile
                         profiler.is_profiled = True
+
+                    # Restore predictor trained status from DB
+                    if state.predictor_trained:
+                        if model_name in self.predictors:
+                            self.predictors[model_name].is_trained = True
 
                     # Track as trained
                     if model_name not in self.trained_models:
