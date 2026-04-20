@@ -59,6 +59,9 @@ class Analyzer:
         model: Optional[str] = None,
         linearity_type: Optional[str] = None,
         station_compensation: Optional[float] = None,
+        angle_spec: Optional[float] = None,
+        angle_tol: Optional[float] = None,
+        angle_tol_type: Optional[str] = None,
     ) -> TrackData:
         """
         Perform complete analysis on a track.
@@ -99,11 +102,15 @@ class Analyzer:
         )
         sigma_pass = sigma_gradient <= sigma_threshold
 
-        # Linearity analysis (spec-aware)
+        # Linearity analysis (spec-aware). angle_spec/tol/tol_type drive the
+        # slope-correction rule: slope is locked unless a tolerance exists.
         (optimal_offset, optimal_slope, linearity_error, linearity_pass,
          fail_points, raw_linearity_error, raw_fail_points) = self._calculate_linearity(
             positions, errors, upper_limits, lower_limits, linearity_spec,
-            linearity_type=linearity_type
+            linearity_type=linearity_type,
+            angle_spec=angle_spec,
+            angle_tol=angle_tol,
+            angle_tol_type=angle_tol_type,
         )
 
         # Risk assessment
@@ -327,6 +334,9 @@ class Analyzer:
         lower_limits: List[float],
         linearity_spec: float,
         linearity_type: Optional[str] = None,
+        angle_spec: Optional[float] = None,
+        angle_tol: Optional[float] = None,
+        angle_tol_type: Optional[str] = None,
     ) -> Tuple[float, float, float, bool, int, float, int]:
         """
         Calculate linearity metrics with spec-aware optimal adjustment.
@@ -339,9 +349,13 @@ class Analyzer:
         raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits)
         raw_linearity_error = max(abs(e) for e in errors) if errors else 0.0
 
-        # Calculate optimal adjustment (constrained by linearity type)
+        # Calculate optimal adjustment. Slope bounds are driven by the model
+        # spec's angle tolerance — no tolerance means slope stays at 1.0.
         optimal_offset, optimal_slope = self._calculate_optimal_adjustment(
-            positions, errors, upper_limits, lower_limits, linearity_type
+            positions, errors, upper_limits, lower_limits, linearity_type,
+            angle_spec=angle_spec,
+            angle_tol=angle_tol,
+            angle_tol_type=angle_tol_type,
         )
 
         # Apply adjustment: adjusted = error * slope + offset
@@ -372,37 +386,94 @@ class Analyzer:
         upper_limits: List[float],
         lower_limits: List[float],
         linearity_type: Optional[str] = None,
+        angle_spec: Optional[float] = None,
+        angle_tol: Optional[float] = None,
+        angle_tol_type: Optional[str] = None,
     ) -> Tuple[float, float]:
         """
-        Calculate optimal offset and slope adjustment, constrained by linearity type.
+        Calculate optimal offset and slope adjustment.
 
-        Linearity types control which degrees of freedom are available:
-        - Absolute / Term Base: No adjustment (offset=0, slope=1.0)
-        - Independent: Free offset + slope optimization (most common)
-        - Zero-Based: Slope optimization only (offset=0)
-        - None/unknown: Falls back to offset-only (legacy behavior)
+        Slope bounds come from the model spec's ANGLE TOLERANCE, not from
+        linearity_type. The physical meaning: if the part is allowed to be
+        off by `angle_tol` on its electrical angle, then the measured trim
+        length can vary by that much, which is what slope compensates for.
+
+        Rule:
+          - angle_tol is None         -> slope locked at 1.0 (no allowance)
+          - tol_type 'symmetric' |
+                     'range' |
+                     'bilateral'      -> slope in [1 - tol/ang, 1 + tol/ang]
+          - tol_type 'min'            -> slope in [1.0, 1 + headroom]
+                                         (part can be longer than nominal)
+          - tol_type 'max'            -> slope in [1 - headroom, 1.0]
+                                         (part can be shorter than nominal)
+
+        Offset is ALWAYS allowed. It compensates for test-station noise and
+        fixturing bias, not for gaming the part's trim. Locking offset to 0
+        would falsely fail in-spec parts reading with a systematic station
+        offset.
 
         Returns:
             (optimal_offset, optimal_slope) tuple
         """
-        lin_type = (linearity_type or "").strip().lower()
+        # Determine slope bounds from angle tolerance.
+        slope_lo, slope_hi = self._slope_bounds_from_angle_tol(
+            angle_spec, angle_tol, angle_tol_type
+        )
+        slope_locked = (slope_lo == 1.0 and slope_hi == 1.0)
 
-        # Absolute and Term Base: no adjustment allowed
-        if lin_type in ("absolute", "term base"):
-            return 0.0, 1.0
+        if slope_locked:
+            # No slope allowance — offset only.
+            offset = self._calculate_optimal_offset(errors, upper_limits, lower_limits)
+            return offset, 1.0
 
-        # Zero-Based: slope only (offset locked at 0)
-        if lin_type == "zero-based":
-            slope = self._optimize_slope_only(errors, upper_limits, lower_limits)
-            return 0.0, slope
+        # Have slope headroom — optimize offset and slope together within
+        # the computed bounds.
+        return self._optimize_offset_and_slope(
+            errors, upper_limits, lower_limits,
+            slope_bounds=(slope_lo, slope_hi),
+        )
 
-        # Independent: full offset + slope optimization
-        if lin_type == "independent":
-            return self._optimize_offset_and_slope(errors, upper_limits, lower_limits)
+    def _slope_bounds_from_angle_tol(
+        self,
+        angle_spec: Optional[float],
+        angle_tol: Optional[float],
+        angle_tol_type: Optional[str],
+    ) -> Tuple[float, float]:
+        """
+        Translate an angle tolerance from model_specs into slope bounds.
 
-        # Unknown/None: legacy offset-only behavior for backwards compatibility
-        offset = self._calculate_optimal_offset(errors, upper_limits, lower_limits)
-        return offset, 1.0
+        The ratio tol/nominal is the fractional length allowance; that same
+        fraction is how much slope may be adjusted when fitting the curve.
+        """
+        # No spec info at all -> slope locked at 1.0.
+        if angle_spec is None or angle_spec == 0:
+            return 1.0, 1.0
+
+        tol_type = (angle_tol_type or "").strip().lower()
+
+        # For min/max one-sided specs, there's no explicit tolerance number
+        # in the spec sheet; the industry practice is 'at least' or 'at
+        # most'. Without a better number we cap the one-sided allowance at
+        # a conservative 5% of nominal.
+        ONE_SIDED_HEADROOM = 0.05
+
+        if tol_type in ("symmetric", "range", "bilateral"):
+            if angle_tol is None or angle_tol <= 0:
+                return 1.0, 1.0
+            frac = abs(angle_tol) / abs(angle_spec)
+            return 1.0 - frac, 1.0 + frac
+
+        if tol_type == "min":
+            # Part can be longer than nominal -> slope can be > 1.0 only.
+            return 1.0, 1.0 + ONE_SIDED_HEADROOM
+
+        if tol_type == "max":
+            # Part can be shorter than nominal -> slope can be < 1.0 only.
+            return 1.0 - ONE_SIDED_HEADROOM, 1.0
+
+        # No tolerance type / unknown -> slope locked.
+        return 1.0, 1.0
 
     def _optimize_slope_only(
         self,
@@ -443,11 +514,52 @@ class Analyzer:
         errors: List[float],
         upper_limits: List[float],
         lower_limits: List[float],
+        slope_bounds: Tuple[float, float] = (0.80, 1.20),
     ) -> Tuple[float, float]:
-        """Optimize both offset and slope for Independent linearity."""
+        """
+        Optimize both offset and slope within bounds derived from the spec.
+
+        slope_bounds: (lo, hi) — slope is constrained to this range. When the
+        spec has no angle tolerance, the caller should not be invoking this
+        function at all (slope stays at 1.0). When a tolerance exists, the
+        caller passes bounds derived from tol/nominal_angle.
+        """
         n = min(len(errors), len(upper_limits), len(lower_limits))
         if n == 0:
             return 0.0, 1.0
+
+        slope_lo, slope_hi = slope_bounds
+        # Defensive: if bounds collapse to a single point, offset-only.
+        if slope_hi - slope_lo < 1e-9:
+            # Caller asked for a locked slope; return it with optimized offset.
+            locked_slope = (slope_lo + slope_hi) / 2.0
+            n2 = n
+
+            def offset_only_cost(off):
+                viol = 0
+                m = 0.0
+                for i in range(n2):
+                    a = errors[i] * locked_slope + off
+                    ul = upper_limits[i]; ll = lower_limits[i]
+                    if ul is not None and ll is not None:
+                        if not (np.isnan(ul) or np.isnan(ll)):
+                            if a > ul or a < ll:
+                                viol += 1
+                            m = max(m, abs(a))
+                return viol * 1e6 + m
+
+            differences = [
+                ((upper_limits[i] + lower_limits[i]) / 2) - errors[i] * locked_slope
+                for i in range(n)
+                if upper_limits[i] is not None and lower_limits[i] is not None
+                and not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i]))
+            ]
+            initial = float(np.median(differences)) if differences else 0.0
+            try:
+                res = optimize.minimize_scalar(offset_only_cost, bracket=(initial - 0.02, initial, initial + 0.02))
+                return float(res.x), float(locked_slope)
+            except Exception:
+                return initial, float(locked_slope)
 
         # Calculate band center differences for initial offset guess
         differences = []
@@ -462,6 +574,10 @@ class Analyzer:
 
         def objective(params):
             offset, slope = params
+            # Penalize slope outside bounds so Nelder-Mead doesn't wander
+            # off into forbidden territory. Hard-cap it.
+            if slope < slope_lo or slope > slope_hi:
+                return 1e12
             violations = 0
             max_err = 0.0
             for i in range(n):
@@ -476,23 +592,27 @@ class Analyzer:
             return violations * 1e6 + max_err
 
         try:
-            # Stage 1: coarse grid search
+            # Stage 1: coarse grid search over allowed slope range
             best_params = (initial_offset, 1.0)
             best_cost = objective(best_params)
             offset_range = abs(initial_offset) + 0.02
-            for slope_candidate in [0.90, 0.95, 0.98, 1.0, 1.02, 1.05, 1.10]:
+            slope_grid = np.linspace(slope_lo, slope_hi, 11)
+            for slope_candidate in slope_grid:
                 for offset_factor in np.linspace(-offset_range, offset_range, 11):
                     cost = objective((offset_factor, slope_candidate))
                     if cost < best_cost:
                         best_cost = cost
-                        best_params = (offset_factor, slope_candidate)
+                        best_params = (offset_factor, float(slope_candidate))
 
-            # Stage 2: Nelder-Mead refinement
+            # Stage 2: Nelder-Mead refinement (bounds enforced via objective)
             result = optimize.minimize(
                 objective, x0=best_params, method='Nelder-Mead',
                 options={'xatol': 1e-7, 'fatol': 1e-7, 'maxiter': 500}
             )
-            return float(result.x[0]), float(result.x[1])
+            # Clamp to bounds in case optimizer was just outside.
+            fo = float(result.x[0])
+            fs = float(max(slope_lo, min(slope_hi, result.x[1])))
+            return fo, fs
         except Exception:
             return initial_offset, 1.0
 

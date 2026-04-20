@@ -63,7 +63,13 @@
       "Bash(git -C /Users/jb631/projects/laser-trim-ai-system log --oneline -10)",
       "Bash(PYTHONPATH=src python3 -c \"from laser_trim_analyzer.utils.constants import NON_TRIM_FILENAME_PATTERNS; print\\('NON_TRIM_FILENAME_PATTERNS:', NON_TRIM_FILENAME_PATTERNS\\)\")",
       "Bash(pip3 list:*)",
-      "Bash(PYTHONPATH=src python3 -c \"\nfrom laser_trim_analyzer.core.models import AnalysisResult\nfields = [f for f in AnalysisResult.model_fields if 'quality' in f]\nprint\\('AnalysisResult quality fields:', fields\\)\nfor f in fields:\n    info = AnalysisResult.model_fields[f]\n    print\\(f'  {f}: default={info.default}, annotation={info.annotation}'\\)\n\")"
+      "Bash(PYTHONPATH=src python3 -c \"\nfrom laser_trim_analyzer.core.models import AnalysisResult\nfields = [f for f in AnalysisResult.model_fields if 'quality' in f]\nprint\\('AnalysisResult quality fields:', fields\\)\nfor f in fields:\n    info = AnalysisResult.model_fields[f]\n    print\\(f'  {f}: default={info.default}, annotation={info.annotation}'\\)\n\")",
+      "Bash(/Users/jb631/projects/laser-trim-ai-system-v5/.venv/bin/python --version)",
+      "Bash(git merge:*)",
+      "Bash(gh repo:*)",
+      "Skill(ralph-loop:ralph-loop)",
+      "Bash(/Users/jb631/.claude/plugins/cache/claude-plugins-official/ralph-loop/1.0.0/scripts/setup-ralph-loop.sh:*)",
+      "Skill(ralph-loop:cancel-ralph)"
     ],
     "deny": [],
     "ask": []

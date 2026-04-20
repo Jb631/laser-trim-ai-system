@@ -135,7 +135,22 @@ class SmoothnessParser:
     def _parse_test_data_sheet(
         self, xl: pd.ExcelFile, sheet_name: str = "Test Data"
     ) -> List[Dict[str, Any]]:
-        """Parse the Test Data sheet for position vs smoothness data."""
+        """Parse the Test Data sheet for time-series + smoothness summary.
+
+        The Betatronix Output Smoothness file has a fixed shape:
+          Row 1 header: ['Model Parameters', 'Model Number', '<model>', None,
+                         'Time (s)', 'Filtered Volts (V)', None,
+                         'Max. Deviation (V)', 'Max. Spec. Dev. (V)', 'Result']
+          Row 2 contains the precomputed test results in cols H/I/J:
+              H = Max. Deviation (V)   <- this IS the max smoothness value
+              I = Max. Spec. Dev. (V)  <- the spec limit
+              J = Result               <- "PASSED" / "FAILED"
+          Rows 2..N have time-series data in cols E (Time) and F (Filtered Volts).
+
+        We try this fixed layout first because it deterministically extracts the
+        right values. If headers don't match (different vendor/format), we fall
+        back to the older keyword-based detection so we don't lose data.
+        """
         try:
             df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
         except Exception as e:
@@ -145,63 +160,117 @@ class SmoothnessParser:
         if df.empty:
             return []
 
-        tracks = []
+        # ---- Path 1: Betatronix fixed-layout fast path -------------------
+        # Quick fingerprint: row 1 col E/F should say "Time" and "Filtered"
+        try:
+            r1_e = str(df.iloc[0, 4]).lower() if df.shape[1] > 4 else ""
+            r1_f = str(df.iloc[0, 5]).lower() if df.shape[1] > 5 else ""
+            r1_h = str(df.iloc[0, 7]).lower() if df.shape[1] > 7 else ""
+            r1_i = str(df.iloc[0, 8]).lower() if df.shape[1] > 8 else ""
+            is_betatronix = (
+                "time" in r1_e
+                and ("volt" in r1_f or "filtered" in r1_f)
+                and "deviation" in r1_h
+                and "spec" in r1_i
+            )
+        except Exception:
+            is_betatronix = False
+
+        if is_betatronix:
+            track = self._parse_betatronix_layout(df)
+            if track:
+                return [track]
+            # If the fast path fails for some reason, fall through to fallback.
+
+        # ---- Path 2: Generic header search (legacy fallback) -------------
+        # Used for non-Betatronix files (e.g. NI TDM exports). Same logic as
+        # before but with an expanded keyword list so newer column names
+        # ("time", "voltage", "deviation") are also matched.
+        return self._parse_generic_layout(xl, sheet_name, df)
+
+    def _parse_betatronix_layout(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Parse the fixed Betatronix smoothness layout from a header-less DataFrame.
+
+        Returns one track dict, or None if values can't be extracted.
+        Cols (0-indexed): 4=Time, 5=Filtered Volts, 7=Max Dev, 8=Spec, 9=Result.
+        """
+        try:
+            # Row 2 (index 1) holds the precomputed results.
+            max_dev = df.iloc[1, 7] if df.shape[0] > 1 and df.shape[1] > 7 else None
+            spec = df.iloc[1, 8] if df.shape[0] > 1 and df.shape[1] > 8 else None
+            result = df.iloc[1, 9] if df.shape[0] > 1 and df.shape[1] > 9 else None
+
+            # Coerce numerics; a missing max_dev means the file is malformed.
+            try:
+                max_smoothness = float(max_dev) if pd.notna(max_dev) else None
+            except (TypeError, ValueError):
+                max_smoothness = None
+            try:
+                spec_value = float(spec) if pd.notna(spec) else None
+            except (TypeError, ValueError):
+                spec_value = None
+
+            if max_smoothness is None:
+                logger.warning("Betatronix layout matched but row-2 Max Deviation is missing/non-numeric")
+                return None
+
+            # Time-series for charting (cols E/F from row 2 onward).
+            times = pd.to_numeric(df.iloc[1:, 4], errors='coerce')
+            volts = pd.to_numeric(df.iloc[1:, 5], errors='coerce')
+            mask = times.notna() & volts.notna()
+            positions = times[mask].tolist()
+            values = volts[mask].tolist()
+
+            # Pass/fail: trust the file's own Result column when present.
+            passes: Optional[bool]
+            if isinstance(result, str):
+                result_str = result.strip().lower()
+                if result_str in ("pass", "passed", "ok"):
+                    passes = True
+                elif result_str in ("fail", "failed"):
+                    passes = False
+                else:
+                    passes = None
+            else:
+                passes = (max_smoothness <= spec_value) if spec_value and spec_value > 0 else None
+
+            avg_smoothness = (sum(abs(v) for v in values) / len(values)) if values else 0.0
+
+            return {
+                "track_id": "default",
+                "positions": positions,
+                "smoothness_values": values,
+                "smoothness_spec": spec_value,
+                "max_smoothness": max_smoothness,
+                "avg_smoothness": avg_smoothness,
+                "smoothness_pass": passes,
+            }
+        except Exception as e:
+            logger.warning(f"Betatronix layout parse failed: {e}")
+            return None
+
+    def _parse_generic_layout(
+        self, xl: pd.ExcelFile, sheet_name: str, df: pd.DataFrame
+    ) -> List[Dict[str, Any]]:
+        """Legacy keyword-based parser for non-Betatronix files.
+
+        Expanded keyword sets so common variations ("time", "voltage",
+        "deviation", "ripple") are recognised.
+        """
+        tracks: List[Dict[str, Any]] = []
+        position_keywords = ['position', 'angle', 'travel', 'degrees', 'inches', 'time']
+        smooth_keywords = ['smooth', 'output', 'volt', 'voltage', 'deviation', 'ripple', 'filtered']
 
         # Find header row
         header_row = None
         for i in range(min(20, len(df))):
             row_values = [str(v).lower().strip() for v in df.iloc[i] if pd.notna(v)]
-            if any(kw in val for val in row_values for kw in ['position', 'angle', 'travel', 'degrees', 'inches']):
+            if any(kw in val for val in row_values for kw in position_keywords):
                 header_row = i
                 break
 
-        if header_row is not None:
-            df_data = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
-            df_data.columns = [str(c).strip() for c in df_data.columns]
-
-            pos_col = None
-            for col in df_data.columns:
-                if any(kw in col.lower() for kw in ['position', 'angle', 'travel', 'degrees', 'inches']):
-                    pos_col = col
-                    break
-
-            smooth_cols = []
-            spec_value = None
-            for col in df_data.columns:
-                col_lower = col.lower()
-                if 'smooth' in col_lower or 'output' in col_lower:
-                    smooth_cols.append(col)
-                if 'spec' in col_lower or 'limit' in col_lower:
-                    valid_vals = df_data[col].dropna()
-                    if len(valid_vals) > 0:
-                        try:
-                            spec_value = float(valid_vals.iloc[0])
-                        except (ValueError, TypeError):
-                            pass
-
-            if pos_col and smooth_cols:
-                positions = pd.to_numeric(df_data[pos_col], errors='coerce').dropna().tolist()
-                for sc in smooth_cols:
-                    values = pd.to_numeric(df_data[sc], errors='coerce').dropna().tolist()
-                    if not values:
-                        continue
-                    min_len = min(len(positions), len(values))
-                    pos = positions[:min_len]
-                    vals = values[:min_len]
-                    max_val = max(vals) if vals else 0
-                    avg_val = sum(vals) / len(vals) if vals else 0
-                    passes = max_val <= spec_value if spec_value and spec_value > 0 else None
-                    tracks.append({
-                        "track_id": "default",
-                        "positions": pos,
-                        "smoothness_values": vals,
-                        "smoothness_spec": spec_value,
-                        "max_smoothness": max_val,
-                        "avg_smoothness": avg_val,
-                        "smoothness_pass": passes,
-                    })
-        else:
-            # No header — try numeric columns
+        if header_row is None:
+            # Last-resort: numeric columns assumption
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             if len(numeric_cols) >= 2:
                 positions = df[numeric_cols[0]].dropna().tolist()
@@ -217,7 +286,62 @@ class SmoothnessParser:
                         "avg_smoothness": sum(values[:min_len]) / min_len,
                         "smoothness_pass": None,
                     })
+                else:
+                    logger.warning(f"No usable numeric columns in sheet '{sheet_name}'")
+            else:
+                logger.warning(f"No header row and <2 numeric columns in sheet '{sheet_name}'")
+            return tracks
 
+        df_data = pd.read_excel(xl, sheet_name=sheet_name, header=header_row)
+        df_data.columns = [str(c).strip() for c in df_data.columns]
+
+        pos_col = None
+        for col in df_data.columns:
+            if any(kw in col.lower() for kw in position_keywords):
+                pos_col = col
+                break
+
+        smooth_cols: List[str] = []
+        spec_value = None
+        for col in df_data.columns:
+            col_lower = col.lower()
+            if any(kw in col_lower for kw in smooth_keywords):
+                smooth_cols.append(col)
+            if 'spec' in col_lower or 'limit' in col_lower:
+                valid_vals = df_data[col].dropna()
+                if len(valid_vals) > 0:
+                    try:
+                        spec_value = float(valid_vals.iloc[0])
+                    except (ValueError, TypeError):
+                        pass
+
+        if not pos_col or not smooth_cols:
+            logger.warning(
+                f"Generic parser found no usable columns in sheet '{sheet_name}' "
+                f"(pos_col={pos_col!r}, smooth_cols={smooth_cols})"
+            )
+            return tracks
+
+        positions = pd.to_numeric(df_data[pos_col], errors='coerce').dropna().tolist()
+        for sc in smooth_cols:
+            values = pd.to_numeric(df_data[sc], errors='coerce').dropna().tolist()
+            if not values:
+                continue
+            min_len = min(len(positions), len(values))
+            pos = positions[:min_len]
+            vals = values[:min_len]
+            max_val = max(vals) if vals else 0
+            avg_val = sum(vals) / len(vals) if vals else 0
+            passes = max_val <= spec_value if spec_value and spec_value > 0 else None
+            tracks.append({
+                "track_id": "default",
+                "positions": pos,
+                "smoothness_values": vals,
+                "smoothness_spec": spec_value,
+                "max_smoothness": max_val,
+                "avg_smoothness": avg_val,
+                "smoothness_pass": passes,
+            })
         return tracks
 
     def _parse_report_sheet(self, xl: pd.ExcelFile) -> Dict[str, Any]:

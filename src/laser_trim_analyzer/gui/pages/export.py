@@ -724,9 +724,22 @@ class ExportPage(ctk.CTkFrame):
                    '--', linewidth=1.5, label='Untrimmed',
                    color=QA_COLORS['untrimmed'], alpha=0.6)
 
-        # Plot trimmed/shifted data
+        # Build corrected label reflecting actual correction applied
+        if abs(slope - 1.0) < 1e-9 and abs(offset) < 1e-9:
+            corrected_label = 'Trimmed corrected (no-op)'
+        elif abs(slope - 1.0) < 1e-9:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
+        else:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+
+        # Corrected trace (primary — solid, drives pass/fail judgment)
         ax.plot(positions, errors_shifted, '-', linewidth=2,
-               label='Trimmed (Offset Applied)', color=QA_COLORS['trimmed'])
+               label=corrected_label, color=QA_COLORS['trimmed'], zorder=3)
+
+        # Raw (as-measured) faint dashed reference
+        ax.plot(positions, errors, linewidth=1.2, linestyle='--',
+               label='Trimmed (as measured)', color=QA_COLORS['trimmed'],
+               alpha=0.35, zorder=2)
 
         # Get spec limits - use stored limits or calculate from linearity_spec
         upper_limits = track.upper_limits

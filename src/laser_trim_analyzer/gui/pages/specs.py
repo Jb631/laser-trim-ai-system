@@ -147,10 +147,21 @@ class SpecsPage(ctk.CTkFrame):
             ("total_resistance_min", "Resistance Min (Ω)", "entry"),
             ("total_resistance_max", "Resistance Max (Ω)", "entry"),
             ("electrical_angle", "Electrical Angle", "entry"),
-            ("electrical_angle_tol", "Angle Tolerance ±", "entry"),
+            ("electrical_angle_tol", "Angle Tolerance", "entry"),
+            # How to interpret electrical_angle_tol. The slope-from-tolerance
+            # rule reads this to decide whether slope can be adjusted
+            # symmetrically, one-sided, etc. Leave blank when there's no
+            # tolerance on the print.
+            ("electrical_angle_tol_type", "Tol Type", "combo",
+             ["", "symmetric", "min", "max", "range", "bilateral"]),
             ("electrical_angle_unit", "Angle Unit", "combo", ["in", "deg"]),
             ("output_smoothness", "Output Smoothness", "entry"),
-            ("circuit_type", "Circuit Type", "combo", ["Open", "Closed"]),
+            # Open = visible resistive element, Closed = enclosed. Imported
+            # from the Open/Closed column on the Model Reference sheet.
+            ("open_closed", "Open/Closed", "combo", ["", "Open", "Closed"]),
+            # Pipe-separated alternate model numbers that should resolve to
+            # this spec. Example: "2001621501 | 1621501-R1"
+            ("aliases", "Aliases (pipe-separated)", "entry"),
             ("notes", "Notes", "textbox"),
         ]
 
@@ -207,6 +218,22 @@ class SpecsPage(ctk.CTkFrame):
         """Called when page becomes visible."""
         self._load_specs()
         self._check_discrepancy_count()
+
+    def on_hide(self):
+        """Called when page is hidden - free 300+ rendered row widgets so
+        the next page renders smoothly. Without this, the row frames stay
+        alive in the geometry manager and the GUI feels sluggish for the
+        rest of the session.
+        """
+        try:
+            for frame in self._row_frames:
+                try:
+                    frame.destroy()
+                except Exception:
+                    pass
+            self._row_frames.clear()
+        except Exception as e:
+            logger.debug(f"Specs on_hide cleanup warning: {e}")
 
     def _load_specs(self):
         """Load all specs from database."""

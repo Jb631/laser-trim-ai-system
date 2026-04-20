@@ -174,8 +174,11 @@ class Processor:
                     metadata, "No valid track data found", start_time
                 )
 
-            # Look up linearity type for this model
-            linearity_type = self._get_linearity_type(metadata.model)
+            # Look up full spec (linearity type + angle spec + tol + tol_type)
+            # for this model. These drive the slope-from-tolerance rule in
+            # the analyzer.
+            spec = self._get_spec_for_analysis(metadata.model, is_final_test=False)
+            linearity_type = spec["linearity_type"]
 
             # Analyze each track (pass model for ML threshold lookup)
             analyzed_tracks: List[TrackData] = []
@@ -185,6 +188,9 @@ class Processor:
                     track_data,
                     model=metadata.model,
                     linearity_type=linearity_type,
+                    angle_spec=spec["angle_spec"],
+                    angle_tol=spec["angle_tol"],
+                    angle_tol_type=spec["angle_tol_type"],
                     station_compensation=track_data.get("station_compensation"),
                 )
 
@@ -292,15 +298,6 @@ class Processor:
             # Add file path to metadata
             metadata["file_path"] = str(file_path)
 
-            # Save to database
-            db = get_database()
-            final_test_id = db.save_final_test(
-                metadata=metadata,
-                tracks=tracks,
-                test_results=test_results,
-                file_hash=file_hash
-            )
-
             processing_time = time.time() - start_time
 
             # Create minimal metadata for result
@@ -317,6 +314,14 @@ class Processor:
             # This can happen with some file formats or parsing failures
             if not tracks:
                 logger.warning(f"Final Test file has no track data: {file_path.name}")
+                # Still save the header row so the file is tracked as processed
+                db = get_database()
+                db.save_final_test(
+                    metadata=metadata,
+                    tracks=tracks,
+                    test_results=test_results,
+                    file_hash=file_hash,
+                )
                 error_result = self._create_error_result(
                     minimal_metadata,
                     "Final Test file has no track data",
@@ -325,19 +330,19 @@ class Processor:
                 error_result.file_type = "final_test"  # Prevent saving as trim record
                 return error_result
 
-            # Determine status from test results
-            overall_status = AnalysisStatus.PASS
-            if test_results.get("linearity_pass") is False:
-                overall_status = AnalysisStatus.FAIL
-            elif any(not t.get("linearity_pass", True) for t in tracks):
-                overall_status = AnalysisStatus.FAIL
-
-            # Look up linearity type and compensation for FT analysis
+            # Look up full spec for FT analysis. Use the FT-specific resolver
+            # so multi-section parts (e.g. 8508) pick up the per-section spec
+            # based on the trailing letter on the serial (e.g. '31B' -> 8508-B).
             ft_model = metadata.get("model", "unknown")
-            ft_linearity_type = self._get_linearity_type(ft_model)
+            ft_serial = metadata.get("serial")
+            ft_spec = self._get_spec_for_analysis(ft_model, ft_serial, is_final_test=True)
+            ft_linearity_type = ft_spec["linearity_type"]
             ft_compensation = metadata.get("station_compensation")
 
-            # Create minimal track data for display
+            # Run analyzer BEFORE saving so slope/offset/linearity_type flow into
+            # the final_test_tracks rows. The analyzer output is used both for
+            # the display result (analyzed_tracks) and for enriching the raw
+            # track dicts passed to save_final_test.
             analyzed_tracks = []
             for track in tracks:
                 # Handle None values explicitly (dict.get returns None if key exists with None value)
@@ -366,9 +371,34 @@ class Processor:
                         track_dict,
                         model=ft_model,
                         linearity_type=ft_linearity_type,
+                        angle_spec=ft_spec["angle_spec"],
+                        angle_tol=ft_spec["angle_tol"],
+                        angle_tol_type=ft_spec["angle_tol_type"],
                         station_compensation=track.get("station_compensation") or ft_compensation,
                     )
                     analyzed_tracks.append(track_result)
+
+                    # Enrich the raw parser track dict with spec-aware values so
+                    # save_final_test can persist them on final_test_tracks.
+                    track["optimal_offset"] = getattr(track_result, "optimal_offset", 0.0)
+                    track["optimal_slope"] = getattr(track_result, "optimal_slope", 1.0)
+                    track["linearity_type"] = (
+                        str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
+                        else (str(ft_linearity_type) if ft_linearity_type else None)
+                    )
+                    # Overwrite the parser's raw-error fail count with the
+                    # analyzer's corrected-error count. Pass/fail is judged
+                    # on corrected errors (raw * slope + offset), not raw,
+                    # so this is what should land in the DB.
+                    corrected_fail_points = getattr(track_result, "linearity_fail_points", None)
+                    if corrected_fail_points is not None:
+                        track["linearity_fail_points"] = corrected_fail_points
+                    corrected_lin_pass = getattr(track_result, "linearity_pass", None)
+                    if corrected_lin_pass is not None:
+                        track["linearity_pass"] = corrected_lin_pass
+                    corrected_lin_error = getattr(track_result, "linearity_error", None)
+                    if corrected_lin_error is not None:
+                        track["linearity_error"] = corrected_lin_error
                 else:
                     # Minimal TrackData when no error data available
                     track_data = TrackData(
@@ -389,6 +419,33 @@ class Processor:
                         error_data=errors,
                     )
                     analyzed_tracks.append(track_data)
+
+                    # Enrich with identity correction so the columns are always
+                    # populated for every track.
+                    track["optimal_offset"] = 0.0
+                    track["optimal_slope"] = 1.0
+                    track["linearity_type"] = (
+                        str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
+                        else (str(ft_linearity_type) if ft_linearity_type else None)
+                    )
+
+            # Determine overall status from CORRECTED analyzer results so the
+            # top-level pass/fail reflects pass/fail on corrected errors
+            # (raw * slope + offset vs spec limits), not the parser's raw count.
+            overall_status = AnalysisStatus.PASS
+            for at in analyzed_tracks:
+                if getattr(at, "linearity_pass", True) is False:
+                    overall_status = AnalysisStatus.FAIL
+                    break
+
+            # Save to database (now with enriched tracks)
+            db = get_database()
+            final_test_id = db.save_final_test(
+                metadata=metadata,
+                tracks=tracks,
+                test_results=test_results,
+                file_hash=file_hash
+            )
 
             result = AnalysisResult(
                 metadata=minimal_metadata,
@@ -755,6 +812,18 @@ class Processor:
             tracks = parsed["tracks"]
             file_hash = parsed["file_hash"]
 
+            # Refuse to save empty parses. The previous code silently saved a
+            # fake "Pass" track with zeroed smoothness values when the parser
+            # returned [], which is why every record showed Max Smoothness:
+            # 0.0000. Better to error loudly so the user knows the file
+            # format isn't recognised.
+            if not tracks:
+                raise ValueError(
+                    f"Smoothness parser returned no tracks for {file_path.name}. "
+                    f"The file format may not be recognised. Check the column "
+                    f"layout matches the expected Betatronix or generic format."
+                )
+
             db = get_database()
             result_id = db.save_smoothness_result(
                 metadata=metadata, tracks=tracks, file_hash=file_hash
@@ -775,7 +844,8 @@ class Processor:
             if any(not t.get("smoothness_pass", True) for t in tracks):
                 overall_status = AnalysisStatus.FAIL
 
-            # Create minimal track data for result
+            # Create minimal TrackData objects mirroring the smoothness tracks.
+            # tracks is guaranteed non-empty by the check above.
             analyzed_tracks = [
                 TrackData(
                     track_id=t.get("track_id", "default"),
@@ -785,7 +855,7 @@ class Processor:
                     optimal_offset=0.0, linearity_error=0.0,
                     linearity_pass=True, linearity_fail_points=0,
                 )
-                for t in (tracks or [{"track_id": "default", "smoothness_pass": True}])
+                for t in tracks
             ]
 
             result = AnalysisResult(
@@ -821,6 +891,51 @@ class Processor:
         except Exception as e:
             logger.debug(f"Could not look up model spec for {model}: {e}")
         return None
+
+    def _get_spec_for_analysis(
+        self,
+        model: str,
+        serial: Optional[str] = None,
+        is_final_test: bool = False,
+    ) -> Dict[str, Optional[object]]:
+        """
+        Look up the spec fields the analyzer needs for slope+offset
+        optimization: (linearity_type, angle_spec, angle_tol, angle_tol_type).
+
+        For Final Test records we use resolve_spec_for_ft so multi-section
+        parts like 8508 (stored as 8508-A, -B, -C, -D in model_specs) map to
+        the right section based on the trailing letter on the serial.
+
+        Returns a dict with keys: linearity_type, angle_spec, angle_tol,
+        angle_tol_type. All values may be None if the model isn't in
+        model_specs yet.
+        """
+        empty = {
+            "linearity_type": None,
+            "angle_spec": None,
+            "angle_tol": None,
+            "angle_tol_type": None,
+        }
+        if not model:
+            return empty
+        try:
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            if is_final_test:
+                spec = db.resolve_spec_for_ft(model, serial)
+            else:
+                spec = db.get_model_spec(model)
+            if not spec:
+                return empty
+            return {
+                "linearity_type": spec.get("linearity_type"),
+                "angle_spec": spec.get("electrical_angle"),
+                "angle_tol": spec.get("electrical_angle_tol"),
+                "angle_tol_type": spec.get("electrical_angle_tol_type"),
+            }
+        except Exception as e:
+            logger.debug(f"Could not look up model spec for {model}: {e}")
+            return empty
 
     def _determine_overall_status(self, tracks: List[TrackData]) -> AnalysisStatus:
         """Determine overall file status from track results."""

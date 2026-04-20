@@ -949,6 +949,11 @@ class AnalyzePage(ctk.CTkFrame):
         else:
             title = f"{model} - Track {track.track_id} - {status_str}"
 
+        # Pull linearity_type so chart can render the corrected-line legend
+        # appropriately (e.g. "no-op for Absolute" when correction is identity).
+        lt = getattr(track, "linearity_type", None)
+        lt_str = lt.value if hasattr(lt, "value") else (str(lt) if lt is not None else None)
+
         self.chart.plot_error_vs_position(
             positions=track.position_data,
             trimmed_errors=track.error_data,
@@ -964,6 +969,7 @@ class AnalyzePage(ctk.CTkFrame):
             trim_improvement_percent=track.trim_improvement_percent,
             trim_date=trim_date,
             station_compensation=getattr(track, 'station_compensation', None),
+            linearity_type=lt_str,
         )
 
     def _display_metrics(self, analysis: AnalysisResult):
@@ -1160,8 +1166,11 @@ class AnalyzePage(ctk.CTkFrame):
                     lines.append(f"  Elec. Angle:     {angle_str}")
                 if spec["output_smoothness"]:
                     lines.append(f"  Smoothness:      {spec['output_smoothness']}")
-                if spec["circuit_type"]:
-                    lines.append(f"  Circuit:         {spec['circuit_type']}")
+                # Prefer the new open_closed column; fall back to legacy
+                # circuit_type for rows imported before the rename.
+                oc = spec.get("open_closed") or spec.get("circuit_type")
+                if oc:
+                    lines.append(f"  Open/Closed:     {oc}")
         except Exception:
             pass  # Model specs not available — no problem
 
@@ -1706,9 +1715,22 @@ class AnalyzePage(ctk.CTkFrame):
                    'b--', linewidth=1.5, label='Untrimmed',
                    color=QA_COLORS['untrimmed'], alpha=0.6)
 
-        # Plot trimmed/shifted data
-        ax.plot(positions, errors_shifted, 'g-', linewidth=2,
-               label='Trimmed (Offset Applied)', color=QA_COLORS['trimmed'])
+        # Build corrected label that reflects actual correction applied
+        if abs(slope - 1.0) < 1e-9 and abs(offset) < 1e-9:
+            corrected_label = 'Trimmed corrected (no-op)'
+        elif abs(slope - 1.0) < 1e-9:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
+        else:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+
+        # Corrected trace (primary — solid, drives pass/fail judgment)
+        ax.plot(positions, errors_shifted, linewidth=2,
+               label=corrected_label, color=QA_COLORS['trimmed'], zorder=3)
+
+        # Raw (as-measured) faint dashed reference
+        ax.plot(positions, errors, linewidth=1.2, linestyle='--',
+               label='Trimmed (as measured)', color=QA_COLORS['trimmed'],
+               alpha=0.35, zorder=2)
 
         # Get spec limits - use stored limits or calculate from linearity_spec
         upper_limits = track.upper_limits

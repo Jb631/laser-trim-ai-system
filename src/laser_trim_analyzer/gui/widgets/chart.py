@@ -110,39 +110,65 @@ class ChartWidget(ctk.CTkFrame):
 
     def _do_resize(self) -> None:
         """Actually perform the resize after debounce."""
+        self._sync_figure_to_widget(redraw=True)
+
+    def _sync_figure_to_widget(self, redraw: bool = False) -> None:
+        """Resize the matplotlib figure to match the current widget size.
+
+        Called by both the debounced resize handler and synchronously by
+        clear() so that newly drawn plots always render at the right
+        pixel dimensions instead of the figure's initial figsize.
+        """
         if self._destroyed or not self.figure or not self.canvas:
             return
+
+        # Force tk to compute current geometry if it hasn't yet
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
 
         # Get the widget's current size
         width = self.winfo_width()
         height = self.winfo_height()
 
-        # Minimum sizes to avoid tiny charts
-        MIN_WIDTH = 200
-        MIN_HEIGHT = 150
+        # If widget hasn't been laid out yet, fall back to the parent's size
+        # (avoids the "1x1 then snap" effect that left the chart in the corner).
+        if width <= 1 or height <= 1:
+            try:
+                parent = self.master
+                if parent is not None:
+                    parent.update_idletasks()
+                    pw = parent.winfo_width()
+                    ph = parent.winfo_height()
+                    if pw > 1 and ph > 1:
+                        width, height = pw, ph
+            except Exception:
+                pass
 
-        # Use minimum sizes if widget is too small (during initialization or small screens)
-        if width < MIN_WIDTH:
-            width = MIN_WIDTH
-        if height < MIN_HEIGHT:
-            height = MIN_HEIGHT
-
-        # Avoid sizes that are clearly invalid
+        # Avoid sizes that are clearly invalid (still during init)
         if width < 10 or height < 10:
             return
 
         # Convert pixels to inches for matplotlib
         dpi = self.style.dpi
-        fig_width = max(2.0, width / dpi)  # Minimum 2 inches
-        fig_height = max(1.5, height / dpi)  # Minimum 1.5 inches
+        fig_width = max(2.0, width / dpi)
+        fig_height = max(1.5, height / dpi)
 
-        # Update figure size and redraw
+        # Only update if the size actually changed (avoid spurious redraws)
+        cur_w, cur_h = self.figure.get_size_inches()
+        if abs(cur_w - fig_width) < 0.05 and abs(cur_h - fig_height) < 0.05:
+            if redraw:
+                self.canvas.draw_idle()
+            return
+
         self.figure.set_size_inches(fig_width, fig_height, forward=True)
         try:
             self.figure.tight_layout(pad=0.5)
         except Exception:
             pass  # tight_layout can fail with certain axes configurations
-        self.canvas.draw_idle()
+        if redraw:
+            self.canvas.draw_idle()
 
     def clear(self) -> None:
         """Clear the chart and release axes resources."""
@@ -152,6 +178,11 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.clear()
         # Restore figure facecolor after clear (matplotlib may reset it)
         self.figure.set_facecolor(COLORS['background'] if self.style.dark_mode else 'white')
+        # Sync figure size to widget size BEFORE the new plot is drawn, so
+        # the plot renders at the correct pixel dimensions instead of the
+        # initial figsize (which causes "renders in top-left then snaps"
+        # behavior on the sigma scatter and other charts).
+        self._sync_figure_to_widget(redraw=False)
         self.canvas.draw_idle()
 
     def _style_axis(self, ax) -> None:
@@ -189,6 +220,7 @@ class ChartWidget(ctk.CTkFrame):
         trim_date: Optional[str] = None,
         trim_improvement_percent: Optional[float] = None,
         station_compensation: Optional[float] = None,
+        linearity_type: Optional[str] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -255,24 +287,44 @@ class ChartWidget(ctk.CTkFrame):
                 label=label_text
             )
 
-        # If slope adjustment applied, show raw errors as faded line
-        if slope != 1.0:
-            ax.plot(
-                positions, [e + offset for e in trimmed_errors],
-                '--', color='gray', alpha=0.4, linewidth=0.8,
-                label='Offset only'
-            )
+        # Plot corrected line: e * slope + offset. This is the PRIMARY solid
+        # line because it's what drives pass/fail judgment against spec limits.
+        # We always draw it, even when slope==1.0 and offset==0 (Absolute or
+        # no spec), so the legend stays consistent and it's obvious whether
+        # correction is doing anything.
+        lt_norm = (linearity_type or "").strip().lower()
+        is_absolute = lt_norm in ("absolute", "term base", "term_base")
+        is_no_op = (abs(slope - 1.0) < 1e-9) and (abs(offset) < 1e-9)
 
-        # Plot trimmed data (optimized)
-        if slope != 1.0:
-            label = f'Optimized (offset: {offset:.4f}, slope: {slope:.4f})'
+        if is_absolute:
+            corrected_label = 'Corrected (no-op for Absolute)'
+        elif is_no_op:
+            corrected_label = 'Corrected (no-op — no spec correction)'
+        elif abs(slope - 1.0) < 1e-9:
+            corrected_label = f'Corrected (offset: {offset:+.6f})'
         else:
-            label = f'Trimmed (offset: {offset:.6f})'
+            corrected_label = f'Corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+
+        # Corrected trace (primary — solid, full weight)
         ax.plot(
             positions, shifted_errors,
             color=COLORS['trimmed'],
             linewidth=self.style.line_width,
-            label=label
+            label=corrected_label,
+            zorder=3,
+        )
+
+        # Raw (as-measured) trimmed line as a faint dashed reference so the
+        # user can see what was actually measured before correction. Fainter
+        # when correction is a no-op (because the two lines overlap exactly).
+        ax.plot(
+            positions, trimmed_errors,
+            color=COLORS['trimmed'],
+            linestyle='--',
+            linewidth=self.style.line_width * 0.8,
+            alpha=0.25 if is_no_op or is_absolute else 0.35,
+            label='Trimmed (as measured)',
+            zorder=2,
         )
 
         # Plot specification limits (handle None = no limit at that position)
@@ -701,13 +753,17 @@ class ChartWidget(ctk.CTkFrame):
         n_tracks = len(tracks)
         if n_tracks == 1:
             # Single track, just show it
+            lt = getattr(tracks[0], "linearity_type", None)
+            lt_str = lt.value if hasattr(lt, "value") else (str(lt) if lt is not None else None)
             self.plot_error_vs_position(
                 positions=tracks[0].position_data,
                 trimmed_errors=tracks[0].error_data,
                 upper_limits=tracks[0].upper_limits,
                 lower_limits=tracks[0].lower_limits,
                 offset=tracks[0].optimal_offset,
-                title=f"Track {tracks[0].track_id}"
+                slope=getattr(tracks[0], 'optimal_slope', 1.0) or 1.0,
+                title=f"Track {tracks[0].track_id}",
+                linearity_type=lt_str,
             )
             return
 

@@ -438,6 +438,10 @@ class DatabaseManager:
                     "CREATE INDEX IF NOT EXISTS idx_ft_status ON final_test_results(overall_status)",
                     "CREATE INDEX IF NOT EXISTS idx_ft_linked_trim ON final_test_results(linked_trim_id)",
                     "CREATE INDEX IF NOT EXISTS idx_ft_test_date ON final_test_results(test_date)",
+                    # Standalone file_date index - Compare/Final Test page does
+                    # ORDER BY file_date DESC LIMIT 500 with no leading filter,
+                    # which the composite indexes don't satisfy.
+                    "CREATE INDEX IF NOT EXISTS idx_ft_file_date ON final_test_results(file_date)",
                 ]
                 created = 0
                 for stmt in index_statements:
@@ -539,6 +543,87 @@ class DatabaseManager:
                     logger.info("Migration: Added match_method column to final_test_results")
                 except Exception:
                     pass
+
+            # Migration: Add aliases column to model_specs.
+            # Stores pipe-separated alternate model numbers so a single spec
+            # row covers cases like 1621501 and 2001621501 being the same part.
+            try:
+                session.execute(text("SELECT aliases FROM model_specs LIMIT 1"))
+            except OperationalError:
+                try:
+                    session.execute(text("ALTER TABLE model_specs ADD COLUMN aliases TEXT"))
+                    session.commit()
+                    logger.info("Migration: Added aliases column to model_specs")
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        logger.warning(f"aliases migration warning: {e}")
+                    session.rollback()
+
+            # Migration: Add open_closed column to model_specs and backfill from
+            # circuit_type. The original importer wrote the Excel "Open/Closed"
+            # column into circuit_type, which is misleading — Open vs Closed
+            # refers to whether the resistive element is visible, not the
+            # electrical circuit type. Keep circuit_type for backward compat
+            # but add a correctly-named column and sync values across.
+            try:
+                session.execute(text("SELECT open_closed FROM model_specs LIMIT 1"))
+            except OperationalError:
+                try:
+                    session.execute(text(
+                        "ALTER TABLE model_specs ADD COLUMN open_closed VARCHAR(10)"
+                    ))
+                    # Backfill from circuit_type for existing rows
+                    session.execute(text(
+                        "UPDATE model_specs SET open_closed = circuit_type "
+                        "WHERE open_closed IS NULL AND circuit_type IS NOT NULL"
+                    ))
+                    session.commit()
+                    logger.info(
+                        "Migration: Added open_closed column to model_specs "
+                        "and backfilled from circuit_type"
+                    )
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        logger.warning(f"open_closed migration warning: {e}")
+                    session.rollback()
+
+            # Migration: Add spec-aware columns to final_test_tracks so the FT
+            # analyzer's optimal_slope/offset/linearity_type are persisted (not
+            # just held in memory for the current Process Files screen).
+            ft_phase2_columns = {
+                "optimal_offset": "FLOAT",
+                "optimal_slope": "FLOAT DEFAULT 1.0",
+                "linearity_type": "VARCHAR(30)",
+            }
+            for col_name, col_type in ft_phase2_columns.items():
+                try:
+                    session.execute(text(
+                        f"ALTER TABLE final_test_tracks ADD COLUMN {col_name} {col_type}"
+                    ))
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                        logger.warning(f"FT migration warning adding {col_name}: {e}")
+                    session.rollback()
+            try:
+                session.commit()
+                logger.info("FT phase2 migration: ensured spec-aware columns exist on final_test_tracks")
+            except Exception:
+                pass
+
+            # Migration: Add electrical_angle_tol_type to model_specs so the
+            # angle-parser qualifier ('symmetric', 'min', 'max', 'range',
+            # 'bilateral') is preserved. The slope-correction rule depends on
+            # this to know whether a tolerance is one-sided or two-sided.
+            try:
+                session.execute(text(
+                    "ALTER TABLE model_specs ADD COLUMN electrical_angle_tol_type VARCHAR(12)"
+                ))
+                session.commit()
+                logger.info("Migration: Added electrical_angle_tol_type column to model_specs")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"electrical_angle_tol_type migration warning: {e}")
+                session.rollback()
 
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
@@ -3472,6 +3557,9 @@ class DatabaseManager:
                             lower_limits=track_data.get("lower_limits"),
                             max_deviation=track_data.get("max_deviation"),
                             max_deviation_position=track_data.get("max_deviation_angle"),
+                            optimal_offset=track_data.get("optimal_offset"),
+                            optimal_slope=track_data.get("optimal_slope"),
+                            linearity_type=track_data.get("linearity_type"),
                         )
                         session.add(db_track)
 
@@ -4401,6 +4489,11 @@ class DatabaseManager:
                         "upper_limits": t.upper_limits or [],
                         "lower_limits": t.lower_limits or [],
                         "linearity_error": t.linearity_error,
+                        # Spec-aware correction fields (persisted by analyzer)
+                        # so the compare chart can draw a corrected overlay.
+                        "optimal_offset": t.optimal_offset if t.optimal_offset is not None else 0.0,
+                        "optimal_slope": t.optimal_slope if t.optimal_slope is not None else 1.0,
+                        "linearity_type": t.linearity_type,
                     }
                     for t in ft.tracks  # Use pre-loaded tracks
                 ]
@@ -4560,6 +4653,9 @@ class DatabaseManager:
                             lower_limits=track_data.get("lower_limits"),
                             max_deviation=track_data.get("max_deviation"),
                             max_deviation_position=track_data.get("max_deviation_angle"),
+                            optimal_offset=track_data.get("optimal_offset"),
+                            optimal_slope=track_data.get("optimal_slope"),
+                            linearity_type=track_data.get("linearity_type"),
                         )
                         session.add(db_track)
 
@@ -5430,56 +5526,105 @@ class DatabaseManager:
     # Model Specifications
     # =========================================================================
 
+    @staticmethod
+    def _spec_to_dict(s: "ModelSpec") -> Dict[str, Any]:
+        return {
+            "id": s.id,
+            "model": s.model,
+            "element_type": s.element_type,
+            "product_class": s.product_class,
+            "linearity_type": s.linearity_type,
+            "linearity_spec_text": s.linearity_spec_text,
+            "linearity_spec_pct": s.linearity_spec_pct,
+            "total_resistance_min": s.total_resistance_min,
+            "total_resistance_max": s.total_resistance_max,
+            "electrical_angle": s.electrical_angle,
+            "electrical_angle_tol": s.electrical_angle_tol,
+            "electrical_angle_tol_type": getattr(s, "electrical_angle_tol_type", None),
+            "electrical_angle_unit": s.electrical_angle_unit,
+            "output_smoothness": s.output_smoothness,
+            "circuit_type": s.circuit_type,
+            "open_closed": getattr(s, "open_closed", None) or s.circuit_type,
+            "aliases": getattr(s, "aliases", None),
+            "notes": s.notes,
+        }
+
+    @staticmethod
+    def _parse_aliases(aliases_str: Optional[str]) -> List[str]:
+        """Parse pipe-separated aliases into a trimmed list of non-empty tokens."""
+        if not aliases_str:
+            return []
+        return [a.strip() for a in aliases_str.split("|") if a.strip()]
+
     def get_all_model_specs(self) -> List[Dict[str, Any]]:
         """Get all model specs as dicts."""
         with self.session() as session:
             specs = session.query(ModelSpec).order_by(ModelSpec.model).all()
-            return [
-                {
-                    "id": s.id,
-                    "model": s.model,
-                    "element_type": s.element_type,
-                    "product_class": s.product_class,
-                    "linearity_type": s.linearity_type,
-                    "linearity_spec_text": s.linearity_spec_text,
-                    "linearity_spec_pct": s.linearity_spec_pct,
-                    "total_resistance_min": s.total_resistance_min,
-                    "total_resistance_max": s.total_resistance_max,
-                    "electrical_angle": s.electrical_angle,
-                    "electrical_angle_tol": s.electrical_angle_tol,
-                    "electrical_angle_unit": s.electrical_angle_unit,
-                    "output_smoothness": s.output_smoothness,
-                    "circuit_type": s.circuit_type,
-                    "notes": s.notes,
-                }
-                for s in specs
-            ]
+            return [self._spec_to_dict(s) for s in specs]
 
     def get_model_spec(self, model: str) -> Optional[Dict[str, Any]]:
-        """Get spec for a specific model."""
+        """
+        Get spec for a specific model. Checks both the primary `model` column
+        and the pipe-separated `aliases` column, so `1621501` and `2001621501`
+        can share a single spec row.
+        """
+        if not model:
+            return None
+        model = model.strip()
         with self.session() as session:
+            # Primary match first
             spec = session.query(ModelSpec).filter(
                 ModelSpec.model == model
             ).first()
-            if not spec:
-                return None
-            return {
-                "id": spec.id,
-                "model": spec.model,
-                "element_type": spec.element_type,
-                "product_class": spec.product_class,
-                "linearity_type": spec.linearity_type,
-                "linearity_spec_text": spec.linearity_spec_text,
-                "linearity_spec_pct": spec.linearity_spec_pct,
-                "total_resistance_min": spec.total_resistance_min,
-                "total_resistance_max": spec.total_resistance_max,
-                "electrical_angle": spec.electrical_angle,
-                "electrical_angle_tol": spec.electrical_angle_tol,
-                "electrical_angle_unit": spec.electrical_angle_unit,
-                "output_smoothness": spec.output_smoothness,
-                "circuit_type": spec.circuit_type,
-                "notes": spec.notes,
-            }
+            if spec:
+                return self._spec_to_dict(spec)
+
+            # Fallback: search aliases. SQLite's LIKE is case-insensitive by
+            # default for ASCII; we wrap with the delimiter to avoid matching
+            # prefixes/suffixes ('21501' should not match '1621501').
+            like_pattern = f"%|{model}|%"
+            # Also match at start/end without a leading/trailing pipe
+            candidates = session.query(ModelSpec).filter(
+                ModelSpec.aliases.isnot(None),
+                ModelSpec.aliases != "",
+            ).all()
+            for c in candidates:
+                if model in self._parse_aliases(c.aliases):
+                    return self._spec_to_dict(c)
+            return None
+
+    def resolve_spec_for_ft(self, model: Optional[str], serial: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a model spec for a Final Test record.
+
+        Multi-section parts (e.g. 8508) store their spec as per-section rows:
+        8508-A, 8508-B, 8508-C, 8508-D. But FT files for the same product are
+        labeled as model='8508' with the section baked into the serial by the
+        operator (e.g. serial='31B' for section B, SN31). This helper tries
+        the section-specific spec first, then falls back to the plain model.
+
+        Resolution order:
+          1. If serial ends in a letter AND get_model_spec(model-letter) exists,
+             return that row.
+          2. Otherwise return get_model_spec(model).
+        """
+        if not model:
+            return None
+
+        if serial:
+            # Trailing letter on the serial — e.g., '31B', '1004a'.
+            # Uppercase it so '31b' and '31B' both resolve to '-B'.
+            import re as _re
+            m = _re.match(r'^.*?([A-Za-z])\s*$', str(serial))
+            if m:
+                section_letter = m.group(1).upper()
+                section_model = f"{model}-{section_letter}"
+                section_spec = self.get_model_spec(section_model)
+                if section_spec:
+                    return section_spec
+
+        # Fallback: plain model lookup (covers single-section parts).
+        return self.get_model_spec(model)
 
     def save_model_spec(self, data: Dict[str, Any]) -> Tuple[int, bool]:
         """Create or update a model spec. Returns (spec_id, was_update)."""
@@ -5530,6 +5675,189 @@ class DatabaseManager:
             ).distinct().order_by(ModelSpec.product_class).all()
             return [r[0] for r in results]
 
+    @staticmethod
+    def _parse_angle_string(angle_text: Optional[str]) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
+        """
+        Parse a single angle-spec string into (value, tol, unit, tol_type).
+
+        Handles many formats:
+          '1.31" ± .005"'        symmetric tolerance
+          '.665" +/-.005"'       symmetric tolerance
+          '150° ± 1°'            symmetric tolerance
+          '350° Min'             one-sided (floor; slope may go up)
+          '340° Max'             one-sided (ceiling; slope may go down)
+          '89° - 91°'            range (midpoint ± half-range)
+          '2.812" - 2.832"'      range
+          '±45°', '+/- 27.5°'    bilateral (±N from center)
+          '120°', '1.25"'        nominal only, no tolerance
+          'See ATP-10312-DS'     reference doc — returns all Nones
+          'SEE CHARTS'           reference doc — returns all Nones
+
+        Returns (angle_val, angle_tol, angle_unit, angle_tol_type).
+        All None if the text is empty or a reference-doc string.
+        """
+        import re as _re
+
+        angle_val = None
+        angle_tol = None
+        angle_unit = None
+        angle_tol_type = None
+
+        if not angle_text:
+            return angle_val, angle_tol, angle_unit, angle_tol_type
+
+        txt = angle_text.strip()
+        if not txt:
+            return angle_val, angle_tol, angle_unit, angle_tol_type
+
+        txt_lower = txt.lower()
+
+        # Reference-doc strings: store nothing (don't pull a part
+        # number out of the string and call it an angle).
+        if (txt_lower.startswith("see ") or
+            "see chart" in txt_lower or
+            "see table" in txt_lower or
+            "see atp" in txt_lower):
+            return None, None, None, None
+
+        has_deg = '°' in txt or 'deg' in txt_lower
+        has_inch = '"' in txt
+        unit_guess = "deg" if has_deg else ("in" if has_inch else None)
+
+        # Bilateral: starts with ± or +/- (e.g. '±45°', '+/- 27.5°')
+        bi_match = _re.match(r'^\s*(?:[±]|\+/?-)\s*([\d.]+)', txt)
+
+        # "Min" or "Max" qualifier anywhere in the text.
+        has_min = bool(_re.search(r'\bmin\b', txt_lower))
+        has_max = bool(_re.search(r'\bmax\b', txt_lower))
+
+        # Range form: "89° - 91°" or "2.812" - 2.832""
+        range_match = _re.search(r'([\d.]+)[°"]?\s*[-–]\s*([\d.]+)', txt)
+
+        # Symmetric form: "N ± M" or "N +/- M"
+        sym_match = _re.search(r'([\d.]+)[°"]?\s*(?:[±]|\+/?-)\s*([\d.]+)', txt)
+
+        # Priority: symmetric > range > bilateral > min/max > plain
+        if sym_match and not (bi_match and bi_match.start() == 0 and '±' not in txt[:3]):
+            try:
+                angle_val = float(sym_match.group(1))
+                angle_tol = float(sym_match.group(2))
+                angle_tol_type = "symmetric"
+                angle_unit = unit_guess or "in"
+            except ValueError:
+                pass
+
+        if angle_val is None and range_match:
+            try:
+                lo = float(range_match.group(1))
+                hi = float(range_match.group(2))
+                if hi > lo:
+                    angle_val = (lo + hi) / 2.0
+                    angle_tol = (hi - lo) / 2.0
+                    angle_tol_type = "range"
+                    angle_unit = unit_guess or "in"
+            except ValueError:
+                pass
+
+        if angle_val is None and bi_match:
+            try:
+                angle_val = float(bi_match.group(1))
+                angle_tol = None
+                angle_tol_type = "bilateral"
+                angle_unit = unit_guess or "deg"
+            except ValueError:
+                pass
+
+        if angle_val is None and has_min:
+            num_match = _re.search(r'([\d.]+)', txt)
+            if num_match:
+                try:
+                    angle_val = float(num_match.group(1))
+                    angle_tol = None
+                    angle_tol_type = "min"
+                    angle_unit = unit_guess or "in"
+                except ValueError:
+                    pass
+
+        if angle_val is None and has_max:
+            num_match = _re.search(r'([\d.]+)', txt)
+            if num_match:
+                try:
+                    angle_val = float(num_match.group(1))
+                    angle_tol = None
+                    angle_tol_type = "max"
+                    angle_unit = unit_guess or "in"
+                except ValueError:
+                    pass
+
+        if angle_val is None:
+            num_match = _re.search(r'([\d.]+)', txt)
+            if num_match:
+                try:
+                    angle_val = float(num_match.group(1))
+                    angle_tol = None
+                    angle_tol_type = None
+                    angle_unit = unit_guess or "in"
+                except ValueError:
+                    pass
+
+        return angle_val, angle_tol, angle_unit, angle_tol_type
+
+    @staticmethod
+    def _split_multi_section_angle(angle_text: Optional[str]) -> List[Tuple[List[str], str]]:
+        """
+        If the angle text describes multiple sections with different specs,
+        split it into [(sections, per_section_angle_text), ...].
+
+        Example inputs that trigger splitting:
+          'Section A, B & C = 60° +/-.3°\\nSection D = 66.66° +/-.3°'
+            -> [(['A','B','C'], '60° +/-.3°'), (['D'], '66.66° +/-.3°')]
+          'Sections A, B = 60° ± .3°; Section C = 66° ± .3°'
+            -> [(['A','B'], '60° ± .3°'), (['C'], '66° ± .3°')]
+
+        Returns empty list when the text is NOT a multi-section spec — caller
+        should then treat the whole string as a single spec.
+        """
+        import re as _re
+
+        if not angle_text:
+            return []
+
+        txt = angle_text.strip()
+
+        # Must contain at least two occurrences of "Section" (case-insensitive)
+        # to qualify as multi-section. One "Section X = Y" row is technically
+        # possible but pointless to split.
+        if len(_re.findall(r'\bsections?\b', txt, _re.IGNORECASE)) < 2:
+            return []
+
+        # Split on newlines OR on semicolons — the real-world Excel has
+        # '\n' but users may type ';' too.
+        raw_parts = [p.strip() for p in _re.split(r'[\n\r;]+', txt) if p.strip()]
+
+        out: List[Tuple[List[str], str]] = []
+        for part in raw_parts:
+            # Match: "Section(s) A, B & C = <spec text>"
+            m = _re.match(
+                r'^\s*Sections?\s+([A-Za-z0-9 ,&/]+?)\s*=\s*(.+)$',
+                part,
+                _re.IGNORECASE,
+            )
+            if not m:
+                continue
+            sections_str = m.group(1).strip()
+            spec_text = m.group(2).strip()
+            # Break 'A, B & C' into ['A','B','C']. Accept ',', '&', ' and '.
+            tokens = _re.split(r'[,&/]|\band\b', sections_str, flags=_re.IGNORECASE)
+            sections = [t.strip().upper() for t in tokens if t.strip()]
+            # Only keep single-letter section labels (A-Z). Drop anything weird
+            # to stay conservative.
+            sections = [s for s in sections if _re.match(r'^[A-Z]$', s)]
+            if sections and spec_text:
+                out.append((sections, spec_text))
+
+        return out
+
     def import_model_specs_from_excel(self, file_path: str) -> Dict[str, int]:
         """
         Import model specs from the reference Excel file.
@@ -5562,8 +5890,16 @@ class DatabaseManager:
                 resistance_text = str(row[5]).strip() if row[5] else None
                 angle_text = str(row[6]).strip() if row[6] else None
                 smoothness = str(row[7]).strip() if row[7] else None
-                circuit = str(row[8]).strip() if row[8] else None
+                # Column 8 is the Open/Closed indicator (visible vs enclosed
+                # element). Originally mis-read as circuit_type — now we write
+                # to both columns so legacy lookups still work.
+                open_closed = str(row[8]).strip() if row[8] else None
                 product_class = str(row[10]).strip() if len(row) > 10 and row[10] else None
+                # Optional Aliases column (column index 11 if present). Accepts
+                # pipe- or comma-separated alternate model numbers.
+                aliases_raw = None
+                if len(row) > 11 and row[11]:
+                    aliases_raw = str(row[11]).strip()
 
                 # Parse linearity type from text
                 linearity_type = None
@@ -5613,41 +5949,31 @@ class DatabaseManager:
                         except ValueError:
                             pass
 
-                # Parse angle — handles many formats:
-                # '1.31" ± .005"', '.665" +/-.005"', '150° ± 1°', '120°', '1.25"'
-                angle_val = None
-                angle_tol = None
-                angle_unit = None
-                if angle_text:
-                    # Determine unit from text
-                    has_deg = '°' in angle_text or 'deg' in angle_text.lower()
-                    has_inch = '"' in angle_text
+                # Parse angle — either a single spec or a multi-section spec.
+                # Multi-section example from Excel (model 8508):
+                #   'Section A, B & C = 60° +/-.3°\nSection D = 66.66° +/-.3°'
+                # In that case we emit one spec row per section letter so the
+                # trim files (which come in as 8508-A, 8508-B, ...) each find
+                # the matching spec via plain model-name lookup.
+                sections = self._split_multi_section_angle(angle_text)
 
-                    # Try value ± tolerance (handles both ± and +/-)
-                    a_match = re.search(
-                        r'([\d.]+)[°"]?\s*(?:[±]|\+/?-?)\s*([\d.]+)',
-                        angle_text
-                    )
-                    if a_match:
-                        try:
-                            angle_val = float(a_match.group(1))
-                            angle_tol = float(a_match.group(2))
-                            angle_unit = "deg" if has_deg else "in"
-                        except ValueError:
-                            pass
+                # Normalize aliases: accept '|' or ',' as separator, dedupe
+                # and drop empties. Stored as pipe-separated in DB.
+                aliases_norm = None
+                if aliases_raw and aliases_raw not in ("None", "nan"):
+                    tokens = re.split(r'[|,]', aliases_raw)
+                    clean = []
+                    seen = set()
+                    for t in tokens:
+                        t = t.strip()
+                        if t and t not in seen and t != model:
+                            seen.add(t)
+                            clean.append(t)
+                    if clean:
+                        aliases_norm = " | ".join(clean)
 
-                    # Fallback: just extract the first number
-                    if angle_val is None:
-                        num_match = re.search(r'([\d.]+)', angle_text)
-                        if num_match:
-                            try:
-                                angle_val = float(num_match.group(1))
-                                angle_unit = "deg" if has_deg else "in" if has_inch else "in"
-                            except ValueError:
-                                pass
-
-                model_data[model] = {
-                    "model": model,
+                # Shared fields common to every section row for this source row.
+                shared = {
                     "element_type": element_type if element_type and element_type != 'None' else None,
                     "product_class": product_class if product_class and product_class != 'None' else None,
                     "linearity_type": linearity_type,
@@ -5655,12 +5981,45 @@ class DatabaseManager:
                     "linearity_spec_pct": linearity_pct,
                     "total_resistance_min": r_min,
                     "total_resistance_max": r_max,
-                    "electrical_angle": angle_val,
-                    "electrical_angle_tol": angle_tol,
-                    "electrical_angle_unit": angle_unit,
                     "output_smoothness": smoothness if smoothness and smoothness != 'None' else None,
-                    "circuit_type": circuit if circuit and circuit != 'None' else None,
+                    # Write open_closed to both new and legacy fields so GUIs
+                    # reading either column keep working.
+                    "open_closed": open_closed if open_closed and open_closed != 'None' else None,
+                    "circuit_type": open_closed if open_closed and open_closed != 'None' else None,
+                    "aliases": aliases_norm,
                 }
+
+                if sections:
+                    # Multi-section model: emit one row per section letter.
+                    for section_letters, per_section_text in sections:
+                        angle_val, angle_tol, angle_unit, angle_tol_type = \
+                            self._parse_angle_string(per_section_text)
+                        for letter in section_letters:
+                            section_model = f"{model}-{letter}"
+                            model_data[section_model] = {
+                                "model": section_model,
+                                **shared,
+                                "electrical_angle": angle_val,
+                                "electrical_angle_tol": angle_tol,
+                                "electrical_angle_tol_type": angle_tol_type,
+                                "electrical_angle_unit": angle_unit,
+                            }
+                    logger.info(
+                        f"Model specs: expanded {model!r} into "
+                        f"{sum(len(s) for s, _ in sections)} section rows"
+                    )
+                else:
+                    # Normal single-spec row.
+                    angle_val, angle_tol, angle_unit, angle_tol_type = \
+                        self._parse_angle_string(angle_text)
+                    model_data[model] = {
+                        "model": model,
+                        **shared,
+                        "electrical_angle": angle_val,
+                        "electrical_angle_tol": angle_tol,
+                        "electrical_angle_tol_type": angle_tol_type,
+                        "electrical_angle_unit": angle_unit,
+                    }
 
         # Sheet 2: Element Type (supplement — broader coverage)
         if "Element Type" in wb.sheetnames:
@@ -5719,6 +6078,18 @@ class DatabaseManager:
             SmoothnessTrack as DBSmoothnessTrack,
         )
 
+        # Precompute aggregates (used for both insert and upsert paths)
+        overall_status = DBStatusType.PASS
+        for track in tracks:
+            if track.get("smoothness_pass") is False:
+                overall_status = DBStatusType.FAIL
+                break
+
+        max_smooth = max((t.get("max_smoothness", 0) or 0 for t in tracks), default=0)
+        avg_smooth = sum(t.get("avg_smoothness", 0) or 0 for t in tracks) / len(tracks) if tracks else 0
+        spec = metadata.get("smoothness_spec") or (tracks[0].get("smoothness_spec") if tracks else None)
+        passes = all(t.get("smoothness_pass", True) for t in tracks) if tracks else None
+
         with self._write_lock:
             try:
                 with self.session() as session:
@@ -5726,18 +6097,49 @@ class DatabaseManager:
                         DBSmoothnessResult.file_hash == file_hash
                     ).first()
                     if existing:
+                        # UPSERT: the old code silently returned here without
+                        # updating anything. That meant records imported before
+                        # the parser fix kept their zeroed values forever, even
+                        # when reprocessed. Now we overwrite the parent row's
+                        # aggregate fields and replace the child tracks so a
+                        # reprocess actually refreshes the stored data.
+                        existing.overall_status = overall_status
+                        existing.smoothness_spec = spec
+                        existing.max_smoothness_value = max_smooth
+                        existing.avg_smoothness_value = avg_smooth
+                        existing.smoothness_pass = passes
+                        if metadata.get("file_date"):
+                            existing.file_date = metadata.get("file_date")
+                        if metadata.get("test_date"):
+                            existing.test_date = metadata.get("test_date")
+                        if metadata.get("element_label"):
+                            existing.element_label = metadata.get("element_label")
+
+                        # Replace the per-track rows
+                        session.query(DBSmoothnessTrack).filter(
+                            DBSmoothnessTrack.smoothness_id == existing.id
+                        ).delete(synchronize_session=False)
+
+                        for track_data in tracks:
+                            db_track = DBSmoothnessTrack(
+                                smoothness_id=existing.id,
+                                track_id=track_data.get("track_id", "default"),
+                                status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
+                                smoothness_spec=track_data.get("smoothness_spec"),
+                                max_smoothness=track_data.get("max_smoothness"),
+                                avg_smoothness=track_data.get("avg_smoothness"),
+                                smoothness_pass=track_data.get("smoothness_pass"),
+                                position_data=track_data.get("positions"),
+                                smoothness_data=track_data.get("smoothness_values"),
+                            )
+                            session.add(db_track)
+
+                        logger.info(
+                            f"Updated Smoothness: {metadata.get('filename')} "
+                            f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
+                            f"tracks={len(tracks)})"
+                        )
                         return existing.id
-
-                    overall_status = DBStatusType.PASS
-                    for track in tracks:
-                        if track.get("smoothness_pass") is False:
-                            overall_status = DBStatusType.FAIL
-                            break
-
-                    max_smooth = max((t.get("max_smoothness", 0) or 0 for t in tracks), default=0)
-                    avg_smooth = sum(t.get("avg_smoothness", 0) or 0 for t in tracks) / len(tracks) if tracks else 0
-                    spec = metadata.get("smoothness_spec") or (tracks[0].get("smoothness_spec") if tracks else None)
-                    passes = all(t.get("smoothness_pass", True) for t in tracks) if tracks else None
 
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
                         session, metadata.get("model"), metadata.get("serial"),
@@ -5791,6 +6193,96 @@ class DatabaseManager:
                         DBSmoothnessResult.file_hash == file_hash
                     ).first()
                     return existing.id if existing else -1
+
+    def get_smoothness_files_missing_tracks(self) -> List[Dict[str, Any]]:
+        """
+        Get Output Smoothness records that have 0 tracks stored.
+
+        Used to repair records imported by the older code that wrote the
+        result row but did not persist the per-position arrays needed to
+        render the chart.
+
+        Returns:
+            List of dicts with id, filename, file_path, model, serial.
+        """
+        from laser_trim_analyzer.database.models import (
+            SmoothnessResult as DBSmoothnessResult,
+            SmoothnessTrack as DBSmoothnessTrack,
+        )
+
+        with self.session() as session:
+            track_count_subq = (
+                session.query(
+                    DBSmoothnessTrack.smoothness_id,
+                    func.count(DBSmoothnessTrack.id).label('track_count')
+                )
+                .group_by(DBSmoothnessTrack.smoothness_id)
+                .subquery()
+            )
+
+            results = (
+                session.query(DBSmoothnessResult)
+                .outerjoin(
+                    track_count_subq,
+                    DBSmoothnessResult.id == track_count_subq.c.smoothness_id,
+                )
+                .filter(track_count_subq.c.track_count == None)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id,
+                    "filename": r.filename,
+                    "file_path": r.file_path,
+                    "model": r.model,
+                    "serial": r.serial,
+                }
+                for r in results
+            ]
+
+    def update_smoothness_tracks(
+        self,
+        smoothness_id: int,
+        tracks: List[Dict[str, Any]],
+    ) -> bool:
+        """
+        Replace the per-track data for an existing Smoothness record.
+
+        Used to fix records that were imported before the smoothness_tracks
+        write was added to save_smoothness_result.
+        """
+        from laser_trim_analyzer.database.models import (
+            SmoothnessTrack as DBSmoothnessTrack,
+        )
+
+        if not tracks:
+            return False
+
+        with self._write_lock:
+            try:
+                with self.session() as session:
+                    # Delete any existing (likely zero) tracks first
+                    session.query(DBSmoothnessTrack).filter(
+                        DBSmoothnessTrack.smoothness_id == smoothness_id
+                    ).delete(synchronize_session=False)
+
+                    for track_data in tracks:
+                        db_track = DBSmoothnessTrack(
+                            smoothness_id=smoothness_id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=DBStatusType.PASS if track_data.get("smoothness_pass", True) else DBStatusType.FAIL,
+                            smoothness_spec=track_data.get("smoothness_spec"),
+                            max_smoothness=track_data.get("max_smoothness"),
+                            avg_smoothness=track_data.get("avg_smoothness"),
+                            smoothness_pass=track_data.get("smoothness_pass"),
+                            position_data=track_data.get("positions"),
+                            smoothness_data=track_data.get("smoothness_values"),
+                        )
+                        session.add(db_track)
+                    return True
+            except Exception as e:
+                logger.error(f"update_smoothness_tracks({smoothness_id}) failed: {e}")
+                return False
 
     def search_smoothness_results(
         self, model: Optional[str] = None, limit: int = 500
@@ -6103,18 +6595,29 @@ class DatabaseManager:
         return result
 
     def get_drift_events_timeline(self, days_back: int = 180) -> List[Dict[str, Any]]:
-        """Get drift detection events for timeline visualization."""
+        """Get drift detection events for timeline visualization.
+
+        Returns the date drift was first detected (drift_start_date), not when the
+        ML state row was last updated. Falls back to updated_date for legacy rows
+        that were written before drift_start_date was populated.
+        """
         from laser_trim_analyzer.database.models import ModelMLState
         with self.session() as session:
             cutoff = datetime.now() - timedelta(days=days_back)
+            # Use drift_start_date where available; updated_date as fallback for old rows.
+            effective_date = func.coalesce(
+                ModelMLState.drift_start_date, ModelMLState.updated_date
+            )
             results = session.query(ModelMLState).filter(
-                ModelMLState.updated_date >= cutoff,
+                effective_date >= cutoff,
                 ModelMLState.is_drifting == True,
-            ).order_by(ModelMLState.updated_date).all()
+            ).order_by(effective_date).all()
             return [
                 {
                     "model": r.model,
-                    "date": r.updated_date.isoformat() if r.updated_date else None,
+                    # Prefer the actual detection date; fall back to updated_date only if missing.
+                    "date": (r.drift_start_date or r.updated_date).isoformat()
+                    if (r.drift_start_date or r.updated_date) else None,
                     "direction": r.drift_direction,
                 }
                 for r in results

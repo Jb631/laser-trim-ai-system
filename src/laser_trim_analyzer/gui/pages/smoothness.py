@@ -253,22 +253,32 @@ class SmoothnessPage(ctk.CTkFrame):
         self.info_text.insert("1.0", "\n".join(lines))
         self.info_text.configure(state="disabled")
 
-        # Plot chart
-        if detail.get("tracks"):
-            track = detail["tracks"][0]
-            positions = track.get("positions", [])
-            values = track.get("smoothness_values", [])
-            if positions and values:
-                chart = self._get_chart()
-                chart.plot_smoothness(
-                    positions=positions,
-                    smoothness_values=values,
-                    spec_limit=track.get("smoothness_spec") or detail.get("smoothness_spec"),
-                    title=f"Output Smoothness - {detail['model']} SN{detail['serial']}",
-                    serial_number=detail["serial"],
-                    test_date=detail["test_date"].strftime("%Y-%m-%d") if detail.get("test_date") else None,
-                    element_label=detail.get("element_label"),
-                )
+        # Plot chart - if there's no track data, show a helpful placeholder
+        # explaining that the file needs to be re-imported. (Records imported
+        # before the smoothness_tracks fix are missing the position/value
+        # arrays - the result row exists but the chart can't render.)
+        chart = self._get_chart()
+        tracks = detail.get("tracks") or []
+        track = tracks[0] if tracks else None
+        positions = (track or {}).get("positions") or []
+        values = (track or {}).get("smoothness_values") or []
+
+        if positions and values:
+            chart.plot_smoothness(
+                positions=positions,
+                smoothness_values=values,
+                spec_limit=(track or {}).get("smoothness_spec") or detail.get("smoothness_spec"),
+                title=f"Output Smoothness - {detail['model']} SN{detail['serial']}",
+                serial_number=detail["serial"],
+                test_date=detail["test_date"].strftime("%Y-%m-%d") if detail.get("test_date") else None,
+                element_label=detail.get("element_label"),
+            )
+        else:
+            chart.show_placeholder(
+                "No track data stored for this record.\n\n"
+                "This file was imported before the smoothness fix.\n"
+                "Re-process the source file via Process Files to populate the chart."
+            )
 
     def _display_stats(self, stats: Dict[str, Any]):
         """Display summary stats."""

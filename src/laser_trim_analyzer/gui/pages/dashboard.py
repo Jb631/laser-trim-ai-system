@@ -390,15 +390,35 @@ class DashboardPage(ctk.CTkFrame):
         )
         self._cpk_summary_label.pack(padx=10, pady=(0, 10), anchor="w")
 
-        # Failure mode summary (right)
-        fail_frame = ctk.CTkFrame(process_frame)
+        # Failure mode summary (right) - clickable to jump to Trends > Drift tab
+        fail_frame = ctk.CTkFrame(process_frame, cursor="hand2")
         fail_frame.grid(row=1, column=1, padx=10, pady=(0, 10), sticky="nsew")
-        ctk.CTkLabel(fail_frame, text="Drift Alerts",
-                    font=ctk.CTkFont(size=13, weight="bold")).pack(padx=10, pady=(10, 5), anchor="w")
+        drift_title = ctk.CTkLabel(
+            fail_frame, text="Drift Alerts  \u2192",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            cursor="hand2",
+        )
+        drift_title.pack(padx=10, pady=(10, 5), anchor="w")
         self._drift_summary_label = ctk.CTkLabel(
             fail_frame, text="Loading...", font=ctk.CTkFont(size=11), justify="left",
+            cursor="hand2",
         )
         self._drift_summary_label.pack(padx=10, pady=(0, 10), anchor="w")
+
+        # Make the whole card clickable - navigate to Trends page so the
+        # user can see the drift timeline (V5 reported the card "did nothing").
+        def _open_drift_view(_event=None):
+            try:
+                self.app._show_page("trends")
+                # If trends has a "show_drift" hook, jump straight to the Drift tab
+                trends_page = self.app._pages.get("trends")
+                if trends_page is not None and hasattr(trends_page, "show_drift_tab"):
+                    trends_page.show_drift_tab()
+            except Exception as e:
+                logger.debug(f"Drift card navigation failed: {e}")
+
+        for w in (fail_frame, drift_title, self._drift_summary_label):
+            w.bind("<Button-1>", _open_drift_view)
 
     def _create_metric_card(self, parent) -> ctk.CTkFrame:
         """Create a metric card frame."""
@@ -1353,15 +1373,34 @@ class DashboardPage(ctk.CTkFrame):
         self._refresh_data()
 
     def _populate_filters(self):
-        """Populate element type and product class filter dropdowns."""
+        """Populate element type and product class filter dropdowns.
+
+        Runs the DB queries on a background thread to keep the UI responsive
+        during page navigation; dropdown .configure() is marshaled back to the
+        main thread via self.after() because tkinter is not thread-safe.
+        """
+        def _load_filter_values():
+            try:
+                db = get_database()
+                etypes = ["All Element Types"] + db.get_distinct_element_types()
+                pclasses = ["All Product Classes"] + db.get_distinct_product_classes()
+                # Hop back to the main thread before touching any widget.
+                self.after(0, lambda: self._apply_filter_values(etypes, pclasses))
+            except Exception as e:
+                logger.debug(f"Could not populate filters: {e}")
+
+        get_thread_manager().start_thread(
+            target=_load_filter_values,
+            name="dashboard-populate-filters",
+        )
+
+    def _apply_filter_values(self, etypes, pclasses):
+        """Main-thread callback to apply dropdown values. Must not run on a worker."""
         try:
-            db = get_database()
-            etypes = ["All Element Types"] + db.get_distinct_element_types()
-            pclasses = ["All Product Classes"] + db.get_distinct_product_classes()
             self._element_filter.configure(values=etypes)
             self._class_filter.configure(values=pclasses)
         except Exception as e:
-            logger.debug(f"Could not populate filters: {e}")
+            logger.debug(f"Could not apply filter values: {e}")
 
     def _on_filter_changed(self, _=None):
         """Handle filter dropdown change."""

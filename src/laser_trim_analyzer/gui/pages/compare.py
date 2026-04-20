@@ -747,11 +747,21 @@ Match: {method_label} ({confidence_str})"""
         lower_limits = ft_track.get("lower_limits", [])
         spec_positions = ft_positions  # Use Final Test positions for spec limits
 
+        # Pull FT slope/offset/linearity_type for the corrected overlay.
+        # These are populated by the analyzer on save (Task #15).
+        ft_track_raw = final_test.get("tracks", [{}])[0] if final_test.get("tracks") else {}
+        ft_offset = ft_track_raw.get("optimal_offset", 0) or 0
+        ft_slope = ft_track_raw.get("optimal_slope", 1.0) or 1.0
+        ft_linearity_type = ft_track_raw.get("linearity_type")
+
         # Prepare chart data
         chart_data = {
             "final_test": {
                 "positions": ft_positions,
                 "errors": ft_errors,
+                "offset": ft_offset,
+                "slope": ft_slope,
+                "linearity_type": ft_linearity_type,
                 "label": f"Final Test ({final_test.get('filename', 'Unknown')[:20]})",
             },
             "upper_limits": upper_limits,
@@ -765,12 +775,16 @@ Match: {method_label} ({confidence_str})"""
                 trim_track = trim_tracks[0]
                 trim_positions = trim_track.get("positions", [])
                 trim_errors = trim_track.get("errors", [])
-                trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0)
+                trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0) or 0
+                trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+                trim_linearity_type = trim_track.get("linearity_type")
 
                 chart_data["trim"] = {
                     "positions": trim_positions,
                     "errors": trim_errors,
                     "offset": trim_offset,
+                    "slope": trim_slope,
+                    "linearity_type": trim_linearity_type,
                     "label": f"Trim ({trim.get('filename', 'Unknown')[:20]})",
                 }
 
@@ -843,31 +857,96 @@ Match: {method_label} ({confidence_str})"""
         trim_positions_norm = self._normalize_positions(trim_data.get("positions", [])) if has_trim_data else []
         spec_positions_norm = self._normalize_positions(spec_positions) if spec_positions else []
 
-        # Plot Trim data first (if available) - so Final Test appears on top
-        if has_trim_data:
-            trim_errors = trim_data["errors"]
-            offset = trim_data.get("offset", 0)
-            if offset:
-                trim_errors = [e + offset for e in trim_errors]
+        # Helper: compute corrected errors using slope + offset from the analyzer.
+        # Matches the trim chart convention: shifted = e * slope + offset.
+        def _corrected(raw_errors, slope, offset):
+            s = slope if slope is not None else 1.0
+            o = offset if offset is not None else 0.0
+            return [e * s + o for e in raw_errors]
 
+        # Helper: build a contextual label for the corrected line so the user
+        # knows whether slope correction was actually applied or it's a no-op.
+        def _corrected_label(base_label, linearity_type, slope, offset):
+            lt = (linearity_type or "").strip().lower()
+            s = slope if slope is not None else 1.0
+            o = offset if offset is not None else 0.0
+            slope_active = abs(s - 1.0) > 1e-9
+            offset_active = abs(o) > 1e-9
+            if not slope_active and not offset_active:
+                return f"{base_label} corrected (no-op)"
+            if lt == "absolute" and not slope_active:
+                return f"{base_label} corrected (Absolute — offset only)"
+            if slope_active and offset_active:
+                return f"{base_label} corrected (slope+offset)"
+            if slope_active:
+                return f"{base_label} corrected (slope)"
+            return f"{base_label} corrected (offset)"
+
+        # Plot Trim data first (if available) - so Final Test appears on top.
+        # Corrected is the PRIMARY line (solid) because it's what drives
+        # the pass/fail judgment against spec limits. Raw is shown as a
+        # faint dashed reference so you can see what was measured.
+        corrected_trim = None
+        corrected_ft = None
+        if has_trim_data:
+            raw_trim_errors = trim_data["errors"]
+            trim_slope = trim_data.get("slope", 1.0)
+            trim_offset = trim_data.get("offset", 0)
+            trim_lin = trim_data.get("linearity_type")
+            corrected_trim = _corrected(raw_trim_errors, trim_slope, trim_offset)
+
+            # Corrected (primary — drives pass/fail)
             ax.plot(
                 trim_positions_norm,
-                trim_errors,
+                corrected_trim,
                 color='#3498db',  # Blue for Trim (laser trim data)
                 linewidth=1.5,
-                label=trim_data.get("label", "Trim"),
-                alpha=0.9
+                label=_corrected_label("Trim", trim_lin, trim_slope, trim_offset),
+                alpha=0.95,
+                zorder=3,
             )
 
-        # Plot Final Test data
+            # Raw (faint dashed reference — as measured, pre-correction)
+            ax.plot(
+                trim_positions_norm,
+                raw_trim_errors,
+                color='#3498db',
+                linewidth=1.0,
+                linestyle='--',
+                label=trim_data.get("label", "Trim") + " (raw)",
+                alpha=0.35,
+                zorder=2,
+            )
+
+        # Plot Final Test data — corrected primary, raw as faint dashed reference
         if has_ft_data:
+            raw_ft_errors = ft_data["errors"]
+            ft_slope = ft_data.get("slope", 1.0)
+            ft_offset = ft_data.get("offset", 0)
+            ft_lin = ft_data.get("linearity_type")
+            corrected_ft = _corrected(raw_ft_errors, ft_slope, ft_offset)
+
+            # Corrected (primary — drives pass/fail)
             ax.plot(
                 ft_positions_norm,
-                ft_data["errors"],
+                corrected_ft,
                 color='#27ae60',  # Green for Final Test (post-assembly)
                 linewidth=1.5,
-                label=ft_data.get("label", "Final Test"),
-                alpha=0.9
+                label=_corrected_label("FT", ft_lin, ft_slope, ft_offset),
+                alpha=0.95,
+                zorder=3,
+            )
+
+            # Raw (faint dashed reference)
+            ax.plot(
+                ft_positions_norm,
+                raw_ft_errors,
+                color='#27ae60',
+                linewidth=1.0,
+                linestyle='--',
+                label=ft_data.get("label", "Final Test") + " (raw)",
+                alpha=0.35,
+                zorder=2,
             )
 
         # Plot specification limits (matching Analyze page style)
@@ -887,16 +966,18 @@ Match: {method_label} ({confidence_str})"""
                            alpha=0.1, color=COLORS.get('spec_limit', '#e74c3c'),
                            where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
 
-            # Find and mark fail points for Final Test data
-            # Use interpolation when spec limits have different point count than FT data
-            if has_ft_data:
+            # Find and mark fail points for Final Test data.
+            # Pass/fail is judged on CORRECTED errors (raw * slope + offset)
+            # against spec limits — this matches the analyzer's pass/fail logic.
+            # Use interpolation when spec limits have different point count than FT data.
+            if has_ft_data and corrected_ft is not None:
                 fail_indices = []
-                ft_errors = ft_data["errors"]
+                ft_errors_for_pf = corrected_ft
 
                 # Check if we need to interpolate (different point counts)
-                if len(upper_limits) == len(ft_errors):
+                if len(upper_limits) == len(ft_errors_for_pf):
                     # Same point count - direct comparison
-                    for i, e in enumerate(ft_errors):
+                    for i, e in enumerate(ft_errors_for_pf):
                         if upper_limits[i] is not None and lower_limits[i] is not None:
                             if e > upper_limits[i] or e < lower_limits[i]:
                                 fail_indices.append(i)
@@ -906,14 +987,15 @@ Match: {method_label} ({confidence_str})"""
                                             [u if u is not None else np.nan for u in upper_limits])
                     lower_interp = np.interp(ft_positions_norm, spec_positions_norm,
                                             [l if l is not None else np.nan for l in lower_limits])
-                    for i, e in enumerate(ft_errors):
+                    for i, e in enumerate(ft_errors_for_pf):
                         if not np.isnan(upper_interp[i]) and not np.isnan(lower_interp[i]):
                             if e > upper_interp[i] or e < lower_interp[i]:
                                 fail_indices.append(i)
 
                 if fail_indices:
                     fail_pos = [ft_positions_norm[i] for i in fail_indices]
-                    fail_err = [ft_errors[i] for i in fail_indices]
+                    # Plot fail markers on the CORRECTED trace (what drives pass/fail)
+                    fail_err = [ft_errors_for_pf[i] for i in fail_indices]
                     ax.scatter(fail_pos, fail_err, color='#e74c3c',
                               s=100, marker='x', linewidth=3,
                               label=f'Fail Points ({len(fail_indices)})', zorder=5)
@@ -1411,7 +1493,13 @@ Match: {method_label} ({confidence_str})"""
                 plt.close(fig)
 
     def _calculate_linearity_status(self, data: Dict) -> Dict[str, Any]:
-        """Calculate linearity status from actual track data using displayed spec limits."""
+        """Calculate linearity status from actual track data using displayed spec limits.
+
+        Pass/fail is judged on CORRECTED errors (raw * slope + offset) against
+        spec limits — this matches the analyzer's pass/fail rule. For absolute
+        linearity, slope is 1.0 (offset-only correction). For any other mode,
+        the optimizer may have found a better slope to shift errors into spec.
+        """
         final_test = data.get("final_test", {})
         trim = data.get("trim")
         ft_tracks = final_test.get("tracks", [])
@@ -1420,14 +1508,19 @@ Match: {method_label} ({confidence_str})"""
             return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
 
         ft_track = ft_tracks[0]
-        ft_errors = ft_track.get("errors", [])
+        ft_raw_errors = ft_track.get("errors", [])
         upper_limits = ft_track.get("upper_limits", [])
         lower_limits = ft_track.get("lower_limits", [])
 
-        if not ft_errors or not upper_limits or not lower_limits:
+        if not ft_raw_errors or not upper_limits or not lower_limits:
             return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
 
-        # Count Final Test fail points
+        # Apply slope+offset correction to FT errors (pass/fail is on corrected)
+        ft_slope = ft_track.get("optimal_slope", 1.0) or 1.0
+        ft_offset = ft_track.get("optimal_offset", 0) or 0
+        ft_errors = [e * ft_slope + ft_offset for e in ft_raw_errors]
+
+        # Count Final Test fail points against corrected errors
         fail_count = 0
         for i, e in enumerate(ft_errors):
             if i < len(upper_limits) and i < len(lower_limits):
@@ -1436,20 +1529,20 @@ Match: {method_label} ({confidence_str})"""
                         fail_count += 1
 
         # Calculate Trim linearity against the SAME spec limits (Final Test spec)
-        # Need to interpolate spec limits at trim positions since they may differ
+        # Apply slope+offset to trim, then interpolate spec limits at trim positions.
         trim_fail_count = 0
         trim_linearity_pass = None
         if trim:
             trim_tracks = trim.get("tracks", [])
             if trim_tracks:
                 trim_track = trim_tracks[0]
-                trim_errors = trim_track.get("errors", [])
+                trim_raw_errors = trim_track.get("errors", [])
                 trim_positions = trim_track.get("positions", [])
-                offset = trim_track.get("optimal_offset", 0) or 0
+                trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+                trim_offset = trim_track.get("optimal_offset", 0) or 0
 
-                # Apply offset to trim errors (same as chart display)
-                if offset and trim_errors:
-                    trim_errors = [e + offset for e in trim_errors]
+                # Apply full correction (slope + offset) — matches analyzer + chart
+                trim_errors = [e * trim_slope + trim_offset for e in trim_raw_errors]
 
                 # Get FT positions for interpolation
                 ft_positions = ft_track.get("positions", [])
@@ -1509,33 +1602,60 @@ Match: {method_label} ({confidence_str})"""
             ax.set_ylim(0, 1)
             return
 
-        # Plot Trim data first (if available)
+        # Plot Trim data first (if available).
+        # Corrected is the PRIMARY solid line (what drives pass/fail);
+        # raw is drawn as a faint dashed reference.
+        corrected_ft_errors_export = None
         if has_trim_data:
             trim_track = trim_tracks[0]
-            trim_positions = trim_track.get("positions", [])
-            trim_errors = trim_track.get("errors", [])
-            offset = trim_track.get("optimal_offset", 0) or trim_track.get("offset", 0)
+            trim_positions_raw = trim_track.get("positions", [])
+            trim_raw_errors = trim_track.get("errors", [])
+            trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+            trim_offset = trim_track.get("optimal_offset", 0) or trim_track.get("offset", 0) or 0
 
-            if offset:
-                trim_errors = [e + offset for e in trim_errors]
+            # Corrected = raw * slope + offset (matches analyzer pass/fail rule)
+            corrected_trim_errors = [e * trim_slope + trim_offset for e in trim_raw_errors]
 
             # Normalize positions to 0-100% for alignment
-            trim_positions = self._normalize_positions(trim_positions)
+            trim_positions = self._normalize_positions(trim_positions_raw)
 
-            ax.plot(trim_positions, trim_errors, color=COLORS['trim'],
-                   linewidth=1.5, label=f"Trim ({trim.get('filename', 'Unknown')[:25]})", alpha=0.9)
+            # Corrected (primary solid)
+            ax.plot(trim_positions, corrected_trim_errors, color=COLORS['trim'],
+                   linewidth=1.5,
+                   label=f"Trim corrected ({trim.get('filename', 'Unknown')[:22]})",
+                   alpha=0.95, zorder=3)
+
+            # Raw (faint dashed reference)
+            ax.plot(trim_positions, trim_raw_errors, color=COLORS['trim'],
+                   linewidth=1.0, linestyle='--',
+                   label="Trim (raw)",
+                   alpha=0.35, zorder=2)
 
         # Plot Final Test data
         if has_ft_data:
             ft_track = ft_tracks[0]
-            ft_positions = ft_track.get("positions", [])
-            ft_errors = ft_track.get("errors", [])
+            ft_positions_raw = ft_track.get("positions", [])
+            ft_raw_errors = ft_track.get("errors", [])
+            ft_slope = ft_track.get("optimal_slope", 1.0) or 1.0
+            ft_offset = ft_track.get("optimal_offset", 0) or 0
+
+            # Corrected = raw * slope + offset
+            corrected_ft_errors_export = [e * ft_slope + ft_offset for e in ft_raw_errors]
 
             # Normalize positions to 0-100% for alignment
-            ft_positions = self._normalize_positions(ft_positions)
+            ft_positions = self._normalize_positions(ft_positions_raw)
 
-            ax.plot(ft_positions, ft_errors, color=COLORS['final_test'],
-                   linewidth=1.5, label=f"Final Test ({final_test.get('filename', 'Unknown')[:25]})", alpha=0.9)
+            # Corrected (primary solid)
+            ax.plot(ft_positions, corrected_ft_errors_export, color=COLORS['final_test'],
+                   linewidth=1.5,
+                   label=f"FT corrected ({final_test.get('filename', 'Unknown')[:22]})",
+                   alpha=0.95, zorder=3)
+
+            # Raw (faint dashed reference)
+            ax.plot(ft_positions, ft_raw_errors, color=COLORS['final_test'],
+                   linewidth=1.0, linestyle='--',
+                   label="FT (raw)",
+                   alpha=0.35, zorder=2)
 
             # Get spec limits
             upper_limits = ft_track.get("upper_limits", [])
@@ -1556,11 +1676,11 @@ Match: {method_label} ({confidence_str})"""
                                alpha=0.1, color=COLORS['spec_limit'],
                                where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
 
-                # Mark fail points (use corrected values if available)
+                # Mark fail points on the CORRECTED FT trace (pass/fail rule)
                 fail_count = corrected_values.get('fail_points', 0) if corrected_values else 0
                 if fail_count > 0:
                     fail_indices = []
-                    for i, e in enumerate(ft_errors):
+                    for i, e in enumerate(corrected_ft_errors_export):
                         if i < len(upper_limits) and i < len(lower_limits):
                             if upper_limits[i] is not None and lower_limits[i] is not None:
                                 if e > upper_limits[i] or e < lower_limits[i]:
@@ -1568,7 +1688,7 @@ Match: {method_label} ({confidence_str})"""
 
                     if fail_indices:
                         fail_pos = [ft_positions[i] for i in fail_indices]
-                        fail_err = [ft_errors[i] for i in fail_indices]
+                        fail_err = [corrected_ft_errors_export[i] for i in fail_indices]
                         ax.scatter(fail_pos, fail_err, color=COLORS['fail'],
                                   s=100, marker='x', linewidth=3,
                                   label=f'Fail Points ({len(fail_indices)})', zorder=5)

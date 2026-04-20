@@ -641,7 +641,10 @@ class MLManager:
                                 .all()
                             )
 
-                            prediction_count = 0
+                            # PERF FIX: build mappings list and use bulk_update_mappings
+                            # instead of one UPDATE per track. The old per-row loop
+                            # could take >1 hour for 80K+ tracks across 200+ models.
+                            update_mappings = []
                             for track in tracks:
                                 sigma = track.sigma_gradient or 0.0
                                 lin_error = abs(track.final_linearity_error_shifted or 0.0)
@@ -657,12 +660,17 @@ class MLManager:
                                 }
                                 prob = predictor.predict_failure_probability(features)
                                 if prob is not None:
-                                    session.execute(
-                                        update(TrackResult)
-                                        .where(TrackResult.id == track.id)
-                                        .values(failure_probability=prob)
-                                    )
-                                    prediction_count += 1
+                                    update_mappings.append({
+                                        'id': track.id,
+                                        'failure_probability': prob,
+                                    })
+
+                            prediction_count = len(update_mappings)
+                            if update_mappings:
+                                # bulk_update_mappings issues a single UPDATE statement
+                                # batched on the driver side - dramatically faster than
+                                # individual UPDATE-WHERE-id calls.
+                                session.bulk_update_mappings(TrackResult, update_mappings)
 
                             logger.info(f"Updated {prediction_count} failure predictions for {model_name}")
 

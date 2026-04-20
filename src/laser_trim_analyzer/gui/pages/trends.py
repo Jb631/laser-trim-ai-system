@@ -2224,6 +2224,15 @@ class TrendsPage(ctk.CTkFrame):
         elif value == "Drift":
             self._show_drift_timeline()
 
+    def show_drift_tab(self):
+        """Public hook used by the Dashboard's Drift Alerts card to jump
+        straight to the Drift timeline view on this page."""
+        try:
+            self._trend_type.set("Drift")
+        except Exception:
+            pass
+        self._show_drift_timeline()
+
     def _create_dedicated_chart_view(self, title: str) -> "ChartWidget":
         """Create a dedicated full-width chart view for non-Standard tabs.
 
@@ -2258,6 +2267,26 @@ class TrendsPage(ctk.CTkFrame):
 
         return chart
 
+    def _draw_empty_state(self, ax, message: str) -> None:
+        """Render a visible empty-state message centered on an Axes.
+
+        Used when a chart can't be produced (no data, missing spec, etc.) so
+        the user sees an explanation instead of a silent blank page.
+        """
+        ax.clear()
+        ax.text(
+            0.5, 0.5, message,
+            ha='center', va='center',
+            transform=ax.transAxes,
+            fontsize=11,
+            color='#adb5bd',
+            wrap=True,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
     def _show_comparative_trends(self):
         """Show comparative pass rate trends for top models."""
         try:
@@ -2279,11 +2308,26 @@ class TrendsPage(ctk.CTkFrame):
             ax = fig.add_subplot(111)
             chart._style_axis(ax)
 
+            # Build a unified, chronologically-sorted x-axis covering every week any
+            # model has data for. Then plot each model aligned to that shared axis,
+            # using None for weeks the model has no data so matplotlib breaks the
+            # line cleanly instead of zigzagging.
+            #
+            # The DB returns periods like "2026-W06"; sorted() works correctly on
+            # these strings as long as the year-Wweek format is consistent (zero-
+            # padded week, ISO-style year prefix).
+            all_periods = sorted({
+                t["period"]
+                for trend in data.values()
+                for t in (trend or [])
+            })
+
             for model, trend in data.items():
-                if trend:
-                    periods = [t["period"] for t in trend]
-                    rates = [t["pass_rate"] for t in trend]
-                    ax.plot(periods, rates, marker='o', markersize=4, label=model)
+                if not trend:
+                    continue
+                rate_by_period = {t["period"]: t["pass_rate"] for t in trend}
+                rates = [rate_by_period.get(p) for p in all_periods]  # None where missing
+                ax.plot(all_periods, rates, marker='o', markersize=4, label=model)
 
             ax.set_ylabel("Pass Rate (%)")
             ax.set_title("Comparative Pass Rate Trends")
@@ -2298,34 +2342,90 @@ class TrendsPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Comparative error: {e}")
 
     def _show_cpk_trend(self):
-        """Show Cpk trend over time for selected model."""
+        """Show Cpk trend over time for the selected model.
+
+        If "All Models" is selected, fall back to a Cpk comparison chart across
+        every model that has a linearity spec (via get_cpk_by_model). This is
+        better than silently doing nothing, which was the previous behavior.
+        """
         try:
             db = get_database()
             model = self.selected_model.replace(" (inactive)", "")
+
+            # Create the chart view FIRST so that even empty-state messages are visible.
+            # The old code created the chart after the early-return branches, which
+            # meant clicking the tab with "All Models" selected did nothing visible.
+            title = "Cpk by Model" if (not model or model == "All Models") else f"Cpk Trend — {model}"
+            chart = self._create_dedicated_chart_view(title)
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
+
+            # Branch 1: "All Models" -> Cpk comparison across every spec'd model.
             if not model or model == "All Models":
-                self.status_label.configure(text="Select a specific model for Cpk trend")
+                rows = db.get_cpk_by_model(days_back=90)
+                if not rows:
+                    self._draw_empty_state(
+                        ax,
+                        "No Cpk data available.\n\n"
+                        "Cpk requires at least 10 linearity measurements per model\n"
+                        "and a linearity spec defined in Model Specs.",
+                    )
+                    chart.canvas.draw_idle()
+                    self.status_label.configure(text="No Cpk data")
+                    return
+
+                # Show worst-to-best — the models that need attention first.
+                rows_sorted = sorted(rows, key=lambda r: r["cpk"] if r["cpk"] is not None else 99)
+                models = [r["model"] for r in rows_sorted]
+                cpks = [r["cpk"] if r["cpk"] is not None else 0 for r in rows_sorted]
+                # Color bars by capability band: red <1.0, orange 1.0–1.33, green >=1.33
+                colors = [
+                    '#dc3545' if c < 1.0 else '#fd7e14' if c < 1.33 else '#198754'
+                    for c in cpks
+                ]
+                ax.barh(models, cpks, color=colors)
+                ax.axvline(x=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
+                ax.axvline(x=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
+                ax.set_xlabel("Cpk")
+                ax.set_title("Cpk by Model (last 90 days, n>=10)")
+                ax.legend(loc="best", fontsize=8)
+                ax.tick_params(axis='y', labelsize=8)
+                fig.tight_layout()
+                chart.canvas.draw_idle()
+                self.status_label.configure(text=f"Cpk for {len(rows)} models")
                 return
 
+            # Branch 2: single model -> time-series Cpk trend.
             spec = db.get_model_spec(model)
             if not spec or not spec.get("linearity_spec_pct"):
+                self._draw_empty_state(
+                    ax,
+                    f"No linearity spec defined for {model}.\n\n"
+                    "Cpk requires a linearity spec percent.\n"
+                    "Go to Model Specs to add one.",
+                )
+                chart.canvas.draw_idle()
                 self.status_label.configure(text=f"No linearity spec for {model}")
                 return
 
             trend = db.get_cpk_trend_for_model(
                 model, spec["linearity_spec_pct"], days_back=180, period="month"
             )
-            if not trend:
-                self.status_label.configure(text="No data for Cpk trend")
+            valid = [t for t in (trend or []) if t.get("cpk") is not None]
+            if not valid:
+                self._draw_empty_state(
+                    ax,
+                    f"No Cpk data for {model} in the last 180 days.\n\n"
+                    "Cpk needs at least 10 samples per period.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text=f"No Cpk data for {model}")
                 return
 
-            chart = self._create_dedicated_chart_view(f"Cpk Trend — {model}")
-            fig = chart.figure
-            fig.clear()
-            ax = fig.add_subplot(111)
-            chart._style_axis(ax)
-
-            periods = [t["period"] for t in trend if t["cpk"] is not None]
-            cpk_values = [t["cpk"] for t in trend if t["cpk"] is not None]
+            periods = [t["period"] for t in valid]
+            cpk_values = [t["cpk"] for t in valid]
 
             ax.plot(periods, cpk_values, marker='o', color='#0d6efd', linewidth=2, label="Cpk")
             ax.axhline(y=1.67, color='#198754', linestyle='--', alpha=0.7, label='Excellent (1.67)')
@@ -2346,16 +2446,23 @@ class TrendsPage(ctk.CTkFrame):
         """Show overall yield trend across all models."""
         try:
             db = get_database()
-            data = db.get_yield_trend(days_back=180, period="week")
-            if not data:
-                self.status_label.configure(text="No yield data")
-                return
-
+            # Build the chart view first so empty-state messages are visible.
             chart = self._create_dedicated_chart_view("Yield Trend")
             fig = chart.figure
             fig.clear()
             ax = fig.add_subplot(111)
             chart._style_axis(ax)
+
+            data = db.get_yield_trend(days_back=180, period="week")
+            if not data:
+                self._draw_empty_state(
+                    ax,
+                    "No yield data in the last 180 days.\n\n"
+                    "Process some files to populate yield history.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="No yield data")
+                return
 
             periods = [d["period"] for d in data]
             rates = [d["pass_rate"] for d in data]
@@ -2386,8 +2493,11 @@ class TrendsPage(ctk.CTkFrame):
             events = db.get_drift_events_timeline(days_back=180)
 
             chart = self._create_dedicated_chart_view("Drift Detection Timeline")
+            # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
+            # restored — fig.clear() resets it to matplotlib's default (black
+            # under the dark_background style), making the chart unreadable.
+            chart.clear()
             fig = chart.figure
-            fig.clear()
             ax = fig.add_subplot(111)
             chart._style_axis(ax)
 
@@ -2396,18 +2506,48 @@ class TrendsPage(ctk.CTkFrame):
                        ha='center', va='center', transform=ax.transAxes, fontsize=14,
                        color='gray')
             else:
-                models = sorted(set(e["model"] for e in events))
+                # Sort models so the most-recent drift sits at the top of the chart.
+                # Color-code by direction (red = up = quality degrading, orange = down = improving).
+                last_event = {}
+                for e in events:
+                    last_event[e["model"]] = e.get("date", "")
+                models = sorted(last_event, key=lambda m: last_event[m], reverse=True)
                 model_y = {m: i for i, m in enumerate(models)}
+
+                # Dynamically size the figure so each model gets ~0.3" of vertical space
+                # (prevents the Y-axis from being crammed when many models are drifting)
+                target_height = max(4.0, min(12.0, 1.5 + 0.3 * len(models)))
+                fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
+
+                up_x, up_y = [], []
+                down_x, down_y = [], []
                 for e in events:
                     y = model_y[e["model"]]
                     x_label = e.get("date", "")[:10]
-                    ax.scatter(x_label, y, s=80, c='#dc3545', zorder=5, marker='D')
+                    if (e.get("direction") or "").lower() == "down":
+                        down_x.append(x_label); down_y.append(y)
+                    else:
+                        up_x.append(x_label); up_y.append(y)
+
+                if up_x:
+                    ax.scatter(up_x, up_y, s=70, c='#dc3545', zorder=5,
+                               marker='^', label='Drifting up (degrading)')
+                if down_x:
+                    ax.scatter(down_x, down_y, s=70, c='#f39c12', zorder=5,
+                               marker='v', label='Drifting down (improving)')
+
                 ax.set_yticks(range(len(models)))
                 ax.set_yticklabels(models, fontsize=9)
                 ax.tick_params(axis='x', rotation=45, labelsize=8)
+                ax.set_xlabel("Detection date")
+                ax.legend(loc='upper left', fontsize=9, framealpha=0.85)
+                ax.grid(True, axis='x', alpha=0.2)
 
             ax.set_title("Drift Detection Timeline")
-            fig.tight_layout()
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass  # tight_layout sometimes fails with rotated tick labels
             chart.canvas.draw_idle()
             self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
         except Exception as e:
@@ -2415,15 +2555,33 @@ class TrendsPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Drift error: {e}")
 
     def _populate_spec_filters(self):
-        """Populate element type and product class filter dropdowns."""
+        """Populate element type and product class filter dropdowns.
+
+        DB queries run on a background thread to avoid freezing the UI during
+        page navigation; widget updates are marshaled back to the main thread
+        via self.after() because tkinter is not thread-safe.
+        """
+        def _load_spec_values():
+            try:
+                db = get_database()
+                etypes = ["All"] + db.get_distinct_element_types()
+                pclasses = ["All"] + db.get_distinct_product_classes()
+                self.after(0, lambda: self._apply_spec_filter_values(etypes, pclasses))
+            except Exception as e:
+                logger.debug(f"Could not populate spec filters: {e}")
+
+        get_thread_manager().start_thread(
+            target=_load_spec_values,
+            name="trends-populate-spec-filters",
+        )
+
+    def _apply_spec_filter_values(self, etypes, pclasses):
+        """Main-thread callback to apply dropdown values."""
         try:
-            db = get_database()
-            etypes = ["All"] + db.get_distinct_element_types()
-            pclasses = ["All"] + db.get_distinct_product_classes()
             self._element_filter.configure(values=etypes)
             self._class_filter.configure(values=pclasses)
         except Exception as e:
-            logger.debug(f"Could not populate spec filters: {e}")
+            logger.debug(f"Could not apply spec filter values: {e}")
 
     def _on_spec_filter_change(self, _=None):
         """Handle element type or product class filter change."""

@@ -789,6 +789,11 @@ class FinalTestResult(Base):
         Index('idx_ft_status', 'overall_status'),
         Index('idx_ft_linked_trim', 'linked_trim_id'),
         Index('idx_ft_test_date', 'test_date'),
+        # Standalone index on file_date - the Compare/Final Test page does
+        # ORDER BY file_date DESC LIMIT 500 with no leading filter, which the
+        # composite indexes can't satisfy. Without this the query has to
+        # full-scan and sort, which is what made the page appear to "not load".
+        Index('idx_ft_file_date', 'file_date'),
         # Prevent duplicate processing of same file
         UniqueConstraint('filename', 'file_date', 'model', 'serial', name='uq_final_test_file'),
         # Data validation constraints
@@ -884,6 +889,12 @@ class FinalTestTrack(Base):
     # Additional metrics (for future use)
     max_deviation = Column(Float)
     max_deviation_position = Column(Float)
+
+    # Spec-aware correction (populated when a model spec is found so FT charts
+    # can draw a "corrected" overlay consistent with the trim chart).
+    optimal_offset = Column(Float, nullable=True)
+    optimal_slope = Column(Float, nullable=True, default=1.0)
+    linearity_type = Column(String(30), nullable=True)
 
     # Relationships
     final_test = relationship("FinalTestResult", back_populates="tracks")
@@ -1103,8 +1114,27 @@ class ModelSpec(Base):
     electrical_angle = Column(Float, nullable=True)
     electrical_angle_tol = Column(Float, nullable=True)
     electrical_angle_unit = Column(String(10), nullable=True)
+    # Qualifier for how electrical_angle_tol should be interpreted:
+    #   'symmetric' -> ±tol around nominal (e.g. "351° ± 1°")
+    #   'min'       -> nominal is a floor, part can be higher (e.g. "350° Min")
+    #   'max'       -> nominal is a ceiling, part can be lower
+    #   'range'     -> nominal is midpoint, tol is half-range (e.g. "89° - 91°")
+    #   'bilateral' -> ±tol from center/zero (e.g. "±45°")
+    #    NULL       -> no tolerance / unknown
+    electrical_angle_tol_type = Column(String(12), nullable=True)
     output_smoothness = Column(String(50), nullable=True)
+    # circuit_type is a legacy column — it was originally storing the Excel
+    # "Open/Closed" values (visible vs enclosed element). Kept for backward
+    # compatibility; new code should read/write open_closed instead.
     circuit_type = Column(String(10), nullable=True)
+    # "Open" = visible resistive element, "Closed" = enclosed. Imported from
+    # the Open/Closed column on the Model Reference sheet.
+    open_closed = Column(String(10), nullable=True)
+    # Pipe-separated alternate model numbers that should resolve to this spec.
+    # Example: "2001621501 | 1621501-R1" so files labeled with either alias
+    # pick up this row's linearity_type/spec/etc. Lookup is case-sensitive,
+    # whitespace-trimmed, and accepts either 'model' or any token in 'aliases'.
+    aliases = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
