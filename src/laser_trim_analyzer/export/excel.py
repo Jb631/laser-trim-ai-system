@@ -45,18 +45,22 @@ class ExcelExportError(Exception):
 
 
 # Style definitions
-HEADER_FILL = PatternFill(start_color="2B579A", end_color="2B579A", fill_type="solid")
-PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-WARNING_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-HEADER_FONT = Font(bold=True, color="FFFFFF")
-TITLE_FONT = Font(bold=True, size=14)
-THIN_BORDER = Border(
-    left=Side(style='thin'),
-    right=Side(style='thin'),
-    top=Side(style='thin'),
-    bottom=Side(style='thin')
-)
+if HAS_OPENPYXL:
+    HEADER_FILL = PatternFill(start_color="2B579A", end_color="2B579A", fill_type="solid")
+    PASS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    FAIL_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    WARNING_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    HEADER_FONT = Font(bold=True, color="FFFFFF")
+    TITLE_FONT = Font(bold=True, size=14)
+    THIN_BORDER = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+else:
+    HEADER_FILL = PASS_FILL = FAIL_FILL = WARNING_FILL = None
+    HEADER_FONT = TITLE_FONT = THIN_BORDER = None
 
 
 def export_single_result(

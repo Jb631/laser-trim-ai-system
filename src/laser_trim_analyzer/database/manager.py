@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, exists, func, and_, or_, desc, text, case
+from sqlalchemy import create_engine, exists, func, and_, or_, desc, text, case, select
 from sqlalchemy.orm import sessionmaker, Session, joinedload, subqueryload
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -873,20 +873,25 @@ class DatabaseManager:
         if not file_path.exists():
             return
 
-        try:
+        file_hash = calculate_file_hash(file_path)
+
+        # Check if already recorded before inserting (avoids IntegrityError
+        # which would rollback the entire transaction including parent analysis)
+        existing = session.execute(
+            select(DBProcessedFile.id).where(DBProcessedFile.file_hash == file_hash)
+        ).scalar_one_or_none()
+        if existing is None:
             processed_file = DBProcessedFile(
                 filename=file_path.name,
                 file_path=str(file_path),
-                file_hash=calculate_file_hash(file_path),
+                file_hash=file_hash,
                 file_size=file_path.stat().st_size,
                 file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
                 analysis_id=analysis_id,
                 success=True,
             )
             session.add(processed_file)
-        except IntegrityError:
-            session.rollback()  # Required: session is invalid after IntegrityError
-            pass  # File already recorded
+            session.flush()
 
     # =========================================================================
     # QA Alerts
@@ -2300,7 +2305,8 @@ class DatabaseManager:
             }
             existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
             existing.data_quality = getattr(analysis, 'data_quality', None)
-            existing.data_quality_issues = getattr(analysis, 'data_quality_issues', None)
+            issues = getattr(analysis, 'data_quality_issues', None) or []
+            existing.data_quality_issues = ','.join(issues) if issues else None
 
             # Delete old tracks explicitly and flush before adding new ones
             # This avoids unique constraint violations

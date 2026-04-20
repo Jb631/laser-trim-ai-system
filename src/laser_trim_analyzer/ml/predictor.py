@@ -331,9 +331,11 @@ class ModelPredictor:
             }])
 
             X_scaled = self.scaler.transform(X)
-            proba = self.classifier.predict_proba(X_scaled)[0, 1]
-
-            return float(proba)
+            proba = self.classifier.predict_proba(X_scaled)
+            if proba.shape[1] == 1:
+                # Single class in training data
+                return 0.0 if self.classifier.classes_[0] else 1.0
+            return float(proba[0, 1])
 
         except Exception as e:
             logger.warning(f"Prediction failed for {self.model_name}: {e}")
@@ -365,11 +367,21 @@ class ModelPredictor:
             }])
             X_scaled = self.scaler.transform(X)
 
+            # Handle single-class models
+            if len(self.classifier.classes_) == 1:
+                val = 0.0 if self.classifier.classes_[0] else 1.0
+                return val, val, val
+
             # Get predictions from all trees
-            tree_predictions = np.array([
-                tree.predict_proba(X_scaled)[0, 1]
-                for tree in self.classifier.estimators_
-            ])
+            tree_predictions = []
+            for tree in self.classifier.estimators_:
+                tp = tree.predict_proba(X_scaled)
+                if tp.shape[1] == 1:
+                    # Tree saw only one class
+                    tree_predictions.append(0.0 if self.classifier.classes_[0] else 1.0)
+                else:
+                    tree_predictions.append(tp[0, 1])
+            tree_predictions = np.array(tree_predictions)
 
             mean_proba = float(np.mean(tree_predictions))
             lower = float(np.percentile(tree_predictions, 5))

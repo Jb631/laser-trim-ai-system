@@ -158,7 +158,7 @@ class ModelThresholdOptimizer:
 
         # Calculate severity if provided
         if fail_points is not None:
-            fp = np.array(fail_points)
+            fp = np.array(fail_points)[valid_mask]
             fail_fp = fp[~is_pass]
             if len(fail_fp) > 0:
                 self.avg_fail_severity = float(np.mean(fail_fp))
@@ -182,7 +182,7 @@ class ModelThresholdOptimizer:
             # Overlap - use severity-weighted approach
             result = self._weighted_threshold(
                 sigma, is_pass,
-                np.array(fail_points) if fail_points is not None else None
+                np.array(fail_points)[valid_mask] if fail_points is not None else None
             )
 
         # Store results
