@@ -610,17 +610,22 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 mea_elec_angle = getattr(track, 'measured_electrical_angle', None)
             else:
                 # Multi-track: use worst-case values for sigma, sum for fail points
-                sigma_gradient = max(t.sigma_gradient for t in result.tracks)
-                sigma_threshold = min(t.sigma_threshold for t in result.tracks)  # Most restrictive
-                linearity_error = max(t.linearity_error for t in result.tracks)
-                linearity_spec = result.tracks[0].linearity_spec  # Should be same for all
-                fail_points = sum(t.linearity_fail_points for t in result.tracks)
-                travel_length = result.tracks[0].travel_length  # Should be same
-                sigma_pass = all(t.sigma_pass for t in result.tracks)
-                linearity_pass = all(t.linearity_pass for t in result.tracks)
+                # Guard against None values in aggregations
+                sigma_vals = [t.sigma_gradient for t in result.tracks if t.sigma_gradient is not None]
+                sigma_gradient = max(sigma_vals) if sigma_vals else 0
+                thresh_vals = [t.sigma_threshold for t in result.tracks if t.sigma_threshold is not None]
+                sigma_threshold = min(thresh_vals) if thresh_vals else 0  # Most restrictive
+                error_vals = [t.linearity_error for t in result.tracks if t.linearity_error is not None]
+                linearity_error = max(error_vals) if error_vals else 0
+                linearity_spec = result.tracks[0].linearity_spec or 0.01  # Should be same for all
+                fail_points = sum(t.linearity_fail_points or 0 for t in result.tracks)
+                travel_length = result.tracks[0].travel_length or 0  # Should be same
+                sigma_pass = all(t.sigma_pass for t in result.tracks if t.sigma_pass is not None)
+                linearity_pass = all(t.linearity_pass for t in result.tracks if t.linearity_pass is not None)
                 # Use worst risk category
                 risk_order = {"Low": 0, "Medium": 1, "High": 2, "Unknown": -1}
-                risk = max([t.risk_category.value for t in result.tracks], key=lambda x: risk_order.get(x, -1))
+                risk_vals = [t.risk_category.value for t in result.tracks if t.risk_category is not None]
+                risk = max(risk_vals, key=lambda x: risk_order.get(x, -1)) if risk_vals else "Unknown"
                 # Max failure probability (worst case)
                 probs = [t.failure_probability for t in result.tracks if t.failure_probability is not None]
                 fail_prob = max(probs) if probs else None
