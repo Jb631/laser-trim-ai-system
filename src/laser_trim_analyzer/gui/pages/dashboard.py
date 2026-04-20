@@ -1128,6 +1128,7 @@ class DashboardPage(ctk.CTkFrame):
             title="Save Executive Summary",
             defaultextension=".xlsx",
             initialfile=f"quality_summary_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("Excel files", "*.xlsx")],
         )
         if not file_path:

@@ -917,6 +917,7 @@ class SettingsPage(ctk.CTkFrame):
             options["delete_non_mps"], options["delete_before_date"],
             options["delete_suspect_quality"], options["delete_unknown"],
             options["delete_error_status"], options["delete_no_tracks"],
+            options["delete_misclassified_ft"],
         ])
         if not has_option:
             messagebox.showinfo("No Options", "Select at least one cleanup option.")
@@ -1307,6 +1308,7 @@ class SettingsPage(ctk.CTkFrame):
             ml_manager.load_all()
 
             if ml_manager.trained_models:
+                self._ml_manager = ml_manager
                 self.ml_status_label.configure(
                     text=f"Status: {len(ml_manager.trained_models)} models trained",
                     text_color="#27ae60"

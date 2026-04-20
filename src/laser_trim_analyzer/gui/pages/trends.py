@@ -1106,9 +1106,11 @@ class TrendsPage(ctk.CTkFrame):
             return
 
         # Extract values for plotting (normal samples only) - include year in date format
-        dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in normal_points]
-        sigma_values = [d["sigma_gradient"] for d in normal_points if d["sigma_gradient"] is not None]
-        pass_flags = [d.get("sigma_pass", False) for d in normal_points]
+        # Build aligned arrays - only include points with valid sigma
+        valid_points = [d for d in normal_points if d["sigma_gradient"] is not None]
+        dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in valid_points]
+        sigma_values = [d["sigma_gradient"] for d in valid_points]
+        pass_flags = [d.get("sigma_pass", False) for d in valid_points]
 
         # Calculate rolling average for filtered data (normal samples only)
         rolling_vals = None
@@ -2674,6 +2676,7 @@ class TrendsPage(ctk.CTkFrame):
             title="Export Summary to PDF",
             defaultextension=".pdf",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
         )
 
@@ -2713,6 +2716,7 @@ class TrendsPage(ctk.CTkFrame):
             title="Export Model Trends to PDF",
             defaultextension=".pdf",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
         )
 

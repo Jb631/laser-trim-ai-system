@@ -1483,6 +1483,7 @@ class AnalyzePage(ctk.CTkFrame):
             title="Export Analysis to Excel",
             defaultextension=".xlsx",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
 
@@ -1521,6 +1522,7 @@ class AnalyzePage(ctk.CTkFrame):
                 title=f"Export All {model} Results to Excel",
                 defaultextension=".xlsx",
                 initialfile=default_name,
+                initialdir=getattr(self.app.config, 'export_path', None),
                 filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
             )
 
@@ -1549,6 +1551,7 @@ class AnalyzePage(ctk.CTkFrame):
             title="Export Chart",
             defaultextension=".png",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[
                 ("PNG Image", "*.png"),
                 ("PDF Document", "*.pdf"),

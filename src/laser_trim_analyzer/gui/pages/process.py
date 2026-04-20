@@ -845,6 +845,7 @@ class ProcessPage(ctk.CTkFrame):
             title="Export Batch Results to Excel",
             defaultextension=".xlsx",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
 

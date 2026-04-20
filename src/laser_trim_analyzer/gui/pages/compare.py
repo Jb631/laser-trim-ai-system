@@ -1221,6 +1221,7 @@ Match: {method_label} ({confidence_str})"""
             title="Export Comparison Chart",
             defaultextension=".png",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[
                 ("PNG Image", "*.png"),
                 ("PDF Document", "*.pdf"),
@@ -1283,6 +1284,7 @@ Match: {method_label} ({confidence_str})"""
             title=f"Export {count} Comparison Charts",
             defaultextension=".pdf",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[
                 ("PDF Document", "*.pdf"),
                 ("All files", "*.*")
@@ -1510,6 +1512,9 @@ Match: {method_label} ({confidence_str})"""
             if offset:
                 trim_errors = [e + offset for e in trim_errors]
 
+            # Normalize positions to 0-100% for alignment
+            trim_positions = self._normalize_positions(trim_positions)
+
             ax.plot(trim_positions, trim_errors, color=COLORS['trim'],
                    linewidth=1.5, label=f"Trim ({trim.get('filename', 'Unknown')[:25]})", alpha=0.9)
 
@@ -1518,6 +1523,9 @@ Match: {method_label} ({confidence_str})"""
             ft_track = ft_tracks[0]
             ft_positions = ft_track.get("positions", [])
             ft_errors = ft_track.get("errors", [])
+
+            # Normalize positions to 0-100% for alignment
+            ft_positions = self._normalize_positions(ft_positions)
 
             ax.plot(ft_positions, ft_errors, color=COLORS['final_test'],
                    linewidth=1.5, label=f"Final Test ({final_test.get('filename', 'Unknown')[:25]})", alpha=0.9)
@@ -1529,7 +1537,8 @@ Match: {method_label} ({confidence_str})"""
             if upper_limits and lower_limits:
                 upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
                 lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
-                pos_array = np.array(ft_positions[:len(upper_limits)])
+                spec_positions = ft_track.get("positions", [])[:len(upper_limits)]
+                pos_array = np.array(self._normalize_positions(spec_positions))
 
                 ax.plot(pos_array, upper_plot, color=COLORS['spec_limit'],
                        linestyle='--', linewidth=1, alpha=0.8, label='Spec Limits')
@@ -1558,7 +1567,7 @@ Match: {method_label} ({confidence_str})"""
                                   label=f'Fail Points ({len(fail_indices)})', zorder=5)
 
         ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
-        ax.set_xlabel('Position', fontsize=12)
+        ax.set_xlabel('Position (%)', fontsize=12)
         ax.set_ylabel('Error', fontsize=12)
 
         # Use corrected linearity status for title

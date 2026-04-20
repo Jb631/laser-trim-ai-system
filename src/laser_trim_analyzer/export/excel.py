@@ -258,10 +258,13 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
 
             # Color status cells
             if col == 2:  # Status column
-                if value == "PASS":
+                value_upper = str(value).upper()
+                if value_upper == "PASS":
                     cell.fill = PASS_FILL
-                elif value == "FAIL":
+                elif value_upper in ("FAIL", "ERROR"):
                     cell.fill = FAIL_FILL
+                elif value_upper == "WARNING":
+                    cell.fill = WARNING_FILL
             # Color anomaly cells
             elif col == 10 and value == "YES":  # Anomaly column
                 cell.font = Font(bold=True, color="9B59B6")

@@ -37,7 +37,7 @@ def export_trends_summary_pdf(
         for model_data in active_models_data:
             row = [
                 model_data.get('model', 'Unknown'),
-                str(model_data.get('total_samples', 0)),
+                str(model_data.get('total', model_data.get('total_samples', 0))),
                 f"{model_data.get('sigma_pass_rate', 0):.1f}%",
                 f"{model_data.get('linearity_pass_rate', 0):.1f}%",
                 f"{model_data.get('overall_pass_rate', 0):.1f}%",

@@ -101,18 +101,40 @@ class ScorecardPage(ctk.CTkFrame):
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
 
-        try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            data = db.get_model_scorecard_data(model, days_back=90)
-            self._render_scorecard(data)
-        except Exception as e:
-            logger.error(f"Failed to load scorecard for {model}: {e}")
-            ctk.CTkLabel(
-                self.scroll_frame,
-                text=f"Error loading scorecard: {e}",
-                text_color="#dc3545",
-            ).grid(row=0, column=0, pady=20)
+        ctk.CTkLabel(
+            self.scroll_frame,
+            text="Loading scorecard...",
+            text_color="gray",
+        ).grid(row=0, column=0, pady=20)
+
+        def fetch():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                data = db.get_model_scorecard_data(model, days_back=90)
+                self.after(0, lambda: self._display_scorecard(data))
+            except Exception as e:
+                logger.error(f"Failed to load scorecard: {e}")
+                self.after(0, lambda: self._display_scorecard_error(e))
+
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+        get_thread_manager().start_thread(target=fetch, name="scorecard-load")
+
+    def _display_scorecard(self, data: dict):
+        """Display scorecard data on the UI thread."""
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+        self._render_scorecard(data)
+
+    def _display_scorecard_error(self, error: Exception):
+        """Display scorecard loading error on the UI thread."""
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+        ctk.CTkLabel(
+            self.scroll_frame,
+            text=f"Error loading scorecard: {error}",
+            text_color="#dc3545",
+        ).grid(row=0, column=0, pady=20)
 
     def _render_scorecard(self, data: dict):
         """Render the scorecard sections from loaded data."""

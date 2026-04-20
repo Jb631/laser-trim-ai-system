@@ -763,7 +763,7 @@ class ChartWidget(ctk.CTkFrame):
                 upper_fill = np.array([u if u is not None else np.nan for u in track.upper_limits])
                 lower_fill = np.array([l if l is not None else np.nan for l in track.lower_limits])
                 ax.fill_between(positions, lower_fill, upper_fill,
-                               alpha=0.1, color=COLORS['spec_limit'], where=~np.isnan(upper_fill))
+                               alpha=0.1, color=COLORS['spec_limit'], where=~np.isnan(upper_fill) & ~np.isnan(lower_fill))
 
             # Mark fail points (skip positions with no spec = None)
             fail_indices = []
@@ -1352,7 +1352,7 @@ class ChartWidget(ctk.CTkFrame):
         ax.set_title(title, fontsize=self.style.title_size)
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='x')
         ax.legend(loc='lower right', fontsize=self.style.font_size - 2)
-        # Don't invert - keep High severity (first in list) at top
+        ax.invert_yaxis()
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
@@ -1505,7 +1505,7 @@ class ChartWidget(ctk.CTkFrame):
         # Styling
         chart_title = f"{title}: {model_name}" if model_name else title
         ax.set_xlabel('Sample', fontsize=self.style.font_size)
-        ax.set_ylabel('Linearity Error Rate', fontsize=self.style.font_size)
+        ax.set_ylabel('Sigma Gradient', fontsize=self.style.font_size)
         ax.set_title(chart_title, fontsize=self.style.title_size, color=status_color)
         ax.legend(loc='upper left', fontsize=self.style.font_size - 2, ncol=2)
         ax.grid(True, alpha=0.3, color=COLORS['grid'])

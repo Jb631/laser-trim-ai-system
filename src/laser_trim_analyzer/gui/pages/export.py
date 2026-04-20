@@ -462,7 +462,8 @@ class ExportPage(ctk.CTkFrame):
         """Export charts as individual PNG files."""
         # Ask for output directory
         output_dir = filedialog.askdirectory(
-            title="Select Output Directory for Charts"
+            title="Select Output Directory for Charts",
+            initialdir=getattr(self.app.config, 'export_path', None),
         )
 
         if not output_dir:
@@ -516,6 +517,7 @@ class ExportPage(ctk.CTkFrame):
             title="Save PDF",
             defaultextension=".pdf",
             initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
         )
 
@@ -562,7 +564,8 @@ class ExportPage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            shifted_errors = [e + track.optimal_offset for e in track.error_data]
+            slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     if upper_limits[i] is not None and lower_limits[i] is not None:
@@ -704,9 +707,10 @@ class ExportPage(ctk.CTkFrame):
         positions = np.array(track.position_data)
         errors = np.array(track.error_data)
 
-        # Apply offset
+        # Apply slope and offset
         offset = track.optimal_offset
-        errors_shifted = errors + offset
+        slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+        errors_shifted = errors * slope + offset
 
         # Plot untrimmed data if available
         if track.untrimmed_positions and track.untrimmed_errors:
