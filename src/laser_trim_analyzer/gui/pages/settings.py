@@ -813,11 +813,11 @@ class SettingsPage(ctk.CTkFrame):
                 else:
                     lines.append("  Database is clean!")
 
-                self.after(0, lambda: self.scan_results_label.configure(text="\n".join(lines)))
+                self.after(0, lambda: self.scan_results_label.configure(text="\n".join(lines)) if self.winfo_exists() else None)
             except Exception as e:
-                self.after(0, lambda: self.scan_results_label.configure(text=f"Scan error: {e}"))
+                self.after(0, lambda: self.scan_results_label.configure(text=f"Scan error: {e}") if self.winfo_exists() else None)
             finally:
-                self.after(0, lambda: self.scan_btn.configure(state="normal"))
+                self.after(0, lambda: self.scan_btn.configure(state="normal") if self.winfo_exists() else None)
 
         def _run():
             try:
@@ -829,8 +829,8 @@ class SettingsPage(ctk.CTkFrame):
                 logger.error(f"Scan database error:\n{tb}")
                 # Show traceback in UI for debugging
                 msg = f"Scan error: {e}\n\n{tb[-500:]}"
-                self.after(0, lambda: self.scan_results_label.configure(text=msg))
-                self.after(0, lambda: self.scan_btn.configure(state="normal"))
+                self.after(0, lambda: self.scan_results_label.configure(text=msg) if self.winfo_exists() else None)
+                self.after(0, lambda: self.scan_btn.configure(state="normal") if self.winfo_exists() else None)
 
         get_thread_manager().start_thread(target=_run, name="settings-scan-db")
 
@@ -1147,6 +1147,8 @@ class SettingsPage(ctk.CTkFrame):
 
     def _update_training_progress(self, progress: float, message: str):
         """Update training progress bar."""
+        if not self.winfo_exists():
+            return
         self.ml_progress.set(progress)
         self.ml_progress_label.configure(text=message)
 
@@ -1239,6 +1241,8 @@ class SettingsPage(ctk.CTkFrame):
 
     def _on_apply_complete(self, success: bool, message: str):
         """Handle apply completion."""
+        if not self.winfo_exists():
+            return
         self.train_btn.configure(state="normal")
         self.apply_btn.configure(state="normal")
         self.ml_progress.grid_remove()
@@ -1253,6 +1257,8 @@ class SettingsPage(ctk.CTkFrame):
 
     def _on_training_complete(self, success: bool, message: str, status_details: str = ""):
         """Handle training completion."""
+        if not self.winfo_exists():
+            return
         self.train_btn.configure(state="normal")
         self.apply_btn.configure(state="normal")
         self.ml_progress.grid_remove()

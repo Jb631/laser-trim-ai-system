@@ -645,6 +645,8 @@ class AnalyzePage(ctk.CTkFrame):
     def _display_analyses(self, analyses: List[AnalysisResult], models: List[str],
                           db_path: Path, record_count: Dict[str, int]):
         """Display fetched analyses."""
+        if not self.winfo_exists():
+            return
         self.recent_analyses = analyses
 
         # Update model dropdown
@@ -873,10 +875,11 @@ class AnalyzePage(ctk.CTkFrame):
             # No track data available - show message
             self.track_selector.configure(values=["No Tracks"], state="disabled")
             self._ensure_chart_initialized()
-            self.chart.show_placeholder(
-                "No track data available for this analysis.\n\n"
-                "Try re-analyzing the file if the original file is accessible."
-            )
+            if self.chart:
+                self.chart.show_placeholder(
+                    "No track data available for this analysis.\n\n"
+                    "Try re-analyzing the file if the original file is accessible."
+                )
 
         # Update metrics and info
         self._display_metrics(analysis)
@@ -888,7 +891,8 @@ class AnalyzePage(ctk.CTkFrame):
         self._ensure_chart_initialized()
 
         if not track.position_data or not track.error_data:
-            self.chart.show_placeholder("No chart data available\n\n(Position/error data not stored)")
+            if self.chart:
+                self.chart.show_placeholder("No chart data available\n\n(Position/error data not stored)")
             return
 
         # Use stored spec limits (position-dependent) from database

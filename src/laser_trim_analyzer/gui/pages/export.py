@@ -274,6 +274,8 @@ class ExportPage(ctk.CTkFrame):
 
     def _display_results(self, results: List[AnalysisResult], models: List[str]):
         """Display search results."""
+        if not self.winfo_exists():
+            return
         self.search_results = results
         self.selected_ids.clear()
         self._checkbox_vars.clear()

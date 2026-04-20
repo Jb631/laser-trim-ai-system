@@ -454,6 +454,8 @@ class ComparePage(ctk.CTkFrame):
 
     def _display_comparisons(self, pairs: List[Dict], models: List[str]):
         """Display comparison pairs in the list."""
+        if not self.winfo_exists():
+            return
         self.comparison_pairs = pairs
 
         # Update model filter (models already sorted numerically from database)
@@ -503,6 +505,9 @@ class ComparePage(ctk.CTkFrame):
     def _create_list_item(self, pair: Dict, index: int):
         """Create a list item for a comparison pair."""
         ft_id = pair.get("final_test_id")
+        if ft_id is None:
+            # Don't create list item for entries without final_test_id
+            return
 
         item_frame = ctk.CTkFrame(self.list_frame)
         item_frame.pack(fill="x", padx=5, pady=2)
@@ -678,6 +683,8 @@ Match: {method_label} ({confidence_str})"""
 
     def _display_comparison_chart(self, data: Optional[Dict]):
         """Display the comparison overlay chart."""
+        if not self.winfo_exists():
+            return
         if not data:
             logger.warning("Compare chart: No data received")
             # Clear chart to show empty state instead of leaving previous chart frozen
@@ -1177,7 +1184,7 @@ Match: {method_label} ({confidence_str})"""
         """Select all items on current page."""
         for pair in self.comparison_pairs:
             ft_id = pair.get("final_test_id")
-            if ft_id:
+            if ft_id is not None:
                 self._selected_ids.add(ft_id)
                 if ft_id in self._checkbox_vars:
                     self._checkbox_vars[ft_id].set(True)

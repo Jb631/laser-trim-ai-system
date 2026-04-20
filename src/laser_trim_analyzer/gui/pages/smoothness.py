@@ -146,6 +146,8 @@ class SmoothnessPage(ctk.CTkFrame):
         def _on_done(results_and_stats):
             results, stats = results_and_stats
             def _apply():
+                if not self.winfo_exists():
+                    return
                 self.results_list = results
                 self._current_page = 0
                 self._total_pages = max(1, (len(results) + self._page_size - 1) // self._page_size)
@@ -230,6 +232,8 @@ class SmoothnessPage(ctk.CTkFrame):
 
     def _display_detail(self, detail: Dict[str, Any]):
         """Display selected result detail and chart."""
+        if not self.winfo_exists():
+            return
         self.info_text.configure(state="normal")
         self.info_text.delete("1.0", "end")
 

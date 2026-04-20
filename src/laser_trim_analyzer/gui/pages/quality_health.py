@@ -358,6 +358,8 @@ class QualityHealthPage(ctk.CTkFrame):
 
     def _update_display(self, priority: List[Dict[str, Any]]):
         """Store data and render."""
+        if not self.winfo_exists():
+            return
         self._model_data = priority
         self._update_label.configure(
             text=f"Updated: {datetime.now().strftime('%H:%M:%S')}"
@@ -365,6 +367,8 @@ class QualityHealthPage(ctk.CTkFrame):
         self._render()
 
     def _show_error(self, msg: str):
+        if not self.winfo_exists():
+            return
         self._clear_content()
         lbl = ctk.CTkLabel(
             self._content, text=f"Error loading data: {msg}", text_color=COLOR_RED

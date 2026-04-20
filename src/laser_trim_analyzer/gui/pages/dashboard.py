@@ -657,6 +657,8 @@ class DashboardPage(ctk.CTkFrame):
         failure_modes: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update display with loaded data."""
+        if not self.winfo_exists():
+            return
         # Use overall_stats for the Files Processed card (all-time totals)
         if overall_stats and overall_stats.get("total_files", 0) > 0:
             total_files = overall_stats.get("total_files", 0)
@@ -1331,6 +1333,8 @@ class DashboardPage(ctk.CTkFrame):
 
     def _show_error(self, error: str):
         """Show error state."""
+        if not self.winfo_exists():
+            return
         self._update_card(
             self.health_card,
             title="Linearity Quality",

@@ -747,6 +747,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_processing_complete(self):
         """Handle processing completion."""
+        if not self.winfo_exists():
+            return
         self.is_processing = False
 
         # Update UI state
@@ -813,6 +815,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_processing_error(self, error: str):
         """Handle processing error."""
+        if not self.winfo_exists():
+            return
         self.is_processing = False
 
         self.process_btn.configure(state="normal")
