@@ -259,7 +259,7 @@ class QualityHealthPage(ctk.CTkFrame):
                         DBAnalysisResult.file_date,
                         DBTrackResult.linearity_pass,
                     )
-                    .join(DBAnalysisResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                    .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
                     .filter(
                         DBAnalysisResult.model.in_(mid_models),
                         DBAnalysisResult.file_date.isnot(None),

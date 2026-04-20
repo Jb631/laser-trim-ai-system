@@ -592,6 +592,7 @@ class ProcessPage(ctk.CTkFrame):
 
         # Capture UI state on main thread for thread safety
         self._save_to_db = self.save_db_var.get()
+        self._incremental = self.incremental_var.get()
 
         # Start processing in background thread (tracked for graceful shutdown)
         get_thread_manager().start_thread(target=self._process_files, name="file-processing")
@@ -626,7 +627,7 @@ class ProcessPage(ctk.CTkFrame):
                 self.after(0, lambda s=status: self._on_progress_update(s))
 
             # Process batch
-            incremental = self.incremental_var.get()
+            incremental = self._incremental
             gc_interval = 100  # Force GC every 100 files for large batches
 
             for i, result in enumerate(self.processor.process_batch(

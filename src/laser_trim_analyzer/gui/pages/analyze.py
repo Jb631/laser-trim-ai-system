@@ -536,6 +536,7 @@ class AnalyzePage(ctk.CTkFrame):
         self._filter_serial = self.serial_filter.get().strip()
         self._filter_date_from = self.date_from.get().strip()
         self._filter_date_to = self.date_to.get().strip()
+        self._filter_active_only = self.active_only_var.get()
 
         get_thread_manager().start_thread(target=self._fetch_analyses, name="fetch-analyses")
 
@@ -611,7 +612,7 @@ class AnalyzePage(ctk.CTkFrame):
                     recent_days=config.active_models.recent_days
                 )
                 # Build model list with inactive suffix
-                active_only = self.active_only_var.get()
+                active_only = self._filter_active_only
                 models = []
                 for m in prioritized:
                     if m['status'] == 'inactive':
@@ -866,7 +867,8 @@ class AnalyzePage(ctk.CTkFrame):
             except Exception as e:
                 logger.error(f"Error displaying chart: {e}")
                 self._ensure_chart_initialized()
-                self.chart.show_placeholder(f"Chart error: {e}")
+                if self.chart:
+                    self.chart.show_placeholder(f"Chart error: {e}")
         else:
             # No track data available - show message
             self.track_selector.configure(values=["No Tracks"], state="disabled")
@@ -1317,6 +1319,11 @@ class AnalyzePage(ctk.CTkFrame):
                 processor = Processor(use_ml=self.app.config.ml.enabled)
                 result = processor.process_file(Path(file_path))
 
+                if result is None:
+                    self.after(0, lambda: messagebox.showwarning("Re-analyze", "File was not recognized as a trim file"))
+                    self.after(0, lambda: self.reanalyze_btn.configure(state="normal"))
+                    return
+
                 # Save to database (will update existing record)
                 try:
                     db = get_database()
@@ -1435,6 +1442,7 @@ class AnalyzePage(ctk.CTkFrame):
             self.export_model_btn.configure(state="disabled")
             self.reanalyze_btn.configure(state="disabled")
             self.delete_btn.configure(state="disabled")
+            self.scorecard_btn.configure(state="disabled")
             self.track_selector.configure(state="disabled")
 
             # Show placeholder chart

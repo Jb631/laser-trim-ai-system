@@ -803,7 +803,7 @@ class TrendsPage(ctk.CTkFrame):
         ChartWidget, ChartStyle = _ensure_chart_module()
 
         # Create scatter chart
-        if self._scatter_placeholder:
+        if self._scatter_placeholder and self._scatter_placeholder.winfo_exists():
             self._scatter_placeholder.destroy()
         self.scatter_chart = ChartWidget(
             self._scatter_frame,
@@ -826,7 +826,7 @@ class TrendsPage(ctk.CTkFrame):
             self.linearity_chart.show_placeholder("Loading linearity trend data...")
 
         # Create distribution chart
-        if self._dist_placeholder:
+        if self._dist_placeholder and self._dist_placeholder.winfo_exists():
             self._dist_placeholder.destroy()
         self.dist_chart = ChartWidget(
             self._dist_frame,
@@ -2210,6 +2210,10 @@ class TrendsPage(ctk.CTkFrame):
     def _on_trend_type_changed(self, value: str):
         """Handle trend type selector change."""
         if value == "Standard":
+            if self.selected_model == "All Models":
+                self._create_summary_view()
+            else:
+                self._create_detail_view()
             self._refresh_data()
         elif value == "Comparative":
             self._show_comparative_trends()
@@ -2297,7 +2301,7 @@ class TrendsPage(ctk.CTkFrame):
         """Show Cpk trend over time for selected model."""
         try:
             db = get_database()
-            model = self.selected_model
+            model = self.selected_model.replace(" (inactive)", "")
             if not model or model == "All Models":
                 self.status_label.configure(text="Select a specific model for Cpk trend")
                 return

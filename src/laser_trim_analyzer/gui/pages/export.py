@@ -220,17 +220,20 @@ class ExportPage(ctk.CTkFrame):
         # Clear previous results
         self._clear_results()
 
-        get_thread_manager().start_thread(target=self._fetch_results, name="export-fetch-results")
+        # Capture filter values on main thread for thread safety
+        _model = self.model_filter.get()
+        _date_str = self.date_filter.get()
+        _serial = self.serial_filter.get().strip()
 
-    def _fetch_results(self):
+        get_thread_manager().start_thread(
+            target=lambda: self._fetch_results(_model, _date_str, _serial),
+            name="export-fetch-results"
+        )
+
+    def _fetch_results(self, model: str, date_str: str, serial: str):
         """Fetch results in background thread."""
         try:
             db = get_database()
-
-            # Get filter values
-            model = self.model_filter.get()
-            date_str = self.date_filter.get()
-            serial = self.serial_filter.get().strip()
 
             # Parse date range
             date_from = None
@@ -639,7 +642,8 @@ class ExportPage(ctk.CTkFrame):
                         lower_limits = [-track.linearity_spec] * len(track.error_data)
 
                 if upper_limits and lower_limits and track.error_data:
-                    shifted_errors = [e + track.optimal_offset for e in track.error_data]
+                    slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+                    shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(upper_limits) and i < len(lower_limits):
                             if upper_limits[i] is not None and lower_limits[i] is not None:

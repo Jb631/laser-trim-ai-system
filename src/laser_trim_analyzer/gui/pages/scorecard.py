@@ -122,12 +122,16 @@ class ScorecardPage(ctk.CTkFrame):
 
     def _display_scorecard(self, data: dict):
         """Display scorecard data on the UI thread."""
+        if not self.winfo_exists():
+            return
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self._render_scorecard(data)
 
     def _display_scorecard_error(self, error: Exception):
         """Display scorecard loading error on the UI thread."""
+        if not self.winfo_exists():
+            return
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         ctk.CTkLabel(

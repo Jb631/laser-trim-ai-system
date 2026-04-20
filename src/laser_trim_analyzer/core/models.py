@@ -206,6 +206,7 @@ class AnalysisResult(BaseAnalysisModel):
     # File type marker (for distinguishing trim vs final test)
     file_type: str = Field(default="trim", description="File type: 'trim', 'final_test', or 'smoothness'")
     final_test_id: Optional[int] = Field(None, description="Database ID for final test records")
+    smoothness_id: Optional[int] = Field(None, description="Linked smoothness result ID")
 
     # Data quality flags — validation issues found during ingest
     data_quality: str = Field(default="good", description="Data quality: 'good' or 'suspect'")

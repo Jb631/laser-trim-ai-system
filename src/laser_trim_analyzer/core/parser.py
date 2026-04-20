@@ -401,14 +401,16 @@ class ExcelParser:
             except ValueError:
                 pass
 
-        # Also try YYYY-MM-DD format
-        date_match = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})', filename)
+        # Also try YYYY-MM-DD format (with boundary checks to avoid matching model numbers)
+        date_match = re.search(r'(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)', filename)
         if date_match:
-            year, month, day = date_match.groups()
-            try:
-                return datetime.strptime(f'{year}-{month}-{day}', '%Y-%m-%d')
-            except ValueError:
-                pass
+            year, month, day = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+            if 1990 <= year <= 2100:
+                try:
+                    test_date = datetime(year, month, day)
+                    return test_date
+                except ValueError:
+                    pass
 
         return None
 

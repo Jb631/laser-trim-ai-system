@@ -793,8 +793,8 @@ def export_executive_summary(
     ws[f"A{row}"].font = header_font
     row += 1
 
-    daily = stats.get("daily_stats", [])
-    total_pass = sum(d.get("pass", 0) for d in daily)
+    daily = stats.get("daily_trend", [])
+    total_pass = sum(d.get("pass_count", 0) for d in daily)
     total_count = sum(d.get("total", 0) for d in daily)
     pass_rate = (total_pass / total_count * 100) if total_count > 0 else 0
 
@@ -834,7 +834,7 @@ def export_executive_summary(
         model = m.get("model", "?")
         lin_rate = m.get("linearity_pass_rate", 0)
         failed = m.get("failed_units", 0)
-        total = m.get("total_units", 0)
+        total = m.get("total_tracks", 0)
         near_miss = m.get("near_miss_count", 0)
         rec = m.get("recommendation", "")
 

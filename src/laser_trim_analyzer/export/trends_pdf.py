@@ -40,7 +40,7 @@ def export_trends_summary_pdf(
                 str(model_data.get('total', model_data.get('total_samples', 0))),
                 f"{model_data.get('sigma_pass_rate', 0):.1f}%",
                 f"{model_data.get('linearity_pass_rate', 0):.1f}%",
-                f"{model_data.get('overall_pass_rate', 0):.1f}%",
+                f"{model_data.get('overall_pass_rate', 0) or 0:.1f}%",
                 f"{model_data.get('avg_sigma', 0):.4f}",
                 str(model_data.get('anomaly_count', 0)),
             ]

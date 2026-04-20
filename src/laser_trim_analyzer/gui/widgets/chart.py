@@ -444,6 +444,9 @@ class ChartWidget(ctk.CTkFrame):
             ylabel: Y-axis label
         """
         self.clear()
+        if not values:
+            self.show_placeholder("No data available")
+            return
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
@@ -512,6 +515,9 @@ class ChartWidget(ctk.CTkFrame):
             spec_limit: Specification limit to show
         """
         self.clear()
+        if not values:
+            self.show_placeholder("No data available")
+            return
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
@@ -597,6 +603,9 @@ class ChartWidget(ctk.CTkFrame):
             ylabel: Y-axis label
         """
         self.clear()
+        if not values:
+            self.show_placeholder("No data available")
+            return
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 

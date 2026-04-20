@@ -743,10 +743,10 @@ class Analyzer:
             # R² > 0.95 is very strict - only catches truly linear patterns
             # Error range threshold is spec-relative: 10x the sigma threshold
             # catches truly anomalous data while working for normalized errors
-            # (typically 0.001-0.01 range). Floor of 0.5 prevents false positives
-            # on very tight specs.
+            # (typically 0.001-0.01 range). Floor of 0.02 (2% of full scale)
+            # is a reasonable anomaly threshold for normalized data.
 
-            if r_squared > 0.95 and error_range > max(sigma_threshold * 10, 0.5):
+            if r_squared > 0.95 and error_range > max(sigma_threshold * 10, 0.02):
                 return True, f"Linear slope pattern (R²={r_squared:.3f}, range={error_range:.2f})"
 
             return False, None

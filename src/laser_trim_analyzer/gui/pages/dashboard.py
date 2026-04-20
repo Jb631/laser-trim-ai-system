@@ -1010,7 +1010,7 @@ class DashboardPage(ctk.CTkFrame):
             lin_rate = m.get("linearity_pass_rate", 0)
             failed = m.get("failed_units", 0)
             near_miss = m.get("near_miss_count", 0)
-            total = m.get("total_units", 0)
+            total = m.get("total_tracks", 0)
             rec = m.get("recommendation", "")
             is_declining = model in declining_models
 

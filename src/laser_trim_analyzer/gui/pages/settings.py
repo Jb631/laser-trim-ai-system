@@ -757,12 +757,12 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=11)
         )
         self.cleanup_preview_label.grid(
-            row=12, column=0, columnspan=3, padx=15, pady=(5, 10), sticky="w"
+            row=13, column=0, columnspan=3, padx=15, pady=(5, 10), sticky="w"
         )
 
         # --- Reset skipped files ---
         reset_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        reset_frame.grid(row=13, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
+        reset_frame.grid(row=14, column=0, columnspan=3, padx=15, pady=(5, 15), sticky="w")
 
         self.reset_skipped_btn = ctk.CTkButton(
             reset_frame,
@@ -1066,6 +1066,7 @@ class SettingsPage(ctk.CTkFrame):
         )
         if path:
             self.app.config.database.path = Path(path)
+            self.app.config.save()
             self.db_path_label.configure(text=str(path))
             logger.info(f"Database path changed to: {path}")
             messagebox.showinfo(

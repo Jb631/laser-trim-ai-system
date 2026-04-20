@@ -128,7 +128,7 @@ class Processor:
             logger.debug(f"Could not load ML thresholds: {e}")
             self._model_thresholds = {}
 
-    def process_file(self, file_path: Path, generate_plots: bool = True) -> AnalysisResult:
+    def process_file(self, file_path: Path, generate_plots: bool = True) -> Optional[AnalysisResult]:
         """
         Process a single file (trim or final test).
 

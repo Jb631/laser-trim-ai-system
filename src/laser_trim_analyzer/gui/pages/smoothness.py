@@ -212,8 +212,12 @@ class SmoothnessPage(ctk.CTkFrame):
         result_id = result["id"]
 
         def _do_load():
-            db = get_database()
-            return db.get_smoothness_result(result_id)
+            try:
+                db = get_database()
+                return db.get_smoothness_result(result_id)
+            except Exception as e:
+                logger.error(f"Error loading smoothness detail: {e}")
+                return None
 
         def _on_done(detail):
             if detail:
