@@ -317,11 +317,13 @@ class Processor:
             # This can happen with some file formats or parsing failures
             if not tracks:
                 logger.warning(f"Final Test file has no track data: {file_path.name}")
-                return self._create_error_result(
+                error_result = self._create_error_result(
                     minimal_metadata,
                     "Final Test file has no track data",
                     start_time
                 )
+                error_result.file_type = "final_test"  # Prevent saving as trim record
+                return error_result
 
             # Determine status from test results
             overall_status = AnalysisStatus.PASS
@@ -406,11 +408,13 @@ class Processor:
 
         except Exception as e:
             logger.exception(f"Error processing Final Test {file_path.name}: {e}")
-            return self._create_error_result(
+            error_result = self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 f"Final Test error: {e}",
                 start_time
             )
+            error_result.file_type = "final_test"  # Prevent saving as trim record
+            return error_result
 
     def process_batch(
         self,
@@ -799,10 +803,12 @@ class Processor:
 
         except Exception as e:
             logger.exception(f"Error processing Smoothness {file_path.name}: {e}")
-            return self._create_error_result(
+            error_result = self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 f"Smoothness error: {e}", start_time
             )
+            error_result.file_type = "smoothness"  # Prevent saving as trim record
+            return error_result
 
     def _get_linearity_type(self, model: str) -> Optional[str]:
         """Look up linearity type from model_specs table."""
@@ -982,8 +988,21 @@ class Processor:
                         self._processed_filenames.add(row.file_path)
                         ft_count += 1
 
+                # Also load Smoothness file paths
+                smoothness_count = 0
+                try:
+                    from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+                    smoothness_paths = session.query(DBSmoothnessResult.file_path).all()
+                    for row in smoothness_paths:
+                        if row.file_path:
+                            self._processed_filenames.add(row.file_path)
+                            smoothness_count += 1
+                except Exception as e:
+                    logger.debug(f"Could not load smoothness paths: {e}")
+
             logger.info(f"Loaded {len(self._processed_filenames)} processed file paths "
-                       f"({len(self._processed_filenames) - ft_count} trim, {ft_count} final test)")
+                       f"({len(self._processed_filenames) - ft_count - smoothness_count} trim, "
+                       f"{ft_count} final test, {smoothness_count} smoothness)")
         except Exception as e:
             logger.warning(f"Could not load processed files from database: {e}")
             self._processed_filenames = set()

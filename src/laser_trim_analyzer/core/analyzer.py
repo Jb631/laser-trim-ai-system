@@ -223,10 +223,15 @@ class Analyzer:
         # Apply Butterworth filter to smooth errors
         filtered_errors = self._apply_butterworth_filter(errors)
 
-        # Remove endpoints
-        if len(positions) > 2 * END_POINT_FILTER_COUNT:
+        # Remove endpoints (only if enough points remain for meaningful gradient calc)
+        # Need at least 2*END_POINT_FILTER_COUNT + 3 points so that after removal
+        # we still have >= 3 points for gradient calculation
+        if len(positions) >= 2 * END_POINT_FILTER_COUNT + 3:
             positions = positions[END_POINT_FILTER_COUNT:-END_POINT_FILTER_COUNT]
             filtered_errors = filtered_errors[END_POINT_FILTER_COUNT:-END_POINT_FILTER_COUNT]
+        elif len(positions) > 2 * END_POINT_FILTER_COUNT:
+            logger.debug(f"Track too short after endpoint removal ({len(positions)} points, "
+                        f"need {2 * END_POINT_FILTER_COUNT + 3}), skipping endpoint filter")
 
         # Calculate gradients
         gradients = []
@@ -736,9 +741,12 @@ class Analyzer:
             #
             # Criteria: High R² AND significant error range (not just noise)
             # R² > 0.95 is very strict - only catches truly linear patterns
-            # Error range > 1.0 ensures it's a significant slope, not flat noise
+            # Error range threshold is spec-relative: 10x the sigma threshold
+            # catches truly anomalous data while working for normalized errors
+            # (typically 0.001-0.01 range). Floor of 0.5 prevents false positives
+            # on very tight specs.
 
-            if r_squared > 0.95 and error_range > 1.0:
+            if r_squared > 0.95 and error_range > max(sigma_threshold * 10, 0.5):
                 return True, f"Linear slope pattern (R²={r_squared:.3f}, range={error_range:.2f})"
 
             return False, None

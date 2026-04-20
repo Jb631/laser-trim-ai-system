@@ -295,9 +295,9 @@ class FinalTestParser:
         # Or: 1844202-sn1004a_7-27-2022_1-26 PM
         # Or: 8340-1-sn470_5-30-2025_1-52 PM (model with suffix)
 
-        # Try to extract model number with optional suffix (e.g., 8340-1)
-        # Pattern: digits followed by optional hyphen-digits, before the -sn serial pattern
-        model_match = re.match(r'^(\d+(?:-\d+)?)', base)
+        # Try to extract model number with optional suffix (e.g., 8340-1, 7280-1-CT, 8508-A)
+        # Pattern: digits followed by optional numeric segments and optional letter suffix
+        model_match = re.match(r'^(\d+(?:-\d+)*(?:-[A-Z]+)?)', base)
         if model_match:
             metadata["model"] = model_match.group(1)
 
