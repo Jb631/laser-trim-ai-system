@@ -380,9 +380,11 @@ class ModelDriftDetector:
         # Check control limits
         if self.baseline_std is not None and self.baseline_std > 0:
             # Calculate EWMA standard deviation
+            # Use samples_since_baseline + 1 because counter hasn't been incremented yet for current sample
+            t = self.samples_since_baseline + 1
             ewma_std = self.baseline_std * np.sqrt(
                 self.ewma_lambda / (2 - self.ewma_lambda) *
-                (1 - (1 - self.ewma_lambda) ** (2 * self.samples_since_baseline))
+                (1 - (1 - self.ewma_lambda) ** (2 * t))
             )
 
             upper_limit = self.baseline_mean + self.ewma_l * ewma_std

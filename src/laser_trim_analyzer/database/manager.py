@@ -35,6 +35,7 @@ from laser_trim_analyzer.database.models import (
     StatusType as DBStatusType,
     RiskCategory as DBRiskCategory,
     AlertType as DBAlertType,
+    utc_now,
 )
 from laser_trim_analyzer.core.models import (
     AnalysisResult,
@@ -518,8 +519,10 @@ class DatabaseManager:
                     session.execute(text(
                         f"ALTER TABLE track_results ADD COLUMN {col_name} {col_type}"
                     ))
-                except Exception:
-                    pass  # Column already exists
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                        logger.warning(f"Migration error adding {col_name}: {e}")
+                    session.rollback()
             try:
                 session.commit()
                 logger.info("Phase 2 migration: ensured spec-aware columns exist")
@@ -632,35 +635,36 @@ class DatabaseManager:
         """
         saved_ids = []
 
-        with self.session() as session:
-            for analysis in analyses:
-                # Skip Final Test files - they're already saved in processor
-                if getattr(analysis, 'file_type', 'trim') == 'final_test':
-                    saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
-                    continue
+        with self._write_lock:
+            with self.session() as session:
+                for analysis in analyses:
+                    # Skip Final Test files - they're already saved in processor
+                    if getattr(analysis, 'file_type', 'trim') == 'final_test':
+                        saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                        continue
 
-                # Check for existing record by filename
-                existing = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.filename == analysis.metadata.filename
-                ).first()
+                    # Check for existing record by filename
+                    existing = session.query(DBAnalysisResult).filter(
+                        DBAnalysisResult.filename == analysis.metadata.filename
+                    ).first()
 
-                if existing:
-                    # Update existing record
-                    updated_id = self._update_existing_analysis(session, analysis)
-                    saved_ids.append(updated_id)
-                else:
-                    # Create new record
-                    db_analysis = self._map_analysis_to_db(analysis)
-                    session.add(db_analysis)
-                    session.flush()
+                    if existing:
+                        # Update existing record
+                        updated_id = self._update_existing_analysis(session, analysis)
+                        saved_ids.append(updated_id)
+                    else:
+                        # Create new record
+                        db_analysis = self._map_analysis_to_db(analysis)
+                        session.add(db_analysis)
+                        session.flush()
 
-                    self._record_processed_file(
-                        session,
-                        analysis.metadata.file_path,
-                        db_analysis.id
-                    )
+                        self._record_processed_file(
+                            session,
+                            analysis.metadata.file_path,
+                            db_analysis.id
+                        )
 
-                    saved_ids.append(db_analysis.id)
+                        saved_ids.append(db_analysis.id)
 
         logger.info(f"Saved batch of {len(saved_ids)} analyses")
         return saved_ids
@@ -881,8 +885,8 @@ class DatabaseManager:
             )
             session.add(processed_file)
         except IntegrityError:
-            # Already recorded, ignore
-            pass
+            session.rollback()  # Required: session is invalid after IntegrityError
+            pass  # File already recorded
 
     # =========================================================================
     # QA Alerts
@@ -981,7 +985,7 @@ class DatabaseManager:
             if alert:
                 alert.acknowledged = True
                 alert.acknowledged_by = acknowledged_by
-                alert.acknowledged_date = datetime.now()
+                alert.acknowledged_date = utc_now()
                 return True
             return False
 
@@ -1009,11 +1013,11 @@ class DatabaseManager:
                     # Auto-acknowledge when resolving
                     alert.acknowledged = True
                     alert.acknowledged_by = resolved_by
-                    alert.acknowledged_date = datetime.now()
+                    alert.acknowledged_date = utc_now()
 
                 alert.resolved = True
                 alert.resolved_by = resolved_by
-                alert.resolved_date = datetime.now()
+                alert.resolved_date = utc_now()
                 alert.resolution_notes = resolution_notes
                 return True
             return False
@@ -1755,7 +1759,7 @@ class DatabaseManager:
                         DBTrackResult.track_id == DBFinalTestTrack.track_id,
                         and_(
                             DBFinalTestTrack.track_id == "default",
-                            DBTrackResult.track_id == "A",
+                            DBTrackResult.track_id.in_(["TRK1", "TRK2", "default"]),
                         ),
                     ),
                 )
@@ -1842,12 +1846,10 @@ class DatabaseManager:
                 session.query(
                     DBAnalysisResult.model,
                     func.count(func.distinct(DBAnalysisResult.id)).label('count'),
-                    func.sum(
-                        case(
-                            (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
-                            else_=0
-                        )
-                    ).label('passed'),
+                    func.count(func.distinct(case(
+                        (DBAnalysisResult.overall_status == DBStatusType.PASS, DBAnalysisResult.id),
+                        else_=None
+                    ))).label('passed'),
                     func.count(DBTrackResult.id).label('total_tracks'),
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
@@ -2297,6 +2299,8 @@ class DatabaseManager:
                 AnalysisStatus.ERROR: DBStatusType.ERROR,
             }
             existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
+            existing.data_quality = getattr(analysis, 'data_quality', None)
+            existing.data_quality_issues = getattr(analysis, 'data_quality_issues', None)
 
             # Delete old tracks explicitly and flush before adding new ones
             # This avoids unique constraint violations
@@ -2552,12 +2556,10 @@ class DatabaseManager:
                 session.query(
                     DBAnalysisResult.model,
                     func.count(func.distinct(DBAnalysisResult.id)).label('total'),
-                    func.sum(
-                        case(
-                            (DBAnalysisResult.overall_status == DBStatusType.PASS, 1),
-                            else_=0
-                        )
-                    ).label('passed'),
+                    func.count(func.distinct(case(
+                        (DBAnalysisResult.overall_status == DBStatusType.PASS, DBAnalysisResult.id),
+                        else_=None
+                    ))).label('passed'),
                     func.min(DBAnalysisResult.file_date).label('first_date'),
                     func.max(DBAnalysisResult.file_date).label('last_date'),
                     func.avg(DBTrackResult.sigma_gradient).label('avg_sigma'),
@@ -3265,7 +3267,7 @@ class DatabaseManager:
                         "sigma_gradient": sigma_gradient,
                         "sigma_threshold": sigma_threshold,
                         "sigma_pass": sigma_pass,
-                        "status": status.value if status else "UNKNOWN",
+                        "status": status.value if hasattr(status, 'value') else str(status) if status else "UNKNOWN",
                         "is_anomaly": is_anomaly or False,
                         "linearity_error": linearity_error,
                         "linearity_spec": linearity_spec,
@@ -4731,7 +4733,7 @@ class DatabaseManager:
                         upper_limits=upper_limits,
                         lower_limits=lower_limits,
                         # Travel length from position range
-                        travel_length=max(positions) - min(positions) if positions else 0,
+                        travel_length=max(positions) - min(positions) if positions and len(positions) > 1 else 1.0,
                     )
                     session.add(db_track)
 

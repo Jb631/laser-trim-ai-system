@@ -318,7 +318,7 @@ class ModelThresholdOptimizer:
 
         # Threshold between high-passing and low-failing (weighted)
         # Bias towards catching failures (threshold closer to passing)
-        threshold = 0.6 * p95_pass + 0.4 * weighted_fail_low
+        threshold = 0.4 * p95_pass + 0.6 * weighted_fail_low
 
         # Moderate confidence due to overlap
         overlap_ratio = len(pass_sigma[pass_sigma > weighted_fail_low]) / len(pass_sigma)

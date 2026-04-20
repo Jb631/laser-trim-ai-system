@@ -256,7 +256,7 @@ class ModelProfiler:
         return ProfileStatistics(
             count=len(arr),
             mean=float(np.mean(arr)),
-            std=float(np.std(arr)),
+            std=float(np.std(arr, ddof=1)),
             min=float(np.min(arr)),
             max=float(np.max(arr)),
             p5=float(np.percentile(arr, 5)),
