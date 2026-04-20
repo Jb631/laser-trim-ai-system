@@ -1759,7 +1759,7 @@ class TrendsPage(ctk.CTkFrame):
             total_analyses = model_stats.get("total", total_samples)
         else:
             # Fallback: count from track data (may differ from analysis-level count)
-            overall_pass_count = sum(1 for d in data_points if d.get("status") == "PASS")
+            overall_pass_count = sum(1 for d in data_points if str(d.get("status", "")).upper() == "PASS")
             overall_pass_rate = (overall_pass_count / total_samples * 100) if total_samples > 0 else 0
             linearity_pass_rate = 0  # Can't calculate without model_stats
             total_analyses = total_samples
