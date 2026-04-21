@@ -137,42 +137,41 @@ class LaserTrimApp(ctk.CTk):
         self.main_frame.grid_columnconfigure(0, weight=1)
 
     def _create_pages(self):
-        """Create all pages."""
-        # Import pages here to avoid circular imports
-        from laser_trim_analyzer.gui.pages.dashboard import DashboardPage
-        from laser_trim_analyzer.gui.pages.quality_health import QualityHealthPage
-        from laser_trim_analyzer.gui.pages.process import ProcessPage
-        from laser_trim_analyzer.gui.pages.analyze import AnalyzePage
-        from laser_trim_analyzer.gui.pages.compare import ComparePage
-        from laser_trim_analyzer.gui.pages.trends import TrendsPage
-        from laser_trim_analyzer.gui.pages.export import ExportPage
-        from laser_trim_analyzer.gui.pages.smoothness import SmoothnessPage
-        from laser_trim_analyzer.gui.pages.scorecard import ScorecardPage
-        from laser_trim_analyzer.gui.pages.specs import SpecsPage
-        from laser_trim_analyzer.gui.pages.settings import SettingsPage
+        """Register page factories — pages are instantiated on first visit."""
+        self._page_factories = {
+            "dashboard": lambda: __import__('laser_trim_analyzer.gui.pages.dashboard', fromlist=['DashboardPage']).DashboardPage(self.main_frame, self),
+            "quality_health": lambda: __import__('laser_trim_analyzer.gui.pages.quality_health', fromlist=['QualityHealthPage']).QualityHealthPage(self.main_frame, self),
+            "process": lambda: __import__('laser_trim_analyzer.gui.pages.process', fromlist=['ProcessPage']).ProcessPage(self.main_frame, self),
+            "analyze": lambda: __import__('laser_trim_analyzer.gui.pages.analyze', fromlist=['AnalyzePage']).AnalyzePage(self.main_frame, self),
+            "compare": lambda: __import__('laser_trim_analyzer.gui.pages.compare', fromlist=['ComparePage']).ComparePage(self.main_frame, self),
+            "trends": lambda: __import__('laser_trim_analyzer.gui.pages.trends', fromlist=['TrendsPage']).TrendsPage(self.main_frame, self),
+            "smoothness": lambda: __import__('laser_trim_analyzer.gui.pages.smoothness', fromlist=['SmoothnessPage']).SmoothnessPage(self.main_frame, self),
+            "specs": lambda: __import__('laser_trim_analyzer.gui.pages.specs', fromlist=['SpecsPage']).SpecsPage(self.main_frame, self),
+            "export": lambda: __import__('laser_trim_analyzer.gui.pages.export', fromlist=['ExportPage']).ExportPage(self.main_frame, self),
+            "scorecard": lambda: __import__('laser_trim_analyzer.gui.pages.scorecard', fromlist=['ScorecardPage']).ScorecardPage(self.main_frame, self),
+            "settings": lambda: __import__('laser_trim_analyzer.gui.pages.settings', fromlist=['SettingsPage']).SettingsPage(self.main_frame, self),
+        }
 
-        # Create page instances
-        self._pages["dashboard"] = DashboardPage(self.main_frame, self)
-        self._pages["quality_health"] = QualityHealthPage(self.main_frame, self)
-        self._pages["process"] = ProcessPage(self.main_frame, self)
-        self._pages["analyze"] = AnalyzePage(self.main_frame, self)
-        self._pages["compare"] = ComparePage(self.main_frame, self)
-        self._pages["trends"] = TrendsPage(self.main_frame, self)
-        self._pages["smoothness"] = SmoothnessPage(self.main_frame, self)
-        self._pages["specs"] = SpecsPage(self.main_frame, self)
-        self._pages["export"] = ExportPage(self.main_frame, self)
-        self._pages["scorecard"] = ScorecardPage(self.main_frame, self)
-        self._pages["settings"] = SettingsPage(self.main_frame, self)
+        # Only create the dashboard eagerly (it's the landing page)
+        self._pages["dashboard"] = self._page_factories["dashboard"]()
+        self._pages["dashboard"].grid(row=0, column=0, sticky="nsew")
 
-        # Place all pages in the same grid cell (only one visible at a time)
-        for page in self._pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
+    def _ensure_page(self, page_id: str):
+        """Lazily instantiate a page on first visit."""
+        if page_id not in self._pages:
+            if page_id in self._page_factories:
+                self._pages[page_id] = self._page_factories[page_id]()
+                self._pages[page_id].grid(row=0, column=0, sticky="nsew")
+                self._pages[page_id].grid_remove()  # Hidden until _show_page makes it visible
 
     def _show_page(self, page_id: str):
         """Show a specific page and update navigation state."""
-        if page_id not in self._pages:
+        if page_id not in self._pages and page_id not in self._page_factories:
             logger.warning(f"Unknown page: {page_id}")
             return
+
+        # Lazily create the page on first visit
+        self._ensure_page(page_id)
 
         # Call on_hide for the current page before switching (memory cleanup)
         if self._current_page and self._current_page in self._pages:
