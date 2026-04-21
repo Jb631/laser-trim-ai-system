@@ -751,7 +751,7 @@ Match: {method_label} ({confidence_str})"""
         # These are populated by the analyzer on save (Task #15).
         ft_track_raw = final_test.get("tracks", [{}])[0] if final_test.get("tracks") else {}
         ft_offset = ft_track_raw.get("optimal_offset", 0) or 0
-        ft_slope = ft_track_raw.get("optimal_slope", 1.0) or 1.0
+        ft_slope = ft_track_raw.get("optimal_slope") if ft_track_raw.get("optimal_slope") is not None else 1.0
         ft_linearity_type = ft_track_raw.get("linearity_type")
 
         # Prepare chart data
@@ -776,7 +776,7 @@ Match: {method_label} ({confidence_str})"""
                 trim_positions = trim_track.get("positions", [])
                 trim_errors = trim_track.get("errors", [])
                 trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0) or 0
-                trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+                trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
                 trim_linearity_type = trim_track.get("linearity_type")
 
                 chart_data["trim"] = {
@@ -1519,7 +1519,7 @@ Match: {method_label} ({confidence_str})"""
             return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
 
         # Apply slope+offset correction to FT errors (pass/fail is on corrected)
-        ft_slope = ft_track.get("optimal_slope", 1.0) or 1.0
+        ft_slope = ft_track.get("optimal_slope") if ft_track.get("optimal_slope") is not None else 1.0
         ft_offset = ft_track.get("optimal_offset", 0) or 0
         ft_errors = [e * ft_slope + ft_offset for e in ft_raw_errors]
 
@@ -1541,7 +1541,7 @@ Match: {method_label} ({confidence_str})"""
                 trim_track = trim_tracks[0]
                 trim_raw_errors = trim_track.get("errors", [])
                 trim_positions = trim_track.get("positions", [])
-                trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+                trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
                 trim_offset = trim_track.get("optimal_offset", 0) or 0
 
                 # Apply full correction (slope + offset) — matches analyzer + chart
@@ -1613,7 +1613,7 @@ Match: {method_label} ({confidence_str})"""
             trim_track = trim_tracks[0]
             trim_positions_raw = trim_track.get("positions", [])
             trim_raw_errors = trim_track.get("errors", [])
-            trim_slope = trim_track.get("optimal_slope", 1.0) or 1.0
+            trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
             trim_offset = trim_track.get("optimal_offset", 0) or trim_track.get("offset", 0) or 0
 
             # Corrected = raw * slope + offset (matches analyzer pass/fail rule)
@@ -1639,7 +1639,7 @@ Match: {method_label} ({confidence_str})"""
             ft_track = ft_tracks[0]
             ft_positions_raw = ft_track.get("positions", [])
             ft_raw_errors = ft_track.get("errors", [])
-            ft_slope = ft_track.get("optimal_slope", 1.0) or 1.0
+            ft_slope = ft_track.get("optimal_slope") if ft_track.get("optimal_slope") is not None else 1.0
             ft_offset = ft_track.get("optimal_offset", 0) or 0
 
             # Corrected = raw * slope + offset

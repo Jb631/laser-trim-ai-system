@@ -761,7 +761,7 @@ class ChartWidget(ctk.CTkFrame):
                 upper_limits=tracks[0].upper_limits,
                 lower_limits=tracks[0].lower_limits,
                 offset=tracks[0].optimal_offset,
-                slope=getattr(tracks[0], 'optimal_slope', 1.0) or 1.0,
+                slope=getattr(tracks[0], 'optimal_slope', None) if getattr(tracks[0], 'optimal_slope', None) is not None else 1.0,
                 title=f"Track {tracks[0].track_id}",
                 linearity_type=lt_str,
             )
@@ -776,7 +776,7 @@ class ChartWidget(ctk.CTkFrame):
         def get_status_str(track):
             fail_count = 0
             if track.upper_limits and track.lower_limits:
-                slope_val = getattr(track, 'optimal_slope', 1.0) or 1.0
+                slope_val = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
                 shifted = [e * slope_val + track.optimal_offset for e in track.error_data]
                 for i, e in enumerate(shifted):
                     if i < len(track.upper_limits) and i < len(track.lower_limits):
@@ -805,7 +805,7 @@ class ChartWidget(ctk.CTkFrame):
                 continue
 
             positions = np.array(track.position_data)
-            slope_val = getattr(track, 'optimal_slope', 1.0) or 1.0
+            slope_val = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
             errors = np.array(track.error_data) * slope_val + track.optimal_offset
 
             # Plot trimmed data

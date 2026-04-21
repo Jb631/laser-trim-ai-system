@@ -567,7 +567,7 @@ class ExportPage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
             shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
@@ -642,7 +642,7 @@ class ExportPage(ctk.CTkFrame):
                         lower_limits = [-track.linearity_spec] * len(track.error_data)
 
                 if upper_limits and lower_limits and track.error_data:
-                    slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+                    slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
                     shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(upper_limits) and i < len(lower_limits):
@@ -713,7 +713,7 @@ class ExportPage(ctk.CTkFrame):
 
         # Apply slope and offset
         offset = track.optimal_offset
-        slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+        slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
         errors_shifted = errors * slope + offset
 
         # Plot untrimmed data if available

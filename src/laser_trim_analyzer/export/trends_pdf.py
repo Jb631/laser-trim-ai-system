@@ -24,6 +24,10 @@ def export_trends_summary_pdf(
     """
     plt.style.use('default')
 
+    if not active_models_data:
+        logger.warning("No model data to export for trends summary PDF")
+        return
+
     with PdfPages(output_path) as pdf:
         fig = plt.figure(figsize=(11, 8.5), facecolor='white')
         fig.suptitle('Trends Summary - All Active Models',
