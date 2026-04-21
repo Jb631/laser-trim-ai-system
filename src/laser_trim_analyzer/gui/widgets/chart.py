@@ -221,6 +221,7 @@ class ChartWidget(ctk.CTkFrame):
         trim_improvement_percent: Optional[float] = None,
         station_compensation: Optional[float] = None,
         linearity_type: Optional[str] = None,
+        excluded_points: Optional[List[int]] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -373,6 +374,22 @@ class ChartWidget(ctk.CTkFrame):
                 label='Fail Points',
                 zorder=5
             )
+
+        if excluded_points:
+            excl_x = [positions[i] for i in excluded_points if i < len(positions)]
+            excl_y = [shifted_errors[i] for i in excluded_points if i < len(shifted_errors)]
+            if excl_x:
+                ax.scatter(
+                    excl_x, excl_y,
+                    color='gray',
+                    marker='o',
+                    s=40,
+                    facecolors='none',
+                    linewidths=1.5,
+                    label='Excluded Points',
+                    zorder=4,
+                    alpha=0.6,
+                )
 
         # Station compensation annotation
         if station_compensation is not None:

@@ -908,7 +908,6 @@ class AnalyzePage(ctk.CTkFrame):
         # ALWAYS recalculate fail point indices (old DB data may have incorrect fail_points=0)
         # Skip positions where limit is None (no spec = unlimited at that position)
         fail_indices = []
-        actual_fail_count = 0
         if upper_limits and lower_limits:
             _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
             shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
@@ -918,7 +917,23 @@ class AnalyzePage(ctk.CTkFrame):
                     if upper_limits[i] is not None and lower_limits[i] is not None:
                         if e > upper_limits[i] or e < lower_limits[i]:
                             fail_indices.append(i)
-                            actual_fail_count += 1
+
+        # Look up excluded points for this model
+        excluded_indices = set()
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.core.analyzer import parse_exclude_points
+            db = get_database()
+            spec = db.get_model_spec(self.current_result.metadata.model)
+            if spec:
+                excluded_indices = parse_exclude_points(spec.get("exclude_points"))
+        except Exception:
+            pass
+
+        # Separate excluded fail points from real fail points
+        excluded_fail_indices = [i for i in fail_indices if i in excluded_indices]
+        real_fail_indices = [i for i in fail_indices if i not in excluded_indices]
+        actual_fail_count = len(real_fail_indices)
 
         # Determine actual status based on recalculated fail points
         # Use WARNING when one passes and one fails
@@ -964,7 +979,8 @@ class AnalyzePage(ctk.CTkFrame):
             offset=track.optimal_offset,
             slope=getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0,
             title=title,
-            fail_points=fail_indices,
+            fail_points=real_fail_indices,
+            excluded_points=excluded_fail_indices,
             serial_number=serial,
             trim_improvement_percent=track.trim_improvement_percent,
             trim_date=trim_date,
