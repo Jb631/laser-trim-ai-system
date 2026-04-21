@@ -613,16 +613,20 @@ class ProcessPage(ctk.CTkFrame):
             total_files = len(self.selected_files)
 
             # Process callback with throttling for large batches
+            import threading
+            _throttle_lock = threading.Lock()
+
             def on_progress(status: ProcessingStatus):
                 # Throttle UI updates for large batches (max 10 updates/sec)
                 current_time = time.time()
-                if is_large_batch and (current_time - self._last_ui_update) < 0.1:
-                    # Skip UI update but still count results
-                    if status.status == "completed" and status.result:
-                        return  # Will be counted in main loop
-                    return
+                with _throttle_lock:
+                    if is_large_batch and (current_time - self._last_ui_update) < 0.1:
+                        # Skip UI update but still count results
+                        if status.status == "completed" and status.result:
+                            return  # Will be counted in main loop
+                        return
+                    self._last_ui_update = current_time
 
-                self._last_ui_update = current_time
                 # Schedule UI update on main thread
                 self.after(0, lambda s=status: self._on_progress_update(s))
 

@@ -314,10 +314,8 @@ class ExportPage(ctk.CTkFrame):
 
     def _create_result_item(self, result: AnalysisResult, index: int):
         """Create a result item with checkbox."""
-        # Use a stable hash-based ID that doesn't change across searches
-        # This ensures selections remain valid even if search results change
-        date_str = result.metadata.file_date.isoformat() if result.metadata.file_date else ''
-        item_id = hash((result.metadata.filename, result.metadata.serial, date_str))
+        # Use monotonic index as ID — hash() can collide across large result sets
+        item_id = index
 
         # Store mapping from ID to result for export
         self._id_to_result[item_id] = result

@@ -537,8 +537,6 @@ class DashboardPage(ctk.CTkFrame):
                 element_type=element_type,
                 product_class=product_class
             )
-            self.stats = stats
-
             # Get last batch stats
             batch_stats = db.get_last_batch_stats()
 
@@ -679,6 +677,7 @@ class DashboardPage(ctk.CTkFrame):
         """Update display with loaded data."""
         if not self.winfo_exists():
             return
+        self.stats = stats  # Safe: runs on main thread via self.after()
         # Use overall_stats for the Files Processed card (all-time totals)
         if overall_stats and overall_stats.get("total_files", 0) > 0:
             total_files = overall_stats.get("total_files", 0)

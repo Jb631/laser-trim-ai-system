@@ -952,9 +952,11 @@ Match: {method_label} ({confidence_str})"""
         # Plot specification limits (matching Analyze page style)
         if upper_limits and lower_limits and spec_positions_norm:
             # Convert None to NaN for matplotlib (creates gaps)
-            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits])
-            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits])
-            pos_array = np.array(spec_positions_norm[:len(upper_limits)])
+            # Ensure arrays have the same length by truncating to the shortest
+            min_len = min(len(upper_limits), len(lower_limits), len(spec_positions_norm))
+            upper_plot = np.array([u if u is not None else np.nan for u in upper_limits[:min_len]])
+            lower_plot = np.array([l if l is not None else np.nan for l in lower_limits[:min_len]])
+            pos_array = np.array(spec_positions_norm[:min_len])
 
             ax.plot(pos_array, upper_plot, color=COLORS.get('spec_limit', '#e74c3c'),
                    linestyle='--', linewidth=1, alpha=0.8, label='Spec Limits')

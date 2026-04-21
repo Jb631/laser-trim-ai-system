@@ -1283,17 +1283,24 @@ class SettingsPage(ctk.CTkFrame):
         logger.info(f"Theme changed to: {theme_lower}")
 
     def _update_database_info(self):
-        """Update database info display."""
-        try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            stats = db.get_dashboard_stats(days_back=365)
-            total = stats.get("total_files", 0)
-            self.db_info_label.configure(
-                text=f"Connected - {total} files in database"
-            )
-        except Exception as e:
-            self.db_info_label.configure(text=f"Not connected: {str(e)[:30]}")
+        """Update database info display (runs DB query in background)."""
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+
+        def _fetch():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                count = db.get_record_count()
+                total = count.get("analyses", 0)
+                self.after(0, lambda: self.db_info_label.configure(
+                    text=f"Connected - {total} files in database"
+                ) if self.winfo_exists() else None)
+            except Exception as e:
+                self.after(0, lambda: self.db_info_label.configure(
+                    text=f"Not connected: {str(e)[:30]}"
+                ) if self.winfo_exists() else None)
+
+        get_thread_manager().start_thread(target=_fetch, name="settings-db-info")
 
     def on_show(self):
         """Called when the page is shown."""
