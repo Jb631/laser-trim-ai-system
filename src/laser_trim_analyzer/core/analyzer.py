@@ -162,6 +162,7 @@ class Analyzer:
         untrimmed_resistance = track_data.get("untrimmed_resistance")
         trimmed_resistance = track_data.get("trimmed_resistance")
         measured_electrical_angle = track_data.get("measured_electrical_angle")
+        exclude_indices = parse_exclude_points(track_data.get("exclude_points"))
 
         logger.info(f"Analyzing track {track_id}: {len(positions)} points")
 
@@ -186,6 +187,7 @@ class Analyzer:
             angle_spec=angle_spec,
             angle_tol=angle_tol,
             angle_tol_type=angle_tol_type,
+            exclude_indices=exclude_indices,
         )
 
         # Risk assessment
@@ -217,7 +219,7 @@ class Analyzer:
         # Calculate failure margin metrics
         shifted_errors = [e * optimal_slope + optimal_offset for e in errors]
         margin_metrics = self._calculate_failure_margins(
-            shifted_errors, upper_limits, lower_limits
+            shifted_errors, upper_limits, lower_limits, exclude_indices
         )
 
         # Calculate max deviation position and uniformity
@@ -414,6 +416,7 @@ class Analyzer:
         angle_spec: Optional[float] = None,
         angle_tol: Optional[float] = None,
         angle_tol_type: Optional[str] = None,
+        exclude_indices: Optional[Set[int]] = None,
     ) -> Tuple[float, float, float, bool, int, float, int]:
         """
         Calculate linearity metrics with spec-aware optimal adjustment.
@@ -423,7 +426,7 @@ class Analyzer:
              fail_points, raw_linearity_error, raw_fail_points)
         """
         # Calculate raw results (no adjustment)
-        raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits)
+        raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits, exclude_indices)
         raw_linearity_error = max(abs(e) for e in errors) if errors else 0.0
 
         # Calculate optimal adjustment. Slope bounds are driven by the model
@@ -442,7 +445,7 @@ class Analyzer:
         linearity_error = max(abs(e) for e in shifted_errors) if shifted_errors else 0.0
 
         # Count fail points after adjustment
-        fail_points = self._count_fail_points(shifted_errors, upper_limits, lower_limits)
+        fail_points = self._count_fail_points(shifted_errors, upper_limits, lower_limits, exclude_indices)
 
         # Linearity passes only if ALL points are within limits (zero tolerance)
         linearity_pass = fail_points == 0
@@ -754,9 +757,10 @@ class Analyzer:
         self,
         errors: List[float],
         upper_limits: List[float],
-        lower_limits: List[float]
+        lower_limits: List[float],
+        exclude_indices: Optional[Set[int]] = None,
     ) -> int:
-        """Count points outside specification limits."""
+        """Count points outside specification limits, skipping excluded indices."""
         if not upper_limits or not lower_limits:
             return 0
 
@@ -764,6 +768,8 @@ class Analyzer:
         count = 0
 
         for i in range(n):
+            if exclude_indices and i in exclude_indices:
+                continue
             if upper_limits[i] is not None and lower_limits[i] is not None:
                 if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
                     if errors[i] > upper_limits[i] or errors[i] < lower_limits[i]:
@@ -776,6 +782,7 @@ class Analyzer:
         shifted_errors: List[float],
         upper_limits: List[float],
         lower_limits: List[float],
+        exclude_indices: Optional[Set[int]] = None,
     ) -> Dict[str, Optional[float]]:
         """
         Calculate how far points are from spec limits.
@@ -801,6 +808,8 @@ class Analyzer:
         for i in range(n):
             ul = upper_limits[i]
             ll = lower_limits[i]
+            if exclude_indices and i in exclude_indices:
+                continue
             if ul is None or ll is None:
                 continue
             if np.isnan(ul) or np.isnan(ll):
