@@ -2323,10 +2323,22 @@ class TrendsPage(ctk.CTkFrame):
             config = get_config()
             mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
             if not mps:
-                self.status_label.configure(text="No MPS models configured for comparison")
+                chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
+                fig = chart.figure
+                fig.clear()
+                ax = fig.add_subplot(111)
+                chart._style_axis(ax)
+                self._draw_empty_state(
+                    ax,
+                    "No MPS models configured.\n\n"
+                    "Go to Settings → Active Models to set your\n"
+                    "MPS (Master Production Schedule) model list.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="No MPS models configured")
                 return
 
-            data = db.get_comparative_model_trends(mps, days_back=90, period="week")
+            data = db.get_comparative_model_trends(mps, days_back=self.selected_days, period="week")
             if not data:
                 self.status_label.configure(text="No data for comparative trends")
                 return
@@ -2393,7 +2405,7 @@ class TrendsPage(ctk.CTkFrame):
 
             # Branch 1: "All Models" -> Cpk comparison across every spec'd model.
             if not model or model == "All Models":
-                rows = db.get_cpk_by_model(days_back=90)
+                rows = db.get_cpk_by_model(days_back=self.selected_days)
                 if not rows:
                     self._draw_empty_state(
                         ax,
@@ -2440,7 +2452,7 @@ class TrendsPage(ctk.CTkFrame):
                 return
 
             trend = db.get_cpk_trend_for_model(
-                model, spec["linearity_spec_pct"], days_back=180, period="month"
+                model, spec["linearity_spec_pct"], days_back=self.selected_days, period="month"
             )
             valid = [t for t in (trend or []) if t.get("cpk") is not None]
             if not valid:
@@ -2482,7 +2494,7 @@ class TrendsPage(ctk.CTkFrame):
             ax = fig.add_subplot(111)
             chart._style_axis(ax)
 
-            data = db.get_yield_trend(days_back=180, period="week")
+            data = db.get_yield_trend(days_back=self.selected_days, period="week")
             if not data:
                 self._draw_empty_state(
                     ax,
@@ -2519,7 +2531,7 @@ class TrendsPage(ctk.CTkFrame):
         """Show drift detection events as a timeline."""
         try:
             db = get_database()
-            events = db.get_drift_events_timeline(days_back=180)
+            events = db.get_drift_events_timeline(days_back=self.selected_days)
 
             chart = self._create_dedicated_chart_view("Drift Detection Timeline")
             # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
