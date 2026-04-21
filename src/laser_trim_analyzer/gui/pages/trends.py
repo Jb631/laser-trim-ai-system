@@ -2617,9 +2617,14 @@ class TrendsPage(ctk.CTkFrame):
         self._refresh_data()
 
     def on_hide(self):
-        """Called when page becomes hidden - cleanup to free memory."""
-        # Cleanup charts (frees matplotlib figures)
-        self._cleanup_charts()
+        """Called when page becomes hidden."""
+        # Don't destroy charts on hide — recreating 10 ChartWidgets on every
+        # page visit is the #1 performance bottleneck. Instead, keep them alive
+        # and just clear stale data. Charts are only destroyed on model switch
+        # (via _create_summary_view / _create_detail_view) which already calls
+        # _cleanup_charts internally.
+        self.active_models_data = []
+        self.model_trend_data = None
 
     def _refresh_drift_data(self):
         """Refresh drift detection data."""

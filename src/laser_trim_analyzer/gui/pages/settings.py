@@ -1317,25 +1317,33 @@ class SettingsPage(ctk.CTkFrame):
         # Update database info
         self._update_database_info()
 
-        # Check ML model status from database
-        try:
-            from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+        # Check ML model status from database (background — MLManager.load_all can be slow)
+        def _load_ml_status():
+            try:
+                from laser_trim_analyzer.database import get_database
+                from laser_trim_analyzer.ml import MLManager
 
-            db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+                db = get_database()
+                ml_manager = MLManager(db)
+                ml_manager.load_all()
 
-            if ml_manager.trained_models:
-                self._ml_manager = ml_manager
-                self.ml_status_label.configure(
-                    text=f"Status: {len(ml_manager.trained_models)} models trained",
-                    text_color="#27ae60"
-                )
-            else:
-                self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
-        except Exception:
-            self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
+                def _update_ui():
+                    if not self.winfo_exists():
+                        return
+                    if ml_manager.trained_models:
+                        self._ml_manager = ml_manager
+                        self.ml_status_label.configure(
+                            text=f"Status: {len(ml_manager.trained_models)} models trained",
+                            text_color="#27ae60"
+                        )
+                    else:
+                        self.ml_status_label.configure(text="Status: Not trained", text_color="gray")
+                    self._refresh_staleness()
 
-        # Update staleness info
-        self._refresh_staleness()
+                self.after(0, _update_ui)
+            except Exception:
+                self.after(0, lambda: self.ml_status_label.configure(
+                    text="Status: Not trained", text_color="gray"
+                ) if self.winfo_exists() else None)
+
+        get_thread_manager().start_thread(target=_load_ml_status, name="settings-ml-status")

@@ -952,11 +952,17 @@ class ExportPage(ctk.CTkFrame):
 
     def on_show(self):
         """Called when page is shown."""
-        # Load models list
-        try:
-            db = get_database()
-            models = db.get_models_list()
-            model_values = ["All Models"] + models
-            self.model_filter.configure(values=model_values)
-        except Exception as e:
-            logger.error(f"Failed to load models: {e}")
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+
+        def _fetch_models():
+            try:
+                db = get_database()
+                models = db.get_models_list()
+                model_values = ["All Models"] + models
+                self.after(0, lambda: self.model_filter.configure(
+                    values=model_values
+                ) if self.winfo_exists() else None)
+            except Exception as e:
+                logger.error(f"Failed to load models: {e}")
+
+        get_thread_manager().start_thread(target=_fetch_models, name="export-models")
