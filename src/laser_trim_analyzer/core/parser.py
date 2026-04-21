@@ -620,7 +620,9 @@ class ExcelParser:
             )
 
             # Calculate travel length
-            travel_length = max(positions) - min(positions) if positions else 0.0
+            travel_length = max(positions) - min(positions) if positions else 0.001
+            if travel_length == 0.0:
+                travel_length = 0.001  # Degenerate track with constant position
 
             # Calculate linearity spec from limits
             # Note: Some positions may have NaN limits intentionally (no spec for that portion of travel)

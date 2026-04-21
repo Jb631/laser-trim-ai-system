@@ -721,35 +721,38 @@ class DatabaseManager:
         saved_ids = []
 
         with self._write_lock:
-            with self.session() as session:
-                for analysis in analyses:
-                    # Skip Final Test files - they're already saved in processor
-                    if getattr(analysis, 'file_type', 'trim') == 'final_test':
-                        saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
-                        continue
+            for analysis in analyses:
+                try:
+                    with self.session() as session:
+                        # Skip Final Test files - they're already saved in processor
+                        if getattr(analysis, 'file_type', 'trim') == 'final_test':
+                            saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
+                            continue
 
-                    # Check for existing record by filename
-                    existing = session.query(DBAnalysisResult).filter(
-                        DBAnalysisResult.filename == analysis.metadata.filename
-                    ).first()
+                        # Check for existing record by filename
+                        existing = session.query(DBAnalysisResult).filter(
+                            DBAnalysisResult.filename == analysis.metadata.filename
+                        ).first()
 
-                    if existing:
-                        # Update existing record
-                        updated_id = self._update_existing_analysis(session, analysis)
-                        saved_ids.append(updated_id)
-                    else:
-                        # Create new record
-                        db_analysis = self._map_analysis_to_db(analysis)
-                        session.add(db_analysis)
-                        session.flush()
+                        if existing:
+                            # Update existing record
+                            updated_id = self._update_existing_analysis(session, analysis)
+                            saved_ids.append(updated_id)
+                        else:
+                            # Create new record
+                            db_analysis = self._map_analysis_to_db(analysis)
+                            session.add(db_analysis)
+                            session.flush()
 
-                        self._record_processed_file(
-                            session,
-                            analysis.metadata.file_path,
-                            db_analysis.id
-                        )
+                            self._record_processed_file(
+                                session,
+                                analysis.metadata.file_path,
+                                db_analysis.id
+                            )
 
-                        saved_ids.append(db_analysis.id)
+                            saved_ids.append(db_analysis.id)
+                except Exception as e:
+                    logger.error(f"Failed to save analysis {getattr(analysis.metadata, 'filename', '?')}: {e}")
 
         logger.info(f"Saved batch of {len(saved_ids)} analyses")
         return saved_ids
@@ -6400,23 +6403,25 @@ class DatabaseManager:
         from laser_trim_analyzer.core.cpk import calculate_cpk
 
         with self.session() as session:
-            specs = session.query(ModelSpec).filter(
+            specs = session.query(
+                ModelSpec.model, ModelSpec.linearity_spec_pct
+            ).filter(
                 ModelSpec.linearity_spec_pct.isnot(None)
             ).all()
 
         results = []
-        for spec in specs:
-            devs = self.get_linearity_deviations_for_cpk(spec.model, days_back)
+        for model_name, spec_pct in specs:
+            devs = self.get_linearity_deviations_for_cpk(model_name, days_back)
             if len(devs) < 10:
                 continue
-            cpk_result = calculate_cpk(devs, spec.linearity_spec_pct)
+            cpk_result = calculate_cpk(devs, spec_pct)
             results.append({
-                "model": spec.model,
+                "model": model_name,
                 "cpk": cpk_result.cpk,
                 "ppk": cpk_result.ppk,
                 "rating": cpk_result.rating,
                 "n_samples": cpk_result.n_samples,
-                "spec_pct": spec.linearity_spec_pct,
+                "spec_pct": spec_pct,
                 "mean": cpk_result.mean,
             })
         results.sort(key=lambda x: x["cpk"] if x["cpk"] is not None else 999)

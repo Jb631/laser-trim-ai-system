@@ -910,7 +910,7 @@ class AnalyzePage(ctk.CTkFrame):
         fail_indices = []
         actual_fail_count = 0
         if upper_limits and lower_limits:
-            _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
             shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
@@ -962,7 +962,7 @@ class AnalyzePage(ctk.CTkFrame):
             untrimmed_positions=track.untrimmed_positions,
             untrimmed_errors=track.untrimmed_errors,
             offset=track.optimal_offset,
-            slope=getattr(track, 'optimal_slope', 1.0) or 1.0,
+            slope=getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0,
             title=title,
             fail_points=fail_indices,
             serial_number=serial,
@@ -1014,7 +1014,7 @@ class AnalyzePage(ctk.CTkFrame):
                 # Calculate actual fail points (skip None = no limit at that position)
                 actual_fail_count = 0
                 if actual_upper and actual_lower and track.error_data:
-                    _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+                    _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
                     shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(actual_upper) and i < len(actual_lower):
@@ -1637,7 +1637,7 @@ class AnalyzePage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            _slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+            _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
             shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
@@ -1706,7 +1706,7 @@ class AnalyzePage(ctk.CTkFrame):
 
         # Apply offset and slope
         offset = track.optimal_offset
-        slope = getattr(track, 'optimal_slope', 1.0) or 1.0
+        slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
         errors_shifted = errors * slope + offset
 
         # Plot untrimmed data if available

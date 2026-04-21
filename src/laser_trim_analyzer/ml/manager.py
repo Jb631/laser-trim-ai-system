@@ -358,12 +358,12 @@ class MLManager:
                     message=f"Training {model_name} ({i+1}/{len(models)})"
                 ))
 
-            # Simple callback for single model
-            def model_callback(msg: str):
+            # Simple callback for single model — bind loop variables by value
+            def model_callback(msg: str, _name=model_name, _i=i):
                 if progress_callback:
                     progress_callback(TrainingProgress(
-                        current_model=model_name,
-                        models_complete=i,
+                        current_model=_name,
+                        models_complete=_i,
                         models_total=len(models),
                         phase='training',
                         message=msg
@@ -539,7 +539,9 @@ class MLManager:
 
                     except Exception as e:
                         logger.warning(f"Error in bulk update for {model_name}: {e}")
+                        session.rollback()
                         counts['errors'] += 1
+                        continue  # Skip remaining steps for this model
 
                     # OPTIMIZATION 3: Update analysis overall_status in bulk using subqueries
                     # This is faster than iterating over each analysis
@@ -621,6 +623,8 @@ class MLManager:
 
                     except Exception as e:
                         logger.warning(f"Error updating analysis status for {model_name}: {e}")
+                        session.rollback()
+                        continue  # Skip remaining steps for this model
 
                     # OPTIMIZATION 3.5: Update failure_probability using ML predictor
                     predictor = self.predictors.get(model_name)

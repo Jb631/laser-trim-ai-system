@@ -124,12 +124,14 @@ class Analyzer:
         )
 
         # Determine overall status
-        if sigma_pass and linearity_pass:
-            status = AnalysisStatus.PASS
-        elif sigma_pass or linearity_pass:
-            status = AnalysisStatus.WARNING
-        else:
+        # Linearity is zero-tolerance: any linearity failure = FAIL
+        # WARNING = linearity passed but sigma is concerning (process health signal)
+        if not linearity_pass:
             status = AnalysisStatus.FAIL
+        elif sigma_pass:
+            status = AnalysisStatus.PASS
+        else:
+            status = AnalysisStatus.WARNING
 
         # Calculate trim effectiveness metrics
         trim_metrics = self._calculate_trim_effectiveness(
@@ -926,7 +928,7 @@ class Analyzer:
         return TrackData(
             track_id=track_id,
             status=AnalysisStatus.ERROR,
-            travel_length=0.0,
+            travel_length=0.001,
             linearity_spec=0.01,
             sigma_gradient=999.999,
             sigma_threshold=0.001,

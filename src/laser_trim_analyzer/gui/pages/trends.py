@@ -248,6 +248,17 @@ class TrendsPage(ctk.CTkFrame):
         self._summary_charts_initialized = False
         self._detail_charts_initialized = False
 
+        # Null all chart references so re-initialization guards work correctly
+        self.linearity_chart = None
+        self.scatter_chart = None
+        self.dist_chart = None
+        self.alerts_chart = None
+        self.trending_chart = None
+        self.best_chart = None
+        self.recent_issues_chart = None
+        self.heatmap_chart = None
+        self.drift_chart = None
+
         # Clear any stale data
         self.active_models_data = []
         self.model_trend_data = None
@@ -1151,13 +1162,21 @@ class TrendsPage(ctk.CTkFrame):
         # Apply timeline filter - use RELATIVE to data, not absolute calendar dates
         if self.chart_timeline_days > 0 and linearity_pass_rates:
             # Find the most recent date in the data
+            def _parse_date(date_str):
+                """Parse date string, handling both date-only and datetime formats."""
+                try:
+                    return datetime.strptime(date_str[:10], "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    return None
+
             most_recent_str = max(pr["date"] for pr in linearity_pass_rates)
-            most_recent = datetime.strptime(most_recent_str, "%Y-%m-%d")
-            cutoff_date = most_recent - timedelta(days=self.chart_timeline_days)
-            linearity_pass_rates = [
-                pr for pr in linearity_pass_rates
-                if datetime.strptime(pr["date"], "%Y-%m-%d") >= cutoff_date
-            ]
+            most_recent = _parse_date(most_recent_str)
+            if most_recent:
+                cutoff_date = most_recent - timedelta(days=self.chart_timeline_days)
+                linearity_pass_rates = [
+                    pr for pr in linearity_pass_rates
+                    if (_parse_date(pr["date"]) or datetime.min) >= cutoff_date
+                ]
 
         if len(linearity_pass_rates) < 2:
             self.linearity_chart.show_placeholder("Insufficient linearity data for selected range")
@@ -1181,7 +1200,11 @@ class TrendsPage(ctk.CTkFrame):
                 # Weighted average by totals
                 window_rates = pass_rates[start_idx:i + 1]
                 window_totals = totals[start_idx:i + 1]
-                weighted_avg = sum(r * t for r, t in zip(window_rates, window_totals)) / sum(window_totals)
+                total_weight = sum(window_totals)
+                if total_weight > 0:
+                    weighted_avg = sum(r * t for r, t in zip(window_rates, window_totals)) / total_weight
+                else:
+                    weighted_avg = 0.0
                 rolling_avg.append(weighted_avg)
 
         # Determine title suffix based on filter

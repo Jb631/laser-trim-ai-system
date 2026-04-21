@@ -403,8 +403,8 @@ class TrackResult(Base):
         CheckConstraint('sigma_gradient >= 0', name='check_sigma_gradient_positive'),
         CheckConstraint('sigma_threshold > 0', name='check_sigma_threshold_positive'),
         CheckConstraint('failure_probability >= 0 AND failure_probability <= 1', name='check_probability_range'),
-        CheckConstraint('travel_length > 0', name='check_travel_length_positive'),
-        CheckConstraint('unit_length > 0', name='check_unit_length_positive'),
+        CheckConstraint('travel_length >= 0', name='check_travel_length_positive'),
+        CheckConstraint('unit_length >= 0', name='check_unit_length_positive'),
         CheckConstraint("LENGTH(TRIM(track_id)) > 0", name='check_track_id_not_empty'),
         CheckConstraint('linearity_fail_points >= 0', name='check_linearity_fail_points_positive'),
         CheckConstraint('worst_zone >= 0', name='check_worst_zone_positive'),
@@ -442,16 +442,16 @@ class TrackResult(Base):
 
     @validates('travel_length')
     def validate_travel_length(self, key, travel_length):
-        """Validate travel_length is positive."""
-        if travel_length is not None and travel_length <= 0:
-            raise ValueError("Travel length must be positive")
+        """Validate travel_length is non-negative."""
+        if travel_length is not None and travel_length < 0:
+            raise ValueError("Travel length must be non-negative")
         return travel_length
 
     @validates('unit_length')
     def validate_unit_length(self, key, unit_length):
-        """Validate unit_length is positive."""
-        if unit_length is not None and unit_length <= 0:
-            raise ValueError("Unit length must be positive")
+        """Validate unit_length is non-negative."""
+        if unit_length is not None and unit_length < 0:
+            raise ValueError("Unit length must be non-negative")
         return unit_length
 
     @validates('linearity_fail_points')

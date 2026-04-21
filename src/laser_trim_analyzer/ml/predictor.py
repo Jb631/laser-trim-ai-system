@@ -333,8 +333,8 @@ class ModelPredictor:
             X_scaled = self.scaler.transform(X)
             proba = self.classifier.predict_proba(X_scaled)
             if proba.shape[1] == 1:
-                # Single class in training data
-                return 0.0 if self.classifier.classes_[0] else 1.0
+                # Single class in training data — return probability matching that class
+                return 1.0 if self.classifier.classes_[0] else 0.0
             return float(proba[0, 1])
 
         except Exception as e:

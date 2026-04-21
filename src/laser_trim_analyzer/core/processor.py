@@ -304,8 +304,8 @@ class Processor:
             minimal_metadata = FileMetadata(
                 filename=metadata.get("filename", file_path.name),
                 file_path=str(file_path),
-                model=metadata.get("model", "unknown"),
-                serial=metadata.get("serial", "unknown"),
+                model=metadata.get("model") or "unknown",
+                serial=metadata.get("serial") or "unknown",
                 system=SystemType.UNKNOWN,  # Final test doesn't have system type
                 file_date=metadata.get("file_date"),
             )

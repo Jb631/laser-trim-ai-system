@@ -644,7 +644,7 @@ Linearity: {"PASS" if linearity_pass else "FAIL" if linearity_pass is False else
         if is_linked:
             linked_trim = pair.get("linked_trim", {})
             trim_file = linked_trim.get("filename", "Unknown") if linked_trim else "Unknown"
-            confidence_str = f"{confidence*100:.0f}%" if confidence else "N/A"
+            confidence_str = f"{confidence*100:.0f}%" if confidence is not None else "N/A"
             # Match method label
             method_labels = {
                 "exact": "Exact Match",
