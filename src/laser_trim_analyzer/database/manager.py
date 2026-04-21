@@ -560,6 +560,19 @@ class DatabaseManager:
                         logger.warning(f"aliases migration warning: {e}")
                     session.rollback()
 
+            # Migration: Add exclude_points column to model_specs
+            try:
+                session.execute(text("SELECT exclude_points FROM model_specs LIMIT 1"))
+            except OperationalError:
+                try:
+                    session.execute(text("ALTER TABLE model_specs ADD COLUMN exclude_points TEXT"))
+                    session.commit()
+                    logger.info("Migration: Added exclude_points column to model_specs")
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        logger.warning(f"exclude_points migration warning: {e}")
+                    session.rollback()
+
             # Migration: Add open_closed column to model_specs and backfill from
             # circuit_type. The original importer wrote the Excel "Open/Closed"
             # column into circuit_type, which is misleading — Open vs Closed
@@ -5550,6 +5563,7 @@ class DatabaseManager:
             "circuit_type": s.circuit_type,
             "open_closed": getattr(s, "open_closed", None) or s.circuit_type,
             "aliases": getattr(s, "aliases", None),
+            "exclude_points": getattr(s, "exclude_points", None),
             "notes": s.notes,
         }
 

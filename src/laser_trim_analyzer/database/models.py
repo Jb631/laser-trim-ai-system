@@ -1135,6 +1135,10 @@ class ModelSpec(Base):
     # pick up this row's linearity_type/spec/etc. Lookup is case-sensitive,
     # whitespace-trimmed, and accepts either 'model' or any token in 'aliases'.
     aliases = Column(Text, nullable=True)
+    # JSON list of point indices/ranges to exclude from linearity fail counting.
+    # Format: {"exclude": [0, 1, [48, 50]]}  — ints and [start, end] ranges.
+    # Set via Specs page as human-friendly "0-1, 48-50" notation.
+    exclude_points = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
