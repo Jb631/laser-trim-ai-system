@@ -31,6 +31,9 @@ class SpecsPage(ctk.CTkFrame):
         self._filtered_specs: List[Dict[str, Any]] = []
         self._selected_model: Optional[str] = None
         self._row_frames: List[ctk.CTkFrame] = []
+        self._page_size = 50
+        self._current_page = 0
+        self._total_pages = 1
 
         self._create_ui()
 
@@ -38,7 +41,7 @@ class SpecsPage(ctk.CTkFrame):
         """Create the specs page UI."""
         self.grid_columnconfigure(0, weight=3)  # Table
         self.grid_columnconfigure(1, weight=2)  # Edit panel
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)  # Table + edit panel row
 
         # Header row
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -91,9 +94,21 @@ class SpecsPage(ctk.CTkFrame):
         )
         self._search_entry.grid(row=0, column=1, sticky="w")
 
-        # Table area (left)
+        # Pagination controls
+        page_frame = ctk.CTkFrame(self, fg_color="transparent")
+        page_frame.grid(row=2, column=0, columnspan=2, padx=20, pady=(0, 5), sticky="ew")
+
+        self._prev_btn = ctk.CTkButton(page_frame, text="< Prev", width=70, command=self._prev_page)
+        self._prev_btn.pack(side="left", padx=5)
+        self._page_label = ctk.CTkLabel(page_frame, text="Page 1 / 1", font=ctk.CTkFont(size=12))
+        self._page_label.pack(side="left", padx=10)
+        self._next_btn = ctk.CTkButton(page_frame, text="Next >", width=70, command=self._next_page)
+        self._next_btn.pack(side="left", padx=5)
+
+        # Table area (left) — row 3 now (was 2)
+        self.grid_rowconfigure(3, weight=1)
         self._table_frame = ctk.CTkScrollableFrame(self)
-        self._table_frame.grid(row=2, column=0, sticky="nsew", padx=(20, 10), pady=(0, 20))
+        self._table_frame.grid(row=3, column=0, sticky="nsew", padx=(20, 10), pady=(0, 20))
         self._table_frame.grid_columnconfigure(0, weight=1)
 
         # Column headers
@@ -101,7 +116,7 @@ class SpecsPage(ctk.CTkFrame):
 
         # Edit panel (right)
         self._edit_frame = ctk.CTkScrollableFrame(self)
-        self._edit_frame.grid(row=2, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
+        self._edit_frame.grid(row=3, column=1, sticky="nsew", padx=(10, 20), pady=(0, 20))
         self._edit_frame.grid_columnconfigure(1, weight=1)
 
         self._create_edit_panel()
@@ -290,14 +305,41 @@ class SpecsPage(ctk.CTkFrame):
             ]
         else:
             self._filtered_specs = self._specs[:]
+        self._current_page = 0  # Reset to first page on new search
+        self._update_table(self._filtered_specs)
+
+    def _prev_page(self):
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._render_page()
+
+    def _next_page(self):
+        if self._current_page < self._total_pages - 1:
+            self._current_page += 1
+            self._render_page()
+
+    def _render_page(self):
+        """Render the current page of specs."""
         self._update_table(self._filtered_specs)
 
     def _update_table(self, specs: List[Dict[str, Any]]):
-        """Rebuild the table with given specs."""
+        """Rebuild the table with the current page of specs."""
         # Clear existing rows
         for frame in self._row_frames:
             frame.destroy()
         self._row_frames.clear()
+
+        # Pagination
+        self._total_pages = max(1, (len(specs) + self._page_size - 1) // self._page_size)
+        self._current_page = min(self._current_page, self._total_pages - 1)
+        start = self._current_page * self._page_size
+        end = start + self._page_size
+        page_specs = specs[start:end]
+
+        # Update pagination controls
+        self._page_label.configure(text=f"Page {self._current_page + 1} / {self._total_pages}")
+        self._prev_btn.configure(state="normal" if self._current_page > 0 else "disabled")
+        self._next_btn.configure(state="normal" if self._current_page < self._total_pages - 1 else "disabled")
 
         # Count incomplete specs for the summary
         incomplete = sum(1 for s in specs if not s.get("element_type") or not s.get("linearity_type"))
@@ -306,7 +348,7 @@ class SpecsPage(ctk.CTkFrame):
             count_text += f" ({incomplete} incomplete — shown in red)"
         self._count_label.configure(text=count_text)
 
-        for i, spec in enumerate(specs):
+        for i, spec in enumerate(page_specs):
             bg = ("gray90", "gray17") if i % 2 == 0 else ("gray85", "gray20")
             row = ctk.CTkFrame(self._table_frame, fg_color=bg, corner_radius=0)
             row.grid(row=i + 1, column=0, sticky="ew", pady=0)
