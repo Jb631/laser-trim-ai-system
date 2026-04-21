@@ -572,9 +572,8 @@ class FinalTestParser:
                 # Calculate linearity metrics
                 linearity_error = max(abs(e) for e in errors) if errors else 0.0
                 linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
-                linearity_pass = linearity_error <= linearity_spec if linearity_spec > 0 else True
 
-                # Count fail points (comparing error to spec limits)
+                # Count fail points (comparing error to spec limits per point)
                 fail_points = 0
                 for i, err in enumerate(errors):
                     upper = upper_limits[i] if i < len(upper_limits) else None
@@ -583,6 +582,9 @@ class FinalTestParser:
                         fail_points += 1
                     elif lower is not None and err < lower:
                         fail_points += 1
+
+                # Zero-tolerance: linearity passes only if ALL points are within limits
+                linearity_pass = fail_points == 0
 
                 # Find electrical angle of max deviation
                 max_err_idx = errors.index(max(errors, key=abs)) if errors else 0
@@ -1078,7 +1080,6 @@ class FinalTestParser:
 
                 linearity_error = max(abs(e) for e in errors) if errors else 0.0
                 linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
-                linearity_pass = linearity_error <= linearity_spec if linearity_spec > 0 else True
 
                 # Count fail points
                 fail_points = 0
@@ -1089,6 +1090,9 @@ class FinalTestParser:
                         fail_points += 1
                     elif lower is not None and err < lower:
                         fail_points += 1
+
+                # Zero-tolerance: linearity passes only if ALL points are within limits
+                linearity_pass = fail_points == 0
 
                 # Find position of max deviation
                 max_err_idx = errors.index(max(errors, key=abs)) if errors else 0
