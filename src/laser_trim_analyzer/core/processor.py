@@ -184,6 +184,7 @@ class Processor:
             analyzed_tracks: List[TrackData] = []
             predictor = self._model_predictors.get(metadata.model)
             for track_data in tracks_data:
+                track_data["exclude_points"] = spec["exclude_points"]
                 track_result = self.analyzer.analyze_track(
                     track_data,
                     model=metadata.model,
@@ -367,6 +368,7 @@ class Processor:
                         "travel_length": max(positions) - min(positions) if positions else 1.0,
                         "linearity_spec": track.get("linearity_spec") or 0.01,
                     }
+                    track_dict["exclude_points"] = ft_spec["exclude_points"]
                     track_result = self.analyzer.analyze_track(
                         track_dict,
                         model=ft_model,
@@ -915,6 +917,7 @@ class Processor:
             "angle_spec": None,
             "angle_tol": None,
             "angle_tol_type": None,
+            "exclude_points": None,
         }
         if not model:
             return empty
@@ -932,6 +935,7 @@ class Processor:
                 "angle_spec": spec.get("electrical_angle"),
                 "angle_tol": spec.get("electrical_angle_tol"),
                 "angle_tol_type": spec.get("electrical_angle_tol_type"),
+                "exclude_points": spec.get("exclude_points"),
             }
         except Exception as e:
             logger.debug(f"Could not look up model spec for {model}: {e}")
