@@ -9,7 +9,7 @@ ML Integration:
 - Falls back to formula when ML threshold not available
 """
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 import logging
 import numpy as np
 from scipy.signal import butter, filtfilt
@@ -27,6 +27,81 @@ from laser_trim_analyzer.utils.constants import (
 from laser_trim_analyzer.core.models import TrackData, AnalysisStatus, RiskCategory
 
 logger = logging.getLogger(__name__)
+
+
+def parse_exclude_points(raw: Optional[str]) -> Set[int]:
+    """Parse exclude_points JSON string into a set of integer indices.
+
+    Accepts JSON like: {"exclude": [0, 1, [48, 50]]}
+    Individual ints become single indices. [start, end] ranges are inclusive.
+    Returns empty set for None/empty/invalid input.
+    """
+    if not raw:
+        return set()
+    try:
+        import json
+        data = json.loads(raw)
+        items = data.get("exclude", []) if isinstance(data, dict) else []
+        indices = set()
+        for item in items:
+            if isinstance(item, int):
+                indices.add(item)
+            elif isinstance(item, list) and len(item) == 2:
+                start, end = int(item[0]), int(item[1])
+                indices.update(range(start, end + 1))
+        return indices
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return set()
+
+
+def format_exclude_points(indices: Set[int]) -> str:
+    """Convert a set of indices back to human-friendly string like '0-2, 48-50'.
+
+    Groups consecutive indices into ranges.
+    """
+    if not indices:
+        return ""
+    sorted_idx = sorted(indices)
+    ranges = []
+    start = prev = sorted_idx[0]
+    for idx in sorted_idx[1:]:
+        if idx == prev + 1:
+            prev = idx
+        else:
+            ranges.append(f"{start}-{prev}" if start != prev else str(start))
+            start = prev = idx
+    ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return ", ".join(ranges)
+
+
+def human_to_exclude_json(text: str) -> Optional[str]:
+    """Parse human-friendly '0-2, 48-50' into JSON storage format.
+
+    Returns JSON string or None if input is empty.
+    """
+    if not text or not text.strip():
+        return None
+    import json
+    items = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            pieces = part.split("-", 1)
+            try:
+                start, end = int(pieces[0].strip()), int(pieces[1].strip())
+                items.append([start, end])
+            except ValueError:
+                continue
+        else:
+            try:
+                items.append(int(part))
+            except ValueError:
+                continue
+    if not items:
+        return None
+    return json.dumps({"exclude": items})
 
 
 class Analyzer:
