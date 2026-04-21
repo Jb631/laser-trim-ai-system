@@ -12,6 +12,7 @@ Operations:
 - QA alerts management
 """
 
+import json
 import logging
 import threading
 from datetime import datetime, timedelta
@@ -2126,7 +2127,7 @@ class DatabaseManager:
             processing_time=analysis.processing_time,
             timestamp=datetime.now(),
             data_quality=getattr(analysis, 'data_quality', 'good'),
-            data_quality_issues=','.join(getattr(analysis, 'data_quality_issues', [])) or None,
+            data_quality_issues=json.dumps(getattr(analysis, 'data_quality_issues', [])) if getattr(analysis, 'data_quality_issues', []) else None,
         )
 
         # Add track results
@@ -2394,7 +2395,7 @@ class DatabaseManager:
             existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
             existing.data_quality = getattr(analysis, 'data_quality', None)
             issues = getattr(analysis, 'data_quality_issues', None) or []
-            existing.data_quality_issues = ','.join(issues) if issues else None
+            existing.data_quality_issues = json.dumps(issues) if issues else None
 
             # Delete old tracks explicitly and flush before adding new ones
             # This avoids unique constraint violations

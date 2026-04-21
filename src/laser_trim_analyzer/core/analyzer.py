@@ -892,7 +892,7 @@ class Analyzer:
         result: Dict[str, Any] = {}
 
         # Resistance change
-        if untrimmed_resistance and trimmed_resistance and untrimmed_resistance > 0:
+        if untrimmed_resistance is not None and trimmed_resistance is not None and untrimmed_resistance > 0:
             result["resistance_change"] = trimmed_resistance - untrimmed_resistance
 
         # Linearity improvement from trim

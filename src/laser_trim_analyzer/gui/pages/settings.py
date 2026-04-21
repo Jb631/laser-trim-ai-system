@@ -835,16 +835,21 @@ class SettingsPage(ctk.CTkFrame):
         get_thread_manager().start_thread(target=_run, name="settings-scan-db")
 
     def _update_skipped_count(self):
-        """Update the skipped file count label."""
-        try:
-            from laser_trim_analyzer.database import get_database
-            db = get_database()
-            count = db.count_skipped_files()
-            self.skipped_count_label.configure(
-                text=f"{count} skipped files — clears them so they get reprocessed next run"
-            )
-        except Exception:
-            self.skipped_count_label.configure(text="")
+        """Update the skipped file count label (runs DB query in background)."""
+        def _fetch():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                count = db.count_skipped_files()
+                self.after(0, lambda: self.skipped_count_label.configure(
+                    text=f"{count} skipped files — clears them so they get reprocessed next run"
+                ) if self.winfo_exists() else None)
+            except Exception:
+                self.after(0, lambda: self.skipped_count_label.configure(
+                    text=""
+                ) if self.winfo_exists() else None)
+
+        get_thread_manager().start_thread(target=_fetch, name="settings-skipped-count")
 
     def _reset_skipped_files(self):
         """Reset skipped non-trim files so they can be reprocessed."""

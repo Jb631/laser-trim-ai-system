@@ -1096,11 +1096,17 @@ class TrendsPage(ctk.CTkFrame):
         if self.chart_timeline_days > 0 and data_points:
             # Find the most recent date in the data
             def get_date(d):
-                return d["date"] if isinstance(d["date"], datetime) else datetime.strptime(str(d["date"])[:10], "%Y-%m-%d")
+                try:
+                    return d["date"] if isinstance(d["date"], datetime) else datetime.strptime(str(d["date"])[:10], "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    return None
 
-            most_recent = max(get_date(d) for d in data_points)
+            valid_dates = [dt for dt in (get_date(d) for d in data_points) if dt is not None]
+            if not valid_dates:
+                return
+            most_recent = max(valid_dates)
             cutoff_date = most_recent - timedelta(days=self.chart_timeline_days)
-            filtered_points = [d for d in data_points if get_date(d) >= cutoff_date]
+            filtered_points = [d for d in data_points if (get_date(d) or datetime.min) >= cutoff_date]
         else:
             filtered_points = data_points
 

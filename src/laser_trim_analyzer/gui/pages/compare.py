@@ -1243,9 +1243,10 @@ Match: {method_label} ({confidence_str})"""
         """Called when page becomes hidden - cleanup to free memory."""
         import matplotlib.pyplot as plt
 
-        # Clear large data lists
+        # Clear large data lists and stale checkbox state
         self.comparison_pairs = []
         self.current_comparison = None
+        self._checkbox_vars.clear()
 
         # Clear chart to free matplotlib resources
         if self.chart and hasattr(self.chart, 'figure'):
