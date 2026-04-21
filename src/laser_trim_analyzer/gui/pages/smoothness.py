@@ -118,13 +118,20 @@ class SmoothnessPage(ctk.CTkFrame):
             self._chart.clear()
 
     def _load_models(self):
-        """Load model list for dropdown."""
-        try:
-            db = get_database()
-            models = db.get_models_list()
-            self.model_dropdown.configure(values=["All Models"] + models)
-        except Exception as e:
-            logger.warning(f"Could not load models: {e}")
+        """Load model list for dropdown (background thread)."""
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+
+        def _fetch():
+            try:
+                db = get_database()
+                models = db.get_models_list()
+                self.after(0, lambda: self.model_dropdown.configure(
+                    values=["All Models"] + models
+                ) if self.winfo_exists() else None)
+            except Exception as e:
+                logger.warning(f"Could not load models: {e}")
+
+        get_thread_manager().start_thread(target=_fetch, name="smoothness-models")
 
     def _load_results(self):
         """Load smoothness results from database in background."""
@@ -201,7 +208,8 @@ class SmoothnessPage(ctk.CTkFrame):
         ctk.CTkLabel(frame, text=text, font=ctk.CTkFont(size=12)).grid(
             row=0, column=1, sticky="w", padx=2)
 
-        date_str = result["file_date"].strftime("%Y-%m-%d") if result.get("file_date") else ""
+        fd = result.get("file_date")
+        date_str = fd.strftime("%Y-%m-%d") if hasattr(fd, 'strftime') else str(fd)[:10] if fd else ""
         ctk.CTkLabel(frame, text=date_str, text_color="gray",
                     font=ctk.CTkFont(size=11)).grid(row=0, column=2, padx=5)
 

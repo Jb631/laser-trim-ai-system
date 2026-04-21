@@ -256,7 +256,8 @@ def _create_linearity_page(pdf, model, linearity_pass_rates_by_day, spec, stats)
             start = max(0, i - window + 1)
             window_rates = pass_rates[start:i + 1]
             window_totals = totals[start:i + 1]
-            weighted_avg = sum(r * t for r, t in zip(window_rates, window_totals)) / sum(window_totals)
+            total_weight = sum(window_totals)
+            weighted_avg = sum(r * t for r, t in zip(window_rates, window_totals)) / total_weight if total_weight > 0 else 0.0
             rolling_avg.append(weighted_avg)
         ax_chart.plot(dates, rolling_avg, 'b-', linewidth=3, alpha=0.7, label='30-Day Rolling Avg')
 

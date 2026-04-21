@@ -216,8 +216,39 @@ class SpecsPage(ctk.CTkFrame):
 
     def on_show(self):
         """Called when page becomes visible."""
-        self._load_specs()
-        self._check_discrepancy_count()
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+
+        def _load_all():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                specs = db.get_all_model_specs()
+                discrepancies = db.get_spec_discrepancies()
+                self.after(0, lambda: self._on_specs_loaded(specs, discrepancies))
+            except Exception as e:
+                logger.error(f"Failed to load specs: {e}")
+                self.after(0, lambda: self._on_specs_loaded([], []))
+
+        get_thread_manager().start_thread(target=_load_all, name="specs-load")
+
+    def _on_specs_loaded(self, specs, discrepancies):
+        """Handle specs loaded from background thread."""
+        if not self.winfo_exists():
+            return
+        self._specs = specs
+        self._on_search()
+
+        count = len(discrepancies) if discrepancies else 0
+        if count > 0:
+            self._discrepancy_btn.configure(
+                text=f"Discrepancies ({count})",
+                fg_color="#e74c3c"
+            )
+        else:
+            self._discrepancy_btn.configure(
+                text="Check Discrepancies",
+                fg_color="#2980b9"
+            )
 
     def on_hide(self):
         """Called when page is hidden - free 300+ rendered row widgets so

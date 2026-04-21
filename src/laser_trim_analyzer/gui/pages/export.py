@@ -935,6 +935,8 @@ class ExportPage(ctk.CTkFrame):
 
     def _export_complete(self, count: int, format_name: str):
         """Handle export completion."""
+        if not self.winfo_exists():
+            return
         self.export_btn.configure(state="normal", text="Export Charts")
         messagebox.showinfo(
             "Export Complete",
@@ -943,6 +945,8 @@ class ExportPage(ctk.CTkFrame):
 
     def _export_error(self, error: str):
         """Handle export error."""
+        if not self.winfo_exists():
+            return
         self.export_btn.configure(state="normal", text="Export Charts")
         messagebox.showerror("Export Error", f"Failed to export charts:\n{error}")
 
