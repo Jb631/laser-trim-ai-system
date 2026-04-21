@@ -177,6 +177,7 @@ class SpecsPage(ctk.CTkFrame):
             # Pipe-separated alternate model numbers that should resolve to
             # this spec. Example: "2001621501 | 1621501-R1"
             ("aliases", "Aliases (pipe-separated)", "entry"),
+            ("exclude_points", "Exclude Points", "entry"),
             ("notes", "Notes", "textbox"),
         ]
 
@@ -205,6 +206,11 @@ class SpecsPage(ctk.CTkFrame):
                 widget.grid(row=i + 1, column=1, padx=10, pady=4, sticky="ew")
 
             self._edit_fields[field_name] = (field_type, widget)
+
+        # Set placeholder for exclude_points field
+        if "exclude_points" in self._edit_fields:
+            _, ep_widget = self._edit_fields["exclude_points"]
+            ep_widget.configure(placeholder_text="e.g. 0-2, 48-50")
 
         # Buttons
         btn_row = len(fields) + 1
@@ -423,6 +429,16 @@ class SpecsPage(ctk.CTkFrame):
                 widget.delete("1.0", "end")
                 widget.insert("1.0", value)
 
+        # Special handling: convert exclude_points JSON to human-friendly display
+        if "exclude_points" in self._edit_fields:
+            _, ep_widget = self._edit_fields["exclude_points"]
+            ep_widget.delete(0, "end")
+            raw_json = spec.get("exclude_points", "")
+            if raw_json:
+                from laser_trim_analyzer.core.analyzer import parse_exclude_points, format_exclude_points
+                indices = parse_exclude_points(raw_json)
+                ep_widget.insert(0, format_exclude_points(indices))
+
     def _add_new(self):
         """Clear edit panel for new model entry."""
         self._selected_model = None
@@ -473,6 +489,13 @@ class SpecsPage(ctk.CTkFrame):
                 val = None
 
             data[field_name] = val
+
+        # Convert human-friendly exclude_points to JSON storage format
+        if "exclude_points" in data and data["exclude_points"]:
+            from laser_trim_analyzer.core.analyzer import human_to_exclude_json
+            data["exclude_points"] = human_to_exclude_json(data["exclude_points"])
+        elif "exclude_points" in data:
+            data["exclude_points"] = None
 
         if not data.get("model"):
             messagebox.showerror("Missing Model", "Model number is required")
