@@ -5895,149 +5895,177 @@ class DatabaseManager:
         # Sheet 1: Model Reference (primary, most complete)
         if "Model Reference" in wb.sheetnames:
             ws = wb["Model Reference"]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if not row or len(row) < 9:
-                    continue
-                model = str(row[1]).strip() if row[1] else None
-                if not model:
-                    continue
 
-                # Skip Customer (row[2]) and Operator (row[9])
-                element_type = str(row[3]).strip() if row[3] else None
-                linearity_text = str(row[4]).strip() if row[4] else None
-                resistance_text = str(row[5]).strip() if row[5] else None
-                angle_text = str(row[6]).strip() if row[6] else None
-                smoothness = str(row[7]).strip() if row[7] else None
-                # Column 8 is the Open/Closed indicator (visible vs enclosed
-                # element). Originally mis-read as circuit_type — now we write
-                # to both columns so legacy lookups still work.
-                open_closed = str(row[8]).strip() if row[8] else None
-                product_class = str(row[10]).strip() if len(row) > 10 and row[10] else None
-                # Optional Aliases column (column index 11 if present). Accepts
-                # pipe- or comma-separated alternate model numbers.
-                aliases_raw = None
-                if len(row) > 11 and row[11]:
-                    aliases_raw = str(row[11]).strip()
+            # Detect column positions from header row instead of hardcoding.
+            # This handles spreadsheets with or without an extra leading column.
+            col_map = {}
+            header_aliases = {
+                "model": "model",
+                "element type": "element_type",
+                "linearity": "linearity",
+                "total resistance": "resistance",
+                "electrical angle": "angle",
+                "output smoothness": "smoothness",
+                "open/closed": "open_closed",
+                "product class": "product_class",
+                "aliases": "aliases",
+            }
+            for header_row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+                if not header_row:
+                    break
+                for idx, cell in enumerate(header_row):
+                    if cell is None:
+                        continue
+                    key = str(cell).strip().lower()
+                    if key in header_aliases:
+                        col_map[header_aliases[key]] = idx
+            logger.debug(f"Model Reference column map: {col_map}")
 
-                # Parse linearity type from text
-                linearity_type = None
-                linearity_pct = None
-                if linearity_text:
-                    lt_lower = linearity_text.lower()
-                    # Extract type: look for (Absolute), (Independent), etc.
-                    type_match = re.search(
-                        r'\(?(Absolute|Independent|Term Base|Zero-Based|VR Max)\)?',
-                        linearity_text, re.IGNORECASE
-                    )
-                    if type_match:
-                        linearity_type = type_match.group(1)
-                        # Normalize case
-                        type_map = {"absolute": "Absolute", "independent": "Independent",
-                                    "term base": "Term Base", "zero-based": "Zero-Based",
-                                    "vr max": "VR Max"}
-                        linearity_type = type_map.get(linearity_type.lower(), linearity_type)
-                    elif any(kw in lt_lower for kw in
-                             ['see chart', 'see table', 'function', 'trim according',
-                              'logarithmic', 'logaithmic', 'bowtie', 'no linearity']):
-                        linearity_type = "Custom"
+            if "model" not in col_map:
+                logger.warning("Model Reference sheet has no 'Model' column header — skipping")
+            else:
+                def _cell(row, field):
+                    """Get a cell value by field name, or None if column missing."""
+                    idx = col_map.get(field)
+                    if idx is None or idx >= len(row) or row[idx] is None:
+                        return None
+                    return str(row[idx]).strip() or None
 
-                    # Extract percentage: handle ± N.N%, +/-N.N%, +/-.N%
-                    # Try ± first, then +/- variants
-                    pct_match = re.search(r'[±]\s*(\d*\.?\d+)\s*%', linearity_text)
-                    if not pct_match:
-                        pct_match = re.search(r'\+/?-?\s*(\d*\.?\d+)\s*%', linearity_text)
-                    if pct_match:
-                        try:
-                            linearity_pct = float(pct_match.group(1))
-                        except ValueError:
-                            pass
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if not row:
+                        continue
+                    model = _cell(row, "model")
+                    if not model:
+                        continue
 
-                # Parse resistance: "950 - 1,050 Ω" → min=950, max=1050
-                r_min = None
-                r_max = None
-                if resistance_text:
-                    r_match = re.search(
-                        r'([\d,]+\.?\d*)\s*[-–]\s*([\d,]+\.?\d*)',
-                        resistance_text
-                    )
-                    if r_match:
-                        try:
-                            r_min = float(r_match.group(1).replace(',', ''))
-                            r_max = float(r_match.group(2).replace(',', ''))
-                        except ValueError:
-                            pass
+                    element_type = _cell(row, "element_type")
+                    linearity_text = _cell(row, "linearity")
+                    resistance_text = _cell(row, "resistance")
+                    angle_text = _cell(row, "angle")
+                    smoothness = _cell(row, "smoothness")
+                    open_closed = _cell(row, "open_closed")
+                    product_class = _cell(row, "product_class")
+                    aliases_raw = _cell(row, "aliases")
 
-                # Parse angle — either a single spec or a multi-section spec.
-                # Multi-section example from Excel (model 8508):
-                #   'Section A, B & C = 60° +/-.3°\nSection D = 66.66° +/-.3°'
-                # In that case we emit one spec row per section letter so the
-                # trim files (which come in as 8508-A, 8508-B, ...) each find
-                # the matching spec via plain model-name lookup.
-                sections = self._split_multi_section_angle(angle_text)
+                    # Parse linearity type from text
+                    linearity_type = None
+                    linearity_pct = None
+                    if linearity_text:
+                        lt_lower = linearity_text.lower()
+                        # Extract type: look for (Absolute), (Independent), etc.
+                        type_match = re.search(
+                            r'\(?(Absolute|Independent|Term Base|Zero-Based|VR Max)\)?',
+                            linearity_text, re.IGNORECASE
+                        )
+                        if type_match:
+                            linearity_type = type_match.group(1)
+                            # Normalize case
+                            type_map = {"absolute": "Absolute", "independent": "Independent",
+                                        "term base": "Term Base", "zero-based": "Zero-Based",
+                                        "vr max": "VR Max"}
+                            linearity_type = type_map.get(linearity_type.lower(), linearity_type)
+                        elif any(kw in lt_lower for kw in
+                                 ['see chart', 'see table', 'function', 'trim according',
+                                  'logarithmic', 'logaithmic', 'bowtie', 'no linearity']):
+                            linearity_type = "Custom"
 
-                # Normalize aliases: accept '|' or ',' as separator, dedupe
-                # and drop empties. Stored as pipe-separated in DB.
-                aliases_norm = None
-                if aliases_raw and aliases_raw not in ("None", "nan"):
-                    tokens = re.split(r'[|,]', aliases_raw)
-                    clean = []
-                    seen = set()
-                    for t in tokens:
-                        t = t.strip()
-                        if t and t not in seen and t != model:
-                            seen.add(t)
-                            clean.append(t)
-                    if clean:
-                        aliases_norm = " | ".join(clean)
+                        # Extract percentage: handle ± N.N%, +/-N.N%, +/-.N%
+                        # Try ± first, then +/- variants
+                        pct_match = re.search(r'[±]\s*(\d*\.?\d+)\s*%', linearity_text)
+                        if not pct_match:
+                            pct_match = re.search(r'\+/?-?\s*(\d*\.?\d+)\s*%', linearity_text)
+                        if pct_match:
+                            try:
+                                linearity_pct = float(pct_match.group(1))
+                            except ValueError:
+                                pass
 
-                # Shared fields common to every section row for this source row.
-                shared = {
-                    "element_type": element_type if element_type and element_type != 'None' else None,
-                    "product_class": product_class if product_class and product_class != 'None' else None,
-                    "linearity_type": linearity_type,
-                    "linearity_spec_text": linearity_text if linearity_text and linearity_text != 'None' else None,
-                    "linearity_spec_pct": linearity_pct,
-                    "total_resistance_min": r_min,
-                    "total_resistance_max": r_max,
-                    "output_smoothness": smoothness if smoothness and smoothness != 'None' else None,
-                    # Write open_closed to both new and legacy fields so GUIs
-                    # reading either column keep working.
-                    "open_closed": open_closed if open_closed and open_closed != 'None' else None,
-                    "circuit_type": open_closed if open_closed and open_closed != 'None' else None,
-                    "aliases": aliases_norm,
-                }
+                    # Parse resistance: "950 - 1,050 Ω" → min=950, max=1050
+                    r_min = None
+                    r_max = None
+                    if resistance_text:
+                        r_match = re.search(
+                            r'([\d,]+\.?\d*)\s*[-–]\s*([\d,]+\.?\d*)',
+                            resistance_text
+                        )
+                        if r_match:
+                            try:
+                                r_min = float(r_match.group(1).replace(',', ''))
+                                r_max = float(r_match.group(2).replace(',', ''))
+                            except ValueError:
+                                pass
 
-                if sections:
-                    # Multi-section model: emit one row per section letter.
-                    for section_letters, per_section_text in sections:
-                        angle_val, angle_tol, angle_unit, angle_tol_type = \
-                            self._parse_angle_string(per_section_text)
-                        for letter in section_letters:
-                            section_model = f"{model}-{letter}"
-                            model_data[section_model] = {
-                                "model": section_model,
-                                **shared,
-                                "electrical_angle": angle_val,
-                                "electrical_angle_tol": angle_tol,
-                                "electrical_angle_tol_type": angle_tol_type,
-                                "electrical_angle_unit": angle_unit,
-                            }
-                    logger.info(
-                        f"Model specs: expanded {model!r} into "
-                        f"{sum(len(s) for s, _ in sections)} section rows"
-                    )
-                else:
-                    # Normal single-spec row.
-                    angle_val, angle_tol, angle_unit, angle_tol_type = \
-                        self._parse_angle_string(angle_text)
-                    model_data[model] = {
-                        "model": model,
-                        **shared,
-                        "electrical_angle": angle_val,
-                        "electrical_angle_tol": angle_tol,
-                        "electrical_angle_tol_type": angle_tol_type,
-                        "electrical_angle_unit": angle_unit,
+                    # Parse angle — either a single spec or a multi-section spec.
+                    # Multi-section example from Excel (model 8508):
+                    #   'Section A, B & C = 60° +/-.3°\nSection D = 66.66° +/-.3°'
+                    # In that case we emit one spec row per section letter so the
+                    # trim files (which come in as 8508-A, 8508-B, ...) each find
+                    # the matching spec via plain model-name lookup.
+                    sections = self._split_multi_section_angle(angle_text)
+
+                    # Normalize aliases: accept '|' or ',' as separator, dedupe
+                    # and drop empties. Stored as pipe-separated in DB.
+                    aliases_norm = None
+                    if aliases_raw and aliases_raw not in ("None", "nan"):
+                        tokens = re.split(r'[|,]', aliases_raw)
+                        clean = []
+                        seen = set()
+                        for t in tokens:
+                            t = t.strip()
+                            if t and t not in seen and t != model:
+                                seen.add(t)
+                                clean.append(t)
+                        if clean:
+                            aliases_norm = " | ".join(clean)
+
+                    # Shared fields common to every section row for this source row.
+                    shared = {
+                        "element_type": element_type if element_type and element_type != 'None' else None,
+                        "product_class": product_class if product_class and product_class != 'None' else None,
+                        "linearity_type": linearity_type,
+                        "linearity_spec_text": linearity_text if linearity_text and linearity_text != 'None' else None,
+                        "linearity_spec_pct": linearity_pct,
+                        "total_resistance_min": r_min,
+                        "total_resistance_max": r_max,
+                        "output_smoothness": smoothness if smoothness and smoothness != 'None' else None,
+                        # Write open_closed to both new and legacy fields so GUIs
+                        # reading either column keep working.
+                        "open_closed": open_closed if open_closed and open_closed != 'None' else None,
+                        "circuit_type": open_closed if open_closed and open_closed != 'None' else None,
+                        "aliases": aliases_norm,
                     }
+
+                    if sections:
+                        # Multi-section model: emit one row per section letter.
+                        for section_letters, per_section_text in sections:
+                            angle_val, angle_tol, angle_unit, angle_tol_type = \
+                                self._parse_angle_string(per_section_text)
+                            for letter in section_letters:
+                                section_model = f"{model}-{letter}"
+                                model_data[section_model] = {
+                                    "model": section_model,
+                                    **shared,
+                                    "electrical_angle": angle_val,
+                                    "electrical_angle_tol": angle_tol,
+                                    "electrical_angle_tol_type": angle_tol_type,
+                                    "electrical_angle_unit": angle_unit,
+                                }
+                        logger.info(
+                            f"Model specs: expanded {model!r} into "
+                            f"{sum(len(s) for s, _ in sections)} section rows"
+                        )
+                    else:
+                        # Normal single-spec row.
+                        angle_val, angle_tol, angle_unit, angle_tol_type = \
+                            self._parse_angle_string(angle_text)
+                        model_data[model] = {
+                            "model": model,
+                            **shared,
+                            "electrical_angle": angle_val,
+                            "electrical_angle_tol": angle_tol,
+                            "electrical_angle_tol_type": angle_tol_type,
+                            "electrical_angle_unit": angle_unit,
+                        }
 
         # Sheet 2: Element Type (supplement — broader coverage)
         if "Element Type" in wb.sheetnames:
@@ -6393,6 +6421,68 @@ class DatabaseManager:
                 "linked_count": linked,
                 "link_rate": round(linked / total * 100, 1),
             }
+
+    def get_smoothness_stats_by_model(
+        self, model: Optional[str] = None, days_back: int = 90
+    ) -> List[Dict[str, Any]]:
+        """Get Output Smoothness statistics grouped by model.
+
+        Args:
+            model: Optional model filter. If given, return stats for that model only.
+            days_back: Number of days to look back (default 90).
+
+        Returns:
+            List of dicts sorted by pass_rate ascending (worst first), then margin.
+        """
+        from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
+
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+
+            query = session.query(
+                DBSmoothnessResult.model,
+                func.count(DBSmoothnessResult.id).label("count"),
+                func.sum(
+                    case(
+                        (DBSmoothnessResult.smoothness_pass == True, 1),
+                        else_=0,
+                    )
+                ).label("passed"),
+                func.avg(DBSmoothnessResult.max_smoothness_value).label("avg_max_smoothness"),
+                func.max(DBSmoothnessResult.max_smoothness_value).label("worst_case"),
+                func.avg(DBSmoothnessResult.smoothness_spec).label("spec_limit"),
+            ).filter(
+                DBSmoothnessResult.file_date >= cutoff,
+            ).group_by(DBSmoothnessResult.model)
+
+            if model is not None:
+                query = query.filter(DBSmoothnessResult.model == model)
+
+            rows = query.all()
+
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                count = row.count
+                passed = row.passed or 0
+                pass_rate = round(passed / count * 100, 1) if count else 0.0
+                avg_max = round(row.avg_max_smoothness, 4) if row.avg_max_smoothness is not None else 0.0
+                worst = round(row.worst_case, 4) if row.worst_case is not None else 0.0
+                spec = round(row.spec_limit, 4) if row.spec_limit is not None else 0.0
+                margin = round(spec - avg_max, 4)
+
+                results.append({
+                    "model": row.model,
+                    "count": count,
+                    "passed": passed,
+                    "pass_rate": pass_rate,
+                    "avg_max_smoothness": avg_max,
+                    "worst_case": worst,
+                    "spec_limit": spec,
+                    "margin": margin,
+                })
+
+            results.sort(key=lambda r: (r["pass_rate"], r["margin"]))
+            return results
 
     # =========================================================================
     # Cpk / Analytics Queries (Phase 4)
