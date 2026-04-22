@@ -530,7 +530,7 @@ class SmoothnessPage(ctk.CTkFrame):
                                 model_stats: List[Dict[str, Any]]):
         """Write smoothness results to an Excel workbook with one sheet per model."""
         from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.styles import Font, PatternFill
         from openpyxl.utils import get_column_letter
 
         wb = Workbook()
