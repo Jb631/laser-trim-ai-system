@@ -6349,6 +6349,7 @@ class DatabaseManager:
                     "overall_status": r.overall_status.value if r.overall_status else "UNKNOWN",
                     "smoothness_spec": r.smoothness_spec,
                     "max_smoothness_value": r.max_smoothness_value,
+                    "avg_smoothness_value": r.avg_smoothness_value,
                     "smoothness_pass": r.smoothness_pass,
                     "linked_trim_id": r.linked_trim_id,
                     "match_confidence": r.match_confidence,

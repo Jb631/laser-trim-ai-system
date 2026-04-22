@@ -483,8 +483,170 @@ class SmoothnessPage(ctk.CTkFrame):
         self._load_results()
 
     def _export_to_excel(self):
-        """Export smoothness data to Excel. Implemented in Task 3."""
-        pass
+        """Export smoothness data to Excel."""
+        from tkinter import filedialog, messagebox
+        from datetime import datetime
+
+        # Get current model filter
+        model_filter = self.model_dropdown.get()
+        if model_filter == "All Models":
+            model_filter = None
+
+        # Fetch data
+        try:
+            db = get_database()
+            results = db.search_smoothness_results(model=model_filter, limit=10000)
+            model_stats = db.get_smoothness_stats_by_model(model=model_filter)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to fetch data:\n{e}")
+            return
+
+        if not results:
+            messagebox.showinfo("No Data", "No smoothness results to export.")
+            return
+
+        # Show save dialog
+        default_name = f"Output_Smoothness_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        file_path = filedialog.asksaveasfilename(
+            title="Export Smoothness to Excel",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            initialdir=getattr(self.app.config, 'export_path', None),
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            self._write_smoothness_excel(file_path, results, model_stats)
+            messagebox.showinfo("Export Complete",
+                                f"Smoothness data exported to:\n{file_path}")
+        except Exception as e:
+            logger.error(f"Excel export failed: {e}", exc_info=True)
+            messagebox.showerror("Export Error", f"Failed to write Excel file:\n{e}")
+
+    def _write_smoothness_excel(self, file_path: str,
+                                results: List[Dict[str, Any]],
+                                model_stats: List[Dict[str, Any]]):
+        """Write smoothness results to an Excel workbook with one sheet per model."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.utils import get_column_letter
+
+        wb = Workbook()
+        # Remove the default sheet
+        wb.remove(wb.active)
+
+        # Group results by model
+        by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for r in results:
+            model_name = r.get("model", "Unknown")
+            by_model.setdefault(model_name, []).append(r)
+
+        # Build stats lookup
+        stats_lookup: Dict[str, Dict[str, Any]] = {}
+        for s in model_stats:
+            stats_lookup[s.get("model", "")] = s
+
+        # Styles
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        pass_font = Font(color="27AE60")
+        fail_font = Font(color="E74C3C")
+        bold_font = Font(bold=True)
+        italic_font = Font(italic=True)
+
+        headers = [
+            "Model", "Serial", "Element Label", "Date", "Status",
+            "Spec Limit", "Max Smoothness", "Avg Smoothness",
+            "Linked Trim ID", "Match Confidence"
+        ]
+
+        for model_name in sorted(by_model.keys()):
+            model_results = by_model[model_name]
+            # Worksheet tab name: truncate to 31 chars (Excel limit)
+            tab_name = model_name[:31] if model_name else "Unknown"
+            ws = wb.create_sheet(title=tab_name)
+
+            # Header row
+            for ci, header in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=ci, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+
+            # Data rows — sorted by date descending
+            model_results.sort(
+                key=lambda r: r.get("file_date") or "",
+                reverse=True,
+            )
+
+            for ri, r in enumerate(model_results, start=2):
+                ws.cell(row=ri, column=1, value=r.get("model", ""))
+                ws.cell(row=ri, column=2, value=r.get("serial", ""))
+                ws.cell(row=ri, column=3, value=r.get("element_label", ""))
+
+                # Format date
+                fd = r.get("file_date")
+                if hasattr(fd, "strftime"):
+                    date_str = fd.strftime("%Y-%m-%d")
+                elif fd:
+                    date_str = str(fd)[:10]
+                else:
+                    date_str = ""
+                ws.cell(row=ri, column=4, value=date_str)
+
+                # Status with color
+                status = r.get("overall_status", "UNKNOWN")
+                status_cell = ws.cell(row=ri, column=5, value=status)
+                if status and status.upper() == "PASS":
+                    status_cell.font = pass_font
+                elif status and status.upper() == "FAIL":
+                    status_cell.font = fail_font
+
+                ws.cell(row=ri, column=6, value=r.get("smoothness_spec"))
+                ws.cell(row=ri, column=7, value=r.get("max_smoothness_value"))
+                ws.cell(row=ri, column=8, value=r.get("avg_smoothness_value"))
+                ws.cell(row=ri, column=9, value=r.get("linked_trim_id"))
+
+                # Match confidence as percentage
+                mc = r.get("match_confidence")
+                if mc is not None:
+                    mc_cell = ws.cell(row=ri, column=10, value=mc)
+                    mc_cell.number_format = '0%'
+                else:
+                    ws.cell(row=ri, column=10, value="")
+
+            # Summary section
+            data_end_row = len(model_results) + 1  # header is row 1
+            summary_start = data_end_row + 2  # skip a blank row
+
+            ws.cell(row=summary_start, column=1, value="Summary").font = bold_font
+
+            stats = stats_lookup.get(model_name, {})
+            summary_items = [
+                ("Count", stats.get("count", len(model_results))),
+                ("Pass Rate", f"{stats.get('pass_rate', 0):.1f}%" if stats.get("pass_rate") is not None else "N/A"),
+                ("Avg Max Smoothness", stats.get("avg_max_smoothness")),
+                ("Worst Case", stats.get("worst_case")),
+                ("Spec Limit", stats.get("spec_limit")),
+                ("Margin", stats.get("margin")),
+            ]
+
+            for si, (label, value) in enumerate(summary_items, start=1):
+                label_cell = ws.cell(row=summary_start + si, column=1, value=label)
+                label_cell.font = italic_font
+                ws.cell(row=summary_start + si, column=2, value=value)
+
+            # Auto-width columns (cap at 30)
+            for ci in range(1, len(headers) + 1):
+                max_len = len(headers[ci - 1])
+                for row in ws.iter_rows(min_row=2, max_row=data_end_row, min_col=ci, max_col=ci):
+                    for cell in row:
+                        if cell.value is not None:
+                            max_len = max(max_len, len(str(cell.value)))
+                ws.column_dimensions[get_column_letter(ci)].width = min(max_len + 2, 30)
+
+        wb.save(file_path)
 
     def _display_stats(self, stats: Dict[str, Any]):
         """Display summary stats."""
