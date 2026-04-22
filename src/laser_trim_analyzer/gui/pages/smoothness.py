@@ -35,10 +35,11 @@ class SmoothnessPage(ctk.CTkFrame):
 
     def _create_layout(self):
         """Create the page layout."""
-        self.grid_rowconfigure(1, weight=1)
+        # Row 0: top bar, Row 1: stats panel, Row 2: content (stretches)
+        self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # Top bar with filters
+        # Row 0 — Top bar with filters
         bar = ctk.CTkFrame(self)
         bar.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 0))
 
@@ -58,12 +59,30 @@ class SmoothnessPage(ctk.CTkFrame):
         ctk.CTkButton(bar, text="Refresh", width=80,
                      command=self._load_results).pack(side="left", padx=10)
 
+        ctk.CTkButton(bar, text="Export to Excel", width=100,
+                     command=self._export_to_excel).pack(side="left", padx=5)
+
         self.stats_label = ctk.CTkLabel(bar, text="", text_color="gray")
         self.stats_label.pack(side="right", padx=10)
 
-        # Main content
+        # Row 1 — Stats panel (comparison table or single-model card)
+        stats_panel = ctk.CTkFrame(self)
+        stats_panel.grid(row=1, column=0, sticky="ew", padx=5, pady=(5, 0))
+        stats_panel.grid_columnconfigure(0, weight=1)
+
+        self.stats_table_frame = ctk.CTkScrollableFrame(stats_panel, height=180)
+        self.stats_table_frame.grid(row=0, column=0, sticky="ew")
+        self.stats_table_frame.grid_columnconfigure(0, weight=1)
+
+        self.stats_card_frame = ctk.CTkFrame(stats_panel)
+        self.stats_card_frame.grid(row=0, column=0, sticky="ew")
+        # Start with both hidden; _display_model_stats will show the right one
+        self.stats_table_frame.grid_remove()
+        self.stats_card_frame.grid_remove()
+
+        # Row 2 — Main content
         content = ctk.CTkFrame(self)
-        content.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        content.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
         content.grid_rowconfigure(0, weight=1)
         content.grid_columnconfigure(0, weight=1)
         content.grid_columnconfigure(1, weight=2)
@@ -145,13 +164,14 @@ class SmoothnessPage(ctk.CTkFrame):
                 db = get_database()
                 results = db.search_smoothness_results(model=model, limit=500)
                 stats = db.get_smoothness_stats()
-                return results, stats
+                model_stats = db.get_smoothness_stats_by_model(model=model)
+                return results, stats, model_stats
             except Exception as e:
                 logger.error(f"Error loading smoothness results: {e}")
-                return [], {}
+                return [], {}, []
 
-        def _on_done(results_and_stats):
-            results, stats = results_and_stats
+        def _on_done(load_result):
+            results, stats, model_stats = load_result
             def _apply():
                 if not self.winfo_exists():
                     return
@@ -160,6 +180,7 @@ class SmoothnessPage(ctk.CTkFrame):
                 self._total_pages = max(1, (len(results) + self._page_size - 1) // self._page_size)
                 self._display_results()
                 self._display_stats(stats)
+                self._display_model_stats(model_stats, is_single=(model is not None))
             self.after(0, _apply)
 
         get_thread_manager().start_thread(
@@ -287,6 +308,183 @@ class SmoothnessPage(ctk.CTkFrame):
                 "This file was imported before the smoothness fix.\n"
                 "Re-process the source file via Process Files to populate the chart."
             )
+
+    def _display_model_stats(self, model_stats: List[Dict[str, Any]], is_single: bool = False):
+        """Show per-model stats panel (table or single-model card)."""
+        # Clear both frames
+        for child in self.stats_table_frame.winfo_children():
+            child.destroy()
+        for child in self.stats_card_frame.winfo_children():
+            child.destroy()
+
+        if not model_stats:
+            self.stats_table_frame.grid_remove()
+            self.stats_card_frame.grid_remove()
+            return
+
+        if is_single:
+            self.stats_table_frame.grid_remove()
+            self.stats_card_frame.grid()
+            self._build_single_model_card(model_stats[0])
+        else:
+            self.stats_card_frame.grid_remove()
+            self.stats_table_frame.grid()
+            self._build_comparison_table(model_stats)
+
+    def _build_comparison_table(self, model_stats: List[Dict[str, Any]]):
+        """Build the all-models comparison table inside stats_table_frame."""
+        frame = self.stats_table_frame
+        frame.grid_columnconfigure(0, weight=1)
+
+        headers = ["Model", "Count", "Pass Rate", "Avg Max", "Worst Case", "Spec Limit", "Margin"]
+        header_font = ctk.CTkFont(size=11, weight="bold")
+        header_color = "#aaaaaa"
+
+        # Header row
+        hdr = ctk.CTkFrame(frame)
+        hdr.grid(row=0, column=0, sticky="ew", padx=2, pady=(2, 0))
+        for ci in range(len(headers)):
+            hdr.grid_columnconfigure(ci, weight=1)
+        for ci, h in enumerate(headers):
+            ctk.CTkLabel(hdr, text=h, font=header_font, text_color=header_color).grid(
+                row=0, column=ci, sticky="w", padx=6, pady=2)
+
+        # Data rows
+        for ri, s in enumerate(model_stats, start=1):
+            row_frame = ctk.CTkFrame(frame)
+            row_frame.grid(row=ri, column=0, sticky="ew", padx=2, pady=1)
+            for ci in range(len(headers)):
+                row_frame.grid_columnconfigure(ci, weight=1)
+
+            # Model name — clickable
+            model_lbl = ctk.CTkLabel(
+                row_frame, text=s.get("model", ""),
+                text_color="#3498db", cursor="hand2",
+                font=ctk.CTkFont(size=12))
+            model_lbl.grid(row=0, column=0, sticky="w", padx=6, pady=2)
+            model_name = s.get("model", "")
+            model_lbl.bind("<Button-1>", lambda e, m=model_name: self._select_model(m))
+
+            # Count
+            ctk.CTkLabel(row_frame, text=str(s.get("count", 0)),
+                        font=ctk.CTkFont(size=12)).grid(
+                row=0, column=1, sticky="w", padx=6, pady=2)
+
+            # Pass rate — color-coded
+            pr = s.get("pass_rate")
+            pr_text = f"{pr:.0f}%" if pr is not None else "N/A"
+            if pr is not None:
+                if pr < 80:
+                    pr_color = "#e74c3c"
+                elif pr < 95:
+                    pr_color = "#f39c12"
+                else:
+                    pr_color = "#27ae60"
+            else:
+                pr_color = "gray"
+            ctk.CTkLabel(row_frame, text=pr_text, text_color=pr_color,
+                        font=ctk.CTkFont(size=12, weight="bold")).grid(
+                row=0, column=2, sticky="w", padx=6, pady=2)
+
+            # Avg max smoothness
+            avg = s.get("avg_max_smoothness")
+            avg_text = f"{avg:.4f}" if avg is not None else "N/A"
+            ctk.CTkLabel(row_frame, text=avg_text,
+                        font=ctk.CTkFont(size=12)).grid(
+                row=0, column=3, sticky="w", padx=6, pady=2)
+
+            # Worst case
+            worst = s.get("worst_case")
+            worst_text = f"{worst:.4f}" if worst is not None else "N/A"
+            ctk.CTkLabel(row_frame, text=worst_text,
+                        font=ctk.CTkFont(size=12)).grid(
+                row=0, column=4, sticky="w", padx=6, pady=2)
+
+            # Spec limit
+            spec = s.get("spec_limit")
+            spec_text = f"{spec:.4f}" if spec is not None else "N/A"
+            ctk.CTkLabel(row_frame, text=spec_text,
+                        font=ctk.CTkFont(size=12)).grid(
+                row=0, column=5, sticky="w", padx=6, pady=2)
+
+            # Margin — color-coded
+            margin = s.get("margin")
+            if margin is not None:
+                margin_text = f"{margin:.4f}"
+                if margin < 0:
+                    margin_color = "#e74c3c"
+                elif spec is not None and spec > 0 and margin < 0.20 * spec:
+                    margin_color = "#f39c12"
+                else:
+                    margin_color = "#27ae60"
+            else:
+                margin_text = "N/A"
+                margin_color = "gray"
+            ctk.CTkLabel(row_frame, text=margin_text, text_color=margin_color,
+                        font=ctk.CTkFont(size=12)).grid(
+                row=0, column=6, sticky="w", padx=6, pady=2)
+
+    def _build_single_model_card(self, s: Dict[str, Any]):
+        """Build a horizontal stats card for a single model."""
+        frame = self.stats_card_frame
+
+        items = [
+            ("Pass Rate", s.get("pass_rate"), "%", True),
+            ("Avg Max Smoothness", s.get("avg_max_smoothness"), "", False),
+            ("Worst Case", s.get("worst_case"), "", False),
+            ("Spec Limit", s.get("spec_limit"), "", False),
+            ("Margin", s.get("margin"), "", False),
+        ]
+
+        for label_text, value, suffix, is_pass_rate in items:
+            item_frame = ctk.CTkFrame(frame)
+            item_frame.pack(side="left", padx=12, pady=8)
+
+            ctk.CTkLabel(item_frame, text=label_text,
+                        font=ctk.CTkFont(size=10), text_color="gray").pack(anchor="w")
+
+            if is_pass_rate and value is not None:
+                val_text = f"{value:.0f}{suffix}"
+                if value < 80:
+                    val_color = "#e74c3c"
+                elif value < 95:
+                    val_color = "#f39c12"
+                else:
+                    val_color = "#27ae60"
+            elif label_text == "Margin":
+                if value is not None:
+                    val_text = f"{value:.4f}"
+                    spec = s.get("spec_limit")
+                    if value < 0:
+                        val_color = "#e74c3c"
+                    elif spec is not None and spec > 0 and value < 0.20 * spec:
+                        val_color = "#f39c12"
+                    else:
+                        val_color = "#27ae60"
+                else:
+                    val_text = "N/A"
+                    val_color = "gray"
+            elif value is not None:
+                val_text = f"{value:.4f}{suffix}"
+                val_color = None  # default
+            else:
+                val_text = "N/A"
+                val_color = "gray"
+
+            lbl = ctk.CTkLabel(item_frame, text=val_text,
+                              font=ctk.CTkFont(size=14, weight="bold"))
+            if val_color:
+                lbl.configure(text_color=val_color)
+            lbl.pack(anchor="w")
+
+    def _select_model(self, model: str):
+        """Select a model in the dropdown and reload results."""
+        self.model_dropdown.set(model)
+        self._load_results()
+
+    def _export_to_excel(self):
+        """Export smoothness data to Excel. Implemented in Task 3."""
+        pass
 
     def _display_stats(self, stats: Dict[str, Any]):
         """Display summary stats."""
