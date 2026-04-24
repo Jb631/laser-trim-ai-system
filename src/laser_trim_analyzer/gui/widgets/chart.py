@@ -172,6 +172,10 @@ class ChartWidget(ctk.CTkFrame):
 
     def clear(self) -> None:
         """Clear the chart and release axes resources."""
+        # Restore original figure size if heatmap resized it
+        if hasattr(self, '_heatmap_original_size') and self._heatmap_original_size:
+            self.figure.set_size_inches(*self._heatmap_original_size)
+            self._heatmap_original_size = None
         # Close all axes to release resources before clearing
         for ax in self.figure.axes:
             ax.cla()  # Clear axis contents first
@@ -615,10 +619,13 @@ class ChartWidget(ctk.CTkFrame):
                        linestyle='--', linewidth=2,
                        label=f'Spec: {spec_limit:.4f}')
 
-        # Add statistics (computed from ALL values, not just displayed)
-        mean = np.mean(values)
-        std = np.std(values, ddof=1)
-        median = np.median(values)
+        # Compute statistics from displayed values (matching histogram bars)
+        display_mean = np.mean(display_values)
+        display_std = np.std(display_values, ddof=1)
+        n_outliers = len(values) - len(display_values)
+        mean = display_mean
+        std = display_std
+        median = np.median(display_values)
 
         # Show mean line only if within display range
         if mean <= x_max:
@@ -632,8 +639,8 @@ class ChartWidget(ctk.CTkFrame):
         ax.legend(fontsize=self.style.font_size - 2)
 
         # Add outlier annotation if any exist
-        if outlier_count > 0:
-            ax.text(0.98, 0.98, f'{outlier_count} outlier(s) > {x_max:.2f}',
+        if n_outliers > 0:
+            ax.text(0.98, 0.98, f'{n_outliers} outlier(s) > {x_max:.2f}',
                    transform=ax.transAxes, fontsize=8, ha='right', va='top',
                    color=COLORS['fail'], alpha=0.8)
 
@@ -643,7 +650,8 @@ class ChartWidget(ctk.CTkFrame):
         # Styling
         ax.set_xlabel(xlabel, fontsize=self.style.font_size)
         ax.set_ylabel('Count', fontsize=self.style.font_size)
-        ax.set_title(f"{title}\n(Mean: {mean:.4f}, Std: {std:.4f})",
+        outlier_note = f" ({n_outliers} outliers excluded)" if n_outliers > 0 else ""
+        ax.set_title(f"{title}\n(Mean: {display_mean:.4f}, Std: {display_std:.4f}{outlier_note})",
                      fontsize=self.style.title_size)
         ax.grid(True, alpha=0.3, color=COLORS['grid'], axis='y')
 
@@ -1911,6 +1919,9 @@ class ChartWidget(ctk.CTkFrame):
         if not models or not periods or not values:
             self.show_placeholder("No data for heat map")
             return
+
+        # Save original figure size so clear() can restore it later
+        self._heatmap_original_size = self.style.figure_size
 
         # Scale figure height so each model row is readable (~0.4" per row)
         n_models = len(models)

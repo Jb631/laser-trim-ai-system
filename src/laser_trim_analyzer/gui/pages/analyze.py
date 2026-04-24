@@ -1790,6 +1790,26 @@ class AnalyzePage(ctk.CTkFrame):
                       s=100, marker='x', linewidth=3,
                       label=f'Fail Points ({len(fail_indices)})', zorder=5)
 
+        # Look up excluded points for this model and render them
+        excluded_indices = set()
+        try:
+            from laser_trim_analyzer.database import get_database
+            from laser_trim_analyzer.core.analyzer import parse_exclude_points
+            db = get_database()
+            spec = db.get_model_spec(self.current_result.metadata.model)
+            if spec:
+                excluded_indices = parse_exclude_points(spec.get("exclude_points"))
+        except Exception:
+            pass
+
+        if excluded_indices:
+            excluded_positions = [positions[i] for i in excluded_indices if i < len(positions)]
+            excluded_errors = [errors_shifted[i] for i in excluded_indices if i < len(errors_shifted)]
+            if excluded_positions:
+                ax.scatter(excluded_positions, excluded_errors,
+                          color='gray', marker='o', s=30, alpha=0.5, zorder=5,
+                          label='Excluded')
+
         # Zero line
         ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
 

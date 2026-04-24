@@ -26,6 +26,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _clean_limits_for_interp(limits):
+    """Replace None/NaN with nearest valid value for interpolation.
+
+    np.interp does not handle NaN properly (it propagates them unpredictably).
+    This forward/backward fills gaps so interpolation produces sensible values.
+    """
+    clean = list(limits)
+    # Forward fill
+    last_valid = None
+    for i, v in enumerate(clean):
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            last_valid = v
+        elif last_valid is not None:
+            clean[i] = last_valid
+    # Backward fill remaining
+    last_valid = None
+    for i in range(len(clean) - 1, -1, -1):
+        v = clean[i]
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            last_valid = v
+        elif last_valid is not None:
+            clean[i] = last_valid
+    return [v if v is not None else 0.0 for v in clean]
+
+
 class ComparePage(ctk.CTkFrame):
     """
     Compare page for Final Test vs Trim comparison.
@@ -985,10 +1010,11 @@ Match: {method_label} ({confidence_str})"""
                                 fail_indices.append(i)
                 else:
                     # Different point counts - interpolate limits to FT positions
-                    upper_interp = np.interp(ft_positions_norm, spec_positions_norm,
-                                            [u if u is not None else np.nan for u in upper_limits])
-                    lower_interp = np.interp(ft_positions_norm, spec_positions_norm,
-                                            [l if l is not None else np.nan for l in lower_limits])
+                    # Clean NaN/None values before interpolation (np.interp can't handle them)
+                    clean_upper = _clean_limits_for_interp(upper_limits)
+                    clean_lower = _clean_limits_for_interp(lower_limits)
+                    upper_interp = np.interp(ft_positions_norm, spec_positions_norm, clean_upper)
+                    lower_interp = np.interp(ft_positions_norm, spec_positions_norm, clean_lower)
                     for i, e in enumerate(ft_errors_for_pf):
                         if not np.isnan(upper_interp[i]) and not np.isnan(lower_interp[i]):
                             if e > upper_interp[i] or e < lower_interp[i]:
@@ -1554,10 +1580,11 @@ Match: {method_label} ({confidence_str})"""
                 if trim_errors and trim_positions and ft_positions and len(ft_positions) == len(upper_limits):
                     # Interpolate spec limits at trim positions
                     try:
-                        upper_interp = np.interp(trim_positions, ft_positions,
-                                                  [u if u is not None else np.nan for u in upper_limits])
-                        lower_interp = np.interp(trim_positions, ft_positions,
-                                                  [l if l is not None else np.nan for l in lower_limits])
+                        # Clean NaN/None values before interpolation
+                        clean_upper = _clean_limits_for_interp(upper_limits)
+                        clean_lower = _clean_limits_for_interp(lower_limits)
+                        upper_interp = np.interp(trim_positions, ft_positions, clean_upper)
+                        lower_interp = np.interp(trim_positions, ft_positions, clean_lower)
 
                         for i, e in enumerate(trim_errors):
                             if not np.isnan(upper_interp[i]) and not np.isnan(lower_interp[i]):
