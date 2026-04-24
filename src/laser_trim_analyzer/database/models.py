@@ -363,6 +363,8 @@ class TrackResult(Base):
     # Raw data for detailed analysis and comparison
     position_data = Column(SafeJSON, nullable=True)  # Array of position values
     error_data = Column(SafeJSON, nullable=True)     # Array of error values
+    theory_data = Column(SafeJSON, nullable=True)    # Array of theoretical output values
+    test_volts = Column(Float, nullable=True)        # Reference voltage (for slope bounds)
     upper_limits = Column(SafeJSON, nullable=True)   # Array of upper spec limits (position-dependent)
     lower_limits = Column(SafeJSON, nullable=True)   # Array of lower spec limits (position-dependent)
     untrimmed_positions = Column(SafeJSON, nullable=True)  # Array of untrimmed position values

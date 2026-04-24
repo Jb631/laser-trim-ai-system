@@ -648,6 +648,25 @@ class DatabaseManager:
                     logger.warning(f"electrical_angle_tol_type migration warning: {e}")
                 session.rollback()
 
+            # Migration: Add theory_data and test_volts columns for slope optimization
+            try:
+                session.execute(text("ALTER TABLE track_results ADD COLUMN theory_data TEXT"))
+                session.commit()
+                logger.info("Migration: Added theory_data column to track_results")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"theory_data migration warning: {e}")
+                session.rollback()
+
+            try:
+                session.execute(text("ALTER TABLE track_results ADD COLUMN test_volts FLOAT"))
+                session.commit()
+                logger.info("Migration: Added test_volts column to track_results")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"test_volts migration warning: {e}")
+                session.rollback()
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -2214,6 +2233,8 @@ class DatabaseManager:
             anomaly_reason=track.anomaly_reason,  # Reason for anomaly flag
             position_data=track.position_data,
             error_data=track.error_data,
+            theory_data=getattr(track, 'theory_data', None),
+            test_volts=getattr(track, 'test_volts', None),
             upper_limits=track.upper_limits,  # Store position-dependent spec limits
             lower_limits=track.lower_limits,  # Store position-dependent spec limits
             untrimmed_positions=track.untrimmed_positions,  # Store untrimmed data for charts
@@ -2369,6 +2390,8 @@ class DatabaseManager:
                 anomaly_reason=db_track.anomaly_reason,  # Retrieve anomaly reason
                 position_data=db_track.position_data,
                 error_data=db_track.error_data,
+                theory_data=getattr(db_track, 'theory_data', None),
+                test_volts=getattr(db_track, 'test_volts', None),
                 upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
                 lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits
                 untrimmed_positions=db_track.untrimmed_positions,  # Retrieve untrimmed data for charts
