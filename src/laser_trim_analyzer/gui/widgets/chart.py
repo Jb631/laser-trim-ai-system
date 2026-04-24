@@ -1907,12 +1907,18 @@ class ChartWidget(ctk.CTkFrame):
             values: 2D list [model_idx][period_idx] of pass rates (0-100), NaN for no data
         """
         self.clear()
-        ax = self.figure.add_subplot(111)
-        self._style_axis(ax)
 
         if not models or not periods or not values:
             self.show_placeholder("No data for heat map")
             return
+
+        # Scale figure height so each model row is readable (~0.4" per row)
+        n_models = len(models)
+        fig_height = max(3, n_models * 0.4 + 1.5)  # 1.5" for title/x-labels
+        self.figure.set_size_inches(self.style.figure_size[0], fig_height)
+
+        ax = self.figure.add_subplot(111)
+        self._style_axis(ax)
 
         data = np.array(values)
 
@@ -1935,9 +1941,8 @@ class ChartWidget(ctk.CTkFrame):
             for label in cbar.ax.get_yticklabels():
                 label.set_color(COLORS['text'])
 
-        # Labels - thin out X-axis ticks if too many periods to prevent overlap
+        # X-axis labels — thin out if too many periods
         if len(periods) > 20:
-            # Show every Nth label to keep ~12-15 visible
             step = max(1, len(periods) // 12)
             tick_positions = list(range(0, len(periods), step))
             ax.set_xticks(tick_positions)
@@ -1948,21 +1953,30 @@ class ChartWidget(ctk.CTkFrame):
             ax.set_xticks(range(len(periods)))
             ax.set_xticklabels(periods, rotation=45, ha='right',
                               fontsize=self.style.font_size - 2)
-        ax.set_yticks(range(len(models)))
-        ax.set_yticklabels(models, fontsize=self.style.font_size - 2)
+
+        # Y-axis labels
+        ax.set_yticks(range(n_models))
+        ax.set_yticklabels(models, fontsize=self.style.font_size - 1)
         ax.set_title(title, fontsize=self.style.title_size)
 
-        # Add text values in cells (only for small grids)
-        if len(models) <= 20 and len(periods) <= 15:
-            for i in range(len(models)):
-                for j in range(len(periods)):
-                    val = data[i][j]
-                    if not np.isnan(val):
-                        text_color = 'white' if val < 40 or val > 85 else 'black'
-                        ax.text(j, i, f'{val:.0f}', ha='center', va='center',
-                               fontsize=max(6, self.style.font_size - 3), color=text_color)
+        # Always show pass rate values in cells — scale font to fit
+        n_periods = len(periods)
+        cell_font = max(6, min(9, int(200 / max(n_models, n_periods))))
+        for i in range(n_models):
+            for j in range(n_periods):
+                val = data[i][j]
+                if not np.isnan(val):
+                    text_color = 'white' if val < 40 or val > 85 else 'black'
+                    ax.text(j, i, f'{val:.0f}', ha='center', va='center',
+                           fontsize=cell_font, color=text_color)
 
-        ax.grid(False)
+        # Light grid lines between cells for readability
+        ax.set_xticks([x - 0.5 for x in range(1, n_periods)], minor=True)
+        ax.set_yticks([y - 0.5 for y in range(1, n_models)], minor=True)
+        ax.grid(which='minor', color=COLORS['grid'], linewidth=0.5, alpha=0.3)
+        ax.tick_params(which='minor', length=0)  # Hide minor tick marks
+        ax.grid(which='major', visible=False)
+
         self.figure.tight_layout()
         self.canvas.draw_idle()
 

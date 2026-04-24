@@ -8,6 +8,7 @@ import sys
 import os
 import logging
 import warnings
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # Suppress scikit-learn parallel warnings (compatibility issue with joblib)
@@ -24,12 +25,22 @@ if sys.platform == "darwin" and "TCL_LIBRARY" not in os.environ:
     if tk_path.exists():
         os.environ["TK_LIBRARY"] = str(tk_path)
 
-# Setup logging before any other imports
+# Setup logging — console + persistent log file
+# Log file lives in data/ next to the database so it's easy to find
+log_dir = Path("data")
+log_dir.mkdir(parents=True, exist_ok=True)
+log_file = log_dir / "laser_trim.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
+        # 5 MB per file, keep last 3 rotations (up to 20 MB total)
+        RotatingFileHandler(
+            log_file, maxBytes=5_000_000, backupCount=3,
+            encoding="utf-8",
+        ),
     ]
 )
 

@@ -49,7 +49,7 @@ class PredictorConfig:
     min_samples_split: int = 5
     min_samples_leaf: int = 3
     test_size: float = 0.2
-    cv_folds: int = 5
+    cv_folds: int = 3
     random_state: int = 42
     # Minimum samples required for training
     min_samples: int = 50
@@ -197,20 +197,26 @@ class ModelPredictor:
                 sample_weight = 1 + 2 * (severity / max_severity)
                 sample_weight = sample_weight.fillna(1)
 
+            # Only stratify if each class has at least 2 members
+            # (sklearn requires >=2 per class for stratified split)
+            min_class_count = y.value_counts().min()
+            can_stratify = y.nunique() > 1 and min_class_count >= 2
+            stratify = y if can_stratify else None
+
             # Split data
             if sample_weight is not None:
                 X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
                     X, y, sample_weight,
                     test_size=self.config.test_size,
                     random_state=self.config.random_state,
-                    stratify=y if y.nunique() > 1 else None
+                    stratify=stratify
                 )
             else:
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y,
                     test_size=self.config.test_size,
                     random_state=self.config.random_state,
-                    stratify=y if y.nunique() > 1 else None
+                    stratify=stratify
                 )
                 sw_train = sw_test = None
 
@@ -261,20 +267,29 @@ class ModelPredictor:
             if y_test.nunique() > 1:
                 metrics.auc_roc = roc_auc_score(y_test, y_proba)
 
-            # Cross-validation
-            cv_scores = cross_val_score(
-                self.classifier, X_train_scaled, y_train,
-                cv=min(self.config.cv_folds, len(y_train) // 2),
-                scoring='accuracy'
-            )
-            metrics.cv_mean = float(cv_scores.mean())
-            metrics.cv_std = float(cv_scores.std())
+            # Cross-validation — cap folds at minority class count
+            # (StratifiedKFold needs at least n_splits members per class)
+            train_min_class = y_train.value_counts().min()
+            max_cv = min(self.config.cv_folds, len(y_train) // 2, train_min_class)
+            if max_cv >= 2:
+                cv_scores = cross_val_score(
+                    self.classifier, X_train_scaled, y_train,
+                    cv=max_cv,
+                    scoring='accuracy'
+                )
+                metrics.cv_mean = float(cv_scores.mean())
+                metrics.cv_std = float(cv_scores.std())
+            else:
+                # Too few samples for meaningful CV — use test accuracy as estimate
+                metrics.cv_mean = metrics.accuracy
+                metrics.cv_std = 0.0
 
-            # Feature importance
-            self.feature_importance = dict(zip(
-                available_features,
-                self.classifier.feature_importances_
-            ))
+            # Feature importance — convert numpy floats to Python floats
+            # so the dict can be JSON-serialized for DB storage
+            self.feature_importance = {
+                name: float(imp)
+                for name, imp in zip(available_features, self.classifier.feature_importances_)
+            }
 
             # Update state
             self.is_trained = True

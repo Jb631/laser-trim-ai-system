@@ -715,7 +715,32 @@ class ExcelParser:
                     f"Possible swapped limit columns."
                 )
 
-        # Check 4: Reasonable data length (typical trim files have 20-500 data points)
+        # Check 4: Position spacing regularity — equipment reads at fixed intervals
+        # so spacing between consecutive positions should be consistent.
+        # Large gaps suggest missing data points.
+        if len(positions) > 10:
+            spacings = [positions[i] - positions[i-1] for i in range(1, len(positions))]
+            positive_spacings = [s for s in spacings if s > 0]
+            if positive_spacings:
+                from statistics import median
+                median_spacing = median(positive_spacings)
+                if median_spacing > 0:
+                    # Flag points where spacing is >2.5x the median (a gap)
+                    gaps = []
+                    for i, s in enumerate(spacings):
+                        if s > 2.5 * median_spacing:
+                            gaps.append((i + 1, positions[i], positions[i + 1], s))
+                    if gaps:
+                        gap_details = "; ".join(
+                            f"idx {g[0]}: {g[1]:.1f}->{g[2]:.1f} (gap={g[3]:.2f}, expected~{median_spacing:.2f})"
+                            for g in gaps[:5]  # Show first 5
+                        )
+                        logger.warning(
+                            f"SANITY: {fname} [{sheet_name}] track {track_id}: "
+                            f"{len(gaps)} position gap(s) detected — {gap_details}"
+                        )
+
+        # Check 5: Reasonable data length (typical trim files have 20-500 data points)
         n = len(positions)
         if n < 5:
             logger.warning(

@@ -713,10 +713,13 @@ class DatabaseManager:
                 session.flush()  # Get ID before commit
 
                 # Record as processed file
+                # ERROR results are marked success=False so they get retried
+                is_success = analysis.overall_status != AnalysisStatus.ERROR
                 self._record_processed_file(
                     session,
                     analysis.metadata.file_path,
-                    db_analysis.id
+                    db_analysis.id,
+                    success=is_success,
                 )
 
                 logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
@@ -758,10 +761,12 @@ class DatabaseManager:
                             session.add(db_analysis)
                             session.flush()
 
+                            is_success = analysis.overall_status != AnalysisStatus.ERROR
                             self._record_processed_file(
                                 session,
                                 analysis.metadata.file_path,
-                                db_analysis.id
+                                db_analysis.id,
+                                success=is_success,
                             )
 
                             saved_ids.append(db_analysis.id)
@@ -931,6 +936,7 @@ class DatabaseManager:
                 row.file_hash for row in
                 session.query(DBProcessedFile.file_hash)
                 .filter(DBProcessedFile.file_hash.in_(hash_list))
+                .filter(DBProcessedFile.success == True)
                 .all()
             )
 
@@ -967,9 +973,17 @@ class DatabaseManager:
         self,
         session: Session,
         file_path: Path,
-        analysis_id: int
+        analysis_id: int,
+        success: bool = True,
     ) -> None:
-        """Record a file as processed."""
+        """Record a file as processed.
+
+        Args:
+            session: Active database session
+            file_path: Path to the processed file
+            analysis_id: ID of the saved AnalysisResult
+            success: False for ERROR results — allows retry on next run
+        """
         file_path = Path(file_path)
 
         if not file_path.exists():
@@ -990,7 +1004,7 @@ class DatabaseManager:
                 file_size=file_path.stat().st_size,
                 file_modified_date=datetime.fromtimestamp(file_path.stat().st_mtime),
                 analysis_id=analysis_id,
-                success=True,
+                success=success,
             )
             session.add(processed_file)
             session.flush()
@@ -1816,7 +1830,7 @@ class DatabaseManager:
             for model in model_set:
                 rates = [data_map[(model, p)] for p in period_set if (model, p) in data_map]
                 model_avgs[model] = sum(rates) / len(rates) if rates else 100
-            models = sorted(model_set, key=lambda m: model_avgs[m])[:25]  # Top 25 worst
+            models = sorted(model_set, key=lambda m: model_avgs[m])[:15]  # Top 15 worst
             periods = sorted(period_set)
 
             # Build matrix
