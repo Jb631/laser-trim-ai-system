@@ -1043,6 +1043,7 @@ class ModelMLState(Base):
     drift_direction = Column(String(10))  # 'up', 'down', or NULL
     drift_start_date = Column(DateTime)
     samples_since_baseline = Column(Integer, default=0)
+    consecutive_recovered = Column(Integer, default=0)
 
     # Common spec for this model
     linearity_spec = Column(Float)

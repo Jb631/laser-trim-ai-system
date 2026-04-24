@@ -76,7 +76,7 @@ class MLConfig:
     enabled: bool = True
     use_threshold_optimizer: bool = True
     use_drift_detector: bool = True
-    min_samples_for_training: int = 100
+    min_samples_for_training: int = 20
 
 
 @dataclass

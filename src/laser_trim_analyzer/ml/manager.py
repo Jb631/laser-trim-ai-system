@@ -1091,6 +1091,7 @@ class MLManager:
                         state.drift_direction = detector.drift_direction.value if detector.drift_direction else None
                         state.drift_start_date = detector.drift_start_date
                         state.samples_since_baseline = detector.samples_since_baseline
+                        state.consecutive_recovered = detector._consecutive_recovered
 
             if existing_session is not None:
                 # Use caller's session -- caller is responsible for commit
@@ -1157,6 +1158,7 @@ class MLManager:
                             detector.drift_direction = DriftDirection(state.drift_direction)
                         detector.drift_start_date = state.drift_start_date
                         detector.samples_since_baseline = state.samples_since_baseline or 0
+                        detector._consecutive_recovered = getattr(state, 'consecutive_recovered', 0) or 0
 
                     # Load profiler state
                     if state.sigma_mean is not None or state.pass_rate is not None:

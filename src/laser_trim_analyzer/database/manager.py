@@ -624,6 +624,15 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            # Migration: Add consecutive_recovered column to model_ml_state
+            try:
+                session.execute(text("ALTER TABLE model_ml_state ADD COLUMN consecutive_recovered INTEGER DEFAULT 0"))
+                session.commit()
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"consecutive_recovered migration warning: {e}")
+                session.rollback()
+
             # Migration: Add electrical_angle_tol_type to model_specs so the
             # angle-parser qualifier ('symmetric', 'min', 'max', 'range',
             # 'bilateral') is preserved. The slope-correction rule depends on

@@ -1126,7 +1126,7 @@ class SettingsPage(ctk.CTkFrame):
 
             # Train all models
             results = ml_manager.train_all_models(
-                min_samples=20,
+                min_samples=self.app.config.ml.min_samples_for_training,
                 progress_callback=on_progress
             )
 
