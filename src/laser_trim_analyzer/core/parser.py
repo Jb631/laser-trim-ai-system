@@ -540,12 +540,17 @@ class ExcelParser:
             # Use allow_nan=True to handle this, then trim to match positions length
             errors = self._get_column_data(df, columns["error"], data_start, allow_nan=True)
 
-            # Trim errors to match positions length (or pad if needed)
+            # Align positions and errors arrays — never fabricate data
             if len(errors) > len(positions):
                 errors = errors[:len(positions)]
             elif len(errors) < len(positions):
-                # Pad with zeros if error column is shorter
-                errors = errors + [0.0] * (len(positions) - len(errors))
+                # Truncate positions to match errors — don't pad with fake 0.0 values
+                logger.warning(
+                    f"SANITY: {file_path.name} [{trimmed_sheet}] "
+                    f"error column ({len(errors)} pts) shorter than positions ({len(positions)} pts) "
+                    f"— truncating positions to match"
+                )
+                positions = positions[:len(errors)]
 
             if not errors:
                 logger.warning(f"No error data in {trimmed_sheet}")
