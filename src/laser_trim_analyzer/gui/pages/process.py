@@ -383,9 +383,7 @@ class ProcessPage(ctk.CTkFrame):
                             last_progress_time = now
                             count = len(all_files)
                             remaining = len(dirs_to_scan)
-                            self.after(0, lambda c=count, r=remaining:
-                                       self.file_count_label.configure(
-                                           text=f"Scanning... {c:,} files found ({r:,} folders queued)"))
+                            self.after(0, lambda c=count, r=remaining: self._update_scan_progress(c, r))
 
                     # Sort by path for consistent ordering (groups files by subfolder)
                     all_files.sort(key=lambda f: (f.parent, f.name))
@@ -400,8 +398,16 @@ class ProcessPage(ctk.CTkFrame):
 
             get_thread_manager().start_thread(target=discover_files, name="folder-scan")
 
+    def _update_scan_progress(self, count, remaining):
+        if not self.winfo_exists():
+            return
+        self.file_count_label.configure(
+            text=f"Scanning... {count:,} files found ({remaining:,} folders queued)")
+
     def _on_folder_scanned(self, files: list):
         """Called when folder scan completes - updates UI with found files."""
+        if not self.winfo_exists():
+            return
         self.selected_files = files
         self.cancel_btn.configure(state="disabled")
         self._update_file_list()
@@ -436,6 +442,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_incremental_count_ready(self, unprocessed: int, already_processed: int):
         """Called when incremental count check completes."""
+        if not self.winfo_exists():
+            return
         total = len(self.selected_files)
         unique_folders = len(set(f.parent for f in self.selected_files))
         folder_info = f" in {unique_folders} folder(s)" if unique_folders > 1 else ""
@@ -452,6 +460,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _update_file_count_label(self):
         """Update file count label with basic info (no incremental check)."""
+        if not self.winfo_exists():
+            return
         if not self.selected_files:
             self.file_count_label.configure(text="No files selected")
             return
@@ -464,6 +474,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_folder_scan_error(self, error: str):
         """Called when folder scan fails."""
+        if not self.winfo_exists():
+            return
         self.file_list.configure(state="normal")
         self.file_list.delete("1.0", "end")
         self.file_list.insert("end", f"Error scanning folder: {error}")
@@ -473,6 +485,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_folder_scan_cancelled(self):
         """Called when folder scan is cancelled by user."""
+        if not self.winfo_exists():
+            return
         self.file_list.configure(state="normal")
         self.file_list.delete("1.0", "end")
         self.file_list.insert("end", "Scan cancelled.")
@@ -694,6 +708,8 @@ class ProcessPage(ctk.CTkFrame):
 
     def _on_progress_update(self, status: ProcessingStatus):
         """Handle progress update (called on main thread)."""
+        if not self.winfo_exists():
+            return
         if not self.is_processing:
             return
 
