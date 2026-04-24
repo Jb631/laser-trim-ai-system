@@ -127,6 +127,10 @@ class TrackData(BaseAnalysisModel):
     is_anomaly: bool = Field(default=False, description="Flagged as anomalous (likely trim failure)")
     anomaly_reason: Optional[str] = Field(None, description="Reason for anomaly flag")
 
+    # Theory/test voltage data (from parser, used for slope optimization bounds)
+    theory_volts: Optional[List[float]] = Field(None, description="Theoretical output values at each position")
+    test_volts: Optional[float] = Field(None, description="Reference voltage for slope optimization bounds")
+
     # Raw data for plotting (optional - can be large)
     position_data: Optional[List[float]] = Field(None, description="Position values")
     error_data: Optional[List[float]] = Field(None, description="Error values")

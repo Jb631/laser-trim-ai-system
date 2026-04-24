@@ -162,6 +162,8 @@ class Analyzer:
         untrimmed_resistance = track_data.get("untrimmed_resistance")
         trimmed_resistance = track_data.get("trimmed_resistance")
         measured_electrical_angle = track_data.get("measured_electrical_angle")
+        theory_volts = track_data.get("theory_volts")
+        test_volts = track_data.get("test_volts")
         exclude_indices = parse_exclude_points(track_data.get("exclude_points"))
 
         logger.info(f"Analyzing track {track_id}: {len(positions)} points")
@@ -278,6 +280,9 @@ class Analyzer:
             **margin_metrics,
             # Trim effectiveness
             **trim_metrics,
+            # Theory/test voltage data
+            theory_volts=theory_volts,
+            test_volts=test_volts,
             # Raw data (for plotting)
             position_data=positions,
             error_data=errors,

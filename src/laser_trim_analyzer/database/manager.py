@@ -2233,7 +2233,7 @@ class DatabaseManager:
             anomaly_reason=track.anomaly_reason,  # Reason for anomaly flag
             position_data=track.position_data,
             error_data=track.error_data,
-            theory_data=getattr(track, 'theory_data', None),
+            theory_data=getattr(track, 'theory_volts', None),
             test_volts=getattr(track, 'test_volts', None),
             upper_limits=track.upper_limits,  # Store position-dependent spec limits
             lower_limits=track.lower_limits,  # Store position-dependent spec limits
@@ -2390,7 +2390,7 @@ class DatabaseManager:
                 anomaly_reason=db_track.anomaly_reason,  # Retrieve anomaly reason
                 position_data=db_track.position_data,
                 error_data=db_track.error_data,
-                theory_data=getattr(db_track, 'theory_data', None),
+                theory_volts=getattr(db_track, 'theory_data', None),
                 test_volts=getattr(db_track, 'test_volts', None),
                 upper_limits=db_track.upper_limits,  # Retrieve position-dependent spec limits
                 lower_limits=db_track.lower_limits,  # Retrieve position-dependent spec limits

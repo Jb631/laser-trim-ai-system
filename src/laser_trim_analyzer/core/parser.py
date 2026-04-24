@@ -540,6 +540,10 @@ class ExcelParser:
             # Use allow_nan=True to handle this, then trim to match positions length
             errors = self._get_column_data(df, columns["error"], data_start, allow_nan=True)
 
+            # Theory volts — needed for correct slope/angle optimization
+            # Represents the ideal output at each position
+            theory_volts = self._get_column_data(df, columns["theory_volts"], data_start, allow_nan=True)
+
             # Align positions and errors arrays — never fabricate data
             if len(errors) > len(positions):
                 errors = errors[:len(positions)]
@@ -551,6 +555,19 @@ class ExcelParser:
                     f"— truncating positions to match"
                 )
                 positions = positions[:len(errors)]
+
+            # Align theory_volts to match positions length
+            if theory_volts:
+                if len(theory_volts) > len(positions):
+                    theory_volts = theory_volts[:len(positions)]
+                elif len(theory_volts) < len(positions):
+                    # Extend with linear extrapolation if shorter
+                    if len(theory_volts) >= 2:
+                        step = theory_volts[-1] - theory_volts[-2]
+                        while len(theory_volts) < len(positions):
+                            theory_volts.append(theory_volts[-1] + step)
+                    else:
+                        theory_volts = theory_volts + [0.0] * (len(positions) - len(theory_volts))
 
             if not errors:
                 logger.warning(f"No error data in {trimmed_sheet}")
@@ -565,6 +582,18 @@ class ExcelParser:
             # Extract resistance and unit length from DataFrame already in memory
             trimmed_resistance = self._get_cell_from_df(df, cells["trimmed_resistance"])
             unit_length = self._get_cell_from_df(df, cells["unit_length"])
+
+            # Read test/reference voltage — needed for slope optimization bounds
+            # System A: cell B13 contains "test volts"
+            # System B: derive from max theory value
+            test_volts = None
+            if system_type == SystemType.A:
+                test_volts = self._get_cell_from_df(df, "B13")
+            if test_volts is None and theory_volts:
+                # Derive from theory column (works for both systems)
+                valid_theory = [v for v in theory_volts if v != 0.0]
+                if valid_theory:
+                    test_volts = max(valid_theory)
 
             # Extract measured electrical angle if cell reference exists
             # For System B, the trimmed sheet (Lin Error) has a spec limit in this cell,
@@ -649,6 +678,8 @@ class ExcelParser:
                 "trimmed_resistance": trimmed_resistance,
                 "measured_electrical_angle": measured_electrical_angle,
                 "station_compensation": station_compensation,
+                "theory_volts": theory_volts,
+                "test_volts": test_volts,
             }
 
         except Exception as e:
