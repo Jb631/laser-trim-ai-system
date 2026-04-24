@@ -185,8 +185,9 @@ class ModelThresholdOptimizer:
                 np.array(fail_points)[valid_mask] if fail_points is not None else None
             )
 
-        # Store results
-        self.threshold = result.threshold
+        # Store results (enforce minimum to satisfy DB CHECK constraint)
+        self.threshold = max(0.00005, result.threshold)
+        result.threshold = self.threshold
         self.confidence = result.confidence
         self.method = result.method
         self.is_calculated = True

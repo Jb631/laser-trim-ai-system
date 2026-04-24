@@ -49,7 +49,11 @@ class SafeJSON(TypeDecorator):
         self.none_as = none_as if none_as is not None else []
 
     def _get_none_value(self):
-        """Return the none_as default value."""
+        """Return a fresh copy of the none_as default value."""
+        if isinstance(self.none_as, list):
+            return list(self.none_as)
+        if isinstance(self.none_as, dict):
+            return dict(self.none_as)
         return self.none_as
 
     def process_bind_param(self, value, dialect):
@@ -279,7 +283,10 @@ class AnalysisResult(Base):
             try:
                 return StatusType(overall_status)
             except ValueError:
-                return StatusType.ERROR
+                try:
+                    return StatusType[overall_status]  # Try NAME lookup (e.g., "PASS")
+                except KeyError:
+                    return StatusType.ERROR
         return overall_status
 
     def __repr__(self):
@@ -483,7 +490,10 @@ class TrackResult(Base):
             try:
                 return StatusType(status)
             except ValueError:
-                return StatusType.ERROR
+                try:
+                    return StatusType[status]  # Try NAME lookup (e.g., "PASS")
+                except KeyError:
+                    return StatusType.ERROR
         return status
     
     @validates('risk_category')
@@ -845,7 +855,10 @@ class FinalTestResult(Base):
             try:
                 return StatusType(overall_status)
             except ValueError:
-                return StatusType.ERROR
+                try:
+                    return StatusType[overall_status]  # Try NAME lookup (e.g., "PASS")
+                except KeyError:
+                    return StatusType.ERROR
         return overall_status
 
     def __repr__(self):
@@ -929,7 +942,10 @@ class FinalTestTrack(Base):
             try:
                 return StatusType(status)
             except ValueError:
-                return StatusType.ERROR
+                try:
+                    return StatusType[status]  # Try NAME lookup (e.g., "PASS")
+                except KeyError:
+                    return StatusType.ERROR
         return status
 
     def __repr__(self):
