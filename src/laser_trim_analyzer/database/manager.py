@@ -700,7 +700,8 @@ class DatabaseManager:
                 # This ensures re-analysis updates the existing record even if
                 # model/serial/date parsing changed
                 existing = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.filename == analysis.metadata.filename
+                    DBAnalysisResult.filename == analysis.metadata.filename,
+                    DBAnalysisResult.file_path == str(analysis.metadata.file_path),
                 ).first()
 
                 if existing:
@@ -2395,15 +2396,19 @@ class DatabaseManager:
         analysis: AnalysisResult
     ) -> int:
         """Update an existing analysis record."""
-        # Find existing record by filename only (model/serial may have changed due to parsing fixes)
+        # Find existing record by filename + file_path (model/serial may have changed due to parsing fixes)
         existing = (
             session.query(DBAnalysisResult)
-            .filter(DBAnalysisResult.filename == analysis.metadata.filename)
+            .filter(
+                DBAnalysisResult.filename == analysis.metadata.filename,
+                DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+            )
             .first()
         )
 
         if existing:
             # Update ALL fields including model/serial (parsing may have changed)
+            existing.file_path = str(analysis.metadata.file_path)
             existing.model = analysis.metadata.model
             existing.serial = analysis.metadata.serial
             existing.system = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
