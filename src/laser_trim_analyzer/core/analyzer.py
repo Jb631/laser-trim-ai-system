@@ -181,8 +181,8 @@ class Analyzer:
         sigma_pass = sigma_gradient <= sigma_threshold
 
         # Linearity analysis (spec-aware). angle_spec/tol/tol_type drive the
-        # slope-correction rule: slope is locked unless a tolerance exists.
-        (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+        # rotation rule: k stays at 0 unless an angle tolerance exists.
+        (optimal_offset, optimal_k, linearity_error, linearity_pass,
          fail_points, raw_linearity_error, raw_fail_points) = self._calculate_linearity(
             positions, errors, upper_limits, lower_limits, linearity_spec,
             linearity_type=linearity_type,
@@ -190,6 +190,7 @@ class Analyzer:
             angle_tol=angle_tol,
             angle_tol_type=angle_tol_type,
             exclude_indices=exclude_indices,
+            theory_volts=theory_volts,
         )
 
         # Risk assessment
@@ -219,7 +220,11 @@ class Analyzer:
         )
 
         # Calculate failure margin metrics
-        shifted_errors = [e * optimal_slope + optimal_offset for e in errors]
+        if theory_volts and optimal_k != 0:
+            shifted_errors = [errors[i] + theory_volts[i] * optimal_k + optimal_offset
+                              for i in range(len(errors))]
+        else:
+            shifted_errors = [e + optimal_offset for e in errors]
         margin_metrics = self._calculate_failure_margins(
             shifted_errors, upper_limits, lower_limits, exclude_indices
         )
@@ -251,7 +256,7 @@ class Analyzer:
             sigma_pass=sigma_pass,
             # Linearity results
             optimal_offset=optimal_offset,
-            optimal_slope=optimal_slope,
+            optimal_slope=optimal_k,  # k factor (theory rotation); field name kept for compat
             linearity_error=linearity_error,
             linearity_pass=linearity_pass,
             linearity_fail_points=fail_points,
@@ -422,30 +427,36 @@ class Analyzer:
         angle_tol: Optional[float] = None,
         angle_tol_type: Optional[str] = None,
         exclude_indices: Optional[Set[int]] = None,
+        theory_volts: Optional[List[float]] = None,
     ) -> Tuple[float, float, float, bool, int, float, int]:
         """
         Calculate linearity metrics with spec-aware optimal adjustment.
 
         Returns:
-            (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+            (optimal_offset, optimal_k, linearity_error, linearity_pass,
              fail_points, raw_linearity_error, raw_fail_points)
         """
         # Calculate raw results (no adjustment)
         raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits, exclude_indices)
         raw_linearity_error = max(abs(e) for e in errors) if errors else 0.0
 
-        # Calculate optimal adjustment. Slope bounds are driven by the model
-        # spec's angle tolerance — no tolerance means slope stays at 1.0.
-        optimal_offset, optimal_slope = self._calculate_optimal_adjustment(
+        # Calculate optimal adjustment. k bounds are driven by the model
+        # spec's angle tolerance — no tolerance means k stays at 0.0.
+        optimal_offset, optimal_k = self._calculate_optimal_adjustment(
             positions, errors, upper_limits, lower_limits, linearity_type,
             angle_spec=angle_spec,
             angle_tol=angle_tol,
             angle_tol_type=angle_tol_type,
             exclude_indices=exclude_indices,
+            theory_volts=theory_volts,
         )
 
-        # Apply adjustment: adjusted = error * slope + offset
-        shifted_errors = [e * optimal_slope + optimal_offset for e in errors]
+        # Apply adjustment: adjusted = error + theory * k + offset
+        if theory_volts and optimal_k != 0:
+            shifted_errors = [errors[i] + theory_volts[i] * optimal_k + optimal_offset
+                              for i in range(len(errors))]
+        else:
+            shifted_errors = [e + optimal_offset for e in errors]
 
         # Calculate optimized max error
         linearity_error = max(abs(e) for e in shifted_errors) if shifted_errors else 0.0
@@ -458,11 +469,11 @@ class Analyzer:
 
         logger.debug(
             f"Linearity: type={linearity_type}, offset={optimal_offset:.6f}, "
-            f"slope={optimal_slope:.6f}, error={linearity_error:.6f}, "
+            f"k={optimal_k:.6f}, error={linearity_error:.6f}, "
             f"fail_points={fail_points} (raw={raw_fail_points}), pass={linearity_pass}"
         )
 
-        return (optimal_offset, optimal_slope, linearity_error, linearity_pass,
+        return (optimal_offset, optimal_k, linearity_error, linearity_pass,
                 fail_points, raw_linearity_error, raw_fail_points)
 
     def _calculate_optimal_adjustment(
@@ -476,24 +487,24 @@ class Analyzer:
         angle_tol: Optional[float] = None,
         angle_tol_type: Optional[str] = None,
         exclude_indices: Optional[Set[int]] = None,
+        theory_volts: Optional[List[float]] = None,
     ) -> Tuple[float, float]:
         """
-        Calculate optimal offset and slope adjustment.
+        Calculate optimal offset and k (theory rotation factor) adjustment.
 
-        Slope bounds come from the model spec's ANGLE TOLERANCE, not from
-        linearity_type. The physical meaning: if the part is allowed to be
-        off by `angle_tol` on its electrical angle, then the measured trim
-        length can vary by that much, which is what slope compensates for.
+        k bounds come from the model spec's ANGLE TOLERANCE, not from
+        linearity_type. The physical meaning: k = 1 - B8_old/B8_new.
+        Adjusting the angle/length on the equipment recalculates the
+        theoretical reference, changing errors by an amount proportional
+        to the THEORY value at each position, not the error itself.
 
         Rule:
-          - angle_tol is None         -> slope locked at 1.0 (no allowance)
+          - angle_tol is None         -> k locked at 0.0 (no allowance)
           - tol_type 'symmetric' |
                      'range' |
-                     'bilateral'      -> slope in [1 - tol/ang, 1 + tol/ang]
-          - tol_type 'min'            -> slope in [1.0, 1 + headroom]
-                                         (part can be longer than nominal)
-          - tol_type 'max'            -> slope in [1 - headroom, 1.0]
-                                         (part can be shorter than nominal)
+                     'bilateral'      -> k bounded by angle tolerance
+          - tol_type 'min'            -> k in [0.0, headroom]
+          - tol_type 'max'            -> k in [-headroom, 0.0]
 
         Offset is ALWAYS allowed. It compensates for test-station noise and
         fixturing bias, not for gaming the part's trim. Locking offset to 0
@@ -501,70 +512,62 @@ class Analyzer:
         offset.
 
         Returns:
-            (optimal_offset, optimal_slope) tuple
+            (optimal_offset, optimal_k) tuple
         """
-        # Determine slope bounds from angle tolerance.
-        slope_lo, slope_hi = self._slope_bounds_from_angle_tol(
+        # Determine k bounds from angle tolerance.
+        k_lo, k_hi = self._k_bounds_from_angle_tol(
             angle_spec, angle_tol, angle_tol_type
         )
-        slope_locked = (slope_lo == 1.0 and slope_hi == 1.0)
+        k_locked = (k_lo == 0.0 and k_hi == 0.0)
 
-        if slope_locked:
-            # No slope allowance — offset only.
+        if k_locked or not theory_volts:
+            # No k allowance or no theory data — offset only.
             offset = self._calculate_optimal_offset(
                 errors, upper_limits, lower_limits,
                 exclude_indices=exclude_indices,
             )
-            return offset, 1.0
+            return offset, 0.0
 
-        # Have slope headroom — optimize offset and slope together within
-        # the computed bounds.
-        return self._optimize_offset_and_slope(
-            errors, upper_limits, lower_limits,
-            slope_bounds=(slope_lo, slope_hi),
+        # Have k headroom and theory data — optimize offset and k together.
+        return self._optimize_offset_and_k(
+            errors, upper_limits, lower_limits, theory_volts,
+            k_bounds=(k_lo, k_hi),
             exclude_indices=exclude_indices,
         )
 
-    def _slope_bounds_from_angle_tol(
+    def _k_bounds_from_angle_tol(
         self,
         angle_spec: Optional[float],
         angle_tol: Optional[float],
         angle_tol_type: Optional[str],
     ) -> Tuple[float, float]:
-        """
-        Translate an angle tolerance from model_specs into slope bounds.
+        """Compute bounds on k (theory rotation factor) from angle tolerance.
 
-        The ratio tol/nominal is the fractional length allowance; that same
-        fraction is how much slope may be adjusted when fitting the curve.
+        k = 1 - B8_old/B8_new
+        Positive k: longer travel (rotates error curve one way)
+        Negative k: shorter travel (rotates other way)
         """
-        # No spec info at all -> slope locked at 1.0.
         if angle_spec is None or angle_spec == 0:
-            return 1.0, 1.0
+            return 0.0, 0.0
 
         tol_type = (angle_tol_type or "").strip().lower()
-
-        # For min/max one-sided specs, there's no explicit tolerance number
-        # in the spec sheet; the industry practice is 'at least' or 'at
-        # most'. Without a better number we cap the one-sided allowance at
-        # a conservative 5% of nominal.
         ONE_SIDED_HEADROOM = 0.05
 
         if tol_type in ("symmetric", "range", "bilateral"):
             if angle_tol is None or angle_tol <= 0:
-                return 1.0, 1.0
-            frac = abs(angle_tol) / abs(angle_spec)
-            return 1.0 - frac, 1.0 + frac
+                return 0.0, 0.0
+            # k = 1 - A/(A±T)
+            # 1 - A/(A-T) = -T/(A-T) < 0 (shorter travel)
+            # 1 - A/(A+T) =  T/(A+T) > 0 (longer travel)
+            return -angle_tol / (angle_spec - angle_tol), angle_tol / (angle_spec + angle_tol)
 
         if tol_type == "min":
-            # Part can be longer than nominal -> slope can be > 1.0 only.
-            return 1.0, 1.0 + ONE_SIDED_HEADROOM
+            return 0.0, ONE_SIDED_HEADROOM
 
         if tol_type == "max":
-            # Part can be shorter than nominal -> slope can be < 1.0 only.
-            return 1.0 - ONE_SIDED_HEADROOM, 1.0
+            return -ONE_SIDED_HEADROOM, 0.0
 
-        # No tolerance type / unknown -> slope locked.
-        return 1.0, 1.0
+        return 0.0, 0.0
 
     def _optimize_slope_only(
         self,
@@ -714,6 +717,85 @@ class Analyzer:
             return fo, fs
         except Exception:
             return initial_offset, 1.0
+
+    def _optimize_offset_and_k(
+        self,
+        errors: List[float],
+        upper_limits: List[float],
+        lower_limits: List[float],
+        theory_volts: List[float],
+        k_bounds: Tuple[float, float] = (-0.01, 0.01),
+        exclude_indices: Optional[Set[int]] = None,
+    ) -> Tuple[float, float]:
+        """
+        Optimize offset and k (theory rotation factor) within bounds.
+
+        This matches what the equipment does when changing B8: the theoretical
+        reference recalculates and errors change proportionally to the theory
+        value at each position.
+
+        adjusted_error = error + theory * k + offset
+        """
+        n = min(len(errors), len(upper_limits), len(lower_limits), len(theory_volts))
+        if n == 0:
+            return 0.0, 0.0
+
+        k_lo, k_hi = k_bounds
+        if k_hi - k_lo < 1e-12:
+            offset = self._calculate_optimal_offset(
+                errors, upper_limits, lower_limits, exclude_indices)
+            return offset, 0.0
+
+        # Initial offset guess from band centers
+        differences = []
+        for i in range(n):
+            if exclude_indices and i in exclude_indices:
+                continue
+            ul, ll = upper_limits[i], lower_limits[i]
+            if ul is not None and ll is not None and not (np.isnan(ul) or np.isnan(ll)):
+                differences.append((ul + ll) / 2 - errors[i])
+        initial_offset = float(np.median(differences)) if differences else 0.0
+
+        def objective(params):
+            offset, k = params
+            if k < k_lo or k > k_hi:
+                return 1e12
+            violations = 0
+            max_err = 0.0
+            for i in range(n):
+                if exclude_indices and i in exclude_indices:
+                    continue
+                adjusted = errors[i] + theory_volts[i] * k + offset
+                ul, ll = upper_limits[i], lower_limits[i]
+                if ul is not None and ll is not None and not (np.isnan(ul) or np.isnan(ll)):
+                    if adjusted > ul or adjusted < ll:
+                        violations += 1
+                    max_err = max(max_err, abs(adjusted))
+            return violations * 1e6 + max_err
+
+        try:
+            # Stage 1: coarse grid search over allowed k range
+            best_params = (initial_offset, 0.0)
+            best_cost = objective(best_params)
+            offset_range = abs(initial_offset) + 0.02
+            k_grid = np.linspace(k_lo, k_hi, 11)
+            for k_candidate in k_grid:
+                for offset_factor in np.linspace(-offset_range, offset_range, 11):
+                    cost = objective((offset_factor, k_candidate))
+                    if cost < best_cost:
+                        best_cost = cost
+                        best_params = (offset_factor, float(k_candidate))
+
+            # Stage 2: Nelder-Mead refinement (bounds enforced via objective)
+            result = optimize.minimize(
+                objective, x0=best_params, method='Nelder-Mead',
+                options={'xatol': 1e-7, 'fatol': 1e-7, 'maxiter': 500}
+            )
+            fo = float(result.x[0])
+            fk = float(max(k_lo, min(k_hi, result.x[1])))
+            return fo, fk
+        except Exception:
+            return initial_offset, 0.0
 
     def _calculate_optimal_offset(
         self,
