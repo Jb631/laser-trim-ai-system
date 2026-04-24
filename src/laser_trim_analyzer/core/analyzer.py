@@ -436,6 +436,7 @@ class Analyzer:
             angle_spec=angle_spec,
             angle_tol=angle_tol,
             angle_tol_type=angle_tol_type,
+            exclude_indices=exclude_indices,
         )
 
         # Apply adjustment: adjusted = error * slope + offset
@@ -469,6 +470,7 @@ class Analyzer:
         angle_spec: Optional[float] = None,
         angle_tol: Optional[float] = None,
         angle_tol_type: Optional[str] = None,
+        exclude_indices: Optional[Set[int]] = None,
     ) -> Tuple[float, float]:
         """
         Calculate optimal offset and slope adjustment.
@@ -504,7 +506,10 @@ class Analyzer:
 
         if slope_locked:
             # No slope allowance — offset only.
-            offset = self._calculate_optimal_offset(errors, upper_limits, lower_limits)
+            offset = self._calculate_optimal_offset(
+                errors, upper_limits, lower_limits,
+                exclude_indices=exclude_indices,
+            )
             return offset, 1.0
 
         # Have slope headroom — optimize offset and slope together within
@@ -512,6 +517,7 @@ class Analyzer:
         return self._optimize_offset_and_slope(
             errors, upper_limits, lower_limits,
             slope_bounds=(slope_lo, slope_hi),
+            exclude_indices=exclude_indices,
         )
 
     def _slope_bounds_from_angle_tol(
@@ -595,6 +601,7 @@ class Analyzer:
         upper_limits: List[float],
         lower_limits: List[float],
         slope_bounds: Tuple[float, float] = (0.80, 1.20),
+        exclude_indices: Optional[Set[int]] = None,
     ) -> Tuple[float, float]:
         """
         Optimize both offset and slope within bounds derived from the spec.
@@ -619,6 +626,8 @@ class Analyzer:
                 viol = 0
                 m = 0.0
                 for i in range(n2):
+                    if exclude_indices and i in exclude_indices:
+                        continue
                     a = errors[i] * locked_slope + off
                     ul = upper_limits[i]; ll = lower_limits[i]
                     if ul is not None and ll is not None:
@@ -631,7 +640,8 @@ class Analyzer:
             differences = [
                 ((upper_limits[i] + lower_limits[i]) / 2) - errors[i] * locked_slope
                 for i in range(n)
-                if upper_limits[i] is not None and lower_limits[i] is not None
+                if (not exclude_indices or i not in exclude_indices)
+                and upper_limits[i] is not None and lower_limits[i] is not None
                 and not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i]))
             ]
             initial = float(np.median(differences)) if differences else 0.0
@@ -644,6 +654,8 @@ class Analyzer:
         # Calculate band center differences for initial offset guess
         differences = []
         for i in range(n):
+            if exclude_indices and i in exclude_indices:
+                continue
             ul = upper_limits[i]
             ll = lower_limits[i]
             if ul is not None and ll is not None:
@@ -661,6 +673,8 @@ class Analyzer:
             violations = 0
             max_err = 0.0
             for i in range(n):
+                if exclude_indices and i in exclude_indices:
+                    continue
                 adjusted = errors[i] * slope + offset
                 ul = upper_limits[i]
                 ll = lower_limits[i]
@@ -700,7 +714,8 @@ class Analyzer:
         self,
         errors: List[float],
         upper_limits: List[float],
-        lower_limits: List[float]
+        lower_limits: List[float],
+        exclude_indices: Optional[Set[int]] = None,
     ) -> float:
         """
         Calculate optimal offset to center errors within limits.
@@ -719,6 +734,8 @@ class Analyzer:
         # Calculate differences from band center
         differences = []
         for i in range(n):
+            if exclude_indices and i in exclude_indices:
+                continue
             if upper_limits[i] is not None and lower_limits[i] is not None:
                 if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
                     midpoint = (upper_limits[i] + lower_limits[i]) / 2
@@ -734,6 +751,8 @@ class Analyzer:
         def violation_count(offset: float) -> float:
             count = 0
             for i in range(n):
+                if exclude_indices and i in exclude_indices:
+                    continue
                 shifted = errors[i] + offset
                 if upper_limits[i] is not None and lower_limits[i] is not None:
                     if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
