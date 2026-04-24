@@ -4560,7 +4560,8 @@ class DatabaseManager:
                         # Spec-aware correction fields (persisted by analyzer)
                         # so the compare chart can draw a corrected overlay.
                         "optimal_offset": t.optimal_offset if t.optimal_offset is not None else 0.0,
-                        "optimal_slope": t.optimal_slope if t.optimal_slope is not None else 1.0,
+                        "optimal_slope": t.optimal_slope if t.optimal_slope is not None else 0.0,
+                        "theory_data": t.theory_data,
                         "linearity_type": t.linearity_type,
                     }
                     for t in ft.tracks  # Use pre-loaded tracks
@@ -4592,6 +4593,8 @@ class DatabaseManager:
                                 "upper_limits": t.upper_limits or [],
                                 "lower_limits": t.lower_limits or [],
                                 "optimal_offset": t.optimal_offset or 0,
+                                "optimal_slope": t.optimal_slope if t.optimal_slope is not None else 0.0,
+                                "theory_data": t.theory_data,
                                 "linearity_error": t.final_linearity_error_shifted,
                                 "linearity_pass": t.linearity_pass,
                                 "sigma_gradient": t.sigma_gradient,

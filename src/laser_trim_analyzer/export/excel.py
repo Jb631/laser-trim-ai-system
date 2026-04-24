@@ -329,7 +329,7 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
 
         linearity_data = [
             ("Optimal Offset:", f"{track.optimal_offset:.6f}"),
-            ("Optimal Slope:", f"{getattr(track, 'optimal_slope', 1.0):.6f}"),
+            ("Rotation Factor (k):", f"{getattr(track, 'optimal_slope', 0.0) or 0.0:.6f}"),
             ("Max Error:", f"{track.linearity_error:.6f}"),
             ("Linearity Spec:", f"{track.linearity_spec:.6f}"),
             ("Fail Points:", str(track.linearity_fail_points)),

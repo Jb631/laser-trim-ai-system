@@ -217,7 +217,8 @@ class ChartWidget(ctk.CTkFrame):
         untrimmed_positions: Optional[List[float]] = None,
         untrimmed_errors: Optional[List[float]] = None,
         offset: float = 0.0,
-        slope: float = 1.0,
+        k: float = 0.0,
+        theory_data: Optional[List[float]] = None,
         title: str = "Error vs Position Analysis",
         fail_points: Optional[List[int]] = None,
         serial_number: Optional[str] = None,
@@ -247,9 +248,10 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
-        # Apply offset and slope to trimmed errors
-        if slope != 1.0:
-            shifted_errors = [e * slope + offset for e in trimmed_errors]
+        # Apply theory-based rotation if theory data available, otherwise offset-only
+        if theory_data and k != 0:
+            shifted_errors = [trimmed_errors[i] + theory_data[i] * k + offset
+                              for i in range(len(trimmed_errors))]
         else:
             shifted_errors = [e + offset for e in trimmed_errors]
 
@@ -292,23 +294,24 @@ class ChartWidget(ctk.CTkFrame):
                 label=label_text
             )
 
-        # Plot corrected line: e * slope + offset. This is the PRIMARY solid
+        # Plot corrected line: e + theory*k + offset. This is the PRIMARY solid
         # line because it's what drives pass/fail judgment against spec limits.
-        # We always draw it, even when slope==1.0 and offset==0 (Absolute or
+        # We always draw it, even when k==0.0 and offset==0 (Absolute or
         # no spec), so the legend stays consistent and it's obvious whether
         # correction is doing anything.
         lt_norm = (linearity_type or "").strip().lower()
         is_absolute = lt_norm in ("absolute", "term base", "term_base")
-        is_no_op = (abs(slope - 1.0) < 1e-9) and (abs(offset) < 1e-9)
+        has_rotation = theory_data and k != 0
+        is_no_op = (not has_rotation) and (abs(offset) < 1e-9)
 
         if is_absolute:
             corrected_label = 'Corrected (no-op for Absolute)'
         elif is_no_op:
             corrected_label = 'Corrected (no-op — no spec correction)'
-        elif abs(slope - 1.0) < 1e-9:
-            corrected_label = f'Corrected (offset: {offset:+.6f})'
+        elif has_rotation:
+            corrected_label = f'Corrected (offset: {offset:+.4f}, k: {k:.4f})'
         else:
-            corrected_label = f'Corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+            corrected_label = f'Corrected (offset: {offset:+.6f})'
 
         # Corrected trace (primary — solid, full weight)
         ax.plot(
@@ -780,13 +783,16 @@ class ChartWidget(ctk.CTkFrame):
             # Single track, just show it
             lt = getattr(tracks[0], "linearity_type", None)
             lt_str = lt.value if hasattr(lt, "value") else (str(lt) if lt is not None else None)
+            _k = getattr(tracks[0], 'optimal_slope', 0.0) or 0.0
+            _theory = getattr(tracks[0], 'theory_volts', None)
             self.plot_error_vs_position(
                 positions=tracks[0].position_data,
                 trimmed_errors=tracks[0].error_data,
                 upper_limits=tracks[0].upper_limits,
                 lower_limits=tracks[0].lower_limits,
                 offset=tracks[0].optimal_offset,
-                slope=getattr(tracks[0], 'optimal_slope', None) if getattr(tracks[0], 'optimal_slope', None) is not None else 1.0,
+                k=_k,
+                theory_data=_theory,
                 title=f"Track {tracks[0].track_id}",
                 linearity_type=lt_str,
             )
@@ -801,8 +807,13 @@ class ChartWidget(ctk.CTkFrame):
         def get_status_str(track):
             fail_count = 0
             if track.upper_limits and track.lower_limits:
-                slope_val = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-                shifted = [e * slope_val + track.optimal_offset for e in track.error_data]
+                _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+                _theory = getattr(track, 'theory_volts', None)
+                if _theory and _k != 0:
+                    shifted = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                               for i in range(len(track.error_data))]
+                else:
+                    shifted = [e + track.optimal_offset for e in track.error_data]
                 for i, e in enumerate(shifted):
                     if i < len(track.upper_limits) and i < len(track.lower_limits):
                         # Skip positions with no spec limit (None = unlimited)
@@ -830,8 +841,13 @@ class ChartWidget(ctk.CTkFrame):
                 continue
 
             positions = np.array(track.position_data)
-            slope_val = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-            errors = np.array(track.error_data) * slope_val + track.optimal_offset
+            _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+            _theory = getattr(track, 'theory_volts', None)
+            if _theory and _k != 0:
+                errors = np.array([track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                   for i in range(len(track.error_data))])
+            else:
+                errors = np.array(track.error_data) + track.optimal_offset
 
             # Plot trimmed data
             ax.plot(positions, errors, color=color, linewidth=self.style.line_width,

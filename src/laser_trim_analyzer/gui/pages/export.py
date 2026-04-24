@@ -567,8 +567,13 @@ class ExportPage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-            shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
+            _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+            _theory = getattr(track, 'theory_volts', None)
+            if _theory and _k != 0:
+                shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                  for i in range(len(track.error_data))]
+            else:
+                shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     if upper_limits[i] is not None and lower_limits[i] is not None:
@@ -642,8 +647,13 @@ class ExportPage(ctk.CTkFrame):
                         lower_limits = [-track.linearity_spec] * len(track.error_data)
 
                 if upper_limits and lower_limits and track.error_data:
-                    slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-                    shifted_errors = [e * slope + track.optimal_offset for e in track.error_data]
+                    _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+                    _theory = getattr(track, 'theory_volts', None)
+                    if _theory and _k != 0:
+                        shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                          for i in range(len(track.error_data))]
+                    else:
+                        shifted_errors = [e + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(upper_limits) and i < len(lower_limits):
                             if upper_limits[i] is not None and lower_limits[i] is not None:
@@ -711,10 +721,15 @@ class ExportPage(ctk.CTkFrame):
         positions = np.array(track.position_data)
         errors = np.array(track.error_data)
 
-        # Apply slope and offset
+        # Apply theory-based rotation if theory data available, otherwise offset-only
         offset = track.optimal_offset
-        slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-        errors_shifted = errors * slope + offset
+        _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+        _theory = getattr(track, 'theory_volts', None)
+        if _theory and _k != 0:
+            errors_shifted = np.array([track.error_data[i] + _theory[i] * _k + offset
+                                       for i in range(len(track.error_data))])
+        else:
+            errors_shifted = errors + offset
 
         # Plot untrimmed data if available
         if track.untrimmed_positions and track.untrimmed_errors:
@@ -723,12 +738,13 @@ class ExportPage(ctk.CTkFrame):
                    color=QA_COLORS['untrimmed'], alpha=0.6)
 
         # Build corrected label reflecting actual correction applied
-        if abs(slope - 1.0) < 1e-9 and abs(offset) < 1e-9:
+        has_rotation = _theory and _k != 0
+        if not has_rotation and abs(offset) < 1e-9:
             corrected_label = 'Trimmed corrected (no-op)'
-        elif abs(slope - 1.0) < 1e-9:
-            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
+        elif has_rotation:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, k: {_k:.4f})'
         else:
-            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
 
         # Corrected trace (primary — solid, drives pass/fail judgment)
         ax.plot(positions, errors_shifted, '-', linewidth=2,

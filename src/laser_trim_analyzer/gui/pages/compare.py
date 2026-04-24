@@ -776,7 +776,8 @@ Match: {method_label} ({confidence_str})"""
         # These are populated by the analyzer on save (Task #15).
         ft_track_raw = final_test.get("tracks", [{}])[0] if final_test.get("tracks") else {}
         ft_offset = ft_track_raw.get("optimal_offset", 0) or 0
-        ft_slope = ft_track_raw.get("optimal_slope") if ft_track_raw.get("optimal_slope") is not None else 1.0
+        ft_k = ft_track_raw.get("optimal_slope", 0.0) or 0.0
+        ft_theory = ft_track_raw.get("theory_data")
         ft_linearity_type = ft_track_raw.get("linearity_type")
 
         # Prepare chart data
@@ -785,7 +786,8 @@ Match: {method_label} ({confidence_str})"""
                 "positions": ft_positions,
                 "errors": ft_errors,
                 "offset": ft_offset,
-                "slope": ft_slope,
+                "k": ft_k,
+                "theory_data": ft_theory,
                 "linearity_type": ft_linearity_type,
                 "label": f"Final Test ({final_test.get('filename', 'Unknown')[:20]})",
             },
@@ -801,14 +803,16 @@ Match: {method_label} ({confidence_str})"""
                 trim_positions = trim_track.get("positions", [])
                 trim_errors = trim_track.get("errors", [])
                 trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0) or 0
-                trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
+                trim_k = trim_track.get("optimal_slope", 0.0) or 0.0
+                trim_theory = trim_track.get("theory_data")
                 trim_linearity_type = trim_track.get("linearity_type")
 
                 chart_data["trim"] = {
                     "positions": trim_positions,
                     "errors": trim_errors,
                     "offset": trim_offset,
-                    "slope": trim_slope,
+                    "k": trim_k,
+                    "theory_data": trim_theory,
                     "linearity_type": trim_linearity_type,
                     "label": f"Trim ({trim.get('filename', 'Unknown')[:20]})",
                 }
@@ -882,29 +886,32 @@ Match: {method_label} ({confidence_str})"""
         trim_positions_norm = self._normalize_positions(trim_data.get("positions", [])) if has_trim_data else []
         spec_positions_norm = self._normalize_positions(spec_positions) if spec_positions else []
 
-        # Helper: compute corrected errors using slope + offset from the analyzer.
-        # Matches the trim chart convention: shifted = e * slope + offset.
-        def _corrected(raw_errors, slope, offset):
-            s = slope if slope is not None else 1.0
+        # Helper: compute corrected errors using theory rotation (k) + offset.
+        # Matches the trim chart convention: shifted = e + theory*k + offset.
+        def _corrected(raw_errors, k, theory, offset):
+            """Apply theory-based rotation if available, otherwise offset-only."""
+            _k = k or 0.0
             o = offset if offset is not None else 0.0
-            return [e * s + o for e in raw_errors]
+            if theory and _k != 0:
+                return [raw_errors[i] + theory[i] * _k + o for i in range(len(raw_errors))]
+            return [e + o for e in raw_errors]
 
         # Helper: build a contextual label for the corrected line so the user
-        # knows whether slope correction was actually applied or it's a no-op.
-        def _corrected_label(base_label, linearity_type, slope, offset):
+        # knows whether rotation correction was actually applied or it's a no-op.
+        def _corrected_label(base_label, linearity_type, k, theory, offset):
             lt = (linearity_type or "").strip().lower()
-            s = slope if slope is not None else 1.0
+            _k = k or 0.0
             o = offset if offset is not None else 0.0
-            slope_active = abs(s - 1.0) > 1e-9
+            has_rotation = theory and _k != 0
             offset_active = abs(o) > 1e-9
-            if not slope_active and not offset_active:
+            if not has_rotation and not offset_active:
                 return f"{base_label} corrected (no-op)"
-            if lt == "absolute" and not slope_active:
+            if lt == "absolute" and not has_rotation:
                 return f"{base_label} corrected (Absolute — offset only)"
-            if slope_active and offset_active:
-                return f"{base_label} corrected (slope+offset)"
-            if slope_active:
-                return f"{base_label} corrected (slope)"
+            if has_rotation and offset_active:
+                return f"{base_label} corrected (k+offset)"
+            if has_rotation:
+                return f"{base_label} corrected (k)"
             return f"{base_label} corrected (offset)"
 
         # Plot Trim data first (if available) - so Final Test appears on top.
@@ -915,10 +922,11 @@ Match: {method_label} ({confidence_str})"""
         corrected_ft = None
         if has_trim_data:
             raw_trim_errors = trim_data["errors"]
-            trim_slope = trim_data.get("slope", 1.0)
+            trim_k = trim_data.get("k", 0.0) or 0.0
+            trim_theory = trim_data.get("theory_data")
             trim_offset = trim_data.get("offset", 0)
             trim_lin = trim_data.get("linearity_type")
-            corrected_trim = _corrected(raw_trim_errors, trim_slope, trim_offset)
+            corrected_trim = _corrected(raw_trim_errors, trim_k, trim_theory, trim_offset)
 
             # Corrected (primary — drives pass/fail)
             ax.plot(
@@ -926,7 +934,7 @@ Match: {method_label} ({confidence_str})"""
                 corrected_trim,
                 color='#3498db',  # Blue for Trim (laser trim data)
                 linewidth=1.5,
-                label=_corrected_label("Trim", trim_lin, trim_slope, trim_offset),
+                label=_corrected_label("Trim", trim_lin, trim_k, trim_theory, trim_offset),
                 alpha=0.95,
                 zorder=3,
             )
@@ -946,10 +954,11 @@ Match: {method_label} ({confidence_str})"""
         # Plot Final Test data — corrected primary, raw as faint dashed reference
         if has_ft_data:
             raw_ft_errors = ft_data["errors"]
-            ft_slope = ft_data.get("slope", 1.0)
+            ft_k = ft_data.get("k", 0.0) or 0.0
+            ft_theory = ft_data.get("theory_data")
             ft_offset = ft_data.get("offset", 0)
             ft_lin = ft_data.get("linearity_type")
-            corrected_ft = _corrected(raw_ft_errors, ft_slope, ft_offset)
+            corrected_ft = _corrected(raw_ft_errors, ft_k, ft_theory, ft_offset)
 
             # Corrected (primary — drives pass/fail)
             ax.plot(
@@ -957,7 +966,7 @@ Match: {method_label} ({confidence_str})"""
                 corrected_ft,
                 color='#27ae60',  # Green for Final Test (post-assembly)
                 linewidth=1.5,
-                label=_corrected_label("FT", ft_lin, ft_slope, ft_offset),
+                label=_corrected_label("FT", ft_lin, ft_k, ft_theory, ft_offset),
                 alpha=0.95,
                 zorder=3,
             )
@@ -1544,10 +1553,15 @@ Match: {method_label} ({confidence_str})"""
         if not ft_raw_errors or not upper_limits or not lower_limits:
             return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
 
-        # Apply slope+offset correction to FT errors (pass/fail is on corrected)
-        ft_slope = ft_track.get("optimal_slope") if ft_track.get("optimal_slope") is not None else 1.0
+        # Apply theory-based rotation to FT errors (pass/fail is on corrected)
+        ft_k = ft_track.get("optimal_slope", 0.0) or 0.0
+        ft_theory = ft_track.get("theory_data")
         ft_offset = ft_track.get("optimal_offset", 0) or 0
-        ft_errors = [e * ft_slope + ft_offset for e in ft_raw_errors]
+        if ft_theory and ft_k != 0:
+            ft_errors = [ft_raw_errors[i] + ft_theory[i] * ft_k + ft_offset
+                         for i in range(len(ft_raw_errors))]
+        else:
+            ft_errors = [e + ft_offset for e in ft_raw_errors]
 
         # Count Final Test fail points against corrected errors
         fail_count = 0
@@ -1567,11 +1581,16 @@ Match: {method_label} ({confidence_str})"""
                 trim_track = trim_tracks[0]
                 trim_raw_errors = trim_track.get("errors", [])
                 trim_positions = trim_track.get("positions", [])
-                trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
+                trim_k = trim_track.get("optimal_slope", 0.0) or 0.0
+                trim_theory = trim_track.get("theory_data")
                 trim_offset = trim_track.get("optimal_offset", 0) or 0
 
-                # Apply full correction (slope + offset) — matches analyzer + chart
-                trim_errors = [e * trim_slope + trim_offset for e in trim_raw_errors]
+                # Apply theory-based rotation — matches analyzer + chart
+                if trim_theory and trim_k != 0:
+                    trim_errors = [trim_raw_errors[i] + trim_theory[i] * trim_k + trim_offset
+                                   for i in range(len(trim_raw_errors))]
+                else:
+                    trim_errors = [e + trim_offset for e in trim_raw_errors]
 
                 # Get FT positions for interpolation
                 ft_positions = ft_track.get("positions", [])
@@ -1640,11 +1659,16 @@ Match: {method_label} ({confidence_str})"""
             trim_track = trim_tracks[0]
             trim_positions_raw = trim_track.get("positions", [])
             trim_raw_errors = trim_track.get("errors", [])
-            trim_slope = trim_track.get("optimal_slope") if trim_track.get("optimal_slope") is not None else 1.0
+            trim_k = trim_track.get("optimal_slope", 0.0) or 0.0
+            trim_theory = trim_track.get("theory_data")
             trim_offset = trim_track.get("optimal_offset", 0) or trim_track.get("offset", 0) or 0
 
-            # Corrected = raw * slope + offset (matches analyzer pass/fail rule)
-            corrected_trim_errors = [e * trim_slope + trim_offset for e in trim_raw_errors]
+            # Apply theory-based rotation (matches analyzer pass/fail rule)
+            if trim_theory and trim_k != 0:
+                corrected_trim_errors = [trim_raw_errors[i] + trim_theory[i] * trim_k + trim_offset
+                                         for i in range(len(trim_raw_errors))]
+            else:
+                corrected_trim_errors = [e + trim_offset for e in trim_raw_errors]
 
             # Normalize positions to 0-100% for alignment
             trim_positions = self._normalize_positions(trim_positions_raw)
@@ -1666,11 +1690,16 @@ Match: {method_label} ({confidence_str})"""
             ft_track = ft_tracks[0]
             ft_positions_raw = ft_track.get("positions", [])
             ft_raw_errors = ft_track.get("errors", [])
-            ft_slope = ft_track.get("optimal_slope") if ft_track.get("optimal_slope") is not None else 1.0
+            ft_k = ft_track.get("optimal_slope", 0.0) or 0.0
+            ft_theory = ft_track.get("theory_data")
             ft_offset = ft_track.get("optimal_offset", 0) or 0
 
-            # Corrected = raw * slope + offset
-            corrected_ft_errors_export = [e * ft_slope + ft_offset for e in ft_raw_errors]
+            # Apply theory-based rotation
+            if ft_theory and ft_k != 0:
+                corrected_ft_errors_export = [ft_raw_errors[i] + ft_theory[i] * ft_k + ft_offset
+                                              for i in range(len(ft_raw_errors))]
+            else:
+                corrected_ft_errors_export = [e + ft_offset for e in ft_raw_errors]
 
             # Normalize positions to 0-100% for alignment
             ft_positions = self._normalize_positions(ft_positions_raw)

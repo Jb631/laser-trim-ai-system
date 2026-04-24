@@ -909,8 +909,14 @@ class AnalyzePage(ctk.CTkFrame):
         # Skip positions where limit is None (no spec = unlimited at that position)
         fail_indices = []
         if upper_limits and lower_limits:
-            _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-            shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
+            # Apply theory-based rotation if theory data available, otherwise offset-only
+            _k = getattr(track, 'optimal_slope', 0.0) or 0.0  # k factor (was slope)
+            _theory = getattr(track, 'theory_volts', None)
+            if _theory and _k != 0:
+                shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                  for i in range(len(track.error_data))]
+            else:
+                shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     # Only check positions that have spec limits (not None)
@@ -977,7 +983,8 @@ class AnalyzePage(ctk.CTkFrame):
             untrimmed_positions=track.untrimmed_positions,
             untrimmed_errors=track.untrimmed_errors,
             offset=track.optimal_offset,
-            slope=getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0,
+            k=getattr(track, 'optimal_slope', 0.0) or 0.0,
+            theory_data=getattr(track, 'theory_volts', None),
             title=title,
             fail_points=real_fail_indices,
             excluded_points=excluded_fail_indices,
@@ -1030,8 +1037,13 @@ class AnalyzePage(ctk.CTkFrame):
                 # Calculate actual fail points (skip None = no limit at that position)
                 actual_fail_count = 0
                 if actual_upper and actual_lower and track.error_data:
-                    _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-                    shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
+                    _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+                    _theory = getattr(track, 'theory_volts', None)
+                    if _theory and _k != 0:
+                        shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                          for i in range(len(track.error_data))]
+                    else:
+                        shifted_errors = [e + track.optimal_offset for e in track.error_data]
                     for i, e in enumerate(shifted_errors):
                         if i < len(actual_upper) and i < len(actual_lower):
                             # Skip positions with no spec limit (None = unlimited)
@@ -1212,8 +1224,8 @@ class AnalyzePage(ctk.CTkFrame):
                     if track.station_compensation is not None:
                         lines.append(f"  Station Comp:      {track.station_compensation:.6f}")
                     lines.append(f"  Optimal Offset:    {track.optimal_offset:.6f}")
-                    if hasattr(track, 'optimal_slope') and track.optimal_slope != 1.0:
-                        lines.append(f"  Optimal Slope:     {track.optimal_slope:.6f}")
+                    if hasattr(track, 'optimal_slope') and track.optimal_slope != 0.0:
+                        lines.append(f"  Rotation (k):      {track.optimal_slope:.6f}")
                     if track.raw_linearity_error is not None and track.optimized_linearity_error is not None:
                         lines.append(f"  Raw Error:         {track.raw_linearity_error:.6f}")
                         lines.append(f"  Optimized Error:   {track.optimized_linearity_error:.6f}")
@@ -1653,8 +1665,13 @@ class AnalyzePage(ctk.CTkFrame):
                 lower_limits = [-track.linearity_spec] * len(track.error_data)
 
         if upper_limits and lower_limits and track.error_data:
-            _slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-            shifted_errors = [e * _slope + track.optimal_offset for e in track.error_data]
+            _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+            _theory = getattr(track, 'theory_volts', None)
+            if _theory and _k != 0:
+                shifted_errors = [track.error_data[i] + _theory[i] * _k + track.optimal_offset
+                                  for i in range(len(track.error_data))]
+            else:
+                shifted_errors = [e + track.optimal_offset for e in track.error_data]
             for i, e in enumerate(shifted_errors):
                 if i < len(upper_limits) and i < len(lower_limits):
                     # Skip positions with no spec limit (None = unlimited)
@@ -1720,10 +1737,15 @@ class AnalyzePage(ctk.CTkFrame):
         positions = np.array(track.position_data)
         errors = np.array(track.error_data)
 
-        # Apply offset and slope
+        # Apply theory-based rotation if theory data available, otherwise offset-only
         offset = track.optimal_offset
-        slope = getattr(track, 'optimal_slope', None) if getattr(track, 'optimal_slope', None) is not None else 1.0
-        errors_shifted = errors * slope + offset
+        _k = getattr(track, 'optimal_slope', 0.0) or 0.0
+        _theory = getattr(track, 'theory_volts', None)
+        if _theory and _k != 0:
+            errors_shifted = np.array([track.error_data[i] + _theory[i] * _k + offset
+                                       for i in range(len(track.error_data))])
+        else:
+            errors_shifted = errors + offset
 
         # Plot untrimmed data if available
         if track.untrimmed_positions and track.untrimmed_errors:
@@ -1732,12 +1754,13 @@ class AnalyzePage(ctk.CTkFrame):
                    color=QA_COLORS['untrimmed'], alpha=0.6)
 
         # Build corrected label that reflects actual correction applied
-        if abs(slope - 1.0) < 1e-9 and abs(offset) < 1e-9:
+        has_rotation = _theory and _k != 0
+        if not has_rotation and abs(offset) < 1e-9:
             corrected_label = 'Trimmed corrected (no-op)'
-        elif abs(slope - 1.0) < 1e-9:
-            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
+        elif has_rotation:
+            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, k: {_k:.4f})'
         else:
-            corrected_label = f'Trimmed corrected (offset: {offset:+.4f}, slope: {slope:.4f})'
+            corrected_label = f'Trimmed corrected (offset: {offset:+.6f})'
 
         # Corrected trace (primary — solid, drives pass/fail judgment)
         ax.plot(positions, errors_shifted, linewidth=2,
