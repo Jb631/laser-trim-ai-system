@@ -106,7 +106,7 @@ class TrackData(BaseAnalysisModel):
     linearity_fail_points: int = Field(default=0, ge=0, description="Failing points count")
 
     # Spec-aware optimization results (Phase 2)
-    optimal_slope: float = Field(default=1.0, description="Optimal slope adjustment (1.0 = no change)")
+    optimal_slope: float = Field(default=0.0, description="Theory rotation factor k (0.0 = no rotation)")
     station_compensation: Optional[float] = Field(None, description="Compensation value from station file (offset applied by machine)")
     linearity_type: Optional[str] = Field(None, description="Linearity type from model specs (Absolute, Independent, Term Base, Zero-Based)")
     raw_linearity_error: Optional[float] = Field(None, ge=0, description="Max error before any optimization")

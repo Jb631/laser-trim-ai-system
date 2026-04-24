@@ -337,7 +337,7 @@ class TrackResult(Base):
     linearity_fail_points = Column(Integer)
 
     # Spec-aware optimization (Phase 2)
-    optimal_slope = Column(Float, default=1.0)
+    optimal_slope = Column(Float, default=0.0)  # Theory rotation factor k (0.0 = no rotation)
     station_compensation = Column(Float)
     linearity_type = Column(String(30))
     raw_linearity_error = Column(Float)
@@ -909,7 +909,7 @@ class FinalTestTrack(Base):
     # Spec-aware correction (populated when a model spec is found so FT charts
     # can draw a "corrected" overlay consistent with the trim chart).
     optimal_offset = Column(Float, nullable=True)
-    optimal_slope = Column(Float, nullable=True, default=1.0)
+    optimal_slope = Column(Float, nullable=True, default=0.0)  # Theory rotation factor k
     linearity_type = Column(String(30), nullable=True)
 
     # Relationships

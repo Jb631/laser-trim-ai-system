@@ -2265,7 +2265,7 @@ class DatabaseManager:
             avg_violation=getattr(track, 'avg_violation', None),
             margin_to_spec=getattr(track, 'margin_to_spec', None),
             # Spec-aware optimization fields (Phase 2)
-            optimal_slope=getattr(track, 'optimal_slope', 1.0),
+            optimal_slope=getattr(track, 'optimal_slope', 0.0),
             station_compensation=getattr(track, 'station_compensation', None),
             linearity_type=getattr(track, 'linearity_type', None),
             raw_linearity_error=getattr(track, 'raw_linearity_error', None),
@@ -2413,7 +2413,7 @@ class DatabaseManager:
                 trimmed_rms_error=db_track.trimmed_rms_error,
                 max_error_reduction_percent=db_track.max_error_reduction_percent,
                 # Phase 2 spec-aware fields
-                optimal_slope=getattr(db_track, 'optimal_slope', 1.0),
+                optimal_slope=getattr(db_track, 'optimal_slope', 0.0),
                 station_compensation=getattr(db_track, 'station_compensation', None),
                 linearity_type=getattr(db_track, 'linearity_type', None),
                 raw_linearity_error=getattr(db_track, 'raw_linearity_error', None),

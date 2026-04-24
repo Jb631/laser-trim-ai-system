@@ -388,14 +388,14 @@ class Processor:
                     # Enrich the raw parser track dict with spec-aware values so
                     # save_final_test can persist them on final_test_tracks.
                     track["optimal_offset"] = getattr(track_result, "optimal_offset", 0.0)
-                    track["optimal_slope"] = getattr(track_result, "optimal_slope", 1.0)
+                    track["optimal_slope"] = getattr(track_result, "optimal_slope", 0.0)
                     track["linearity_type"] = (
                         str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
                         else (str(ft_linearity_type) if ft_linearity_type else None)
                     )
                     # Overwrite the parser's raw-error fail count with the
                     # analyzer's corrected-error count. Pass/fail is judged
-                    # on corrected errors (raw * slope + offset), not raw,
+                    # on corrected errors (error + theory*k + offset), not raw,
                     # so this is what should land in the DB.
                     corrected_fail_points = getattr(track_result, "linearity_fail_points", None)
                     if corrected_fail_points is not None:
@@ -430,7 +430,7 @@ class Processor:
                     # Enrich with identity correction so the columns are always
                     # populated for every track.
                     track["optimal_offset"] = 0.0
-                    track["optimal_slope"] = 1.0
+                    track["optimal_slope"] = 0.0
                     track["linearity_type"] = (
                         str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
                         else (str(ft_linearity_type) if ft_linearity_type else None)

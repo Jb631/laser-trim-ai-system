@@ -556,6 +556,9 @@ class Analyzer:
         if tol_type in ("symmetric", "range", "bilateral"):
             if angle_tol is None or angle_tol <= 0:
                 return 0.0, 0.0
+            if angle_tol >= angle_spec:
+                # Tolerance >= spec would mean division by zero or nonsensical bounds
+                return -0.5, 0.5  # Cap at generous range
             # k = 1 - A/(A±T)
             # 1 - A/(A-T) = -T/(A-T) < 0 (shorter travel)
             # 1 - A/(A+T) =  T/(A+T) > 0 (longer travel)
@@ -569,154 +572,6 @@ class Analyzer:
 
         return 0.0, 0.0
 
-    def _optimize_slope_only(
-        self,
-        errors: List[float],
-        upper_limits: List[float],
-        lower_limits: List[float],
-    ) -> float:
-        """Optimize slope with offset fixed at zero."""
-        n = min(len(errors), len(upper_limits), len(lower_limits))
-        if n == 0:
-            return 1.0
-
-        def objective(slope_val: float) -> float:
-            violations = 0
-            max_err = 0.0
-            for i in range(n):
-                adjusted = errors[i] * slope_val
-                ul = upper_limits[i]
-                ll = lower_limits[i]
-                if ul is not None and ll is not None:
-                    if not (np.isnan(ul) or np.isnan(ll)):
-                        if adjusted > ul or adjusted < ll:
-                            violations += 1
-                        max_err = max(max_err, abs(adjusted))
-            return violations * 1e6 + max_err
-
-        try:
-            result = optimize.minimize_scalar(
-                objective, bounds=(0.8, 1.2), method='bounded',
-                options={'xatol': 1e-6}
-            )
-            return float(result.x)
-        except Exception:
-            return 1.0
-
-    def _optimize_offset_and_slope(
-        self,
-        errors: List[float],
-        upper_limits: List[float],
-        lower_limits: List[float],
-        slope_bounds: Tuple[float, float] = (0.80, 1.20),
-        exclude_indices: Optional[Set[int]] = None,
-    ) -> Tuple[float, float]:
-        """
-        Optimize both offset and slope within bounds derived from the spec.
-
-        slope_bounds: (lo, hi) — slope is constrained to this range. When the
-        spec has no angle tolerance, the caller should not be invoking this
-        function at all (slope stays at 1.0). When a tolerance exists, the
-        caller passes bounds derived from tol/nominal_angle.
-        """
-        n = min(len(errors), len(upper_limits), len(lower_limits))
-        if n == 0:
-            return 0.0, 1.0
-
-        slope_lo, slope_hi = slope_bounds
-        # Defensive: if bounds collapse to a single point, offset-only.
-        if slope_hi - slope_lo < 1e-9:
-            # Caller asked for a locked slope; return it with optimized offset.
-            locked_slope = (slope_lo + slope_hi) / 2.0
-            n2 = n
-
-            def offset_only_cost(off):
-                viol = 0
-                m = 0.0
-                for i in range(n2):
-                    if exclude_indices and i in exclude_indices:
-                        continue
-                    a = errors[i] * locked_slope + off
-                    ul = upper_limits[i]; ll = lower_limits[i]
-                    if ul is not None and ll is not None:
-                        if not (np.isnan(ul) or np.isnan(ll)):
-                            if a > ul or a < ll:
-                                viol += 1
-                            m = max(m, abs(a))
-                return viol * 1e6 + m
-
-            differences = [
-                ((upper_limits[i] + lower_limits[i]) / 2) - errors[i] * locked_slope
-                for i in range(n)
-                if (not exclude_indices or i not in exclude_indices)
-                and upper_limits[i] is not None and lower_limits[i] is not None
-                and not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i]))
-            ]
-            initial = float(np.median(differences)) if differences else 0.0
-            try:
-                res = optimize.minimize_scalar(offset_only_cost, bracket=(initial - 0.02, initial, initial + 0.02))
-                return float(res.x), float(locked_slope)
-            except Exception:
-                return initial, float(locked_slope)
-
-        # Calculate band center differences for initial offset guess
-        differences = []
-        for i in range(n):
-            if exclude_indices and i in exclude_indices:
-                continue
-            ul = upper_limits[i]
-            ll = lower_limits[i]
-            if ul is not None and ll is not None:
-                if not (np.isnan(ul) or np.isnan(ll)):
-                    midpoint = (ul + ll) / 2
-                    differences.append(midpoint - errors[i])
-        initial_offset = float(np.median(differences)) if differences else 0.0
-
-        def objective(params):
-            offset, slope = params
-            # Penalize slope outside bounds so Nelder-Mead doesn't wander
-            # off into forbidden territory. Hard-cap it.
-            if slope < slope_lo or slope > slope_hi:
-                return 1e12
-            violations = 0
-            max_err = 0.0
-            for i in range(n):
-                if exclude_indices and i in exclude_indices:
-                    continue
-                adjusted = errors[i] * slope + offset
-                ul = upper_limits[i]
-                ll = lower_limits[i]
-                if ul is not None and ll is not None:
-                    if not (np.isnan(ul) or np.isnan(ll)):
-                        if adjusted > ul or adjusted < ll:
-                            violations += 1
-                        max_err = max(max_err, abs(adjusted))
-            return violations * 1e6 + max_err
-
-        try:
-            # Stage 1: coarse grid search over allowed slope range
-            best_params = (initial_offset, 1.0)
-            best_cost = objective(best_params)
-            offset_range = abs(initial_offset) + 0.02
-            slope_grid = np.linspace(slope_lo, slope_hi, 11)
-            for slope_candidate in slope_grid:
-                for offset_factor in np.linspace(-offset_range, offset_range, 11):
-                    cost = objective((offset_factor, slope_candidate))
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_params = (offset_factor, float(slope_candidate))
-
-            # Stage 2: Nelder-Mead refinement (bounds enforced via objective)
-            result = optimize.minimize(
-                objective, x0=best_params, method='Nelder-Mead',
-                options={'xatol': 1e-7, 'fatol': 1e-7, 'maxiter': 500}
-            )
-            # Clamp to bounds in case optimizer was just outside.
-            fo = float(result.x[0])
-            fs = float(max(slope_lo, min(slope_hi, result.x[1])))
-            return fo, fs
-        except Exception:
-            return initial_offset, 1.0
 
     def _optimize_offset_and_k(
         self,
@@ -739,6 +594,13 @@ class Analyzer:
         n = min(len(errors), len(upper_limits), len(lower_limits), len(theory_volts))
         if n == 0:
             return 0.0, 0.0
+
+        # Replace None/NaN in theory_volts with 0.0 (FT parser can produce None)
+        theory_clean = [
+            float(theory_volts[i]) if theory_volts[i] is not None and not (isinstance(theory_volts[i], float) and np.isnan(theory_volts[i]))
+            else 0.0
+            for i in range(n)
+        ]
 
         k_lo, k_hi = k_bounds
         if k_hi - k_lo < 1e-12:
@@ -765,7 +627,7 @@ class Analyzer:
             for i in range(n):
                 if exclude_indices and i in exclude_indices:
                     continue
-                adjusted = errors[i] + theory_volts[i] * k + offset
+                adjusted = errors[i] + theory_clean[i] * k + offset
                 ul, ll = upper_limits[i], lower_limits[i]
                 if ul is not None and ll is not None and not (np.isnan(ul) or np.isnan(ll)):
                     if adjusted > ul or adjusted < ll:
