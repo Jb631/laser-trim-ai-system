@@ -437,332 +437,335 @@ class MLManager:
 
             models_updated = set()
 
-            with self.db.session() as session:
-                # Count total trained models for progress
-                total_models = len(self.trained_models)
-
-                if progress_callback:
-                    progress_callback(ApplyProgress(
-                        records_complete=0,
-                        records_total=total_models,
-                        models_updated=0,
-                        message=f"Applying thresholds to {total_models} models..."
-                    ))
-
-                for model_idx, model_name in enumerate(self.trained_models):
-                    optimizer = self.threshold_optimizers.get(model_name)
-                    if not optimizer or not optimizer.is_calculated:
-                        continue
-
-                    new_threshold = optimizer.threshold
-                    detector = self.drift_detectors.get(model_name)
-
-                    # OPTIMIZATION 1: Bulk update sigma_threshold and sigma_pass using SQL
-                    # Use subquery instead of loading IDs into Python (much faster for large datasets)
-                    import time
-                    model_start_time = time.time()
-                    track_count = 0
-                    analysis_updates = 0
-                    analysis_subquery = None  # Defined here so prediction block can use it
-
-                    try:
-                        from sqlalchemy import select
-
-                        # Use subquery instead of loading all IDs into Python
-                        # SQLite can optimize this much better than a massive IN list
-                        analysis_subquery = (
-                            select(AnalysisResult.id)
-                            .where(AnalysisResult.model == model_name)
-                        )
-
-                        # Check if there are any analyses for this model
-                        analysis_count = session.query(AnalysisResult.id).filter(
-                            AnalysisResult.model == model_name
-                        ).count()
-
-                        if analysis_count == 0:
-                            continue
-
-                        # Bulk update sigma_threshold for all tracks of this model
-                        result1 = session.execute(
-                            update(TrackResult)
-                            .where(TrackResult.analysis_id.in_(analysis_subquery))
-                            .values(sigma_threshold=new_threshold)
-                        )
-                        track_count = result1.rowcount  # Get count from UPDATE result
-
-                        # Bulk update sigma_pass based on threshold comparison
-                        # sigma_pass = True if sigma_gradient <= threshold, else False
-                        session.execute(
-                            update(TrackResult)
-                            .where(
-                                and_(
-                                    TrackResult.analysis_id.in_(analysis_subquery),
-                                    TrackResult.sigma_gradient.isnot(None)
-                                )
-                            )
-                            .values(
-                                sigma_pass=case(
-                                    (TrackResult.sigma_gradient <= new_threshold, True),
-                                    else_=False
-                                )
-                            )
-                        )
-
-                        # OPTIMIZATION 2: Bulk update track status based on sigma_pass and linearity_pass
-                        # Status = PASS if both pass, FAIL if both fail, WARNING otherwise
-                        # NOTE: Use .name (not .value) for SQLite - SQLAlchemy stores enum NAME not value
-                        session.execute(
-                            update(TrackResult)
-                            .where(TrackResult.analysis_id.in_(analysis_subquery))
-                            .values(
-                                status=case(
-                                    # Both pass -> PASS
-                                    (and_(
-                                        TrackResult.sigma_pass == True,
-                                        TrackResult.linearity_pass == True
-                                    ), StatusType.PASS.name),
-                                    # Both fail -> FAIL
-                                    (and_(
-                                        TrackResult.sigma_pass == False,
-                                        TrackResult.linearity_pass == False
-                                    ), StatusType.FAIL.name),
-                                    # Mixed -> WARNING
-                                    else_=StatusType.WARNING.name
-                                )
-                            )
-                        )
-
-                        # Track count already captured from first UPDATE rowcount
-                        counts['updated'] += track_count
-                        models_updated.add(model_name)
-
-                    except Exception as e:
-                        logger.warning(f"Error in bulk update for {model_name}: {e}")
-                        session.rollback()
-                        counts['errors'] += 1
-                        continue  # Skip remaining steps for this model
-
-                    # OPTIMIZATION 3: Update analysis overall_status in bulk using subqueries
-                    # This is faster than iterating over each analysis
-                    try:
-                        from sqlalchemy import func, exists
-                        from sqlalchemy.orm import aliased
-
-                        # Update analyses that have any ERROR tracks -> ERROR
-                        # NOTE: Use .name (not .value) - SQLAlchemy stores enum NAME
-                        result = session.execute(
-                            update(AnalysisResult)
-                            .where(AnalysisResult.model == model_name)
-                            .where(
-                                exists(
-                                    select(TrackResult.id)
-                                    .where(TrackResult.analysis_id == AnalysisResult.id)
-                                    .where(TrackResult.status == StatusType.ERROR.name)
-                                )
-                            )
-                            .values(overall_status=StatusType.ERROR.name)
-                        )
-                        analysis_updates += result.rowcount
-
-                        # Update analyses that have FAIL but no ERROR -> FAIL
-                        result = session.execute(
-                            update(AnalysisResult)
-                            .where(AnalysisResult.model == model_name)
-                            .where(~exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status == StatusType.ERROR.name)
-                            ))
-                            .where(exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status == StatusType.FAIL.name)
-                            ))
-                            .values(overall_status=StatusType.FAIL.name)
-                        )
-                        analysis_updates += result.rowcount
-
-                        # Update analyses that have WARNING but no ERROR/FAIL -> WARNING
-                        result = session.execute(
-                            update(AnalysisResult)
-                            .where(AnalysisResult.model == model_name)
-                            .where(~exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status == StatusType.ERROR.name)
-                            ))
-                            .where(~exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status == StatusType.FAIL.name)
-                            ))
-                            .where(exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status == StatusType.WARNING.name)
-                            ))
-                            .values(overall_status=StatusType.WARNING.name)
-                        )
-                        analysis_updates += result.rowcount
-
-                        # Update remaining analyses (all tracks PASS) -> PASS
-                        result = session.execute(
-                            update(AnalysisResult)
-                            .where(AnalysisResult.model == model_name)
-                            .where(~exists(
-                                select(TrackResult.id)
-                                .where(TrackResult.analysis_id == AnalysisResult.id)
-                                .where(TrackResult.status.in_([
-                                    StatusType.ERROR.name, StatusType.FAIL.name, StatusType.WARNING.name
-                                ]))
-                            ))
-                            .values(overall_status=StatusType.PASS.name)
-                        )
-                        analysis_updates += result.rowcount
-
-                    except Exception as e:
-                        logger.warning(f"Error updating analysis status for {model_name}: {e}")
-                        session.rollback()
-                        continue  # Skip remaining steps for this model
-
-                    # OPTIMIZATION 3.5: Update failure_probability using ML predictor
-                    predictor = self.predictors.get(model_name)
-                    if predictor and predictor.is_trained and analysis_subquery is not None:
-                        try:
-                            # Load tracks with features needed for prediction
-                            tracks = (
-                                session.query(
-                                    TrackResult.id,
-                                    TrackResult.sigma_gradient,
-                                    TrackResult.final_linearity_error_shifted,
-                                    TrackResult.linearity_fail_points,
-                                    TrackResult.optimal_offset,
-                                    TrackResult.linearity_spec,
-                                )
-                                .filter(TrackResult.analysis_id.in_(analysis_subquery))
-                                .filter(TrackResult.sigma_gradient.isnot(None))
-                                .all()
-                            )
-
-                            # PERF FIX: build mappings list and use bulk_update_mappings
-                            # instead of one UPDATE per track. The old per-row loop
-                            # could take >1 hour for 80K+ tracks across 200+ models.
-                            update_mappings = []
-                            for track in tracks:
-                                sigma = track.sigma_gradient or 0.0
-                                lin_error = abs(track.final_linearity_error_shifted or 0.0)
-                                lin_spec = track.linearity_spec or 0.01
-                                features = {
-                                    'sigma_gradient': sigma,
-                                    'linearity_error': lin_error,
-                                    'fail_points': track.linearity_fail_points or 0,
-                                    'optimal_offset': track.optimal_offset or 0.0,
-                                    'linearity_spec': lin_spec,
-                                    'sigma_to_spec': sigma / lin_spec if lin_spec > 0 else 0.0,
-                                    'error_to_spec': lin_error / lin_spec if lin_spec > 0 else 0.0,
-                                }
-                                prob = predictor.predict_failure_probability(features)
-                                if prob is not None:
-                                    update_mappings.append({
-                                        'id': track.id,
-                                        'failure_probability': prob,
-                                    })
-
-                            prediction_count = len(update_mappings)
-                            if update_mappings:
-                                # bulk_update_mappings issues a single UPDATE statement
-                                # batched on the driver side - dramatically faster than
-                                # individual UPDATE-WHERE-id calls.
-                                session.bulk_update_mappings(TrackResult, update_mappings)
-
-                            logger.info(f"Updated {prediction_count} failure predictions for {model_name}")
-
-                        except Exception as e:
-                            logger.warning(f"Error updating failure predictions for {model_name}: {e}")
-
-                    # OPTIMIZATION 4: Drift detection - only load detection-period tracks
-                    if run_drift_detection and detector and detector.has_baseline:
-                        try:
-                            # Only get tracks AFTER baseline cutoff date
-                            cutoff_date = detector.baseline_cutoff_date
-
-                            if cutoff_date:
-                                detection_tracks = (
-                                    session.query(TrackResult.sigma_gradient, AnalysisResult.id)
-                                    .join(AnalysisResult)
-                                    .filter(AnalysisResult.model == model_name)
-                                    .filter(AnalysisResult.file_date > cutoff_date)
-                                    .filter(TrackResult.sigma_gradient.isnot(None))
-                                    .order_by(AnalysisResult.file_date)
-                                    .all()
-                                )
-
-                                # Reset detector before running on detection period
-                                detector.reset()
-
-                                # Run drift detection only on detection-period samples
-                                for sigma, analysis_id in detection_tracks:
-                                    drift_result = detector.detect(sigma)
-
-                                    # Only create alert on first detection per model
-                                    if drift_result.is_drifting and drift_result.message:
-                                        # Check if we already logged this drift
-                                        if model_name not in [a['model'] for a in counts['drift_alerts']]:
-                                            counts['drift_alerts'].append({
-                                                'model': model_name,
-                                                'direction': drift_result.direction.value,
-                                                'severity': drift_result.severity,
-                                            })
-
-                                            # Persist drift alert to DB
-                                            try:
-                                                # Map float severity (0-1) to string category
-                                                if drift_result.severity >= 0.75:
-                                                    severity_str = "Critical"
-                                                elif drift_result.severity >= 0.5:
-                                                    severity_str = "High"
-                                                elif drift_result.severity >= 0.25:
-                                                    severity_str = "Medium"
-                                                else:
-                                                    severity_str = "Low"
-
-                                                alert = QAAlert(
-                                                    analysis_id=analysis_id,
-                                                    alert_type=AlertType.DRIFT_DETECTED,
-                                                    severity=severity_str,
-                                                    message=drift_result.message,
-                                                    metric_name="sigma_gradient",
-                                                    metric_value=drift_result.cusum_value,
-                                                )
-                                                session.add(alert)
-                                            except Exception as e:
-                                                logger.warning(f"Failed to persist drift alert: {e}")
-
-                        except Exception as e:
-                            logger.warning(f"Error in drift detection for {model_name}: {e}")
-
-                    # Commit after each model to avoid holding locks too long
-                    session.commit()
-
-                    # Log completion with timing and counts for verification
-                    model_elapsed = time.time() - model_start_time
-                    logger.info(
-                        f"Apply complete for {model_name}: "
-                        f"{track_count} tracks, {analysis_updates} analyses updated "
-                        f"in {model_elapsed:.1f}s"
-                    )
+            with self.db._write_lock:
+                with self.db.session() as session:
+                    # Count total trained models for progress
+                    total_models = len(self.trained_models)
 
                     if progress_callback:
                         progress_callback(ApplyProgress(
-                            records_complete=model_idx + 1,
+                            records_complete=0,
                             records_total=total_models,
-                            models_updated=len(models_updated),
-                            message=f"Completed {model_name}: {track_count} tracks, {analysis_updates} analyses ({model_elapsed:.1f}s)"
+                            models_updated=0,
+                            message=f"Applying thresholds to {total_models} models..."
                         ))
 
-                # Save updated drift state
-                self._save_state_to_db()
+                    for model_idx, model_name in enumerate(self.trained_models):
+                        optimizer = self.threshold_optimizers.get(model_name)
+                        if not optimizer or not optimizer.is_calculated:
+                            continue
+
+                        new_threshold = optimizer.threshold
+                        detector = self.drift_detectors.get(model_name)
+
+                        # OPTIMIZATION 1: Bulk update sigma_threshold and sigma_pass using SQL
+                        # Use subquery instead of loading IDs into Python (much faster for large datasets)
+                        import time
+                        model_start_time = time.time()
+                        track_count = 0
+                        analysis_updates = 0
+                        analysis_subquery = None  # Defined here so prediction block can use it
+
+                        try:
+                            from sqlalchemy import select
+
+                            # Use subquery instead of loading all IDs into Python
+                            # SQLite can optimize this much better than a massive IN list
+                            analysis_subquery = (
+                                select(AnalysisResult.id)
+                                .where(AnalysisResult.model == model_name)
+                            )
+
+                            # Check if there are any analyses for this model
+                            analysis_count = session.query(AnalysisResult.id).filter(
+                                AnalysisResult.model == model_name
+                            ).count()
+
+                            if analysis_count == 0:
+                                continue
+
+                            # Bulk update sigma_threshold for all tracks of this model
+                            result1 = session.execute(
+                                update(TrackResult)
+                                .where(TrackResult.analysis_id.in_(analysis_subquery))
+                                .values(sigma_threshold=new_threshold)
+                            )
+                            track_count = result1.rowcount  # Get count from UPDATE result
+
+                            # Bulk update sigma_pass based on threshold comparison
+                            # sigma_pass = True if sigma_gradient <= threshold, else False
+                            session.execute(
+                                update(TrackResult)
+                                .where(
+                                    and_(
+                                        TrackResult.analysis_id.in_(analysis_subquery),
+                                        TrackResult.sigma_gradient.isnot(None)
+                                    )
+                                )
+                                .values(
+                                    sigma_pass=case(
+                                        (TrackResult.sigma_gradient <= new_threshold, True),
+                                        else_=False
+                                    )
+                                )
+                            )
+
+                            # OPTIMIZATION 2: Bulk update track status based on sigma_pass and linearity_pass
+                            # Status = PASS if both pass, FAIL if both fail, WARNING otherwise
+                            # NOTE: Use .name (not .value) for SQLite - SQLAlchemy stores enum NAME not value
+                            session.execute(
+                                update(TrackResult)
+                                .where(TrackResult.analysis_id.in_(analysis_subquery))
+                                .values(
+                                    status=case(
+                                        # Both pass -> PASS
+                                        (and_(
+                                            TrackResult.sigma_pass == True,
+                                            TrackResult.linearity_pass == True
+                                        ), StatusType.PASS.name),
+                                        # Both fail -> FAIL
+                                        (and_(
+                                            TrackResult.sigma_pass == False,
+                                            TrackResult.linearity_pass == False
+                                        ), StatusType.FAIL.name),
+                                        # Mixed -> WARNING
+                                        else_=StatusType.WARNING.name
+                                    )
+                                )
+                            )
+
+                            # Track count already captured from first UPDATE rowcount
+                            counts['updated'] += track_count
+                            models_updated.add(model_name)
+
+                        except Exception as e:
+                            logger.warning(f"Error in bulk update for {model_name}: {e}")
+                            session.rollback()
+                            counts['errors'] += 1
+                            continue  # Skip remaining steps for this model
+
+                        # OPTIMIZATION 3: Update analysis overall_status in bulk using subqueries
+                        # This is faster than iterating over each analysis
+                        try:
+                            from sqlalchemy import func, exists
+                            from sqlalchemy.orm import aliased
+
+                            # Update analyses that have any ERROR tracks -> ERROR
+                            # NOTE: Use .name (not .value) - SQLAlchemy stores enum NAME
+                            result = session.execute(
+                                update(AnalysisResult)
+                                .where(AnalysisResult.model == model_name)
+                                .where(
+                                    exists(
+                                        select(TrackResult.id)
+                                        .where(TrackResult.analysis_id == AnalysisResult.id)
+                                        .where(TrackResult.status == StatusType.ERROR.name)
+                                    )
+                                )
+                                .values(overall_status=StatusType.ERROR.name)
+                            )
+                            analysis_updates += result.rowcount
+
+                            # Update analyses that have FAIL but no ERROR -> FAIL
+                            result = session.execute(
+                                update(AnalysisResult)
+                                .where(AnalysisResult.model == model_name)
+                                .where(~exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.ERROR.name)
+                                ))
+                                .where(exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.FAIL.name)
+                                ))
+                                .values(overall_status=StatusType.FAIL.name)
+                            )
+                            analysis_updates += result.rowcount
+
+                            # Update analyses that have WARNING but no ERROR/FAIL -> WARNING
+                            result = session.execute(
+                                update(AnalysisResult)
+                                .where(AnalysisResult.model == model_name)
+                                .where(~exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.ERROR.name)
+                                ))
+                                .where(~exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.FAIL.name)
+                                ))
+                                .where(exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status == StatusType.WARNING.name)
+                                ))
+                                .values(overall_status=StatusType.WARNING.name)
+                            )
+                            analysis_updates += result.rowcount
+
+                            # Update remaining analyses (all tracks PASS) -> PASS
+                            result = session.execute(
+                                update(AnalysisResult)
+                                .where(AnalysisResult.model == model_name)
+                                .where(~exists(
+                                    select(TrackResult.id)
+                                    .where(TrackResult.analysis_id == AnalysisResult.id)
+                                    .where(TrackResult.status.in_([
+                                        StatusType.ERROR.name, StatusType.FAIL.name, StatusType.WARNING.name
+                                    ]))
+                                ))
+                                .values(overall_status=StatusType.PASS.name)
+                            )
+                            analysis_updates += result.rowcount
+
+                        except Exception as e:
+                            logger.warning(f"Error updating analysis status for {model_name}: {e}")
+                            session.rollback()
+                            continue  # Skip remaining steps for this model
+
+                        # OPTIMIZATION 3.5: Update failure_probability using ML predictor
+                        predictor = self.predictors.get(model_name)
+                        if predictor and predictor.is_trained and analysis_subquery is not None:
+                            try:
+                                # Load tracks with features needed for prediction
+                                tracks = (
+                                    session.query(
+                                        TrackResult.id,
+                                        TrackResult.sigma_gradient,
+                                        TrackResult.final_linearity_error_shifted,
+                                        TrackResult.linearity_fail_points,
+                                        TrackResult.optimal_offset,
+                                        TrackResult.linearity_spec,
+                                    )
+                                    .filter(TrackResult.analysis_id.in_(analysis_subquery))
+                                    .filter(TrackResult.sigma_gradient.isnot(None))
+                                    .all()
+                                )
+
+                                # PERF FIX: build mappings list and use bulk_update_mappings
+                                # instead of one UPDATE per track. The old per-row loop
+                                # could take >1 hour for 80K+ tracks across 200+ models.
+                                update_mappings = []
+                                for track in tracks:
+                                    sigma = track.sigma_gradient or 0.0
+                                    lin_error = abs(track.final_linearity_error_shifted or 0.0)
+                                    lin_spec = track.linearity_spec or 0.01
+                                    features = {
+                                        'sigma_gradient': sigma,
+                                        'linearity_error': lin_error,
+                                        'fail_points': track.linearity_fail_points or 0,
+                                        'optimal_offset': track.optimal_offset or 0.0,
+                                        'linearity_spec': lin_spec,
+                                        'sigma_to_spec': sigma / lin_spec if lin_spec > 0 else 0.0,
+                                        'error_to_spec': lin_error / lin_spec if lin_spec > 0 else 0.0,
+                                    }
+                                    prob = predictor.predict_failure_probability(features)
+                                    if prob is not None:
+                                        update_mappings.append({
+                                            'id': track.id,
+                                            'failure_probability': prob,
+                                        })
+
+                                prediction_count = len(update_mappings)
+                                if update_mappings:
+                                    # bulk_update_mappings issues a single UPDATE statement
+                                    # batched on the driver side - dramatically faster than
+                                    # individual UPDATE-WHERE-id calls.
+                                    session.bulk_update_mappings(TrackResult, update_mappings)
+
+                                logger.info(f"Updated {prediction_count} failure predictions for {model_name}")
+
+                            except Exception as e:
+                                logger.warning(f"Error updating failure predictions for {model_name}: {e}")
+
+                        # OPTIMIZATION 4: Drift detection - only load detection-period tracks
+                        if run_drift_detection and detector and detector.has_baseline:
+                            try:
+                                # Only get tracks AFTER baseline cutoff date
+                                cutoff_date = detector.baseline_cutoff_date
+
+                                if cutoff_date:
+                                    detection_tracks = (
+                                        session.query(TrackResult.sigma_gradient, AnalysisResult.id)
+                                        .join(AnalysisResult)
+                                        .filter(AnalysisResult.model == model_name)
+                                        .filter(AnalysisResult.file_date > cutoff_date)
+                                        .filter(TrackResult.sigma_gradient.isnot(None))
+                                        .order_by(AnalysisResult.file_date)
+                                        .all()
+                                    )
+
+                                    # Reset detector before running on detection period
+                                    detector.reset()
+
+                                    # Run drift detection only on detection-period samples
+                                    for sigma, analysis_id in detection_tracks:
+                                        drift_result = detector.detect(sigma)
+
+                                        # Only create alert on first detection per model
+                                        if drift_result.is_drifting and drift_result.message:
+                                            # Check if we already logged this drift
+                                            if model_name not in [a['model'] for a in counts['drift_alerts']]:
+                                                counts['drift_alerts'].append({
+                                                    'model': model_name,
+                                                    'direction': drift_result.direction.value,
+                                                    'severity': drift_result.severity,
+                                                })
+
+                                                # Persist drift alert to DB
+                                                try:
+                                                    # Map float severity (0-1) to string category
+                                                    if drift_result.severity >= 0.75:
+                                                        severity_str = "Critical"
+                                                    elif drift_result.severity >= 0.5:
+                                                        severity_str = "High"
+                                                    elif drift_result.severity >= 0.25:
+                                                        severity_str = "Medium"
+                                                    else:
+                                                        severity_str = "Low"
+
+                                                    alert = QAAlert(
+                                                        analysis_id=analysis_id,
+                                                        alert_type=AlertType.DRIFT_DETECTED,
+                                                        severity=severity_str,
+                                                        message=drift_result.message,
+                                                        metric_name="sigma_gradient",
+                                                        metric_value=drift_result.cusum_value,
+                                                    )
+                                                    session.add(alert)
+                                                except Exception as e:
+                                                    logger.warning(f"Failed to persist drift alert: {e}")
+
+                            except Exception as e:
+                                logger.warning(f"Error in drift detection for {model_name}: {e}")
+
+                        # Commit after each model to avoid holding locks too long
+                        session.commit()
+
+                        # Log completion with timing and counts for verification
+                        model_elapsed = time.time() - model_start_time
+                        logger.info(
+                            f"Apply complete for {model_name}: "
+                            f"{track_count} tracks, {analysis_updates} analyses updated "
+                            f"in {model_elapsed:.1f}s"
+                        )
+
+                        if progress_callback:
+                            progress_callback(ApplyProgress(
+                                records_complete=model_idx + 1,
+                                records_total=total_models,
+                                models_updated=len(models_updated),
+                                message=f"Completed {model_name}: {track_count} tracks, {analysis_updates} analyses ({model_elapsed:.1f}s)"
+                            ))
+
+                    # Save updated drift state using the existing session to
+                    # avoid opening a nested session on the StaticPool connection
+                    self._save_state_to_db(existing_session=session)
+                    session.commit()
 
         except Exception as e:
             logger.exception(f"Error applying ML to database: {e}")
@@ -994,12 +997,18 @@ class MLManager:
             logger.error(f"Error loading ML state: {e}")
             return False
 
-    def _save_state_to_db(self) -> None:
-        """Save ML state to database model_ml_state table."""
+    def _save_state_to_db(self, existing_session=None) -> None:
+        """Save ML state to database model_ml_state table.
+
+        Args:
+            existing_session: If provided, use this session instead of opening
+                a new one.  The caller is responsible for committing.  When
+                *not* provided the method opens (and commits) its own session.
+        """
         try:
             from laser_trim_analyzer.database.models import ModelMLState
 
-            with self.db.session() as session:
+            def _do_save(session):
                 for model_name in self.trained_models:
                     # Get or create state record
                     state = session.query(ModelMLState).filter(
@@ -1083,8 +1092,16 @@ class MLManager:
                         state.drift_start_date = detector.drift_start_date
                         state.samples_since_baseline = detector.samples_since_baseline
 
-                session.commit()
-                logger.info(f"Saved ML state for {len(self.trained_models)} models to database")
+            if existing_session is not None:
+                # Use caller's session -- caller is responsible for commit
+                _do_save(existing_session)
+            else:
+                # Open our own session and commit
+                with self.db.session() as session:
+                    _do_save(session)
+                    session.commit()
+
+            logger.info(f"Saved ML state for {len(self.trained_models)} models to database")
 
         except Exception as e:
             logger.error(f"Error saving ML state to database: {e}")
