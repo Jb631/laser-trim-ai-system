@@ -897,6 +897,7 @@ class FinalTestTrack(Base):
     # Raw data for overlay chart (JSON arrays)
     position_data = Column(SafeJSON, nullable=True)  # Array of position values
     error_data = Column(SafeJSON, nullable=True)  # Array of error values
+    theory_data = Column(SafeJSON, nullable=True)  # Array of theoretical output values
     electrical_angle_data = Column(SafeJSON, nullable=True)  # For alignment with trim data
     upper_limits = Column(SafeJSON, nullable=True)  # Spec limits
     lower_limits = Column(SafeJSON, nullable=True)

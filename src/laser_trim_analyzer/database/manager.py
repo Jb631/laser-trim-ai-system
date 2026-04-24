@@ -667,6 +667,16 @@ class DatabaseManager:
                     logger.warning(f"test_volts migration warning: {e}")
                 session.rollback()
 
+            # Migration: Add theory_data to final_test_tracks for slope optimization
+            try:
+                session.execute(text("ALTER TABLE final_test_tracks ADD COLUMN theory_data TEXT"))
+                session.commit()
+                logger.info("Migration: Added theory_data column to final_test_tracks")
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.warning(f"ft theory_data migration: {e}")
+                session.rollback()
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -3620,6 +3630,7 @@ class DatabaseManager:
                             linearity_fail_points=track_data.get("linearity_fail_points", 0),
                             position_data=position_values,
                             error_data=track_data.get("errors"),
+                            theory_data=track_data.get("theory_values"),
                             electrical_angle_data=track_data.get("electrical_angles"),
                             upper_limits=track_data.get("upper_limits"),
                             lower_limits=track_data.get("lower_limits"),
@@ -4304,6 +4315,7 @@ class DatabaseManager:
                         # Use position_data if available, fall back to electrical_angle_data
                         "positions": t.position_data or t.electrical_angle_data or [],
                         "errors": t.error_data or [],
+                        "theory_data": t.theory_data,
                         "electrical_angles": t.electrical_angle_data or [],
                         "upper_limits": t.upper_limits or [],
                         "lower_limits": t.lower_limits or [],
@@ -4719,6 +4731,7 @@ class DatabaseManager:
                             linearity_fail_points=track_data.get("linearity_fail_points", 0),
                             position_data=position_values,
                             error_data=track_data.get("errors"),
+                            theory_data=track_data.get("theory_values"),
                             electrical_angle_data=track_data.get("electrical_angles"),
                             upper_limits=track_data.get("upper_limits"),
                             lower_limits=track_data.get("lower_limits"),

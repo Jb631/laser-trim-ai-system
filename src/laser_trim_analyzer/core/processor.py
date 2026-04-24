@@ -368,6 +368,11 @@ class Processor:
                         "travel_length": max(positions) - min(positions) if positions else 1.0,
                         "linearity_spec": track.get("linearity_spec") or 0.01,
                     }
+                    # Pass theory_values so the analyzer can run slope optimization
+                    # (adjusted = error + theory * k + offset)
+                    theory_vals = track.get("theory_values")
+                    if theory_vals:
+                        track_dict["theory_volts"] = theory_vals
                     track_dict["exclude_points"] = ft_spec["exclude_points"]
                     track_result = self.analyzer.analyze_track(
                         track_dict,
