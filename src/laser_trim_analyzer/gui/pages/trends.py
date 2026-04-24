@@ -560,6 +560,7 @@ class TrendsPage(ctk.CTkFrame):
         self.ml_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.ml_text.configure(state="disabled")
         self._cached_alert_models = None  # Cache for dialog
+        self._cached_ml_insights = None  # Cache for dialog
         self._update_ml_summary(None)
 
     def _ensure_summary_charts_initialized(self):
@@ -1312,11 +1313,15 @@ class TrendsPage(ctk.CTkFrame):
             logger.debug(f"Could not load heatmap data: {e}")
             heatmap_data = None
 
+        # Load ML insights on background thread (disk I/O for MLManager.load_all)
+        ml_insights = self._get_ml_summary_insights()
+
         # Update UI on main thread
         self.after(0, lambda: self._update_summary_display(
             active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
-            priority_models=priority_models, heatmap_data=heatmap_data
+            priority_models=priority_models, heatmap_data=heatmap_data,
+            ml_insights=ml_insights
         ))
 
     def _load_detail_data(self, db):
@@ -1450,6 +1455,7 @@ class TrendsPage(ctk.CTkFrame):
         recent_days: int = 90,
         priority_models: Optional[List[Dict[str, Any]]] = None,
         heatmap_data: Optional[Dict[str, Any]] = None,
+        ml_insights: Optional[Dict[str, Any]] = None,
     ):
         """Update summary display with loaded data."""
         if not self.winfo_exists():
@@ -1633,7 +1639,7 @@ class TrendsPage(ctk.CTkFrame):
         self._update_heatmap(heatmap_data)
 
         # Update ML summary
-        self._update_ml_summary(alert_models)
+        self._update_ml_summary(alert_models, ml_insights=ml_insights)
 
         # Load drift detection data
         self._refresh_drift_data()
@@ -1917,11 +1923,12 @@ class TrendsPage(ctk.CTkFrame):
         for key in self.detail_stat_labels:
             self.detail_stat_labels[key].configure(text="--", text_color="white")
 
-    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]]):
+    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]], ml_insights: Optional[Dict[str, Any]] = None):
         """Update ML summary text for all models view with ML insights."""
         # Cache for the details dialog
         self._cached_alert_models = alert_models
-        self._cached_ml_insights = self._get_ml_summary_insights()
+        # Use pre-loaded insights (from background thread) or fall back to cached
+        self._cached_ml_insights = ml_insights if ml_insights is not None else self._cached_ml_insights
 
         self.ml_text.configure(state="normal")
         self.ml_text.delete("1.0", "end")
@@ -2038,8 +2045,8 @@ class TrendsPage(ctk.CTkFrame):
         text_widget = ctk.CTkTextbox(main_frame, width=650, height=450)
         text_widget.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Fetch fresh data instead of using potentially stale cache
-        ml_insights = self._get_ml_summary_insights()
+        # Use cached data (loaded on background thread during summary refresh)
+        ml_insights = getattr(self, '_cached_ml_insights', None)
         alert_models = getattr(self, '_cached_alert_models', None)
 
         # Section 1: ML Status Overview
@@ -2318,27 +2325,45 @@ class TrendsPage(ctk.CTkFrame):
 
     def _show_comparative_trends(self):
         """Show comparative pass rate trends for top models."""
-        try:
-            db = get_database()
-            config = get_config()
-            mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
-            if not mps:
-                chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
-                fig = chart.figure
-                fig.clear()
-                ax = fig.add_subplot(111)
-                chart._style_axis(ax)
-                self._draw_empty_state(
-                    ax,
-                    "No MPS models configured.\n\n"
-                    "Go to Settings → Active Models to set your\n"
-                    "MPS (Master Production Schedule) model list.",
-                )
-                chart.canvas.draw_idle()
-                self.status_label.configure(text="No MPS models configured")
-                return
+        config = get_config()
+        mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
+        if not mps:
+            chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
+            fig = chart.figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
+            self._draw_empty_state(
+                ax,
+                "No MPS models configured.\n\n"
+                "Go to Settings → Active Models to set your\n"
+                "MPS (Master Production Schedule) model list.",
+            )
+            chart.canvas.draw_idle()
+            self.status_label.configure(text="No MPS models configured")
+            return
 
-            data = db.get_comparative_model_trends(mps, days_back=self.selected_days, period="week")
+        self.status_label.configure(text="Loading comparative trends...")
+
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                data = db.get_comparative_model_trends(mps, days_back=selected_days, period="week")
+                self.after(0, lambda: self._render_comparative_trends(data))
+            except Exception as e:
+                logger.error(f"Comparative trends error: {e}")
+                self.after(0, lambda: self.status_label.configure(
+                    text=f"Comparative error: {e}"))
+
+        get_thread_manager().start_thread(target=_load, name="comparative-trends")
+
+    def _render_comparative_trends(self, data):
+        """Render comparative trends chart on the main thread."""
+        if not self.winfo_exists():
+            return
+        try:
             if not data:
                 self.status_label.configure(text="No data for comparative trends")
                 return
@@ -2389,14 +2414,40 @@ class TrendsPage(ctk.CTkFrame):
         every model that has a linearity spec (via get_cpk_by_model). This is
         better than silently doing nothing, which was the previous behavior.
         """
-        try:
-            db = get_database()
-            model = self.selected_model.replace(" (inactive)", "")
+        model = self.selected_model.replace(" (inactive)", "")
+        selected_days = self.selected_days
+        self.status_label.configure(text="Loading Cpk trend...")
 
-            # Create the chart view FIRST so that even empty-state messages are visible.
-            # The old code created the chart after the early-return branches, which
-            # meant clicking the tab with "All Models" selected did nothing visible.
-            title = "Cpk by Model" if (not model or model == "All Models") else f"Cpk Trend — {model}"
+        def _load():
+            try:
+                db = get_database()
+                if not model or model == "All Models":
+                    rows = db.get_cpk_by_model(days_back=selected_days)
+                    self.after(0, lambda: self._render_cpk_trend(
+                        model=model, branch="all", rows=rows))
+                else:
+                    spec = db.get_model_spec(model)
+                    trend = None
+                    if spec and spec.get("linearity_spec_pct"):
+                        trend = db.get_cpk_trend_for_model(
+                            model, spec["linearity_spec_pct"],
+                            days_back=selected_days, period="month"
+                        )
+                    self.after(0, lambda: self._render_cpk_trend(
+                        model=model, branch="single", spec=spec, trend=trend))
+            except Exception as e:
+                logger.error(f"Cpk trend error: {e}")
+                self.after(0, lambda: self.status_label.configure(
+                    text=f"Cpk trend error: {e}"))
+
+        get_thread_manager().start_thread(target=_load, name="cpk-trend")
+
+    def _render_cpk_trend(self, model, branch, rows=None, spec=None, trend=None):
+        """Render Cpk trend chart on the main thread."""
+        if not self.winfo_exists():
+            return
+        try:
+            title = "Cpk by Model" if branch == "all" else f"Cpk Trend — {model}"
             chart = self._create_dedicated_chart_view(title)
             fig = chart.figure
             fig.clear()
@@ -2404,8 +2455,7 @@ class TrendsPage(ctk.CTkFrame):
             chart._style_axis(ax)
 
             # Branch 1: "All Models" -> Cpk comparison across every spec'd model.
-            if not model or model == "All Models":
-                rows = db.get_cpk_by_model(days_back=self.selected_days)
+            if branch == "all":
                 if not rows:
                     self._draw_empty_state(
                         ax,
@@ -2439,7 +2489,6 @@ class TrendsPage(ctk.CTkFrame):
                 return
 
             # Branch 2: single model -> time-series Cpk trend.
-            spec = db.get_model_spec(model)
             if not spec or not spec.get("linearity_spec_pct"):
                 self._draw_empty_state(
                     ax,
@@ -2451,9 +2500,6 @@ class TrendsPage(ctk.CTkFrame):
                 self.status_label.configure(text=f"No linearity spec for {model}")
                 return
 
-            trend = db.get_cpk_trend_for_model(
-                model, spec["linearity_spec_pct"], days_back=self.selected_days, period="month"
-            )
             valid = [t for t in (trend or []) if t.get("cpk") is not None]
             if not valid:
                 self._draw_empty_state(
@@ -2485,16 +2531,32 @@ class TrendsPage(ctk.CTkFrame):
 
     def _show_yield_trend(self):
         """Show overall yield trend across all models."""
+        self.status_label.configure(text="Loading yield trend...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                data = db.get_yield_trend(days_back=selected_days, period="week")
+                self.after(0, lambda: self._render_yield_trend(data))
+            except Exception as e:
+                logger.error(f"Yield trend error: {e}")
+                self.after(0, lambda: self.status_label.configure(
+                    text=f"Yield trend error: {e}"))
+
+        get_thread_manager().start_thread(target=_load, name="yield-trend")
+
+    def _render_yield_trend(self, data):
+        """Render yield trend chart on the main thread."""
+        if not self.winfo_exists():
+            return
         try:
-            db = get_database()
-            # Build the chart view first so empty-state messages are visible.
             chart = self._create_dedicated_chart_view("Yield Trend")
             fig = chart.figure
             fig.clear()
             ax = fig.add_subplot(111)
             chart._style_axis(ax)
 
-            data = db.get_yield_trend(days_back=self.selected_days, period="week")
             if not data:
                 self._draw_empty_state(
                     ax,
@@ -2529,10 +2591,26 @@ class TrendsPage(ctk.CTkFrame):
 
     def _show_drift_timeline(self):
         """Show drift detection events as a timeline."""
-        try:
-            db = get_database()
-            events = db.get_drift_events_timeline(days_back=self.selected_days)
+        self.status_label.configure(text="Loading drift timeline...")
+        selected_days = self.selected_days
 
+        def _load():
+            try:
+                db = get_database()
+                events = db.get_drift_events_timeline(days_back=selected_days)
+                self.after(0, lambda: self._render_drift_timeline(events))
+            except Exception as e:
+                logger.error(f"Drift timeline error: {e}")
+                self.after(0, lambda: self.status_label.configure(
+                    text=f"Drift error: {e}"))
+
+        get_thread_manager().start_thread(target=_load, name="drift-timeline")
+
+    def _render_drift_timeline(self, events):
+        """Render drift timeline chart on the main thread."""
+        if not self.winfo_exists():
+            return
+        try:
             chart = self._create_dedicated_chart_view("Drift Detection Timeline")
             # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
             # restored — fig.clear() resets it to matplotlib's default (black
