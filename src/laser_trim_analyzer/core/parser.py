@@ -548,13 +548,38 @@ class ExcelParser:
             if len(errors) > len(positions):
                 errors = errors[:len(positions)]
             elif len(errors) < len(positions):
-                # Truncate positions to match errors — don't pad with fake 0.0 values
-                logger.warning(
-                    f"SANITY: {file_path.name} [{trimmed_sheet}] "
-                    f"error column ({len(errors)} pts) shorter than positions ({len(positions)} pts) "
-                    f"— truncating positions to match"
-                )
-                positions = positions[:len(errors)]
+                # Some files leave the error column blank for trailing rows where
+                # measured and theory are still recorded. Recover those errors as
+                # measured - theory (read raw to distinguish NaN from real 0)
+                # before falling back to truncation.
+                meas_col = columns["measured_volts"]
+                thy_col = columns["theory_volts"]
+                recovered = 0
+                for i in range(len(errors), len(positions)):
+                    row_idx = data_start + i
+                    if row_idx >= len(df):
+                        break
+                    try:
+                        m = df.iloc[row_idx, meas_col]
+                        t = df.iloc[row_idx, thy_col]
+                    except (IndexError, ValueError):
+                        break
+                    if pd.isna(m) or pd.isna(t):
+                        break
+                    errors.append(float(m) - float(t))
+                    recovered += 1
+                if recovered > 0:
+                    logger.info(
+                        f"{file_path.name} [{trimmed_sheet}]: recovered "
+                        f"{recovered} missing error(s) from measured-theory"
+                    )
+                if len(errors) < len(positions):
+                    logger.warning(
+                        f"SANITY: {file_path.name} [{trimmed_sheet}] "
+                        f"error column ({len(errors)} pts) shorter than positions "
+                        f"({len(positions)} pts) — truncating positions to match"
+                    )
+                    positions = positions[:len(errors)]
 
             # Align theory_volts to match positions length
             if theory_volts:

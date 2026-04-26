@@ -474,12 +474,20 @@ class FinalTestParser:
                 else:
                     continue
 
-                # Get measured value (Column A)
+                # Get measured value (Column A) — required for a real data point.
+                # Some files have trailing rows where electrical angle/theory are populated
+                # but no measurement was taken (column A is empty). The pre-calculated error
+                # column then holds (0 − theory) which can be a multi-volt phantom error
+                # and dominates the linearity result. Skip such rows entirely.
                 if df.shape[1] > cols["measured"]:
                     meas = row.iloc[cols["measured"]]
-                    measured_values.append(float(meas) if pd.notna(meas) else 0.0)
+                    if pd.isna(meas):
+                        electrical_angles.pop()
+                        continue
+                    measured_values.append(float(meas))
                 else:
-                    measured_values.append(0.0)
+                    electrical_angles.pop()
+                    continue
 
                 # Get theory value (Column C)
                 if df.shape[1] > cols["theory"]:
@@ -513,6 +521,37 @@ class FinalTestParser:
                 # Use pre-calculated errors from file if available
                 valid_file_errors = [e for e in file_errors if e is not None]
                 n_points = len(electrical_angles)
+
+                # Sanity-flag the file's error column without changing values.
+                # Some files (e.g. 8501, 8186, 8290, 6952b, 8605-2) put
+                # something other than linearity error in column D — a constant
+                # offset, an absolute voltage. Real linearity errors are small
+                # and centered near zero (median |err| well under spec band).
+                # If median |err| > 0.1 AND > 10× the spec band, log a SANITY
+                # warning so the user knows the reported value is suspect.
+                # Values are NOT replaced — production data integrity over
+                # heuristic correction.
+                if valid_file_errors:
+                    abs_errs = sorted(abs(e) for e in valid_file_errors)
+                    median_abs_err = abs_errs[len(abs_errs) // 2]
+                    valid_uppers = [u for u in upper_limits if u is not None]
+                    valid_lowers = [l for l in lower_limits if l is not None]
+                    spec_estimate = None
+                    if valid_uppers and valid_lowers:
+                        spec_estimate = (
+                            sum(valid_uppers) / len(valid_uppers)
+                            - sum(valid_lowers) / len(valid_lowers)
+                        ) / 2
+                    if (median_abs_err > 0.1
+                            and (spec_estimate is None
+                                 or median_abs_err > 10 * spec_estimate)):
+                        logger.warning(
+                            f"SANITY: FT format1 column D may not be errors — "
+                            f"median |file_error|={median_abs_err:.4f} is "
+                            f"{'>10× spec' if spec_estimate else 'large'} "
+                            f"(spec≈{spec_estimate}). Reported linearity_error "
+                            f"is suspect; verify file column layout."
+                        )
 
                 if len(valid_file_errors) >= n_points * 0.9:
                     # Use file errors (replace None with 0)
