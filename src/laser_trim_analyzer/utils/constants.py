@@ -188,6 +188,15 @@ NON_TRIM_FILENAME_PATTERNS: Final[list] = [
     "noise",              # Noise/vibration test files
     "smoothness",         # Output smoothness test files
     "output smooth",      # Alternate smoothness naming
+    "voltage output",     # Voltage Output test files (Shop##__Voltage Output_*)
+]
+
+# Non-trim filename regex patterns (matched on lowercased filename).
+# Use this when a substring check would false-positive on legitimate files
+# (e.g. "vo_" would also match "servo_*"). Patterns are anchored or otherwise
+# made specific.
+NON_TRIM_FILENAME_REGEXES: Final[list] = [
+    r"^vo_\d",            # Voltage Output files: VO_<model>_<sn>_<date>.xlsx
 ]
 
 # Matching parameters for Final Test to Trim linking

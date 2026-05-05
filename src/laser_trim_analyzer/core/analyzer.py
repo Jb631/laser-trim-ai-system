@@ -74,6 +74,35 @@ def format_exclude_points(indices: Set[int]) -> str:
     return ", ".join(ranges)
 
 
+def fill_missing_theory_volts(values: List[Any]) -> List[float]:
+    """Fill None/NaN gaps in a theory voltage series.
+
+    Theory voltages ramp 0V → 10V across a track's positions (potentiometer
+    reference output). Domain rules:
+      - Missing first index  → 0.0  (start of ramp)
+      - Missing last index   → 10.0 (end of ramp)
+      - Missing interior     → linear interpolation between nearest valid neighbours
+    """
+    n = len(values)
+    if n == 0:
+        return []
+
+    def _is_valid(v: Any) -> bool:
+        return v is not None and not (isinstance(v, float) and np.isnan(v))
+
+    work: List[Optional[float]] = [float(v) if _is_valid(v) else None for v in values]
+    if work[0] is None:
+        work[0] = 0.0
+    if work[-1] is None:
+        work[-1] = 10.0
+
+    valid_idx = [i for i, v in enumerate(work) if v is not None]
+    if len(valid_idx) == n:
+        return [v for v in work]  # type: ignore[misc]
+    valid_vals = [work[i] for i in valid_idx]
+    return list(np.interp(np.arange(n), valid_idx, valid_vals))
+
+
 def human_to_exclude_json(text: str) -> Optional[str]:
     """Parse human-friendly '0-2, 48-50' into JSON storage format.
 
@@ -163,6 +192,8 @@ class Analyzer:
         trimmed_resistance = track_data.get("trimmed_resistance")
         measured_electrical_angle = track_data.get("measured_electrical_angle")
         theory_volts = track_data.get("theory_volts")
+        if theory_volts:
+            theory_volts = fill_missing_theory_volts(theory_volts)
         test_volts = track_data.get("test_volts")
         exclude_indices = parse_exclude_points(track_data.get("exclude_points"))
 
@@ -595,12 +626,7 @@ class Analyzer:
         if n == 0:
             return 0.0, 0.0
 
-        # Replace None/NaN in theory_volts with 0.0 (FT parser can produce None)
-        theory_clean = [
-            float(theory_volts[i]) if theory_volts[i] is not None and not (isinstance(theory_volts[i], float) and np.isnan(theory_volts[i]))
-            else 0.0
-            for i in range(n)
-        ]
+        theory_clean = [float(v) for v in theory_volts[:n]]
 
         k_lo, k_hi = k_bounds
         if k_hi - k_lo < 1e-12:

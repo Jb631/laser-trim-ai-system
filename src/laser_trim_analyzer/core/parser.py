@@ -23,7 +23,7 @@ from laser_trim_analyzer.utils.constants import (
     EXCEL_EXTENSIONS,
     FINAL_TEST_SHEET_PATTERNS, FINAL_TEST_ROUT_PREFIX,
     FINAL_TEST_FILENAME_PATTERNS, FINAL_TEST_FOLDER_INDICATORS,
-    TRIM_FILE_INDICATORS, NON_TRIM_FILENAME_PATTERNS,
+    TRIM_FILE_INDICATORS, NON_TRIM_FILENAME_PATTERNS, NON_TRIM_FILENAME_REGEXES,
 )
 
 logger = logging.getLogger(__name__)
@@ -978,6 +978,11 @@ def detect_file_type(file_path: Path) -> str:
     for pattern in NON_TRIM_FILENAME_PATTERNS:
         if pattern in filename_lower:
             logger.info(f"Skipping non-trim file ('{pattern}' in filename): {filename}")
+            return "non_trim"
+
+    for regex in NON_TRIM_FILENAME_REGEXES:
+        if re.search(regex, filename_lower):
+            logger.info(f"Skipping non-trim file (regex '{regex}'): {filename}")
             return "non_trim"
 
     # Check for Rout_ prefix (Format 2 final test)

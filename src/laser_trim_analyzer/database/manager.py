@@ -154,9 +154,12 @@ class DatabaseManager:
         # Thread-local session storage
         self._thread_local = threading.local()
 
-        # Single write lock for thread safety (SQLite is single-writer)
-        # Using one lock instead of separate locks reduces contention
-        self._write_lock = threading.Lock()
+        # Re-entrant DB lock. With StaticPool every thread shares one
+        # underlying SQLite connection, so all session() / cursor.execute
+        # operations must be serialised — not just writes — to avoid
+        # SQLITE_MISUSE from concurrent reads. Re-entrant so existing
+        # nested `with _write_lock: with session():` blocks still work.
+        self._write_lock = threading.RLock()
 
         # Initialize database
         self._init_database()
@@ -695,17 +698,25 @@ class DatabaseManager:
             with db_manager.session() as session:
                 session.add(record)
                 # Auto-commits on success, rolls back on exception
+
+        Acquires the DB lock for the lifetime of the session. With StaticPool
+        every thread shares one underlying SQLite connection, and concurrent
+        cursor.execute calls from different threads trip SQLITE_MISUSE
+        ("bad parameter or other API misuse"). Serialising at the session
+        boundary eliminates that race; reentrant so nested session() blocks
+        and the explicit _write_lock acquisitions still work.
         """
-        session = self._SessionFactory()
-        try:
-            yield session
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Session error: {e}")
-            raise
-        finally:
-            session.close()
+        with self._write_lock:
+            session = self._SessionFactory()
+            try:
+                yield session
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Session error: {e}")
+                raise
+            finally:
+                session.close()
 
     # =========================================================================
     # Analysis Results
