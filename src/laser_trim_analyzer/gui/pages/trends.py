@@ -106,7 +106,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self._trend_type = ctk.CTkSegmentedButton(
             header_frame,
-            values=["Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Trim Difficulty"],
+            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Trim Difficulty"],
             command=self._on_trend_type_changed,
         )
         self._trend_type.set("Standard")
@@ -2325,6 +2325,8 @@ class TrendsPage(ctk.CTkFrame):
             self._show_drift_timeline()
         elif value == "Trim Difficulty":
             self._show_trim_difficulty()
+        elif value == "Priorities":
+            self._show_priorities()
 
     def show_drift_tab(self):
         """Public hook used by the Dashboard's Drift Alerts card to jump
@@ -2935,6 +2937,224 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")
             self.status_label.configure(text=f"Drift error: {e}")
+
+    def _show_priorities(self):
+        """Three-section view that answers the operator's three highest-
+        value questions: where to focus this week, near-miss vs hard-fail
+        breakdown, and where money is being lost. All data already exists
+        in the DB (linearity prioritization, near-miss summary) and config
+        (model_prices, cost_ratio); this just composes them."""
+        self.status_label.configure(text="Loading priorities...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                priorities = db.get_linearity_prioritization(
+                    days_back=selected_days, min_samples=10
+                )
+                near_miss = db.get_near_miss_summary(days_back=selected_days)
+                cfg = get_config()
+                pricing = dict(cfg.active_models.model_prices or {})
+                cost_ratio = float(getattr(cfg.active_models, "cost_ratio", 0.5))
+                self.after(0, lambda p=priorities, nm=near_miss, pr=pricing,
+                              cr=cost_ratio: self._render_priorities(p, nm, pr, cr))
+            except Exception as e:
+                logger.error(f"Priorities load error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Priorities error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="priorities")
+
+    def _render_priorities(self, priorities, near_miss, pricing, cost_ratio):
+        """Render the three-section priorities view on the main thread."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Priorities")
+            chart.clear()
+            fig = chart.figure
+            # Tall figure with 3 stacked subplots, sized to row content.
+            n_focus = min(5, len(priorities or []))
+            n_cost = min(15, sum(1 for p in (priorities or [])
+                                 if pricing.get(p["model"])))
+            target_height = 4.0 + 0.4 * n_focus + 0.35 * n_cost + 2.0
+            fig.set_size_inches(fig.get_size_inches()[0],
+                                 max(8.0, min(18.0, target_height)),
+                                 forward=True)
+            gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.0, 1.4],
+                                   hspace=0.6)
+
+            # ─── Section 1: Focus This Week ─────────────────────────────
+            ax1 = fig.add_subplot(gs[0])
+            chart._style_axis(ax1)
+            ax1.set_title("Focus This Week — Top Priority Models",
+                          loc="left", fontsize=12, fontweight="bold",
+                          color="#ffffff")
+            if not priorities:
+                self._draw_empty_state(ax1, "No priority models in this window")
+            else:
+                top = priorities[:n_focus]
+                lines = []
+                for i, p in enumerate(top, start=1):
+                    rec = p.get("recommendation", "Monitor")
+                    lines.append(
+                        f"{i}. {p['model']:>8}  "
+                        f"fail rate {100 - p['linearity_pass_rate']:>4.1f}%  "
+                        f"({p['failed_units']} fails / {p['total_tracks']} tracks, "
+                        f"{p.get('near_miss_count', 0)} near-miss)\n"
+                        f"     → {rec}"
+                    )
+                ax1.text(0.01, 0.98, "\n".join(lines),
+                         transform=ax1.transAxes, ha="left", va="top",
+                         fontsize=10, color="#dddddd",
+                         family="monospace")
+            ax1.set_xticks([])
+            ax1.set_yticks([])
+            for spine in ax1.spines.values():
+                spine.set_visible(False)
+
+            # ─── Section 2: Near-Miss vs Hard-Fail ──────────────────────
+            ax2 = fig.add_subplot(gs[1])
+            chart._style_axis(ax2)
+            total_failing = (near_miss or {}).get("total_failing", 0)
+            if total_failing == 0:
+                ax2.set_title("Failure Severity — last "
+                              f"{self.selected_days}d",
+                              loc="left", fontsize=12, fontweight="bold",
+                              color="#ffffff")
+                self._draw_empty_state(ax2, "No failing tracks in this window")
+                ax2.set_xticks([])
+                ax2.set_yticks([])
+                for spine in ax2.spines.values():
+                    spine.set_visible(False)
+            else:
+                buckets = near_miss["distribution"]
+                labels = ["1-3 pts\n(near-miss)", "4-10 pts", "11-50 pts",
+                          "50+ pts\n(hard-fail)"]
+                values = [buckets.get("1-3 points", 0),
+                          buckets.get("4-10 points", 0),
+                          buckets.get("11-50 points", 0),
+                          buckets.get("50+ points", 0)]
+                colors = ["#198754", "#fd7e14", "#dc3545", "#6f42c1"]
+                bars = ax2.bar(labels, values, color=colors,
+                                edgecolor="#1a1a1a", linewidth=0.5)
+                for bar, v in zip(bars, values):
+                    pct = (v / total_failing) * 100 if total_failing else 0
+                    ax2.text(bar.get_x() + bar.get_width() / 2,
+                             bar.get_height(),
+                             f"{v}\n({pct:.0f}%)", ha="center", va="bottom",
+                             fontsize=9, color="#dddddd")
+                near_pct = near_miss["near_miss_percent"]
+                hard_pct = near_miss["hard_fail_percent"]
+                ax2.set_title(
+                    f"Failure Severity — {total_failing} failing tracks, "
+                    f"{near_pct:.0f}% near-miss / {hard_pct:.0f}% hard-fail",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax2.set_ylabel("Failing tracks")
+                ax2.tick_params(axis="x", labelsize=9)
+                ax2.grid(True, axis="y", alpha=0.2)
+                # Headroom for the count+percent labels
+                ax2.set_ylim(0, max(values) * 1.25 if max(values) else 1)
+
+            # ─── Section 3: Cost Impact ─────────────────────────────────
+            ax3 = fig.add_subplot(gs[2])
+            chart._style_axis(ax3)
+            with_price = [(p, pricing.get(p["model"])) for p in (priorities or [])
+                          if pricing.get(p["model"])]
+            if not with_price:
+                ax3.set_title("Cost Impact", loc="left", fontsize=12,
+                              fontweight="bold", color="#ffffff")
+                self._draw_empty_state(
+                    ax3,
+                    "No model pricing configured.\n"
+                    "Add prices in Settings → Active Models to see\n"
+                    "estimated scrap cost per model.",
+                )
+                ax3.set_xticks([])
+                ax3.set_yticks([])
+                for spine in ax3.spines.values():
+                    spine.set_visible(False)
+            else:
+                # Estimated cost = failed_units × price × cost_ratio
+                cost_rows = [
+                    {
+                        "model": p["model"],
+                        "failed": p["failed_units"],
+                        "price": price,
+                        "cost": p["failed_units"] * price * cost_ratio,
+                        "near_miss": p.get("near_miss_count", 0),
+                    }
+                    for p, price in with_price
+                    if p["failed_units"] > 0
+                ]
+                cost_rows.sort(key=lambda r: r["cost"], reverse=True)
+                cost_rows = cost_rows[:n_cost]
+                # Reverse so highest cost is at the top of the bar chart
+                cost_rows = list(reversed(cost_rows))
+                models = [r["model"] for r in cost_rows]
+                costs = [r["cost"] for r in cost_rows]
+                # Color bars by what fraction is near-miss (green = lots of
+                # easy wins, red = mostly hard-fail / root cause work).
+                colors_cost = []
+                for r in cost_rows:
+                    if r["failed"] == 0:
+                        colors_cost.append("#888888")
+                    else:
+                        ratio = r["near_miss"] / r["failed"]
+                        if ratio >= 0.5:
+                            colors_cost.append("#198754")  # mostly easy wins
+                        elif ratio >= 0.25:
+                            colors_cost.append("#fd7e14")  # mixed
+                        else:
+                            colors_cost.append("#dc3545")  # mostly hard fail
+                y_pos = list(range(len(models)))
+                ax3.barh(y_pos, costs, color=colors_cost,
+                          edgecolor="#1a1a1a", linewidth=0.5)
+                ax3.set_yticks(y_pos)
+                ax3.set_yticklabels(models, fontsize=9)
+                for i, r in enumerate(cost_rows):
+                    nm_pct = (
+                        (r["near_miss"] / r["failed"]) * 100
+                        if r["failed"] else 0
+                    )
+                    ax3.text(
+                        r["cost"] * 1.01, i,
+                        f"${r['cost']:,.0f}  ·  {r['failed']} fails  ·  "
+                        f"{nm_pct:.0f}% near-miss",
+                        va="center", fontsize=8, color="#cccccc",
+                    )
+                ax3.set_xlabel(
+                    f"Est. scrap cost ($, last {self.selected_days}d, "
+                    f"cost_ratio={cost_ratio:.2f})"
+                )
+                total_cost = sum(c for c in costs)
+                ax3.set_title(
+                    f"Cost Impact — top {len(cost_rows)} models  "
+                    f"(${total_cost:,.0f} total)",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax3.grid(True, axis="x", alpha=0.2)
+                # Generous right margin for the annotation text
+                ax3.set_xlim(0, max(costs) * 1.6 if costs else 1)
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=(
+                    f"Priorities — {len(priorities or [])} models analyzed, "
+                    f"{(near_miss or {}).get('total_failing', 0)} fails"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Priorities render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Priorities error: {e}")
 
     def _show_trim_difficulty(self):
         """Show models ranked by how many laser-trim passes the equipment
