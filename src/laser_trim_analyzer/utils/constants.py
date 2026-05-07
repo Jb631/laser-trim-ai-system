@@ -203,6 +203,14 @@ NON_TRIM_FILENAME_PATTERNS: Final[list] = [
 # made specific.
 NON_TRIM_FILENAME_REGEXES: Final[list] = [
     r"^vo_\d",            # Voltage Output files: VO_<model>_<sn>_<date>.xlsx
+    # Experimental / shop-floor scratch files like:
+    #   0022A.xls, 1050B_FAIL.xls, 73B_PASS.xls, 1054B_131713_FAIL.xls
+    # Pattern: digits + single letter, optional _HHMMSS, optional _PASS|_FAIL.
+    # These trip the FT sheet-pattern heuristic (Sheet1 + content) and
+    # produce ~2000 'Serial cannot be empty' validation errors per batch.
+    # Real trim and FT filenames carry hyphens / spaces / 'sn'/'final'/'Trimmed',
+    # so this anchored pattern won't false-positive on production data.
+    r"^\d+[a-z](_\d{6})?(_(pass|fail))?\.xlsx?$",
 ]
 
 # Matching parameters for Final Test to Trim linking
