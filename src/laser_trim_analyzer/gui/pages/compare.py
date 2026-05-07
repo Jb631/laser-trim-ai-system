@@ -36,7 +36,7 @@ def _clean_limits_for_interp(limits):
     # Forward fill
     last_valid = None
     for i, v in enumerate(clean):
-        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+        if v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v)):
             last_valid = v
         elif last_valid is not None:
             clean[i] = last_valid
@@ -44,7 +44,7 @@ def _clean_limits_for_interp(limits):
     last_valid = None
     for i in range(len(clean) - 1, -1, -1):
         v = clean[i]
-        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+        if v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v)):
             last_valid = v
         elif last_valid is not None:
             clean[i] = last_valid

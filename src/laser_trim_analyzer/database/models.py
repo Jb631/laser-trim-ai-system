@@ -28,8 +28,7 @@ from sqlalchemy import (
     DateTime, Text, ForeignKey, Index, UniqueConstraint,
     Enum, JSON, CheckConstraint, event, TypeDecorator
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, Session, validates
+from sqlalchemy.orm import DeclarativeBase, relationship, Session, validates
 from sqlalchemy.sql import func
 import json as json_lib
 
@@ -124,8 +123,9 @@ class SafeJSON(TypeDecorator):
         return self._get_none_value()
 
 
-# Create base class for all models
-Base = declarative_base()
+# Create base class for all models (SQLAlchemy 2.0+ style)
+class Base(DeclarativeBase):
+    pass
 
 
 class SystemType(PyEnum):

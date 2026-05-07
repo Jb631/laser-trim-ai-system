@@ -129,7 +129,7 @@ class ModelThresholdOptimizer:
         is_pass_raw = np.array(passed).astype(bool)
 
         # Filter out None/NaN sigma values (some models have no sigma data)
-        valid_mask = np.array([v is not None and not (isinstance(v, float) and np.isnan(v))
+        valid_mask = np.array([v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v))
                                for v in sigma_raw])
         if not np.any(valid_mask):
             logger.warning(f"ThresholdOptimizer[{self.model_name}] no valid sigma values, using fallback")
