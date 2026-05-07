@@ -76,6 +76,16 @@ class TrendsPage(ctk.CTkFrame):
         self._summary_charts_initialized = False
         self._detail_charts_initialized = False
 
+        # Generation counter — bumped on every navigation/filter change.
+        # Background loads capture this value at launch and the after()
+        # callbacks discard themselves if a newer load has superseded
+        # them. Without this, a stale _load_summary_data callback fires
+        # AFTER _create_detail_view destroyed _alerts_frame and tries to
+        # create a ChartWidget on the dead frame, raising
+        # _tkinter.TclError "bad window path name". Same pattern as
+        # ComparePage._load_generation.
+        self._load_generation = 0
+
         self._create_ui()
 
     def _create_ui(self):
@@ -566,6 +576,17 @@ class TrendsPage(ctk.CTkFrame):
     def _ensure_summary_charts_initialized(self):
         """Lazily initialize summary view charts - defers matplotlib loading."""
         if self._summary_charts_initialized:
+            return
+
+        # Bail out if the summary frames have been destroyed (e.g. user
+        # navigated to detail mode while a stale callback was queued).
+        # Creating a ChartWidget on a destroyed parent raises
+        # _tkinter.TclError "bad window path name".
+        if (
+            getattr(self, "_alerts_frame", None) is None
+            or not self._alerts_frame.winfo_exists()
+        ):
+            logger.debug("Summary frames missing; skipping chart init")
             return
 
         ChartWidget, ChartStyle = _ensure_chart_module()
@@ -1229,6 +1250,11 @@ class TrendsPage(ctk.CTkFrame):
     def _refresh_data(self):
         """Refresh data from database."""
         self.status_label.configure(text="Loading...")
+        # Bump generation so any in-flight summary/detail load discards
+        # its result when the after() callback fires (the user has
+        # already moved on, possibly destroying the target frames).
+        self._load_generation += 1
+        gen = self._load_generation
         # Capture UI filter values on main thread (tkinter is not thread-safe)
         self._cached_active_only = self.active_only_var.get()
         try:
@@ -1241,25 +1267,27 @@ class TrendsPage(ctk.CTkFrame):
             self._cached_min_fail_rate = 0
         self._cached_element_filter = self._element_filter.get() if hasattr(self, '_element_filter') else "All"
         self._cached_class_filter = self._class_filter.get() if hasattr(self, '_class_filter') else "All"
-        get_thread_manager().start_thread(target=self._load_data, name="trends-load-data")
+        get_thread_manager().start_thread(
+            target=lambda g=gen: self._load_data(g), name="trends-load-data"
+        )
 
-    def _load_data(self):
-        """Load data in background thread."""
+    def _load_data(self, gen: int):
+        """Load data in background thread; gen lets stale callbacks bail."""
         try:
             db = get_database()
 
             if self.selected_model == "All Models":
                 # Summary mode
-                self._load_summary_data(db)
+                self._load_summary_data(db, gen)
             else:
                 # Detail mode
-                self._load_detail_data(db)
+                self._load_detail_data(db, gen)
 
         except Exception as e:
-            logger.error(f"Failed to load trend data: {e}")
+            logger.error(f"Failed to load trend data: {e}", exc_info=True)
             self.after(0, lambda: self._show_error(str(e)))
 
-    def _load_summary_data(self, db):
+    def _load_summary_data(self, db, gen: int = 0):
         """Load data for summary mode."""
         # Get active models config for MPS prioritization
         config = get_config()
@@ -1316,15 +1344,39 @@ class TrendsPage(ctk.CTkFrame):
         # Load ML insights on background thread (disk I/O for MLManager.load_all)
         ml_insights = self._get_ml_summary_insights()
 
-        # Update UI on main thread
-        self.after(0, lambda: self._update_summary_display(
-            active_models, alert_models, model_names, trending_worse,
+        # Update UI on main thread; capture gen so we can discard stale loads
+        self.after(0, lambda g=gen: self._update_summary_display_if_current(
+            g, active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
             priority_models=priority_models, heatmap_data=heatmap_data,
             ml_insights=ml_insights
         ))
 
-    def _load_detail_data(self, db):
+    def _update_summary_display_if_current(self, gen: int, *args, **kwargs):
+        """Apply summary load result only if no newer load has superseded it.
+
+        Without this guard the callback runs even after _create_detail_view
+        has destroyed the summary frames, which makes
+        _ensure_summary_charts_initialized try to instantiate ChartWidget
+        on a dead parent → TclError "bad window path name".
+        """
+        if gen != self._load_generation:
+            return
+        # Defensive: also confirm the page itself is still alive AND the
+        # parent frame the charts will mount into still exists. If the
+        # user has navigated to detail mode in between, the summary
+        # frames are gone even though the gen check above should already
+        # have bailed — this is belt-and-suspenders for unexpected paths.
+        if not self.winfo_exists():
+            return
+        if (
+            getattr(self, "_alerts_frame", None) is None
+            or not self._alerts_frame.winfo_exists()
+        ):
+            return
+        self._update_summary_display(*args, **kwargs)
+
+    def _load_detail_data(self, db, gen: int = 0):
         """Load data for detail mode."""
         # Get active models config for MPS prioritization
         config = get_config()
@@ -1390,11 +1442,25 @@ class TrendsPage(ctk.CTkFrame):
             logger.debug(f"Could not load Cpk: {e}")
             cpk_data = None
 
-        # Update UI on main thread
-        self.after(0, lambda: self._update_detail_display(
-            trend_data, model_alerts, ml_recommendations, model_names, model_stats,
+        # Update UI on main thread; gen lets us discard stale results if
+        # the user switched models or back to All Models in the meantime.
+        self.after(0, lambda g=gen: self._update_detail_display_if_current(
+            g, trend_data, model_alerts, ml_recommendations, model_names, model_stats,
             margin_data=margin_data, model_priority=model_priority, cpk_data=cpk_data
         ))
+
+    def _update_detail_display_if_current(self, gen: int, *args, **kwargs):
+        """Apply detail load result only if not superseded by a newer load."""
+        if gen != self._load_generation:
+            return
+        if not self.winfo_exists():
+            return
+        # Confirm the detail frames the renderer will write into still exist.
+        # _create_summary_view destroys these; running anyway crashes Tk.
+        scatter_frame = getattr(self, "_scatter_frame", None)
+        if scatter_frame is not None and not scatter_frame.winfo_exists():
+            return
+        self._update_detail_display(*args, **kwargs)
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Get ML recommendations for current model using per-model ML system."""
