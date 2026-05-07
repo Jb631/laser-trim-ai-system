@@ -102,12 +102,25 @@ class ThreadManager:
             self._threads = [t for t in self._threads if t.is_alive()]
             return len(self._threads)
 
+    # Threads with these name prefixes get a longer per-thread join timeout
+    # because they perform user-visible work that must finish (writing files
+    # the operator just asked for, persisting batch progress, etc.). 5 s was
+    # killing in-flight `export-model-results` threads mid-write.
+    LONG_RUNNING_THREAD_PREFIXES = (
+        "export-",
+        "settings-execute-cleanup",
+        "settings-import-specs",
+    )
+    LONG_RUNNING_TIMEOUT = 90.0  # seconds
+
     def shutdown(self, timeout: float = 5.0) -> bool:
         """
         Wait for all tracked threads to complete.
 
         Args:
-            timeout: Maximum seconds to wait for each thread
+            timeout: Maximum seconds to wait for each thread.
+                     Threads matching LONG_RUNNING_THREAD_PREFIXES get a
+                     longer grace period regardless of this value.
 
         Returns:
             True if all threads completed, False if timeout occurred
@@ -126,8 +139,19 @@ class ThreadManager:
         all_completed = True
         for thread in threads_to_join:
             if thread.is_alive():
-                logger.debug(f"Waiting for thread '{thread.name}'...")
-                thread.join(timeout=timeout)
+                effective_timeout = timeout
+                if thread.name and any(
+                    thread.name.startswith(prefix)
+                    for prefix in self.LONG_RUNNING_THREAD_PREFIXES
+                ):
+                    effective_timeout = max(timeout, self.LONG_RUNNING_TIMEOUT)
+                    logger.info(
+                        f"Thread '{thread.name}' is long-running, "
+                        f"waiting up to {effective_timeout:.0f}s for it to finish"
+                    )
+                else:
+                    logger.debug(f"Waiting for thread '{thread.name}'...")
+                thread.join(timeout=effective_timeout)
                 if thread.is_alive():
                     logger.warning(f"Thread '{thread.name}' did not complete within timeout")
                     all_completed = False

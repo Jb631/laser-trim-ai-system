@@ -638,9 +638,11 @@ class AnalyzePage(ctk.CTkFrame):
             self.after(0, lambda: self._display_analyses(analyses, models, db_path, record_count))
 
         except Exception as e:
-            logger.error(f"Failed to fetch analyses: {e}")
-            import traceback
-            traceback.print_exc()
+            # exc_info=True keeps the full stack in the rotating log file.
+            # The previous traceback.print_exc() wrote straight to stderr,
+            # which produced "thread errors flashing in the terminal" with
+            # no record in laser_trim.log — impossible to diagnose later.
+            logger.error(f"Failed to fetch analyses: {e}", exc_info=True)
             self.after(0, lambda: self._show_fetch_error(str(e)))
 
     def _display_analyses(self, analyses: List[AnalysisResult], models: List[str],
@@ -806,9 +808,7 @@ class AnalyzePage(ctk.CTkFrame):
             try:
                 self._show_analysis_details(a)
             except Exception as e:
-                logger.error(f"Error showing analysis details: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"Error showing analysis details: {e}", exc_info=True)
                 self._update_metrics(f"Error loading analysis:\n{e}")
                 self.status_text.configure(text="Display Error", text_color="white")
                 self.status_banner.configure(fg_color="#8B0000")
@@ -1570,8 +1570,20 @@ class AnalyzePage(ctk.CTkFrame):
         if not file_path:
             return  # User cancelled
 
-        # Run the heavy DB query + Excel export in a background thread
-        # so the GUI stays responsive.
+        # Disable the button and show status so the user has visible feedback
+        # while the background thread fetches records and writes the workbook.
+        # The previous version dismissed the dialog and ran silently, which
+        # made operators think the export had failed and close the app —
+        # killing the thread before it could finish.
+        original_text = self.export_model_btn.cget("text")
+        self.export_model_btn.configure(state="disabled", text=f"⏳ Exporting {model}…")
+        self._update_metrics(f"Exporting all {model} results to:\n{file_path}\n\nThis can take a minute on large models.")
+        logger.info(f"Starting model export: model={model}, target={file_path}")
+
+        def _restore_button():
+            if self.winfo_exists():
+                self.export_model_btn.configure(state="normal", text=original_text)
+
         def _do_export():
             try:
                 db = get_database()
@@ -1579,12 +1591,18 @@ class AnalyzePage(ctk.CTkFrame):
                 if not model_results:
                     self.after(0, lambda: messagebox.showinfo("No Data", f"No results found for model: {model}"))
                     return
-                default_name = generate_batch_export_filename(model_results, prefix=f"model_{model}")
+                logger.info(f"Model export: fetched {len(model_results)} records for {model}, writing workbook")
                 output_path = export_batch_results(model_results, file_path)
                 logger.info(f"Exported {len(model_results)} results for model {model} to: {output_path}")
+                self.after(0, lambda n=len(model_results), p=output_path: messagebox.showinfo(
+                    "Export Complete",
+                    f"Exported {n} {model} results to:\n{p}"
+                ))
             except Exception as e:
-                logger.error(f"Model export failed: {e}")
-                self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export model results: {e}"))
+                logger.error(f"Model export failed for {model}: {e}", exc_info=True)
+                self.after(0, lambda exc=e: messagebox.showerror("Export Error", f"Failed to export model results: {exc}"))
+            finally:
+                self.after(0, _restore_button)
 
         from laser_trim_analyzer.utils.threads import get_thread_manager
         get_thread_manager().start_thread(_do_export, name="export-model-results")
