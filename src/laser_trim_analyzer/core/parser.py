@@ -915,8 +915,11 @@ class ExcelParser:
                     # NaN guard that conservatively treats NaN as a fail point.
                     data.append(float('nan'))
                     consecutive_nan += 1
-                    # If we have too many consecutive NaN, we've hit the end of data
-                    if consecutive_nan > 10:
+                    # 10+ consecutive NaN means end of data; trim them so they
+                    # don't get counted as fail points past the real signal.
+                    # Trigger at >= 10 so 10-trailing-NaN runs are also trimmed
+                    # (was > 10, which left up to 10 NaN values in the array).
+                    if consecutive_nan >= 10:
                         # Remove the trailing NaN placeholders
                         data = data[:-consecutive_nan]
                         break

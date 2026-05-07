@@ -636,7 +636,14 @@ class Analyzer:
         if n == 0:
             return 0.0, 0.0
 
-        theory_clean = [float(v) for v in theory_volts[:n]]
+        # NaN in the theory column would propagate into the objective via
+        # `error + theory * k + offset`, masking violations (NaN > limit is
+        # False) and producing a NaN-corrupted max_err.  Replace with 0.0
+        # at those points so rotation is effectively skipped there.
+        theory_clean = [
+            (float(v) if v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v)) else 0.0)
+            for v in theory_volts[:n]
+        ]
 
         k_lo, k_hi = k_bounds
         if k_hi - k_lo < 1e-12:

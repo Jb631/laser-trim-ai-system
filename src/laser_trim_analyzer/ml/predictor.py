@@ -31,6 +31,13 @@ from sklearn.preprocessing import StandardScaler
 logger = logging.getLogger(__name__)
 
 
+def _class_label_is_failure(label: Any) -> bool:
+    """Return True when a classifier class label represents a failure."""
+    if isinstance(label, str):
+        return label.strip().lower() in {"1", "true", "fail", "failed", "failure"}
+    return bool(label == 1 or label is True)
+
+
 # Feature columns used for prediction
 FEATURE_COLUMNS = [
     'sigma_gradient',
@@ -351,7 +358,7 @@ class ModelPredictor:
             proba = self.classifier.predict_proba(X_scaled)
             if proba.shape[1] == 1:
                 # Single class in training data — return probability matching that class
-                return 1.0 if self.classifier.classes_[0] else 0.0
+                return 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
             return float(proba[0, 1])
 
         except Exception as e:
@@ -393,7 +400,7 @@ class ModelPredictor:
 
             if proba.shape[1] == 1:
                 # Single class in training data
-                val = 1.0 if self.classifier.classes_[0] else 0.0
+                val = 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
                 return [val] * len(features_list)
 
             return [float(p) for p in proba[:, 1]]
@@ -431,7 +438,7 @@ class ModelPredictor:
             # Handle single-class models
             # classes_[0] == 1 (fail) → probability 1.0; classes_[0] == 0 (pass) → 0.0
             if len(self.classifier.classes_) == 1:
-                val = 1.0 if self.classifier.classes_[0] else 0.0
+                val = 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
                 return val, val, val
 
             # Get predictions from all trees
@@ -440,7 +447,9 @@ class ModelPredictor:
                 tp = tree.predict_proba(X_scaled)
                 if tp.shape[1] == 1:
                     # Tree saw only one class
-                    tree_predictions.append(1.0 if self.classifier.classes_[0] else 0.0)
+                    tree_predictions.append(
+                        1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
+                    )
                 else:
                     tree_predictions.append(tp[0, 1])
             tree_predictions = np.array(tree_predictions)
@@ -688,6 +697,9 @@ def _add_spec_features(features: dict, model: str) -> dict:
             features["element_type_code"] = element_map.get(etype, 0)
 
     except Exception:
-        pass  # Specs not available
+        # Specs may not be available for every model; failing to enrich
+        # silently degrades ML accuracy without leaving a trail. Logging at
+        # debug level keeps it observable without being noisy.
+        logger.debug("Spec feature enrichment failed", exc_info=True)
 
     return features

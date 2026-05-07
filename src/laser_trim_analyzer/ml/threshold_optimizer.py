@@ -271,7 +271,10 @@ class ModelThresholdOptimizer:
         # Calculate weights from severity
         if fail_points is not None:
             fail_weights = fail_points[~is_pass]
-            # Normalize weights to [1, 3] range
+            # Strip NaN before computing max — a NaN max() poisons every
+            # subsequent op (cumsum, searchsorted) and yields a garbage
+            # threshold for any model with NULL fail_points in DB.
+            fail_weights = np.nan_to_num(fail_weights, nan=0.0)
             max_fp = fail_weights.max() if len(fail_weights) > 0 and fail_weights.max() > 0 else 1
             fail_weights = 1 + 2 * (fail_weights / max_fp)
         else:

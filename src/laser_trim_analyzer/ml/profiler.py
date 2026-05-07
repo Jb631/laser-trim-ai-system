@@ -180,7 +180,16 @@ class ModelProfiler:
             valid_mask = data['linearity_pass'].notna() & data['sigma_pass'].notna()
             valid_data = data[valid_mask]
             if len(valid_data) > 0:
-                both_pass = valid_data['linearity_pass'].astype(bool) & valid_data['sigma_pass'].astype(bool)
+                # Coerce booleans safely. astype(bool) on a string Series turns
+                # 'False' into True (any non-empty string is truthy), which
+                # would silently flip every failed unit to passing.
+                truthy_map = {True: True, False: False, 1: True, 0: False,
+                              '1': True, '0': False,
+                              'True': True, 'False': False,
+                              'true': True, 'false': False}
+                lin = valid_data['linearity_pass'].map(truthy_map).fillna(False).astype(bool)
+                sig = valid_data['sigma_pass'].map(truthy_map).fillna(False).astype(bool)
+                both_pass = lin & sig
                 profile.pass_rate = float(both_pass.mean())
                 profile.fail_rate = 1.0 - profile.pass_rate
 
