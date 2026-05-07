@@ -892,7 +892,8 @@ class DatabaseManager:
         self,
         model: Optional[str] = None,
         days_back: int = 30,
-        limit: int = 1000
+        limit: int = 1000,
+        light_load: bool = False,
     ) -> List[AnalysisResult]:
         """
         Get historical analysis data with optional filtering.
@@ -904,15 +905,35 @@ class DatabaseManager:
             model: Filter by model number (optional)
             days_back: How many days back to query (based on trim date)
             limit: Maximum number of results
+            light_load: When True, skip per-track JSON-blob columns
+                (position_data, error_data, upper/lower limits, theory_data,
+                test_volts, untrimmed_positions/errors). Use this for the
+                Excel summary export which only needs scalar metrics —
+                deferring the blobs cuts reconstruction time roughly 5–10×
+                on a multi-GB database.
 
         Returns:
             List of AnalysisResult objects sorted by trim date (newest first)
         """
         with self.session() as session:
+            tracks_loader = joinedload(DBAnalysisResult.tracks)
+            if light_load:
+                # SafeJSON columns are the bulk of track_results size and
+                # decode work. The summary export never reads them, so
+                # defer() them — Pydantic TrackData declares them Optional,
+                # so None is a legal value end-to-end.
+                tracks_loader = tracks_loader.defer(
+                    DBTrackResult.position_data,
+                    DBTrackResult.error_data,
+                    DBTrackResult.upper_limits,
+                    DBTrackResult.lower_limits,
+                    DBTrackResult.theory_data,
+                    DBTrackResult.test_volts,
+                    DBTrackResult.untrimmed_positions,
+                    DBTrackResult.untrimmed_errors,
+                )
             # Use joinedload to fetch tracks in single query (avoids N+1)
-            query = session.query(DBAnalysisResult).options(
-                joinedload(DBAnalysisResult.tracks)
-            )
+            query = session.query(DBAnalysisResult).options(tracks_loader)
 
             # Filter by trim date (file_date), not processing date (timestamp)
             cutoff_date = datetime.now() - timedelta(days=days_back)

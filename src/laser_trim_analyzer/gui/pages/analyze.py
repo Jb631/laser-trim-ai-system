@@ -1587,7 +1587,12 @@ class AnalyzePage(ctk.CTkFrame):
         def _do_export():
             try:
                 db = get_database()
-                model_results = db.get_historical_data(model=model, days_back=36500, limit=10000)
+                # light_load skips per-track JSON blob columns (position/error/
+                # limit arrays) which the summary export never reads — major
+                # speedup on a 1 GB+ database.
+                model_results = db.get_historical_data(
+                    model=model, days_back=36500, limit=10000, light_load=True
+                )
                 if not model_results:
                     self.after(0, lambda: messagebox.showinfo("No Data", f"No results found for model: {model}"))
                     return
