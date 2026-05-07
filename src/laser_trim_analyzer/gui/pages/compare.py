@@ -1083,6 +1083,7 @@ Match: {method_label} ({confidence_str})"""
     def _on_filter_change(self, *args):
         """Handle filter changes."""
         self._current_page = 0
+        self._selected_ids.clear()  # Clear stale selections from previous filter
         self._load_comparisons()
 
     def _update_fix_progress(self, current: int, total: int, item_type: str = "Final Test"):
@@ -1209,27 +1210,31 @@ Match: {method_label} ({confidence_str})"""
                             continue
 
                     try:
-                        # First try parsing as Final Test (some "Trim" records point to FT files)
+                        # Try Trim processor first — this is a trim record so
+                        # the file is most likely a trim file.
+                        analysis = trim_processor.process_file(file_path)
+                        if analysis and analysis.tracks:
+                            if db.update_trim_tracks(record["id"], analysis.tracks):
+                                fixed_trim += 1
+                                continue
+                            else:
+                                failed_trim += 1
+                                continue
+
+                        # Only fall back to FT parsing if trim processing
+                        # returned no tracks (some "Trim" records genuinely
+                        # point to FT files due to mis-classification)
                         ft_result = ft_parser.parse_file(file_path)
                         ft_tracks = ft_result.get("tracks", [])
 
                         if ft_tracks:
-                            # Convert FT track format to TrackResult format
                             track_data = db.update_trim_tracks_from_final_test(record["id"], ft_tracks)
                             if track_data:
                                 fixed_trim += 1
                                 continue
 
-                        # Fall back to Trim processor
-                        analysis = trim_processor.process_file(file_path)
-                        if analysis and analysis.tracks:
-                            if db.update_trim_tracks(record["id"], analysis.tracks):
-                                fixed_trim += 1
-                            else:
-                                failed_trim += 1
-                        else:
-                            logger.warning(f"No tracks from re-processing {record.get('filename')}")
-                            failed_trim += 1
+                        logger.warning(f"No tracks from re-processing {record.get('filename')}")
+                        failed_trim += 1
                     except Exception as e:
                         logger.error(f"Error fixing Trim {record.get('filename')}: {e}")
                         failed_trim += 1

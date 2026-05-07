@@ -1155,30 +1155,37 @@ class DashboardPage(ctk.CTkFrame):
         if not file_path:
             return
 
-        try:
-            from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.export.excel import export_executive_summary
+        # Run DB queries + Excel export in background thread so the
+        # dashboard stays responsive during large exports.
+        pricing = self.app.config.active_models.model_prices
+        cost_ratio = self.app.config.active_models.cost_ratio
 
-            db = get_database()
-            stats = db.get_dashboard_stats(days_back=90)
-            priority_models = db.get_linearity_prioritization(days_back=90, min_samples=10)
-            near_miss_data = db.get_near_miss_summary(days_back=90)
-            recommendations = db.get_screening_recommendations(days_back=90)
-            pricing = self.app.config.active_models.model_prices
-            cost_ratio = self.app.config.active_models.cost_ratio
+        def _do_export():
+            try:
+                from laser_trim_analyzer.database import get_database
+                from laser_trim_analyzer.export.excel import export_executive_summary
 
-            output = export_executive_summary(
-                output_path=file_path,
-                stats=stats,
-                priority_models=priority_models,
-                near_miss_data=near_miss_data,
-                recommendations=recommendations,
-                pricing=pricing,
-                cost_ratio=cost_ratio,
-            )
-            messagebox.showinfo("Export Complete", f"Executive summary saved to:\n{output}")
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export:\n{e}")
+                db = get_database()
+                stats = db.get_dashboard_stats(days_back=90)
+                priority_models = db.get_linearity_prioritization(days_back=90, min_samples=10)
+                near_miss_data = db.get_near_miss_summary(days_back=90)
+                recommendations = db.get_screening_recommendations(days_back=90)
+
+                output = export_executive_summary(
+                    output_path=file_path,
+                    stats=stats,
+                    priority_models=priority_models,
+                    near_miss_data=near_miss_data,
+                    recommendations=recommendations,
+                    pricing=pricing,
+                    cost_ratio=cost_ratio,
+                )
+                self.after(0, lambda: messagebox.showinfo("Export Complete", f"Executive summary saved to:\n{output}"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export:\n{e}"))
+
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+        get_thread_manager().start_thread(_do_export, name="export-executive-summary")
 
     def _update_breakdown_charts(
         self,

@@ -171,13 +171,19 @@ FINAL_TEST_FOLDER_INDICATORS: Final[list] = [
 ]
 
 # Trim file detection (things that indicate it's NOT a final test)
+# NOTE: These are checked case-insensitively against both filenames and
+# sheet names.  For filenames, newer LTS files use formats like
+# "8232-1_196_TA_Test Data_5-4-2026_10-48 AM_ResTrimmed Correct.xls"
+# where "Trimmed" appears WITHOUT a leading underscore (e.g. "ResTrimmed",
+# "AMTrimmed").  We match on "Trimmed" (no underscore) so both old-format
+# "_Trimmed" and new-format "ResTrimmed" / "AMTrimmed" are caught.
 TRIM_FILE_INDICATORS: Final[list] = [
     "SEC1 TRK",           # System A multi-track
     "TRK1",               # Track identifiers
     "TRK2",
     "Lin Error",          # System B linearity error sheet
-    "_Trimmed",           # Trimmed file suffix
-    "_Untrimmed",         # Untrimmed file suffix
+    "Trimmed",            # Trimmed file suffix (matches _Trimmed, ResTrimmed, AMTrimmed)
+    "Untrimmed",          # Untrimmed file suffix
 ]
 
 # Non-trim file detection — filename substrings (case-insensitive) that indicate

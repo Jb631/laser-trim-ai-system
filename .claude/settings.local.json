@@ -69,7 +69,22 @@
       "Bash(gh repo:*)",
       "Skill(ralph-loop:ralph-loop)",
       "Bash(/Users/jb631/.claude/plugins/cache/claude-plugins-official/ralph-loop/1.0.0/scripts/setup-ralph-loop.sh:*)",
-      "Skill(ralph-loop:cancel-ralph)"
+      "Skill(ralph-loop:cancel-ralph)",
+      "Bash(mkdir -p /Users/jb631/projects/ai_trader/docs/superpowers/specs)",
+      "Read(//Users/jb631/projects/ai_trader/docs/superpowers/specs/**)",
+      "Bash(grep -E \"EXPERIMENT|overrides|^---|Sortino|Sharpe|Ann\\\\. Ret|Max DD|Win rate|Trades:|FLOORS|PHASE 2|^={20,}|BASELINE|✅|❌|^A[2-3]|^B[1-3]\")",
+      "Bash(grep -E \"flatten_at_close|overnight_size_pct|max_overnight|cooldown_|max_stops_per_symbol\" /Users/jb631/projects/ai_trader/mean_reversion/strategy.py echo \"---final floor check---\" cd /Users/jb631/projects/ai_trader)",
+      "Bash(grep -nE \"^def fetch_universe|fetch_universe\\\\\\(\" /Users/jb631/projects/ai_trader/mean_reversion/data.py /Users/jb631/projects/ai_trader/mean_reversion/run_experiment.py echo \"---fetch_universe signature---\" grep -nA 20 \"^def fetch_universe\" /Users/jb631/projects/ai_trader/mean_reversion/data.py)",
+      "Bash(grep -nB1 -A3 \"model_specs.model ==\\\\|ModelSpec.model ==\\\\|filter.*model.*==\\\\|where.*model.*==\" src/laser_trim_analyzer/database/manager.py)",
+      "Bash(git rev-list *)",
+      "Read(//Users/jb631/projects/laser-trim-ai-system-v5/=== other worktree's data/**)",
+      "Read(//Users/jb631/projects/laser-trim-ai-system/data/**)",
+      "Bash(set -e)",
+      "Bash(rsync -a --ignore-existing __TRACKED_VAR__/Model_cost.xlsx __TRACKED_VAR__/)",
+      "Bash(rsync -a --ignore-existing __TRACKED_VAR__/laser_trim_v4_issue_log.docx __TRACKED_VAR__/)",
+      "Bash(rsync -av --ignore-existing '__TRACKED_VAR__/work files/' '__TRACKED_VAR__/Work Files/')",
+      "Bash(time rsync *)",
+      "Bash(git reset *)"
     ],
     "deny": [],
     "ask": []

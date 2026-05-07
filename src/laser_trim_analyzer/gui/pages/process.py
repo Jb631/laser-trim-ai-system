@@ -577,7 +577,12 @@ class ProcessPage(ctk.CTkFrame):
         if self.is_processing:
             return
 
+        # Set flag AND disable button immediately to prevent double-click race.
+        # The flag check above is not atomic with the set below, so a fast
+        # double-click could slip through.  Disabling the button closes that window.
         self.is_processing = True
+        if hasattr(self, 'process_btn'):
+            self.process_btn.configure(state="disabled")
         # Reset counters - don't accumulate full results in memory for large batches
         self.results = []
         self._result_count = 0

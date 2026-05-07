@@ -175,11 +175,14 @@ class ModelProfiler:
             if len(sigma_pass) > 0:
                 profile.sigma_pass_rate = float(sigma_pass.mean())
 
-        # Overall pass rate (both must pass)
+        # Overall pass rate (both must pass — drop rows where either is NaN)
         if 'linearity_pass' in data.columns and 'sigma_pass' in data.columns:
-            both_pass = data['linearity_pass'] & data['sigma_pass']
-            profile.pass_rate = float(both_pass.mean())
-            profile.fail_rate = 1.0 - profile.pass_rate
+            valid_mask = data['linearity_pass'].notna() & data['sigma_pass'].notna()
+            valid_data = data[valid_mask]
+            if len(valid_data) > 0:
+                both_pass = valid_data['linearity_pass'].astype(bool) & valid_data['sigma_pass'].astype(bool)
+                profile.pass_rate = float(both_pass.mean())
+                profile.fail_rate = 1.0 - profile.pass_rate
 
         # Fail points analysis
         if 'linearity_fail_points' in data.columns:

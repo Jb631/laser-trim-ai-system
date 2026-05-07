@@ -371,7 +371,7 @@ class FinalTestParser:
 
             # Helper function to check if value is numeric (handles numpy types)
             def is_numeric(val):
-                return pd.notna(val) and np.issubdtype(type(val), np.number)
+                return pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating))
 
             # Find data start row (skip any header rows)
             data_start = 0
@@ -673,7 +673,7 @@ class FinalTestParser:
 
             # Helper function to check if value is numeric (handles numpy types)
             def is_numeric(val):
-                return pd.notna(val) and np.issubdtype(type(val), np.number)
+                return pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating))
 
             # Auto-detect data start row
             # Check if row 0 has numeric data in position column
@@ -818,7 +818,7 @@ class FinalTestParser:
             df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
             def is_numeric(val):
-                return pd.notna(val) and np.issubdtype(type(val), np.number)
+                return pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating))
 
             # Find data start row
             data_start = 0
@@ -916,7 +916,7 @@ class FinalTestParser:
             df = pd.read_excel(xl, sheet_name="Parameters", header=None)
 
             def is_numeric(val):
-                return pd.notna(val) and np.issubdtype(type(val), np.number)
+                return pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating))
 
             # Data appears to start at row 0, but first few rows have text in col 0
             # Look for rows where col 4 (position) has numeric increasing values
@@ -1037,7 +1037,7 @@ class FinalTestParser:
             df = pd.read_excel(xl, sheet_name="test", header=None)
 
             def is_numeric(val):
-                return pd.notna(val) and np.issubdtype(type(val), np.number)
+                return pd.notna(val) and isinstance(val, (int, float, np.integer, np.floating))
 
             # Extract metadata from cells
             # Row 0, Col 1: Model number

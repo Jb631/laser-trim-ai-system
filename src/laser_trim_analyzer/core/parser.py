@@ -495,9 +495,23 @@ class ExcelParser:
             trimmed_sheet = None
 
         if trimmed_sheet:
+            # Extract track ID from filename if present.
+            # Newer LTS files embed the track letter: e.g.
+            #   6607_175_TB_Test Data_...  → Track B
+            #   8232-1_196_TA_Test Data_... → Track A
+            import re as _re
+            _track_match = _re.search(
+                r'_T([A-Z])_', file_path.name
+            )
+            sys_b_track_id = (
+                f"Track {_track_match.group(1)}"
+                if _track_match
+                else "default"
+            )
+
             track_data = self._extract_track_data(
                 xl, file_path, trimmed_sheet, untrimmed_sheet,
-                SystemType.B, "default"
+                SystemType.B, sys_b_track_id
             )
             if track_data:
                 tracks.append(track_data)
@@ -640,7 +654,48 @@ class ExcelParser:
                     untrim_start = self._find_data_start(df_untrim, columns["position"])
                     if untrim_start is not None:
                         untrimmed_positions = self._get_column_data(df_untrim, columns["position"], untrim_start)
+                        # Try reading the error column first (without allow_nan
+                        # so we get a clean list of real values only)
                         untrimmed_errors = self._get_column_data(df_untrim, columns["error"], untrim_start)
+
+                        # If the error column is empty or too short, compute
+                        # errors as measured - theory.  Pre-trim sheets often
+                        # have no pre-calculated error column at all.
+                        if len(untrimmed_errors) < len(untrimmed_positions):
+                            meas_col = columns["measured_volts"]
+                            thy_col = columns["theory_volts"]
+                            recovered = []
+                            for idx in range(len(untrimmed_positions)):
+                                row_idx = untrim_start + idx
+                                if row_idx >= len(df_untrim):
+                                    break
+                                try:
+                                    m = df_untrim.iloc[row_idx, meas_col]
+                                    t_val = df_untrim.iloc[row_idx, thy_col]
+                                    if pd.isna(m) or pd.isna(t_val):
+                                        break
+                                    recovered.append(float(m) - float(t_val))
+                                except (IndexError, ValueError):
+                                    break
+                            # Use recovered errors if we got more data than the
+                            # original error column
+                            if len(recovered) > len(untrimmed_errors):
+                                untrimmed_errors = recovered
+                                logger.info(
+                                    f"Recovered {len(recovered)} untrimmed errors "
+                                    f"from measured-theory"
+                                )
+
+                        # Align lengths
+                        if len(untrimmed_errors) > len(untrimmed_positions):
+                            untrimmed_errors = untrimmed_errors[:len(untrimmed_positions)]
+                        elif len(untrimmed_errors) < len(untrimmed_positions):
+                            untrimmed_positions = untrimmed_positions[:len(untrimmed_errors)]
+
+                        # Only keep if we actually got data
+                        if not untrimmed_positions or not untrimmed_errors:
+                            untrimmed_positions = None
+                            untrimmed_errors = None
                     untrimmed_resistance = self._get_cell_from_df(df_untrim, cells["untrimmed_resistance"])
                     # For System B, measured electrical angle is in the "test" (untrimmed)
                     # sheet at K1, not in the trimmed sheet where it reads a spec limit
@@ -819,7 +874,10 @@ class ExcelParser:
         for i in range(min(20, len(df))):
             try:
                 value = df.iloc[i, position_col]
-                if pd.notna(value) and isinstance(value, (int, float)):
+                # Check for numeric types including numpy scalars.
+                # In numpy >= 2.0, np.int64/np.float64 no longer inherit
+                # from Python int/float, so we must also check np.number.
+                if pd.notna(value) and isinstance(value, (int, float, np.integer, np.floating)):
                     return i
             except (IndexError, ValueError):
                 continue
@@ -935,7 +993,10 @@ class ExcelParser:
             # Spec is half the average band width
             avg_upper = np.mean(valid_upper)
             avg_lower = np.mean(valid_lower)
-            return (avg_upper - avg_lower) / 2
+            # abs() guards against inverted limits (upper < lower due to
+            # column ordering in some file formats).  A negative spec would
+            # crash Pydantic validation or invert pass/fail logic.
+            return abs(avg_upper - avg_lower) / 2
 
         return 0.01
 

@@ -11,6 +11,8 @@ for failure prediction (threshold calculation moved to ThresholdOptimizer).
 import logging
 import pickle
 import hashlib
+import hmac
+import socket
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -356,6 +358,50 @@ class ModelPredictor:
             logger.warning(f"Prediction failed for {self.model_name}: {e}")
             return None
 
+    def predict_batch(self, features_list: List[Dict[str, float]]) -> List[Optional[float]]:
+        """
+        Predict failure probability for a batch of tracks at once.
+
+        Much faster than calling predict_failure_probability() in a loop
+        because sklearn's predict_proba handles vectorized input and we
+        only create one DataFrame and one scaler.transform() call.
+
+        Args:
+            features_list: List of feature dicts (same format as predict_failure_probability)
+
+        Returns:
+            List of failure probabilities (0-1), None for any that failed
+        """
+        if not self.is_trained or self.classifier is None or self.scaler is None:
+            return [None] * len(features_list)
+
+        if not features_list:
+            return []
+
+        try:
+            trained_features = list(self.feature_importance.keys())
+
+            # Build one DataFrame for all tracks at once
+            rows = [
+                {col: f.get(col, self.feature_means.get(col, 0)) for col in trained_features}
+                for f in features_list
+            ]
+            X = pd.DataFrame(rows)
+
+            X_scaled = self.scaler.transform(X)
+            proba = self.classifier.predict_proba(X_scaled)
+
+            if proba.shape[1] == 1:
+                # Single class in training data
+                val = 1.0 if self.classifier.classes_[0] else 0.0
+                return [val] * len(features_list)
+
+            return [float(p) for p in proba[:, 1]]
+
+        except Exception as e:
+            logger.warning(f"Batch prediction failed for {self.model_name}: {e}")
+            return [None] * len(features_list)
+
     def predict_with_confidence(
         self,
         features: Dict[str, float]
@@ -383,8 +429,9 @@ class ModelPredictor:
             X_scaled = self.scaler.transform(X)
 
             # Handle single-class models
+            # classes_[0] == 1 (fail) → probability 1.0; classes_[0] == 0 (pass) → 0.0
             if len(self.classifier.classes_) == 1:
-                val = 0.0 if self.classifier.classes_[0] else 1.0
+                val = 1.0 if self.classifier.classes_[0] else 0.0
                 return val, val, val
 
             # Get predictions from all trees
@@ -393,7 +440,7 @@ class ModelPredictor:
                 tp = tree.predict_proba(X_scaled)
                 if tp.shape[1] == 1:
                     # Tree saw only one class
-                    tree_predictions.append(0.0 if self.classifier.classes_[0] else 1.0)
+                    tree_predictions.append(1.0 if self.classifier.classes_[0] else 0.0)
                 else:
                     tree_predictions.append(tp[0, 1])
             tree_predictions = np.array(tree_predictions)
@@ -447,10 +494,10 @@ class ModelPredictor:
             with open(path, 'wb') as f:
                 pickle.dump(data, f)
 
-            # Write hash file for integrity verification on load
-            file_hash = self._compute_file_hash(path)
+            # Write HMAC hash file for tamper-resistant integrity verification
+            file_hmac = self._compute_file_hmac(path)
             hash_path = path.with_suffix('.hash')
-            hash_path.write_text(file_hash)
+            hash_path.write_text(file_hmac)
 
             logger.debug(f"Predictor saved: {self.model_name} -> {path}")
             return True
@@ -459,8 +506,27 @@ class ModelPredictor:
             logger.error(f"Failed to save predictor {self.model_name}: {e}")
             return False
 
+    @staticmethod
+    def _get_hmac_key() -> bytes:
+        """Derive a machine-local HMAC key from hostname + install path.
+
+        This prevents an attacker from crafting a valid .hash file on a
+        different machine because the key is unique to this installation.
+        """
+        identity = f"{socket.gethostname()}:{Path(__file__).resolve().parent}"
+        return hashlib.sha256(identity.encode()).digest()
+
+    def _compute_file_hmac(self, path: Path) -> str:
+        """Compute HMAC-SHA256 of a file for tamper-resistant integrity verification."""
+        key = self._get_hmac_key()
+        mac = hmac.new(key, digestmod=hashlib.sha256)
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                mac.update(chunk)
+        return mac.hexdigest()
+
     def _compute_file_hash(self, path: Path) -> str:
-        """Compute SHA256 hash of a file for integrity verification."""
+        """Legacy SHA256 hash — kept only for detecting old-format .hash files."""
         sha256 = hashlib.sha256()
         with open(path, 'rb') as f:
             for chunk in iter(lambda: f.read(8192), b''):
@@ -483,12 +549,30 @@ class ModelPredictor:
                 logger.warning(f"Predictor file not found: {path}")
                 return False
 
-            # Verify file integrity before loading pickle
+            # Mandatory integrity verification before loading pickle
             hash_path = path.with_suffix('.hash')
-            if hash_path.exists():
-                expected_hash = hash_path.read_text().strip()
-                actual_hash = self._compute_file_hash(path)
-                if expected_hash != actual_hash:
+            if not hash_path.exists():
+                logger.error(
+                    f"Refusing to load predictor without hash file: {path}. "
+                    "Re-train the model to generate a valid hash."
+                )
+                return False
+
+            expected_hash = hash_path.read_text().strip()
+            actual_hmac = self._compute_file_hmac(path)
+
+            if hmac.compare_digest(expected_hash, actual_hmac):
+                # Current HMAC format — good to go
+                pass
+            else:
+                # Check if it's a legacy plain SHA256 hash
+                actual_sha = self._compute_file_hash(path)
+                if expected_hash == actual_sha:
+                    logger.warning(
+                        f"Predictor {path} has legacy SHA256 hash. "
+                        "Will upgrade to HMAC-SHA256 after successful load."
+                    )
+                else:
                     logger.error(f"Predictor file integrity check failed: {path}")
                     logger.error("File may have been corrupted or tampered with")
                     return False
@@ -507,6 +591,15 @@ class ModelPredictor:
             self.feature_means = data['feature_means']
             self.feature_stds = data['feature_stds']
             self.config = data.get('config', self.config)
+
+            # Upgrade legacy SHA256 hash to HMAC-SHA256 on successful load
+            if not hmac.compare_digest(expected_hash, actual_hmac):
+                try:
+                    new_hmac = self._compute_file_hmac(path)
+                    hash_path.write_text(new_hmac)
+                    logger.info(f"Upgraded {path} hash to HMAC-SHA256")
+                except Exception as upgrade_err:
+                    logger.warning(f"Could not upgrade hash for {path}: {upgrade_err}")
 
             logger.debug(f"Predictor loaded: {self.model_name} <- {path}")
             return True

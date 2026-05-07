@@ -177,7 +177,8 @@ class SpecsPage(ctk.CTkFrame):
             # Pipe-separated alternate model numbers that should resolve to
             # this spec. Example: "2001621501 | 1621501-R1"
             ("aliases", "Aliases (pipe-separated)", "entry"),
-            ("exclude_points", "Exclude Points", "entry"),
+            ("exclude_points", "Exclude Points (Trim)", "entry"),
+            ("exclude_points_ft", "Exclude Points (FT)", "entry"),
             ("notes", "Notes", "textbox"),
         ]
 
@@ -207,10 +208,13 @@ class SpecsPage(ctk.CTkFrame):
 
             self._edit_fields[field_name] = (field_type, widget)
 
-        # Set placeholder for exclude_points field
+        # Set placeholder for exclude_points fields
         if "exclude_points" in self._edit_fields:
             _, ep_widget = self._edit_fields["exclude_points"]
             ep_widget.configure(placeholder_text="e.g. 0-2, 48-50")
+        if "exclude_points_ft" in self._edit_fields:
+            _, ep_ft_widget = self._edit_fields["exclude_points_ft"]
+            ep_ft_widget.configure(placeholder_text="e.g. 0-2, 48-50")
 
         # Buttons
         btn_row = len(fields) + 1
@@ -430,14 +434,15 @@ class SpecsPage(ctk.CTkFrame):
                 widget.insert("1.0", value)
 
         # Special handling: convert exclude_points JSON to human-friendly display
-        if "exclude_points" in self._edit_fields:
-            _, ep_widget = self._edit_fields["exclude_points"]
-            ep_widget.delete(0, "end")
-            raw_json = spec.get("exclude_points", "")
-            if raw_json:
-                from laser_trim_analyzer.core.analyzer import parse_exclude_points, format_exclude_points
-                indices = parse_exclude_points(raw_json)
-                ep_widget.insert(0, format_exclude_points(indices))
+        from laser_trim_analyzer.core.analyzer import parse_exclude_points, format_exclude_points
+        for ep_field in ("exclude_points", "exclude_points_ft"):
+            if ep_field in self._edit_fields:
+                _, ep_widget = self._edit_fields[ep_field]
+                ep_widget.delete(0, "end")
+                raw_json = spec.get(ep_field, "")
+                if raw_json:
+                    indices = parse_exclude_points(raw_json)
+                    ep_widget.insert(0, format_exclude_points(indices))
 
     def _add_new(self):
         """Clear edit panel for new model entry."""
@@ -491,11 +496,12 @@ class SpecsPage(ctk.CTkFrame):
             data[field_name] = val
 
         # Convert human-friendly exclude_points to JSON storage format
-        if "exclude_points" in data and data["exclude_points"]:
-            from laser_trim_analyzer.core.analyzer import human_to_exclude_json
-            data["exclude_points"] = human_to_exclude_json(data["exclude_points"])
-        elif "exclude_points" in data:
-            data["exclude_points"] = None
+        from laser_trim_analyzer.core.analyzer import human_to_exclude_json
+        for ep_field in ("exclude_points", "exclude_points_ft"):
+            if ep_field in data and data[ep_field]:
+                data[ep_field] = human_to_exclude_json(data[ep_field])
+            elif ep_field in data:
+                data[ep_field] = None
 
         if not data.get("model"):
             messagebox.showerror("Missing Model", "Model number is required")

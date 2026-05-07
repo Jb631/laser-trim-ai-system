@@ -502,17 +502,18 @@ class AnalyzePage(ctk.CTkFrame):
                             pass
                         return "break"
 
-                    # Bind globally on the dropdown toplevel window
-                    dropdown.bind_all("<MouseWheel>", scroll_dropdown)
-                    dropdown.bind_all("<Button-4>", scroll_dropdown)
-                    dropdown.bind_all("<Button-5>", scroll_dropdown)
+                    # Bind on the dropdown window only (not globally) to avoid
+                    # hijacking mousewheel scrolling in other widgets.
+                    dropdown.bind("<MouseWheel>", scroll_dropdown)
+                    dropdown.bind("<Button-4>", scroll_dropdown)
+                    dropdown.bind("<Button-5>", scroll_dropdown)
 
                     # Clean up when dropdown closes
                     def on_destroy(event):
                         try:
-                            dropdown.unbind_all("<MouseWheel>")
-                            dropdown.unbind_all("<Button-4>")
-                            dropdown.unbind_all("<Button-5>")
+                            dropdown.unbind("<MouseWheel>")
+                            dropdown.unbind("<Button-4>")
+                            dropdown.unbind("<Button-5>")
                         except Exception:
                             pass
 
@@ -1355,9 +1356,14 @@ class AnalyzePage(ctk.CTkFrame):
         self.status_banner.configure(fg_color="#1e3d4d")
 
         # Process in background thread
+        # NOTE: use_ml=False for single-file re-analysis.
+        # Loading 100+ pickle files for ML predictors triggers
+        # enterprise antivirus (pickle deserialization is a known
+        # attack vector).  The core analysis works fine without ML
+        # — ML only adds failure-probability predictions on top.
         def process():
             try:
-                processor = Processor(use_ml=self.app.config.ml.enabled)
+                processor = Processor(use_ml=False)
                 result = processor.process_file(Path(file_path))
 
                 if result is None:
@@ -1553,37 +1559,35 @@ class AnalyzePage(ctk.CTkFrame):
 
         model = self.current_result.metadata.model
 
-        try:
-            # Get all analyses for this model from database
-            db = get_database()
-            model_results = db.get_historical_data(model=model, days_back=36500, limit=10000)
+        # Ask for save location first (must be on main thread)
+        file_path = filedialog.asksaveasfilename(
+            title=f"Export All {model} Results to Excel",
+            defaultextension=".xlsx",
+            initialfile=f"model_{model}_export.xlsx",
+            initialdir=getattr(self.app.config, 'export_path', None),
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if not file_path:
+            return  # User cancelled
 
-            if not model_results:
-                logger.warning(f"No results found for model: {model}")
-                messagebox.showinfo("No Data", f"No results found for model: {model}")
-                return
+        # Run the heavy DB query + Excel export in a background thread
+        # so the GUI stays responsive.
+        def _do_export():
+            try:
+                db = get_database()
+                model_results = db.get_historical_data(model=model, days_back=36500, limit=10000)
+                if not model_results:
+                    self.after(0, lambda: messagebox.showinfo("No Data", f"No results found for model: {model}"))
+                    return
+                default_name = generate_batch_export_filename(model_results, prefix=f"model_{model}")
+                output_path = export_batch_results(model_results, file_path)
+                logger.info(f"Exported {len(model_results)} results for model {model} to: {output_path}")
+            except Exception as e:
+                logger.error(f"Model export failed: {e}")
+                self.after(0, lambda: messagebox.showerror("Export Error", f"Failed to export model results: {e}"))
 
-            # Generate default filename
-            default_name = generate_batch_export_filename(model_results, prefix=f"model_{model}")
-
-            # Ask for save location
-            file_path = filedialog.asksaveasfilename(
-                title=f"Export All {model} Results to Excel",
-                defaultextension=".xlsx",
-                initialfile=default_name,
-                initialdir=getattr(self.app.config, 'export_path', None),
-                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-            )
-
-            if not file_path:
-                return  # User cancelled
-
-            output_path = export_batch_results(model_results, file_path)
-            logger.info(f"Exported {len(model_results)} results for model {model} to: {output_path}")
-
-        except Exception as e:
-            logger.error(f"Model export failed: {e}")
-            messagebox.showerror("Export Error", f"Failed to export model results: {e}")
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+        get_thread_manager().start_thread(_do_export, name="export-model-results")
 
     def _export_chart(self):
         """Export the current chart to an image file with analysis info like V2."""

@@ -224,8 +224,23 @@ class Config:
             "export_path": self.export_path,
         }
 
-        with open(config_path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
+        # Atomic save: write to temp file, then os.replace() so a crash
+        # mid-write never corrupts the config file.
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=config_path.parent, suffix=".tmp", prefix=".config_"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                yaml.dump(data, f, default_flow_style=False)
+            os.replace(tmp_path, config_path)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
         logger.info(f"Saved config to {config_path}")
 

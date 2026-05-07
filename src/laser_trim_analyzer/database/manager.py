@@ -143,10 +143,22 @@ class DatabaseManager:
         )
 
         # Enable WAL mode for better concurrency (allows readers during writes)
+        # Enable foreign key enforcement (SQLite disables it by default!)
         with self._engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.execute(text("PRAGMA busy_timeout=30000"))  # 30 second timeout
+            conn.execute(text("PRAGMA foreign_keys=ON"))
             conn.commit()
+
+        # Foreign keys must be enabled on EVERY connection (SQLite per-connection).
+        # With StaticPool there's only one connection, but add an event listener
+        # as defense-in-depth in case the pool strategy changes later.
+        from sqlalchemy import event
+        @event.listens_for(self._engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
         # Create session factory
         self._SessionFactory = sessionmaker(bind=self._engine)
@@ -284,6 +296,7 @@ class DatabaseManager:
                 # Check if columns exist by attempting a query
                 session.execute(text("SELECT is_anomaly FROM track_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 # Columns don't exist, add them
                 logger.info("Running migration: Adding is_anomaly and anomaly_reason columns")
                 try:
@@ -298,6 +311,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT drift_baseline_cutoff_date FROM model_ml_state LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding drift_baseline_cutoff_date column")
                 try:
                     session.execute(text("ALTER TABLE model_ml_state ADD COLUMN drift_baseline_cutoff_date DATETIME"))
@@ -310,6 +324,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT peak_cusum FROM model_ml_state LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding peak_cusum column")
                 try:
                     session.execute(text("ALTER TABLE model_ml_state ADD COLUMN peak_cusum FLOAT DEFAULT 0"))
@@ -460,6 +475,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT max_violation FROM track_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding failure margin columns")
                 try:
                     session.execute(text("ALTER TABLE track_results ADD COLUMN max_violation FLOAT"))
@@ -474,6 +490,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding measured_electrical_angle column")
                 try:
                     session.execute(text("ALTER TABLE track_results ADD COLUMN measured_electrical_angle FLOAT"))
@@ -486,6 +503,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT max_deviation FROM track_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding max deviation columns")
                 try:
                     session.execute(text("ALTER TABLE track_results ADD COLUMN max_deviation FLOAT"))
@@ -500,6 +518,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 logger.info("Running migration: Adding data_quality columns")
                 try:
                     session.execute(text(
@@ -515,7 +534,7 @@ class DatabaseManager:
 
             # Migration: Add Phase 2 spec-aware optimization columns to track_results
             phase2_columns = {
-                "optimal_slope": "FLOAT DEFAULT 1.0",
+                "optimal_slope": "FLOAT DEFAULT 0.0",
                 "station_compensation": "FLOAT",
                 "linearity_type": "VARCHAR(30)",
                 "raw_linearity_error": "FLOAT",
@@ -541,6 +560,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT match_method FROM final_test_results LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 try:
                     session.execute(text("ALTER TABLE final_test_results ADD COLUMN match_method VARCHAR(30)"))
                     session.commit()
@@ -554,6 +574,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT aliases FROM model_specs LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 try:
                     session.execute(text("ALTER TABLE model_specs ADD COLUMN aliases TEXT"))
                     session.commit()
@@ -567,6 +588,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT exclude_points FROM model_specs LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 try:
                     session.execute(text("ALTER TABLE model_specs ADD COLUMN exclude_points TEXT"))
                     session.commit()
@@ -574,6 +596,22 @@ class DatabaseManager:
                 except Exception as e:
                     if "duplicate column" not in str(e).lower():
                         logger.warning(f"exclude_points migration warning: {e}")
+                    session.rollback()
+
+            # Migration: Add exclude_points_ft column to model_specs
+            # FT files have different data point counts than trim files,
+            # so they need separate exclude ranges.
+            try:
+                session.execute(text("SELECT exclude_points_ft FROM model_specs LIMIT 1"))
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                try:
+                    session.execute(text("ALTER TABLE model_specs ADD COLUMN exclude_points_ft TEXT"))
+                    session.commit()
+                    logger.info("Migration: Added exclude_points_ft column to model_specs")
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        logger.warning(f"exclude_points_ft migration warning: {e}")
                     session.rollback()
 
             # Migration: Add open_closed column to model_specs and backfill from
@@ -585,6 +623,7 @@ class DatabaseManager:
             try:
                 session.execute(text("SELECT open_closed FROM model_specs LIMIT 1"))
             except OperationalError:
+                session.rollback()  # Clear error state from failed probe
                 try:
                     session.execute(text(
                         "ALTER TABLE model_specs ADD COLUMN open_closed VARCHAR(10)"
@@ -609,7 +648,7 @@ class DatabaseManager:
             # just held in memory for the current Process Files screen).
             ft_phase2_columns = {
                 "optimal_offset": "FLOAT",
-                "optimal_slope": "FLOAT DEFAULT 1.0",
+                "optimal_slope": "FLOAT DEFAULT 0.0",
                 "linearity_type": "VARCHAR(30)",
             }
             for col_name, col_type in ft_phase2_columns.items():
@@ -796,9 +835,11 @@ class DatabaseManager:
                             saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
                             continue
 
-                        # Check for existing record by filename
+                        # Check for existing record by filename + file_path
+                        # (must match save_analysis to avoid cross-directory overwrites)
                         existing = session.query(DBAnalysisResult).filter(
-                            DBAnalysisResult.filename == analysis.metadata.filename
+                            DBAnalysisResult.filename == analysis.metadata.filename,
+                            DBAnalysisResult.file_path == str(analysis.metadata.file_path),
                         ).first()
 
                         if existing:
@@ -837,7 +878,7 @@ class DatabaseManager:
             AnalysisResult or None if not found
         """
         with self.session() as session:
-            db_analysis = session.query(DBAnalysisResult).get(analysis_id)
+            db_analysis = session.get(DBAnalysisResult, analysis_id)
 
             if db_analysis is None:
                 return None
@@ -1152,7 +1193,7 @@ class DatabaseManager:
             True if successful
         """
         with self.session() as session:
-            alert = session.query(DBQAAlert).get(alert_id)
+            alert = session.get(DBQAAlert, alert_id)
             if alert:
                 alert.acknowledged = True
                 alert.acknowledged_by = acknowledged_by
@@ -1178,7 +1219,7 @@ class DatabaseManager:
             True if successful
         """
         with self.session() as session:
-            alert = session.query(DBQAAlert).get(alert_id)
+            alert = session.get(DBQAAlert, alert_id)
             if alert:
                 if not alert.acknowledged:
                     # Auto-acknowledge when resolving
@@ -2202,7 +2243,7 @@ class DatabaseManager:
             has_multi_tracks=analysis.metadata.has_multi_tracks,
             overall_status=overall_status,
             processing_time=analysis.processing_time,
-            timestamp=datetime.now(),
+            timestamp=utc_now(),
             data_quality=getattr(analysis, 'data_quality', 'good'),
             data_quality_issues=json.dumps(getattr(analysis, 'data_quality_issues', [])) if getattr(analysis, 'data_quality_issues', []) else None,
         )
@@ -2468,7 +2509,7 @@ class DatabaseManager:
             existing.file_date = analysis.metadata.file_date
             existing.has_multi_tracks = analysis.metadata.has_multi_tracks
             existing.processing_time = analysis.processing_time
-            existing.timestamp = datetime.now()
+            existing.timestamp = utc_now()
 
             # Map overall status
             status_map = {
@@ -2528,7 +2569,7 @@ class DatabaseManager:
         """
         with self.session() as session:
             # Find the analysis record
-            analysis = session.query(DBAnalysisResult).get(analysis_id)
+            analysis = session.get(DBAnalysisResult, analysis_id)
 
             if not analysis:
                 logger.warning(f"Analysis ID {analysis_id} not found for deletion")
@@ -4718,7 +4759,7 @@ class DatabaseManager:
             try:
                 with self.session() as session:
                     # Get existing record
-                    result = session.query(DBFinalTestResult).get(final_test_id)
+                    result = session.get(DBFinalTestResult, final_test_id)
                     if not result:
                         logger.warning(f"Final Test ID {final_test_id} not found")
                         return False
@@ -4842,7 +4883,7 @@ class DatabaseManager:
         try:
             with self.session() as session:
                 # Get existing record
-                result = session.query(DBAnalysisResult).get(analysis_id)
+                result = session.get(DBAnalysisResult, analysis_id)
                 if not result:
                     logger.warning(f"Analysis ID {analysis_id} not found")
                     return False
@@ -4887,7 +4928,7 @@ class DatabaseManager:
         try:
             with self.session() as session:
                 # Get existing record
-                result = session.query(DBAnalysisResult).get(analysis_id)
+                result = session.get(DBAnalysisResult, analysis_id)
                 if not result:
                     logger.warning(f"Analysis ID {analysis_id} not found")
                     return False
@@ -5642,6 +5683,7 @@ class DatabaseManager:
             "open_closed": getattr(s, "open_closed", None) or s.circuit_type,
             "aliases": getattr(s, "aliases", None),
             "exclude_points": getattr(s, "exclude_points", None),
+            "exclude_points_ft": getattr(s, "exclude_points_ft", None),
             "notes": s.notes,
         }
 

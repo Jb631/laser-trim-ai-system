@@ -127,6 +127,7 @@ class Processor:
         except Exception as e:
             logger.debug(f"Could not load ML thresholds: {e}")
             self._model_thresholds = {}
+            self._model_predictors = {}
 
     def process_file(self, file_path: Path, generate_plots: bool = True) -> Optional[AnalysisResult]:
         """
@@ -935,12 +936,20 @@ class Processor:
                 spec = db.get_model_spec(model)
             if not spec:
                 return empty
+
+            # Use FT-specific exclude points when analyzing FT files,
+            # fall back to trim exclude points if FT field is empty.
+            if is_final_test:
+                exclude = spec.get("exclude_points_ft") or spec.get("exclude_points")
+            else:
+                exclude = spec.get("exclude_points")
+
             return {
                 "linearity_type": spec.get("linearity_type"),
                 "angle_spec": spec.get("electrical_angle"),
                 "angle_tol": spec.get("electrical_angle_tol"),
                 "angle_tol_type": spec.get("electrical_angle_tol_type"),
-                "exclude_points": spec.get("exclude_points"),
+                "exclude_points": exclude,
             }
         except Exception as e:
             logger.debug(f"Could not look up model spec for {model}: {e}")

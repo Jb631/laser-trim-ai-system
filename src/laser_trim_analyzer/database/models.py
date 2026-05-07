@@ -1155,10 +1155,15 @@ class ModelSpec(Base):
     # pick up this row's linearity_type/spec/etc. Lookup is case-sensitive,
     # whitespace-trimmed, and accepts either 'model' or any token in 'aliases'.
     aliases = Column(Text, nullable=True)
-    # JSON list of point indices/ranges to exclude from linearity fail counting.
+    # JSON list of point indices/ranges to exclude from linearity fail counting
+    # during TRIM file analysis.
     # Format: {"exclude": [0, 1, [48, 50]]}  — ints and [start, end] ranges.
     # Set via Specs page as human-friendly "0-1, 48-50" notation.
     exclude_points = Column(Text, nullable=True)
+    # Same format as exclude_points but applied to FINAL TEST file analysis.
+    # FT files often have different data point counts than trim files, so they
+    # need their own exclude ranges.
+    exclude_points_ft = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

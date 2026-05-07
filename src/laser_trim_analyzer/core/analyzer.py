@@ -88,7 +88,9 @@ def fill_missing_theory_volts(values: List[Any]) -> List[float]:
         return []
 
     def _is_valid(v: Any) -> bool:
-        return v is not None and not (isinstance(v, float) and np.isnan(v))
+        # np.floating needed for numpy 2.x where np.float64 is no longer a
+        # subclass of Python float — without it, np.float64(nan) slips through.
+        return v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v))
 
     work: List[Optional[float]] = [float(v) if _is_valid(v) else None for v in values]
     if work[0] is None:
@@ -695,8 +697,16 @@ class Analyzer:
         """
         Calculate optimal offset to center errors within limits.
 
-        Uses median of differences from band center as initial guess,
-        then optimizes to minimize violations.
+        Uses a two-phase approach:
+        1. Compute the feasible offset range for each point (the offset values
+           that would bring that point within spec).
+        2. Find the offset that minimizes violations via interval intersection,
+           then center within the best band for maximum margin.
+
+        The old approach used scipy minimize_scalar with Brent's method, which
+        fails on integer step-function objectives (violation count) because
+        Brent's method needs gradient information and can converge to the wrong
+        plateau.  A grid search + centering approach is more reliable here.
         """
         if not upper_limits or not lower_limits:
             return 0.0
@@ -706,46 +716,81 @@ class Analyzer:
         if n == 0:
             return 0.0
 
-        # Calculate differences from band center
-        differences = []
+        # Build list of valid (non-excluded, has-limits) indices and their
+        # per-point feasible offset intervals: lower_limit - error <= offset <= upper_limit - error
+        intervals = []
         for i in range(n):
             if exclude_indices and i in exclude_indices:
                 continue
             if upper_limits[i] is not None and lower_limits[i] is not None:
                 if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
-                    midpoint = (upper_limits[i] + lower_limits[i]) / 2
-                    differences.append(midpoint - errors[i])
+                    lo = lower_limits[i] - errors[i]
+                    hi = upper_limits[i] - errors[i]
+                    intervals.append((lo, hi))
 
-        if not differences:
+        if not intervals:
             return 0.0
 
-        # Use median as initial estimate
-        median_offset = float(np.median(differences))
-
-        # Optimize to minimize violations
-        def violation_count(offset: float) -> float:
+        # Violation count helper
+        def violation_count(offset: float) -> int:
             count = 0
-            for i in range(n):
-                if exclude_indices and i in exclude_indices:
-                    continue
-                shifted = errors[i] + offset
-                if upper_limits[i] is not None and lower_limits[i] is not None:
-                    if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
-                        if shifted > upper_limits[i] or shifted < lower_limits[i]:
-                            count += 1
+            for lo, hi in intervals:
+                if offset < lo or offset > hi:
+                    count += 1
             return count
 
-        try:
-            # Search around median
-            search_range = abs(median_offset) + 0.01
-            result = optimize.minimize_scalar(
-                violation_count,
-                bounds=(median_offset - search_range, median_offset + search_range),
-                method='bounded'
-            )
-            return float(result.x)
-        except Exception:
-            return median_offset
+        # Collect all interval boundaries — violations can only change at these points
+        boundaries = sorted(set(
+            val for lo, hi in intervals for val in (lo, hi)
+        ))
+
+        if not boundaries:
+            return 0.0
+
+        # Evaluate violation count at each boundary and at midpoints between
+        # consecutive boundaries (to catch plateaus)
+        best_offset = 0.0
+        best_violations = len(intervals)  # worst case: everything fails
+        best_margin = -1.0
+
+        candidates = []
+        for b in boundaries:
+            candidates.append(b)
+        for i in range(len(boundaries) - 1):
+            candidates.append((boundaries[i] + boundaries[i + 1]) / 2)
+
+        for candidate in candidates:
+            v = violation_count(candidate)
+            if v < best_violations:
+                best_violations = v
+                best_offset = candidate
+                best_margin = -1.0  # reset
+            elif v == best_violations and v < len(intervals):
+                # Same violation count — prefer the one with more margin
+                pass  # will be handled by centering below
+
+        # If we found a 0-violation band, center within it for maximum margin
+        if best_violations == 0:
+            # Find the intersection of all intervals (the feasible band)
+            band_lo = max(lo for lo, hi in intervals)
+            band_hi = min(hi for lo, hi in intervals)
+            if band_lo <= band_hi:
+                best_offset = (band_lo + band_hi) / 2
+        elif best_violations > 0:
+            # Find the offset band that achieves the minimum violation count
+            # by testing which intervals are satisfied at the best offset
+            # and intersecting those
+            satisfied = [
+                (lo, hi) for lo, hi in intervals
+                if best_offset >= lo and best_offset <= hi
+            ]
+            if satisfied:
+                band_lo = max(lo for lo, hi in satisfied)
+                band_hi = min(hi for lo, hi in satisfied)
+                if band_lo <= band_hi:
+                    best_offset = (band_lo + band_hi) / 2
+
+        return float(best_offset)
 
     def _count_fail_points(
         self,

@@ -928,15 +928,15 @@ class TrendsPage(ctk.CTkFrame):
                             pass
                         return "break"
 
-                    dropdown.bind_all("<MouseWheel>", scroll_dropdown)
-                    dropdown.bind_all("<Button-4>", scroll_dropdown)
-                    dropdown.bind_all("<Button-5>", scroll_dropdown)
+                    dropdown.bind("<MouseWheel>", scroll_dropdown)
+                    dropdown.bind("<Button-4>", scroll_dropdown)
+                    dropdown.bind("<Button-5>", scroll_dropdown)
 
                     def on_destroy(event):
                         try:
-                            dropdown.unbind_all("<MouseWheel>")
-                            dropdown.unbind_all("<Button-4>")
-                            dropdown.unbind_all("<Button-5>")
+                            dropdown.unbind("<MouseWheel>")
+                            dropdown.unbind("<Button-4>")
+                            dropdown.unbind("<Button-5>")
                         except Exception:
                             pass
 

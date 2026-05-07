@@ -242,21 +242,24 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
     for track in result.tracks:
         is_anomaly = getattr(track, 'is_anomaly', False)
         cells = [
-            track.track_id,
-            track.status.value,
-            f"{track.sigma_gradient:.6f}",
-            f"{track.sigma_threshold:.6f}",
-            "PASS" if track.sigma_pass else "FAIL",
-            f"{track.linearity_error:.6f}",
-            "PASS" if track.linearity_pass else "FAIL",
-            track.risk_category.value,
-            f"{track.failure_probability:.1%}" if track.failure_probability is not None else "N/A",
-            "YES" if is_anomaly else "",
+            (track.track_id, None),
+            (track.status.value, None),
+            (track.sigma_gradient, "0.000000"),
+            (track.sigma_threshold, "0.000000"),
+            ("PASS" if track.sigma_pass else "FAIL", None),
+            (track.linearity_error, "0.000000"),
+            ("PASS" if track.linearity_pass else "FAIL", None),
+            (track.risk_category.value, None),
+            (track.failure_probability if track.failure_probability is not None else "N/A",
+             "0.0%" if track.failure_probability is not None else None),
+            ("YES" if is_anomaly else "", None),
         ]
 
-        for col, value in enumerate(cells, 1):
+        for col, (value, num_fmt) in enumerate(cells, 1):
             cell = ws.cell(row=row, column=col)
             cell.value = value
+            if num_fmt:
+                cell.number_format = num_fmt
             cell.alignment = Alignment(horizontal="center")
             cell.border = THIN_BORDER
 
@@ -627,8 +630,12 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 linearity_spec = result.tracks[0].linearity_spec or 0.01  # Should be same for all
                 fail_points = sum(t.linearity_fail_points or 0 for t in result.tracks)
                 travel_length = result.tracks[0].travel_length or 0  # Should be same
-                sigma_pass = all(t.sigma_pass for t in result.tracks if t.sigma_pass is not None)
-                linearity_pass = all(t.linearity_pass for t in result.tracks if t.linearity_pass is not None)
+                # Guard: all([]) returns True, so error-state tracks (all None)
+                # would falsely report PASS.  Treat empty-after-filter as FAIL.
+                sigma_vals_pass = [t.sigma_pass for t in result.tracks if t.sigma_pass is not None]
+                sigma_pass = all(sigma_vals_pass) if sigma_vals_pass else False
+                lin_vals_pass = [t.linearity_pass for t in result.tracks if t.linearity_pass is not None]
+                linearity_pass = all(lin_vals_pass) if lin_vals_pass else False
                 # Use worst risk category
                 risk_order = {"Low": 0, "Medium": 1, "High": 2, "Unknown": -1}
                 risk_vals = [t.risk_category.value for t in result.tracks if t.risk_category is not None]
@@ -657,39 +664,43 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         # Use file_date which is the trim date (we set file_date = test_date in parser)
         trim_date = result.metadata.file_date or result.metadata.test_date
 
+        # Write raw numeric values with number_format so Excel can sort/chart them.
+        # Each entry is (value, number_format_or_None).
         values = [
-            result.metadata.model,
-            result.metadata.serial,
-            result.metadata.system.value,
-            trim_date.strftime("%Y-%m-%d") if trim_date else "",
-            result.overall_status.value,
-            len(result.tracks),
-            f"{sigma_gradient:.6f}",
-            f"{sigma_threshold:.6f}",
-            f"{sigma_margin_pct:.1f}%",
-            "PASS" if sigma_pass else "FAIL",
-            f"{linearity_error:.6f}",
-            f"{linearity_spec:.6f}",
-            fail_points,
-            "PASS" if linearity_pass else "FAIL",
-            risk,
-            f"{fail_prob:.1%}" if fail_prob is not None else "N/A",
-            "YES" if is_anomaly else "",  # Anomaly flag
-            mea_elec_angle if mea_elec_angle is not None else "",
-            f"{travel_length:.1f}" if travel_length else "",
-            f"{untrimmed_r:.2f}" if untrimmed_r is not None else "",
-            f"{trimmed_r:.2f}" if trimmed_r is not None else "",
-            f"{r_change_pct:.2f}%" if r_change_pct is not None else "",
-            f"{trim_imp:.1f}%" if trim_imp is not None else "",
-            f"{max_err_red:.1f}%" if max_err_red is not None else "",
-            result.metadata.filename,  # Filename at end
+            (result.metadata.model, None),
+            (result.metadata.serial, None),
+            (result.metadata.system.value, None),
+            (trim_date.strftime("%Y-%m-%d") if trim_date else "", None),
+            (result.overall_status.value, None),
+            (len(result.tracks), None),
+            (sigma_gradient, "0.000000"),
+            (sigma_threshold, "0.000000"),
+            (sigma_margin_pct / 100 if sigma_margin_pct else 0, "0.0%"),
+            ("PASS" if sigma_pass else "FAIL", None),
+            (linearity_error, "0.000000"),
+            (linearity_spec, "0.000000"),
+            (fail_points, None),
+            ("PASS" if linearity_pass else "FAIL", None),
+            (risk, None),
+            (fail_prob if fail_prob is not None else "N/A", "0.0%" if fail_prob is not None else None),
+            ("YES" if is_anomaly else "", None),
+            (mea_elec_angle if mea_elec_angle is not None else "", None),
+            (travel_length if travel_length else "", "0.0" if travel_length else None),
+            (untrimmed_r if untrimmed_r is not None else "", "0.00" if untrimmed_r is not None else None),
+            (trimmed_r if trimmed_r is not None else "", "0.00" if trimmed_r is not None else None),
+            (r_change_pct / 100 if r_change_pct is not None else "", "0.00%" if r_change_pct is not None else None),
+            (trim_imp / 100 if trim_imp is not None else "", "0.0%" if trim_imp is not None else None),
+            (max_err_red / 100 if max_err_red is not None else "", "0.0%" if max_err_red is not None else None),
+            (result.metadata.filename, None),  # Filename at end
         ]
 
         status_col = 5  # Status is now column 5
 
-        for col, value in enumerate(values, 1):
+        for col, (value, num_fmt) in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col)
             cell.value = value
+            if num_fmt:
+                cell.number_format = num_fmt
             cell.border = THIN_BORDER
 
             # Color status column
