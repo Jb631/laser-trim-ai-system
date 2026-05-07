@@ -2535,25 +2535,84 @@ class TrendsPage(ctk.CTkFrame):
                     self.status_label.configure(text="No Cpk data")
                     return
 
-                # Show worst-to-best — the models that need attention first.
-                rows_sorted = sorted(rows, key=lambda r: r["cpk"] if r["cpk"] is not None else 99)
-                models = [r["model"] for r in rows_sorted]
-                cpks = [r["cpk"] if r["cpk"] is not None else 0 for r in rows_sorted]
-                # Color bars by capability band: red <1.0, orange 1.0–1.33, green >=1.33
+                # Show worst-to-best — models that need attention first.
+                rows_sorted = sorted(
+                    rows, key=lambda r: r["cpk"] if r["cpk"] is not None else 99
+                )
+                # Cap to bottom 20 worst Cpk so 60+ rows can't pile into an
+                # illegible wall of overlapping y-labels (the visual review
+                # showed labels stacking on top of each other at scale).
+                # An extreme outlier (e.g. Cpk=130 for one model) used to
+                # crush every other bar into a sliver — clipping the x-axis
+                # at 5.0 and capping rows fixes both problems together.
+                CPK_ROW_CAP = 20
+                CPK_X_LIMIT = 5.0
+                total_models = len(rows_sorted)
+                rows_shown = rows_sorted[:CPK_ROW_CAP]
+                # Reverse so the worst sits at the top of the bar chart.
+                rows_shown = list(reversed(rows_shown))
+                models = [r["model"] for r in rows_shown]
+                cpks_raw = [r["cpk"] if r["cpk"] is not None else 0 for r in rows_shown]
+                # Clip bar widths for display, but keep the real value for the
+                # label so users can still see "Cpk = 130" annotated even
+                # though the bar runs off-axis.
+                cpks_clipped = [min(c, CPK_X_LIMIT) for c in cpks_raw]
                 colors = [
                     '#dc3545' if c < 1.0 else '#fd7e14' if c < 1.33 else '#198754'
-                    for c in cpks
+                    for c in cpks_raw
                 ]
-                ax.barh(models, cpks, color=colors)
-                ax.axvline(x=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
-                ax.axvline(x=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
-                ax.set_xlabel("Cpk")
-                ax.set_title("Cpk by Model (last 90 days, n>=10)")
-                ax.legend(loc="best", fontsize=8)
-                ax.tick_params(axis='y', labelsize=8)
-                fig.tight_layout()
+
+                # Scale figure height to row count so 9pt y-labels stay readable.
+                target_height = max(4.0, min(12.0, 1.5 + 0.35 * len(models)))
+                fig.set_size_inches(
+                    fig.get_size_inches()[0], target_height, forward=True
+                )
+
+                y_pos = list(range(len(models)))
+                ax.barh(y_pos, cpks_clipped, color=colors,
+                        edgecolor="#1a1a1a", linewidth=0.5)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(models, fontsize=9)
+
+                # Annotate each bar with the actual Cpk value (not the clipped
+                # one) so the operator can read the number directly.
+                for i, (cpk_real, cpk_disp) in enumerate(zip(cpks_raw, cpks_clipped)):
+                    over = " (clipped)" if cpk_real > CPK_X_LIMIT else ""
+                    ax.text(
+                        min(cpk_disp, CPK_X_LIMIT) + 0.05,
+                        i,
+                        f"{cpk_real:.2f}{over}",
+                        va="center",
+                        fontsize=8,
+                        color="#cccccc",
+                    )
+
+                ax.axvline(x=1.33, color='#fd7e14', linestyle='--', alpha=0.7,
+                           label='Capable (1.33)')
+                ax.axvline(x=1.0, color='#dc3545', linestyle='--', alpha=0.7,
+                           label='Minimum (1.0)')
+                ax.set_xlim(0, CPK_X_LIMIT * 1.1)
+                ax.set_xlabel("Cpk (clipped at 5.0)")
+
+                if total_models > CPK_ROW_CAP:
+                    ax.set_title(
+                        f"Cpk by Model — bottom {CPK_ROW_CAP} of {total_models} "
+                        f"(last {self.selected_days}d, n≥10)"
+                    )
+                else:
+                    ax.set_title(
+                        f"Cpk by Model — last {self.selected_days}d, n≥10"
+                    )
+                ax.legend(loc="lower right", fontsize=8, framealpha=0.85)
+                ax.grid(True, axis="x", alpha=0.2)
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
                 chart.canvas.draw_idle()
-                self.status_label.configure(text=f"Cpk for {len(rows)} models")
+                self.status_label.configure(
+                    text=f"Cpk: showing worst {len(models)} of {total_models}"
+                )
                 return
 
             # Branch 2: single model -> time-series Cpk trend.
@@ -2601,20 +2660,32 @@ class TrendsPage(ctk.CTkFrame):
         """Show overall yield trend across all models."""
         self.status_label.configure(text="Loading yield trend...")
         selected_days = self.selected_days
+        # Pick aggregation period to keep ~10–60 buckets on the chart.
+        # Weekly buckets over 10 years = 520 ticks, unreadable; monthly
+        # buckets over 90 days = 3 ticks, also useless. Heuristic:
+        #   ≤ 90 d  → daily
+        #   ≤ 730 d → weekly
+        #   > 730 d → monthly
+        if selected_days <= 90:
+            period = "day"
+        elif selected_days <= 730:
+            period = "week"
+        else:
+            period = "month"
 
         def _load():
             try:
                 db = get_database()
-                data = db.get_yield_trend(days_back=selected_days, period="week")
-                self.after(0, lambda: self._render_yield_trend(data))
+                data = db.get_yield_trend(days_back=selected_days, period=period)
+                self.after(0, lambda d=data, p=period: self._render_yield_trend(d, p))
             except Exception as e:
-                logger.error(f"Yield trend error: {e}")
-                self.after(0, lambda: self.status_label.configure(
-                    text=f"Yield trend error: {e}"))
+                logger.error(f"Yield trend error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Yield trend error: {exc}"))
 
         get_thread_manager().start_thread(target=_load, name="yield-trend")
 
-    def _render_yield_trend(self, data):
+    def _render_yield_trend(self, data, period: str = "week"):
         """Render yield trend chart on the main thread."""
         if not self.winfo_exists():
             return
@@ -2638,21 +2709,81 @@ class TrendsPage(ctk.CTkFrame):
             periods = [d["period"] for d in data]
             rates = [d["pass_rate"] for d in data]
 
-            ax.fill_between(range(len(periods)), rates, alpha=0.3, color='#0d6efd')
-            ax.plot(range(len(periods)), rates, marker='o', markersize=3,
-                   color='#0d6efd', linewidth=1.5)
-            ax.axhline(y=80, color='#198754', linestyle='--', alpha=0.7, label='Target (80%)')
-            step = max(1, len(periods) // 8)
+            if len(periods) < 2:
+                # Single bucket = noise, not a trend. Tell the user the
+                # date filter / aggregation produced no usable trend
+                # rather than drawing a misleading single point.
+                self._draw_empty_state(
+                    ax,
+                    "Not enough data to draw a yield trend.\n\n"
+                    "Try a wider date range, or check that\n"
+                    "files have been processed in this window.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="Yield trend: insufficient data")
+                return
+
+            x = list(range(len(periods)))
+            target = 80.0
+            # Fill between the curve and the target so colour shows the gap
+            # to spec, not absolute area-under-the-curve which exaggerated
+            # 90% yield as a giant blue block (per usability review).
+            above = [max(r, target) for r in rates]
+            below = [min(r, target) for r in rates]
+            ax.fill_between(x, target, above, color="#198754", alpha=0.25,
+                            label="Above target")
+            ax.fill_between(x, below, target, color="#dc3545", alpha=0.25,
+                            label="Below target")
+            ax.plot(x, rates, marker="o", markersize=3,
+                    color="#0d6efd", linewidth=1.5, label="Yield")
+
+            # Rolling-average overlay smooths out weekly/daily noise so
+            # the underlying trend is visible at long date ranges. Window
+            # is ~10% of the visible periods, capped 4–12 buckets.
+            if len(rates) >= 6:
+                w = max(4, min(12, len(rates) // 10))
+                rolling = []
+                for i in range(len(rates)):
+                    lo = max(0, i - w + 1)
+                    window_vals = [v for v in rates[lo:i + 1] if v is not None]
+                    rolling.append(
+                        sum(window_vals) / len(window_vals) if window_vals else None
+                    )
+                ax.plot(x, rolling, color="#fd7e14", linewidth=2.0,
+                        label=f"Rolling avg ({w}{period[0]})")
+
+            ax.axhline(y=target, color="#198754", linestyle="--",
+                       alpha=0.7, label="Target (80%)")
+
+            step = max(1, len(periods) // 10)
             ax.set_xticks(range(0, len(periods), step))
-            ax.set_xticklabels([periods[i] for i in range(0, len(periods), step)],
-                              rotation=45, fontsize=8)
+            ax.set_xticklabels(
+                [periods[i] for i in range(0, len(periods), step)],
+                rotation=45, fontsize=8,
+            )
             ax.set_ylabel("Yield (%)")
-            ax.set_title("Overall Yield Trend")
-            ax.set_ylim(0, 105)
-            ax.legend(loc="best", fontsize=8)
-            fig.tight_layout()
+            granularity = {"day": "daily", "week": "weekly",
+                           "month": "monthly"}.get(period, period)
+            ax.set_title(
+                f"Overall Yield Trend — last {self.selected_days}d, "
+                f"{granularity} buckets ({len(periods)} points)"
+            )
+            # Auto-scale y-axis around the data with breathing room rather
+            # than 0–105% which wasted half the chart on empty space.
+            data_min = min(r for r in rates if r is not None)
+            data_max = max(r for r in rates if r is not None)
+            pad = max(2.0, (data_max - data_min) * 0.1)
+            ax.set_ylim(max(0, data_min - pad), min(105, data_max + pad))
+            ax.legend(loc="lower left", fontsize=8, framealpha=0.85)
+            ax.grid(True, axis="y", alpha=0.2)
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
             chart.canvas.draw_idle()
-            self.status_label.configure(text="Yield trend (all models)")
+            self.status_label.configure(
+                text=f"Yield trend: {len(periods)} {granularity} buckets"
+            )
         except Exception as e:
             logger.error(f"Yield trend error: {e}")
             self.status_label.configure(text=f"Yield trend error: {e}")
@@ -2689,32 +2820,65 @@ class TrendsPage(ctk.CTkFrame):
             chart._style_axis(ax)
 
             if not events:
-                ax.text(0.5, 0.5, "No drift events detected",
-                       ha='center', va='center', transform=ax.transAxes, fontsize=14,
-                       color='gray')
+                self._draw_empty_state(ax, "No drift events detected")
             else:
+                # Parse ISO date strings to datetime so matplotlib renders a
+                # proper time axis. Previously every marker was passed as the
+                # string slice e["date"][:10], which matplotlib treats as a
+                # categorical value — every event with the same date string
+                # collapsed onto a single x-position, making the chart look
+                # like one stacked column of triangles regardless of when
+                # the events happened.
+                from datetime import datetime as _dt
+                from matplotlib import dates as mdates
+
+                def _parse_date(raw):
+                    if not raw:
+                        return None
+                    try:
+                        return _dt.fromisoformat(raw[:19] if len(raw) >= 19 else raw[:10])
+                    except (ValueError, TypeError):
+                        return None
+
                 # Sort models so the most-recent drift sits at the top of the chart.
-                # Color-code by direction (red = up = quality degrading, orange = down = improving).
+                # Color-code by direction (red = up = degrading, orange = down = improving).
                 last_event = {}
                 for e in events:
-                    last_event[e["model"]] = e.get("date", "")
+                    parsed = _parse_date(e.get("date"))
+                    if parsed is None:
+                        continue
+                    if (
+                        e["model"] not in last_event
+                        or parsed > last_event[e["model"]]
+                    ):
+                        last_event[e["model"]] = parsed
+                if not last_event:
+                    self._draw_empty_state(
+                        ax, "Drift events have no parseable detection dates"
+                    )
+                    chart.canvas.draw_idle()
+                    self.status_label.configure(text="Drift dates malformed")
+                    return
                 models = sorted(last_event, key=lambda m: last_event[m], reverse=True)
                 model_y = {m: i for i, m in enumerate(models)}
 
-                # Dynamically size the figure so each model gets ~0.3" of vertical space
-                # (prevents the Y-axis from being crammed when many models are drifting)
+                # Dynamically size the figure so each model gets ~0.3" of vertical space.
                 target_height = max(4.0, min(12.0, 1.5 + 0.3 * len(models)))
                 fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
 
                 up_x, up_y = [], []
                 down_x, down_y = [], []
                 for e in events:
+                    if e["model"] not in model_y:
+                        continue
+                    parsed = _parse_date(e.get("date"))
+                    if parsed is None:
+                        continue
                     y = model_y[e["model"]]
-                    x_label = e.get("date", "")[:10]
                     if (e.get("direction") or "").lower() == "down":
-                        down_x.append(x_label); down_y.append(y)
+                        down_x.append(parsed); down_y.append(y)
                     else:
-                        up_x.append(x_label); up_y.append(y)
+                        up_x.append(parsed); up_y.append(y)
 
                 if up_x:
                     ax.scatter(up_x, up_y, s=70, c='#dc3545', zorder=5,
@@ -2723,6 +2887,8 @@ class TrendsPage(ctk.CTkFrame):
                     ax.scatter(down_x, down_y, s=70, c='#f39c12', zorder=5,
                                marker='v', label='Drifting down (improving)')
 
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
                 ax.set_yticks(range(len(models)))
                 ax.set_yticklabels(models, fontsize=9)
                 ax.tick_params(axis='x', rotation=45, labelsize=8)
