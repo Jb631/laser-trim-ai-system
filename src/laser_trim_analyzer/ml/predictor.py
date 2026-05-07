@@ -9,10 +9,12 @@ for failure prediction (threshold calculation moved to ThresholdOptimizer).
 """
 
 import logging
+import os
 import pickle
 import hashlib
 import hmac
 import socket
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -500,13 +502,49 @@ class ModelPredictor:
                 'config': self.config,
             }
 
-            with open(path, 'wb') as f:
-                pickle.dump(data, f)
-
-            # Write HMAC hash file for tamper-resistant integrity verification
-            file_hmac = self._compute_file_hmac(path)
+            tmp_model_path = None
+            tmp_hash_path = None
             hash_path = path.with_suffix('.hash')
-            hash_path.write_text(file_hmac)
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='wb',
+                    delete=False,
+                    dir=path.parent,
+                    prefix=f"{path.name}.",
+                    suffix=".tmp",
+                ) as f:
+                    tmp_model_path = Path(f.name)
+                    pickle.dump(data, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                # Write HMAC hash file for tamper-resistant integrity verification.
+                # Compute it from the temp model so readers never see a partial pickle.
+                file_hmac = self._compute_file_hmac(tmp_model_path)
+                with tempfile.NamedTemporaryFile(
+                    mode='w',
+                    encoding='utf-8',
+                    delete=False,
+                    dir=hash_path.parent,
+                    prefix=f"{hash_path.name}.",
+                    suffix=".tmp",
+                ) as f:
+                    tmp_hash_path = Path(f.name)
+                    f.write(file_hmac)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                os.replace(tmp_model_path, path)
+                tmp_model_path = None
+                os.replace(tmp_hash_path, hash_path)
+                tmp_hash_path = None
+            finally:
+                for tmp_path in (tmp_model_path, tmp_hash_path):
+                    if tmp_path is not None:
+                        try:
+                            Path(tmp_path).unlink(missing_ok=True)
+                        except Exception:
+                            logger.debug(f"Could not remove temp predictor file: {tmp_path}")
 
             logger.debug(f"Predictor saved: {self.model_name} -> {path}")
             return True

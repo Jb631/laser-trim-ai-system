@@ -3626,6 +3626,45 @@ class DatabaseManager:
     # Final Test Methods - For post-assembly test data and comparison
     # =========================================================================
 
+    @staticmethod
+    def _coerce_optional_bool(value: Any) -> Optional[bool]:
+        """Coerce common stored bool representations without making None pass."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "pass", "passed", "yes"}:
+                return True
+            if normalized in {"0", "false", "fail", "failed", "no"}:
+                return False
+            return None
+        return bool(value)
+
+    @classmethod
+    def _resolve_final_test_linearity_pass(
+        cls,
+        test_results: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+    ) -> Optional[bool]:
+        """Resolve file-level FT linearity from corrected track-level results.
+
+        Parser headers can say PASS before the analyzer applies slope/offset
+        correction. Zero-tolerance linearity means one failed corrected track
+        must make the whole Final Test fail.
+        """
+        track_values = [
+            cls._coerce_optional_bool(track.get("linearity_pass"))
+            for track in tracks
+        ]
+        known_track_values = [value for value in track_values if value is not None]
+
+        if any(value is False for value in known_track_values):
+            return False
+        if known_track_values:
+            return all(known_track_values)
+
+        return cls._coerce_optional_bool(test_results.get("linearity_pass"))
+
     def save_final_test(
         self,
         metadata: Dict[str, Any],
@@ -3665,16 +3704,13 @@ class DatabaseManager:
                         logger.info(f"Final test already exists: {metadata.get('filename')}")
                         return existing.id
 
-                    # Determine overall status from linearity
-                    overall_status = DBStatusType.PASS
-                    if test_results.get("linearity_pass") is False:
-                        overall_status = DBStatusType.FAIL
-                    elif test_results.get("linearity_pass") is None:
-                        # Check track-level linearity
-                        for track in tracks:
-                            if track.get("linearity_pass") is False:
-                                overall_status = DBStatusType.FAIL
-                                break
+                    # Determine overall status from corrected track-level
+                    # linearity first. The raw FT header can be stale after
+                    # analyzer correction; any corrected track failure wins.
+                    linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
+                    overall_status = (
+                        DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
+                    )
 
                     # Find matching trim result
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
@@ -3694,7 +3730,7 @@ class DatabaseManager:
                         serial=metadata.get("serial", "unknown"),
                         test_date=metadata.get("test_date"),
                         overall_status=overall_status,
-                        linearity_pass=test_results.get("linearity_pass"),
+                        linearity_pass=linearity_pass,
                         linearity_error=tracks[0].get("linearity_error") if tracks else None,
                         resistance_pass=test_results.get("resistance_pass"),
                         resistance_value=test_results.get("resistance_value"),

@@ -451,6 +451,8 @@ class Processor:
                 if getattr(at, "linearity_pass", True) is False:
                     overall_status = AnalysisStatus.FAIL
                     break
+            test_results = dict(test_results)
+            test_results["linearity_pass"] = (overall_status == AnalysisStatus.PASS)
 
             # Save to database (now with enriched tracks)
             db = get_database()
