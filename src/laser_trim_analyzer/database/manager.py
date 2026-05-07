@@ -6999,6 +6999,52 @@ class DatabaseManager:
                 for r in results
             ]
 
+    def get_trim_difficulty_by_model(
+        self,
+        days_back: int = 90,
+        min_units: int = 5,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate trim_pass_count per model.
+
+        Higher avg passes = unit was harder to trim to spec.
+        retrim_rate = % of units that needed >1 trim cycle.
+
+        FT-derived rows have NULL trim_pass_count and are excluded.
+        Models with fewer than `min_units` qualifying records are excluded
+        so a single outlier doesn't dominate the chart.
+
+        Returns rows sorted by avg_passes descending (worst first).
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            results = session.query(
+                DBAnalysisResult.model,
+                func.count(DBTrackResult.id).label("count"),
+                func.avg(DBTrackResult.trim_pass_count).label("avg_passes"),
+                func.max(DBTrackResult.trim_pass_count).label("max_passes"),
+                func.sum(
+                    case((DBTrackResult.trim_pass_count > 1, 1), else_=0)
+                ).label("retrims"),
+            ).join(DBTrackResult).filter(
+                DBAnalysisResult.file_date >= cutoff,
+                DBTrackResult.trim_pass_count.isnot(None),
+            ).group_by(DBAnalysisResult.model).having(
+                func.count(DBTrackResult.id) >= min_units
+            ).order_by(desc("avg_passes")).limit(limit).all()
+
+            return [
+                {
+                    "model": r.model,
+                    "count": int(r.count or 0),
+                    "avg_passes": float(r.avg_passes or 0.0),
+                    "max_passes": int(r.max_passes or 0),
+                    "retrim_rate": (float(r.retrims or 0) / float(r.count)) * 100.0
+                    if r.count else 0.0,
+                }
+                for r in results
+            ]
+
     def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
         """Categorize failures by mode: linearity only, sigma only, or both."""
         with self.session() as session:

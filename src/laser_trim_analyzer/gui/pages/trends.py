@@ -96,7 +96,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self._trend_type = ctk.CTkSegmentedButton(
             header_frame,
-            values=["Standard", "Comparative", "Cpk Trend", "Yield", "Drift"],
+            values=["Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Trim Difficulty"],
             command=self._on_trend_type_changed,
         )
         self._trend_type.set("Standard")
@@ -2259,6 +2259,8 @@ class TrendsPage(ctk.CTkFrame):
             self._show_yield_trend()
         elif value == "Drift":
             self._show_drift_timeline()
+        elif value == "Trim Difficulty":
+            self._show_trim_difficulty()
 
     def show_drift_tab(self):
         """Public hook used by the Dashboard's Drift Alerts card to jump
@@ -2672,6 +2674,109 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")
             self.status_label.configure(text=f"Drift error: {e}")
+
+    def _show_trim_difficulty(self):
+        """Show models ranked by how many laser-trim passes the equipment
+        runs per unit on average. Higher = harder unit, more retrim work."""
+        self.status_label.configure(text="Loading trim difficulty...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                rows = db.get_trim_difficulty_by_model(
+                    days_back=selected_days, min_units=5, limit=25
+                )
+                self.after(0, lambda: self._render_trim_difficulty(rows))
+            except Exception as e:
+                logger.error(f"Trim difficulty error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Trim difficulty error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="trim-difficulty")
+
+    def _render_trim_difficulty(self, rows):
+        """Horizontal bar chart of avg trim passes per model, worst at top.
+        Bars are colored by retrim rate (red = many units needed retrimming).
+        Each bar is annotated with N units and max passes seen."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Trim Difficulty by Model")
+            chart.clear()
+            fig = chart.figure
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
+
+            if not rows:
+                self._draw_empty_state(
+                    ax,
+                    "No trim difficulty data yet.\n\n"
+                    "trim_pass_count is captured at parse time —\n"
+                    "process new files (or reanalyze existing ones)\n"
+                    "to populate this view.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="No trim difficulty data")
+                return
+
+            # Reverse so highest avg sits at the top of the horizontal bar chart.
+            rows_top_first = list(reversed(rows))
+            models = [r["model"] for r in rows_top_first]
+            avgs = [r["avg_passes"] for r in rows_top_first]
+            retrim_rates = [r["retrim_rate"] for r in rows_top_first]
+
+            # Color bars by retrim rate. 0% retrim = green, 50%+ = red.
+            def _color(rate):
+                if rate < 10:
+                    return "#27ae60"   # green: easy
+                if rate < 25:
+                    return "#f1c40f"   # yellow: occasional retrim
+                if rate < 50:
+                    return "#e67e22"   # orange: frequent retrim
+                return "#e74c3c"       # red: most units retrimmed
+
+            colors = [_color(r) for r in retrim_rates]
+
+            target_height = max(4.0, min(14.0, 1.5 + 0.35 * len(models)))
+            fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
+
+            y_pos = list(range(len(models)))
+            ax.barh(y_pos, avgs, color=colors, edgecolor="#1a1a1a", linewidth=0.5)
+
+            # Annotate each bar with "<N units> · max <M>" so the user gets
+            # sample size and worst-case in one glance.
+            for i, r in enumerate(rows_top_first):
+                ax.text(
+                    avgs[i] + 0.05,
+                    i,
+                    f"{r['count']} units · max {r['max_passes']} · "
+                    f"retrim {r['retrim_rate']:.0f}%",
+                    va="center",
+                    fontsize=8,
+                    color="#cccccc",
+                )
+
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(models, fontsize=9)
+            ax.set_xlabel("Avg trim passes per unit")
+            ax.set_title(
+                f"Trim Difficulty by Model — last {self.selected_days} days "
+                f"(top {len(models)} hardest)"
+            )
+            ax.axvline(x=1.0, linestyle="--", color="#888", linewidth=0.8, alpha=0.6)
+            ax.grid(True, axis="x", alpha=0.2)
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=f"Trim difficulty: {len(rows)} models ranked"
+            )
+        except Exception as e:
+            logger.error(f"Trim difficulty render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Trim difficulty error: {e}")
 
     def _populate_spec_filters(self):
         """Populate element type and product class filter dropdowns.
