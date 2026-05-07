@@ -1466,13 +1466,12 @@ class TrendsPage(ctk.CTkFrame):
         """Get ML recommendations for current model using per-model ML system."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-
-            # Try to load trained state
-            ml_manager.load_all()
+            # Shared cached MLManager — avoids reloading 134 predictor pickles
+            # on every navigation. Settings → Train invalidates the cache.
+            ml_manager = get_shared_ml_manager(db)
 
             # Get threshold from per-model optimizer (strip inactive suffix)
             clean_model_name = self.selected_model.replace(" (inactive)", "")
@@ -2051,11 +2050,10 @@ class TrendsPage(ctk.CTkFrame):
         """Get ML insights for summary view."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             if not ml_manager.profilers:
                 return None
@@ -2394,7 +2392,11 @@ class TrendsPage(ctk.CTkFrame):
     def _show_comparative_trends(self):
         """Show comparative pass rate trends for top models."""
         config = get_config()
-        mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
+        # Cap at 5 models so the line chart stays legible. Surface the cap
+        # in the chart title so the user knows how many MPS models are
+        # configured but not shown — previously the cap was silent.
+        all_mps = config.active_models.mps_models or []
+        mps = all_mps[:5]
         if not mps:
             chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
             fig = chart.figure
@@ -2419,7 +2421,8 @@ class TrendsPage(ctk.CTkFrame):
             try:
                 db = get_database()
                 data = db.get_comparative_model_trends(mps, days_back=selected_days, period="week")
-                self.after(0, lambda: self._render_comparative_trends(data))
+                self.after(0, lambda d=data, total=len(all_mps), shown=len(mps):
+                            self._render_comparative_trends(d, total, shown))
             except Exception as e:
                 logger.error(f"Comparative trends error: {e}")
                 self.after(0, lambda: self.status_label.configure(
@@ -2427,7 +2430,7 @@ class TrendsPage(ctk.CTkFrame):
 
         get_thread_manager().start_thread(target=_load, name="comparative-trends")
 
-    def _render_comparative_trends(self, data):
+    def _render_comparative_trends(self, data, total_mps: int = 0, shown_mps: int = 0):
         """Render comparative trends chart on the main thread."""
         if not self.winfo_exists():
             return
@@ -2464,13 +2467,39 @@ class TrendsPage(ctk.CTkFrame):
                 ax.plot(all_periods, rates, marker='o', markersize=4, label=model)
 
             ax.set_ylabel("Pass Rate (%)")
-            ax.set_title("Comparative Pass Rate Trends")
-            ax.legend(loc="best", fontsize=8)
+            # Surface the silent MPS cap in the title so users know more
+            # models are configured than displayed.
+            if total_mps and total_mps > shown_mps:
+                ax.set_title(
+                    f"Comparative Pass Rate Trends — showing {shown_mps} of "
+                    f"{total_mps} MPS models"
+                )
+            else:
+                ax.set_title("Comparative Pass Rate Trends")
+            # 80% target reference line — same threshold the rest of the
+            # page uses for alerts.
+            ax.axhline(y=80, color="#198754", linestyle="--",
+                       alpha=0.7, label="Target (80%)")
+            # Thin x-axis ticks so dense weekly periods don't collide.
+            if len(all_periods) > 12:
+                step = max(1, len(all_periods) // 12)
+                ax.set_xticks(range(0, len(all_periods), step))
+                ax.set_xticklabels(
+                    [all_periods[i] for i in range(0, len(all_periods), step)],
+                    rotation=45, fontsize=8,
+                )
+            ax.legend(loc="lower right", fontsize=8, framealpha=0.85)
             ax.set_ylim(0, 105)
             ax.tick_params(axis='x', rotation=45, labelsize=8)
             fig.tight_layout()
             chart.canvas.draw_idle()
-            self.status_label.configure(text=f"Comparing {len(data)} models")
+            cap_note = (
+                f" ({shown_mps} of {total_mps} MPS models)"
+                if total_mps > shown_mps else ""
+            )
+            self.status_label.configure(
+                text=f"Comparing {len(data)} models{cap_note}"
+            )
         except Exception as e:
             logger.error(f"Comparative trends error: {e}")
             self.status_label.configure(text=f"Comparative error: {e}")
@@ -3061,11 +3090,10 @@ class TrendsPage(ctk.CTkFrame):
         """Load drift detection data in background."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             # Get drift status for all models
             drift_status = ml_manager.get_drift_status()

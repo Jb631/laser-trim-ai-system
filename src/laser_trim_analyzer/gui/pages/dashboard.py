@@ -631,10 +631,9 @@ class DashboardPage(ctk.CTkFrame):
     def _get_drift_alerts(self, db) -> List[Dict[str, Any]]:
         """Get drift status from ML system."""
         try:
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             drift_alerts = []
             for model, detector in ml_manager.drift_detectors.items():

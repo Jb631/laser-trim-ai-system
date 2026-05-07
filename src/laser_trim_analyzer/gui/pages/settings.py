@@ -1221,6 +1221,11 @@ class SettingsPage(ctk.CTkFrame):
             # Save trained state
             ml_manager.save_all()
 
+            # Invalidate the shared MLManager cache so other pages pick up
+            # the freshly-trained models on their next access.
+            from laser_trim_analyzer.ml import invalidate_shared_ml_manager
+            invalidate_shared_ml_manager()
+
             # Store manager for apply step
             self._ml_manager = ml_manager
 
@@ -1409,11 +1414,10 @@ class SettingsPage(ctk.CTkFrame):
         def _load_ml_status():
             try:
                 from laser_trim_analyzer.database import get_database
-                from laser_trim_analyzer.ml import MLManager
+                from laser_trim_analyzer.ml import get_shared_ml_manager
 
                 db = get_database()
-                ml_manager = MLManager(db)
-                ml_manager.load_all()
+                ml_manager = get_shared_ml_manager(db)
 
                 def _update_ui():
                     if not self.winfo_exists():

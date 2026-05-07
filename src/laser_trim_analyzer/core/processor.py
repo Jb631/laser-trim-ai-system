@@ -99,11 +99,10 @@ class Processor:
         """Load trained per-model thresholds from database."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             # Extract thresholds from trained models
             for model_name in ml_manager.trained_models:
