@@ -3781,9 +3781,14 @@ class DatabaseManager:
                     return result_id
 
             except IntegrityError as e:
-                # Handle race condition - another thread inserted first
+                # The unique constraint that can fire is on
+                # (filename, file_date, model, serial), not on file_hash.
+                # When the same file is reprocessed with edited content the
+                # hash differs but the tuple still matches, so the previous
+                # hash-only fallback couldn't find the existing row and the
+                # error propagated to the user as "Error processing Final
+                # Test ... UNIQUE constraint failed". Query by both keys.
                 logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
-                # Try to find the existing record
                 try:
                     with self.session() as session:
                         existing = (
@@ -3791,10 +3796,21 @@ class DatabaseManager:
                             .filter(DBFinalTestResult.file_hash == file_hash)
                             .first()
                         )
+                        if existing is None:
+                            existing = (
+                                session.query(DBFinalTestResult)
+                                .filter(
+                                    DBFinalTestResult.filename == metadata.get("filename"),
+                                    DBFinalTestResult.file_date == metadata.get("file_date"),
+                                    DBFinalTestResult.model == metadata.get("model"),
+                                    DBFinalTestResult.serial == metadata.get("serial"),
+                                )
+                                .first()
+                            )
                         if existing:
                             return existing.id
                 except Exception:
-                    pass
+                    logger.debug("FT duplicate-recovery query failed", exc_info=True)
                 raise
 
     def get_ml_staleness(self) -> List[Dict[str, Any]]:
