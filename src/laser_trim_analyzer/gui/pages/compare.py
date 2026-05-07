@@ -81,6 +81,14 @@ class ComparePage(ctk.CTkFrame):
         self._chart_initialized = False
         self.chart = None
 
+        # Generation counters — incremented on every navigation/filter change.
+        # Background loads capture the value at launch and the after()-marshalled
+        # display callbacks discard themselves if a newer load (or on_hide) has
+        # superseded them. Without this, a stale fetch repopulates the list with
+        # data from the previous filter context after the user has moved on.
+        self._load_generation = 0
+        self._chart_generation = 0
+
         self._create_ui()
 
     def _create_ui(self):
@@ -469,13 +477,20 @@ class ComparePage(ctk.CTkFrame):
                 other_list = sorted([m for m in raw_models if m not in mps_set], key=model_sort_key)
                 models = mps_list + other_list
 
-                self.after(0, lambda: self._display_comparisons(pairs, models))
+                self.after(0, lambda g=gen: self._display_comparisons_if_current(g, pairs, models))
 
             except Exception as e:
                 logger.exception(f"Error loading comparisons: {e}")
                 self.after(0, lambda: self._show_error(str(e)))
 
+        gen = self._load_generation
         get_thread_manager().start_thread(target=fetch, name="fetch-comparisons")
+
+    def _display_comparisons_if_current(self, gen: int, pairs: List[Dict], models: List[str]):
+        """Apply load result only if no newer load/hide has superseded it."""
+        if gen != self._load_generation:
+            return
+        self._display_comparisons(pairs, models)
 
     def _display_comparisons(self, pairs: List[Dict], models: List[str]):
         """Display comparison pairs in the list."""
@@ -699,12 +714,19 @@ Match: {method_label} ({confidence_str})"""
             try:
                 db = get_database()
                 data = db.get_comparison_data(final_test_id)
-                self.after(0, lambda: self._display_comparison_chart(data))
+                self.after(0, lambda g=gen: self._display_comparison_chart_if_current(g, data))
             except Exception as e:
                 logger.exception(f"Error loading comparison data: {e}")
-                self.after(0, lambda: self._display_comparison_chart(None))
+                self.after(0, lambda g=gen: self._display_comparison_chart_if_current(g, None))
 
+        gen = self._chart_generation
         get_thread_manager().start_thread(target=fetch, name="load-comparison-chart")
+
+    def _display_comparison_chart_if_current(self, gen: int, data: Optional[Dict]):
+        """Render chart only if the user hasn't navigated/filtered since launch."""
+        if gen != self._chart_generation:
+            return
+        self._display_comparison_chart(data)
 
     def _display_comparison_chart(self, data: Optional[Dict]):
         """Display the comparison overlay chart."""
@@ -1084,6 +1106,10 @@ Match: {method_label} ({confidence_str})"""
         """Handle filter changes."""
         self._current_page = 0
         self._selected_ids.clear()  # Clear stale selections from previous filter
+        # Bump generation so any in-flight fetch from the previous filter is
+        # discarded when its after() callback fires.
+        self._load_generation += 1
+        self._chart_generation += 1
         self._load_comparisons()
 
     def _update_fix_progress(self, current: int, total: int, item_type: str = "Final Test"):
@@ -1282,6 +1308,11 @@ Match: {method_label} ({confidence_str})"""
     def on_hide(self):
         """Called when page becomes hidden - cleanup to free memory."""
         import matplotlib.pyplot as plt
+
+        # Bump generation so any in-flight fetch will discard its result
+        # when its after() callback fires after we've cleared state below.
+        self._load_generation += 1
+        self._chart_generation += 1
 
         # Clear large data lists and stale checkbox state
         self.comparison_pairs = []

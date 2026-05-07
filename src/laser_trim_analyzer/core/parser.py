@@ -763,7 +763,10 @@ class ExcelParser:
             }
 
         except Exception as e:
-            logger.error(f"Error extracting track data from {trimmed_sheet}: {e}")
+            logger.error(
+                f"Error extracting track data from {trimmed_sheet}: {e}",
+                exc_info=True,
+            )
             return None
 
     def _validate_track_data(
@@ -906,8 +909,11 @@ class ExcelParser:
                     data.append(float(value))
                     consecutive_nan = 0
                 elif allow_nan:
-                    # For error columns, NaN typically means 0 error (within spec, no trim needed)
-                    data.append(0.0)
+                    # Preserve NaN as float('nan') rather than coercing to 0.0.
+                    # An equipment blank/dropout in an error column must not be
+                    # silently treated as "in-spec" — _count_fail_points has a
+                    # NaN guard that conservatively treats NaN as a fail point.
+                    data.append(float('nan'))
                     consecutive_nan += 1
                     # If we have too many consecutive NaN, we've hit the end of data
                     if consecutive_nan > 10:
@@ -983,6 +989,10 @@ class ExcelParser:
     ) -> float:
         """Calculate linearity spec from limits."""
         if not upper_limits or not lower_limits:
+            logger.warning(
+                "linearity_spec defaulting to 0.01 — no limit columns supplied. "
+                "Sigma threshold and pass/fail logic may be calibrated incorrectly."
+            )
             return 0.01  # Default
 
         # Filter valid values
@@ -998,6 +1008,10 @@ class ExcelParser:
             # crash Pydantic validation or invert pass/fail logic.
             return abs(avg_upper - avg_lower) / 2
 
+        logger.warning(
+            "linearity_spec defaulting to 0.01 — limit columns present but all "
+            "values were None/NaN. Sigma threshold may be miscalibrated."
+        )
         return 0.01
 
 

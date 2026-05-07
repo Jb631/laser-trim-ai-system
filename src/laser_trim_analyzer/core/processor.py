@@ -347,10 +347,16 @@ class Processor:
             # track dicts passed to save_final_test.
             analyzed_tracks = []
             for track in tracks:
-                # Handle None values explicitly (dict.get returns None if key exists with None value)
+                # Handle None values explicitly (dict.get returns None if key exists with None value).
+                # Format 2 FT files have no spec limits and the parser returns None — treat as
+                # FAIL rather than silently calling unknown-status units PASS.
                 linearity_pass = track.get("linearity_pass")
                 if linearity_pass is None:
-                    linearity_pass = True  # Default to pass if unknown
+                    logger.warning(
+                        f"FT track {track.get('track_id', '?')} of {file_path.name}: "
+                        f"linearity_pass unknown (no spec limits) — defaulting to FAIL"
+                    )
+                    linearity_pass = False
 
                 # Use analyzer for spec-aware optimization when we have error data
                 positions = track.get("positions") or track.get("electrical_angles") or []
@@ -633,6 +639,10 @@ class Processor:
                     progress_percent=0,
                 ))
 
+            # _processed_filenames / _processed_hashes were loaded once before this
+            # block. The parallel workers below only READ them via _is_processed — no
+            # mutation during the parallel section, so no lock is required. If you
+            # ever add mutation here, switch to a lock-protected set or freeze first.
             files_to_process = [
                 f for f in file_paths if not self._is_processed(Path(f))
             ]

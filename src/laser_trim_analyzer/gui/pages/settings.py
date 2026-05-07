@@ -577,7 +577,7 @@ class SettingsPage(ctk.CTkFrame):
         self._import_specs_label.pack(side="left")
 
     def _import_model_specs(self):
-        """Import model specs from Excel file."""
+        """Import model specs from Excel file (runs DB write in background)."""
         file_path = filedialog.askopenfilename(
             title="Select Model Reference Excel",
             filetypes=[("Excel files", "*.xlsx *.xls")]
@@ -585,19 +585,37 @@ class SettingsPage(ctk.CTkFrame):
         if not file_path:
             return
 
-        try:
+        self._import_specs_label.configure(text="Importing...", text_color="gray")
+
+        def _do_import():
             from laser_trim_analyzer.database import get_database
             db = get_database()
-            result = db.import_model_specs_from_excel(file_path)
+            return db.import_model_specs_from_excel(file_path)
+
+        def _on_done(result):
+            if not self.winfo_exists():
+                return
             msg = f"Added: {result['added']}, Updated: {result['updated']}"
             if result['skipped']:
                 msg += f", Skipped: {result['skipped']}"
             self._import_specs_label.configure(text=msg, text_color="#27ae60")
             messagebox.showinfo("Import Complete", msg)
-        except Exception as e:
-            logger.error(f"Model specs import failed: {e}")
-            self._import_specs_label.configure(text=f"Error: {e}", text_color="#e74c3c")
-            messagebox.showerror("Import Error", str(e))
+
+        def _on_error(err):
+            if not self.winfo_exists():
+                return
+            logger.error(f"Model specs import failed: {err}")
+            self._import_specs_label.configure(text=f"Error: {err}", text_color="#e74c3c")
+            messagebox.showerror("Import Error", str(err))
+
+        def _run():
+            try:
+                result = _do_import()
+                self.after(0, lambda: _on_done(result))
+            except Exception as e:
+                self.after(0, lambda exc=e: _on_error(exc))
+
+        get_thread_manager().start_thread(target=_run, name="settings-import-specs")
 
     def _create_database_cleanup_section(self, container):
         """Create database cleanup section for removing legacy/contaminated records."""
@@ -852,33 +870,59 @@ class SettingsPage(ctk.CTkFrame):
         get_thread_manager().start_thread(target=_fetch, name="settings-skipped-count")
 
     def _reset_skipped_files(self):
-        """Reset skipped non-trim files so they can be reprocessed."""
+        """Reset skipped non-trim files so they can be reprocessed.
+
+        DB count and DELETE both run on a background thread to keep the
+        Tk main loop responsive on large skipped-file tables.
+        """
         from laser_trim_analyzer.database import get_database
-        db = get_database()
 
-        count = db.count_skipped_files()
-        if count == 0:
-            messagebox.showinfo("No Skipped Files", "There are no skipped files to reset.")
-            return
+        self.reset_skipped_btn.configure(state="disabled")
 
-        confirm = messagebox.askyesno(
-            "Reset Skipped Files",
-            f"This will reset {count} skipped files so they get re-evaluated\n"
-            f"on the next processing run.\n\n"
-            f"Use this after fixing files that were previously detected as\n"
-            f"non-trim (wrong format, missing sheets, etc.).\n\n"
-            f"Continue?",
-        )
-        if not confirm:
-            return
+        def _confirm_and_reset(count: int):
+            if not self.winfo_exists():
+                return
+            if count == 0:
+                messagebox.showinfo("No Skipped Files", "There are no skipped files to reset.")
+                self.reset_skipped_btn.configure(state="normal")
+                return
 
-        cleared = db.reset_skipped_files()
-        self._update_skipped_count()
-        messagebox.showinfo(
-            "Files Reset",
-            f"Reset {cleared} files. They will be re-evaluated next time\n"
-            f"you process that folder."
-        )
+            confirm = messagebox.askyesno(
+                "Reset Skipped Files",
+                f"This will reset {count} skipped files so they get re-evaluated\n"
+                f"on the next processing run.\n\n"
+                f"Use this after fixing files that were previously detected as\n"
+                f"non-trim (wrong format, missing sheets, etc.).\n\n"
+                f"Continue?",
+            )
+            if not confirm:
+                self.reset_skipped_btn.configure(state="normal")
+                return
+
+            def _reset_done(cleared: int):
+                if not self.winfo_exists():
+                    return
+                self._update_skipped_count()
+                self.reset_skipped_btn.configure(state="normal")
+                messagebox.showinfo(
+                    "Files Reset",
+                    f"Reset {cleared} files. They will be re-evaluated next time\n"
+                    f"you process that folder."
+                )
+
+            def _do_reset():
+                db = get_database()
+                cleared = db.reset_skipped_files()
+                self.after(0, lambda c=cleared: _reset_done(c))
+
+            get_thread_manager().start_thread(target=_do_reset, name="settings-reset-skipped")
+
+        def _do_count():
+            db = get_database()
+            count = db.count_skipped_files()
+            self.after(0, lambda c=count: _confirm_and_reset(c))
+
+        get_thread_manager().start_thread(target=_do_count, name="settings-count-skipped")
 
     def _get_cleanup_options(self):
         """Get the current cleanup options from the UI checkboxes."""
@@ -931,18 +975,12 @@ class SettingsPage(ctk.CTkFrame):
         return options
 
     def _preview_cleanup(self):
-        """Preview what would be deleted without actually deleting."""
+        """Preview what would be deleted without actually deleting (background)."""
         options = self._get_cleanup_options()
         if not options:
             return
 
-        from laser_trim_analyzer.database import get_database
-        db = get_database()
-
-        preview = db.preview_cleanup(**options)
-
-        # Format preview results
-        lines = [f"Preview: {preview['records_to_delete']} of {preview['total_records']} records would be deleted"]
+        self.cleanup_preview_label.configure(text="Previewing...")
 
         reason_labels = {
             "non_mps_models": "Non-MPS models",
@@ -954,62 +992,112 @@ class SettingsPage(ctk.CTkFrame):
             "misclassified_ft": "Misclassified FT files",
         }
 
-        for reason, info in preview.get("by_reason", {}).items():
-            label = reason_labels.get(reason, reason)
-            if reason == "non_mps_models":
-                models_str = ", ".join(info["models"][:10])
-                if len(info["models"]) > 10:
-                    models_str += f" ... (+{len(info['models']) - 10} more)"
-                lines.append(f"  {label}: {info['count']} records ({len(info['models'])} models: {models_str})")
-            elif reason == "before_date":
-                lines.append(f"  Before {info['date']}: {info['count']} records")
-            else:
-                lines.append(f"  {label}: {info['count']} records")
+        def _do_preview():
+            from laser_trim_analyzer.database import get_database
+            db = get_database()
+            return db.preview_cleanup(**options)
 
-        self.cleanup_preview_label.configure(text="\n".join(lines))
+        def _on_done(preview):
+            if not self.winfo_exists():
+                return
+            lines = [f"Preview: {preview['records_to_delete']} of {preview['total_records']} records would be deleted"]
+            for reason, info in preview.get("by_reason", {}).items():
+                label = reason_labels.get(reason, reason)
+                if reason == "non_mps_models":
+                    models_str = ", ".join(info["models"][:10])
+                    if len(info["models"]) > 10:
+                        models_str += f" ... (+{len(info['models']) - 10} more)"
+                    lines.append(f"  {label}: {info['count']} records ({len(info['models'])} models: {models_str})")
+                elif reason == "before_date":
+                    lines.append(f"  Before {info['date']}: {info['count']} records")
+                else:
+                    lines.append(f"  {label}: {info['count']} records")
+            self.cleanup_preview_label.configure(text="\n".join(lines))
+
+        def _run():
+            try:
+                preview = _do_preview()
+                self.after(0, lambda p=preview: _on_done(p))
+            except Exception as e:
+                logger.error(f"Preview cleanup failed: {e}")
+                self.after(0, lambda exc=e: self.cleanup_preview_label.configure(
+                    text=f"Preview error: {exc}"
+                ) if self.winfo_exists() else None)
+
+        get_thread_manager().start_thread(target=_run, name="settings-preview-cleanup")
 
     def _execute_cleanup(self):
-        """Execute the cleanup after confirmation."""
+        """Execute the cleanup after confirmation (DB ops on background thread)."""
         options = self._get_cleanup_options()
         if not options:
             return
 
-        # First run preview to get counts
+        self.cleanup_preview_label.configure(text="Counting records to delete...")
+
         from laser_trim_analyzer.database import get_database
-        db = get_database()
 
-        preview = db.preview_cleanup(**options)
+        def _confirm_and_run(preview):
+            if not self.winfo_exists():
+                return
+            if preview["records_to_delete"] == 0:
+                messagebox.showinfo("Nothing to Delete", "No records match the selected criteria.")
+                self.cleanup_preview_label.configure(text="")
+                return
 
-        if preview["records_to_delete"] == 0:
-            messagebox.showinfo("Nothing to Delete", "No records match the selected criteria.")
-            return
+            confirm = messagebox.askyesno(
+                "Confirm Deletion",
+                f"This will permanently delete {preview['records_to_delete']} records "
+                f"(out of {preview['total_records']} total).\n\n"
+                f"Have you backed up your database?\n"
+                f"(Copy the .db file before proceeding)\n\n"
+                f"This cannot be undone. Continue?",
+                icon="warning"
+            )
+            if not confirm:
+                self.cleanup_preview_label.configure(text="")
+                return
 
-        # Backup reminder + confirmation
-        confirm = messagebox.askyesno(
-            "Confirm Deletion",
-            f"This will permanently delete {preview['records_to_delete']} records "
-            f"(out of {preview['total_records']} total).\n\n"
-            f"Have you backed up your database?\n"
-            f"(Copy the .db file before proceeding)\n\n"
-            f"This cannot be undone. Continue?",
-            icon="warning"
-        )
-        if not confirm:
-            return
+            self.cleanup_preview_label.configure(text="Deleting...")
 
-        # Execute
-        result = db.execute_cleanup(**options)
+            def _on_delete_done(result):
+                if not self.winfo_exists():
+                    return
+                self.cleanup_preview_label.configure(
+                    text=f"Deleted: {result['analyses']} analyses, {result['tracks']} tracks, "
+                         f"{result['alerts']} alerts (files stay marked so they won't reprocess)"
+                )
+                messagebox.showinfo(
+                    "Cleanup Complete",
+                    f"Deleted {result['analyses']} analysis records and associated data.\n"
+                    f"Cleaned files won't be reprocessed.\n"
+                    f"Refresh Dashboard/Trends to see updated counts."
+                )
 
-        self.cleanup_preview_label.configure(
-            text=f"Deleted: {result['analyses']} analyses, {result['tracks']} tracks, "
-                 f"{result['alerts']} alerts (files stay marked so they won't reprocess)"
-        )
-        messagebox.showinfo(
-            "Cleanup Complete",
-            f"Deleted {result['analyses']} analysis records and associated data.\n"
-            f"Cleaned files won't be reprocessed.\n"
-            f"Refresh Dashboard/Trends to see updated counts."
-        )
+            def _do_delete():
+                try:
+                    db = get_database()
+                    result = db.execute_cleanup(**options)
+                    self.after(0, lambda r=result: _on_delete_done(r))
+                except Exception as e:
+                    logger.error(f"Cleanup failed: {e}")
+                    self.after(0, lambda exc=e: self.cleanup_preview_label.configure(
+                        text=f"Cleanup error: {exc}"
+                    ) if self.winfo_exists() else None)
+
+            get_thread_manager().start_thread(target=_do_delete, name="settings-execute-cleanup")
+
+        def _do_preview_count():
+            try:
+                db = get_database()
+                preview = db.preview_cleanup(**options)
+                self.after(0, lambda p=preview: _confirm_and_run(p))
+            except Exception as e:
+                logger.error(f"Cleanup preview failed: {e}")
+                self.after(0, lambda exc=e: self.cleanup_preview_label.configure(
+                    text=f"Preview error: {exc}"
+                ) if self.winfo_exists() else None)
+
+        get_thread_manager().start_thread(target=_do_preview_count, name="settings-cleanup-precheck")
 
     def _create_appearance_section(self, container):
         """Create appearance settings section."""

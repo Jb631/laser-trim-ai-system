@@ -88,6 +88,7 @@ def export_single_result(
     config = config or ExportConfig()
     output_path = Path(output_path)
 
+    wb = None
     try:
         wb = Workbook()
 
@@ -116,6 +117,14 @@ def export_single_result(
     except Exception as e:
         logger.error(f"Excel export failed: {e}")
         raise ExcelExportError(f"Export failed: {e}") from e
+    finally:
+        # Release the underlying zip handle. On Windows an unclosed Workbook
+        # holds the file open, blocking subsequent writes/deletes.
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
 
 def export_batch_results(
@@ -143,6 +152,7 @@ def export_batch_results(
     config = config or ExportConfig()
     output_path = Path(output_path)
 
+    wb = None
     try:
         wb = Workbook()
 
@@ -164,6 +174,12 @@ def export_batch_results(
     except Exception as e:
         logger.error(f"Batch export failed: {e}")
         raise ExcelExportError(f"Export failed: {e}") from e
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
 
 def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
@@ -781,7 +797,29 @@ def export_executive_summary(
 
     output_path = Path(output_path)
     wb = Workbook()
+    try:
+        return _build_executive_summary(
+            wb, output_path, stats, priority_models,
+            near_miss_data, recommendations, pricing, cost_ratio,
+        )
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
 
+
+def _build_executive_summary(
+    wb: "Workbook",
+    output_path: Path,
+    stats: Dict[str, Any],
+    priority_models: List[Dict[str, Any]],
+    near_miss_data: Optional[Dict[str, Any]],
+    recommendations: Optional[List[Dict[str, Any]]],
+    pricing: Optional[Dict[str, float]],
+    cost_ratio: float,
+) -> Path:
+    """Internal: build the executive summary workbook content."""
     # Styles
     header_font = Font(bold=True, size=14)
     subheader_font = Font(bold=True, size=11)

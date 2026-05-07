@@ -532,7 +532,11 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Data quality migration warning (may already exist): {e}")
 
-            # Migration: Add Phase 2 spec-aware optimization columns to track_results
+            # Migration: Add Phase 2 spec-aware optimization columns to track_results.
+            # Each column gets its own try/commit so a duplicate-column error on
+            # one ALTER does not roll back columns added earlier in the same
+            # session — that was the prior bug (single rollback at end of loop
+            # discarded successful ALTERs in the SQLAlchemy unit of work).
             phase2_columns = {
                 "optimal_slope": "FLOAT DEFAULT 0.0",
                 "station_compensation": "FLOAT",
@@ -546,15 +550,12 @@ class DatabaseManager:
                     session.execute(text(
                         f"ALTER TABLE track_results ADD COLUMN {col_name} {col_type}"
                     ))
+                    session.commit()
                 except Exception as e:
+                    session.rollback()
                     if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                         logger.warning(f"Migration error adding {col_name}: {e}")
-                    session.rollback()
-            try:
-                session.commit()
-                logger.info("Phase 2 migration: ensured spec-aware columns exist")
-            except Exception:
-                pass
+            logger.info("Phase 2 migration: ensured spec-aware columns exist")
 
             # Migration: Add match_method column to final_test_results
             try:
@@ -781,38 +782,40 @@ class DatabaseManager:
             logger.debug(f"Skipping save_analysis for Smoothness: {analysis.metadata.filename}")
             return getattr(analysis, 'smoothness_id', -1) or -1
 
-        # Use write lock for thread safety with SQLite
-        with self._write_lock:
-            with self.session() as session:
-                # Check for existing record by filename (stable identifier)
-                # This ensures re-analysis updates the existing record even if
-                # model/serial/date parsing changed
-                existing = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.filename == analysis.metadata.filename,
-                    DBAnalysisResult.file_path == str(analysis.metadata.file_path),
-                ).first()
+        # session() acquires _write_lock internally (RLock-reentrant), so
+        # wrapping with another `with self._write_lock` here is redundant and
+        # only adds confusion to the lock graph. The session context is
+        # sufficient for SQLite serialization.
+        with self.session() as session:
+            # Check for existing record by filename (stable identifier)
+            # This ensures re-analysis updates the existing record even if
+            # model/serial/date parsing changed
+            existing = session.query(DBAnalysisResult).filter(
+                DBAnalysisResult.filename == analysis.metadata.filename,
+                DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+            ).first()
 
-                if existing:
-                    logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
-                    return self._update_existing_analysis(session, analysis)
+            if existing:
+                logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
+                return self._update_existing_analysis(session, analysis)
 
-                # No existing record, create new one
-                db_analysis = self._map_analysis_to_db(analysis)
-                session.add(db_analysis)
-                session.flush()  # Get ID before commit
+            # No existing record, create new one
+            db_analysis = self._map_analysis_to_db(analysis)
+            session.add(db_analysis)
+            session.flush()  # Get ID before commit
 
-                # Record as processed file
-                # ERROR results are marked success=False so they get retried
-                is_success = analysis.overall_status != AnalysisStatus.ERROR
-                self._record_processed_file(
-                    session,
-                    analysis.metadata.file_path,
-                    db_analysis.id,
-                    success=is_success,
-                )
+            # Record as processed file
+            # ERROR results are marked success=False so they get retried
+            is_success = analysis.overall_status != AnalysisStatus.ERROR
+            self._record_processed_file(
+                session,
+                analysis.metadata.file_path,
+                db_analysis.id,
+                success=is_success,
+            )
 
-                logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-                return db_analysis.id
+            logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+            return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
@@ -2221,8 +2224,20 @@ class DatabaseManager:
 
     def _map_analysis_to_db(self, analysis: AnalysisResult) -> DBAnalysisResult:
         """Map Pydantic AnalysisResult to SQLAlchemy model."""
-        # Map system type
-        system_type = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+        # Map system type. DBSystemType only defines A and B; SystemType.UNKNOWN
+        # only reaches this trim-record path on parser-error rows (FT files take
+        # save_final_test). Fall back to B with a warning so misclassified
+        # records are visible in logs rather than silently labeled.
+        if analysis.metadata.system == SystemType.A:
+            system_type = DBSystemType.A
+        elif analysis.metadata.system == SystemType.B:
+            system_type = DBSystemType.B
+        else:
+            logger.warning(
+                f"SystemType.UNKNOWN on trim record {analysis.metadata.filename} "
+                f"(likely a parse-error row); storing as DBSystemType.B"
+            )
+            system_type = DBSystemType.B
 
         # Map overall status
         status_map = {
@@ -2361,7 +2376,9 @@ class DatabaseManager:
         """
         from laser_trim_analyzer.core.models import FileMetadata
 
-        # Map system type
+        # Map system type. The DB enum only stores A or B (UNKNOWN parse-error
+        # rows are written as B with a warning at save time — see
+        # _map_analysis_to_db). The reverse mapping is therefore lossy by design.
         system_type = SystemType.A if db_analysis.system == DBSystemType.A else SystemType.B
 
         # Map status - handle both enum and string values from DB
@@ -2386,13 +2403,32 @@ class DatabaseManager:
             logger.warning(f"Analysis {db_analysis.filename} has no valid tracks, skipping")
             return None
 
+        # Restore data_quality state — the column is a JSON-encoded list and
+        # was previously dropped on read, leaving every loaded record looking
+        # "good" regardless of the suspect flag set at analysis time.
+        dq_issues = []
+        raw_issues = getattr(db_analysis, 'data_quality_issues', None)
+        if raw_issues:
+            try:
+                decoded = json.loads(raw_issues)
+                if isinstance(decoded, list):
+                    dq_issues = decoded
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Could not decode data_quality_issues for {db_analysis.filename}: {e}")
+        dq_status = getattr(db_analysis, 'data_quality', None) or 'good'
+
         try:
-            return AnalysisResult(
+            result = AnalysisResult(
                 metadata=metadata,
                 overall_status=overall_status,
                 processing_time=db_analysis.processing_time or 0.0,
                 tracks=tracks,
             )
+            # AnalysisResult is Pydantic but data_quality fields are added
+            # dynamically by the processor; preserve them across DB round-trip.
+            result.data_quality = dq_status
+            result.data_quality_issues = dq_issues
+            return result
         except Exception as e:
             logger.error(f"Failed to create AnalysisResult for {db_analysis.filename}: {e}")
             return None
@@ -2505,7 +2541,17 @@ class DatabaseManager:
             existing.file_path = str(analysis.metadata.file_path)
             existing.model = analysis.metadata.model
             existing.serial = analysis.metadata.serial
-            existing.system = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+            # See _map_analysis_to_db for the UNKNOWN→B fallback rationale.
+            if analysis.metadata.system == SystemType.A:
+                existing.system = DBSystemType.A
+            elif analysis.metadata.system == SystemType.B:
+                existing.system = DBSystemType.B
+            else:
+                logger.warning(
+                    f"SystemType.UNKNOWN on update of {analysis.metadata.filename}; "
+                    f"keeping as DBSystemType.B"
+                )
+                existing.system = DBSystemType.B
             existing.file_date = analysis.metadata.file_date
             existing.has_multi_tracks = analysis.metadata.has_multi_tracks
             existing.processing_time = analysis.processing_time
@@ -4371,6 +4417,13 @@ class DatabaseManager:
                         "electrical_angles": t.electrical_angle_data or [],
                         "upper_limits": t.upper_limits or [],
                         "lower_limits": t.lower_limits or [],
+                        # Slope/offset/linearity_type are persisted on the track
+                        # row but were previously omitted here, leaving callers
+                        # (export, diagnostics) without the analyzer correction
+                        # state. get_comparison_data already returns these.
+                        "optimal_offset": getattr(t, "optimal_offset", None),
+                        "optimal_slope": getattr(t, "optimal_slope", None),
+                        "linearity_type": getattr(t, "linearity_type", None),
                     }
                     for t in tracks
                 ],
