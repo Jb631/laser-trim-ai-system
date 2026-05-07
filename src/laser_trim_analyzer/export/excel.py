@@ -572,7 +572,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     # For multi-track: (max)=worst case, (min)=most restrictive, (sum)=total across tracks
     headers = [
         "Model", "Serial", "System", "Trim Date", "Status",
-        "Tracks", "Sigma Gradient (max)", "Sigma Threshold (min)", "Sigma Margin %",
+        "Tracks", "Trim Passes (max)", "Sigma Gradient (max)", "Sigma Threshold (min)", "Sigma Margin %",
         "Sigma Pass", "Linearity Error (max)", "Linearity Spec", "Fail Points (sum)",
         "Linearity Pass", "Risk Category (max)", "Failure Prob (max)", "Anomaly",
         "Meas. Elec. Angle", "Travel Length", "Untrimmed R", "Trimmed R", "R Change %",
@@ -634,6 +634,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 max_err_red = track.max_error_reduction_percent
                 is_anomaly = getattr(track, 'is_anomaly', False)
                 mea_elec_angle = getattr(track, 'measured_electrical_angle', None)
+                trim_pass_count = getattr(track, 'trim_pass_count', None)
             else:
                 # Multi-track: use worst-case values for sigma, sum for fail points
                 # Guard against None values in aggregations
@@ -672,6 +673,12 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 is_anomaly = any(getattr(t, 'is_anomaly', False) for t in result.tracks)
                 # Use first track's measured electrical angle (same unit)
                 mea_elec_angle = getattr(result.tracks[0], 'measured_electrical_angle', None)
+                # Worst-case trim pass count across tracks (more passes = harder unit)
+                trim_pass_vals = [
+                    getattr(t, 'trim_pass_count', None) for t in result.tracks
+                ]
+                trim_pass_vals = [v for v in trim_pass_vals if v is not None]
+                trim_pass_count = max(trim_pass_vals) if trim_pass_vals else None
 
             # Calculate sigma margin percentage
             if sigma_threshold > 0:
@@ -689,6 +696,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             (trim_date.strftime("%Y-%m-%d") if trim_date else "", None),
             (result.overall_status.value, None),
             (len(result.tracks), None),
+            (trim_pass_count if trim_pass_count is not None else "", None),
             (sigma_gradient, "0.000000"),
             (sigma_threshold, "0.000000"),
             (sigma_margin_pct / 100 if sigma_margin_pct else 0, "0.0%"),
@@ -710,7 +718,7 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             (result.metadata.filename, None),  # Filename at end
         ]
 
-        status_col = 5  # Status is now column 5
+        status_col = 5  # Status is in column 5
 
         for col, (value, num_fmt) in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col)
@@ -733,8 +741,8 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     num_cols = len(headers)
     ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}{len(results) + 1}"
 
-    # Adjust column widths — must match number of headers
-    widths = [12, 12, 8, 12, 8, 6, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 14, 12, 12, 12, 10, 14, 14, 35]
+    # Adjust column widths — must match number of headers (Trim Passes col added)
+    widths = [12, 12, 8, 12, 8, 6, 12, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 14, 12, 12, 12, 10, 14, 14, 35]
     assert len(widths) == len(headers), f"Column widths ({len(widths)}) != headers ({len(headers)})"
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width

@@ -442,6 +442,13 @@ class ExcelParser:
             # Find untrimmed sheet
             untrimmed_sheet = None
             trimmed_sheet = None
+            # Count laser trim passes for this track. System A names sheets
+            # "<section> TRK<n> 0" (untrimmed), "<section> TRK<n> 1",
+            # "<section> TRK<n> 2", ... (intermediate passes), and
+            # "<section> TRK<n> TRM" (final).  Highest numeric suffix tells
+            # us how many trim cycles the equipment ran.
+            max_trim_n = 0
+            has_trm = False
 
             for sheet in xl.sheet_names:
                 sheet_upper = sheet.upper()
@@ -450,6 +457,23 @@ class ExcelParser:
                         untrimmed_sheet = sheet
                     elif "TRM" in sheet_upper:
                         trimmed_sheet = sheet
+                        has_trm = True
+                    else:
+                        # Look for trailing positive integer (intermediate trim pass)
+                        tail = sheet.rsplit(" ", 1)[-1]
+                        if tail.isdigit():
+                            n = int(tail)
+                            if n > 0 and n > max_trim_n:
+                                max_trim_n = n
+
+            # 0 intermediate sheets but a TRM exists → single trim pass.
+            # Otherwise the highest numbered sheet is the pass count.
+            if max_trim_n > 0:
+                trim_pass_count = max_trim_n
+            elif has_trm:
+                trim_pass_count = 1
+            else:
+                trim_pass_count = 0
 
             # Use trimmed sheet if available, otherwise use untrimmed
             # (allows processing of files where trimming was aborted/incomplete)
@@ -460,6 +484,7 @@ class ExcelParser:
                     SystemType.A, track_id
                 )
                 if track_data:
+                    track_data["trim_pass_count"] = trim_pass_count
                     tracks.append(track_data)
 
         return tracks
@@ -494,6 +519,19 @@ class ExcelParser:
         else:
             trimmed_sheet = None
 
+        # Count laser trim passes the equipment ran.
+        # If "Trim N" sheets exist, the highest N is the pass count.
+        # Otherwise a lone "Lin Error" implies a single trim pass; nothing
+        # at all means trimming was aborted/incomplete (count = 0).
+        if trim_sheets:
+            trim_pass_count = max(
+                int(s.lower().split()[-1]) for s in trim_sheets
+            )
+        elif lin_error_sheet:
+            trim_pass_count = 1
+        else:
+            trim_pass_count = 0
+
         if trimmed_sheet:
             # Extract track ID from filename if present.
             # Newer LTS files embed the track letter: e.g.
@@ -514,6 +552,7 @@ class ExcelParser:
                 SystemType.B, sys_b_track_id
             )
             if track_data:
+                track_data["trim_pass_count"] = trim_pass_count
                 tracks.append(track_data)
 
         return tracks

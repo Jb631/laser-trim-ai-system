@@ -384,6 +384,10 @@ class TrackResult(Base):
     is_anomaly = Column(Boolean, default=False)
     anomaly_reason = Column(Text)
 
+    # Number of laser-trim passes the equipment ran (counted from file sheets).
+    # 1 = single pass, 2+ = retrim needed. NULL for FT-derived rows.
+    trim_pass_count = Column(Integer, nullable=True)
+
     # Dynamic range
     range_utilization_percent = Column(Float)
     minimum_margin = Column(Float)

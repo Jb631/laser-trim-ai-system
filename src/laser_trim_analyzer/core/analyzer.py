@@ -328,6 +328,8 @@ class Analyzer:
             lower_limits=lower_limits,
             untrimmed_positions=track_data.get("untrimmed_positions"),
             untrimmed_errors=track_data.get("untrimmed_errors"),
+            # Number of laser-trim passes the equipment ran (from sheet count)
+            trim_pass_count=track_data.get("trim_pass_count"),
         )
 
     def _calculate_sigma(

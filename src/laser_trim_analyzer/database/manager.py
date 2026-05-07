@@ -569,6 +569,21 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+            # Migration: Add trim_pass_count column to track_results.
+            # Counts how many laser-trim passes the equipment ran per track,
+            # surfaced from the file's "Trim N" / "TRK<n> M" sheet layout.
+            # Used as a quality indicator (1 = clean, 2+ = retrim needed).
+            try:
+                session.execute(text("SELECT trim_pass_count FROM track_results LIMIT 1"))
+            except OperationalError:
+                session.rollback()
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN trim_pass_count INTEGER"))
+                    session.commit()
+                    logger.info("Migration: Added trim_pass_count column to track_results")
+                except Exception:
+                    pass
+
             # Migration: Add aliases column to model_specs.
             # Stores pipe-separated alternate model numbers so a single spec
             # row covers cases like 1621501 and 2001621501 being the same part.
@@ -2359,6 +2374,8 @@ class DatabaseManager:
             raw_linearity_error=getattr(track, 'raw_linearity_error', None),
             optimized_linearity_error=getattr(track, 'optimized_linearity_error', None),
             raw_fail_points=getattr(track, 'raw_fail_points', None),
+            # Trim difficulty (number of laser-trim passes recorded in file)
+            trim_pass_count=getattr(track, 'trim_pass_count', None),
             # Computed metrics
             gradient_margin=track.gradient_margin,
             plot_path=str(track.plot_path) if track.plot_path else None,
@@ -2528,6 +2545,8 @@ class DatabaseManager:
                 raw_linearity_error=getattr(db_track, 'raw_linearity_error', None),
                 optimized_linearity_error=getattr(db_track, 'optimized_linearity_error', None),
                 raw_fail_points=getattr(db_track, 'raw_fail_points', None),
+                # Trim difficulty
+                trim_pass_count=getattr(db_track, 'trim_pass_count', None),
                 # Max deviation fields
                 max_deviation=getattr(db_track, 'max_deviation', None),
                 max_deviation_position=getattr(db_track, 'max_deviation_position', None),
