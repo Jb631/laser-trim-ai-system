@@ -232,16 +232,46 @@ class DashboardPage(ctk.CTkFrame):
         )
         self.cost_impact_label.pack(padx=15, pady=(4, 10), anchor="w", fill="x")
 
-        # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability
+        # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability.
+        # The Trends > Yield tab was retired in favour of this chart with
+        # an adjustable date range, so the fleet-wide pass-rate question
+        # has a single canonical home.
         chart_frame = ctk.CTkFrame(content)
         chart_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
-        chart_label = ctk.CTkLabel(
-            chart_frame,
-            text="Linearity Pass Rate Trend (90 Days)",
+        chart_header = ctk.CTkFrame(chart_frame, fg_color="transparent")
+        chart_header.pack(fill="x", padx=15, pady=(15, 5))
+
+        self._trend_chart_label = ctk.CTkLabel(
+            chart_header,
+            text="Linearity Pass Rate Trend",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+        self._trend_chart_label.pack(side="left")
+
+        # Date-range selector. Days mapping is held alongside so the
+        # callback knows what int to pass to get_yield_trend / refresh.
+        self._trend_range_options = [
+            ("Last 30 days", 30),
+            ("Last 90 days", 90),
+            ("Last 180 days", 180),
+            ("Last 365 days", 365),
+            ("All time", 3650),
+        ]
+        self._trend_range_label_to_days = dict(self._trend_range_options)
+        self._trend_range_var = ctk.StringVar(value="Last 90 days")
+        self._trend_selected_days = 90
+
+        ctk.CTkLabel(chart_header, text="Range:",
+                     font=ctk.CTkFont(size=11)).pack(side="right", padx=(8, 4))
+        self._trend_range_dropdown = ctk.CTkOptionMenu(
+            chart_header,
+            values=[opt[0] for opt in self._trend_range_options],
+            variable=self._trend_range_var,
+            width=130,
+            command=self._on_trend_range_changed,
+        )
+        self._trend_range_dropdown.pack(side="right")
 
         # Placeholder frame for chart - actual ChartWidget created lazily on first show
         self._chart_frame = chart_frame
@@ -925,7 +955,13 @@ class DashboardPage(ctk.CTkFrame):
         self.alerts_list.configure(state="disabled")
 
     def _update_trend_chart(self, stats: Dict[str, Any]):
-        """Update trend chart with linearity pass rate data."""
+        """Update trend chart with linearity pass rate data.
+
+        At default range (90 days) we use the linearity-specific daily
+        trend already fetched as part of get_dashboard_stats — saves an
+        extra DB round-trip. At other ranges, _on_trend_range_changed
+        runs a separate get_yield_trend query in the background.
+        """
         # Ensure chart is initialized before use
         self._ensure_chart_initialized()
 
@@ -966,6 +1002,81 @@ class DashboardPage(ctk.CTkFrame):
             sample_sizes=sample_sizes,
             title=chart_title,
             ylabel="Pass Rate %"
+        )
+
+    def _on_trend_range_changed(self, label: str) -> None:
+        """User picked a new date range from the trend chart dropdown."""
+        days = self._trend_range_label_to_days.get(label, 90)
+        if days == self._trend_selected_days:
+            return
+        self._trend_selected_days = days
+        self._refresh_trend_chart_for_range(days)
+
+    def _refresh_trend_chart_for_range(self, days_back: int) -> None:
+        """Fetch and re-render only the trend chart at a new date range.
+
+        Doesn't trigger a full dashboard refresh — that would re-pull
+        every other tile. Picks weekly bins past 180 days so the chart
+        doesn't fragment into hundreds of unreadable daily ticks.
+        """
+        self._ensure_chart_initialized()
+        if not self.trend_chart:
+            return
+        period = "day" if days_back <= 180 else "week"
+        # Update label so the user sees the active range.
+        if hasattr(self, "_trend_chart_label"):
+            granularity = {"day": "Daily", "week": "Weekly"}.get(period, period)
+            self._trend_chart_label.configure(
+                text=f"Linearity Pass Rate Trend — {granularity}, last {days_back}d"
+            )
+        self.trend_chart.show_placeholder(f"Loading {days_back}-day trend...")
+
+        def _load():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                if period == "day":
+                    # Reuse the daily linearity trend embedded in the
+                    # main stats — same shape _update_trend_chart already
+                    # consumes, just for an arbitrary number of days.
+                    stats = db.get_dashboard_stats(days_back=days_back)
+                    self.after(0, lambda s=stats: self._update_trend_chart(s)
+                               if self.winfo_exists() else None)
+                else:
+                    rows = db.get_yield_trend(days_back=days_back, period=period)
+                    self.after(0, lambda r=rows: self._render_trend_pchart_from_yield(r)
+                               if self.winfo_exists() else None)
+            except Exception as e:
+                logger.error(f"Trend range refresh failed: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.trend_chart.show_placeholder(
+                    f"Trend error: {exc}"
+                ) if self.winfo_exists() and self.trend_chart else None)
+
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+        get_thread_manager().start_thread(target=_load, name="dashboard-trend-range")
+
+    def _render_trend_pchart_from_yield(self, rows):
+        """Render a P-chart from get_yield_trend rows (period-bucketed)."""
+        if not self.trend_chart or not self.winfo_exists():
+            return
+        if not rows:
+            self.trend_chart.show_placeholder("No data in selected range")
+            return
+        rows = [r for r in rows if r.get("total", 0) > 0]
+        if len(rows) < 2:
+            self.trend_chart.show_placeholder("Insufficient data for trend")
+            return
+        dates = [r["period"] for r in rows]
+        pass_rates = [r["pass_rate"] for r in rows]
+        sample_sizes = [r["total"] for r in rows]
+        latest = dates[-1] if dates else ""
+        title = f"Data as of: {latest}" if latest else ""
+        self.trend_chart.plot_pchart(
+            dates=dates,
+            pass_rates=pass_rates,
+            sample_sizes=sample_sizes,
+            title=title,
+            ylabel="Pass Rate %",
         )
 
     def _update_model_display(

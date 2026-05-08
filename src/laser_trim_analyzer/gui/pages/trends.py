@@ -106,7 +106,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self._trend_type = ctk.CTkSegmentedButton(
             header_frame,
-            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Process Drift", "Trim Difficulty"],
+            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Drift", "Process Drift", "Trim Difficulty"],
             command=self._on_trend_type_changed,
         )
         self._trend_type.set("Standard")
@@ -2323,7 +2323,10 @@ class TrendsPage(ctk.CTkFrame):
         elif value == "Cpk Trend":
             self._show_cpk_trend()
         elif value == "Yield":
-            self._show_yield_trend()
+            # Yield tab was removed — fleet-wide pass rate trend now lives
+            # on the Dashboard with adjustable date range. Keep the elif
+            # branch as a no-op safety net for any saved selection.
+            pass
         elif value == "Drift":
             self._show_drift_timeline()
         elif value == "Trim Difficulty":
