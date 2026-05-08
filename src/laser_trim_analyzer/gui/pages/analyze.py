@@ -739,6 +739,15 @@ class AnalyzePage(ctk.CTkFrame):
         # Check if any track is flagged as anomaly
         has_anomaly = any(t.is_anomaly for t in analysis.tracks if hasattr(t, 'is_anomaly'))
 
+        # Worst-track ML failure probability for the badge below.
+        # Surfacing this in the list lets operators spot units that
+        # passed sigma+linearity but ML still considers high-risk for
+        # FT failure — useful pre-screen before sending to assembly.
+        track_probs = [
+            getattr(t, "failure_probability", None) for t in analysis.tracks
+        ]
+        max_prob = max((p for p in track_probs if p is not None), default=None)
+
         # Determine status color
         if analysis.overall_status == AnalysisStatus.PASS:
             status_color = "#27ae60"
@@ -773,6 +782,24 @@ class AnalyzePage(ctk.CTkFrame):
                 width=15
             )
             anomaly_indicator.pack(side="left", padx=(0, 2), pady=8)
+
+        # ML failure-probability badge — only show when the prediction
+        # is meaningful (>=50%). Most useful for PASS-status units flagged
+        # as high-risk: those are the ones to watch at FT.
+        prob_indicator = None
+        if max_prob is not None and max_prob >= 0.50:
+            if max_prob >= 0.75:
+                prob_color = "#dc3545"  # red — high risk
+            else:
+                prob_color = "#fd7e14"  # amber — moderate risk
+            prob_indicator = ctk.CTkLabel(
+                item_frame,
+                text=f"ML {int(max_prob * 100)}%",
+                font=ctk.CTkFont(size=9, weight="bold"),
+                text_color=prob_color,
+                width=46,
+            )
+            prob_indicator.pack(side="left", padx=(0, 2), pady=8)
 
         # Info section
         info_frame = ctk.CTkFrame(item_frame, fg_color="transparent")
@@ -818,9 +845,11 @@ class AnalyzePage(ctk.CTkFrame):
         info_frame.bind("<Button-1>", on_click)
         model_serial_label.bind("<Button-1>", on_click)
         date_label.bind("<Button-1>", on_click)
-        # Bind anomaly indicator if it exists
+        # Bind indicators if they exist so the whole row is clickable
         if has_anomaly:
             anomaly_indicator.bind("<Button-1>", on_click)
+        if prob_indicator is not None:
+            prob_indicator.bind("<Button-1>", on_click)
 
     # =========================================================================
     # Details Display
@@ -1081,13 +1110,39 @@ class AnalyzePage(ctk.CTkFrame):
                     lines.append(f"    Result:     {'✓ PASS' if track.linearity_pass else '✗ FAIL'}")
                 lines.append("")
 
-                # Risk Assessment
-                lines.append("  RISK ASSESSMENT:")
-                if track.failure_probability is not None:
-                    lines.append(f"    Probability: {track.failure_probability:.1%}")
+                # Failure Margin — replaces the old RISK ASSESSMENT block.
+                # For passing tracks: how close did this unit come to failing?
+                # For failing tracks: how badly did it miss?
+                # margin_to_spec, max_violation, avg_violation are stored
+                # per-track but were previously never surfaced in the GUI.
+                margin = getattr(track, "margin_to_spec", None)
+                max_viol = getattr(track, "max_violation", None)
+                avg_viol = getattr(track, "avg_violation", None)
+                lines.append("  FAILURE MARGIN:")
+                if track.linearity_pass:
+                    if margin is not None:
+                        lines.append(
+                            f"    Margin to spec: {margin:.4f}  "
+                            f"(closer to 0 = closer to fail)"
+                        )
+                    else:
+                        lines.append("    Margin to spec: N/A")
                 else:
-                    lines.append(f"    Probability: N/A")
-                lines.append(f"    Category:    {track.risk_category.value}")
+                    if max_viol is not None:
+                        lines.append(f"    Max violation: {max_viol:.4f}  (worst point exceedance)")
+                    if avg_viol is not None:
+                        lines.append(f"    Avg violation: {avg_viol:.4f}  (across {track.linearity_fail_points} fail points)")
+                    if max_viol is None and avg_viol is None:
+                        lines.append("    Violation data: N/A")
+                # Keep the ML prediction here; it's a different signal
+                # (predicted FT failure) and useful alongside the margin.
+                if track.failure_probability is not None:
+                    lines.append(
+                        f"    ML failure prob: {track.failure_probability:.1%}  "
+                        f"(risk: {track.risk_category.value})"
+                    )
+                else:
+                    lines.append(f"    ML failure prob: N/A  (risk: {track.risk_category.value})")
                 lines.append("")
 
                 # Anomaly Detection (if flagged)
@@ -1099,7 +1154,11 @@ class AnalyzePage(ctk.CTkFrame):
                     lines.append("")
 
                 # Unit Properties (if available)
-                if track.unit_length or track.untrimmed_resistance or track.trimmed_resistance or track.measured_electrical_angle:
+                trim_passes = getattr(track, "trim_pass_count", None)
+                if (track.unit_length or track.untrimmed_resistance
+                        or track.trimmed_resistance
+                        or track.measured_electrical_angle is not None
+                        or trim_passes is not None):
                     lines.append("  UNIT PROPERTIES:")
                     if track.measured_electrical_angle is not None:
                         lines.append(f"    Meas. Elec. Angle: {track.measured_electrical_angle}")
@@ -1113,6 +1172,12 @@ class AnalyzePage(ctk.CTkFrame):
                         pct = track.resistance_change_percent
                         pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
                         lines.append(f"    R Change:    {track.resistance_change:+.2f}{pct_str}")
+                    # Trim difficulty — newly captured signal. 1 = clean
+                    # single pass; 2+ = laser ran multiple cycles to reach
+                    # spec (operator may want to investigate the unit).
+                    if trim_passes is not None:
+                        suffix = "" if trim_passes <= 1 else "  (retrim)"
+                        lines.append(f"    Trim Passes: {trim_passes}{suffix}")
                     lines.append("")
 
                 # Trim Effectiveness (if calculated)
@@ -1164,6 +1229,36 @@ class AnalyzePage(ctk.CTkFrame):
         lines.append("")
         lines.append(f"  Processing Time: {analysis.processing_time:.2f}s")
         lines.append(f"  File Path: {analysis.metadata.file_path}")
+
+        # Spatial fail-zone summary across tracks. worst_zone /
+        # worst_zone_position are stored on every track but were never
+        # surfaced; recurring failures in the same physical zone of
+        # multiple units suggest a fixture / element-geometry issue.
+        zone_lines = []
+        for track in analysis.tracks:
+            zone = getattr(track, "worst_zone", None)
+            zone_pos = getattr(track, "worst_zone_position", None)
+            if zone is None and zone_pos is None:
+                continue
+            label = f"Track {track.track_id}" if track.track_id else "Track"
+            parts = []
+            if zone is not None:
+                parts.append(f"zone {zone}")
+            if zone_pos is not None:
+                parts.append(f"pos {zone_pos:.3f}")
+            if parts:
+                zone_lines.append(f"    {label}: {', '.join(parts)}")
+        if zone_lines:
+            lines.append("")
+            lines.append("───────────────────────────────────────")
+            lines.append("  WORST FAIL ZONE")
+            lines.append("───────────────────────────────────────")
+            lines.append("")
+            lines.extend(zone_lines)
+            lines.append("")
+            lines.append("    (Spatial location on the element where the")
+            lines.append("     largest deviation occurred — recurring zones")
+            lines.append("     across units point to fixture/geometry issues.)")
 
         # Look up model specs
         try:
