@@ -300,7 +300,9 @@ class TrendsPage(ctk.CTkFrame):
             text="Active Models Summary",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=6)
+        # columnspan grew from 6 to 9 with the addition of the Top Anomaly
+        # Model stat tile, so the title stays aligned across the full row.
+        stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=9)
 
         # Stats in a horizontal row
         self.summary_stat_labels = {}
@@ -313,6 +315,11 @@ class TrendsPage(ctk.CTkFrame):
             ("models_at_risk", "Needs Attention"),
             ("best_model", "Best (Linearity)"),
             ("worst_model", "Worst (Linearity)"),
+            # Top model by anomaly rate over the selected window. Per-track
+            # is_anomaly was visible per-unit but never rolled up to the
+            # model level — a model with persistent anomalies is a fixture
+            # or operator setup issue, not random material variation.
+            ("top_anomaly", "Top Anomaly Model"),
         ]
 
         for idx, (key, label) in enumerate(stat_names):
@@ -1359,12 +1366,23 @@ class TrendsPage(ctk.CTkFrame):
         # Load ML insights on background thread (disk I/O for MLManager.load_all)
         ml_insights = self._get_ml_summary_insights()
 
+        # Per-model anomaly rates — surfaced as a stat tile so persistent
+        # setup issues are visible at the model level (per-track is_anomaly
+        # was visible per-unit but never rolled up before).
+        try:
+            anomaly_rows = db.get_anomaly_rate_by_model(
+                days_back=self.selected_days, min_samples=10
+            )
+        except Exception as e:
+            logger.debug(f"Could not load anomaly rates: {e}")
+            anomaly_rows = []
+
         # Update UI on main thread; capture gen so we can discard stale loads
         self.after(0, lambda g=gen: self._update_summary_display_if_current(
             g, active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
             priority_models=priority_models, heatmap_data=heatmap_data,
-            ml_insights=ml_insights
+            ml_insights=ml_insights, anomaly_rows=anomaly_rows,
         ))
 
     def _update_summary_display_if_current(self, gen: int, *args, **kwargs):
@@ -1536,6 +1554,7 @@ class TrendsPage(ctk.CTkFrame):
         priority_models: Optional[List[Dict[str, Any]]] = None,
         heatmap_data: Optional[Dict[str, Any]] = None,
         ml_insights: Optional[Dict[str, Any]] = None,
+        anomaly_rows: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update summary display with loaded data."""
         if not self.winfo_exists():
@@ -1632,6 +1651,28 @@ class TrendsPage(ctk.CTkFrame):
             text=f"{worst_model} ({worst_rate:.0f}%)",
             text_color="#e74c3c" if worst_rate < 80 else "#f39c12"
         )
+
+        # Top anomaly model — pulls from get_anomaly_rate_by_model which
+        # is already sorted descending by rate. Color-code amber at >=5%
+        # and red at >=15% so persistent setup issues stand out without
+        # the operator having to drill into individual files.
+        anomaly_label = self.summary_stat_labels.get("top_anomaly")
+        if anomaly_label is not None:
+            top_anom = (anomaly_rows or [None])[0] if anomaly_rows else None
+            if top_anom and top_anom["anomaly_count"] > 0:
+                rate = top_anom["anomaly_rate"]
+                if rate >= 15.0:
+                    anom_color = "#e74c3c"
+                elif rate >= 5.0:
+                    anom_color = "#f39c12"
+                else:
+                    anom_color = "white"
+                anomaly_label.configure(
+                    text=f"{top_anom['model']} ({top_anom['anomaly_count']}, {rate:.0f}%)",
+                    text_color=anom_color,
+                )
+            else:
+                anomaly_label.configure(text="None", text_color="#27ae60")
 
         # Update alerts chart - show active alerts first, then inactive in separate section
         if active_alerts:
