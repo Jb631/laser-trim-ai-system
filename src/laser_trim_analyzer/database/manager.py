@@ -7045,6 +7045,73 @@ class DatabaseManager:
                 for r in results
             ]
 
+    def get_anomaly_rate_by_model(
+        self,
+        days_back: int = 90,
+        min_samples: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate anomaly flag rate per model over a window.
+
+        is_anomaly is set per-track when the trim has the linear-slope
+        signature of a true trim failure (vs random noise). Rolling it
+        up per model surfaces persistent setup issues — e.g. a model
+        with 12 anomalies in 30 days likely has a fixture or operator
+        problem rather than random material variation.
+
+        Args:
+            days_back: window length in days, anchored to file_date.
+            min_samples: minimum total tracks per model to include in
+                the result so a single anomaly on a low-volume model
+                doesn't dominate the ranking.
+
+        Returns:
+            List of dicts sorted by anomaly_rate descending. Each dict:
+                model, total_tracks, anomaly_count, anomaly_rate
+                (percent), last_anomaly_date.
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBTrackResult.id).label("total_tracks"),
+                    func.sum(
+                        case((DBTrackResult.is_anomaly == True, 1), else_=0)
+                    ).label("anomaly_count"),
+                    func.max(
+                        case(
+                            (DBTrackResult.is_anomaly == True,
+                             DBAnalysisResult.file_date),
+                            else_=None,
+                        )
+                    ).label("last_anomaly_date"),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= cutoff,
+                )
+                .group_by(DBAnalysisResult.model)
+                .having(func.count(DBTrackResult.id) >= min_samples)
+                .all()
+            )
+
+            results = []
+            for r in rows:
+                total = int(r.total_tracks or 0)
+                anom = int(r.anomaly_count or 0)
+                rate = (anom / total * 100.0) if total else 0.0
+                results.append({
+                    "model": r.model,
+                    "total_tracks": total,
+                    "anomaly_count": anom,
+                    "anomaly_rate": rate,
+                    "last_anomaly_date": r.last_anomaly_date,
+                })
+            results.sort(key=lambda r: -r["anomaly_rate"])
+            return results
+
     # Columns the Process Drift view supports. Mapping from the
     # user-facing label to the SQLAlchemy column attribute on
     # DBTrackResult, plus a unit string for the chart axis.
