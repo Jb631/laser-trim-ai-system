@@ -282,7 +282,9 @@ class DashboardPage(ctk.CTkFrame):
         )
         self._chart_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
-        # Row 3: [Alerts+Drift | Pareto chart | Where to Focus]
+        # Row 3: [Alerts | Where to Focus (cols 1+2)]
+        # Pareto chart was removed in favour of the expanded Where-to-Focus
+        # panel — they ranked the same models by the same impact signal.
         content.grid_rowconfigure(3, weight=1, minsize=250)
 
         # Alerts (column 0). Previously this column also stacked a separate
@@ -312,25 +314,17 @@ class DashboardPage(ctk.CTkFrame):
         self.alerts_list.configure(state="disabled")
         self._update_alerts_display([])
 
-        # Pareto chart (column 1)
-        self._pareto_frame = ctk.CTkFrame(content)
-        self._pareto_frame.grid(row=3, column=1, padx=10, pady=10, sticky="nsew")
-        pareto_label = ctk.CTkLabel(
-            self._pareto_frame, text="Failure Pareto",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        pareto_label.pack(padx=15, pady=(15, 5), anchor="w")
-        self._pareto_placeholder = ctk.CTkLabel(
-            self._pareto_frame, text="Loading...", text_color="gray"
-        )
-        self._pareto_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.pareto_chart = None
+        # Failure Pareto chart removed — the same model ranking lives in
+        # the expanded Where-to-Focus cards which already include count
+        # and a recommendation string.
+        self.pareto_chart = None  # legacy reference for any external code
         self.confusion_chart = None  # Not used as chart — text summary in system info row
         self.scatter_chart = None    # Not used as chart — data in system info row
 
-        # Where to Focus panel (column 2)
+        # Where to Focus panel — now spans columns 1+2 since the Pareto
+        # chart that used to sit in column 1 has been removed.
         self.model_frame = ctk.CTkFrame(content)
-        self.model_frame.grid(row=3, column=2, padx=10, pady=10, sticky="nsew")
+        self.model_frame.grid(row=3, column=1, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         model_label = ctk.CTkLabel(
             self.model_frame,
@@ -503,25 +497,6 @@ class DashboardPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Failed to initialize chart (matplotlib issue?): {e}")
             self._chart_initialized = True  # Don't retry on every refresh
-
-    def _ensure_pareto_chart_initialized(self):
-        """Lazily initialize Pareto chart."""
-        if self.pareto_chart is not None or getattr(self, '_pareto_init_failed', False):
-            return
-
-        try:
-            from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
-
-            self._pareto_placeholder.destroy()
-            self.pareto_chart = ChartWidget(
-                self._pareto_frame,
-                style=ChartStyle(figure_size=(5, 3), dpi=80)
-            )
-            self.pareto_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-            self.pareto_chart.show_placeholder("Loading Pareto data...")
-        except Exception as e:
-            logger.error(f"Failed to initialize Pareto chart: {e}")
-            self._pareto_init_failed = True  # Don't retry on every refresh
 
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
@@ -778,8 +753,8 @@ class DashboardPage(ctk.CTkFrame):
         # Update model prioritization display
         self._update_model_display(priority_models, trending_worse)
 
-        # Update Pareto chart
-        self._update_pareto_chart(priority_models)
+        # Pareto chart removed — _update_model_display already shows the
+        # same ranking via Where-to-Focus cards.
 
         # Update category breakdown charts
         self._update_breakdown_charts(element_breakdown or [], class_breakdown or [])
@@ -1166,60 +1141,6 @@ class DashboardPage(ctk.CTkFrame):
             )
             stats_label.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 5), sticky="w")
 
-    def _update_pareto_chart(self, priority_models: List[Dict[str, Any]]):
-        """Update Pareto chart with cost-weighted failure data when pricing available."""
-        try:
-            self._ensure_pareto_chart_initialized()
-            if not self.pareto_chart:
-                return
-
-            if not priority_models:
-                self.pareto_chart.show_placeholder("No failure data for Pareto chart")
-                return
-
-            # Get pricing data for cost-weighted Pareto
-            prices = self.app.config.active_models.model_prices
-            cost_ratio = self.app.config.active_models.cost_ratio
-
-            failing_models = [m for m in priority_models if m.get("failed_units", 0) > 0]
-            if not failing_models:
-                self.pareto_chart.show_placeholder("No failures to display")
-                return
-
-            if prices:
-                # Cost-weighted Pareto: failure_count * unit_price * cost_ratio
-                labels = []
-                values = []
-                for m in failing_models:
-                    model = m.get("model", "?")
-                    failed = m.get("failed_units", 0)
-                    price = prices.get(model, 0)
-                    cost = failed * price * cost_ratio
-                    if cost > 0:
-                        labels.append(model)
-                        values.append(cost)
-                    elif price == 0:
-                        # No price — still include by failure count (as $0)
-                        labels.append(model)
-                        values.append(0)
-
-                if any(v > 0 for v in values):
-                    # Format as $K for readability
-                    title = "Failure Cost Impact ($)"
-                    self.pareto_chart.plot_pareto(labels=labels, values=values, title=title)
-                else:
-                    # All prices are 0 — fall back to failure count
-                    labels = [m.get("model", "?") for m in failing_models]
-                    values = [m.get("failed_units", 0) for m in failing_models]
-                    self.pareto_chart.plot_pareto(labels=labels, values=values)
-            else:
-                # No pricing — use failure count
-                labels = [m.get("model", "?") for m in failing_models]
-                values = [m.get("failed_units", 0) for m in failing_models]
-                self.pareto_chart.plot_pareto(labels=labels, values=values)
-        except Exception as e:
-            logger.debug(f"Pareto chart update error: {e}")
-
     def _export_executive_summary(self):
         """Export executive summary report to Excel."""
         from tkinter import filedialog, messagebox
@@ -1494,9 +1415,8 @@ class DashboardPage(ctk.CTkFrame):
     def on_hide(self):
         """Called when page becomes hidden - cleanup to free memory."""
         # Clear charts to free matplotlib resources
-        for chart in [self.trend_chart, self.pareto_chart]:
-            if chart and hasattr(chart, 'figure'):
-                try:
-                    chart.clear()
-                except Exception as e:
-                    logger.debug(f"Chart cleanup warning: {e}")
+        if self.trend_chart and hasattr(self.trend_chart, 'figure'):
+            try:
+                self.trend_chart.clear()
+            except Exception as e:
+                logger.debug(f"Chart cleanup warning: {e}")
