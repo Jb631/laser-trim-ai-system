@@ -106,7 +106,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self._trend_type = ctk.CTkSegmentedButton(
             header_frame,
-            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Trim Difficulty"],
+            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Yield", "Drift", "Process Drift", "Trim Difficulty"],
             command=self._on_trend_type_changed,
         )
         self._trend_type.set("Standard")
@@ -2330,6 +2330,8 @@ class TrendsPage(ctk.CTkFrame):
             self._show_trim_difficulty()
         elif value == "Priorities":
             self._show_priorities()
+        elif value == "Process Drift":
+            self._show_process_drift()
 
     def show_drift_tab(self):
         """Public hook used by the Dashboard's Drift Alerts card to jump
@@ -2940,6 +2942,189 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")
             self.status_label.configure(text=f"Drift error: {e}")
+
+    # Metrics shown on the Process Drift tab. The DB-side keys must
+    # match DatabaseManager._PROCESS_DRIFT_METRICS.
+    _PROCESS_DRIFT_PANELS = (
+        ("untrimmed_resistance", "Untrimmed Resistance",
+         "Carbon batch / tooling drift"),
+        ("measured_electrical_angle", "Measured Electrical Angle",
+         "Fixture / setup drift"),
+        ("trim_pass_count", "Trim Passes",
+         "Process difficulty creep"),
+    )
+
+    def _show_process_drift(self):
+        """Three-panel view of physical-measurement drift per model.
+
+        Same z-score-based drift detection ML uses, applied to the
+        physical track signals (untrimmed resistance, electrical angle,
+        trim pass count). A drifting baseline often shows up here weeks
+        before sigma starts moving.
+        """
+        self.status_label.configure(text="Loading process drift...")
+        baseline_days = max(self.selected_days, 60)
+        # Recent window = ~15% of baseline, clamped 7–28 days.
+        recent_days = max(7, min(28, baseline_days // 7))
+
+        def _load():
+            try:
+                db = get_database()
+                panels = []
+                for metric, label, subtitle in self._PROCESS_DRIFT_PANELS:
+                    try:
+                        rows = db.get_process_drift_by_model(
+                            metric=metric,
+                            baseline_days=baseline_days,
+                            recent_days=recent_days,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"Process drift load failed for {metric}: {e}",
+                            exc_info=True,
+                        )
+                        rows = []
+                    panels.append((metric, label, subtitle, rows))
+                self.after(0, lambda p=panels, bd=baseline_days, rd=recent_days:
+                            self._render_process_drift(p, bd, rd))
+            except Exception as e:
+                logger.error(f"Process drift load error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Process drift error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="process-drift")
+
+    def _render_process_drift(self, panels, baseline_days: int, recent_days: int):
+        """Render three stacked drift panels — one per physical metric."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Process Drift")
+            chart.clear()
+            fig = chart.figure
+            n = len(panels)
+            # Per-panel rows shown
+            per_panel_rows = [min(10, len(rows)) for _, _, _, rows in panels]
+            total_rows = sum(max(1, r) for r in per_panel_rows)
+            target_height = max(7.0, min(18.0, 1.5 + 0.45 * total_rows + 1.0 * n))
+            fig.set_size_inches(fig.get_size_inches()[0], target_height,
+                                 forward=True)
+            gs = fig.add_gridspec(n, 1, hspace=0.65)
+            db_metrics = self._db_metric_meta()
+
+            any_drifting = 0
+            for i, (metric, label, subtitle, rows) in enumerate(panels):
+                ax = fig.add_subplot(gs[i])
+                chart._style_axis(ax)
+                meta = db_metrics.get(metric, {})
+                unit = meta.get("unit", "")
+                fmt = meta.get("fmt", "{:.2f}")
+
+                if not rows:
+                    ax.set_title(
+                        f"{label} — no data",
+                        loc="left", fontsize=12, fontweight="bold",
+                        color="#ffffff",
+                    )
+                    self._draw_empty_state(
+                        ax,
+                        f"Need ≥20 baseline samples and ≥5 recent samples\n"
+                        f"per model. None met the threshold.",
+                    )
+                    ax.set_xticks([]); ax.set_yticks([])
+                    for spine in ax.spines.values():
+                        spine.set_visible(False)
+                    continue
+
+                # Show top 10 by |z|.
+                shown = rows[:10]
+                drifting_in_panel = sum(1 for r in shown if r["is_drifting"])
+                any_drifting += drifting_in_panel
+                # Reverse so largest |z| ends at the top of the bar chart.
+                shown_rev = list(reversed(shown))
+                models = [r["model"] for r in shown_rev]
+                z_scores = [r["z_score"] for r in shown_rev]
+
+                def _color(r):
+                    if not r["is_drifting"]:
+                        return "#198754"  # within tolerance
+                    z = abs(r["z_score"])
+                    if z >= 4.0:
+                        return "#6f42c1"  # extreme
+                    if z >= 3.0:
+                        return "#dc3545"  # severe
+                    return "#fd7e14"      # moderate
+
+                colors = [_color(r) for r in shown_rev]
+                y_pos = list(range(len(models)))
+                ax.barh(y_pos, z_scores, color=colors,
+                        edgecolor="#1a1a1a", linewidth=0.5)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(models, fontsize=9)
+
+                # Annotate each bar with baseline mean and recent mean
+                # so the operator can see what the actual numbers are
+                # rather than just the z-score.
+                xmax = max((abs(z) for z in z_scores), default=1.0)
+                for j, r in enumerate(shown_rev):
+                    base_str = fmt.format(r["baseline_mean"])
+                    recent_str = fmt.format(r["recent_mean"])
+                    arrow = "↑" if r["direction"] == "up" else (
+                        "↓" if r["direction"] == "down" else "·"
+                    )
+                    text = (
+                        f"  z={r['z_score']:+.1f}  {arrow} "
+                        f"{base_str} → {recent_str} {unit}"
+                        f"  (n={r['baseline_n']}/{r['recent_n']})"
+                    )
+                    # Place the annotation at the bar end, biased outward
+                    # so positive bars get text right of zero, negative bars
+                    # left of zero. Use ha to keep it readable.
+                    z = z_scores[j]
+                    if z >= 0:
+                        ax.text(z, j, text, va="center", ha="left",
+                                fontsize=8, color="#cccccc")
+                    else:
+                        ax.text(z, j, text, va="center", ha="right",
+                                fontsize=8, color="#cccccc")
+
+                # ±2σ reference lines for the drift threshold.
+                ax.axvline(x=0, color="#666666", linewidth=0.6)
+                ax.axvline(x=2.0, color="#fd7e14", linestyle="--",
+                           linewidth=0.8, alpha=0.7)
+                ax.axvline(x=-2.0, color="#fd7e14", linestyle="--",
+                           linewidth=0.8, alpha=0.7)
+                ax.set_xlim(-max(3.0, xmax * 1.5), max(3.0, xmax * 1.5))
+                ax.set_xlabel("z-score (recent vs baseline)")
+                ax.set_title(
+                    f"{label} — {subtitle}  ({drifting_in_panel}/"
+                    f"{len(shown)} drifting)",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax.grid(True, axis="x", alpha=0.2)
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=(
+                    f"Process drift — baseline {baseline_days}d vs "
+                    f"recent {recent_days}d, {any_drifting} drifting"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Process drift render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Process drift error: {e}")
+
+    @staticmethod
+    def _db_metric_meta():
+        """Cached lookup for axis-unit metadata (kept here so the GUI
+        doesn't have to import the DB module's private constant)."""
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        return DatabaseManager._PROCESS_DRIFT_METRICS
 
     def _show_priorities(self):
         """Three-section view that answers the operator's three highest-
