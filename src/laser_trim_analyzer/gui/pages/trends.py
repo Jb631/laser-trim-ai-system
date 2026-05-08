@@ -3457,14 +3457,19 @@ class TrendsPage(ctk.CTkFrame):
             y_pos = list(range(len(models)))
             ax.barh(y_pos, avgs, color=colors, edgecolor="#1a1a1a", linewidth=0.5)
 
-            # Annotate each bar with "<N units> · max <M>" so the user gets
-            # sample size and worst-case in one glance.
+            # Annotate each bar with sample size, max passes, retrim rate,
+            # and (when available) average max-error-reduction. The last
+            # field distinguishes models where extra trim passes are
+            # genuinely fixing outcomes (high Δ) from models where extra
+            # passes don't help (low Δ — process root-cause issue).
             for i, r in enumerate(rows_top_first):
+                aer = r.get("avg_error_reduction")
+                aer_part = f" · avg Δ {aer:.0f}%" if aer is not None else ""
                 ax.text(
                     avgs[i] + 0.05,
                     i,
                     f"{r['count']} units · max {r['max_passes']} · "
-                    f"retrim {r['retrim_rate']:.0f}%",
+                    f"retrim {r['retrim_rate']:.0f}%{aer_part}",
                     va="center",
                     fontsize=8,
                     color="#cccccc",

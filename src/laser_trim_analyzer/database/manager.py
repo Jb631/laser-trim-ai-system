@@ -7026,6 +7026,13 @@ class DatabaseManager:
                 func.sum(
                     case((DBTrackResult.trim_pass_count > 1, 1), else_=0)
                 ).label("retrims"),
+                # Avg max_error_reduction_percent — distinguishes models
+                # where retrimming actually helps (high reduction) from
+                # those where extra passes don't improve outcomes (low
+                # reduction, process root-cause issue).
+                func.avg(
+                    DBTrackResult.max_error_reduction_percent
+                ).label("avg_error_reduction"),
             ).join(DBTrackResult).filter(
                 DBAnalysisResult.file_date >= cutoff,
                 DBTrackResult.trim_pass_count.isnot(None),
@@ -7041,6 +7048,11 @@ class DatabaseManager:
                     "max_passes": int(r.max_passes or 0),
                     "retrim_rate": (float(r.retrims or 0) / float(r.count)) * 100.0
                     if r.count else 0.0,
+                    "avg_error_reduction": (
+                        float(r.avg_error_reduction)
+                        if r.avg_error_reduction is not None
+                        else None
+                    ),
                 }
                 for r in results
             ]
