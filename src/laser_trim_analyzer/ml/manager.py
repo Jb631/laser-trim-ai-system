@@ -165,10 +165,13 @@ class MLManager:
         Returns:
             Learned threshold, or None to use formula fallback
         """
-        if model_name in self.threshold_optimizers:
-            optimizer = self.threshold_optimizers[model_name]
-            if optimizer.is_calculated:
-                return optimizer.threshold
+        # Snapshot the optimizer reference under the lock so a concurrent
+        # train_model() insert can't reshape the dict between the membership
+        # check and the dereference.
+        with self._components_lock:
+            optimizer = self.threshold_optimizers.get(model_name)
+        if optimizer is not None and optimizer.is_calculated:
+            return optimizer.threshold
         return None
 
     def get_failure_probability(
@@ -186,10 +189,10 @@ class MLManager:
         Returns:
             Failure probability (0-1), or None if not trained
         """
-        if model_name in self.predictors:
-            predictor = self.predictors[model_name]
-            if predictor.is_trained:
-                return predictor.predict_failure_probability(features)
+        with self._components_lock:
+            predictor = self.predictors.get(model_name)
+        if predictor is not None and predictor.is_trained:
+            return predictor.predict_failure_probability(features)
         return None
 
     def train_model(
@@ -445,8 +448,12 @@ class MLManager:
 
             models_updated = set()
 
-            with self.db._write_lock:
-                with self.db.session() as session:
+            # Drop the explicit outer _write_lock — db.session() already takes
+            # it (RLock-reentrant) on enter, and holding it for the entire
+            # multi-model loop blocked every other DB consumer (dashboard
+            # refresh, incremental check, ML staleness lookup) for the full
+            # duration of a multi-second apply.
+            with self.db.session() as session:
                     # Count total trained models for progress
                     total_models = len(self.trained_models)
 

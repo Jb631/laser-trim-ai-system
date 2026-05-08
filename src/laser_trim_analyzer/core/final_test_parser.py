@@ -646,7 +646,7 @@ class FinalTestParser:
                 })
 
         except Exception as e:
-            logger.error(f"Error extracting Format 1 tracks: {e}")
+            logger.error(f"Error extracting Format 1 tracks: {e}", exc_info=True)
         finally:
             if df is not None:
                 del df  # Free memory
@@ -697,18 +697,24 @@ class FinalTestParser:
                 if df.shape[1] > cols["position"]:
                     pos = row.iloc[cols["position"]]
                     if is_numeric(pos):
-                        positions.append(float(pos))
+                        pos_val = float(pos)
                     else:
                         continue
                 else:
                     continue
 
-                # Get measured value
+                # Get measured value — skip the row entirely when the cell
+                # is missing/NaN. Substituting 0.0 fabricates a measurement
+                # at the lowest possible voltage, which corrupts the
+                # measured-vs-ideal-line fit and the resulting error series.
                 if df.shape[1] > cols["measured"]:
                     meas = row.iloc[cols["measured"]]
-                    measured_values.append(float(meas) if pd.notna(meas) else 0.0)
+                    if not pd.notna(meas):
+                        continue
+                    positions.append(pos_val)
+                    measured_values.append(float(meas))
                 else:
-                    measured_values.append(0.0)
+                    continue
 
             if positions and measured_values:
                 # CALCULATE linearity error from measured vs ideal
@@ -840,15 +846,19 @@ class FinalTestParser:
 
                 # Position from column 4
                 if df.shape[1] > 4 and is_numeric(row.iloc[4]):
-                    electrical_angles.append(float(row.iloc[4]))
+                    pos_val = float(row.iloc[4])
                 else:
                     continue
 
-                # Error from column 5
+                # Error from column 5 — skip rows with no error reading rather
+                # than fabricating 0.0 (which would silently pass a fail point).
                 if df.shape[1] > 5 and is_numeric(row.iloc[5]):
-                    errors.append(float(row.iloc[5]))
+                    err_val = float(row.iloc[5])
                 else:
-                    errors.append(0.0)
+                    continue
+
+                electrical_angles.append(pos_val)
+                errors.append(err_val)
 
                 # Upper limit from column 6
                 if df.shape[1] > 6 and is_numeric(row.iloc[6]):
@@ -937,15 +947,19 @@ class FinalTestParser:
 
                 # Position from column 4
                 if df.shape[1] > 4 and is_numeric(row.iloc[4]):
-                    electrical_angles.append(float(row.iloc[4]))
+                    pos_val = float(row.iloc[4])
                 else:
                     continue
 
-                # Error from column 5
+                # Error from column 5 — skip rows with no error reading rather
+                # than fabricating 0.0 (which would silently pass a fail point).
                 if df.shape[1] > 5 and is_numeric(row.iloc[5]):
-                    errors.append(float(row.iloc[5]))
+                    err_val = float(row.iloc[5])
                 else:
-                    errors.append(0.0)
+                    continue
+
+                electrical_angles.append(pos_val)
+                errors.append(err_val)
 
                 # Upper limit from column 6
                 if df.shape[1] > 6 and is_numeric(row.iloc[6]):
@@ -1248,6 +1262,12 @@ class FinalTestParser:
         if valid_upper and valid_lower:
             avg_upper = np.mean(valid_upper)
             avg_lower = np.mean(valid_lower)
-            return (avg_upper - avg_lower) / 2
+            # abs() guards against inverted upper/lower limit columns.
+            # A negative spec would invert downstream pass/fail logic and
+            # produce sign-inverted error_to_spec ratios in ML features.
+            return abs(avg_upper - avg_lower) / 2
 
+        logger.warning(
+            "FT linearity_spec defaulting to 0.01 — limit columns missing or all NaN."
+        )
         return 0.01  # Default

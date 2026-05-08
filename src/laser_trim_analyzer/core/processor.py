@@ -99,11 +99,10 @@ class Processor:
         """Load trained per-model thresholds from database."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             # Extract thresholds from trained models
             for model_name in ml_manager.trained_models:
@@ -347,10 +346,16 @@ class Processor:
             # track dicts passed to save_final_test.
             analyzed_tracks = []
             for track in tracks:
-                # Handle None values explicitly (dict.get returns None if key exists with None value)
+                # Handle None values explicitly (dict.get returns None if key exists with None value).
+                # Format 2 FT files have no spec limits and the parser returns None — treat as
+                # FAIL rather than silently calling unknown-status units PASS.
                 linearity_pass = track.get("linearity_pass")
                 if linearity_pass is None:
-                    linearity_pass = True  # Default to pass if unknown
+                    logger.warning(
+                        f"FT track {track.get('track_id', '?')} of {file_path.name}: "
+                        f"linearity_pass unknown (no spec limits) — defaulting to FAIL"
+                    )
+                    linearity_pass = False
 
                 # Use analyzer for spec-aware optimization when we have error data
                 positions = track.get("positions") or track.get("electrical_angles") or []
@@ -445,6 +450,8 @@ class Processor:
                 if getattr(at, "linearity_pass", True) is False:
                     overall_status = AnalysisStatus.FAIL
                     break
+            test_results = dict(test_results)
+            test_results["linearity_pass"] = (overall_status == AnalysisStatus.PASS)
 
             # Save to database (now with enriched tracks)
             db = get_database()
@@ -633,6 +640,10 @@ class Processor:
                     progress_percent=0,
                 ))
 
+            # _processed_filenames / _processed_hashes were loaded once before this
+            # block. The parallel workers below only READ them via _is_processed — no
+            # mutation during the parallel section, so no lock is required. If you
+            # ever add mutation here, switch to a lock-protected set or freeze first.
             files_to_process = [
                 f for f in file_paths if not self._is_processed(Path(f))
             ]

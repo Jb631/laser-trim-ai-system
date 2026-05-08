@@ -532,7 +532,11 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Data quality migration warning (may already exist): {e}")
 
-            # Migration: Add Phase 2 spec-aware optimization columns to track_results
+            # Migration: Add Phase 2 spec-aware optimization columns to track_results.
+            # Each column gets its own try/commit so a duplicate-column error on
+            # one ALTER does not roll back columns added earlier in the same
+            # session — that was the prior bug (single rollback at end of loop
+            # discarded successful ALTERs in the SQLAlchemy unit of work).
             phase2_columns = {
                 "optimal_slope": "FLOAT DEFAULT 0.0",
                 "station_compensation": "FLOAT",
@@ -546,15 +550,12 @@ class DatabaseManager:
                     session.execute(text(
                         f"ALTER TABLE track_results ADD COLUMN {col_name} {col_type}"
                     ))
+                    session.commit()
                 except Exception as e:
+                    session.rollback()
                     if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                         logger.warning(f"Migration error adding {col_name}: {e}")
-                    session.rollback()
-            try:
-                session.commit()
-                logger.info("Phase 2 migration: ensured spec-aware columns exist")
-            except Exception:
-                pass
+            logger.info("Phase 2 migration: ensured spec-aware columns exist")
 
             # Migration: Add match_method column to final_test_results
             try:
@@ -565,6 +566,21 @@ class DatabaseManager:
                     session.execute(text("ALTER TABLE final_test_results ADD COLUMN match_method VARCHAR(30)"))
                     session.commit()
                     logger.info("Migration: Added match_method column to final_test_results")
+                except Exception:
+                    pass
+
+            # Migration: Add trim_pass_count column to track_results.
+            # Counts how many laser-trim passes the equipment ran per track,
+            # surfaced from the file's "Trim N" / "TRK<n> M" sheet layout.
+            # Used as a quality indicator (1 = clean, 2+ = retrim needed).
+            try:
+                session.execute(text("SELECT trim_pass_count FROM track_results LIMIT 1"))
+            except OperationalError:
+                session.rollback()
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN trim_pass_count INTEGER"))
+                    session.commit()
+                    logger.info("Migration: Added trim_pass_count column to track_results")
                 except Exception:
                     pass
 
@@ -781,38 +797,40 @@ class DatabaseManager:
             logger.debug(f"Skipping save_analysis for Smoothness: {analysis.metadata.filename}")
             return getattr(analysis, 'smoothness_id', -1) or -1
 
-        # Use write lock for thread safety with SQLite
-        with self._write_lock:
-            with self.session() as session:
-                # Check for existing record by filename (stable identifier)
-                # This ensures re-analysis updates the existing record even if
-                # model/serial/date parsing changed
-                existing = session.query(DBAnalysisResult).filter(
-                    DBAnalysisResult.filename == analysis.metadata.filename,
-                    DBAnalysisResult.file_path == str(analysis.metadata.file_path),
-                ).first()
+        # session() acquires _write_lock internally (RLock-reentrant), so
+        # wrapping with another `with self._write_lock` here is redundant and
+        # only adds confusion to the lock graph. The session context is
+        # sufficient for SQLite serialization.
+        with self.session() as session:
+            # Check for existing record by filename (stable identifier)
+            # This ensures re-analysis updates the existing record even if
+            # model/serial/date parsing changed
+            existing = session.query(DBAnalysisResult).filter(
+                DBAnalysisResult.filename == analysis.metadata.filename,
+                DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+            ).first()
 
-                if existing:
-                    logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
-                    return self._update_existing_analysis(session, analysis)
+            if existing:
+                logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
+                return self._update_existing_analysis(session, analysis)
 
-                # No existing record, create new one
-                db_analysis = self._map_analysis_to_db(analysis)
-                session.add(db_analysis)
-                session.flush()  # Get ID before commit
+            # No existing record, create new one
+            db_analysis = self._map_analysis_to_db(analysis)
+            session.add(db_analysis)
+            session.flush()  # Get ID before commit
 
-                # Record as processed file
-                # ERROR results are marked success=False so they get retried
-                is_success = analysis.overall_status != AnalysisStatus.ERROR
-                self._record_processed_file(
-                    session,
-                    analysis.metadata.file_path,
-                    db_analysis.id,
-                    success=is_success,
-                )
+            # Record as processed file
+            # ERROR results are marked success=False so they get retried
+            is_success = analysis.overall_status != AnalysisStatus.ERROR
+            self._record_processed_file(
+                session,
+                analysis.metadata.file_path,
+                db_analysis.id,
+                success=is_success,
+            )
 
-                logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
-                return db_analysis.id
+            logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+            return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
         """
@@ -889,7 +907,8 @@ class DatabaseManager:
         self,
         model: Optional[str] = None,
         days_back: int = 30,
-        limit: int = 1000
+        limit: int = 1000,
+        light_load: bool = False,
     ) -> List[AnalysisResult]:
         """
         Get historical analysis data with optional filtering.
@@ -901,15 +920,35 @@ class DatabaseManager:
             model: Filter by model number (optional)
             days_back: How many days back to query (based on trim date)
             limit: Maximum number of results
+            light_load: When True, skip per-track JSON-blob columns
+                (position_data, error_data, upper/lower limits, theory_data,
+                test_volts, untrimmed_positions/errors). Use this for the
+                Excel summary export which only needs scalar metrics —
+                deferring the blobs cuts reconstruction time roughly 5–10×
+                on a multi-GB database.
 
         Returns:
             List of AnalysisResult objects sorted by trim date (newest first)
         """
         with self.session() as session:
+            tracks_loader = joinedload(DBAnalysisResult.tracks)
+            if light_load:
+                # SafeJSON columns are the bulk of track_results size and
+                # decode work. The summary export never reads them, so
+                # defer() them — Pydantic TrackData declares them Optional,
+                # so None is a legal value end-to-end.
+                tracks_loader = tracks_loader.defer(
+                    DBTrackResult.position_data,
+                    DBTrackResult.error_data,
+                    DBTrackResult.upper_limits,
+                    DBTrackResult.lower_limits,
+                    DBTrackResult.theory_data,
+                    DBTrackResult.test_volts,
+                    DBTrackResult.untrimmed_positions,
+                    DBTrackResult.untrimmed_errors,
+                )
             # Use joinedload to fetch tracks in single query (avoids N+1)
-            query = session.query(DBAnalysisResult).options(
-                joinedload(DBAnalysisResult.tracks)
-            )
+            query = session.query(DBAnalysisResult).options(tracks_loader)
 
             # Filter by trim date (file_date), not processing date (timestamp)
             cutoff_date = datetime.now() - timedelta(days=days_back)
@@ -2221,8 +2260,20 @@ class DatabaseManager:
 
     def _map_analysis_to_db(self, analysis: AnalysisResult) -> DBAnalysisResult:
         """Map Pydantic AnalysisResult to SQLAlchemy model."""
-        # Map system type
-        system_type = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+        # Map system type. DBSystemType only defines A and B; SystemType.UNKNOWN
+        # only reaches this trim-record path on parser-error rows (FT files take
+        # save_final_test). Fall back to B with a warning so misclassified
+        # records are visible in logs rather than silently labeled.
+        if analysis.metadata.system == SystemType.A:
+            system_type = DBSystemType.A
+        elif analysis.metadata.system == SystemType.B:
+            system_type = DBSystemType.B
+        else:
+            logger.warning(
+                f"SystemType.UNKNOWN on trim record {analysis.metadata.filename} "
+                f"(likely a parse-error row); storing as DBSystemType.B"
+            )
+            system_type = DBSystemType.B
 
         # Map overall status
         status_map = {
@@ -2323,6 +2374,8 @@ class DatabaseManager:
             raw_linearity_error=getattr(track, 'raw_linearity_error', None),
             optimized_linearity_error=getattr(track, 'optimized_linearity_error', None),
             raw_fail_points=getattr(track, 'raw_fail_points', None),
+            # Trim difficulty (number of laser-trim passes recorded in file)
+            trim_pass_count=getattr(track, 'trim_pass_count', None),
             # Computed metrics
             gradient_margin=track.gradient_margin,
             plot_path=str(track.plot_path) if track.plot_path else None,
@@ -2361,7 +2414,9 @@ class DatabaseManager:
         """
         from laser_trim_analyzer.core.models import FileMetadata
 
-        # Map system type
+        # Map system type. The DB enum only stores A or B (UNKNOWN parse-error
+        # rows are written as B with a warning at save time — see
+        # _map_analysis_to_db). The reverse mapping is therefore lossy by design.
         system_type = SystemType.A if db_analysis.system == DBSystemType.A else SystemType.B
 
         # Map status - handle both enum and string values from DB
@@ -2386,13 +2441,32 @@ class DatabaseManager:
             logger.warning(f"Analysis {db_analysis.filename} has no valid tracks, skipping")
             return None
 
+        # Restore data_quality state — the column is a JSON-encoded list and
+        # was previously dropped on read, leaving every loaded record looking
+        # "good" regardless of the suspect flag set at analysis time.
+        dq_issues = []
+        raw_issues = getattr(db_analysis, 'data_quality_issues', None)
+        if raw_issues:
+            try:
+                decoded = json.loads(raw_issues)
+                if isinstance(decoded, list):
+                    dq_issues = decoded
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Could not decode data_quality_issues for {db_analysis.filename}: {e}")
+        dq_status = getattr(db_analysis, 'data_quality', None) or 'good'
+
         try:
-            return AnalysisResult(
+            result = AnalysisResult(
                 metadata=metadata,
                 overall_status=overall_status,
                 processing_time=db_analysis.processing_time or 0.0,
                 tracks=tracks,
             )
+            # AnalysisResult is Pydantic but data_quality fields are added
+            # dynamically by the processor; preserve them across DB round-trip.
+            result.data_quality = dq_status
+            result.data_quality_issues = dq_issues
+            return result
         except Exception as e:
             logger.error(f"Failed to create AnalysisResult for {db_analysis.filename}: {e}")
             return None
@@ -2471,6 +2545,8 @@ class DatabaseManager:
                 raw_linearity_error=getattr(db_track, 'raw_linearity_error', None),
                 optimized_linearity_error=getattr(db_track, 'optimized_linearity_error', None),
                 raw_fail_points=getattr(db_track, 'raw_fail_points', None),
+                # Trim difficulty
+                trim_pass_count=getattr(db_track, 'trim_pass_count', None),
                 # Max deviation fields
                 max_deviation=getattr(db_track, 'max_deviation', None),
                 max_deviation_position=getattr(db_track, 'max_deviation_position', None),
@@ -2505,7 +2581,17 @@ class DatabaseManager:
             existing.file_path = str(analysis.metadata.file_path)
             existing.model = analysis.metadata.model
             existing.serial = analysis.metadata.serial
-            existing.system = DBSystemType.A if analysis.metadata.system == SystemType.A else DBSystemType.B
+            # See _map_analysis_to_db for the UNKNOWN→B fallback rationale.
+            if analysis.metadata.system == SystemType.A:
+                existing.system = DBSystemType.A
+            elif analysis.metadata.system == SystemType.B:
+                existing.system = DBSystemType.B
+            else:
+                logger.warning(
+                    f"SystemType.UNKNOWN on update of {analysis.metadata.filename}; "
+                    f"keeping as DBSystemType.B"
+                )
+                existing.system = DBSystemType.B
             existing.file_date = analysis.metadata.file_date
             existing.has_multi_tracks = analysis.metadata.has_multi_tracks
             existing.processing_time = analysis.processing_time
@@ -3580,6 +3666,45 @@ class DatabaseManager:
     # Final Test Methods - For post-assembly test data and comparison
     # =========================================================================
 
+    @staticmethod
+    def _coerce_optional_bool(value: Any) -> Optional[bool]:
+        """Coerce common stored bool representations without making None pass."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "pass", "passed", "yes"}:
+                return True
+            if normalized in {"0", "false", "fail", "failed", "no"}:
+                return False
+            return None
+        return bool(value)
+
+    @classmethod
+    def _resolve_final_test_linearity_pass(
+        cls,
+        test_results: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+    ) -> Optional[bool]:
+        """Resolve file-level FT linearity from corrected track-level results.
+
+        Parser headers can say PASS before the analyzer applies slope/offset
+        correction. Zero-tolerance linearity means one failed corrected track
+        must make the whole Final Test fail.
+        """
+        track_values = [
+            cls._coerce_optional_bool(track.get("linearity_pass"))
+            for track in tracks
+        ]
+        known_track_values = [value for value in track_values if value is not None]
+
+        if any(value is False for value in known_track_values):
+            return False
+        if known_track_values:
+            return all(known_track_values)
+
+        return cls._coerce_optional_bool(test_results.get("linearity_pass"))
+
     def save_final_test(
         self,
         metadata: Dict[str, Any],
@@ -3619,16 +3744,13 @@ class DatabaseManager:
                         logger.info(f"Final test already exists: {metadata.get('filename')}")
                         return existing.id
 
-                    # Determine overall status from linearity
-                    overall_status = DBStatusType.PASS
-                    if test_results.get("linearity_pass") is False:
-                        overall_status = DBStatusType.FAIL
-                    elif test_results.get("linearity_pass") is None:
-                        # Check track-level linearity
-                        for track in tracks:
-                            if track.get("linearity_pass") is False:
-                                overall_status = DBStatusType.FAIL
-                                break
+                    # Determine overall status from corrected track-level
+                    # linearity first. The raw FT header can be stale after
+                    # analyzer correction; any corrected track failure wins.
+                    linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
+                    overall_status = (
+                        DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
+                    )
 
                     # Find matching trim result
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
@@ -3648,7 +3770,7 @@ class DatabaseManager:
                         serial=metadata.get("serial", "unknown"),
                         test_date=metadata.get("test_date"),
                         overall_status=overall_status,
-                        linearity_pass=test_results.get("linearity_pass"),
+                        linearity_pass=linearity_pass,
                         linearity_error=tracks[0].get("linearity_error") if tracks else None,
                         resistance_pass=test_results.get("resistance_pass"),
                         resistance_value=test_results.get("resistance_value"),
@@ -3699,9 +3821,14 @@ class DatabaseManager:
                     return result_id
 
             except IntegrityError as e:
-                # Handle race condition - another thread inserted first
+                # The unique constraint that can fire is on
+                # (filename, file_date, model, serial), not on file_hash.
+                # When the same file is reprocessed with edited content the
+                # hash differs but the tuple still matches, so the previous
+                # hash-only fallback couldn't find the existing row and the
+                # error propagated to the user as "Error processing Final
+                # Test ... UNIQUE constraint failed". Query by both keys.
                 logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
-                # Try to find the existing record
                 try:
                     with self.session() as session:
                         existing = (
@@ -3709,10 +3836,21 @@ class DatabaseManager:
                             .filter(DBFinalTestResult.file_hash == file_hash)
                             .first()
                         )
+                        if existing is None:
+                            existing = (
+                                session.query(DBFinalTestResult)
+                                .filter(
+                                    DBFinalTestResult.filename == metadata.get("filename"),
+                                    DBFinalTestResult.file_date == metadata.get("file_date"),
+                                    DBFinalTestResult.model == metadata.get("model"),
+                                    DBFinalTestResult.serial == metadata.get("serial"),
+                                )
+                                .first()
+                            )
                         if existing:
                             return existing.id
                 except Exception:
-                    pass
+                    logger.debug("FT duplicate-recovery query failed", exc_info=True)
                 raise
 
     def get_ml_staleness(self) -> List[Dict[str, Any]]:
@@ -4371,6 +4509,13 @@ class DatabaseManager:
                         "electrical_angles": t.electrical_angle_data or [],
                         "upper_limits": t.upper_limits or [],
                         "lower_limits": t.lower_limits or [],
+                        # Slope/offset/linearity_type are persisted on the track
+                        # row but were previously omitted here, leaving callers
+                        # (export, diagnostics) without the analyzer correction
+                        # state. get_comparison_data already returns these.
+                        "optimal_offset": getattr(t, "optimal_offset", None),
+                        "optimal_slope": getattr(t, "optimal_slope", None),
+                        "linearity_type": getattr(t, "linearity_type", None),
                     }
                     for t in tracks
                 ],
@@ -6853,6 +6998,283 @@ class DatabaseManager:
                 }
                 for r in results
             ]
+
+    def get_trim_difficulty_by_model(
+        self,
+        days_back: int = 90,
+        min_units: int = 5,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate trim_pass_count per model.
+
+        Higher avg passes = unit was harder to trim to spec.
+        retrim_rate = % of units that needed >1 trim cycle.
+
+        FT-derived rows have NULL trim_pass_count and are excluded.
+        Models with fewer than `min_units` qualifying records are excluded
+        so a single outlier doesn't dominate the chart.
+
+        Returns rows sorted by avg_passes descending (worst first).
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            results = session.query(
+                DBAnalysisResult.model,
+                func.count(DBTrackResult.id).label("count"),
+                func.avg(DBTrackResult.trim_pass_count).label("avg_passes"),
+                func.max(DBTrackResult.trim_pass_count).label("max_passes"),
+                func.sum(
+                    case((DBTrackResult.trim_pass_count > 1, 1), else_=0)
+                ).label("retrims"),
+                # Avg max_error_reduction_percent — distinguishes models
+                # where retrimming actually helps (high reduction) from
+                # those where extra passes don't improve outcomes (low
+                # reduction, process root-cause issue).
+                func.avg(
+                    DBTrackResult.max_error_reduction_percent
+                ).label("avg_error_reduction"),
+            ).join(DBTrackResult).filter(
+                DBAnalysisResult.file_date >= cutoff,
+                DBTrackResult.trim_pass_count.isnot(None),
+            ).group_by(DBAnalysisResult.model).having(
+                func.count(DBTrackResult.id) >= min_units
+            ).order_by(desc("avg_passes")).limit(limit).all()
+
+            return [
+                {
+                    "model": r.model,
+                    "count": int(r.count or 0),
+                    "avg_passes": float(r.avg_passes or 0.0),
+                    "max_passes": int(r.max_passes or 0),
+                    "retrim_rate": (float(r.retrims or 0) / float(r.count)) * 100.0
+                    if r.count else 0.0,
+                    "avg_error_reduction": (
+                        float(r.avg_error_reduction)
+                        if r.avg_error_reduction is not None
+                        else None
+                    ),
+                }
+                for r in results
+            ]
+
+    def get_anomaly_rate_by_model(
+        self,
+        days_back: int = 90,
+        min_samples: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Aggregate anomaly flag rate per model over a window.
+
+        is_anomaly is set per-track when the trim has the linear-slope
+        signature of a true trim failure (vs random noise). Rolling it
+        up per model surfaces persistent setup issues — e.g. a model
+        with 12 anomalies in 30 days likely has a fixture or operator
+        problem rather than random material variation.
+
+        Args:
+            days_back: window length in days, anchored to file_date.
+            min_samples: minimum total tracks per model to include in
+                the result so a single anomaly on a low-volume model
+                doesn't dominate the ranking.
+
+        Returns:
+            List of dicts sorted by anomaly_rate descending. Each dict:
+                model, total_tracks, anomaly_count, anomaly_rate
+                (percent), last_anomaly_date.
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    func.count(DBTrackResult.id).label("total_tracks"),
+                    func.sum(
+                        case((DBTrackResult.is_anomaly == True, 1), else_=0)
+                    ).label("anomaly_count"),
+                    func.max(
+                        case(
+                            (DBTrackResult.is_anomaly == True,
+                             DBAnalysisResult.file_date),
+                            else_=None,
+                        )
+                    ).label("last_anomaly_date"),
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= cutoff,
+                )
+                .group_by(DBAnalysisResult.model)
+                .having(func.count(DBTrackResult.id) >= min_samples)
+                .all()
+            )
+
+            results = []
+            for r in rows:
+                total = int(r.total_tracks or 0)
+                anom = int(r.anomaly_count or 0)
+                rate = (anom / total * 100.0) if total else 0.0
+                results.append({
+                    "model": r.model,
+                    "total_tracks": total,
+                    "anomaly_count": anom,
+                    "anomaly_rate": rate,
+                    "last_anomaly_date": r.last_anomaly_date,
+                })
+            results.sort(key=lambda r: -r["anomaly_rate"])
+            return results
+
+    # Columns the Process Drift view supports. Mapping from the
+    # user-facing label to the SQLAlchemy column attribute on
+    # DBTrackResult, plus a unit string for the chart axis.
+    _PROCESS_DRIFT_METRICS: Dict[str, Dict[str, Any]] = {
+        "untrimmed_resistance": {
+            "label": "Untrimmed Resistance",
+            "unit": "Ω",
+            "fmt": "{:.0f}",
+        },
+        "trimmed_resistance": {
+            "label": "Trimmed Resistance",
+            "unit": "Ω",
+            "fmt": "{:.0f}",
+        },
+        "measured_electrical_angle": {
+            "label": "Measured Electrical Angle",
+            "unit": "°",
+            "fmt": "{:.2f}",
+        },
+        "trim_pass_count": {
+            "label": "Trim Passes",
+            "unit": "passes",
+            "fmt": "{:.2f}",
+        },
+    }
+
+    def get_process_drift_by_model(
+        self,
+        metric: str,
+        baseline_days: int = 90,
+        recent_days: int = 14,
+        min_baseline_samples: int = 20,
+        min_recent_samples: int = 5,
+        z_threshold: float = 2.0,
+    ) -> List[Dict[str, Any]]:
+        """Detect per-model drift in a physical track measurement.
+
+        Compares each model's recent mean of `metric` against its older
+        baseline mean+stdev. Models whose recent mean differs from the
+        baseline by more than ``z_threshold`` standard deviations are
+        flagged as drifting.
+
+        Useful for spotting:
+            * starting resistance shifting (carbon batch / tooling)
+            * measured electrical angle shifting (setup / fixture)
+            * trim passes creeping up (process degradation)
+
+        Args:
+            metric: One of self._PROCESS_DRIFT_METRICS keys.
+            baseline_days: How far back the 'normal' window goes.
+            recent_days: How recent the 'is it different now?' window is.
+                Must be < baseline_days; the baseline excludes recent_days
+                so we are comparing recent to a true historical baseline.
+            min_baseline_samples / min_recent_samples: filters out models
+                without enough data to make a meaningful comparison.
+            z_threshold: |z| above this counts as drifting.
+
+        Returns:
+            List of dicts sorted by abs(z_score) descending. Each dict:
+                model, baseline_mean, baseline_std, baseline_n,
+                recent_mean, recent_n, delta, z_score, direction,
+                is_drifting.
+        """
+        if metric not in self._PROCESS_DRIFT_METRICS:
+            raise ValueError(
+                f"Unknown drift metric {metric!r}; "
+                f"choose from {list(self._PROCESS_DRIFT_METRICS)}"
+            )
+        if recent_days >= baseline_days:
+            raise ValueError("recent_days must be less than baseline_days")
+
+        column = getattr(DBTrackResult, metric)
+        now = datetime.now()
+        recent_cutoff = now - timedelta(days=recent_days)
+        baseline_start = now - timedelta(days=baseline_days)
+
+        with self.session() as session:
+            # Pull (model, value, file_date) for everything inside the
+            # baseline window with a non-NULL value, then bucket in
+            # Python — SQLite doesn't have a robust stddev_samp on every
+            # build and we need both windows from the same model anyway.
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    column,
+                    DBAnalysisResult.file_date,
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= baseline_start,
+                    column.isnot(None),
+                )
+                .all()
+            )
+
+        per_model: Dict[str, Dict[str, List[float]]] = {}
+        for model, value, file_date in rows:
+            if value is None or file_date is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            bucket = "recent" if file_date >= recent_cutoff else "baseline"
+            entry = per_model.setdefault(model, {"baseline": [], "recent": []})
+            entry[bucket].append(value)
+
+        results = []
+        for model, buckets in per_model.items():
+            base = buckets["baseline"]
+            recent = buckets["recent"]
+            if len(base) < min_baseline_samples:
+                continue
+            if len(recent) < min_recent_samples:
+                continue
+
+            base_mean = sum(base) / len(base)
+            # Sample stdev (n-1) for an unbiased estimate.
+            if len(base) > 1:
+                var = sum((x - base_mean) ** 2 for x in base) / (len(base) - 1)
+                base_std = var ** 0.5
+            else:
+                base_std = 0.0
+            recent_mean = sum(recent) / len(recent)
+
+            delta = recent_mean - base_mean
+            z = (delta / base_std) if base_std > 0 else 0.0
+            direction = "up" if delta > 0 else ("down" if delta < 0 else "stable")
+            is_drifting = abs(z) >= z_threshold and base_std > 0
+
+            results.append({
+                "model": model,
+                "baseline_mean": base_mean,
+                "baseline_std": base_std,
+                "baseline_n": len(base),
+                "recent_mean": recent_mean,
+                "recent_n": len(recent),
+                "delta": delta,
+                "z_score": z,
+                "direction": direction,
+                "is_drifting": is_drifting,
+            })
+
+        # Drifting models first, then by |z| descending so the most
+        # extreme shifts surface at the top of the list.
+        results.sort(
+            key=lambda r: (not r["is_drifting"], -abs(r["z_score"]))
+        )
+        return results
 
     def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
         """Categorize failures by mode: linearity only, sigma only, or both."""

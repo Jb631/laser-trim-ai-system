@@ -328,6 +328,8 @@ class Analyzer:
             lower_limits=lower_limits,
             untrimmed_positions=track_data.get("untrimmed_positions"),
             untrimmed_errors=track_data.get("untrimmed_errors"),
+            # Number of laser-trim passes the equipment ran (from sheet count)
+            trim_pass_count=track_data.get("trim_pass_count"),
         )
 
     def _calculate_sigma(
@@ -441,11 +443,19 @@ class Analyzer:
             if len(errors) < 10:
                 return errors
 
+            # filtfilt on NaN input produces all-NaN output, which then masks
+            # every fail-point comparison (NaN > limit is always False).
+            # Bypass the filter when any NaN is present so the raw values
+            # reach _count_fail_points where NaN is treated as a fail.
+            if any(e is None or (isinstance(e, float) and np.isnan(e)) for e in errors):
+                logger.warning("Butterworth bypassed: NaN values present in error series")
+                return errors
+
             b, a = butter(BUTTERWORTH_ORDER, BUTTERWORTH_CUTOFF, btype='low')
             filtered = filtfilt(b, a, errors)
             return list(filtered)
         except Exception as e:
-            logger.debug(f"Butterworth filter failed: {e}")
+            logger.warning(f"Butterworth filter failed: {e}")
             return errors
 
     def _calculate_linearity(
@@ -628,7 +638,14 @@ class Analyzer:
         if n == 0:
             return 0.0, 0.0
 
-        theory_clean = [float(v) for v in theory_volts[:n]]
+        # NaN in the theory column would propagate into the objective via
+        # `error + theory * k + offset`, masking violations (NaN > limit is
+        # False) and producing a NaN-corrupted max_err.  Replace with 0.0
+        # at those points so rotation is effectively skipped there.
+        theory_clean = [
+            (float(v) if v is not None and not (isinstance(v, (float, np.floating)) and np.isnan(v)) else 0.0)
+            for v in theory_volts[:n]
+        ]
 
         k_lo, k_hi = k_bounds
         if k_hi - k_lo < 1e-12:
@@ -811,7 +828,14 @@ class Analyzer:
                 continue
             if upper_limits[i] is not None and lower_limits[i] is not None:
                 if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
-                    if errors[i] > upper_limits[i] or errors[i] < lower_limits[i]:
+                    e = errors[i]
+                    # NaN compared with > or < always returns False, which
+                    # would silently mark the point as in-spec.  Treat NaN
+                    # error as a fail (conservative on a zero-tolerance spec).
+                    if e is None or (isinstance(e, float) and np.isnan(e)):
+                        count += 1
+                        continue
+                    if e > upper_limits[i] or e < lower_limits[i]:
                         count += 1
 
         return count

@@ -232,16 +232,46 @@ class DashboardPage(ctk.CTkFrame):
         )
         self.cost_impact_label.pack(padx=15, pady=(4, 10), anchor="w", fill="x")
 
-        # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability
+        # Row 2: P-chart trend — FULL WIDTH (3 columns) for readability.
+        # The Trends > Yield tab was retired in favour of this chart with
+        # an adjustable date range, so the fleet-wide pass-rate question
+        # has a single canonical home.
         chart_frame = ctk.CTkFrame(content)
         chart_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky="nsew")
 
-        chart_label = ctk.CTkLabel(
-            chart_frame,
-            text="Linearity Pass Rate Trend (90 Days)",
+        chart_header = ctk.CTkFrame(chart_frame, fg_color="transparent")
+        chart_header.pack(fill="x", padx=15, pady=(15, 5))
+
+        self._trend_chart_label = ctk.CTkLabel(
+            chart_header,
+            text="Linearity Pass Rate Trend",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        chart_label.pack(padx=15, pady=(15, 5), anchor="w")
+        self._trend_chart_label.pack(side="left")
+
+        # Date-range selector. Days mapping is held alongside so the
+        # callback knows what int to pass to get_yield_trend / refresh.
+        self._trend_range_options = [
+            ("Last 30 days", 30),
+            ("Last 90 days", 90),
+            ("Last 180 days", 180),
+            ("Last 365 days", 365),
+            ("All time", 3650),
+        ]
+        self._trend_range_label_to_days = dict(self._trend_range_options)
+        self._trend_range_var = ctk.StringVar(value="Last 90 days")
+        self._trend_selected_days = 90
+
+        ctk.CTkLabel(chart_header, text="Range:",
+                     font=ctk.CTkFont(size=11)).pack(side="right", padx=(8, 4))
+        self._trend_range_dropdown = ctk.CTkOptionMenu(
+            chart_header,
+            values=[opt[0] for opt in self._trend_range_options],
+            variable=self._trend_range_var,
+            width=130,
+            command=self._on_trend_range_changed,
+        )
+        self._trend_range_dropdown.pack(side="right")
 
         # Placeholder frame for chart - actual ChartWidget created lazily on first show
         self._chart_frame = chart_frame
@@ -252,19 +282,23 @@ class DashboardPage(ctk.CTkFrame):
         )
         self._chart_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
-        # Row 3: [Alerts+Drift | Pareto chart | Where to Focus]
+        # Row 3: [Alerts | Where to Focus (cols 1+2)]
+        # Pareto chart was removed in favour of the expanded Where-to-Focus
+        # panel — they ranked the same models by the same impact signal.
         content.grid_rowconfigure(3, weight=1, minsize=250)
 
-        # Alerts + Drift (column 0) — stacked vertically
+        # Alerts (column 0). Previously this column also stacked a separate
+        # "ML Drift Status" textbox, which duplicated the clickable Drift
+        # Alerts card already shown in the right column. Per UX audit, drop
+        # the duplicate and let Recent Alerts take the full column.
         alerts_container = ctk.CTkFrame(content, fg_color="transparent")
         alerts_container.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
         alerts_container.grid_columnconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(0, weight=1)
-        alerts_container.grid_rowconfigure(1, weight=1)
 
-        # Recent Alerts Card
+        # Recent Alerts Card — full column height now
         self.alerts_frame = ctk.CTkFrame(alerts_container)
-        self.alerts_frame.grid(row=0, column=0, padx=0, pady=(0, 5), sticky="nsew")
+        self.alerts_frame.grid(row=0, column=0, sticky="nsew")
         self.alerts_frame.grid_columnconfigure(0, weight=1)
         self.alerts_frame.grid_rowconfigure(1, weight=1)
 
@@ -275,48 +309,22 @@ class DashboardPage(ctk.CTkFrame):
         )
         alerts_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
 
-        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=60)
+        self.alerts_list = ctk.CTkTextbox(self.alerts_frame)
         self.alerts_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
         self.alerts_list.configure(state="disabled")
         self._update_alerts_display([])
 
-        # Drift Alerts Card (from ML system)
-        self.drift_frame = ctk.CTkFrame(alerts_container)
-        self.drift_frame.grid(row=1, column=0, padx=0, pady=(5, 0), sticky="nsew")
-        self.drift_frame.grid_columnconfigure(0, weight=1)
-        self.drift_frame.grid_rowconfigure(1, weight=1)
-
-        drift_label = ctk.CTkLabel(
-            self.drift_frame,
-            text="ML Drift Status",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        drift_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.drift_list = ctk.CTkTextbox(self.drift_frame, height=60)
-        self.drift_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
-        self.drift_list.configure(state="disabled")
-        self._update_drift_display([])
-
-        # Pareto chart (column 1)
-        self._pareto_frame = ctk.CTkFrame(content)
-        self._pareto_frame.grid(row=3, column=1, padx=10, pady=10, sticky="nsew")
-        pareto_label = ctk.CTkLabel(
-            self._pareto_frame, text="Failure Pareto",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        pareto_label.pack(padx=15, pady=(15, 5), anchor="w")
-        self._pareto_placeholder = ctk.CTkLabel(
-            self._pareto_frame, text="Loading...", text_color="gray"
-        )
-        self._pareto_placeholder.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.pareto_chart = None
+        # Failure Pareto chart removed — the same model ranking lives in
+        # the expanded Where-to-Focus cards which already include count
+        # and a recommendation string.
+        self.pareto_chart = None  # legacy reference for any external code
         self.confusion_chart = None  # Not used as chart — text summary in system info row
         self.scatter_chart = None    # Not used as chart — data in system info row
 
-        # Where to Focus panel (column 2)
+        # Where to Focus panel — now spans columns 1+2 since the Pareto
+        # chart that used to sit in column 1 has been removed.
         self.model_frame = ctk.CTkFrame(content)
-        self.model_frame.grid(row=3, column=2, padx=10, pady=10, sticky="nsew")
+        self.model_frame.grid(row=3, column=1, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         model_label = ctk.CTkLabel(
             self.model_frame,
@@ -490,25 +498,6 @@ class DashboardPage(ctk.CTkFrame):
             logger.error(f"Failed to initialize chart (matplotlib issue?): {e}")
             self._chart_initialized = True  # Don't retry on every refresh
 
-    def _ensure_pareto_chart_initialized(self):
-        """Lazily initialize Pareto chart."""
-        if self.pareto_chart is not None or getattr(self, '_pareto_init_failed', False):
-            return
-
-        try:
-            from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
-
-            self._pareto_placeholder.destroy()
-            self.pareto_chart = ChartWidget(
-                self._pareto_frame,
-                style=ChartStyle(figure_size=(5, 3), dpi=80)
-            )
-            self.pareto_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-            self.pareto_chart.show_placeholder("Loading Pareto data...")
-        except Exception as e:
-            logger.error(f"Failed to initialize Pareto chart: {e}")
-            self._pareto_init_failed = True  # Don't retry on every refresh
-
     def _refresh_data(self):
         """Refresh dashboard data in background thread."""
         self.last_update_label.configure(text="Refreshing...")
@@ -631,10 +620,9 @@ class DashboardPage(ctk.CTkFrame):
     def _get_drift_alerts(self, db) -> List[Dict[str, Any]]:
         """Get drift status from ML system."""
         try:
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             drift_alerts = []
             for model, detector in ml_manager.drift_detectors.items():
@@ -753,8 +741,11 @@ class DashboardPage(ctk.CTkFrame):
         # Update alerts
         self._update_alerts_display(alerts)
 
-        # Update drift alerts
-        self._update_drift_display(drift_alerts or [])
+        # Drift status now lives only on the clickable Drift Alerts card
+        # (right column) — the dedicated textbox below alerts was a
+        # duplicate and was removed per the UX audit. drift_alerts is
+        # still passed through here for the failure-mode summary card
+        # below; intentionally not rendering it again.
 
         # Update trend chart with linearity trend
         self._update_trend_chart(stats)
@@ -762,8 +753,8 @@ class DashboardPage(ctk.CTkFrame):
         # Update model prioritization display
         self._update_model_display(priority_models, trending_worse)
 
-        # Update Pareto chart
-        self._update_pareto_chart(priority_models)
+        # Pareto chart removed — _update_model_display already shows the
+        # same ranking via Where-to-Focus cards.
 
         # Update category breakdown charts
         self._update_breakdown_charts(element_breakdown or [], class_breakdown or [])
@@ -938,26 +929,14 @@ class DashboardPage(ctk.CTkFrame):
 
         self.alerts_list.configure(state="disabled")
 
-    def _update_drift_display(self, drift_alerts: List[Dict[str, Any]]):
-        """Update drift alerts display from ML system."""
-        self.drift_list.configure(state="normal")
-        self.drift_list.delete("1.0", "end")
-
-        if not drift_alerts:
-            self.drift_list.insert("end", "No drift detected - all models stable.\n")
-            self.drift_list.insert("end", "(Train models in Settings to enable drift detection)")
-        else:
-            self.drift_list.insert("end", f"{len(drift_alerts)} model(s) drifting:\n")
-            for alert in drift_alerts[:5]:  # Limit to 5
-                model = alert.get("model", "Unknown")
-                direction = alert.get("direction", "")
-                direction_text = f" ({direction})" if direction else ""
-                self.drift_list.insert("end", f"  ⚠ {model}{direction_text}\n")
-
-        self.drift_list.configure(state="disabled")
-
     def _update_trend_chart(self, stats: Dict[str, Any]):
-        """Update trend chart with linearity pass rate data."""
+        """Update trend chart with linearity pass rate data.
+
+        At default range (90 days) we use the linearity-specific daily
+        trend already fetched as part of get_dashboard_stats — saves an
+        extra DB round-trip. At other ranges, _on_trend_range_changed
+        runs a separate get_yield_trend query in the background.
+        """
         # Ensure chart is initialized before use
         self._ensure_chart_initialized()
 
@@ -998,6 +977,81 @@ class DashboardPage(ctk.CTkFrame):
             sample_sizes=sample_sizes,
             title=chart_title,
             ylabel="Pass Rate %"
+        )
+
+    def _on_trend_range_changed(self, label: str) -> None:
+        """User picked a new date range from the trend chart dropdown."""
+        days = self._trend_range_label_to_days.get(label, 90)
+        if days == self._trend_selected_days:
+            return
+        self._trend_selected_days = days
+        self._refresh_trend_chart_for_range(days)
+
+    def _refresh_trend_chart_for_range(self, days_back: int) -> None:
+        """Fetch and re-render only the trend chart at a new date range.
+
+        Doesn't trigger a full dashboard refresh — that would re-pull
+        every other tile. Picks weekly bins past 180 days so the chart
+        doesn't fragment into hundreds of unreadable daily ticks.
+        """
+        self._ensure_chart_initialized()
+        if not self.trend_chart:
+            return
+        period = "day" if days_back <= 180 else "week"
+        # Update label so the user sees the active range.
+        if hasattr(self, "_trend_chart_label"):
+            granularity = {"day": "Daily", "week": "Weekly"}.get(period, period)
+            self._trend_chart_label.configure(
+                text=f"Linearity Pass Rate Trend — {granularity}, last {days_back}d"
+            )
+        self.trend_chart.show_placeholder(f"Loading {days_back}-day trend...")
+
+        def _load():
+            try:
+                from laser_trim_analyzer.database import get_database
+                db = get_database()
+                if period == "day":
+                    # Reuse the daily linearity trend embedded in the
+                    # main stats — same shape _update_trend_chart already
+                    # consumes, just for an arbitrary number of days.
+                    stats = db.get_dashboard_stats(days_back=days_back)
+                    self.after(0, lambda s=stats: self._update_trend_chart(s)
+                               if self.winfo_exists() else None)
+                else:
+                    rows = db.get_yield_trend(days_back=days_back, period=period)
+                    self.after(0, lambda r=rows: self._render_trend_pchart_from_yield(r)
+                               if self.winfo_exists() else None)
+            except Exception as e:
+                logger.error(f"Trend range refresh failed: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.trend_chart.show_placeholder(
+                    f"Trend error: {exc}"
+                ) if self.winfo_exists() and self.trend_chart else None)
+
+        from laser_trim_analyzer.utils.threads import get_thread_manager
+        get_thread_manager().start_thread(target=_load, name="dashboard-trend-range")
+
+    def _render_trend_pchart_from_yield(self, rows):
+        """Render a P-chart from get_yield_trend rows (period-bucketed)."""
+        if not self.trend_chart or not self.winfo_exists():
+            return
+        if not rows:
+            self.trend_chart.show_placeholder("No data in selected range")
+            return
+        rows = [r for r in rows if r.get("total", 0) > 0]
+        if len(rows) < 2:
+            self.trend_chart.show_placeholder("Insufficient data for trend")
+            return
+        dates = [r["period"] for r in rows]
+        pass_rates = [r["pass_rate"] for r in rows]
+        sample_sizes = [r["total"] for r in rows]
+        latest = dates[-1] if dates else ""
+        title = f"Data as of: {latest}" if latest else ""
+        self.trend_chart.plot_pchart(
+            dates=dates,
+            pass_rates=pass_rates,
+            sample_sizes=sample_sizes,
+            title=title,
+            ylabel="Pass Rate %",
         )
 
     def _update_model_display(
@@ -1086,60 +1140,6 @@ class DashboardPage(ctk.CTkFrame):
                 text_color="gray", anchor="w",
             )
             stats_label.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 5), sticky="w")
-
-    def _update_pareto_chart(self, priority_models: List[Dict[str, Any]]):
-        """Update Pareto chart with cost-weighted failure data when pricing available."""
-        try:
-            self._ensure_pareto_chart_initialized()
-            if not self.pareto_chart:
-                return
-
-            if not priority_models:
-                self.pareto_chart.show_placeholder("No failure data for Pareto chart")
-                return
-
-            # Get pricing data for cost-weighted Pareto
-            prices = self.app.config.active_models.model_prices
-            cost_ratio = self.app.config.active_models.cost_ratio
-
-            failing_models = [m for m in priority_models if m.get("failed_units", 0) > 0]
-            if not failing_models:
-                self.pareto_chart.show_placeholder("No failures to display")
-                return
-
-            if prices:
-                # Cost-weighted Pareto: failure_count * unit_price * cost_ratio
-                labels = []
-                values = []
-                for m in failing_models:
-                    model = m.get("model", "?")
-                    failed = m.get("failed_units", 0)
-                    price = prices.get(model, 0)
-                    cost = failed * price * cost_ratio
-                    if cost > 0:
-                        labels.append(model)
-                        values.append(cost)
-                    elif price == 0:
-                        # No price — still include by failure count (as $0)
-                        labels.append(model)
-                        values.append(0)
-
-                if any(v > 0 for v in values):
-                    # Format as $K for readability
-                    title = "Failure Cost Impact ($)"
-                    self.pareto_chart.plot_pareto(labels=labels, values=values, title=title)
-                else:
-                    # All prices are 0 — fall back to failure count
-                    labels = [m.get("model", "?") for m in failing_models]
-                    values = [m.get("failed_units", 0) for m in failing_models]
-                    self.pareto_chart.plot_pareto(labels=labels, values=values)
-            else:
-                # No pricing — use failure count
-                labels = [m.get("model", "?") for m in failing_models]
-                values = [m.get("failed_units", 0) for m in failing_models]
-                self.pareto_chart.plot_pareto(labels=labels, values=values)
-        except Exception as e:
-            logger.debug(f"Pareto chart update error: {e}")
 
     def _export_executive_summary(self):
         """Export executive summary report to Excel."""
@@ -1415,9 +1415,8 @@ class DashboardPage(ctk.CTkFrame):
     def on_hide(self):
         """Called when page becomes hidden - cleanup to free memory."""
         # Clear charts to free matplotlib resources
-        for chart in [self.trend_chart, self.pareto_chart]:
-            if chart and hasattr(chart, 'figure'):
-                try:
-                    chart.clear()
-                except Exception as e:
-                    logger.debug(f"Chart cleanup warning: {e}")
+        if self.trend_chart and hasattr(self.trend_chart, 'figure'):
+            try:
+                self.trend_chart.clear()
+            except Exception as e:
+                logger.debug(f"Chart cleanup warning: {e}")

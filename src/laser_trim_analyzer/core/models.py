@@ -127,6 +127,11 @@ class TrackData(BaseAnalysisModel):
     is_anomaly: bool = Field(default=False, description="Flagged as anomalous (likely trim failure)")
     anomaly_reason: Optional[str] = Field(None, description="Reason for anomaly flag")
 
+    # Trim difficulty: how many laser-trim passes the equipment ran on this
+    # track. Counted from the file's "Trim N" / "TRK<n> M" sheet structure.
+    # 1 = single pass to spec, 2+ = retrim was needed. None for FT files.
+    trim_pass_count: Optional[int] = Field(None, ge=0, description="Number of trim passes the laser ran for this track")
+
     # Theory/test voltage data (from parser, used for slope optimization bounds)
     theory_volts: Optional[List[float]] = Field(None, description="Theoretical output values at each position")
     test_volts: Optional[float] = Field(None, description="Reference voltage for slope optimization bounds")

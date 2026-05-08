@@ -9,10 +9,12 @@ for failure prediction (threshold calculation moved to ThresholdOptimizer).
 """
 
 import logging
+import os
 import pickle
 import hashlib
 import hmac
 import socket
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -29,6 +31,13 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
+
+
+def _class_label_is_failure(label: Any) -> bool:
+    """Return True when a classifier class label represents a failure."""
+    if isinstance(label, str):
+        return label.strip().lower() in {"1", "true", "fail", "failed", "failure"}
+    return bool(label == 1 or label is True)
 
 
 # Feature columns used for prediction
@@ -351,7 +360,7 @@ class ModelPredictor:
             proba = self.classifier.predict_proba(X_scaled)
             if proba.shape[1] == 1:
                 # Single class in training data — return probability matching that class
-                return 1.0 if self.classifier.classes_[0] else 0.0
+                return 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
             return float(proba[0, 1])
 
         except Exception as e:
@@ -393,7 +402,7 @@ class ModelPredictor:
 
             if proba.shape[1] == 1:
                 # Single class in training data
-                val = 1.0 if self.classifier.classes_[0] else 0.0
+                val = 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
                 return [val] * len(features_list)
 
             return [float(p) for p in proba[:, 1]]
@@ -431,7 +440,7 @@ class ModelPredictor:
             # Handle single-class models
             # classes_[0] == 1 (fail) → probability 1.0; classes_[0] == 0 (pass) → 0.0
             if len(self.classifier.classes_) == 1:
-                val = 1.0 if self.classifier.classes_[0] else 0.0
+                val = 1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
                 return val, val, val
 
             # Get predictions from all trees
@@ -440,7 +449,9 @@ class ModelPredictor:
                 tp = tree.predict_proba(X_scaled)
                 if tp.shape[1] == 1:
                     # Tree saw only one class
-                    tree_predictions.append(1.0 if self.classifier.classes_[0] else 0.0)
+                    tree_predictions.append(
+                        1.0 if _class_label_is_failure(self.classifier.classes_[0]) else 0.0
+                    )
                 else:
                     tree_predictions.append(tp[0, 1])
             tree_predictions = np.array(tree_predictions)
@@ -491,13 +502,49 @@ class ModelPredictor:
                 'config': self.config,
             }
 
-            with open(path, 'wb') as f:
-                pickle.dump(data, f)
-
-            # Write HMAC hash file for tamper-resistant integrity verification
-            file_hmac = self._compute_file_hmac(path)
+            tmp_model_path = None
+            tmp_hash_path = None
             hash_path = path.with_suffix('.hash')
-            hash_path.write_text(file_hmac)
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='wb',
+                    delete=False,
+                    dir=path.parent,
+                    prefix=f"{path.name}.",
+                    suffix=".tmp",
+                ) as f:
+                    tmp_model_path = Path(f.name)
+                    pickle.dump(data, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                # Write HMAC hash file for tamper-resistant integrity verification.
+                # Compute it from the temp model so readers never see a partial pickle.
+                file_hmac = self._compute_file_hmac(tmp_model_path)
+                with tempfile.NamedTemporaryFile(
+                    mode='w',
+                    encoding='utf-8',
+                    delete=False,
+                    dir=hash_path.parent,
+                    prefix=f"{hash_path.name}.",
+                    suffix=".tmp",
+                ) as f:
+                    tmp_hash_path = Path(f.name)
+                    f.write(file_hmac)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                os.replace(tmp_model_path, path)
+                tmp_model_path = None
+                os.replace(tmp_hash_path, hash_path)
+                tmp_hash_path = None
+            finally:
+                for tmp_path in (tmp_model_path, tmp_hash_path):
+                    if tmp_path is not None:
+                        try:
+                            Path(tmp_path).unlink(missing_ok=True)
+                        except Exception:
+                            logger.debug(f"Could not remove temp predictor file: {tmp_path}")
 
             logger.debug(f"Predictor saved: {self.model_name} -> {path}")
             return True
@@ -688,6 +735,9 @@ def _add_spec_features(features: dict, model: str) -> dict:
             features["element_type_code"] = element_map.get(etype, 0)
 
     except Exception:
-        pass  # Specs not available
+        # Specs may not be available for every model; failing to enrich
+        # silently degrades ML accuracy without leaving a trail. Logging at
+        # debug level keeps it observable without being noisy.
+        logger.debug("Spec feature enrichment failed", exc_info=True)
 
     return features

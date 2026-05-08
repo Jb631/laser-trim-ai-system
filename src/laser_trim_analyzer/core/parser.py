@@ -442,6 +442,13 @@ class ExcelParser:
             # Find untrimmed sheet
             untrimmed_sheet = None
             trimmed_sheet = None
+            # Count laser trim passes for this track. System A names sheets
+            # "<section> TRK<n> 0" (untrimmed), "<section> TRK<n> 1",
+            # "<section> TRK<n> 2", ... (intermediate passes), and
+            # "<section> TRK<n> TRM" (final).  Highest numeric suffix tells
+            # us how many trim cycles the equipment ran.
+            max_trim_n = 0
+            has_trm = False
 
             for sheet in xl.sheet_names:
                 sheet_upper = sheet.upper()
@@ -450,6 +457,23 @@ class ExcelParser:
                         untrimmed_sheet = sheet
                     elif "TRM" in sheet_upper:
                         trimmed_sheet = sheet
+                        has_trm = True
+                    else:
+                        # Look for trailing positive integer (intermediate trim pass)
+                        tail = sheet.rsplit(" ", 1)[-1]
+                        if tail.isdigit():
+                            n = int(tail)
+                            if n > 0 and n > max_trim_n:
+                                max_trim_n = n
+
+            # 0 intermediate sheets but a TRM exists → single trim pass.
+            # Otherwise the highest numbered sheet is the pass count.
+            if max_trim_n > 0:
+                trim_pass_count = max_trim_n
+            elif has_trm:
+                trim_pass_count = 1
+            else:
+                trim_pass_count = 0
 
             # Use trimmed sheet if available, otherwise use untrimmed
             # (allows processing of files where trimming was aborted/incomplete)
@@ -460,6 +484,7 @@ class ExcelParser:
                     SystemType.A, track_id
                 )
                 if track_data:
+                    track_data["trim_pass_count"] = trim_pass_count
                     tracks.append(track_data)
 
         return tracks
@@ -494,6 +519,19 @@ class ExcelParser:
         else:
             trimmed_sheet = None
 
+        # Count laser trim passes the equipment ran.
+        # If "Trim N" sheets exist, the highest N is the pass count.
+        # Otherwise a lone "Lin Error" implies a single trim pass; nothing
+        # at all means trimming was aborted/incomplete (count = 0).
+        if trim_sheets:
+            trim_pass_count = max(
+                int(s.lower().split()[-1]) for s in trim_sheets
+            )
+        elif lin_error_sheet:
+            trim_pass_count = 1
+        else:
+            trim_pass_count = 0
+
         if trimmed_sheet:
             # Extract track ID from filename if present.
             # Newer LTS files embed the track letter: e.g.
@@ -514,6 +552,7 @@ class ExcelParser:
                 SystemType.B, sys_b_track_id
             )
             if track_data:
+                track_data["trim_pass_count"] = trim_pass_count
                 tracks.append(track_data)
 
         return tracks
@@ -763,7 +802,10 @@ class ExcelParser:
             }
 
         except Exception as e:
-            logger.error(f"Error extracting track data from {trimmed_sheet}: {e}")
+            logger.error(
+                f"Error extracting track data from {trimmed_sheet}: {e}",
+                exc_info=True,
+            )
             return None
 
     def _validate_track_data(
@@ -906,11 +948,17 @@ class ExcelParser:
                     data.append(float(value))
                     consecutive_nan = 0
                 elif allow_nan:
-                    # For error columns, NaN typically means 0 error (within spec, no trim needed)
-                    data.append(0.0)
+                    # Preserve NaN as float('nan') rather than coercing to 0.0.
+                    # An equipment blank/dropout in an error column must not be
+                    # silently treated as "in-spec" — _count_fail_points has a
+                    # NaN guard that conservatively treats NaN as a fail point.
+                    data.append(float('nan'))
                     consecutive_nan += 1
-                    # If we have too many consecutive NaN, we've hit the end of data
-                    if consecutive_nan > 10:
+                    # 10+ consecutive NaN means end of data; trim them so they
+                    # don't get counted as fail points past the real signal.
+                    # Trigger at >= 10 so 10-trailing-NaN runs are also trimmed
+                    # (was > 10, which left up to 10 NaN values in the array).
+                    if consecutive_nan >= 10:
                         # Remove the trailing NaN placeholders
                         data = data[:-consecutive_nan]
                         break
@@ -983,6 +1031,10 @@ class ExcelParser:
     ) -> float:
         """Calculate linearity spec from limits."""
         if not upper_limits or not lower_limits:
+            logger.warning(
+                "linearity_spec defaulting to 0.01 — no limit columns supplied. "
+                "Sigma threshold and pass/fail logic may be calibrated incorrectly."
+            )
             return 0.01  # Default
 
         # Filter valid values
@@ -998,6 +1050,10 @@ class ExcelParser:
             # crash Pydantic validation or invert pass/fail logic.
             return abs(avg_upper - avg_lower) / 2
 
+        logger.warning(
+            "linearity_spec defaulting to 0.01 — limit columns present but all "
+            "values were None/NaN. Sigma threshold may be miscalibrated."
+        )
         return 0.01
 
 

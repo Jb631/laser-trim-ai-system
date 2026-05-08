@@ -1915,6 +1915,15 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw_idle()
 
+    # Heatmap is unreadable past these thresholds. Visual review showed a
+    # 232-row × 500-col heatmap rendering ~3 px tall cells with overlapping
+    # number annotations — no information conveyed. Caps make the chart
+    # focus on signal: the worst-performing models in the most recent
+    # periods, where attention is actually needed.
+    HEATMAP_MAX_ROWS = 25
+    HEATMAP_MAX_COLS = 26  # ~6 months weekly, or ~2 years monthly
+    HEATMAP_ANNOT_LIMIT = 18  # rows × cols beyond this → no per-cell numbers
+
     def plot_heatmap(
         self,
         models: List[str],
@@ -1924,6 +1933,17 @@ class ChartWidget(ctk.CTkFrame):
     ) -> None:
         """
         Plot heat map: models (Y) x time periods (X), color = pass rate.
+
+        At production scale (200+ models, 500+ weekly periods) the raw
+        matrix is unreadable. This implementation:
+          1. keeps the most-recent HEATMAP_MAX_COLS time buckets,
+          2. ranks models by mean pass rate over the visible window and
+             keeps the worst HEATMAP_MAX_ROWS,
+          3. suppresses per-cell numeric annotations once rows or cols
+             exceed HEATMAP_ANNOT_LIMIT (the colour scale + colourbar
+             carry the magnitude there),
+          4. shows a "showing N of M models / K of P periods" subtitle so
+             the truncation is never silent.
 
         Args:
             models: Y-axis labels (model names)
@@ -1939,69 +1959,105 @@ class ChartWidget(ctk.CTkFrame):
         # Save original figure size so clear() can restore it later
         self._heatmap_original_size = self.style.figure_size
 
-        # Scale figure height so each model row is readable (~0.4" per row)
-        n_models = len(models)
-        fig_height = max(3, n_models * 0.4 + 1.5)  # 1.5" for title/x-labels
+        full_data = np.array(values, dtype=float)
+        total_models = len(models)
+        total_periods = len(periods)
+
+        # 1. Keep the most-recent N periods (assumes input ordered chronologically).
+        if total_periods > self.HEATMAP_MAX_COLS:
+            period_slice = slice(total_periods - self.HEATMAP_MAX_COLS, total_periods)
+        else:
+            period_slice = slice(0, total_periods)
+        full_data = full_data[:, period_slice]
+        periods_visible = periods[period_slice]
+
+        # 2. Rank models by mean pass rate over the visible window
+        # (NaN-safe: a model with no data in the window goes to the bottom
+        # so we don't burn a row on it). Lower mean = worse = top of chart.
+        with np.errstate(invalid="ignore"):
+            row_score = np.where(
+                np.all(np.isnan(full_data), axis=1),
+                np.inf,  # all-NaN rows sort last
+                np.nanmean(full_data, axis=1),
+            )
+        order = np.argsort(row_score)
+        if total_models > self.HEATMAP_MAX_ROWS:
+            kept = order[: self.HEATMAP_MAX_ROWS]
+        else:
+            kept = order
+        # Reverse so the worst pass-rate model is at the top of the heatmap.
+        kept = list(reversed(kept))
+        data = full_data[kept, :]
+        models_visible = [models[i] for i in kept]
+
+        n_models = len(models_visible)
+        n_periods = len(periods_visible)
+
+        fig_height = max(3, n_models * 0.4 + 1.5)
         self.figure.set_size_inches(self.style.figure_size[0], fig_height)
 
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
-        data = np.array(values)
-
-        # Use RdYlGn colormap (red=bad, yellow=mid, green=good)
         from matplotlib.colors import LinearSegmentedColormap
         cmap = LinearSegmentedColormap.from_list('rylg',
             [(0, COLORS['fail']), (0.5, COLORS['warning']), (1.0, COLORS['pass'])])
         cmap.set_bad(color=COLORS['background'], alpha=0.3)
 
         masked_data = np.ma.masked_invalid(data)
-
         im = ax.imshow(masked_data, cmap=cmap, aspect='auto', vmin=0, vmax=100)
 
-        # Add colorbar
         cbar = self.figure.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
-        cbar.set_label('Pass Rate %', fontsize=self.style.font_size - 1)
+        cbar.set_label('Pass Rate % (grey = no data)', fontsize=self.style.font_size - 1)
         if self.style.dark_mode:
             cbar.ax.yaxis.set_tick_params(color=COLORS['text'])
             cbar.ax.yaxis.label.set_color(COLORS['text'])
             for label in cbar.ax.get_yticklabels():
                 label.set_color(COLORS['text'])
 
-        # X-axis labels — thin out if too many periods
-        if len(periods) > 20:
-            step = max(1, len(periods) // 12)
-            tick_positions = list(range(0, len(periods), step))
+        # X-axis labels — thin out so labels never overlap.
+        if n_periods > 20:
+            step = max(1, n_periods // 12)
+            tick_positions = list(range(0, n_periods, step))
             ax.set_xticks(tick_positions)
-            ax.set_xticklabels([periods[i] for i in tick_positions],
+            ax.set_xticklabels([periods_visible[i] for i in tick_positions],
                               rotation=45, ha='right',
                               fontsize=self.style.font_size - 2)
         else:
-            ax.set_xticks(range(len(periods)))
-            ax.set_xticklabels(periods, rotation=45, ha='right',
+            ax.set_xticks(range(n_periods))
+            ax.set_xticklabels(periods_visible, rotation=45, ha='right',
                               fontsize=self.style.font_size - 2)
 
-        # Y-axis labels
         ax.set_yticks(range(n_models))
-        ax.set_yticklabels(models, fontsize=self.style.font_size - 1)
-        ax.set_title(title, fontsize=self.style.title_size)
+        ax.set_yticklabels(models_visible, fontsize=self.style.font_size - 1)
 
-        # Always show pass rate values in cells — scale font to fit
-        n_periods = len(periods)
-        cell_font = max(6, min(9, int(200 / max(n_models, n_periods))))
-        for i in range(n_models):
-            for j in range(n_periods):
-                val = data[i][j]
-                if not np.isnan(val):
-                    text_color = 'white' if val < 40 or val > 85 else 'black'
-                    ax.text(j, i, f'{val:.0f}', ha='center', va='center',
-                           fontsize=cell_font, color=text_color)
+        # Truncation subtitle so the cap is never silent.
+        if total_models > n_models or total_periods > n_periods:
+            subtitle = (
+                f"showing worst {n_models} of {total_models} models, "
+                f"latest {n_periods} of {total_periods} periods"
+            )
+            ax.set_title(f"{title}\n{subtitle}", fontsize=self.style.title_size)
+        else:
+            ax.set_title(title, fontsize=self.style.title_size)
 
-        # Light grid lines between cells for readability
+        # 3. Per-cell numbers only at small sizes. Past the limit the cells
+        # are too small for legible text — colour + colourbar carry the value.
+        max_dim = max(n_models, n_periods)
+        if max_dim <= self.HEATMAP_ANNOT_LIMIT:
+            cell_font = max(7, min(9, int(160 / max_dim)))
+            for i in range(n_models):
+                for j in range(n_periods):
+                    val = data[i][j]
+                    if not np.isnan(val):
+                        text_color = 'white' if val < 40 or val > 85 else 'black'
+                        ax.text(j, i, f'{val:.0f}', ha='center', va='center',
+                               fontsize=cell_font, color=text_color)
+
         ax.set_xticks([x - 0.5 for x in range(1, n_periods)], minor=True)
         ax.set_yticks([y - 0.5 for y in range(1, n_models)], minor=True)
         ax.grid(which='minor', color=COLORS['grid'], linewidth=0.5, alpha=0.3)
-        ax.tick_params(which='minor', length=0)  # Hide minor tick marks
+        ax.tick_params(which='minor', length=0)
         ax.grid(which='major', visible=False)
 
         self.figure.tight_layout()

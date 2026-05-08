@@ -76,6 +76,16 @@ class TrendsPage(ctk.CTkFrame):
         self._summary_charts_initialized = False
         self._detail_charts_initialized = False
 
+        # Generation counter — bumped on every navigation/filter change.
+        # Background loads capture this value at launch and the after()
+        # callbacks discard themselves if a newer load has superseded
+        # them. Without this, a stale _load_summary_data callback fires
+        # AFTER _create_detail_view destroyed _alerts_frame and tries to
+        # create a ChartWidget on the dead frame, raising
+        # _tkinter.TclError "bad window path name". Same pattern as
+        # ComparePage._load_generation.
+        self._load_generation = 0
+
         self._create_ui()
 
     def _create_ui(self):
@@ -96,7 +106,7 @@ class TrendsPage(ctk.CTkFrame):
 
         self._trend_type = ctk.CTkSegmentedButton(
             header_frame,
-            values=["Standard", "Comparative", "Cpk Trend", "Yield", "Drift"],
+            values=["Priorities", "Standard", "Comparative", "Cpk Trend", "Drift", "Process Drift", "Trim Difficulty"],
             command=self._on_trend_type_changed,
         )
         self._trend_type.set("Standard")
@@ -290,7 +300,9 @@ class TrendsPage(ctk.CTkFrame):
             text="Active Models Summary",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=6)
+        # columnspan grew from 6 to 9 with the addition of the Top Anomaly
+        # Model stat tile, so the title stays aligned across the full row.
+        stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=9)
 
         # Stats in a horizontal row
         self.summary_stat_labels = {}
@@ -303,6 +315,11 @@ class TrendsPage(ctk.CTkFrame):
             ("models_at_risk", "Needs Attention"),
             ("best_model", "Best (Linearity)"),
             ("worst_model", "Worst (Linearity)"),
+            # Top model by anomaly rate over the selected window. Per-track
+            # is_anomaly was visible per-unit but never rolled up to the
+            # model level — a model with persistent anomalies is a fixture
+            # or operator setup issue, not random material variation.
+            ("top_anomaly", "Top Anomaly Model"),
         ]
 
         for idx, (key, label) in enumerate(stat_names):
@@ -334,20 +351,35 @@ class TrendsPage(ctk.CTkFrame):
         self._alerts_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.alerts_chart = None
 
-        # Impact Prioritization section (linearity-focused)
+        # Impact Prioritization pointer — the full ranked list, near-miss
+        # split, and cost impact now live on the Priorities tab. This
+        # block used to duplicate that as a plain text dump; per UX audit
+        # collapse it to a one-line pointer that opens the canonical view.
         self._impact_frame = ctk.CTkFrame(self.content)
-        self._impact_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self._impact_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
-        impact_label = ctk.CTkLabel(
+        ctk.CTkLabel(
             self._impact_frame,
-            text="Where to Focus (Impact Ranking)",
+            text="Where to Focus →",
             font=ctk.CTkFont(size=14, weight="bold")
-        )
-        impact_label.pack(padx=15, pady=(15, 5), anchor="w")
+        ).pack(side="left", padx=(15, 8), pady=12)
 
-        self.impact_text = ctk.CTkTextbox(self._impact_frame, height=100)
-        self.impact_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.impact_text.configure(state="disabled")
+        ctk.CTkLabel(
+            self._impact_frame,
+            text="Top priority models, near-miss vs hard-fail, and cost impact",
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(0, 8), pady=12)
+
+        ctk.CTkButton(
+            self._impact_frame,
+            text="Open Priorities tab",
+            width=160,
+            command=lambda: (
+                self._trend_type.set("Priorities"),
+                self._show_priorities()
+            )
+        ).pack(side="right", padx=15, pady=10)
 
         # Best/Worst models side by side
         self._models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -566,6 +598,17 @@ class TrendsPage(ctk.CTkFrame):
     def _ensure_summary_charts_initialized(self):
         """Lazily initialize summary view charts - defers matplotlib loading."""
         if self._summary_charts_initialized:
+            return
+
+        # Bail out if the summary frames have been destroyed (e.g. user
+        # navigated to detail mode while a stale callback was queued).
+        # Creating a ChartWidget on a destroyed parent raises
+        # _tkinter.TclError "bad window path name".
+        if (
+            getattr(self, "_alerts_frame", None) is None
+            or not self._alerts_frame.winfo_exists()
+        ):
+            logger.debug("Summary frames missing; skipping chart init")
             return
 
         ChartWidget, ChartStyle = _ensure_chart_module()
@@ -1229,6 +1272,11 @@ class TrendsPage(ctk.CTkFrame):
     def _refresh_data(self):
         """Refresh data from database."""
         self.status_label.configure(text="Loading...")
+        # Bump generation so any in-flight summary/detail load discards
+        # its result when the after() callback fires (the user has
+        # already moved on, possibly destroying the target frames).
+        self._load_generation += 1
+        gen = self._load_generation
         # Capture UI filter values on main thread (tkinter is not thread-safe)
         self._cached_active_only = self.active_only_var.get()
         try:
@@ -1241,25 +1289,27 @@ class TrendsPage(ctk.CTkFrame):
             self._cached_min_fail_rate = 0
         self._cached_element_filter = self._element_filter.get() if hasattr(self, '_element_filter') else "All"
         self._cached_class_filter = self._class_filter.get() if hasattr(self, '_class_filter') else "All"
-        get_thread_manager().start_thread(target=self._load_data, name="trends-load-data")
+        get_thread_manager().start_thread(
+            target=lambda g=gen: self._load_data(g), name="trends-load-data"
+        )
 
-    def _load_data(self):
-        """Load data in background thread."""
+    def _load_data(self, gen: int):
+        """Load data in background thread; gen lets stale callbacks bail."""
         try:
             db = get_database()
 
             if self.selected_model == "All Models":
                 # Summary mode
-                self._load_summary_data(db)
+                self._load_summary_data(db, gen)
             else:
                 # Detail mode
-                self._load_detail_data(db)
+                self._load_detail_data(db, gen)
 
         except Exception as e:
-            logger.error(f"Failed to load trend data: {e}")
+            logger.error(f"Failed to load trend data: {e}", exc_info=True)
             self.after(0, lambda: self._show_error(str(e)))
 
-    def _load_summary_data(self, db):
+    def _load_summary_data(self, db, gen: int = 0):
         """Load data for summary mode."""
         # Get active models config for MPS prioritization
         config = get_config()
@@ -1316,15 +1366,50 @@ class TrendsPage(ctk.CTkFrame):
         # Load ML insights on background thread (disk I/O for MLManager.load_all)
         ml_insights = self._get_ml_summary_insights()
 
-        # Update UI on main thread
-        self.after(0, lambda: self._update_summary_display(
-            active_models, alert_models, model_names, trending_worse,
+        # Per-model anomaly rates — surfaced as a stat tile so persistent
+        # setup issues are visible at the model level (per-track is_anomaly
+        # was visible per-unit but never rolled up before).
+        try:
+            anomaly_rows = db.get_anomaly_rate_by_model(
+                days_back=self.selected_days, min_samples=10
+            )
+        except Exception as e:
+            logger.debug(f"Could not load anomaly rates: {e}")
+            anomaly_rows = []
+
+        # Update UI on main thread; capture gen so we can discard stale loads
+        self.after(0, lambda g=gen: self._update_summary_display_if_current(
+            g, active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
             priority_models=priority_models, heatmap_data=heatmap_data,
-            ml_insights=ml_insights
+            ml_insights=ml_insights, anomaly_rows=anomaly_rows,
         ))
 
-    def _load_detail_data(self, db):
+    def _update_summary_display_if_current(self, gen: int, *args, **kwargs):
+        """Apply summary load result only if no newer load has superseded it.
+
+        Without this guard the callback runs even after _create_detail_view
+        has destroyed the summary frames, which makes
+        _ensure_summary_charts_initialized try to instantiate ChartWidget
+        on a dead parent → TclError "bad window path name".
+        """
+        if gen != self._load_generation:
+            return
+        # Defensive: also confirm the page itself is still alive AND the
+        # parent frame the charts will mount into still exists. If the
+        # user has navigated to detail mode in between, the summary
+        # frames are gone even though the gen check above should already
+        # have bailed — this is belt-and-suspenders for unexpected paths.
+        if not self.winfo_exists():
+            return
+        if (
+            getattr(self, "_alerts_frame", None) is None
+            or not self._alerts_frame.winfo_exists()
+        ):
+            return
+        self._update_summary_display(*args, **kwargs)
+
+    def _load_detail_data(self, db, gen: int = 0):
         """Load data for detail mode."""
         # Get active models config for MPS prioritization
         config = get_config()
@@ -1390,23 +1475,36 @@ class TrendsPage(ctk.CTkFrame):
             logger.debug(f"Could not load Cpk: {e}")
             cpk_data = None
 
-        # Update UI on main thread
-        self.after(0, lambda: self._update_detail_display(
-            trend_data, model_alerts, ml_recommendations, model_names, model_stats,
+        # Update UI on main thread; gen lets us discard stale results if
+        # the user switched models or back to All Models in the meantime.
+        self.after(0, lambda g=gen: self._update_detail_display_if_current(
+            g, trend_data, model_alerts, ml_recommendations, model_names, model_stats,
             margin_data=margin_data, model_priority=model_priority, cpk_data=cpk_data
         ))
+
+    def _update_detail_display_if_current(self, gen: int, *args, **kwargs):
+        """Apply detail load result only if not superseded by a newer load."""
+        if gen != self._load_generation:
+            return
+        if not self.winfo_exists():
+            return
+        # Confirm the detail frames the renderer will write into still exist.
+        # _create_summary_view destroys these; running anyway crashes Tk.
+        scatter_frame = getattr(self, "_scatter_frame", None)
+        if scatter_frame is not None and not scatter_frame.winfo_exists():
+            return
+        self._update_detail_display(*args, **kwargs)
 
     def _get_ml_recommendations(self, trend_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Get ML recommendations for current model using per-model ML system."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-
-            # Try to load trained state
-            ml_manager.load_all()
+            # Shared cached MLManager — avoids reloading 134 predictor pickles
+            # on every navigation. Settings → Train invalidates the cache.
+            ml_manager = get_shared_ml_manager(db)
 
             # Get threshold from per-model optimizer (strip inactive suffix)
             clean_model_name = self.selected_model.replace(" (inactive)", "")
@@ -1456,6 +1554,7 @@ class TrendsPage(ctk.CTkFrame):
         priority_models: Optional[List[Dict[str, Any]]] = None,
         heatmap_data: Optional[Dict[str, Any]] = None,
         ml_insights: Optional[Dict[str, Any]] = None,
+        anomaly_rows: Optional[List[Dict[str, Any]]] = None,
     ):
         """Update summary display with loaded data."""
         if not self.winfo_exists():
@@ -1552,6 +1651,28 @@ class TrendsPage(ctk.CTkFrame):
             text=f"{worst_model} ({worst_rate:.0f}%)",
             text_color="#e74c3c" if worst_rate < 80 else "#f39c12"
         )
+
+        # Top anomaly model — pulls from get_anomaly_rate_by_model which
+        # is already sorted descending by rate. Color-code amber at >=5%
+        # and red at >=15% so persistent setup issues stand out without
+        # the operator having to drill into individual files.
+        anomaly_label = self.summary_stat_labels.get("top_anomaly")
+        if anomaly_label is not None:
+            top_anom = (anomaly_rows or [None])[0] if anomaly_rows else None
+            if top_anom and top_anom["anomaly_count"] > 0:
+                rate = top_anom["anomaly_rate"]
+                if rate >= 15.0:
+                    anom_color = "#e74c3c"
+                elif rate >= 5.0:
+                    anom_color = "#f39c12"
+                else:
+                    anom_color = "white"
+                anomaly_label.configure(
+                    text=f"{top_anom['model']} ({top_anom['anomaly_count']}, {rate:.0f}%)",
+                    text_color=anom_color,
+                )
+            else:
+                anomaly_label.configure(text="None", text_color="#27ae60")
 
         # Update alerts chart - show active alerts first, then inactive in separate section
         if active_alerts:
@@ -1704,30 +1825,14 @@ class TrendsPage(ctk.CTkFrame):
             label.pack(padx=10, pady=2, anchor="w")
 
     def _update_impact_display(self, priority_models: List[Dict[str, Any]]):
-        """Update impact prioritization section with linearity-focused data."""
-        self.impact_text.configure(state="normal")
-        self.impact_text.delete("1.0", "end")
+        """No-op kept for backwards compatibility with existing call sites.
 
-        if not priority_models:
-            self.impact_text.insert("end", "No prioritization data (need 10+ samples per model)")
-        else:
-            for i, m in enumerate(priority_models[:8]):
-                model = m.get("model", "Unknown")
-                lin_rate = m.get("linearity_pass_rate", 0)
-                failed = m.get("failed_units", 0)
-                near_miss = m.get("near_miss_count", 0)
-                impact = m.get("impact_score", 0)
-                rec = m.get("recommendation", "")
-                total = m.get("total_units", 0)
-
-                rank = f"#{i+1}"
-                self.impact_text.insert("end", f"  {rank}  {model}  [Impact: {impact:.0f}]\n")
-                self.impact_text.insert("end", f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss\n")
-                if rec:
-                    self.impact_text.insert("end", f"      >> {rec}\n")
-                self.impact_text.insert("end", "\n")
-
-        self.impact_text.configure(state="disabled")
+        The full impact ranking now lives on the Priorities tab; the
+        Standard summary used to render a plain-text version of the same
+        data which the UX audit flagged as redundant. The summary view
+        now shows a pointer button to Priorities instead.
+        """
+        return
 
     def _update_detail_display(
         self,
@@ -1911,19 +2016,21 @@ class TrendsPage(ctk.CTkFrame):
         """Reset summary statistics to default values."""
         for key in self.summary_stat_labels:
             self.summary_stat_labels[key].configure(text="--", text_color="white")
-        # Also reset impact display if it exists
-        if hasattr(self, 'impact_text'):
-            self.impact_text.configure(state="normal")
-            self.impact_text.delete("1.0", "end")
-            self.impact_text.insert("end", "No data available")
-            self.impact_text.configure(state="disabled")
+        # impact_text was removed in favour of the Priorities-tab pointer
+        # button — nothing to reset here. Left as comment for grep history.
 
     def _reset_detail_stats(self):
         """Reset detail statistics to default values."""
         for key in self.detail_stat_labels:
             self.detail_stat_labels[key].configure(text="--", text_color="white")
 
-    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]], ml_insights: Optional[Dict[str, Any]] = None):
+    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]], ml_insights: Optional[Dict[str, Any]] = None):  # noqa: E501
+        """ML insights summary on the Standard view.
+
+        The drift portion that used to render here duplicated the Drift
+        tab — now we just show a one-line trained-model count and let
+        the user click 'View All Details' for the full breakdown.
+        """
         """Update ML summary text for all models view with ML insights."""
         # Cache for the details dialog
         self._cached_alert_models = alert_models
@@ -1939,17 +2046,19 @@ class TrendsPage(ctk.CTkFrame):
         if ml_insights:
             has_content = True
             trained = ml_insights.get("trained_models", 0)
-
-            # Show trained models count first
-            if trained > 0:
-                self.ml_text.insert("end", f"ML Status: {trained} models trained  |  ")
-
-            # Show drift status summary inline
             drifting = ml_insights.get("drifting_models", [])
-            if drifting:
-                self.ml_text.insert("end", f"Drift: {len(drifting)} model(s)\n\n")
-            else:
-                self.ml_text.insert("end", "Drift: None detected\n\n")
+
+            # Single status line — full drift list lives on the Drift tab,
+            # listing model names again here was redundant per UX audit.
+            if trained > 0:
+                drift_note = (
+                    f"{len(drifting)} drifting (see Drift tab)"
+                    if drifting else "no drift"
+                )
+                self.ml_text.insert(
+                    "end",
+                    f"ML Status: {trained} models trained · {drift_note}\n\n",
+                )
 
         # Show alert summary if any - show more items now
         if alert_models:
@@ -1985,11 +2094,10 @@ class TrendsPage(ctk.CTkFrame):
         """Get ML insights for summary view."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             if not ml_manager.profilers:
                 return None
@@ -2256,9 +2364,18 @@ class TrendsPage(ctk.CTkFrame):
         elif value == "Cpk Trend":
             self._show_cpk_trend()
         elif value == "Yield":
-            self._show_yield_trend()
+            # Yield tab was removed — fleet-wide pass rate trend now lives
+            # on the Dashboard with adjustable date range. Keep the elif
+            # branch as a no-op safety net for any saved selection.
+            pass
         elif value == "Drift":
             self._show_drift_timeline()
+        elif value == "Trim Difficulty":
+            self._show_trim_difficulty()
+        elif value == "Priorities":
+            self._show_priorities()
+        elif value == "Process Drift":
+            self._show_process_drift()
 
     def show_drift_tab(self):
         """Public hook used by the Dashboard's Drift Alerts card to jump
@@ -2326,7 +2443,11 @@ class TrendsPage(ctk.CTkFrame):
     def _show_comparative_trends(self):
         """Show comparative pass rate trends for top models."""
         config = get_config()
-        mps = config.active_models.mps_models[:5] if config.active_models.mps_models else []
+        # Cap at 5 models so the line chart stays legible. Surface the cap
+        # in the chart title so the user knows how many MPS models are
+        # configured but not shown — previously the cap was silent.
+        all_mps = config.active_models.mps_models or []
+        mps = all_mps[:5]
         if not mps:
             chart = self._create_dedicated_chart_view("Comparative Pass Rate Trends")
             fig = chart.figure
@@ -2351,7 +2472,8 @@ class TrendsPage(ctk.CTkFrame):
             try:
                 db = get_database()
                 data = db.get_comparative_model_trends(mps, days_back=selected_days, period="week")
-                self.after(0, lambda: self._render_comparative_trends(data))
+                self.after(0, lambda d=data, total=len(all_mps), shown=len(mps):
+                            self._render_comparative_trends(d, total, shown))
             except Exception as e:
                 logger.error(f"Comparative trends error: {e}")
                 self.after(0, lambda: self.status_label.configure(
@@ -2359,7 +2481,7 @@ class TrendsPage(ctk.CTkFrame):
 
         get_thread_manager().start_thread(target=_load, name="comparative-trends")
 
-    def _render_comparative_trends(self, data):
+    def _render_comparative_trends(self, data, total_mps: int = 0, shown_mps: int = 0):
         """Render comparative trends chart on the main thread."""
         if not self.winfo_exists():
             return
@@ -2396,13 +2518,39 @@ class TrendsPage(ctk.CTkFrame):
                 ax.plot(all_periods, rates, marker='o', markersize=4, label=model)
 
             ax.set_ylabel("Pass Rate (%)")
-            ax.set_title("Comparative Pass Rate Trends")
-            ax.legend(loc="best", fontsize=8)
+            # Surface the silent MPS cap in the title so users know more
+            # models are configured than displayed.
+            if total_mps and total_mps > shown_mps:
+                ax.set_title(
+                    f"Comparative Pass Rate Trends — showing {shown_mps} of "
+                    f"{total_mps} MPS models"
+                )
+            else:
+                ax.set_title("Comparative Pass Rate Trends")
+            # 80% target reference line — same threshold the rest of the
+            # page uses for alerts.
+            ax.axhline(y=80, color="#198754", linestyle="--",
+                       alpha=0.7, label="Target (80%)")
+            # Thin x-axis ticks so dense weekly periods don't collide.
+            if len(all_periods) > 12:
+                step = max(1, len(all_periods) // 12)
+                ax.set_xticks(range(0, len(all_periods), step))
+                ax.set_xticklabels(
+                    [all_periods[i] for i in range(0, len(all_periods), step)],
+                    rotation=45, fontsize=8,
+                )
+            ax.legend(loc="lower right", fontsize=8, framealpha=0.85)
             ax.set_ylim(0, 105)
             ax.tick_params(axis='x', rotation=45, labelsize=8)
             fig.tight_layout()
             chart.canvas.draw_idle()
-            self.status_label.configure(text=f"Comparing {len(data)} models")
+            cap_note = (
+                f" ({shown_mps} of {total_mps} MPS models)"
+                if total_mps > shown_mps else ""
+            )
+            self.status_label.configure(
+                text=f"Comparing {len(data)} models{cap_note}"
+            )
         except Exception as e:
             logger.error(f"Comparative trends error: {e}")
             self.status_label.configure(text=f"Comparative error: {e}")
@@ -2467,25 +2615,84 @@ class TrendsPage(ctk.CTkFrame):
                     self.status_label.configure(text="No Cpk data")
                     return
 
-                # Show worst-to-best — the models that need attention first.
-                rows_sorted = sorted(rows, key=lambda r: r["cpk"] if r["cpk"] is not None else 99)
-                models = [r["model"] for r in rows_sorted]
-                cpks = [r["cpk"] if r["cpk"] is not None else 0 for r in rows_sorted]
-                # Color bars by capability band: red <1.0, orange 1.0–1.33, green >=1.33
+                # Show worst-to-best — models that need attention first.
+                rows_sorted = sorted(
+                    rows, key=lambda r: r["cpk"] if r["cpk"] is not None else 99
+                )
+                # Cap to bottom 20 worst Cpk so 60+ rows can't pile into an
+                # illegible wall of overlapping y-labels (the visual review
+                # showed labels stacking on top of each other at scale).
+                # An extreme outlier (e.g. Cpk=130 for one model) used to
+                # crush every other bar into a sliver — clipping the x-axis
+                # at 5.0 and capping rows fixes both problems together.
+                CPK_ROW_CAP = 20
+                CPK_X_LIMIT = 5.0
+                total_models = len(rows_sorted)
+                rows_shown = rows_sorted[:CPK_ROW_CAP]
+                # Reverse so the worst sits at the top of the bar chart.
+                rows_shown = list(reversed(rows_shown))
+                models = [r["model"] for r in rows_shown]
+                cpks_raw = [r["cpk"] if r["cpk"] is not None else 0 for r in rows_shown]
+                # Clip bar widths for display, but keep the real value for the
+                # label so users can still see "Cpk = 130" annotated even
+                # though the bar runs off-axis.
+                cpks_clipped = [min(c, CPK_X_LIMIT) for c in cpks_raw]
                 colors = [
                     '#dc3545' if c < 1.0 else '#fd7e14' if c < 1.33 else '#198754'
-                    for c in cpks
+                    for c in cpks_raw
                 ]
-                ax.barh(models, cpks, color=colors)
-                ax.axvline(x=1.33, color='#fd7e14', linestyle='--', alpha=0.7, label='Capable (1.33)')
-                ax.axvline(x=1.0, color='#dc3545', linestyle='--', alpha=0.7, label='Minimum (1.0)')
-                ax.set_xlabel("Cpk")
-                ax.set_title("Cpk by Model (last 90 days, n>=10)")
-                ax.legend(loc="best", fontsize=8)
-                ax.tick_params(axis='y', labelsize=8)
-                fig.tight_layout()
+
+                # Scale figure height to row count so 9pt y-labels stay readable.
+                target_height = max(4.0, min(12.0, 1.5 + 0.35 * len(models)))
+                fig.set_size_inches(
+                    fig.get_size_inches()[0], target_height, forward=True
+                )
+
+                y_pos = list(range(len(models)))
+                ax.barh(y_pos, cpks_clipped, color=colors,
+                        edgecolor="#1a1a1a", linewidth=0.5)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(models, fontsize=9)
+
+                # Annotate each bar with the actual Cpk value (not the clipped
+                # one) so the operator can read the number directly.
+                for i, (cpk_real, cpk_disp) in enumerate(zip(cpks_raw, cpks_clipped)):
+                    over = " (clipped)" if cpk_real > CPK_X_LIMIT else ""
+                    ax.text(
+                        min(cpk_disp, CPK_X_LIMIT) + 0.05,
+                        i,
+                        f"{cpk_real:.2f}{over}",
+                        va="center",
+                        fontsize=8,
+                        color="#cccccc",
+                    )
+
+                ax.axvline(x=1.33, color='#fd7e14', linestyle='--', alpha=0.7,
+                           label='Capable (1.33)')
+                ax.axvline(x=1.0, color='#dc3545', linestyle='--', alpha=0.7,
+                           label='Minimum (1.0)')
+                ax.set_xlim(0, CPK_X_LIMIT * 1.1)
+                ax.set_xlabel("Cpk (clipped at 5.0)")
+
+                if total_models > CPK_ROW_CAP:
+                    ax.set_title(
+                        f"Cpk by Model — bottom {CPK_ROW_CAP} of {total_models} "
+                        f"(last {self.selected_days}d, n≥10)"
+                    )
+                else:
+                    ax.set_title(
+                        f"Cpk by Model — last {self.selected_days}d, n≥10"
+                    )
+                ax.legend(loc="lower right", fontsize=8, framealpha=0.85)
+                ax.grid(True, axis="x", alpha=0.2)
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
                 chart.canvas.draw_idle()
-                self.status_label.configure(text=f"Cpk for {len(rows)} models")
+                self.status_label.configure(
+                    text=f"Cpk: showing worst {len(models)} of {total_models}"
+                )
                 return
 
             # Branch 2: single model -> time-series Cpk trend.
@@ -2533,20 +2740,32 @@ class TrendsPage(ctk.CTkFrame):
         """Show overall yield trend across all models."""
         self.status_label.configure(text="Loading yield trend...")
         selected_days = self.selected_days
+        # Pick aggregation period to keep ~10–60 buckets on the chart.
+        # Weekly buckets over 10 years = 520 ticks, unreadable; monthly
+        # buckets over 90 days = 3 ticks, also useless. Heuristic:
+        #   ≤ 90 d  → daily
+        #   ≤ 730 d → weekly
+        #   > 730 d → monthly
+        if selected_days <= 90:
+            period = "day"
+        elif selected_days <= 730:
+            period = "week"
+        else:
+            period = "month"
 
         def _load():
             try:
                 db = get_database()
-                data = db.get_yield_trend(days_back=selected_days, period="week")
-                self.after(0, lambda: self._render_yield_trend(data))
+                data = db.get_yield_trend(days_back=selected_days, period=period)
+                self.after(0, lambda d=data, p=period: self._render_yield_trend(d, p))
             except Exception as e:
-                logger.error(f"Yield trend error: {e}")
-                self.after(0, lambda: self.status_label.configure(
-                    text=f"Yield trend error: {e}"))
+                logger.error(f"Yield trend error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Yield trend error: {exc}"))
 
         get_thread_manager().start_thread(target=_load, name="yield-trend")
 
-    def _render_yield_trend(self, data):
+    def _render_yield_trend(self, data, period: str = "week"):
         """Render yield trend chart on the main thread."""
         if not self.winfo_exists():
             return
@@ -2570,21 +2789,81 @@ class TrendsPage(ctk.CTkFrame):
             periods = [d["period"] for d in data]
             rates = [d["pass_rate"] for d in data]
 
-            ax.fill_between(range(len(periods)), rates, alpha=0.3, color='#0d6efd')
-            ax.plot(range(len(periods)), rates, marker='o', markersize=3,
-                   color='#0d6efd', linewidth=1.5)
-            ax.axhline(y=80, color='#198754', linestyle='--', alpha=0.7, label='Target (80%)')
-            step = max(1, len(periods) // 8)
+            if len(periods) < 2:
+                # Single bucket = noise, not a trend. Tell the user the
+                # date filter / aggregation produced no usable trend
+                # rather than drawing a misleading single point.
+                self._draw_empty_state(
+                    ax,
+                    "Not enough data to draw a yield trend.\n\n"
+                    "Try a wider date range, or check that\n"
+                    "files have been processed in this window.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="Yield trend: insufficient data")
+                return
+
+            x = list(range(len(periods)))
+            target = 80.0
+            # Fill between the curve and the target so colour shows the gap
+            # to spec, not absolute area-under-the-curve which exaggerated
+            # 90% yield as a giant blue block (per usability review).
+            above = [max(r, target) for r in rates]
+            below = [min(r, target) for r in rates]
+            ax.fill_between(x, target, above, color="#198754", alpha=0.25,
+                            label="Above target")
+            ax.fill_between(x, below, target, color="#dc3545", alpha=0.25,
+                            label="Below target")
+            ax.plot(x, rates, marker="o", markersize=3,
+                    color="#0d6efd", linewidth=1.5, label="Yield")
+
+            # Rolling-average overlay smooths out weekly/daily noise so
+            # the underlying trend is visible at long date ranges. Window
+            # is ~10% of the visible periods, capped 4–12 buckets.
+            if len(rates) >= 6:
+                w = max(4, min(12, len(rates) // 10))
+                rolling = []
+                for i in range(len(rates)):
+                    lo = max(0, i - w + 1)
+                    window_vals = [v for v in rates[lo:i + 1] if v is not None]
+                    rolling.append(
+                        sum(window_vals) / len(window_vals) if window_vals else None
+                    )
+                ax.plot(x, rolling, color="#fd7e14", linewidth=2.0,
+                        label=f"Rolling avg ({w}{period[0]})")
+
+            ax.axhline(y=target, color="#198754", linestyle="--",
+                       alpha=0.7, label="Target (80%)")
+
+            step = max(1, len(periods) // 10)
             ax.set_xticks(range(0, len(periods), step))
-            ax.set_xticklabels([periods[i] for i in range(0, len(periods), step)],
-                              rotation=45, fontsize=8)
+            ax.set_xticklabels(
+                [periods[i] for i in range(0, len(periods), step)],
+                rotation=45, fontsize=8,
+            )
             ax.set_ylabel("Yield (%)")
-            ax.set_title("Overall Yield Trend")
-            ax.set_ylim(0, 105)
-            ax.legend(loc="best", fontsize=8)
-            fig.tight_layout()
+            granularity = {"day": "daily", "week": "weekly",
+                           "month": "monthly"}.get(period, period)
+            ax.set_title(
+                f"Overall Yield Trend — last {self.selected_days}d, "
+                f"{granularity} buckets ({len(periods)} points)"
+            )
+            # Auto-scale y-axis around the data with breathing room rather
+            # than 0–105% which wasted half the chart on empty space.
+            data_min = min(r for r in rates if r is not None)
+            data_max = max(r for r in rates if r is not None)
+            pad = max(2.0, (data_max - data_min) * 0.1)
+            ax.set_ylim(max(0, data_min - pad), min(105, data_max + pad))
+            ax.legend(loc="lower left", fontsize=8, framealpha=0.85)
+            ax.grid(True, axis="y", alpha=0.2)
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
             chart.canvas.draw_idle()
-            self.status_label.configure(text="Yield trend (all models)")
+            self.status_label.configure(
+                text=f"Yield trend: {len(periods)} {granularity} buckets"
+            )
         except Exception as e:
             logger.error(f"Yield trend error: {e}")
             self.status_label.configure(text=f"Yield trend error: {e}")
@@ -2621,32 +2900,65 @@ class TrendsPage(ctk.CTkFrame):
             chart._style_axis(ax)
 
             if not events:
-                ax.text(0.5, 0.5, "No drift events detected",
-                       ha='center', va='center', transform=ax.transAxes, fontsize=14,
-                       color='gray')
+                self._draw_empty_state(ax, "No drift events detected")
             else:
+                # Parse ISO date strings to datetime so matplotlib renders a
+                # proper time axis. Previously every marker was passed as the
+                # string slice e["date"][:10], which matplotlib treats as a
+                # categorical value — every event with the same date string
+                # collapsed onto a single x-position, making the chart look
+                # like one stacked column of triangles regardless of when
+                # the events happened.
+                from datetime import datetime as _dt
+                from matplotlib import dates as mdates
+
+                def _parse_date(raw):
+                    if not raw:
+                        return None
+                    try:
+                        return _dt.fromisoformat(raw[:19] if len(raw) >= 19 else raw[:10])
+                    except (ValueError, TypeError):
+                        return None
+
                 # Sort models so the most-recent drift sits at the top of the chart.
-                # Color-code by direction (red = up = quality degrading, orange = down = improving).
+                # Color-code by direction (red = up = degrading, orange = down = improving).
                 last_event = {}
                 for e in events:
-                    last_event[e["model"]] = e.get("date", "")
+                    parsed = _parse_date(e.get("date"))
+                    if parsed is None:
+                        continue
+                    if (
+                        e["model"] not in last_event
+                        or parsed > last_event[e["model"]]
+                    ):
+                        last_event[e["model"]] = parsed
+                if not last_event:
+                    self._draw_empty_state(
+                        ax, "Drift events have no parseable detection dates"
+                    )
+                    chart.canvas.draw_idle()
+                    self.status_label.configure(text="Drift dates malformed")
+                    return
                 models = sorted(last_event, key=lambda m: last_event[m], reverse=True)
                 model_y = {m: i for i, m in enumerate(models)}
 
-                # Dynamically size the figure so each model gets ~0.3" of vertical space
-                # (prevents the Y-axis from being crammed when many models are drifting)
+                # Dynamically size the figure so each model gets ~0.3" of vertical space.
                 target_height = max(4.0, min(12.0, 1.5 + 0.3 * len(models)))
                 fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
 
                 up_x, up_y = [], []
                 down_x, down_y = [], []
                 for e in events:
+                    if e["model"] not in model_y:
+                        continue
+                    parsed = _parse_date(e.get("date"))
+                    if parsed is None:
+                        continue
                     y = model_y[e["model"]]
-                    x_label = e.get("date", "")[:10]
                     if (e.get("direction") or "").lower() == "down":
-                        down_x.append(x_label); down_y.append(y)
+                        down_x.append(parsed); down_y.append(y)
                     else:
-                        up_x.append(x_label); up_y.append(y)
+                        up_x.append(parsed); up_y.append(y)
 
                 if up_x:
                     ax.scatter(up_x, up_y, s=70, c='#dc3545', zorder=5,
@@ -2655,6 +2967,8 @@ class TrendsPage(ctk.CTkFrame):
                     ax.scatter(down_x, down_y, s=70, c='#f39c12', zorder=5,
                                marker='v', label='Drifting down (improving)')
 
+                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
                 ax.set_yticks(range(len(models)))
                 ax.set_yticklabels(models, fontsize=9)
                 ax.tick_params(axis='x', rotation=45, labelsize=8)
@@ -2672,6 +2986,515 @@ class TrendsPage(ctk.CTkFrame):
         except Exception as e:
             logger.error(f"Drift timeline error: {e}")
             self.status_label.configure(text=f"Drift error: {e}")
+
+    # Metrics shown on the Process Drift tab. The DB-side keys must
+    # match DatabaseManager._PROCESS_DRIFT_METRICS.
+    _PROCESS_DRIFT_PANELS = (
+        ("untrimmed_resistance", "Untrimmed Resistance",
+         "Carbon batch / tooling drift"),
+        ("measured_electrical_angle", "Measured Electrical Angle",
+         "Fixture / setup drift"),
+        ("trim_pass_count", "Trim Passes",
+         "Process difficulty creep"),
+    )
+
+    def _show_process_drift(self):
+        """Three-panel view of physical-measurement drift per model.
+
+        Same z-score-based drift detection ML uses, applied to the
+        physical track signals (untrimmed resistance, electrical angle,
+        trim pass count). A drifting baseline often shows up here weeks
+        before sigma starts moving.
+        """
+        self.status_label.configure(text="Loading process drift...")
+        baseline_days = max(self.selected_days, 60)
+        # Recent window = ~15% of baseline, clamped 7–28 days.
+        recent_days = max(7, min(28, baseline_days // 7))
+
+        def _load():
+            try:
+                db = get_database()
+                panels = []
+                for metric, label, subtitle in self._PROCESS_DRIFT_PANELS:
+                    try:
+                        rows = db.get_process_drift_by_model(
+                            metric=metric,
+                            baseline_days=baseline_days,
+                            recent_days=recent_days,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"Process drift load failed for {metric}: {e}",
+                            exc_info=True,
+                        )
+                        rows = []
+                    panels.append((metric, label, subtitle, rows))
+                self.after(0, lambda p=panels, bd=baseline_days, rd=recent_days:
+                            self._render_process_drift(p, bd, rd))
+            except Exception as e:
+                logger.error(f"Process drift load error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Process drift error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="process-drift")
+
+    def _render_process_drift(self, panels, baseline_days: int, recent_days: int):
+        """Render three stacked drift panels — one per physical metric."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Process Drift")
+            chart.clear()
+            fig = chart.figure
+            n = len(panels)
+            # Per-panel rows shown
+            per_panel_rows = [min(10, len(rows)) for _, _, _, rows in panels]
+            total_rows = sum(max(1, r) for r in per_panel_rows)
+            target_height = max(7.0, min(18.0, 1.5 + 0.45 * total_rows + 1.0 * n))
+            fig.set_size_inches(fig.get_size_inches()[0], target_height,
+                                 forward=True)
+            gs = fig.add_gridspec(n, 1, hspace=0.65)
+            db_metrics = self._db_metric_meta()
+
+            any_drifting = 0
+            for i, (metric, label, subtitle, rows) in enumerate(panels):
+                ax = fig.add_subplot(gs[i])
+                chart._style_axis(ax)
+                meta = db_metrics.get(metric, {})
+                unit = meta.get("unit", "")
+                fmt = meta.get("fmt", "{:.2f}")
+
+                if not rows:
+                    ax.set_title(
+                        f"{label} — no data",
+                        loc="left", fontsize=12, fontweight="bold",
+                        color="#ffffff",
+                    )
+                    self._draw_empty_state(
+                        ax,
+                        f"Need ≥20 baseline samples and ≥5 recent samples\n"
+                        f"per model. None met the threshold.",
+                    )
+                    ax.set_xticks([]); ax.set_yticks([])
+                    for spine in ax.spines.values():
+                        spine.set_visible(False)
+                    continue
+
+                # Show top 10 by |z|.
+                shown = rows[:10]
+                drifting_in_panel = sum(1 for r in shown if r["is_drifting"])
+                any_drifting += drifting_in_panel
+                # Reverse so largest |z| ends at the top of the bar chart.
+                shown_rev = list(reversed(shown))
+                models = [r["model"] for r in shown_rev]
+                z_scores = [r["z_score"] for r in shown_rev]
+
+                def _color(r):
+                    if not r["is_drifting"]:
+                        return "#198754"  # within tolerance
+                    z = abs(r["z_score"])
+                    if z >= 4.0:
+                        return "#6f42c1"  # extreme
+                    if z >= 3.0:
+                        return "#dc3545"  # severe
+                    return "#fd7e14"      # moderate
+
+                colors = [_color(r) for r in shown_rev]
+                y_pos = list(range(len(models)))
+                ax.barh(y_pos, z_scores, color=colors,
+                        edgecolor="#1a1a1a", linewidth=0.5)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(models, fontsize=9)
+
+                # Annotate each bar with baseline mean and recent mean
+                # so the operator can see what the actual numbers are
+                # rather than just the z-score.
+                xmax = max((abs(z) for z in z_scores), default=1.0)
+                for j, r in enumerate(shown_rev):
+                    base_str = fmt.format(r["baseline_mean"])
+                    recent_str = fmt.format(r["recent_mean"])
+                    arrow = "↑" if r["direction"] == "up" else (
+                        "↓" if r["direction"] == "down" else "·"
+                    )
+                    text = (
+                        f"  z={r['z_score']:+.1f}  {arrow} "
+                        f"{base_str} → {recent_str} {unit}"
+                        f"  (n={r['baseline_n']}/{r['recent_n']})"
+                    )
+                    # Place the annotation at the bar end, biased outward
+                    # so positive bars get text right of zero, negative bars
+                    # left of zero. Use ha to keep it readable.
+                    z = z_scores[j]
+                    if z >= 0:
+                        ax.text(z, j, text, va="center", ha="left",
+                                fontsize=8, color="#cccccc")
+                    else:
+                        ax.text(z, j, text, va="center", ha="right",
+                                fontsize=8, color="#cccccc")
+
+                # ±2σ reference lines for the drift threshold.
+                ax.axvline(x=0, color="#666666", linewidth=0.6)
+                ax.axvline(x=2.0, color="#fd7e14", linestyle="--",
+                           linewidth=0.8, alpha=0.7)
+                ax.axvline(x=-2.0, color="#fd7e14", linestyle="--",
+                           linewidth=0.8, alpha=0.7)
+                ax.set_xlim(-max(3.0, xmax * 1.5), max(3.0, xmax * 1.5))
+                ax.set_xlabel("z-score (recent vs baseline)")
+                ax.set_title(
+                    f"{label} — {subtitle}  ({drifting_in_panel}/"
+                    f"{len(shown)} drifting)",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax.grid(True, axis="x", alpha=0.2)
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=(
+                    f"Process drift — baseline {baseline_days}d vs "
+                    f"recent {recent_days}d, {any_drifting} drifting"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Process drift render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Process drift error: {e}")
+
+    @staticmethod
+    def _db_metric_meta():
+        """Cached lookup for axis-unit metadata (kept here so the GUI
+        doesn't have to import the DB module's private constant)."""
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        return DatabaseManager._PROCESS_DRIFT_METRICS
+
+    def _show_priorities(self):
+        """Three-section view that answers the operator's three highest-
+        value questions: where to focus this week, near-miss vs hard-fail
+        breakdown, and where money is being lost. All data already exists
+        in the DB (linearity prioritization, near-miss summary) and config
+        (model_prices, cost_ratio); this just composes them."""
+        self.status_label.configure(text="Loading priorities...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                priorities = db.get_linearity_prioritization(
+                    days_back=selected_days, min_samples=10
+                )
+                near_miss = db.get_near_miss_summary(days_back=selected_days)
+                cfg = get_config()
+                pricing = dict(cfg.active_models.model_prices or {})
+                cost_ratio = float(getattr(cfg.active_models, "cost_ratio", 0.5))
+                self.after(0, lambda p=priorities, nm=near_miss, pr=pricing,
+                              cr=cost_ratio: self._render_priorities(p, nm, pr, cr))
+            except Exception as e:
+                logger.error(f"Priorities load error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Priorities error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="priorities")
+
+    def _render_priorities(self, priorities, near_miss, pricing, cost_ratio):
+        """Render the three-section priorities view on the main thread."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Priorities")
+            chart.clear()
+            fig = chart.figure
+            # Tall figure with 3 stacked subplots, sized to row content.
+            n_focus = min(5, len(priorities or []))
+            n_cost = min(15, sum(1 for p in (priorities or [])
+                                 if pricing.get(p["model"])))
+            target_height = 4.0 + 0.4 * n_focus + 0.35 * n_cost + 2.0
+            fig.set_size_inches(fig.get_size_inches()[0],
+                                 max(8.0, min(18.0, target_height)),
+                                 forward=True)
+            gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.0, 1.4],
+                                   hspace=0.6)
+
+            # ─── Section 1: Focus This Week ─────────────────────────────
+            ax1 = fig.add_subplot(gs[0])
+            chart._style_axis(ax1)
+            ax1.set_title("Focus This Week — Top Priority Models",
+                          loc="left", fontsize=12, fontweight="bold",
+                          color="#ffffff")
+            if not priorities:
+                self._draw_empty_state(ax1, "No priority models in this window")
+            else:
+                top = priorities[:n_focus]
+                lines = []
+                for i, p in enumerate(top, start=1):
+                    rec = p.get("recommendation", "Monitor")
+                    lines.append(
+                        f"{i}. {p['model']:>8}  "
+                        f"fail rate {100 - p['linearity_pass_rate']:>4.1f}%  "
+                        f"({p['failed_units']} fails / {p['total_tracks']} tracks, "
+                        f"{p.get('near_miss_count', 0)} near-miss)\n"
+                        f"     → {rec}"
+                    )
+                ax1.text(0.01, 0.98, "\n".join(lines),
+                         transform=ax1.transAxes, ha="left", va="top",
+                         fontsize=10, color="#dddddd",
+                         family="monospace")
+            ax1.set_xticks([])
+            ax1.set_yticks([])
+            for spine in ax1.spines.values():
+                spine.set_visible(False)
+
+            # ─── Section 2: Near-Miss vs Hard-Fail ──────────────────────
+            ax2 = fig.add_subplot(gs[1])
+            chart._style_axis(ax2)
+            total_failing = (near_miss or {}).get("total_failing", 0)
+            if total_failing == 0:
+                ax2.set_title("Failure Severity — last "
+                              f"{self.selected_days}d",
+                              loc="left", fontsize=12, fontweight="bold",
+                              color="#ffffff")
+                self._draw_empty_state(ax2, "No failing tracks in this window")
+                ax2.set_xticks([])
+                ax2.set_yticks([])
+                for spine in ax2.spines.values():
+                    spine.set_visible(False)
+            else:
+                buckets = near_miss["distribution"]
+                labels = ["1-3 pts\n(near-miss)", "4-10 pts", "11-50 pts",
+                          "50+ pts\n(hard-fail)"]
+                values = [buckets.get("1-3 points", 0),
+                          buckets.get("4-10 points", 0),
+                          buckets.get("11-50 points", 0),
+                          buckets.get("50+ points", 0)]
+                colors = ["#198754", "#fd7e14", "#dc3545", "#6f42c1"]
+                bars = ax2.bar(labels, values, color=colors,
+                                edgecolor="#1a1a1a", linewidth=0.5)
+                for bar, v in zip(bars, values):
+                    pct = (v / total_failing) * 100 if total_failing else 0
+                    ax2.text(bar.get_x() + bar.get_width() / 2,
+                             bar.get_height(),
+                             f"{v}\n({pct:.0f}%)", ha="center", va="bottom",
+                             fontsize=9, color="#dddddd")
+                near_pct = near_miss["near_miss_percent"]
+                hard_pct = near_miss["hard_fail_percent"]
+                ax2.set_title(
+                    f"Failure Severity — {total_failing} failing tracks, "
+                    f"{near_pct:.0f}% near-miss / {hard_pct:.0f}% hard-fail",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax2.set_ylabel("Failing tracks")
+                ax2.tick_params(axis="x", labelsize=9)
+                ax2.grid(True, axis="y", alpha=0.2)
+                # Headroom for the count+percent labels
+                ax2.set_ylim(0, max(values) * 1.25 if max(values) else 1)
+
+            # ─── Section 3: Cost Impact ─────────────────────────────────
+            ax3 = fig.add_subplot(gs[2])
+            chart._style_axis(ax3)
+            with_price = [(p, pricing.get(p["model"])) for p in (priorities or [])
+                          if pricing.get(p["model"])]
+            if not with_price:
+                ax3.set_title("Cost Impact", loc="left", fontsize=12,
+                              fontweight="bold", color="#ffffff")
+                self._draw_empty_state(
+                    ax3,
+                    "No model pricing configured.\n"
+                    "Add prices in Settings → Active Models to see\n"
+                    "estimated scrap cost per model.",
+                )
+                ax3.set_xticks([])
+                ax3.set_yticks([])
+                for spine in ax3.spines.values():
+                    spine.set_visible(False)
+            else:
+                # Estimated cost = failed_units × price × cost_ratio
+                cost_rows = [
+                    {
+                        "model": p["model"],
+                        "failed": p["failed_units"],
+                        "price": price,
+                        "cost": p["failed_units"] * price * cost_ratio,
+                        "near_miss": p.get("near_miss_count", 0),
+                    }
+                    for p, price in with_price
+                    if p["failed_units"] > 0
+                ]
+                cost_rows.sort(key=lambda r: r["cost"], reverse=True)
+                cost_rows = cost_rows[:n_cost]
+                # Reverse so highest cost is at the top of the bar chart
+                cost_rows = list(reversed(cost_rows))
+                models = [r["model"] for r in cost_rows]
+                costs = [r["cost"] for r in cost_rows]
+                # Color bars by what fraction is near-miss (green = lots of
+                # easy wins, red = mostly hard-fail / root cause work).
+                colors_cost = []
+                for r in cost_rows:
+                    if r["failed"] == 0:
+                        colors_cost.append("#888888")
+                    else:
+                        ratio = r["near_miss"] / r["failed"]
+                        if ratio >= 0.5:
+                            colors_cost.append("#198754")  # mostly easy wins
+                        elif ratio >= 0.25:
+                            colors_cost.append("#fd7e14")  # mixed
+                        else:
+                            colors_cost.append("#dc3545")  # mostly hard fail
+                y_pos = list(range(len(models)))
+                ax3.barh(y_pos, costs, color=colors_cost,
+                          edgecolor="#1a1a1a", linewidth=0.5)
+                ax3.set_yticks(y_pos)
+                ax3.set_yticklabels(models, fontsize=9)
+                for i, r in enumerate(cost_rows):
+                    nm_pct = (
+                        (r["near_miss"] / r["failed"]) * 100
+                        if r["failed"] else 0
+                    )
+                    ax3.text(
+                        r["cost"] * 1.01, i,
+                        f"${r['cost']:,.0f}  ·  {r['failed']} fails  ·  "
+                        f"{nm_pct:.0f}% near-miss",
+                        va="center", fontsize=8, color="#cccccc",
+                    )
+                ax3.set_xlabel(
+                    f"Est. scrap cost ($, last {self.selected_days}d, "
+                    f"cost_ratio={cost_ratio:.2f})"
+                )
+                total_cost = sum(c for c in costs)
+                ax3.set_title(
+                    f"Cost Impact — top {len(cost_rows)} models  "
+                    f"(${total_cost:,.0f} total)",
+                    loc="left", fontsize=12, fontweight="bold",
+                    color="#ffffff",
+                )
+                ax3.grid(True, axis="x", alpha=0.2)
+                # Generous right margin for the annotation text
+                ax3.set_xlim(0, max(costs) * 1.6 if costs else 1)
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=(
+                    f"Priorities — {len(priorities or [])} models analyzed, "
+                    f"{(near_miss or {}).get('total_failing', 0)} fails"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Priorities render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Priorities error: {e}")
+
+    def _show_trim_difficulty(self):
+        """Show models ranked by how many laser-trim passes the equipment
+        runs per unit on average. Higher = harder unit, more retrim work."""
+        self.status_label.configure(text="Loading trim difficulty...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                db = get_database()
+                rows = db.get_trim_difficulty_by_model(
+                    days_back=selected_days, min_units=5, limit=25
+                )
+                self.after(0, lambda: self._render_trim_difficulty(rows))
+            except Exception as e:
+                logger.error(f"Trim difficulty error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Trim difficulty error: {exc}"))
+
+        get_thread_manager().start_thread(target=_load, name="trim-difficulty")
+
+    def _render_trim_difficulty(self, rows):
+        """Horizontal bar chart of avg trim passes per model, worst at top.
+        Bars are colored by retrim rate (red = many units needed retrimming).
+        Each bar is annotated with N units and max passes seen."""
+        if not self.winfo_exists():
+            return
+        try:
+            chart = self._create_dedicated_chart_view("Trim Difficulty by Model")
+            chart.clear()
+            fig = chart.figure
+            ax = fig.add_subplot(111)
+            chart._style_axis(ax)
+
+            if not rows:
+                self._draw_empty_state(
+                    ax,
+                    "No trim difficulty data yet.\n\n"
+                    "trim_pass_count is captured at parse time —\n"
+                    "process new files (or reanalyze existing ones)\n"
+                    "to populate this view.",
+                )
+                chart.canvas.draw_idle()
+                self.status_label.configure(text="No trim difficulty data")
+                return
+
+            # Reverse so highest avg sits at the top of the horizontal bar chart.
+            rows_top_first = list(reversed(rows))
+            models = [r["model"] for r in rows_top_first]
+            avgs = [r["avg_passes"] for r in rows_top_first]
+            retrim_rates = [r["retrim_rate"] for r in rows_top_first]
+
+            # Color bars by retrim rate. 0% retrim = green, 50%+ = red.
+            def _color(rate):
+                if rate < 10:
+                    return "#27ae60"   # green: easy
+                if rate < 25:
+                    return "#f1c40f"   # yellow: occasional retrim
+                if rate < 50:
+                    return "#e67e22"   # orange: frequent retrim
+                return "#e74c3c"       # red: most units retrimmed
+
+            colors = [_color(r) for r in retrim_rates]
+
+            target_height = max(4.0, min(14.0, 1.5 + 0.35 * len(models)))
+            fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
+
+            y_pos = list(range(len(models)))
+            ax.barh(y_pos, avgs, color=colors, edgecolor="#1a1a1a", linewidth=0.5)
+
+            # Annotate each bar with sample size, max passes, retrim rate,
+            # and (when available) average max-error-reduction. The last
+            # field distinguishes models where extra trim passes are
+            # genuinely fixing outcomes (high Δ) from models where extra
+            # passes don't help (low Δ — process root-cause issue).
+            for i, r in enumerate(rows_top_first):
+                aer = r.get("avg_error_reduction")
+                aer_part = f" · avg Δ {aer:.0f}%" if aer is not None else ""
+                ax.text(
+                    avgs[i] + 0.05,
+                    i,
+                    f"{r['count']} units · max {r['max_passes']} · "
+                    f"retrim {r['retrim_rate']:.0f}%{aer_part}",
+                    va="center",
+                    fontsize=8,
+                    color="#cccccc",
+                )
+
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(models, fontsize=9)
+            ax.set_xlabel("Avg trim passes per unit")
+            ax.set_title(
+                f"Trim Difficulty by Model — last {self.selected_days} days "
+                f"(top {len(models)} hardest)"
+            )
+            ax.axvline(x=1.0, linestyle="--", color="#888", linewidth=0.8, alpha=0.6)
+            ax.grid(True, axis="x", alpha=0.2)
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(
+                text=f"Trim difficulty: {len(rows)} models ranked"
+            )
+        except Exception as e:
+            logger.error(f"Trim difficulty render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Trim difficulty error: {e}")
 
     def _populate_spec_filters(self):
         """Populate element type and product class filter dropdowns.
@@ -2724,11 +3547,10 @@ class TrendsPage(ctk.CTkFrame):
         """Load drift detection data in background."""
         try:
             from laser_trim_analyzer.database import get_database
-            from laser_trim_analyzer.ml import MLManager
+            from laser_trim_analyzer.ml import get_shared_ml_manager
 
             db = get_database()
-            ml_manager = MLManager(db)
-            ml_manager.load_all()
+            ml_manager = get_shared_ml_manager(db)
 
             # Get drift status for all models
             drift_status = ml_manager.get_drift_status()
