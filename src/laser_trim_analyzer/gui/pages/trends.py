@@ -344,20 +344,35 @@ class TrendsPage(ctk.CTkFrame):
         self._alerts_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
         self.alerts_chart = None
 
-        # Impact Prioritization section (linearity-focused)
+        # Impact Prioritization pointer — the full ranked list, near-miss
+        # split, and cost impact now live on the Priorities tab. This
+        # block used to duplicate that as a plain text dump; per UX audit
+        # collapse it to a one-line pointer that opens the canonical view.
         self._impact_frame = ctk.CTkFrame(self.content)
-        self._impact_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self._impact_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
-        impact_label = ctk.CTkLabel(
+        ctk.CTkLabel(
             self._impact_frame,
-            text="Where to Focus (Impact Ranking)",
+            text="Where to Focus →",
             font=ctk.CTkFont(size=14, weight="bold")
-        )
-        impact_label.pack(padx=15, pady=(15, 5), anchor="w")
+        ).pack(side="left", padx=(15, 8), pady=12)
 
-        self.impact_text = ctk.CTkTextbox(self._impact_frame, height=100)
-        self.impact_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        self.impact_text.configure(state="disabled")
+        ctk.CTkLabel(
+            self._impact_frame,
+            text="Top priority models, near-miss vs hard-fail, and cost impact",
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(0, 8), pady=12)
+
+        ctk.CTkButton(
+            self._impact_frame,
+            text="Open Priorities tab",
+            width=160,
+            command=lambda: (
+                self._trend_type.set("Priorities"),
+                self._show_priorities()
+            )
+        ).pack(side="right", padx=15, pady=10)
 
         # Best/Worst models side by side
         self._models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -1769,30 +1784,14 @@ class TrendsPage(ctk.CTkFrame):
             label.pack(padx=10, pady=2, anchor="w")
 
     def _update_impact_display(self, priority_models: List[Dict[str, Any]]):
-        """Update impact prioritization section with linearity-focused data."""
-        self.impact_text.configure(state="normal")
-        self.impact_text.delete("1.0", "end")
+        """No-op kept for backwards compatibility with existing call sites.
 
-        if not priority_models:
-            self.impact_text.insert("end", "No prioritization data (need 10+ samples per model)")
-        else:
-            for i, m in enumerate(priority_models[:8]):
-                model = m.get("model", "Unknown")
-                lin_rate = m.get("linearity_pass_rate", 0)
-                failed = m.get("failed_units", 0)
-                near_miss = m.get("near_miss_count", 0)
-                impact = m.get("impact_score", 0)
-                rec = m.get("recommendation", "")
-                total = m.get("total_units", 0)
-
-                rank = f"#{i+1}"
-                self.impact_text.insert("end", f"  {rank}  {model}  [Impact: {impact:.0f}]\n")
-                self.impact_text.insert("end", f"      Lin: {lin_rate:.0f}% | {failed} failures / {total} total | {near_miss} near-miss\n")
-                if rec:
-                    self.impact_text.insert("end", f"      >> {rec}\n")
-                self.impact_text.insert("end", "\n")
-
-        self.impact_text.configure(state="disabled")
+        The full impact ranking now lives on the Priorities tab; the
+        Standard summary used to render a plain-text version of the same
+        data which the UX audit flagged as redundant. The summary view
+        now shows a pointer button to Priorities instead.
+        """
+        return
 
     def _update_detail_display(
         self,
@@ -1976,19 +1975,21 @@ class TrendsPage(ctk.CTkFrame):
         """Reset summary statistics to default values."""
         for key in self.summary_stat_labels:
             self.summary_stat_labels[key].configure(text="--", text_color="white")
-        # Also reset impact display if it exists
-        if hasattr(self, 'impact_text'):
-            self.impact_text.configure(state="normal")
-            self.impact_text.delete("1.0", "end")
-            self.impact_text.insert("end", "No data available")
-            self.impact_text.configure(state="disabled")
+        # impact_text was removed in favour of the Priorities-tab pointer
+        # button — nothing to reset here. Left as comment for grep history.
 
     def _reset_detail_stats(self):
         """Reset detail statistics to default values."""
         for key in self.detail_stat_labels:
             self.detail_stat_labels[key].configure(text="--", text_color="white")
 
-    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]], ml_insights: Optional[Dict[str, Any]] = None):
+    def _update_ml_summary(self, alert_models: Optional[List[Dict[str, Any]]], ml_insights: Optional[Dict[str, Any]] = None):  # noqa: E501
+        """ML insights summary on the Standard view.
+
+        The drift portion that used to render here duplicated the Drift
+        tab — now we just show a one-line trained-model count and let
+        the user click 'View All Details' for the full breakdown.
+        """
         """Update ML summary text for all models view with ML insights."""
         # Cache for the details dialog
         self._cached_alert_models = alert_models
@@ -2004,17 +2005,19 @@ class TrendsPage(ctk.CTkFrame):
         if ml_insights:
             has_content = True
             trained = ml_insights.get("trained_models", 0)
-
-            # Show trained models count first
-            if trained > 0:
-                self.ml_text.insert("end", f"ML Status: {trained} models trained  |  ")
-
-            # Show drift status summary inline
             drifting = ml_insights.get("drifting_models", [])
-            if drifting:
-                self.ml_text.insert("end", f"Drift: {len(drifting)} model(s)\n\n")
-            else:
-                self.ml_text.insert("end", "Drift: None detected\n\n")
+
+            # Single status line — full drift list lives on the Drift tab,
+            # listing model names again here was redundant per UX audit.
+            if trained > 0:
+                drift_note = (
+                    f"{len(drifting)} drifting (see Drift tab)"
+                    if drifting else "no drift"
+                )
+                self.ml_text.insert(
+                    "end",
+                    f"ML Status: {trained} models trained · {drift_note}\n\n",
+                )
 
         # Show alert summary if any - show more items now
         if alert_models:

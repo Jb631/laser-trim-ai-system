@@ -255,16 +255,18 @@ class DashboardPage(ctk.CTkFrame):
         # Row 3: [Alerts+Drift | Pareto chart | Where to Focus]
         content.grid_rowconfigure(3, weight=1, minsize=250)
 
-        # Alerts + Drift (column 0) — stacked vertically
+        # Alerts (column 0). Previously this column also stacked a separate
+        # "ML Drift Status" textbox, which duplicated the clickable Drift
+        # Alerts card already shown in the right column. Per UX audit, drop
+        # the duplicate and let Recent Alerts take the full column.
         alerts_container = ctk.CTkFrame(content, fg_color="transparent")
         alerts_container.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
         alerts_container.grid_columnconfigure(0, weight=1)
         alerts_container.grid_rowconfigure(0, weight=1)
-        alerts_container.grid_rowconfigure(1, weight=1)
 
-        # Recent Alerts Card
+        # Recent Alerts Card — full column height now
         self.alerts_frame = ctk.CTkFrame(alerts_container)
-        self.alerts_frame.grid(row=0, column=0, padx=0, pady=(0, 5), sticky="nsew")
+        self.alerts_frame.grid(row=0, column=0, sticky="nsew")
         self.alerts_frame.grid_columnconfigure(0, weight=1)
         self.alerts_frame.grid_rowconfigure(1, weight=1)
 
@@ -275,28 +277,10 @@ class DashboardPage(ctk.CTkFrame):
         )
         alerts_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
 
-        self.alerts_list = ctk.CTkTextbox(self.alerts_frame, height=60)
+        self.alerts_list = ctk.CTkTextbox(self.alerts_frame)
         self.alerts_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
         self.alerts_list.configure(state="disabled")
         self._update_alerts_display([])
-
-        # Drift Alerts Card (from ML system)
-        self.drift_frame = ctk.CTkFrame(alerts_container)
-        self.drift_frame.grid(row=1, column=0, padx=0, pady=(5, 0), sticky="nsew")
-        self.drift_frame.grid_columnconfigure(0, weight=1)
-        self.drift_frame.grid_rowconfigure(1, weight=1)
-
-        drift_label = ctk.CTkLabel(
-            self.drift_frame,
-            text="ML Drift Status",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        drift_label.grid(row=0, column=0, padx=15, pady=(10, 5), sticky="w")
-
-        self.drift_list = ctk.CTkTextbox(self.drift_frame, height=60)
-        self.drift_list.grid(row=1, column=0, sticky="nsew", padx=15, pady=(0, 10))
-        self.drift_list.configure(state="disabled")
-        self._update_drift_display([])
 
         # Pareto chart (column 1)
         self._pareto_frame = ctk.CTkFrame(content)
@@ -752,8 +736,11 @@ class DashboardPage(ctk.CTkFrame):
         # Update alerts
         self._update_alerts_display(alerts)
 
-        # Update drift alerts
-        self._update_drift_display(drift_alerts or [])
+        # Drift status now lives only on the clickable Drift Alerts card
+        # (right column) — the dedicated textbox below alerts was a
+        # duplicate and was removed per the UX audit. drift_alerts is
+        # still passed through here for the failure-mode summary card
+        # below; intentionally not rendering it again.
 
         # Update trend chart with linearity trend
         self._update_trend_chart(stats)
@@ -936,24 +923,6 @@ class DashboardPage(ctk.CTkFrame):
                 )
 
         self.alerts_list.configure(state="disabled")
-
-    def _update_drift_display(self, drift_alerts: List[Dict[str, Any]]):
-        """Update drift alerts display from ML system."""
-        self.drift_list.configure(state="normal")
-        self.drift_list.delete("1.0", "end")
-
-        if not drift_alerts:
-            self.drift_list.insert("end", "No drift detected - all models stable.\n")
-            self.drift_list.insert("end", "(Train models in Settings to enable drift detection)")
-        else:
-            self.drift_list.insert("end", f"{len(drift_alerts)} model(s) drifting:\n")
-            for alert in drift_alerts[:5]:  # Limit to 5
-                model = alert.get("model", "Unknown")
-                direction = alert.get("direction", "")
-                direction_text = f" ({direction})" if direction else ""
-                self.drift_list.insert("end", f"  ⚠ {model}{direction_text}\n")
-
-        self.drift_list.configure(state="disabled")
 
     def _update_trend_chart(self, stats: Dict[str, Any]):
         """Update trend chart with linearity pass rate data."""
