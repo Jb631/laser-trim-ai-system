@@ -609,6 +609,11 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
         r_change_pct = None
         trim_imp = None
         max_err_red = None
+        # Initialize trim_pass_count here so the values list below has a
+        # defined name even on rows whose result.tracks is empty (which
+        # happens for ERROR-status entries — they skip both branches of
+        # the num_tracks == 1 / multi-track if/else).
+        trim_pass_count = None
 
         if result.tracks:
             num_tracks = len(result.tracks)

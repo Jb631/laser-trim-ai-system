@@ -2352,7 +2352,21 @@ class TrendsPage(ctk.CTkFrame):
         self._refresh_data()
 
     def _on_trend_type_changed(self, value: str):
-        """Handle trend type selector change."""
+        """Handle trend type selector change.
+
+        Bumps `_load_generation` BEFORE dispatching to a non-Standard
+        renderer so that any in-flight summary/detail load from a prior
+        Standard view discards itself when it lands. Without this, a
+        stale `_render_*` callback can fire after the user has already
+        moved to a different tab and destroy the freshly-built frames
+        of the new view (the inverse race the original gen-counter fix
+        didn't cover).
+        """
+        # Standard branch already calls _refresh_data which bumps gen.
+        # All other branches skip _refresh_data, so bump here instead.
+        if value != "Standard":
+            self._load_generation += 1
+
         if value == "Standard":
             if self.selected_model == "All Models":
                 self._create_summary_view()
@@ -2485,6 +2499,8 @@ class TrendsPage(ctk.CTkFrame):
         """Render comparative trends chart on the main thread."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Comparative":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             if not data:
                 self.status_label.configure(text="No data for comparative trends")
@@ -2594,6 +2610,8 @@ class TrendsPage(ctk.CTkFrame):
         """Render Cpk trend chart on the main thread."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Cpk Trend":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             title = "Cpk by Model" if branch == "all" else f"Cpk Trend — {model}"
             chart = self._create_dedicated_chart_view(title)
@@ -2889,6 +2907,8 @@ class TrendsPage(ctk.CTkFrame):
         """Render drift timeline chart on the main thread."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Drift":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             chart = self._create_dedicated_chart_view("Drift Detection Timeline")
             # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
@@ -3042,6 +3062,8 @@ class TrendsPage(ctk.CTkFrame):
         """Render three stacked drift panels — one per physical metric."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Process Drift":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             chart = self._create_dedicated_chart_view("Process Drift")
             chart.clear()
@@ -3202,6 +3224,8 @@ class TrendsPage(ctk.CTkFrame):
         """Render the three-section priorities view on the main thread."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Priorities":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             chart = self._create_dedicated_chart_view("Priorities")
             chart.clear()
@@ -3414,6 +3438,8 @@ class TrendsPage(ctk.CTkFrame):
         Each bar is annotated with N units and max passes seen."""
         if not self.winfo_exists():
             return
+        if self._trend_type.get() != "Trim Difficulty":
+            return  # User switched tabs; don't destroy the new tab's frames
         try:
             chart = self._create_dedicated_chart_view("Trim Difficulty by Model")
             chart.clear()

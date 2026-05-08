@@ -82,17 +82,22 @@ def get_shared_ml_manager(db, max_age_seconds: float = 300.0) -> "MLManager":
         )
         if stale:
             mgr = MLManager(db)
+            load_failed = False
             try:
                 mgr.load_all()
             except Exception:
-                # Surface but do not crash callers — they treat None state as
-                # "ML unavailable" and fall back to formula thresholds.
+                # Surface but do not crash callers — they treat empty/missing
+                # ML state as "ML unavailable" and fall back to formula
+                # thresholds. Don't promote a partially-loaded manager into
+                # the cache: leave loaded_at=None so the next caller retries
+                # rather than handing out inconsistent state for 5 minutes.
                 import logging as _logging
                 _logging.getLogger(__name__).debug(
                     "Shared MLManager load_all failed", exc_info=True
                 )
+                load_failed = True
             _shared_ml_manager = mgr
-            _shared_ml_manager_loaded_at = now
+            _shared_ml_manager_loaded_at = None if load_failed else now
         return _shared_ml_manager
 
 
