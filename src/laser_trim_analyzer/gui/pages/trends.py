@@ -274,7 +274,15 @@ class TrendsPage(ctk.CTkFrame):
         self.model_trend_data = None
 
     def _create_summary_view(self):
-        """Create the summary view (All Models mode)."""
+        """Create the summary view (All Models mode).
+
+        Five sections, top to bottom:
+        1. Active Models Summary stats row
+        2. Focus This Week (5 native widget rows)
+        3. Failure Severity bar chart
+        4. Cost Impact horizontal bars
+        5. ML Status one-liner
+        """
         # Clean up existing charts first (frees matplotlib figures)
         self._cleanup_charts()
         self._summary_charts_initialized = False
@@ -283,15 +291,15 @@ class TrendsPage(ctk.CTkFrame):
         for widget in self.content.winfo_children():
             widget.destroy()
 
-        self.content.grid_rowconfigure(0, weight=0)  # Stats row - compact
-        self.content.grid_rowconfigure(1, weight=1, minsize=200)  # Alerts chart
-        self.content.grid_rowconfigure(2, weight=0, minsize=120)  # Impact Prioritization
-        self.content.grid_rowconfigure(3, weight=1, minsize=180)  # Top 5 / Recent Issues
-        self.content.grid_rowconfigure(4, weight=1, minsize=180)  # Trending Worse / Low Data
-        self.content.grid_rowconfigure(5, weight=1, minsize=250)  # Drift Detection section
-        # Rows 6 (Heat Map) and 7 (ML) configured below with their widgets
+        # Row weights: stats compact, focus compact, severity grows,
+        # cost grows tallest (bar chart per model), ML compact.
+        self.content.grid_rowconfigure(0, weight=0)  # Stats
+        self.content.grid_rowconfigure(1, weight=0, minsize=200)  # Focus
+        self.content.grid_rowconfigure(2, weight=1, minsize=240)  # Severity
+        self.content.grid_rowconfigure(3, weight=1, minsize=320)  # Cost
+        self.content.grid_rowconfigure(4, weight=0)  # ML
 
-        # Summary stats at top
+        # ---- Section 1: Active Models Summary stats ----
         stats_frame = ctk.CTkFrame(self.content)
         stats_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
 
@@ -300,11 +308,8 @@ class TrendsPage(ctk.CTkFrame):
             text="Active Models Summary",
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        # columnspan grew from 6 to 9 with the addition of the Top Anomaly
-        # Model stat tile, so the title stays aligned across the full row.
         stats_label.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="w", columnspan=9)
 
-        # Stats in a horizontal row
         self.summary_stat_labels = {}
         stat_names = [
             ("active_models", "Active Models"),
@@ -315,285 +320,303 @@ class TrendsPage(ctk.CTkFrame):
             ("models_at_risk", "Needs Attention"),
             ("best_model", "Best (Linearity)"),
             ("worst_model", "Worst (Linearity)"),
-            # Top model by anomaly rate over the selected window. Per-track
-            # is_anomaly was visible per-unit but never rolled up to the
-            # model level — a model with persistent anomalies is a fixture
-            # or operator setup issue, not random material variation.
             ("top_anomaly", "Top Anomaly Model"),
         ]
-
         for idx, (key, label) in enumerate(stat_names):
             stat_col = ctk.CTkFrame(stats_frame, fg_color="transparent")
             stat_col.grid(row=1, column=idx, padx=15, pady=(0, 15), sticky="w")
-
-            ctk.CTkLabel(stat_col, text=label, text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w")
-            value_label = ctk.CTkLabel(stat_col, text="--", font=ctk.CTkFont(size=14, weight="bold"))
+            ctk.CTkLabel(stat_col, text=label, text_color="gray",
+                         font=ctk.CTkFont(size=11)).pack(anchor="w")
+            value_label = ctk.CTkLabel(stat_col, text="--",
+                                        font=ctk.CTkFont(size=14, weight="bold"))
             value_label.pack(anchor="w")
             self.summary_stat_labels[key] = value_label
 
-        # Alerts chart (models requiring attention) - placeholder until data loads
-        self._alerts_frame = ctk.CTkFrame(self.content)
-        self._alerts_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        # ---- Section 2: Focus This Week ----
+        self._create_focus_section()
 
-        alerts_label = ctk.CTkLabel(
-            self._alerts_frame,
-            text="Models Requiring Attention",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        alerts_label.pack(padx=15, pady=(15, 5), anchor="w")
+        # ---- Section 3: Failure Severity ----
+        self._create_failure_severity_chart()
 
-        # Placeholder label instead of ChartWidget
-        self._alerts_placeholder = ctk.CTkLabel(
-            self._alerts_frame,
-            text="Loading models requiring attention...",
-            text_color="gray"
-        )
-        self._alerts_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.alerts_chart = None
+        # ---- Section 4: Cost Impact ----
+        self._create_cost_impact_chart()
 
-        # Impact Prioritization pointer — the full ranked list, near-miss
-        # split, and cost impact now live on the Priorities tab. This
-        # block used to duplicate that as a plain text dump; per UX audit
-        # collapse it to a one-line pointer that opens the canonical view.
-        self._impact_frame = ctk.CTkFrame(self.content)
-        self._impact_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
-
-        ctk.CTkLabel(
-            self._impact_frame,
-            text="Where to Focus →",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(side="left", padx=(15, 8), pady=12)
-
-        ctk.CTkLabel(
-            self._impact_frame,
-            text="Top priority models, near-miss vs hard-fail, and cost impact",
-            text_color="gray",
-            font=ctk.CTkFont(size=11)
-        ).pack(side="left", padx=(0, 8), pady=12)
-
-        ctk.CTkButton(
-            self._impact_frame,
-            text="Open Priorities tab",
-            width=160,
-            command=lambda: (
-                self._trend_type.set("Priorities"),
-                self._show_priorities()
-            )
-        ).pack(side="right", padx=15, pady=10)
-
-        # Best/Worst models side by side
-        self._models_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        self._models_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
-        self._models_frame.grid_columnconfigure(0, weight=1)
-        self._models_frame.grid_columnconfigure(1, weight=1)
-
-        # Best performers - placeholder
-        self._best_frame = ctk.CTkFrame(self._models_frame)
-        self._best_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
-
-        best_label = ctk.CTkLabel(
-            self._best_frame,
-            text="Top Performing Models",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        best_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self._best_placeholder = ctk.CTkLabel(
-            self._best_frame,
-            text="Loading best models...",
-            text_color="gray"
-        )
-        self._best_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.best_chart = None
-
-        # Recent Issues (replaces "worst performers") - placeholder
-        self._recent_issues_frame = ctk.CTkFrame(self._models_frame)
-        self._recent_issues_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
-
-        recent_label = ctk.CTkLabel(
-            self._recent_issues_frame,
-            text="Recent Issues (Last 30 Days)",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        recent_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self._recent_issues_placeholder = ctk.CTkLabel(
-            self._recent_issues_frame,
-            text="Loading recent issues...",
-            text_color="gray"
-        )
-        self._recent_issues_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.recent_issues_chart = None
-
-        # Row 4: Trending Worse / Low Data Models
-        self._row3_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        self._row3_frame.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
-        self._row3_frame.grid_columnconfigure(0, weight=1)
-        self._row3_frame.grid_columnconfigure(1, weight=1)
-
-        # Trending Worse - placeholder
-        self._trending_frame = ctk.CTkFrame(self._row3_frame)
-        self._trending_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
-
-        trending_label = ctk.CTkLabel(
-            self._trending_frame,
-            text="Trending Worse",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        trending_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self._trending_placeholder = ctk.CTkLabel(
-            self._trending_frame,
-            text="Loading trending data...",
-            text_color="gray"
-        )
-        self._trending_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.trending_chart = None
-
-        # Low Data Models - scrollable list (not a chart)
-        self._low_data_frame = ctk.CTkFrame(self._row3_frame)
-        self._low_data_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
-
-        low_data_label = ctk.CTkLabel(
-            self._low_data_frame,
-            text="Low Data Models (<10 samples)",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        low_data_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self._low_data_list = ctk.CTkScrollableFrame(self._low_data_frame, height=120)
-        self._low_data_list.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-
-        self._low_data_placeholder = ctk.CTkLabel(
-            self._low_data_list,
-            text="Loading low data models...",
-            text_color="gray",
-            font=ctk.CTkFont(size=10)
-        )
-        self._low_data_placeholder.pack(padx=10, pady=20)
-
-        # Drift Detection section
-        self._drift_frame = ctk.CTkFrame(self.content)
-        self._drift_frame.grid(row=5, column=0, sticky="nsew", padx=10, pady=5)
-        self._drift_frame.grid_columnconfigure(0, weight=0, minsize=200)  # Model list
-        self._drift_frame.grid_columnconfigure(1, weight=1)  # Chart area
-
-        drift_header = ctk.CTkFrame(self._drift_frame, fg_color="transparent")
-        drift_header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=15, pady=(15, 5))
-
-        drift_label = ctk.CTkLabel(
-            drift_header,
-            text="Drift Detection",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        drift_label.pack(side="left")
-
-        # Refresh button for drift section
-        drift_refresh_btn = ctk.CTkButton(
-            drift_header,
-            text="Refresh",
-            command=self._refresh_drift_data,
-            width=70,
-            height=24,
-            font=ctk.CTkFont(size=11)
-        )
-        drift_refresh_btn.pack(side="right", padx=5)
-
-        # Model list frame (left side)
-        model_list_frame = ctk.CTkFrame(self._drift_frame)
-        model_list_frame.grid(row=1, column=0, sticky="nsew", padx=(15, 5), pady=(5, 15))
-
-        list_label = ctk.CTkLabel(
-            model_list_frame,
-            text="Model Status",
-            font=ctk.CTkFont(size=11, weight="bold")
-        )
-        list_label.pack(padx=10, pady=(10, 5), anchor="w")
-
-        # Scrollable frame for model list
-        self._drift_model_list = ctk.CTkScrollableFrame(model_list_frame, width=180, height=180)
-        self._drift_model_list.pack(fill="both", expand=True, padx=5, pady=(0, 10))
-
-        self._drift_model_placeholder = ctk.CTkLabel(
-            self._drift_model_list,
-            text="Loading drift status...",
-            text_color="gray",
-            font=ctk.CTkFont(size=10)
-        )
-        self._drift_model_placeholder.pack(padx=10, pady=20)
-
-        # Chart area (right side) - placeholder
-        self._drift_chart_frame = ctk.CTkFrame(self._drift_frame)
-        self._drift_chart_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 15), pady=(5, 15))
-
-        self._drift_chart_placeholder = ctk.CTkLabel(
-            self._drift_chart_frame,
-            text="Select a model to view drift chart",
-            text_color="gray"
-        )
-        self._drift_chart_placeholder.pack(fill="both", expand=True, padx=15, pady=30)
-        self.drift_chart = None
-        self._selected_drift_model = None
-
-        # Details label below chart (shows CUSUM/EWMA when model selected)
-        self._drift_details_label = ctk.CTkLabel(
-            self._drift_frame,
-            text="",
-            font=ctk.CTkFont(size=10),
-            text_color="gray"
-        )
-        self._drift_details_label.grid(row=2, column=1, sticky="w", padx=15, pady=(0, 10))
-
-        # Heat Map section
-        self.content.grid_rowconfigure(6, weight=1, minsize=250)  # Heat map
-        self._heatmap_frame = ctk.CTkFrame(self.content)
-        self._heatmap_frame.grid(row=6, column=0, sticky="nsew", padx=10, pady=5)
-
-        heatmap_label = ctk.CTkLabel(
-            self._heatmap_frame,
-            text="Model Pass Rate Heat Map (by Week)",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        heatmap_label.pack(padx=15, pady=(15, 5), anchor="w")
-
-        self._heatmap_placeholder = ctk.CTkLabel(
-            self._heatmap_frame, text="Loading heat map...", text_color="gray"
-        )
-        self._heatmap_placeholder.pack(fill="both", expand=True, padx=15, pady=(5, 15))
-        self.heatmap_chart = None
-
-        # ML Recommendations at bottom
-        self.content.grid_rowconfigure(7, weight=0)  # ML section - compact
+        # ---- Section 5: ML Status ----
         ml_frame = ctk.CTkFrame(self.content)
-        ml_frame.grid(row=7, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ml_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
 
         ml_header = ctk.CTkFrame(ml_frame, fg_color="transparent")
         ml_header.pack(fill="x", padx=15, pady=(15, 5))
-
-        ml_label = ctk.CTkLabel(
-            ml_header,
-            text="ML Insights",
+        ctk.CTkLabel(
+            ml_header, text="ML Insights",
             font=ctk.CTkFont(size=14, weight="bold")
-        )
-        ml_label.pack(side="left")
-
-        # View All button
+        ).pack(side="left")
         self._ml_view_all_btn = ctk.CTkButton(
-            ml_header,
-            text="View All Details",
+            ml_header, text="View All Details",
             command=self._show_ml_details_dialog,
-            width=100,
-            height=24,
-            font=ctk.CTkFont(size=11)
+            width=100, height=24, font=ctk.CTkFont(size=11)
         )
         self._ml_view_all_btn.pack(side="right", padx=5)
 
-        self.ml_text = ctk.CTkTextbox(ml_frame, height=100)
+        self.ml_text = ctk.CTkTextbox(ml_frame, height=80)
         self.ml_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         self.ml_text.configure(state="disabled")
-        self._cached_alert_models = None  # Cache for dialog
-        self._cached_ml_insights = None  # Cache for dialog
+        self._cached_alert_models = None
+        self._cached_ml_insights = None
         self._update_ml_summary(None)
+
+        self._summary_charts_initialized = False  # charts re-init lazily on update
+
+    def _create_focus_section(self):
+        """Native-widget Focus This Week section.
+
+        Replaces the previous matplotlib `ax.text` blob. Five labeled rows
+        rendered as CTkFrames inside a parent CTkFrame, each row carrying
+        a primary line (rank · model · fail rate) and a secondary line
+        (recommendation, or "—" when none). Color-coded per row by fail
+        rate; row heights stay uniform across all 5 entries so the visual
+        rhythm is stable regardless of recommendation length.
+        """
+        focus_frame = ctk.CTkFrame(self.content)
+        focus_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+
+        ctk.CTkLabel(
+            focus_frame, text="Focus This Week",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+
+        self._focus_rows_frame = ctk.CTkFrame(focus_frame, fg_color="transparent")
+        self._focus_rows_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        # Initial placeholder; replaced by _update_focus_section.
+        self._focus_placeholder = ctk.CTkLabel(
+            self._focus_rows_frame,
+            text="Loading priority models…",
+            text_color="gray",
+        )
+        self._focus_placeholder.pack(pady=10)
+
+    def _update_focus_section(self, priorities):
+        """Render the top 5 priority models as native widget rows."""
+        if not hasattr(self, "_focus_rows_frame"):
+            return
+        # Wipe previous rows (including the loading placeholder)
+        for w in self._focus_rows_frame.winfo_children():
+            w.destroy()
+
+        if not priorities:
+            ctk.CTkLabel(
+                self._focus_rows_frame,
+                text="No priority models in this window",
+                text_color="gray",
+            ).pack(pady=10)
+            return
+
+        for i, p in enumerate(priorities[:5], start=1):
+            row = ctk.CTkFrame(self._focus_rows_frame)
+            row.pack(fill="x", pady=2)
+
+            fail_rate = 100.0 - float(p.get("linearity_pass_rate", 100))
+            if fail_rate >= 30:
+                rate_color = "#dc3545"
+            elif fail_rate >= 15:
+                rate_color = "#fd7e14"
+            elif fail_rate >= 5:
+                rate_color = "#f1c40f"
+            else:
+                rate_color = "white"
+
+            top_line = ctk.CTkFrame(row, fg_color="transparent")
+            top_line.pack(fill="x", padx=10, pady=(6, 0))
+            ctk.CTkLabel(
+                top_line, text=f"#{i}",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=30,
+            ).pack(side="left")
+            ctk.CTkLabel(
+                top_line, text=p.get("model", "?"),
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=120, anchor="w",
+            ).pack(side="left", padx=(5, 10))
+            ctk.CTkLabel(
+                top_line, text=f"{fail_rate:.1f}% fail",
+                font=ctk.CTkFont(size=11),
+                text_color=rate_color,
+                width=80, anchor="w",
+            ).pack(side="left")
+            ctk.CTkLabel(
+                top_line,
+                text=(
+                    f"{p.get('failed_units', 0)} fails / "
+                    f"{p.get('total_tracks', 0)} tracks · "
+                    f"{p.get('near_miss_count', 0)} near-miss"
+                ),
+                font=ctk.CTkFont(size=11),
+                text_color="gray",
+                anchor="w",
+            ).pack(side="left", padx=(15, 0))
+
+            rec = p.get("recommendation") or "—"
+            rec_line = ctk.CTkLabel(
+                row,
+                text=f"   → {rec}",
+                font=ctk.CTkFont(size=11),
+                text_color="#cccccc" if rec != "—" else "gray",
+                anchor="w",
+                justify="left",
+            )
+            rec_line.pack(fill="x", padx=10, pady=(0, 6))
+
+    def _create_failure_severity_chart(self):
+        """Bar chart of failing tracks bucketed by fail-point count."""
+        ChartWidget, ChartStyle = _ensure_chart_module()
+        sev_frame = ctk.CTkFrame(self.content)
+        sev_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        ctk.CTkLabel(
+            sev_frame, text="Failure Severity (last %dd)" % self.selected_days,
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+        self._severity_chart_frame = sev_frame
+        self.severity_chart = ChartWidget(
+            sev_frame, style=ChartStyle(figure_size=(10, 2.6), dpi=100)
+        )
+        self.severity_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.severity_chart.show_placeholder("Loading failure severity…")
+        self._chart_widgets.append(self.severity_chart)
+
+    def _update_failure_severity_chart(self, near_miss):
+        """Render Failure Severity buckets onto severity_chart."""
+        if not getattr(self, "severity_chart", None):
+            return
+        chart = self.severity_chart
+        chart.clear()
+        fig = chart.figure
+        ax = fig.add_subplot(111)
+        chart._style_axis(ax)
+
+        total_failing = (near_miss or {}).get("total_failing", 0)
+        if total_failing == 0:
+            self._draw_empty_state(ax, "No failing tracks in this window")
+        else:
+            buckets = near_miss["distribution"]
+            labels = [
+                "1-3 pts\n(near-miss)", "4-10 pts",
+                "11-50 pts", "50+ pts\n(hard-fail)",
+            ]
+            values = [
+                buckets.get("1-3 points", 0), buckets.get("4-10 points", 0),
+                buckets.get("11-50 points", 0), buckets.get("50+ points", 0),
+            ]
+            colors = ["#198754", "#fd7e14", "#dc3545", "#6f42c1"]
+            bars = ax.bar(labels, values, color=colors,
+                          edgecolor="#1a1a1a", linewidth=0.5)
+            for bar, v in zip(bars, values):
+                pct = (v / total_failing) * 100 if total_failing else 0
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                        f"{v}\n({pct:.0f}%)", ha="center", va="bottom",
+                        fontsize=9, color="#dddddd")
+            ax.set_ylabel("Failing tracks")
+            ax.set_ylim(0, max(values) * 1.25 if max(values) else 1)
+            ax.grid(True, axis="y", alpha=0.2)
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+        chart.canvas.draw_idle()
+
+    def _create_cost_impact_chart(self):
+        ChartWidget, ChartStyle = _ensure_chart_module()
+        cost_frame = ctk.CTkFrame(self.content)
+        cost_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        ctk.CTkLabel(
+            cost_frame, text="Cost Impact",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+        self._cost_chart_frame = cost_frame
+        self.cost_chart = ChartWidget(
+            cost_frame, style=ChartStyle(figure_size=(10, 4.0), dpi=100)
+        )
+        self.cost_chart.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.cost_chart.show_placeholder("Loading cost impact…")
+        self._chart_widgets.append(self.cost_chart)
+
+    def _update_cost_impact_chart(self, priorities, pricing, cost_ratio):
+        """Render top-15 horizontal bars of estimated scrap cost."""
+        if not getattr(self, "cost_chart", None):
+            return
+        chart = self.cost_chart
+        chart.clear()
+        fig = chart.figure
+        ax = fig.add_subplot(111)
+        chart._style_axis(ax)
+
+        with_price = [
+            (p, pricing.get(p["model"]))
+            for p in (priorities or [])
+            if pricing.get(p["model"])
+        ]
+        if not with_price:
+            self._draw_empty_state(
+                ax,
+                "No model pricing configured.\n"
+                "Add prices in Settings → Active Models to see\n"
+                "estimated scrap cost per model.",
+            )
+            chart.canvas.draw_idle()
+            return
+
+        cost_rows = [
+            {
+                "model": p["model"],
+                "failed": p["failed_units"],
+                "cost": p["failed_units"] * price * cost_ratio,
+                "near_miss": p.get("near_miss_count", 0),
+            }
+            for p, price in with_price
+            if p["failed_units"] > 0
+        ]
+        cost_rows.sort(key=lambda r: r["cost"], reverse=True)
+        cost_rows = list(reversed(cost_rows[:15]))
+        models = [r["model"] for r in cost_rows]
+        costs = [r["cost"] for r in cost_rows]
+
+        def _color(r):
+            if r["failed"] == 0:
+                return "#888888"
+            ratio = r["near_miss"] / r["failed"]
+            if ratio >= 0.5:
+                return "#198754"
+            if ratio >= 0.25:
+                return "#fd7e14"
+            return "#dc3545"
+
+        colors = [_color(r) for r in cost_rows]
+        y_pos = list(range(len(models)))
+        ax.barh(y_pos, costs, color=colors, edgecolor="#1a1a1a", linewidth=0.5)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(models, fontsize=9)
+        for i, r in enumerate(cost_rows):
+            nm_pct = (r["near_miss"] / r["failed"]) * 100 if r["failed"] else 0
+            ax.text(r["cost"] * 1.01, i,
+                    f"${r['cost']:,.0f} · {r['failed']} fails · "
+                    f"{nm_pct:.0f}% near-miss",
+                    va="center", fontsize=8, color="#cccccc")
+
+        ax.set_xlabel(
+            f"Est. scrap cost ($, last {self.selected_days}d, "
+            f"cost_ratio={cost_ratio:.2f})"
+        )
+        total_cost = sum(costs)
+        ax.set_title(
+            f"Top {len(cost_rows)} models  (${total_cost:,.0f} total)",
+            loc="left", fontsize=11, fontweight="bold", color="#ffffff",
+        )
+        ax.grid(True, axis="x", alpha=0.2)
+        ax.set_xlim(0, max(costs) * 1.6 if costs else 1)
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+        chart.canvas.draw_idle()
 
     def _ensure_summary_charts_initialized(self):
         """Lazily initialize summary view charts - defers matplotlib loading."""
@@ -1377,12 +1400,23 @@ class TrendsPage(ctk.CTkFrame):
             logger.debug(f"Could not load anomaly rates: {e}")
             anomaly_rows = []
 
+        # Failure Severity + Cost Impact need near_miss summary and pricing
+        try:
+            near_miss = db.get_near_miss_summary(days_back=self.selected_days)
+        except Exception as e:
+            logger.debug(f"Could not load near-miss summary: {e}")
+            near_miss = {}
+        cfg = get_config()
+        pricing = dict(cfg.active_models.model_prices or {})
+        cost_ratio = float(getattr(cfg.active_models, "cost_ratio", 0.5))
+
         # Update UI on main thread; capture gen so we can discard stale loads
         self.after(0, lambda g=gen: self._update_summary_display_if_current(
             g, active_models, alert_models, model_names, trending_worse,
             mps_models=mps_models, recent_days=recent_days,
             priority_models=priority_models, heatmap_data=heatmap_data,
             ml_insights=ml_insights, anomaly_rows=anomaly_rows,
+            near_miss=near_miss, pricing=pricing, cost_ratio=cost_ratio,
         ))
 
     def _update_summary_display_if_current(self, gen: int, *args, **kwargs):
@@ -1555,13 +1589,19 @@ class TrendsPage(ctk.CTkFrame):
         heatmap_data: Optional[Dict[str, Any]] = None,
         ml_insights: Optional[Dict[str, Any]] = None,
         anomaly_rows: Optional[List[Dict[str, Any]]] = None,
+        near_miss: Optional[Dict[str, Any]] = None,
+        pricing: Optional[Dict[str, float]] = None,
+        cost_ratio: float = 0.5,
     ):
-        """Update summary display with loaded data."""
+        """Update summary display with loaded data.
+
+        Five sections, all driven by data already fetched in
+        _load_summary_data: stats row, Focus This Week (priority_models),
+        Failure Severity (near_miss), Cost Impact (priority_models +
+        pricing + cost_ratio), ML Status.
+        """
         if not self.winfo_exists():
             return
-        # Ensure charts are initialized before use (lazy matplotlib loading)
-        self._ensure_summary_charts_initialized()
-
         # Update model dropdown
         current_model = self.model_dropdown.get()
         self.model_dropdown.configure(values=model_names)
@@ -1572,201 +1612,92 @@ class TrendsPage(ctk.CTkFrame):
 
         self.active_models_data = active_models
 
-        # Filter models by sample count
-        models_with_data = [m for m in active_models if m["total"] >= 20]  # 20+ samples
-        low_data_models = [m for m in active_models if m["total"] < 10]  # <10 samples
-
+        # Stats row
         if not active_models:
             self._reset_summary_stats()
-            self.alerts_chart.show_placeholder("No active models in selected period")
-            self.best_chart.show_placeholder("No data")
-            self.recent_issues_chart.show_placeholder("No data")
-            self.trending_chart.show_placeholder("No data")
-            self._update_low_data_list([])
-            self.status_label.configure(text="No data")
-            return
+        else:
+            total_models = len(active_models)
+            total_samples = sum(m.get("total_samples", 0) for m in active_models)
+            avg_pass_rate = (
+                sum(m.get("pass_rate", 0) for m in active_models) / total_models
+            ) if total_models else 0
+            avg_sigma_rate = (
+                sum(m.get("sigma_pass_rate", 0) for m in active_models) / total_models
+            ) if total_models else 0
+            avg_linearity_rate = (
+                sum(m.get("linearity_pass_rate", 0) for m in active_models)
+                / total_models
+            ) if total_models else 0
+            models_at_risk = sum(
+                1 for m in active_models if m.get("linearity_pass_rate", 100) < 80
+            )
+            sorted_by_rate = sorted(
+                active_models, key=lambda x: x.get("linearity_pass_rate", 0),
+                reverse=True
+            )
+            best_model = sorted_by_rate[0]["model"] if sorted_by_rate else "--"
+            worst_model = sorted_by_rate[-1]["model"] if sorted_by_rate else "--"
+            best_rate = sorted_by_rate[0].get("linearity_pass_rate", 0) if sorted_by_rate else 0
+            worst_rate = sorted_by_rate[-1].get("linearity_pass_rate", 0) if sorted_by_rate else 0
 
-        # Classify alert models as active or inactive (need this early for models_at_risk)
-        mps_set = set(mps_models or [])
-        active_cutoff = datetime.now() - timedelta(days=recent_days)
-
-        def is_active_model(model_data):
-            """Check if model is MPS or recently active."""
-            model_name = model_data.get("model", "")
-            if model_name in mps_set:
-                return True
-            # Check last_date from model_data or find in active_models
-            last_date = model_data.get("last_date")
-            if not last_date:
-                # Look up in active_models
-                for am in active_models:
-                    if am.get("model") == model_name:
-                        last_date = am.get("last_date")
-                        break
-            return last_date and last_date >= active_cutoff
-
-        # Separate active vs inactive alerts
-        active_alerts = [a for a in alert_models if is_active_model(a)]
-        inactive_alerts = [a for a in alert_models if not is_active_model(a)]
-
-        # Calculate summary stats
-        total_models = len(active_models)
-        total_samples = sum(m["total"] for m in active_models)
-        avg_pass_rate = sum(m["pass_rate"] for m in active_models) / total_models if total_models > 0 else 0
-        avg_sigma_rate = sum(m.get("sigma_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
-        avg_linearity_rate = sum(m.get("linearity_pass_rate", 0) for m in active_models) / total_models if total_models > 0 else 0
-        models_at_risk = len(active_alerts)  # Only count active models at risk
-
-        # Best and worst models
-        sorted_by_rate = sorted(active_models, key=lambda x: x.get("linearity_pass_rate", 0), reverse=True)
-        best_model = sorted_by_rate[0]["model"] if sorted_by_rate else "--"
-        worst_model = sorted_by_rate[-1]["model"] if sorted_by_rate else "--"
-        best_rate = sorted_by_rate[0].get("linearity_pass_rate", 0) if sorted_by_rate else 0
-        worst_rate = sorted_by_rate[-1].get("linearity_pass_rate", 0) if sorted_by_rate else 0
-
-        # Update stat labels
-        self.summary_stat_labels["active_models"].configure(text=str(total_models))
-        self.summary_stat_labels["total_samples"].configure(text=f"{total_samples:,}")
-        self.summary_stat_labels["avg_pass_rate"].configure(
-            text=f"{avg_pass_rate:.1f}%",
-            text_color="#27ae60" if avg_pass_rate >= 90 else "#f39c12" if avg_pass_rate >= 80 else "#e74c3c"
-        )
-        self.summary_stat_labels["avg_sigma_rate"].configure(
-            text=f"{avg_sigma_rate:.1f}%",
-            text_color="#27ae60" if avg_sigma_rate >= 90 else "#f39c12" if avg_sigma_rate >= 80 else "#e74c3c"
-        )
-        self.summary_stat_labels["avg_linearity_rate"].configure(
-            text=f"{avg_linearity_rate:.1f}%",
-            text_color="#27ae60" if avg_linearity_rate >= 90 else "#f39c12" if avg_linearity_rate >= 80 else "#e74c3c"
-        )
-        self.summary_stat_labels["models_at_risk"].configure(
-            text=str(models_at_risk),
-            text_color="#e74c3c" if models_at_risk > 0 else "#27ae60"
-        )
-        self.summary_stat_labels["best_model"].configure(
-            text=f"{best_model} ({best_rate:.0f}%)",
-            text_color="#27ae60"
-        )
-        self.summary_stat_labels["worst_model"].configure(
-            text=f"{worst_model} ({worst_rate:.0f}%)",
-            text_color="#e74c3c" if worst_rate < 80 else "#f39c12"
-        )
-
-        # Top anomaly model — pulls from get_anomaly_rate_by_model which
-        # is already sorted descending by rate. Color-code amber at >=5%
-        # and red at >=15% so persistent setup issues stand out without
-        # the operator having to drill into individual files.
-        anomaly_label = self.summary_stat_labels.get("top_anomaly")
-        if anomaly_label is not None:
+            self.summary_stat_labels["active_models"].configure(text=str(total_models))
+            self.summary_stat_labels["total_samples"].configure(text=f"{total_samples:,}")
+            self.summary_stat_labels["avg_pass_rate"].configure(
+                text=f"{avg_pass_rate:.1f}%",
+                text_color="#27ae60" if avg_pass_rate >= 90
+                           else "#f39c12" if avg_pass_rate >= 80 else "#e74c3c",
+            )
+            self.summary_stat_labels["avg_sigma_rate"].configure(
+                text=f"{avg_sigma_rate:.1f}%",
+                text_color="#27ae60" if avg_sigma_rate >= 90
+                           else "#f39c12" if avg_sigma_rate >= 80 else "#e74c3c",
+            )
+            self.summary_stat_labels["avg_linearity_rate"].configure(
+                text=f"{avg_linearity_rate:.1f}%",
+                text_color="#27ae60" if avg_linearity_rate >= 90
+                           else "#f39c12" if avg_linearity_rate >= 80 else "#e74c3c",
+            )
+            self.summary_stat_labels["models_at_risk"].configure(
+                text=str(models_at_risk),
+                text_color="#e74c3c" if models_at_risk > 0 else "#27ae60",
+            )
+            self.summary_stat_labels["best_model"].configure(
+                text=f"{best_model} ({best_rate:.0f}%)", text_color="#27ae60"
+            )
+            self.summary_stat_labels["worst_model"].configure(
+                text=f"{worst_model} ({worst_rate:.0f}%)",
+                text_color="#e74c3c" if worst_rate < 80 else "#f39c12",
+            )
             top_anom = (anomaly_rows or [None])[0] if anomaly_rows else None
-            if top_anom and top_anom["anomaly_count"] > 0:
-                rate = top_anom["anomaly_rate"]
-                if rate >= 15.0:
-                    anom_color = "#e74c3c"
-                elif rate >= 5.0:
-                    anom_color = "#f39c12"
+            anomaly_label = self.summary_stat_labels.get("top_anomaly")
+            if anomaly_label is not None:
+                if top_anom and top_anom["anomaly_count"] > 0:
+                    rate = top_anom["anomaly_rate"]
+                    color = ("#e74c3c" if rate >= 15
+                             else "#f39c12" if rate >= 5 else "white")
+                    anomaly_label.configure(
+                        text=f"{top_anom['model']} "
+                             f"({top_anom['anomaly_count']}, {rate:.0f}%)",
+                        text_color=color,
+                    )
                 else:
-                    anom_color = "white"
-                anomaly_label.configure(
-                    text=f"{top_anom['model']} ({top_anom['anomaly_count']}, {rate:.0f}%)",
-                    text_color=anom_color,
-                )
-            else:
-                anomaly_label.configure(text="None", text_color="#27ae60")
+                    anomaly_label.configure(text="None", text_color="#27ae60")
 
-        # Update alerts chart - show active alerts first, then inactive in separate section
-        if active_alerts:
-            self.alerts_chart.plot_alert_summary(
-                models=[a["model"] for a in active_alerts[:10]],
-                alerts=active_alerts[:10],
-                title=f"Models Requiring Attention ({len(active_alerts)} active)"
-            )
-        elif inactive_alerts:
-            # Only inactive alerts exist
-            self.alerts_chart.plot_alert_summary(
-                models=[f"{a['model']} (inactive)" for a in inactive_alerts[:10]],
-                alerts=inactive_alerts[:10],
-                title=f"Inactive Models with Issues ({len(inactive_alerts)} total)"
-            )
-        else:
-            self.alerts_chart.show_placeholder("All models performing well - no alerts!")
+        # Focus This Week
+        self._update_focus_section(priority_models or [])
 
-        # Update impact prioritization section
-        self._update_impact_display(priority_models or [])
+        # Failure Severity chart
+        self._update_failure_severity_chart(near_miss or {})
 
-        # Update best models chart (filtered to 20+ samples, sorted by linearity)
-        sorted_with_data = sorted(models_with_data, key=lambda x: x.get("linearity_pass_rate", 0), reverse=True)
-        best_5 = sorted_with_data[:5]
-        if best_5:
-            self.best_chart.plot_pass_rate_bars(
-                models=[m["model"] for m in best_5],
-                pass_rates=[m.get("linearity_pass_rate", 0) for m in best_5],
-                sample_counts=[m["total"] for m in best_5],
-                title="Top 5 by Linearity",
-                highlight_threshold=80.0
-            )
-        else:
-            self.best_chart.show_placeholder("No models with 20+ samples")
+        # Cost Impact chart
+        self._update_cost_impact_chart(
+            priority_models or [], pricing or {}, cost_ratio
+        )
 
-        # Recent Issues: models with data in last 30 days (relative to newest data) AND pass_rate < 80%
-        # Only show active models (MPS or recently active)
-        # Use most recent data date instead of today to handle stale datasets
-        all_dates = [m["last_date"] for m in models_with_data if m.get("last_date")]
-        latest_data_date = max(all_dates) if all_dates else datetime.now()
-        recent_cutoff_30d = latest_data_date - timedelta(days=30)
-        recent_issues = [
-            m for m in models_with_data
-            if m.get("last_date") and m["last_date"] >= recent_cutoff_30d and m["pass_rate"] < 80
-            and (m["model"] in mps_set or (m.get("last_date") and m["last_date"] >= active_cutoff))
-        ]
-        recent_issues = sorted(recent_issues, key=lambda x: x["pass_rate"])[:5]  # Worst first
-
-        if recent_issues:
-            self.recent_issues_chart.plot_pass_rate_bars(
-                models=[m["model"] for m in recent_issues],
-                pass_rates=[m["pass_rate"] for m in recent_issues],
-                sample_counts=[m["total"] for m in recent_issues],
-                title="Recent Issues (Last 30 Days)",
-                highlight_threshold=80.0
-            )
-        else:
-            self.recent_issues_chart.show_placeholder("No recent issues - great!")
-
-        # Trending Worse section - filter to active models only
-        if trending_worse and len(trending_worse) > 0:
-            # Filter to active models only
-            active_trending = [
-                m for m in trending_worse
-                if m["model"] in mps_set or is_active_model(m)
-            ]
-            top_trending = active_trending[:5]
-            if top_trending:
-                self.trending_chart.plot_trending_worse(
-                    models=[m["model"] for m in top_trending],
-                    pass_rates=[m["pass_rate"] for m in top_trending],
-                    declines=[m["decline"] for m in top_trending],
-                    sample_counts=[m["total_samples"] for m in top_trending],
-                    title="Trending Worse (>10% decline)"
-                )
-            else:
-                self.trending_chart.show_placeholder("No active models trending worse - stable!")
-        else:
-            self.trending_chart.show_placeholder("No models trending worse - stable!")
-
-        # Low Data Models section
-        self._update_low_data_list(low_data_models)
-
-        # Update heatmap
-        self._update_heatmap(heatmap_data)
-
-        # Update ML summary
+        # ML Status (existing helper)
         self._update_ml_summary(alert_models, ml_insights=ml_insights)
-
-        # Load drift detection data
-        self._refresh_drift_data()
-
-        # Update status
-        self.status_label.configure(text=f"Updated: {datetime.now().strftime('%H:%M:%S')}")
+        self._cached_alert_models = alert_models
+        self._cached_ml_insights = ml_insights
 
     def _update_heatmap(self, heatmap_data: Optional[Dict[str, Any]]):
         """Update the heat map chart with model x week pass rate data."""
