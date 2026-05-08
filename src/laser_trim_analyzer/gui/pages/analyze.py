@@ -1134,6 +1134,16 @@ class AnalyzePage(ctk.CTkFrame):
                         lines.append(f"    Avg violation: {avg_viol:.4f}  (across {track.linearity_fail_points} fail points)")
                     if max_viol is None and avg_viol is None:
                         lines.append("    Violation data: N/A")
+                # deviation_uniformity is the coefficient of variation of
+                # absolute errors across the track. < 1.0 = uniform across
+                # length, ≥ 1.5 = concentrated in one region (early warning
+                # of element heterogeneity even on a passing track).
+                dev_unif = getattr(track, "deviation_uniformity", None)
+                if dev_unif is not None:
+                    lines.append(
+                        f"    Error uniformity: {dev_unif:.2f}  "
+                        f"(1.0 = uniform across track, ≥1.5 = concentrated)"
+                    )
                 # Keep the ML prediction here; it's a different signal
                 # (predicted FT failure) and useful alongside the margin.
                 if track.failure_probability is not None:
