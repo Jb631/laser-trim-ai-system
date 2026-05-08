@@ -2341,6 +2341,15 @@ class TrendsPage(ctk.CTkFrame):
             # branch as a no-op safety net for any saved selection.
             pass
         elif value == "Drift":
+            # Reset the sub-toggle so re-entering the Drift tab after a
+            # previous "Process Drift" sub-selection doesn't trip the
+            # render guard (which would leave the tab blank).
+            self._drift_subtab = "ML Drift"
+            if hasattr(self, "_drift_subtab_button"):
+                try:
+                    self._drift_subtab_button.set("ML Drift")
+                except Exception:
+                    pass
             self._show_drift_timeline()
         elif value == "Trim Difficulty":
             self._show_trim_difficulty()
