@@ -365,7 +365,11 @@ class TrendsPage(ctk.CTkFrame):
         self._cached_ml_insights = None
         self._update_ml_summary(None)
 
-        self._summary_charts_initialized = False  # charts re-init lazily on update
+        # New 5-section layout creates severity_chart and cost_chart eagerly
+        # inside _create_failure_severity_chart / _create_cost_impact_chart,
+        # so there is no lazy phase. Mark initialized=True so on_show stops
+        # tearing down and rebuilding the whole summary on every page visit.
+        self._summary_charts_initialized = True
 
     def _create_focus_section(self):
         """Native-widget Focus This Week section.
@@ -471,8 +475,11 @@ class TrendsPage(ctk.CTkFrame):
         ChartWidget, ChartStyle = _ensure_chart_module()
         sev_frame = ctk.CTkFrame(self.content)
         sev_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        # Section header is static; the active date window is rendered in
+        # the matplotlib axis title inside _update_failure_severity_chart so
+        # it stays in sync with the user's date-filter selection.
         ctk.CTkLabel(
-            sev_frame, text="Failure Severity (last %dd)" % self.selected_days,
+            sev_frame, text="Failure Severity",
             font=ctk.CTkFont(size=14, weight="bold")
         ).pack(anchor="w", padx=15, pady=(15, 5))
         self._severity_chart_frame = sev_frame
@@ -497,6 +504,10 @@ class TrendsPage(ctk.CTkFrame):
         if total_failing == 0:
             self._draw_empty_state(ax, "No failing tracks in this window")
         else:
+            ax.set_title(
+                f"last {self.selected_days}d  ·  {total_failing} failing tracks",
+                loc="left", fontsize=10, color="#aaaaaa",
+            )
             buckets = near_miss["distribution"]
             labels = [
                 "1-3 pts\n(near-miss)", "4-10 pts",
@@ -574,6 +585,16 @@ class TrendsPage(ctk.CTkFrame):
             for p, price in with_price
             if p["failed_units"] > 0
         ]
+        if not cost_rows:
+            # Pricing is configured but no failures in this window — show
+            # an explicit message instead of a blank chart with the
+            # nonsensical title "Top 0 models ($0 total)".
+            self._draw_empty_state(
+                ax,
+                "No failing units with configured pricing in this window.",
+            )
+            chart.canvas.draw_idle()
+            return
         cost_rows.sort(key=lambda r: r["cost"], reverse=True)
         cost_rows = list(reversed(cost_rows[:15]))
         models = [r["model"] for r in cost_rows]
@@ -1962,7 +1983,6 @@ class TrendsPage(ctk.CTkFrame):
         tab — now we just show a one-line trained-model count and let
         the user click 'View All Details' for the full breakdown.
         """
-        """Update ML summary text for all models view with ML insights."""
         # Cache for the details dialog
         self._cached_alert_models = alert_models
         # Use pre-loaded insights (from background thread) or fall back to cached
