@@ -86,6 +86,13 @@ class TrendsPage(ctk.CTkFrame):
         # ComparePage._load_generation.
         self._load_generation = 0
 
+        # Drift tab sub-view selector. Set when the user clicks the toggle
+        # inside the Drift tab; consumed by render guards in
+        # _render_drift_timeline and _render_process_drift to discard a
+        # stale render that fires after the user has flipped to the other
+        # sub-view.
+        self._drift_subtab: str = "ML Drift"
+
         self._create_ui()
 
     def _create_ui(self):
@@ -2385,6 +2392,62 @@ class TrendsPage(ctk.CTkFrame):
 
         return chart
 
+    def _create_drift_view(self) -> "ChartWidget":
+        """Build the Drift tab: ML/Process toggle on top, chart below.
+
+        Returns the ChartWidget to render into. The toggle's selection
+        decides which `_show_*` method should run when the user clicks;
+        we still call `_show_drift_timeline()` / `_show_process_drift()`
+        from the toggle handler so the render guards (which read
+        self._drift_subtab) work uniformly.
+        """
+        for widget in self.content.winfo_children():
+            widget.destroy()
+        self._cleanup_charts()
+
+        self.content.grid_rowconfigure(0, weight=0)
+        self.content.grid_rowconfigure(1, weight=1)
+
+        toggle_frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        toggle_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        ctk.CTkLabel(
+            toggle_frame, text="View:",
+            font=ctk.CTkFont(size=11)
+        ).pack(side="left", padx=(0, 8))
+        self._drift_subtab_button = ctk.CTkSegmentedButton(
+            toggle_frame,
+            values=["ML Drift", "Process Drift"],
+            command=self._on_drift_subtab_changed,
+        )
+        self._drift_subtab_button.set(self._drift_subtab)
+        self._drift_subtab_button.pack(side="left")
+
+        chart_frame = ctk.CTkFrame(self.content)
+        chart_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+
+        ChartWidget, ChartStyle = _ensure_chart_module()
+        chart = ChartWidget(
+            chart_frame,
+            style=ChartStyle(figure_size=(12, 6), dpi=100)
+        )
+        chart.pack(fill="both", expand=True, padx=15, pady=15)
+        self._chart_widgets.append(chart)
+        return chart
+
+    def _on_drift_subtab_changed(self, value: str):
+        """Switch between ML Drift and Process Drift sub-views."""
+        if value == self._drift_subtab:
+            return
+        self._drift_subtab = value
+        # Bump the load generation so any in-flight render of the
+        # previous sub-view discards itself when its after() callback
+        # fires — same protection pattern the top-level tab toggle uses.
+        self._load_generation += 1
+        if value == "ML Drift":
+            self._show_drift_timeline()
+        else:
+            self._show_process_drift()
+
     def _draw_empty_state(self, ax, message: str) -> None:
         """Render a visible empty-state message centered on an Axes.
 
@@ -2858,10 +2921,10 @@ class TrendsPage(ctk.CTkFrame):
         """Render drift timeline chart on the main thread."""
         if not self.winfo_exists():
             return
-        if self._trend_type.get() != "Drift":
-            return  # User switched tabs; don't destroy the new tab's frames
+        if self._trend_type.get() != "Drift" or self._drift_subtab != "ML Drift":
+            return  # User switched tab or sub-view; bail before destroying frames
         try:
-            chart = self._create_dedicated_chart_view("Drift Detection Timeline")
+            chart = self._create_drift_view()
             # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
             # restored — fig.clear() resets it to matplotlib's default (black
             # under the dark_background style), making the chart unreadable.
@@ -3013,10 +3076,10 @@ class TrendsPage(ctk.CTkFrame):
         """Render three stacked drift panels — one per physical metric."""
         if not self.winfo_exists():
             return
-        if self._trend_type.get() != "Process Drift":
-            return  # User switched tabs; don't destroy the new tab's frames
+        if self._trend_type.get() != "Drift" or self._drift_subtab != "Process Drift":
+            return  # User switched tab or sub-view; bail before destroying frames
         try:
-            chart = self._create_dedicated_chart_view("Process Drift")
+            chart = self._create_drift_view()
             chart.clear()
             fig = chart.figure
             n = len(panels)
