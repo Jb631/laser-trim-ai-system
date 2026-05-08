@@ -1423,23 +1423,20 @@ class TrendsPage(ctk.CTkFrame):
         """Apply summary load result only if no newer load has superseded it.
 
         Without this guard the callback runs even after _create_detail_view
-        has destroyed the summary frames, which makes
-        _ensure_summary_charts_initialized try to instantiate ChartWidget
-        on a dead parent → TclError "bad window path name".
+        has destroyed the summary frames, raising TclError when we try to
+        update widgets that no longer exist.
         """
         if gen != self._load_generation:
             return
-        # Defensive: also confirm the page itself is still alive AND the
-        # parent frame the charts will mount into still exists. If the
-        # user has navigated to detail mode in between, the summary
-        # frames are gone even though the gen check above should already
-        # have bailed — this is belt-and-suspenders for unexpected paths.
+        # Defensive: also confirm the page itself is still alive AND a
+        # frame from the new 5-section summary layout still exists.
+        # Pick _focus_rows_frame because it is one of the first widgets
+        # _create_summary_view builds; if it has been destroyed, the
+        # whole summary view is gone (user navigated to detail mode).
         if not self.winfo_exists():
             return
-        if (
-            getattr(self, "_alerts_frame", None) is None
-            or not self._alerts_frame.winfo_exists()
-        ):
+        focus_frame = getattr(self, "_focus_rows_frame", None)
+        if focus_frame is None or not focus_frame.winfo_exists():
             return
         self._update_summary_display(*args, **kwargs)
 
@@ -1617,7 +1614,10 @@ class TrendsPage(ctk.CTkFrame):
             self._reset_summary_stats()
         else:
             total_models = len(active_models)
-            total_samples = sum(m.get("total_samples", 0) for m in active_models)
+            # get_active_models_summary returns rows keyed by "total" (not
+            # "total_samples"). Using the wrong key silently produced 0 for
+            # the Total Samples stat tile.
+            total_samples = sum(m.get("total", 0) for m in active_models)
             avg_pass_rate = (
                 sum(m.get("pass_rate", 0) for m in active_models) / total_models
             ) if total_models else 0
