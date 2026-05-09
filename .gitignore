@@ -162,3 +162,6 @@ work files/
 
 # Mac launcher
 launch_app.command
+
+# Superpowers brainstorming session artifacts
+.superpowers/
