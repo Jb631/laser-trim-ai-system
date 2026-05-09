@@ -2469,7 +2469,12 @@ class TrendsPage(ctk.CTkFrame):
                     self._drift_subtab_button.set("ML Drift")
                 except Exception:
                     pass
-            self._show_drift_timeline()
+            if self._drift_filter_model:
+                self._show_single_model_drift()
+            elif self._drift_subtab == "Process Drift":
+                self._show_process_drift()
+            else:
+                self._show_drift_timeline()
         elif value == "Trim Difficulty":
             self._show_trim_difficulty()
         # Any legacy stored selection ("Priorities", "Comparative", etc.)
@@ -2484,7 +2489,12 @@ class TrendsPage(ctk.CTkFrame):
             self._trend_type.set("Drift")
         except Exception:
             pass
-        self._show_drift_timeline()
+        if self._drift_filter_model:
+            self._show_single_model_drift()
+        elif self._drift_subtab == "Process Drift":
+            self._show_process_drift()
+        else:
+            self._show_drift_timeline()
 
     def _create_dedicated_chart_view(self, title: str) -> "ChartWidget":
         """Create a dedicated full-width chart view for non-Standard tabs.
@@ -2651,6 +2661,8 @@ class TrendsPage(ctk.CTkFrame):
 
     def _render_single_model_drift(self, data: Dict[str, Any], detector):
         if not self.winfo_exists():
+            return
+        if self._trend_type.get() != "Drift":
             return
         if self._drift_filter_model != data.get("model"):
             return
