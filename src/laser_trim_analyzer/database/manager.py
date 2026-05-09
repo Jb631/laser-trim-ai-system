@@ -2770,6 +2770,27 @@ class DatabaseManager:
             model_list = [m[0] for m in models if m[0] and m[0] != "Unknown"]
             return sorted(model_list, key=_model_sort_key)
 
+    def get_models_with_sigma_data(self, days_back: int = 30) -> List[str]:
+        """Models with at least one non-null sigma_gradient inside the
+        day-range window. Used to populate the Drift tab's model dropdown
+        — never-processed and dead models don't clutter the list.
+        """
+        cutoff = datetime.now() - timedelta(days=days_back)
+        with self.session() as session:
+            rows = (
+                session.query(DBAnalysisResult.model)
+                .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= cutoff,
+                    DBTrackResult.sigma_gradient.isnot(None),
+                )
+                .distinct()
+                .all()
+            )
+            return sorted([r[0] for r in rows if r[0]], key=_model_sort_key)
+
     def get_models_list_prioritized(
         self,
         mps_models: List[str] = None,
