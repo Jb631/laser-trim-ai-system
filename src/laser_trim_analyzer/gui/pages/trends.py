@@ -232,6 +232,10 @@ class TrendsPage(ctk.CTkFrame):
         # sub-view.
         self._drift_subtab: str = "ML Drift"
 
+        # Global model filter for the Drift tab. None / "All models" → all-models view.
+        # Set when the user picks a model from the new dropdown in _create_drift_view.
+        self._drift_filter_model: Optional[str] = None
+
         self._create_ui()
 
     def _create_ui(self):
@@ -2516,13 +2520,9 @@ class TrendsPage(ctk.CTkFrame):
         return chart
 
     def _create_drift_view(self) -> "ChartWidget":
-        """Build the Drift tab: ML/Process toggle on top, chart below.
-
-        Returns the ChartWidget to render into. The toggle's selection
-        decides which `_show_*` method should run when the user clicks;
-        we still call `_show_drift_timeline()` / `_show_process_drift()`
-        from the toggle handler so the render guards (which read
-        self._drift_subtab) work uniformly.
+        """Build the Drift tab: header row (model filter + ML/Process toggle)
+        on top, chart frame below. Returns the chart widget for All-models
+        sub-views; the single-model view replaces the chart frame contents.
         """
         for widget in self.content.winfo_children():
             widget.destroy()
@@ -2531,27 +2531,51 @@ class TrendsPage(ctk.CTkFrame):
         self.content.grid_rowconfigure(0, weight=0)
         self.content.grid_rowconfigure(1, weight=1)
 
-        toggle_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        toggle_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header = ctk.CTkFrame(self.content, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+
+        # Model filter dropdown
         ctk.CTkLabel(
-            toggle_frame, text="View:",
-            font=ctk.CTkFont(size=11)
-        ).pack(side="left", padx=(0, 8))
+            header, text="Model:",
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(0, 4))
+        try:
+            db = get_database()
+            model_options = ["All models"] + db.get_models_with_sigma_data(
+                days_back=self.selected_days
+            )
+        except Exception as e:
+            logger.debug(f"Could not populate drift model filter: {e}")
+            model_options = ["All models"]
+        self._drift_model_filter = ctk.CTkComboBox(
+            header,
+            values=model_options,
+            command=self._on_drift_model_filter_changed,
+            width=160,
+        )
+        self._drift_model_filter.set(self._drift_filter_model or "All models")
+        self._drift_model_filter.pack(side="left", padx=(0, 14))
+
+        # ML/Process sub-tab toggle — hidden when a specific model is selected.
         self._drift_subtab_button = ctk.CTkSegmentedButton(
-            toggle_frame,
+            header,
             values=["ML Drift", "Process Drift"],
             command=self._on_drift_subtab_changed,
         )
         self._drift_subtab_button.set(self._drift_subtab)
-        self._drift_subtab_button.pack(side="left")
+        if self._drift_filter_model:
+            self._drift_subtab_button.pack_forget()
+        else:
+            self._drift_subtab_button.pack(side="left")
 
         chart_frame = ctk.CTkFrame(self.content)
         chart_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self._drift_content_frame = chart_frame
 
         ChartWidget, ChartStyle = _ensure_chart_module()
         chart = ChartWidget(
             chart_frame,
-            style=ChartStyle(figure_size=(12, 6), dpi=100)
+            style=ChartStyle(figure_size=(12, 6), dpi=100),
         )
         chart.pack(fill="both", expand=True, padx=15, pady=15)
         self._chart_widgets.append(chart)
@@ -2570,6 +2594,35 @@ class TrendsPage(ctk.CTkFrame):
             self._show_drift_timeline()
         else:
             self._show_process_drift()
+
+    def _on_drift_model_filter_changed(self, value: str):
+        """Switch between All-models view and single-model dashboard."""
+        new = None if value == "All models" else value
+        if new == self._drift_filter_model:
+            return
+        self._drift_filter_model = new
+        self._load_generation += 1
+        # Render: pickup whichever sub-view is current (ignored when single
+        # model; the single-model dashboard is rendered directly)
+        if new is None:
+            if self._drift_subtab == "ML Drift":
+                self._show_drift_timeline()
+            else:
+                self._show_process_drift()
+        else:
+            self._show_single_model_drift()
+
+    def _show_single_model_drift(self):
+        """Single-model investigation dashboard. Implemented in Task 9."""
+        if not self._drift_filter_model:
+            return
+        # Stub — overwritten in Task 9
+        chart = self._create_drift_view()
+        self._draw_empty_state(
+            chart.figure.add_subplot(111),
+            f"Single-model view for {self._drift_filter_model} — coming next",
+        )
+        chart.canvas.draw_idle()
 
     def _draw_empty_state(self, ax, message: str) -> None:
         """Render a visible empty-state message centered on an Axes.
