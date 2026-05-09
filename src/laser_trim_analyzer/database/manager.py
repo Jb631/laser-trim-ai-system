@@ -7404,6 +7404,112 @@ class DatabaseManager:
         results.sort(key=lambda r: abs(r["z_score"]), reverse=True)
         return results
 
+    def get_model_drift_dashboard(
+        self,
+        model: str,
+        days_back: int = 90,
+        recent_days: int = 14,
+    ) -> Dict[str, Any]:
+        """Per-model drift dashboard data: sigma series + 3 process metric
+        series with baseline/recent stats. Single round-trip per panel.
+        """
+        if recent_days >= days_back:
+            raise ValueError("recent_days must be less than days_back")
+
+        cutoff = datetime.now() - timedelta(days=days_back)
+        recent_cutoff = datetime.now() - timedelta(days=recent_days)
+
+        with self.session() as session:
+            rows = (
+                session.query(
+                    DBAnalysisResult.file_date,
+                    DBTrackResult.sigma_gradient,
+                    DBTrackResult.untrimmed_resistance,
+                    DBTrackResult.measured_electrical_angle,
+                    DBTrackResult.trim_pass_count,
+                )
+                .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                .filter(
+                    DBAnalysisResult.model == model,
+                    DBAnalysisResult.file_date >= cutoff,
+                )
+                .order_by(DBAnalysisResult.file_date.asc())
+                .all()
+            )
+
+        sigma_series: List[Tuple[str, float]] = []
+        process_series: Dict[str, List[Tuple[str, float]]] = {
+            "untrimmed_resistance": [],
+            "measured_electrical_angle": [],
+            "trim_pass_count": [],
+        }
+        process_baseline: Dict[str, List[float]] = {k: [] for k in process_series}
+        process_recent: Dict[str, List[float]] = {k: [] for k in process_series}
+
+        for file_date, sigma, ur, mea, tpc in rows:
+            if file_date is None:
+                continue
+            iso = file_date.isoformat()
+            if sigma is not None:
+                sigma_series.append((iso, float(sigma)))
+            for metric, value in (
+                ("untrimmed_resistance", ur),
+                ("measured_electrical_angle", mea),
+                ("trim_pass_count", tpc),
+            ):
+                if value is None:
+                    continue
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                process_series[metric].append((iso, value))
+                if file_date >= recent_cutoff:
+                    process_recent[metric].append(value)
+                else:
+                    process_baseline[metric].append(value)
+
+        process: Dict[str, Dict[str, Any]] = {}
+        for metric in process_series:
+            base = process_baseline[metric]
+            recent = process_recent[metric]
+            base_mean = (sum(base) / len(base)) if base else None
+            recent_mean = (sum(recent) / len(recent)) if recent else None
+            if base and len(base) > 1:
+                var = sum((x - base_mean) ** 2 for x in base) / (len(base) - 1)
+                base_std = var ** 0.5
+            else:
+                base_std = 0.0
+            delta = (
+                recent_mean - base_mean
+                if base_mean is not None and recent_mean is not None
+                else None
+            )
+            z = (delta / base_std) if (delta is not None and base_std > 0) else None
+            delta_pct = (
+                (delta / base_mean * 100.0)
+                if delta is not None and base_mean and base_mean != 0
+                else None
+            )
+            process[metric] = {
+                "series": process_series[metric],
+                "baseline_mean": base_mean,
+                "baseline_n": len(base),
+                "recent_mean": recent_mean,
+                "recent_n": len(recent),
+                "delta": delta,
+                "delta_pct": delta_pct,
+                "z_score": z,
+                "is_drifting": z is not None and abs(z) >= 2.0,
+            }
+
+        return {
+            "model": model,
+            "unit_count": len(rows),
+            "sigma_series": sigma_series,
+            "process": process,
+        }
+
     def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
         """Categorize failures by mode: linearity only, sigma only, or both."""
         with self.session() as session:

@@ -165,3 +165,40 @@ def test_process_drift_table_returns_delta_pct_and_series(tmp_path):
     pt = r["series"][0]
     assert isinstance(pt[0], str)
     assert isinstance(pt[1], float)
+
+
+def test_get_model_drift_dashboard_returns_all_panels(tmp_path):
+    db = DatabaseManager(tmp_path / "model_dashboard.db")
+
+    today = datetime.now()
+    for i in range(15):
+        _add_analysis(
+            db, "8492",
+            today - timedelta(days=30 - i),
+            sigma_values=(0.01 + i * 0.0001,),
+            serial=f"{i:04d}",
+        )
+
+    data = db.get_model_drift_dashboard(model="8492", days_back=60)
+    assert data["model"] == "8492"
+    # Sigma panel
+    assert "sigma_series" in data
+    assert isinstance(data["sigma_series"], list)
+    assert len(data["sigma_series"]) >= 10
+    # Three process panels keyed by metric
+    for metric in ("untrimmed_resistance",
+                   "measured_electrical_angle",
+                   "trim_pass_count"):
+        assert metric in data["process"]
+        panel = data["process"][metric]
+        assert "series" in panel
+        assert "baseline_mean" in panel
+        assert "recent_mean" in panel
+
+
+def test_get_model_drift_dashboard_returns_empty_for_unknown_model(tmp_path):
+    db = DatabaseManager(tmp_path / "model_dashboard_empty.db")
+    data = db.get_model_drift_dashboard(model="NOPE", days_back=60)
+    assert data["model"] == "NOPE"
+    assert data["sigma_series"] == []
+    assert data["unit_count"] == 0
