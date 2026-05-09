@@ -2777,125 +2777,194 @@ class TrendsPage(ctk.CTkFrame):
             self.status_label.configure(text=f"Yield trend error: {e}")
 
     def _show_drift_timeline(self):
-        """Show drift detection events as a timeline."""
-        self.status_label.configure(text="Loading drift timeline...")
+        """Show ML Drift sortable model table (All-models view)."""
+        if self._drift_filter_model is not None:
+            # Single-model view takes over; don't render the table.
+            return
+        self.status_label.configure(text="Loading drift table...")
         selected_days = self.selected_days
 
         def _load():
             try:
+                from laser_trim_analyzer.ml import get_shared_ml_manager
                 db = get_database()
-                events = db.get_drift_events_timeline(days_back=selected_days)
-                self.after(0, lambda: self._render_drift_timeline(events))
+                state_by_model = db.get_drift_state_for_models(
+                    days_back=selected_days
+                )
+                ml_manager = get_shared_ml_manager(db)
+                # Combine DB state + in-memory CUSUM score per detector
+                rows = []
+                for model, state in state_by_model.items():
+                    detector = ml_manager.drift_detectors.get(model)
+                    has_baseline = detector is not None and detector.has_baseline
+                    if detector is not None:
+                        cusum_value = max(detector.cusum_pos, detector.cusum_neg)
+                        cusum_h = detector.cusum_h
+                    else:
+                        cusum_value = None
+                        cusum_h = None
+                    days_drifting = None
+                    if state["is_drifting"] and state["drift_start_date"]:
+                        days_drifting = (
+                            datetime.now() - state["drift_start_date"]
+                        ).days
+                    rows.append({
+                        "model": model,
+                        "has_baseline": has_baseline,
+                        "is_drifting": state["is_drifting"],
+                        "direction": state["direction"],
+                        "drift_score": cusum_value,
+                        "drift_threshold": cusum_h,
+                        "drift_start_date": state["drift_start_date"],
+                        "days_drifting": days_drifting,
+                        "sigma_series": state["sigma_series"],
+                    })
+                self.after(0, lambda: self._render_drift_timeline(rows))
             except Exception as e:
-                logger.error(f"Drift timeline error: {e}")
+                logger.error(f"Drift table error: {e}", exc_info=True)
                 self.after(0, lambda: self.status_label.configure(
                     text=f"Drift error: {e}"))
 
-        get_thread_manager().start_thread(target=_load, name="drift-timeline")
+        get_thread_manager().start_thread(target=_load, name="drift-table")
 
-    def _render_drift_timeline(self, events):
-        """Render drift timeline chart on the main thread."""
+    def _render_drift_timeline(self, rows):
+        """Render the ML Drift sortable model table on the main thread."""
         if not self.winfo_exists():
             return
-        if self._trend_type.get() != "Drift" or self._drift_subtab != "ML Drift":
-            return  # User switched tab or sub-view; bail before destroying frames
+        if (
+            self._trend_type.get() != "Drift"
+            or self._drift_subtab != "ML Drift"
+            or self._drift_filter_model is not None
+        ):
+            return
         try:
-            chart = self._create_drift_view()
-            # Use ChartWidget.clear() (not fig.clear()) so the dark facecolor is
-            # restored — fig.clear() resets it to matplotlib's default (black
-            # under the dark_background style), making the chart unreadable.
-            chart.clear()
-            fig = chart.figure
-            ax = fig.add_subplot(111)
-            chart._style_axis(ax)
+            self._create_drift_view()  # rebuild header + content frame
+            for w in self._drift_content_frame.winfo_children():
+                w.destroy()
 
-            if not events:
-                self._draw_empty_state(ax, "No drift events detected")
-            else:
-                # Parse ISO date strings to datetime so matplotlib renders a
-                # proper time axis. Previously every marker was passed as the
-                # string slice e["date"][:10], which matplotlib treats as a
-                # categorical value — every event with the same date string
-                # collapsed onto a single x-position, making the chart look
-                # like one stacked column of triangles regardless of when
-                # the events happened.
-                from datetime import datetime as _dt
-                from matplotlib import dates as mdates
+            if not rows:
+                lbl = ctk.CTkLabel(
+                    self._drift_content_frame,
+                    text="No drift data yet — process more files or train ML in Settings.",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray",
+                )
+                lbl.pack(expand=True, padx=20, pady=20)
+                self.status_label.configure(text="No drift data")
+                return
 
-                def _parse_date(raw):
-                    if not raw:
-                        return None
-                    try:
-                        return _dt.fromisoformat(raw[:19] if len(raw) >= 19 else raw[:10])
-                    except (ValueError, TypeError):
-                        return None
-
-                # Sort models so the most-recent drift sits at the top of the chart.
-                # Color-code by direction (red = up = degrading, orange = down = improving).
-                last_event = {}
-                for e in events:
-                    parsed = _parse_date(e.get("date"))
-                    if parsed is None:
-                        continue
-                    if (
-                        e["model"] not in last_event
-                        or parsed > last_event[e["model"]]
-                    ):
-                        last_event[e["model"]] = parsed
-                if not last_event:
-                    self._draw_empty_state(
-                        ax, "Drift events have no parseable detection dates"
+            def render_status(parent, row):
+                if not row["has_baseline"]:
+                    return ctk.CTkLabel(
+                        parent, text="○ no baseline",
+                        text_color="gray",
+                        font=ctk.CTkFont(size=10),
                     )
-                    chart.canvas.draw_idle()
-                    self.status_label.configure(text="Drift dates malformed")
-                    return
-                models = sorted(last_event, key=lambda m: last_event[m], reverse=True)
-                model_y = {m: i for i, m in enumerate(models)}
+                if row["is_drifting"]:
+                    if row["direction"] == "up":
+                        return ctk.CTkLabel(
+                            parent, text="↑ DRIFTING",
+                            text_color="#ff8080",
+                            font=ctk.CTkFont(size=10, weight="bold"),
+                        )
+                    return ctk.CTkLabel(
+                        parent, text="↓ DRIFTING",
+                        text_color="#ffb060",
+                        font=ctk.CTkFont(size=10, weight="bold"),
+                    )
+                return ctk.CTkLabel(
+                    parent, text="✓ stable",
+                    text_color="#7ed99e",
+                    font=ctk.CTkFont(size=10),
+                )
 
-                # Dynamically size the figure so each model gets ~0.3" of vertical space.
-                target_height = max(4.0, min(12.0, 1.5 + 0.3 * len(models)))
-                fig.set_size_inches(fig.get_size_inches()[0], target_height, forward=True)
+            def render_score(parent, row):
+                if row["drift_score"] is None:
+                    text = "—"
+                    color = "gray"
+                else:
+                    text = f"{row['drift_score']:.1f} / {row['drift_threshold']:.1f}"
+                    color = (
+                        "#ff8080" if row["is_drifting"] and row["direction"] == "up"
+                        else "#ffb060" if row["is_drifting"]
+                        else "#7ed99e"
+                    )
+                return ctk.CTkLabel(
+                    parent, text=text, text_color=color,
+                    font=ctk.CTkFont(size=10),
+                )
 
-                up_x, up_y = [], []
-                down_x, down_y = [], []
-                for e in events:
-                    if e["model"] not in model_y:
-                        continue
-                    parsed = _parse_date(e.get("date"))
-                    if parsed is None:
-                        continue
-                    y = model_y[e["model"]]
-                    if (e.get("direction") or "").lower() == "down":
-                        down_x.append(parsed); down_y.append(y)
-                    else:
-                        up_x.append(parsed); up_y.append(y)
+            def render_last_event(parent, row):
+                d = row["drift_start_date"]
+                text = d.strftime("%Y-%m-%d") if (d and row["is_drifting"]) else "—"
+                return ctk.CTkLabel(
+                    parent, text=text,
+                    font=ctk.CTkFont(size=10),
+                )
 
-                if up_x:
-                    ax.scatter(up_x, up_y, s=70, c='#dc3545', zorder=5,
-                               marker='^', label='Drifting up (degrading)')
-                if down_x:
-                    ax.scatter(down_x, down_y, s=70, c='#f39c12', zorder=5,
-                               marker='v', label='Drifting down (improving)')
+            def render_days(parent, row):
+                d = row["days_drifting"]
+                text = f"{d}d" if d is not None else "—"
+                return ctk.CTkLabel(
+                    parent, text=text,
+                    font=ctk.CTkFont(size=10),
+                )
 
-                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-                ax.set_yticks(range(len(models)))
-                ax.set_yticklabels(models, fontsize=9)
-                ax.tick_params(axis='x', rotation=45, labelsize=8)
-                ax.set_xlabel("Detection date")
-                ax.legend(loc='upper left', fontsize=9, framealpha=0.85)
-                ax.grid(True, axis='x', alpha=0.2)
+            def render_spark(parent, row):
+                s = _Sparkline(parent, width=80, height=14)
+                values = [v for _, v in row["sigma_series"]]
+                color = (
+                    "#ff8080" if row["is_drifting"] and row["direction"] == "up"
+                    else "#ffb060" if row["is_drifting"]
+                    else "#7ed99e"
+                )
+                s.draw(values, color=color)
+                return s
 
-            ax.set_title("Drift Detection Timeline")
-            try:
-                fig.tight_layout()
-            except Exception:
-                pass  # tight_layout sometimes fails with rotated tick labels
-            chart.canvas.draw_idle()
-            self.status_label.configure(text=f"Drift timeline ({len(events)} events)")
+            columns = [
+                ("model", "Model", None),
+                ("status_sort", "Status", render_status),
+                ("score_sort", "Drift score", render_score),
+                ("drift_start_date", "Last event", render_last_event),
+                ("days_drifting", "Days drifting", render_days),
+                ("model", "Sigma trend", render_spark),
+            ]
+            # Add sort-key fields
+            for r in rows:
+                # Drifting first (0), stable (1), no-baseline (2)
+                if not r["has_baseline"]:
+                    r["status_sort"] = 2
+                elif r["is_drifting"]:
+                    r["status_sort"] = 0
+                else:
+                    r["status_sort"] = 1
+                r["score_sort"] = (
+                    r["drift_score"] if r["drift_score"] is not None else -1
+                )
+
+            table = _SortableTable(
+                self._drift_content_frame,
+                columns=columns,
+                rows=rows,
+                row_click=lambda r: self._on_drift_row_click(r["model"]),
+                default_sort_key="status_sort",
+                default_sort_reverse=False,
+            )
+            table.pack(fill="both", expand=True, padx=10, pady=10)
+            drifting_count = sum(1 for r in rows if r["is_drifting"])
+            self.status_label.configure(
+                text=f"Drift: {drifting_count} drifting / {len(rows)} models"
+            )
         except Exception as e:
-            logger.error(f"Drift timeline error: {e}")
-            self.status_label.configure(text=f"Drift error: {e}")
+            logger.error(f"Drift table render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Drift render error: {e}")
+
+    def _on_drift_row_click(self, model: str):
+        """Drill into a model's drift dashboard from a table row click."""
+        self._drift_filter_model = model
+        if hasattr(self, "_drift_model_filter"):
+            self._drift_model_filter.set(model)
+        self._show_single_model_drift()
 
     # Metrics shown on the Process Drift tab. The DB-side keys must
     # match DatabaseManager._PROCESS_DRIFT_METRICS.
