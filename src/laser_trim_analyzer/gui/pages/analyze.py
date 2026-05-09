@@ -966,8 +966,8 @@ class AnalyzePage(ctk.CTkFrame):
         except Exception:
             pass
 
-        # Separate excluded fail points from real fail points
-        excluded_fail_indices = [i for i in fail_indices if i in excluded_indices]
+        # Drop excluded indices from the fail count so the displayed status
+        # matches the analyzer's recorded status.
         real_fail_indices = [i for i in fail_indices if i not in excluded_indices]
         actual_fail_count = len(real_fail_indices)
 
@@ -1017,7 +1017,10 @@ class AnalyzePage(ctk.CTkFrame):
             theory_data=getattr(track, 'theory_volts', None),
             title=title,
             fail_points=real_fail_indices,
-            excluded_points=excluded_fail_indices,
+            # Show ALL excluded indices, not just the failing-and-excluded
+            # subset, so the user has visual confirmation the exclusion is
+            # in effect even when the excluded point happens to be passing.
+            excluded_points=sorted(excluded_indices),
             serial_number=serial,
             trim_improvement_percent=track.trim_improvement_percent,
             trim_date=trim_date,

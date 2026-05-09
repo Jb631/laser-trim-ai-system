@@ -937,7 +937,9 @@ class DatabaseManager:
                 # decode work. The summary export never reads them, so
                 # defer() them — Pydantic TrackData declares them Optional,
                 # so None is a legal value end-to-end.
-                tracks_loader = tracks_loader.defer(
+                # Load.defer() takes one column per call in SQLAlchemy 2.x —
+                # chain it for each blob column we want to skip.
+                for _col in (
                     DBTrackResult.position_data,
                     DBTrackResult.error_data,
                     DBTrackResult.upper_limits,
@@ -946,7 +948,8 @@ class DatabaseManager:
                     DBTrackResult.test_volts,
                     DBTrackResult.untrimmed_positions,
                     DBTrackResult.untrimmed_errors,
-                )
+                ):
+                    tracks_loader = tracks_loader.defer(_col)
             # Use joinedload to fetch tracks in single query (avoids N+1)
             query = session.query(DBAnalysisResult).options(tracks_loader)
 

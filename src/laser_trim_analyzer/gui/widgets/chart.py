@@ -398,6 +398,32 @@ class ChartWidget(ctk.CTkFrame):
                     alpha=0.6,
                 )
 
+            # Constrain the primary y-axis to the range of NON-excluded data
+            # (plus spec limits). Without this, an excluded outlier — e.g. a
+            # last point that drops to 0V — keeps the autoscale bounds wide
+            # and visually compresses the real data into a thin band.
+            # Only constrain when on a single axis; the dual-axis path has
+            # its own scaling for the untrimmed trace on ax2.
+            if not use_dual_axis:
+                excl_set = set(excluded_points)
+                y_candidates: List[float] = []
+                y_candidates.extend(
+                    e for i, e in enumerate(shifted_errors) if i not in excl_set
+                )
+                y_candidates.extend(
+                    e for i, e in enumerate(trimmed_errors) if i not in excl_set
+                )
+                if upper_limits:
+                    y_candidates.extend(u for u in upper_limits if u is not None)
+                if lower_limits:
+                    y_candidates.extend(l for l in lower_limits if l is not None)
+                if y_candidates:
+                    y_lo = min(y_candidates)
+                    y_hi = max(y_candidates)
+                    y_range = y_hi - y_lo
+                    pad = y_range * 0.1 if y_range > 0 else max(abs(y_hi), 1e-6) * 0.1
+                    ax.set_ylim(y_lo - pad, y_hi + pad)
+
         # Station compensation annotation
         if station_compensation is not None:
             ax.annotate(

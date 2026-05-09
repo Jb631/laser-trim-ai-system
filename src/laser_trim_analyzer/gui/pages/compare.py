@@ -26,6 +26,72 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_track_id(track_id) -> str:
+    """Normalize a track designator to a single comparable letter so trim
+    and FT track IDs can be paired across naming conventions:
+      - 'Track A' / 'Track B'  (System B newer trim files)
+      - 'TRK1' / 'TRK2'        (System A trim — TRK1→A, TRK2→B, TRK3→C)
+      - 'A' / 'B' / 'C' / ...  (FT multi-sheet files)
+      - 'default' / ''          (legacy single-track on either side)
+    """
+    if track_id is None:
+        return ""
+    s = str(track_id).strip().upper()
+    if not s:
+        return ""
+    if s.startswith("TRACK "):
+        return s[6:].strip()
+    if s == "TRK1":
+        return "A"
+    if s == "TRK2":
+        return "B"
+    if s == "TRK3":
+        return "C"
+    return s
+
+
+def _pair_tracks(trim_tracks: List[Dict], ft_tracks: List[Dict]):
+    """Return (trim_track, ft_track) paired by normalized track designator.
+
+    Without this, blindly using index 0 on each side mismatches a Track-B
+    trim file with FT track A whenever the FT file is multi-track (e.g. 6607).
+    Falls back to the first track on each side when no designator match is
+    possible (legacy 'default' / single-track data).
+    """
+    if not trim_tracks and not ft_tracks:
+        return None, None
+    if not trim_tracks:
+        return None, ft_tracks[0]
+    if not ft_tracks:
+        return trim_tracks[0], None
+
+    trim = trim_tracks[0]
+    trim_norm = _normalize_track_id(trim.get("track_id"))
+
+    # Empty or 'DEFAULT' trim designator → legacy single-track trim, pair
+    # with first FT track.
+    if not trim_norm or trim_norm == "DEFAULT":
+        return trim, ft_tracks[0]
+
+    for ft in ft_tracks:
+        if _normalize_track_id(ft.get("track_id")) == trim_norm:
+            return trim, ft
+
+    # No designator match: prefer a 'default' FT (legacy single-track FT
+    # paired with a designated trim) over a guess.
+    for ft in ft_tracks:
+        if _normalize_track_id(ft.get("track_id")) == "DEFAULT":
+            return trim, ft
+
+    logger.warning(
+        "Compare chart: no FT track matched trim track '%s'; "
+        "FT tracks available: %s",
+        trim.get("track_id"),
+        [t.get("track_id") for t in ft_tracks],
+    )
+    return trim, ft_tracks[0]
+
+
 def _clean_limits_for_interp(limits):
     """Replace None/NaN with nearest valid value for interpolation.
 
@@ -784,7 +850,13 @@ Match: {method_label} ({confidence_str})"""
                 self.chart.canvas.draw_idle()
             return
 
-        ft_track = ft_tracks[0]  # Use first track
+        # Pair the FT track to the trim track by designator (Track A↔A,
+        # Track B↔B, TRK1↔A, etc.). Without this, multi-track FT files like
+        # 6607 mismatch Track-B trim files against FT track A.
+        trim_tracks_for_pair = (trim or {}).get("tracks", []) if trim else []
+        _, ft_track = _pair_tracks(trim_tracks_for_pair, ft_tracks)
+        if ft_track is None:
+            ft_track = ft_tracks[0]
         # Support both "positions" and "electrical_angles" (new format)
         ft_positions = ft_track.get("positions") or ft_track.get("electrical_angles", [])
         ft_errors = ft_track.get("errors", [])
@@ -795,12 +867,10 @@ Match: {method_label} ({confidence_str})"""
         spec_positions = ft_positions  # Use Final Test positions for spec limits
 
         # Pull FT slope/offset/linearity_type for the corrected overlay.
-        # These are populated by the analyzer on save (Task #15).
-        ft_track_raw = final_test.get("tracks", [{}])[0] if final_test.get("tracks") else {}
-        ft_offset = ft_track_raw.get("optimal_offset", 0) or 0
-        ft_k = ft_track_raw.get("optimal_slope", 0.0) or 0.0
-        ft_theory = ft_track_raw.get("theory_data")
-        ft_linearity_type = ft_track_raw.get("linearity_type")
+        ft_offset = ft_track.get("optimal_offset", 0) or 0
+        ft_k = ft_track.get("optimal_slope", 0.0) or 0.0
+        ft_theory = ft_track.get("theory_data")
+        ft_linearity_type = ft_track.get("linearity_type")
 
         # Prepare chart data
         chart_data = {
@@ -821,7 +891,11 @@ Match: {method_label} ({confidence_str})"""
         if trim:
             trim_tracks = trim.get("tracks", [])
             if trim_tracks:
-                trim_track = trim_tracks[0]
+                # Use the trim track from the pairing above so the chart
+                # shows the correct (trim_track, ft_track) pair.
+                trim_track, _ = _pair_tracks(trim_tracks, ft_tracks)
+                if trim_track is None:
+                    trim_track = trim_tracks[0]
                 trim_positions = trim_track.get("positions", [])
                 trim_errors = trim_track.get("errors", [])
                 trim_offset = trim_track.get("offset", 0) or trim_track.get("optimal_offset", 0) or 0
@@ -1581,7 +1655,12 @@ Match: {method_label} ({confidence_str})"""
         if not ft_tracks:
             return {'fail_points': 0, 'linearity_pass': None, 'trim_fail_points': 0, 'trim_linearity_pass': None}
 
-        ft_track = ft_tracks[0]
+        # Pair FT track to trim track by designator so multi-track FT files
+        # don't mis-evaluate against the wrong-track trim.
+        trim_tracks_for_pair = (trim or {}).get("tracks", []) if trim else []
+        _, ft_track = _pair_tracks(trim_tracks_for_pair, ft_tracks)
+        if ft_track is None:
+            ft_track = ft_tracks[0]
         ft_raw_errors = ft_track.get("errors", [])
         upper_limits = ft_track.get("upper_limits", [])
         lower_limits = ft_track.get("lower_limits", [])
@@ -1614,7 +1693,9 @@ Match: {method_label} ({confidence_str})"""
         if trim:
             trim_tracks = trim.get("tracks", [])
             if trim_tracks:
-                trim_track = trim_tracks[0]
+                trim_track, _ = _pair_tracks(trim_tracks, ft_tracks)
+                if trim_track is None:
+                    trim_track = trim_tracks[0]
                 trim_raw_errors = trim_track.get("errors", [])
                 trim_positions = trim_track.get("positions", [])
                 trim_k = trim_track.get("optimal_slope", 0.0) or 0.0
