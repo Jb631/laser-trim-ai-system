@@ -13,6 +13,7 @@ Features:
 """
 
 import customtkinter as ctk
+import tkinter as tk
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +49,144 @@ def _ensure_chart_module():
         _chart_module_loaded = True
         logger.debug("ChartWidget module loaded (matplotlib initialized)")
     return _ChartWidget, _ChartStyle
+
+
+class _Sparkline(tk.Canvas):
+    """Tiny inline line chart drawn on a tk.Canvas. Used inside table rows.
+
+    Pure tkinter (no matplotlib) so per-row rendering is cheap.
+    """
+
+    def __init__(self, parent, width=80, height=14, **kwargs):
+        super().__init__(
+            parent, width=width, height=height,
+            highlightthickness=0, bd=0, **kwargs,
+        )
+        self._canvas_w = width
+        self._canvas_h = height
+
+    def draw(self, values: list, color: str = "#7ed99e") -> None:
+        self.delete("all")
+        if not values or len(values) < 2:
+            return
+        v_min = min(values)
+        v_max = max(values)
+        span = v_max - v_min if v_max != v_min else 1.0
+        n = len(values)
+        # Map values to canvas coordinates with 1-px top/bottom margin
+        h = self._canvas_h - 2
+        pts = []
+        for i, v in enumerate(values):
+            x = i * (self._canvas_w - 1) / (n - 1)
+            # invert so higher values plot toward the top
+            y = 1 + h - (v - v_min) / span * h
+            pts.extend((x, y))
+        self.create_line(*pts, fill=color, width=1.2, smooth=False)
+
+
+class _SortableTable(ctk.CTkScrollableFrame):
+    """Grid layout with click-to-sort headers and click-to-select rows.
+
+    Columns is a list of (key, label, render) tuples:
+      - key: string used for sort ordering (rows are dicts keyed by this)
+      - label: header text
+      - render: callable(parent, row_dict) -> tk widget (or None to render
+                row_dict[key] as plain text via a CTkLabel).
+
+    Rows are dicts. Pass row_click=fn to be notified on row selection;
+    the callback receives the row dict.
+    """
+
+    def __init__(
+        self,
+        parent,
+        columns,
+        rows,
+        row_click=None,
+        default_sort_key=None,
+        default_sort_reverse=False,
+        **kwargs,
+    ):
+        super().__init__(parent, **kwargs)
+        self._columns = columns
+        self._rows = list(rows)
+        self._row_click = row_click
+        self._sort_key = default_sort_key
+        self._sort_reverse = default_sort_reverse
+        self._build()
+
+    def _build(self):
+        for w in self.winfo_children():
+            w.destroy()
+        # Header row
+        for col_idx, (key, label, _) in enumerate(self._columns):
+            arrow = ""
+            if key == self._sort_key:
+                arrow = " ↓" if self._sort_reverse else " ↑"
+            btn = ctk.CTkButton(
+                self,
+                text=f"{label}{arrow}",
+                anchor="w",
+                fg_color="transparent",
+                hover_color=("gray85", "gray25"),
+                text_color=("gray20", "gray80"),
+                font=ctk.CTkFont(size=10, weight="bold"),
+                height=22,
+                command=lambda k=key: self._on_sort(k),
+            )
+            btn.grid(row=0, column=col_idx, sticky="ew", padx=2, pady=(2, 4))
+
+        # Data rows
+        sorted_rows = self._sorted_rows()
+        for row_idx, row in enumerate(sorted_rows, start=1):
+            for col_idx, (key, _, render) in enumerate(self._columns):
+                if render is None:
+                    val = row.get(key)
+                    text = "" if val is None else str(val)
+                    cell = ctk.CTkLabel(
+                        self, text=text, anchor="w",
+                        font=ctk.CTkFont(size=10),
+                    )
+                else:
+                    cell = render(self, row)
+                cell.grid(row=row_idx, column=col_idx, sticky="ew", padx=4, pady=1)
+                if self._row_click is not None:
+                    cell.bind(
+                        "<Button-1>",
+                        lambda _e, r=row: self._row_click(r),
+                    )
+
+        # Stretch all columns evenly
+        for col_idx in range(len(self._columns)):
+            self.grid_columnconfigure(col_idx, weight=1)
+
+    def _sorted_rows(self):
+        if self._sort_key is None:
+            return self._rows
+
+        def keyfn(r):
+            v = r.get(self._sort_key)
+            if v is None:
+                # Push None to the end regardless of direction
+                return (1, 0)
+            if isinstance(v, (int, float)):
+                return (0, v)
+            return (0, str(v))
+
+        return sorted(self._rows, key=keyfn, reverse=self._sort_reverse)
+
+    def _on_sort(self, key):
+        if self._sort_key == key:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_key = key
+            self._sort_reverse = False
+        self._build()
+
+    def update_rows(self, rows):
+        """Replace the row data and re-render."""
+        self._rows = list(rows)
+        self._build()
 
 
 class TrendsPage(ctk.CTkFrame):
