@@ -7510,6 +7510,76 @@ class DatabaseManager:
             "process": process,
         }
 
+    def get_drift_state_for_models(
+        self,
+        days_back: int = 30,
+        max_series_points: int = 60,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Per-model drift state from the DB only.
+
+        For each model with sigma data in the window, returns:
+            is_drifting, direction, drift_start_date,
+            sigma_series (list of (iso_date, sigma) tuples).
+
+        The CUSUM score and threshold live on the in-memory DriftDetector;
+        the caller is expected to join those in at render time.
+        """
+        from laser_trim_analyzer.database.models import ModelMLState
+
+        cutoff = datetime.now() - timedelta(days=days_back)
+        with self.session() as session:
+            # Pull sigma series for every model in the window
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    DBAnalysisResult.file_date,
+                    DBTrackResult.sigma_gradient,
+                )
+                .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= cutoff,
+                    DBTrackResult.sigma_gradient.isnot(None),
+                )
+                .order_by(DBAnalysisResult.file_date.asc())
+                .all()
+            )
+            # Pull drift state rows and extract attributes while in session
+            ml_state_data = {}
+            for s in session.query(ModelMLState).all():
+                ml_state_data[s.model] = {
+                    "is_drifting": bool(s.is_drifting),
+                    "direction": s.drift_direction,
+                    "drift_start_date": s.drift_start_date,
+                }
+
+        per_model: Dict[str, Dict[str, Any]] = {}
+        for model, file_date, sigma in rows:
+            if not model or file_date is None or sigma is None:
+                continue
+            entry = per_model.setdefault(
+                model, {"sigma_series": []}
+            )
+            entry["sigma_series"].append((file_date.isoformat(), float(sigma)))
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for model, entry in per_model.items():
+            series = entry["sigma_series"]
+            # Downsample to keep sparkline rendering cheap
+            if len(series) > max_series_points:
+                step = len(series) // max_series_points
+                series = series[::step]
+            state = ml_state_data.get(model)
+            result[model] = {
+                "model": model,
+                "is_drifting": state["is_drifting"] if state else False,
+                "direction": state["direction"] if state else None,
+                "drift_start_date": state["drift_start_date"] if state else None,
+                "sigma_series": series,
+            }
+        return result
+
     def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
         """Categorize failures by mode: linearity only, sigma only, or both."""
         with self.session() as session:

@@ -202,3 +202,46 @@ def test_get_model_drift_dashboard_returns_empty_for_unknown_model(tmp_path):
     assert data["model"] == "NOPE"
     assert data["sigma_series"] == []
     assert data["unit_count"] == 0
+
+
+def test_get_drift_state_for_models_pulls_drift_start_date(tmp_path):
+    db = DatabaseManager(tmp_path / "drift_state.db")
+
+    today = datetime.now()
+    _add_analysis(db, "7965", today - timedelta(days=2), sigma_values=(0.012,))
+
+    # Insert ModelMLState row marking 7965 as drifting
+    from laser_trim_analyzer.database.models import ModelMLState
+    with db.session() as s:
+        s.add(ModelMLState(
+            model="7965",
+            is_drifting=True,
+            drift_direction="up",
+            drift_start_date=today - timedelta(days=10),
+            updated_date=today - timedelta(days=1),
+        ))
+        s.commit()
+
+    data = db.get_drift_state_for_models(days_back=30)
+    assert "7965" in data
+    row = data["7965"]
+    assert row["is_drifting"] is True
+    assert row["direction"] == "up"
+    assert row["drift_start_date"] is not None
+    # Sigma trend present
+    assert isinstance(row["sigma_series"], list)
+    assert len(row["sigma_series"]) >= 1
+
+
+def test_get_drift_state_for_models_includes_stable_models(tmp_path):
+    db = DatabaseManager(tmp_path / "drift_state_stable.db")
+
+    today = datetime.now()
+    _add_analysis(db, "8275", today - timedelta(days=1), sigma_values=(0.01,))
+    # No ModelMLState row → treated as no-baseline / stable.
+
+    data = db.get_drift_state_for_models(days_back=30)
+    assert "8275" in data
+    row = data["8275"]
+    assert row["is_drifting"] is False
+    assert row["drift_start_date"] is None
