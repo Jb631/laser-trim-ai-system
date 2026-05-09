@@ -102,3 +102,66 @@ def test_get_models_with_sigma_data_excludes_null_sigma(db):
     assert "VALID" in models
     # NOSIGMA has no tracks, so it won't appear in the result
     assert "NOSIGMA" not in models
+
+
+def test_process_drift_table_returns_delta_pct_and_series(tmp_path):
+    db = DatabaseManager(tmp_path / "process_drift.db")
+
+    today = datetime.now()
+    # 25 baseline samples for 7965 (60+ days ago) at resistance 3.0
+    for i in range(25):
+        _add_analysis(
+            db, "7965",
+            today - timedelta(days=60 + i),
+            sigma_values=(0.01,),
+            serial=f"{i:04d}",
+        )
+    # Patch their untrimmed_resistance to baseline value
+    with db.session() as s:
+        rows = (
+            s.query(DBTrackResult)
+            .join(DBAnalysisResult)
+            .filter(DBAnalysisResult.model == "7965")
+            .all()
+        )
+        for tr in rows:
+            tr.untrimmed_resistance = 3.0
+        s.commit()
+
+    # Add 6 recent samples with higher resistance
+    for i in range(6):
+        _add_analysis(
+            db, "7965",
+            today - timedelta(days=i + 1),
+            sigma_values=(0.01,),
+            serial=f"R{i:03d}",
+        )
+    with db.session() as s:
+        rows = (
+            s.query(DBTrackResult)
+            .join(DBAnalysisResult)
+            .filter(
+                DBAnalysisResult.model == "7965",
+                DBAnalysisResult.serial.like("R%"),
+            )
+            .all()
+        )
+        for tr in rows:
+            tr.untrimmed_resistance = 3.3
+        s.commit()
+
+    rows = db.get_process_drift_table(
+        metric="untrimmed_resistance",
+        baseline_days=90,
+        recent_days=14,
+    )
+    assert rows, "expected at least one model row"
+    r = next(x for x in rows if x["model"] == "7965")
+    # Δ% should be +10% (3.0 → 3.3)
+    assert 8.0 < r["delta_pct"] < 12.0
+    # series is a list of (date_iso, value) tuples — at least one point
+    assert isinstance(r["series"], list)
+    assert len(r["series"]) >= 1
+    pt = r["series"][0]
+    assert isinstance(pt[0], str)
+    assert isinstance(pt[1], float)

@@ -7300,6 +7300,110 @@ class DatabaseManager:
         )
         return results
 
+    def get_process_drift_table(
+        self,
+        metric: str,
+        baseline_days: int = 90,
+        recent_days: int = 14,
+        min_baseline_samples: int = 20,
+        min_recent_samples: int = 5,
+        z_threshold: float = 2.0,
+    ) -> List[Dict[str, Any]]:
+        """Same shape as get_process_drift_by_model, plus delta_pct and a
+        per-model time series (date_iso, value) for sparkline rendering.
+        """
+        if metric not in self._PROCESS_DRIFT_METRICS:
+            raise ValueError(
+                f"Unknown drift metric {metric!r}; "
+                f"choose from {list(self._PROCESS_DRIFT_METRICS)}"
+            )
+        if recent_days >= baseline_days:
+            raise ValueError("recent_days must be less than baseline_days")
+
+        column = getattr(DBTrackResult, metric)
+        now = datetime.now()
+        recent_cutoff = now - timedelta(days=recent_days)
+        baseline_start = now - timedelta(days=baseline_days)
+
+        with self.session() as session:
+            rows = (
+                session.query(
+                    DBAnalysisResult.model,
+                    column,
+                    DBAnalysisResult.file_date,
+                )
+                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .filter(
+                    DBAnalysisResult.model.isnot(None),
+                    DBAnalysisResult.model != "Unknown",
+                    DBAnalysisResult.file_date >= baseline_start,
+                    column.isnot(None),
+                )
+                .order_by(DBAnalysisResult.file_date.asc())
+                .all()
+            )
+
+        # Bucket into baseline/recent and collect a series for the sparkline.
+        per_model: Dict[str, Dict[str, Any]] = {}
+        for model, value, file_date in rows:
+            if value is None or file_date is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            entry = per_model.setdefault(
+                model, {"baseline": [], "recent": [], "series": []}
+            )
+            entry["series"].append((file_date.isoformat(), value))
+            bucket = "recent" if file_date >= recent_cutoff else "baseline"
+            entry[bucket].append(value)
+
+        results = []
+        for model, buckets in per_model.items():
+            base = buckets["baseline"]
+            recent = buckets["recent"]
+            if len(base) < min_baseline_samples:
+                continue
+            if len(recent) < min_recent_samples:
+                continue
+            base_mean = sum(base) / len(base)
+            if len(base) > 1:
+                var = sum((x - base_mean) ** 2 for x in base) / (len(base) - 1)
+                base_std = var ** 0.5
+            else:
+                base_std = 0.0
+            recent_mean = sum(recent) / len(recent)
+            delta = recent_mean - base_mean
+            z = (delta / base_std) if base_std > 0 else 0.0
+            delta_pct = (delta / base_mean * 100.0) if base_mean != 0 else 0.0
+            direction = "up" if delta > 0 else ("down" if delta < 0 else "stable")
+            is_drifting = abs(z) >= z_threshold and base_std > 0
+
+            # Downsample series to ≤80 points to keep sparkline rendering cheap
+            series = buckets["series"]
+            if len(series) > 80:
+                step = len(series) // 80
+                series = series[::step]
+
+            results.append({
+                "model": model,
+                "baseline_mean": base_mean,
+                "baseline_std": base_std,
+                "baseline_n": len(base),
+                "recent_mean": recent_mean,
+                "recent_n": len(recent),
+                "delta": delta,
+                "delta_pct": delta_pct,
+                "z_score": z,
+                "direction": direction,
+                "is_drifting": is_drifting,
+                "series": series,
+            })
+
+        results.sort(key=lambda r: abs(r["z_score"]), reverse=True)
+        return results
+
     def get_failure_mode_summary(self, days_back: int = 90) -> List[Dict[str, Any]]:
         """Categorize failures by mode: linearity only, sigma only, or both."""
         with self.session() as session:
