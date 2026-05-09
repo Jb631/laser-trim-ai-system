@@ -2616,16 +2616,200 @@ class TrendsPage(ctk.CTkFrame):
             self._show_single_model_drift()
 
     def _show_single_model_drift(self):
-        """Single-model investigation dashboard. Implemented in Task 9."""
+        """Single-model investigation dashboard.
+
+        Layout:
+          Header pills (model · status · days drifting · score · units)
+          2×2 chart grid:
+            [ Sigma Drift           | Untrimmed Resistance ]
+            [ Electrical Angle      | Trim Passes          ]
+        """
         if not self._drift_filter_model:
             return
-        # Stub — overwritten in Task 9
-        chart = self._create_drift_view()
-        self._draw_empty_state(
-            chart.figure.add_subplot(111),
-            f"Single-model view for {self._drift_filter_model} — coming next",
+        model = self._drift_filter_model
+        self.status_label.configure(text=f"Loading drift dashboard for {model}...")
+        selected_days = self.selected_days
+
+        def _load():
+            try:
+                from laser_trim_analyzer.ml import get_shared_ml_manager
+                db = get_database()
+                data = db.get_model_drift_dashboard(
+                    model=model, days_back=selected_days
+                )
+                ml_manager = get_shared_ml_manager(db)
+                detector = ml_manager.drift_detectors.get(model)
+                self.after(0, lambda: self._render_single_model_drift(
+                    data, detector
+                ))
+            except Exception as e:
+                logger.error(f"Single-model drift error: {e}", exc_info=True)
+                self.after(0, lambda exc=e: self.status_label.configure(
+                    text=f"Drift dashboard error: {exc}"))
+
+        get_thread_manager().start_thread(
+            target=_load, name="single-model-drift",
         )
-        chart.canvas.draw_idle()
+
+    def _render_single_model_drift(self, data: Dict[str, Any], detector):
+        if not self.winfo_exists():
+            return
+        if self._drift_filter_model != data.get("model"):
+            return
+        try:
+            self._create_drift_view()
+            for w in self._drift_content_frame.winfo_children():
+                w.destroy()
+
+            model = data["model"]
+            unit_count = data["unit_count"]
+            process = data["process"]
+
+            # Header pill bar
+            pills = ctk.CTkFrame(self._drift_content_frame, fg_color="transparent")
+            pills.pack(fill="x", padx=10, pady=(8, 4))
+
+            # Model name big
+            ctk.CTkLabel(
+                pills, text=model,
+                font=ctk.CTkFont(size=18, weight="bold"),
+            ).pack(side="left", padx=(0, 12))
+
+            # Status badge
+            is_drifting = bool(detector and detector.is_drifting)
+            direction = (
+                detector.drift_direction.value
+                if detector and detector.drift_direction
+                else None
+            )
+            if not detector or not detector.has_baseline:
+                badge_text, badge_color = "○ no baseline", "gray"
+            elif is_drifting and direction == "up":
+                badge_text, badge_color = "↑ DRIFTING", "#ff8080"
+            elif is_drifting:
+                badge_text, badge_color = "↓ DRIFTING", "#ffb060"
+            else:
+                badge_text, badge_color = "✓ stable", "#7ed99e"
+            ctk.CTkLabel(
+                pills, text=badge_text, text_color=badge_color,
+                font=ctk.CTkFont(size=11, weight="bold"),
+            ).pack(side="left", padx=(0, 12))
+
+            # Days drifting / score / units pills
+            def _pill(text):
+                f = ctk.CTkFrame(pills, fg_color=("gray85", "gray25"), corner_radius=4)
+                f.pack(side="left", padx=4)
+                ctk.CTkLabel(
+                    f, text=text, font=ctk.CTkFont(size=10),
+                ).pack(padx=8, pady=2)
+
+            if detector and detector.has_baseline:
+                cusum_value = max(detector.cusum_pos, detector.cusum_neg)
+                _pill(f"score {cusum_value:.1f} / {detector.cusum_h:.1f}")
+            _pill(f"{unit_count:,} units")
+
+            # 2×2 chart grid
+            ChartWidget, ChartStyle = _ensure_chart_module()
+            chart = ChartWidget(
+                self._drift_content_frame,
+                style=ChartStyle(figure_size=(12, 7), dpi=100),
+            )
+            chart.pack(fill="both", expand=True, padx=10, pady=(8, 10))
+            self._chart_widgets.append(chart)
+            chart.clear()
+
+            fig = chart.figure
+            gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.25)
+
+            # ---- Top-left: Sigma drift with control limits ----
+            ax_sigma = fig.add_subplot(gs[0, 0])
+            chart._style_axis(ax_sigma)
+            sigma_pts = data["sigma_series"]
+            if not sigma_pts:
+                self._draw_empty_state(
+                    ax_sigma,
+                    "No sigma data in window",
+                )
+            else:
+                from datetime import datetime as _dt
+                dates = [_dt.fromisoformat(d) for d, _ in sigma_pts]
+                values = [v for _, v in sigma_pts]
+                ax_sigma.plot(dates, values, color="#0d6efd", linewidth=1.2)
+                if detector and detector.has_baseline:
+                    lower, center, upper = detector.get_control_limits()
+                    ax_sigma.axhline(upper, color="#dc3545",
+                                     linestyle="--", linewidth=0.6)
+                    ax_sigma.axhline(lower, color="#dc3545",
+                                     linestyle="--", linewidth=0.6)
+                    ax_sigma.axhline(center, color="#666", linewidth=0.5)
+                    if detector.baseline_cutoff_date:
+                        ax_sigma.axvline(
+                            detector.baseline_cutoff_date,
+                            color="#fd7e14", linestyle="--", linewidth=0.6,
+                        )
+            ax_sigma.set_title("Sigma Drift", loc="left",
+                              fontsize=11, fontweight="bold")
+            ax_sigma.tick_params(axis="x", rotation=30, labelsize=8)
+
+            # ---- Three process panels ----
+            metric_axes = (
+                ("untrimmed_resistance", gs[0, 1], "Untrimmed Resistance"),
+                ("measured_electrical_angle", gs[1, 0], "Electrical Angle"),
+                ("trim_pass_count", gs[1, 1], "Trim Passes"),
+            )
+            meta = self._db_metric_meta()
+            for metric, slot, title in metric_axes:
+                ax = fig.add_subplot(slot)
+                chart._style_axis(ax)
+                panel = process.get(metric, {})
+                series = panel.get("series", [])
+                if not series:
+                    self._draw_empty_state(
+                        ax, f"No {title.lower()} data in window",
+                    )
+                    ax.set_title(title, loc="left",
+                                 fontsize=11, fontweight="bold")
+                    ax.tick_params(axis="x", rotation=30, labelsize=8)
+                    continue
+                from datetime import datetime as _dt
+                dates = [_dt.fromisoformat(d) for d, _ in series]
+                values = [v for _, v in series]
+                z = panel.get("z_score") or 0.0
+                color = (
+                    "#ff8080" if abs(z) >= 3.0
+                    else "#ffb060" if abs(z) >= 2.0
+                    else "#7ed99e"
+                )
+                ax.plot(dates, values, color=color, linewidth=1.1)
+                base_mean = panel.get("baseline_mean")
+                if base_mean is not None:
+                    ax.axhline(base_mean, color="#666", linewidth=0.5)
+                # Subtitle line under the title with values
+                fmt = meta.get(metric, {}).get("fmt", "{:.2f}")
+                unit = meta.get(metric, {}).get("unit", "")
+                base_s = fmt.format(base_mean) if base_mean is not None else "—"
+                rec_s = (
+                    fmt.format(panel["recent_mean"])
+                    if panel.get("recent_mean") is not None else "—"
+                )
+                pct = panel.get("delta_pct")
+                pct_s = f"({pct:+.1f}%)" if pct is not None else ""
+                z_s = f"z={z:+.1f}" if panel.get("z_score") is not None else ""
+                ax.set_title(
+                    f"{title}  ·  {base_s} → {rec_s} {unit} {pct_s}  {z_s}",
+                    loc="left", fontsize=10, fontweight="bold",
+                )
+                ax.tick_params(axis="x", rotation=30, labelsize=8)
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            chart.canvas.draw_idle()
+            self.status_label.configure(text=f"Drift dashboard · {model}")
+        except Exception as e:
+            logger.error(f"Single-model drift render error: {e}", exc_info=True)
+            self.status_label.configure(text=f"Drift dashboard error: {e}")
 
     def _draw_empty_state(self, ax, message: str) -> None:
         """Render a visible empty-state message centered on an Axes.
