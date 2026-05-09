@@ -1289,7 +1289,13 @@ class TrendsPage(ctk.CTkFrame):
         }
         self.selected_days = days_map.get(date_range, 3650)
         logger.debug(f"Date range changed to: {date_range} ({self.selected_days} days)")
-        self._refresh_data()
+        # The Drift tab is fed by its own queries, not _refresh_data's
+        # summary/detail loaders, so route the refresh based on which
+        # top-level tab is active.
+        if self._trend_type.get() == "Drift":
+            self._refresh_drift_view()
+        else:
+            self._refresh_data()
 
     def _on_rolling_change(self, rolling: str):
         """Handle rolling average window change."""
@@ -2469,12 +2475,7 @@ class TrendsPage(ctk.CTkFrame):
                     self._drift_subtab_button.set("ML Drift")
                 except Exception:
                     pass
-            if self._drift_filter_model:
-                self._show_single_model_drift()
-            elif self._drift_subtab == "Process Drift":
-                self._show_process_drift()
-            else:
-                self._show_drift_timeline()
+            self._refresh_drift_view()
         elif value == "Trim Difficulty":
             self._show_trim_difficulty()
         # Any legacy stored selection ("Priorities", "Comparative", etc.)
@@ -2489,6 +2490,15 @@ class TrendsPage(ctk.CTkFrame):
             self._trend_type.set("Drift")
         except Exception:
             pass
+        self._refresh_drift_view()
+
+    def _refresh_drift_view(self):
+        """Re-render whichever Drift sub-view is currently active.
+
+        Used by callers (date-range change, tab entry, dashboard hook)
+        that need the Drift tab to refresh without having to know which
+        of single-model / Process Drift / ML Drift is on screen.
+        """
         if self._drift_filter_model:
             self._show_single_model_drift()
         elif self._drift_subtab == "Process Drift":
