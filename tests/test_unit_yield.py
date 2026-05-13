@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
+from sqlalchemy import text
 from laser_trim_analyzer.database.manager import (
     compute_unit_id,
     extract_shop_number,
@@ -167,3 +168,65 @@ class TestWriteTimeUnitId:
         with db.session() as s:
             row = s.query(DBAR).filter(DBAR.id == new_id).one()
             assert row.unit_id is None
+
+
+class TestUnitIdBackfill:
+    def _insert_legacy_row(self, db, model, serial, file_date_str):
+        """Insert a row directly via SQL with unit_id=NULL to simulate
+        a row written before the unit_id column existed."""
+        with db.session() as s:
+            s.execute(text(
+                "INSERT INTO analysis_results "
+                "(filename, file_path, file_date, model, serial, system, "
+                " has_multi_tracks, overall_status, timestamp) "
+                "VALUES (:fn, :fp, :fd, :m, :sn, 'B', 0, 'PASS', :ts)"
+            ), {
+                "fn": f"{model}_{serial}.xls",
+                "fp": f"/fake/{model}_{serial}.xls",
+                "fd": file_date_str,
+                "m": model, "sn": serial,
+                "ts": datetime.utcnow(),
+            })
+            s.commit()
+
+    def test_backfill_populates_valid_rows_and_leaves_junk_null(self, tmp_path):
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+
+        db_path = tmp_path / "bf.db"
+        # First init creates schema (with empty backfill).
+        db = DatabaseManager(database_path=db_path)
+        self._insert_legacy_row(db, "8895", "3P", "2025-03-26")
+        self._insert_legacy_row(db, "8895", "3R", "2025-03-26")
+        self._insert_legacy_row(db, "8895", "TEST", "2025-03-26")
+
+        # NULL out unit_id so the backfill has work to do
+        with db.session() as s:
+            s.execute(text("UPDATE analysis_results SET unit_id = NULL"))
+            s.commit()
+
+        # Re-run backfill on the same connection
+        with db.session() as s:
+            db._backfill_unit_ids(s)
+
+        with db.session() as s:
+            rows = {r.serial: r.unit_id for r in s.query(DBAR).all()}
+        assert rows["3P"] == "8895/3/2025-03-26"
+        assert rows["3R"] == "8895/3/2025-03-26"
+        assert rows["TEST"] is None
+
+    def test_backfill_idempotent(self, tmp_path):
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+
+        db_path = tmp_path / "idem.db"
+        db = DatabaseManager(database_path=db_path)
+        self._insert_legacy_row(db, "8895", "3P", "2025-03-26")
+        # First backfill (already happened on init; force a second)
+        with db.session() as s:
+            db._backfill_unit_ids(s)
+        with db.session() as s:
+            db._backfill_unit_ids(s)
+        with db.session() as s:
+            row = s.query(DBAR).filter(DBAR.serial == "3P").one()
+            assert row.unit_id == "8895/3/2025-03-26"

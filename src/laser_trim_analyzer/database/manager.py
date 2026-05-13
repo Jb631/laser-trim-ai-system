@@ -659,6 +659,13 @@ class DatabaseManager:
                 session.rollback()
                 logger.warning(f"Migration error creating unit_id index: {e}")
 
+            # Migration: Backfill unit_id for existing rows. Idempotent —
+            # only updates rows where unit_id IS NULL, so re-running picks up
+            # where it left off (e.g. after a crash or interrupted startup).
+            # Done in Python because the shop-number extraction regex lives
+            # there; iterates in batches of 1000 to keep memory bounded.
+            self._backfill_unit_ids(session)
+
             # Migration: Add aliases column to model_specs.
             # Stores pipe-separated alternate model numbers so a single spec
             # row covers cases like 1621501 and 2001621501 being the same part.
@@ -888,6 +895,93 @@ class DatabaseManager:
                 logger.info(f"Post-cleanup FT rematch: {stats}")
             except Exception as e:
                 logger.warning(f"FT rematch after cleanup failed: {e}")
+
+    def _backfill_unit_ids(self, session) -> None:
+        """Populate analysis_results.unit_id for rows that don't have one yet.
+
+        Idempotent: only operates on NULL unit_id rows. Logs progress and a
+        post-run sanity check (count of NULL vs non-NULL).
+        """
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+
+        # Count rows that need backfill
+        to_backfill = (
+            session.query(func.count(DBAR.id))
+            .filter(DBAR.unit_id.is_(None))
+            .scalar()
+        ) or 0
+        if to_backfill == 0:
+            logger.debug("unit_id backfill: nothing to do")
+            return
+
+        logger.info(f"unit_id backfill: starting on {to_backfill} rows")
+        batch_size = 1000
+        updated = 0
+        skipped = 0  # rows that have nothing to backfill (junk serial / missing date)
+
+        # Process in batches so we don't load 80k rows into memory at once.
+        # The empty-string sentinel pattern below ensures unparseable rows
+        # don't keep appearing in subsequent batches (we then convert the
+        # sentinels back to NULL at the end).
+        while True:
+            rows = (
+                session.query(DBAR.id, DBAR.model, DBAR.serial, DBAR.file_date)
+                .filter(DBAR.unit_id.is_(None))
+                .limit(batch_size)
+                .all()
+            )
+            if not rows:
+                break
+
+            for row_id, model, serial, file_date in rows:
+                uid = compute_unit_id(model, serial, file_date)
+                if uid is None:
+                    # Junk serial / missing date — mark with empty-string sentinel
+                    # so the next batch query doesn't pick it up again.
+                    session.execute(
+                        text("UPDATE analysis_results SET unit_id = '' WHERE id = :i"),
+                        {"i": row_id},
+                    )
+                    skipped += 1
+                else:
+                    session.execute(
+                        text("UPDATE analysis_results SET unit_id = :u WHERE id = :i"),
+                        {"u": uid, "i": row_id},
+                    )
+                    updated += 1
+            session.commit()
+            logger.info(
+                f"unit_id backfill: progress {updated + skipped}/{to_backfill}"
+            )
+
+        # Restore NULL for unparseable rows.
+        session.execute(text(
+            "UPDATE analysis_results SET unit_id = NULL WHERE unit_id = ''"
+        ))
+        session.commit()
+
+        # Post-flight sanity check
+        non_null = (
+            session.query(func.count(DBAR.id))
+            .filter(DBAR.unit_id.isnot(None))
+            .scalar()
+        ) or 0
+        null_now = (
+            session.query(func.count(DBAR.id))
+            .filter(DBAR.unit_id.is_(None))
+            .scalar()
+        ) or 0
+        distinct_units = (
+            session.query(func.count(func.distinct(DBAR.unit_id)))
+            .filter(DBAR.unit_id.isnot(None))
+            .scalar()
+        ) or 0
+        logger.info(
+            f"unit_id backfill complete: "
+            f"{updated} populated, {skipped} junk-serial/no-date, "
+            f"{non_null} non-NULL total, {null_now} NULL total, "
+            f"{distinct_units} distinct units"
+        )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
