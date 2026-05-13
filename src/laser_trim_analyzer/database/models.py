@@ -196,6 +196,12 @@ class AnalysisResult(Base):
     system = Column(Enum(SystemType), nullable=False)
     has_multi_tracks = Column(Boolean, default=False, nullable=False)
 
+    # Unit-level yield identifier. Format: "<model>/<shop>/<YYYY-MM-DD>".
+    # Computed at write time from model/serial/file_date. NULL when serial
+    # has no leading digits (TEST, x, etc.) — those rows are excluded from
+    # unit-yield queries by design.
+    unit_id = Column(String(80), nullable=True, index=True)
+
     # Overall results - required
     overall_status = Column(Enum(StatusType), nullable=False)
     processing_time = Column(Float)  # seconds

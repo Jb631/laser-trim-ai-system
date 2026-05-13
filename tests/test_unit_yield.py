@@ -71,3 +71,23 @@ class TestComputeUnitId:
 
     def test_returns_none_when_date_missing(self):
         assert compute_unit_id("8895", "3P", None) is None
+
+
+class TestUnitIdMigration:
+    def test_migration_adds_column_idempotently(self, tmp_path):
+        """First migration adds column; second call is a no-op."""
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from sqlalchemy import inspect
+
+        db_path = tmp_path / "smoke.db"
+        # First init runs migrations
+        db1 = DatabaseManager(database_path=db_path)
+        insp = inspect(db1._engine)
+        cols = [c["name"] for c in insp.get_columns("analysis_results")]
+        assert "unit_id" in cols
+
+        # Second init re-runs migration code; must not crash
+        db2 = DatabaseManager(database_path=db_path)
+        cols2 = [c["name"] for c in inspect(db2._engine).get_columns("analysis_results")]
+        assert "unit_id" in cols2
+        assert cols == cols2  # No duplicate

@@ -626,6 +626,30 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+            # Migration: Add unit_id column to analysis_results.
+            # Canonical unit identifier "<model>/<shop>/<date>", used by the
+            # unit-level yield feature (Trends chart + Excel "Yield by Unit"
+            # sheet). Nullable so the app remains functional during/after
+            # partial backfill; the backfill itself happens in a separate
+            # migration step below so it can be retried independently.
+            try:
+                session.execute(text("SELECT unit_id FROM analysis_results LIMIT 1"))
+            except OperationalError:
+                session.rollback()
+                try:
+                    session.execute(text(
+                        "ALTER TABLE analysis_results ADD COLUMN unit_id VARCHAR(80)"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_analysis_unit_id "
+                        "ON analysis_results(unit_id)"
+                    ))
+                    session.commit()
+                    logger.info("Migration: Added unit_id column to analysis_results")
+                except Exception as e:
+                    session.rollback()
+                    logger.warning(f"Migration error adding unit_id: {e}")
+
             # Migration: Add aliases column to model_specs.
             # Stores pipe-separated alternate model numbers so a single spec
             # row covers cases like 1621501 and 2001621501 being the same part.
