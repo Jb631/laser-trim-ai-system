@@ -91,3 +91,79 @@ class TestUnitIdMigration:
         cols2 = [c["name"] for c in inspect(db2._engine).get_columns("analysis_results")]
         assert "unit_id" in cols2
         assert cols == cols2  # No duplicate
+
+
+class TestWriteTimeUnitId:
+    def test_save_analysis_populates_unit_id(self, tmp_path):
+        """Saving a fresh AnalysisResult populates unit_id in the DB row."""
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+        from laser_trim_analyzer.core.models import (
+            AnalysisResult, AnalysisStatus, FileMetadata, SystemType,
+            TrackData, RiskCategory,
+        )
+
+        db = DatabaseManager(database_path=tmp_path / "wt.db")
+        track = TrackData(
+            track_id="TRK1",
+            status=AnalysisStatus.PASS,
+            travel_length=10.0,
+            linearity_spec=0.01,
+            sigma_gradient=0.001,
+            sigma_threshold=0.005,
+            sigma_pass=True,
+            optimal_offset=0.0,
+            linearity_error=0.001,
+            linearity_pass=True,
+            linearity_fail_points=0,
+            risk_category=RiskCategory.LOW,
+        )
+        analysis = AnalysisResult(
+            metadata=FileMetadata(
+                filename="8895_3P_TEST DATA_3-26-2025.xls",
+                file_path=tmp_path / "8895_3P.xls",
+                file_date=datetime(2025, 3, 26, 12, 55),
+                model="8895",
+                serial="3P",
+                system=SystemType.B,
+                has_multi_tracks=False,
+            ),
+            overall_status=AnalysisStatus.PASS,
+            processing_time=0.1,
+            tracks=[track],
+        )
+        new_id = db.save_analysis(analysis)
+        with db.session() as s:
+            row = s.query(DBAR).filter(DBAR.id == new_id).one()
+            assert row.unit_id == "8895/3/2025-03-26"
+
+    def test_save_analysis_junk_serial_unit_id_null(self, tmp_path):
+        from laser_trim_analyzer.database.manager import DatabaseManager
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+        from laser_trim_analyzer.core.models import (
+            AnalysisResult, AnalysisStatus, FileMetadata, SystemType,
+            TrackData, RiskCategory,
+        )
+
+        db = DatabaseManager(database_path=tmp_path / "junk.db")
+        track = TrackData(
+            track_id="TRK1", status=AnalysisStatus.PASS, travel_length=10.0,
+            linearity_spec=0.01, sigma_gradient=0.001, sigma_threshold=0.005,
+            sigma_pass=True, optimal_offset=0.0, linearity_error=0.001,
+            linearity_pass=True, linearity_fail_points=0,
+            risk_category=RiskCategory.LOW,
+        )
+        analysis = AnalysisResult(
+            metadata=FileMetadata(
+                filename="8895_TEST.xls",
+                file_path=tmp_path / "8895_TEST.xls",
+                file_date=datetime(2025, 3, 26),
+                model="8895", serial="TEST",
+                system=SystemType.B, has_multi_tracks=False,
+            ),
+            overall_status=AnalysisStatus.PASS, processing_time=0.1, tracks=[track],
+        )
+        new_id = db.save_analysis(analysis)
+        with db.session() as s:
+            row = s.query(DBAR).filter(DBAR.id == new_id).one()
+            assert row.unit_id is None

@@ -2471,6 +2471,11 @@ class DatabaseManager:
             overall_status=overall_status,
             processing_time=analysis.processing_time,
             timestamp=utc_now(),
+            unit_id=compute_unit_id(
+                analysis.metadata.model,
+                analysis.metadata.serial,
+                analysis.metadata.file_date,
+            ),
             data_quality=getattr(analysis, 'data_quality', 'good'),
             data_quality_issues=json.dumps(getattr(analysis, 'data_quality_issues', [])) if getattr(analysis, 'data_quality_issues', []) else None,
         )
@@ -2772,6 +2777,12 @@ class DatabaseManager:
             existing.file_path = str(analysis.metadata.file_path)
             existing.model = analysis.metadata.model
             existing.serial = analysis.metadata.serial
+            existing.file_date = analysis.metadata.file_date
+            existing.unit_id = compute_unit_id(
+                analysis.metadata.model,
+                analysis.metadata.serial,
+                analysis.metadata.file_date,
+            )
             # See _map_analysis_to_db for the UNKNOWN→B fallback rationale.
             if analysis.metadata.system == SystemType.A:
                 existing.system = DBSystemType.A
@@ -2783,7 +2794,6 @@ class DatabaseManager:
                     f"keeping as DBSystemType.B"
                 )
                 existing.system = DBSystemType.B
-            existing.file_date = analysis.metadata.file_date
             existing.has_multi_tracks = analysis.metadata.has_multi_tracks
             existing.processing_time = analysis.processing_time
             existing.timestamp = utc_now()
