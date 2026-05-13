@@ -1398,9 +1398,16 @@ class DatabaseManager:
                     query = query.filter(DBAnalysisResult.model.in_(filter_models))
                 return query
 
-            # Count analyses - filter by trim date
+            # Count analyses - filter by trim date. UNTRIMMED records belong
+            # in raw totals (the file was processed) but NOT in the pass-rate
+            # denominator since pass/fail isn't defined without a trim.
             total_analyses = (
                 _base_filter(session.query(func.count(DBAnalysisResult.id)))
+                .scalar()
+            ) or 0
+            trimmed_total = (
+                _base_filter(session.query(func.count(DBAnalysisResult.id)))
+                .filter(DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name)
                 .scalar()
             ) or 0
 
@@ -1441,7 +1448,7 @@ class DatabaseManager:
                 high_risk_q = high_risk_q.filter(DBAnalysisResult.model.in_(filter_models))
             high_risk = high_risk_q.scalar() or 0
 
-            pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
+            pass_rate = (passed / trimmed_total * 100) if trimmed_total > 0 else 0.0
 
             # Get track-level sigma and linearity pass rates - filter by trim date.
             # Exclude UNTRIMMED tracks (sigma_pass/linearity_pass are NULL) so
@@ -2712,6 +2719,11 @@ class DatabaseManager:
                 AnalysisStatus.FAIL: DBStatusType.FAIL,
                 AnalysisStatus.WARNING: DBStatusType.WARNING,
                 AnalysisStatus.ERROR: DBStatusType.ERROR,
+                # Without UNTRIMMED here, re-saving an untrimmed file falls
+                # through to the .get() default of ERROR, silently flipping
+                # its overall_status. Must mirror the status_map in
+                # _map_analysis_to_db.
+                AnalysisStatus.UNTRIMMED: DBStatusType.UNTRIMMED,
             }
             existing.overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
             existing.data_quality = getattr(analysis, 'data_quality', None)
@@ -2991,10 +3003,19 @@ class DatabaseManager:
             # Filter by trim date (file_date). UNTRIMMED tracks filtered at the
             # JOIN level so they don't pollute avg_sigma/threshold or deflate
             # pass rates (their sigma columns are NULL anyway).
+            # `total` counts every analysis row (raw count). `trimmed_total`
+            # excludes UNTRIMMED so pass_rate isn't deflated by test-sweep-only
+            # files. Both are needed because the Failed column wants to know
+            # the trimmed pool's failed count, not the total pool.
             model_data = (
                 session.query(
                     DBAnalysisResult.model,
                     func.count(func.distinct(DBAnalysisResult.id)).label('total'),
+                    func.count(func.distinct(case(
+                        (DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                         DBAnalysisResult.id),
+                        else_=None
+                    ))).label('trimmed_total'),
                     func.count(func.distinct(case(
                         (DBAnalysisResult.overall_status == DBStatusType.PASS, DBAnalysisResult.id),
                         else_=None
@@ -3027,6 +3048,7 @@ class DatabaseManager:
             for row in model_data:
                 model = row.model
                 total = row.total
+                trimmed_total = row.trimmed_total or 0
                 passed = row.passed or 0
                 total_tracks = row.total_tracks or 0
                 sigma_passed = row.sigma_passed or 0
@@ -3035,7 +3057,10 @@ class DatabaseManager:
                 if not model or total == 0 or model == "Unknown":
                     continue
 
-                pass_rate = (passed / total * 100)
+                # pass_rate over trimmed pool only (UNTRIMMED files have no
+                # pass/fail meaning). "failed" likewise counted within the
+                # trimmed pool so failed + passed == trimmed_total.
+                pass_rate = (passed / trimmed_total * 100) if trimmed_total > 0 else 0.0
                 sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
                 linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
 
@@ -3043,7 +3068,7 @@ class DatabaseManager:
                     "model": model,
                     "total": total,
                     "passed": passed,
-                    "failed": total - passed,
+                    "failed": trimmed_total - passed,
                     "pass_rate": pass_rate,
                     "sigma_pass_rate": sigma_pass_rate,
                     "linearity_pass_rate": linearity_pass_rate,

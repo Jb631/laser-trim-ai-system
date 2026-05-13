@@ -58,9 +58,20 @@ class _Sparkline(tk.Canvas):
     """
 
     def __init__(self, parent, width=80, height=14, **kwargs):
+        # tk.Canvas defaults to the system color (white on macOS, light gray
+        # on Windows). On the dark CTk theme that paints a bright rectangle
+        # inside every table row. Pick the bg from the current appearance
+        # mode so the sparkline blends into its parent CTkFrame.
+        bg = kwargs.pop("bg", None)
+        if bg is None:
+            try:
+                mode = ctk.get_appearance_mode()
+            except Exception:
+                mode = "Dark"
+            bg = "#2b2b2b" if mode == "Dark" else "#ebebeb"
         super().__init__(
             parent, width=width, height=height,
-            highlightthickness=0, bd=0, **kwargs,
+            highlightthickness=0, bd=0, bg=bg, **kwargs,
         )
         self._canvas_w = width
         self._canvas_h = height
@@ -2647,6 +2658,12 @@ class TrendsPage(ctk.CTkFrame):
         model = self._drift_filter_model
         self.status_label.configure(text=f"Loading drift dashboard for {model}...")
         selected_days = self.selected_days
+        # Capture generation so a stale render doesn't rebuild the content
+        # frame after the user has rapidly clicked away from this model and
+        # come back to a different one. Matches the pattern used by the
+        # other drift renderers.
+        self._load_generation += 1
+        gen = self._load_generation
 
         def _load():
             try:
@@ -2657,8 +2674,8 @@ class TrendsPage(ctk.CTkFrame):
                 )
                 ml_manager = get_shared_ml_manager(db)
                 detector = ml_manager.drift_detectors.get(model)
-                self.after(0, lambda: self._render_single_model_drift(
-                    data, detector
+                self.after(0, lambda g=gen: self._render_single_model_drift(
+                    data, detector, g
                 ))
             except Exception as e:
                 logger.error(f"Single-model drift error: {e}", exc_info=True)
@@ -2669,9 +2686,11 @@ class TrendsPage(ctk.CTkFrame):
             target=_load, name="single-model-drift",
         )
 
-    def _render_single_model_drift(self, data: Dict[str, Any], detector):
+    def _render_single_model_drift(self, data: Dict[str, Any], detector, gen: int = 0):
         if not self.winfo_exists():
             return
+        if gen != self._load_generation:
+            return  # Superseded by a newer load (rapid model switch).
         if self._trend_type.get() != "Drift":
             return
         if self._drift_filter_model != data.get("model"):

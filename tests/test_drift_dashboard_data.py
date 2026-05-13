@@ -245,3 +245,51 @@ def test_get_drift_state_for_models_includes_stable_models(tmp_path):
     row = data["8275"]
     assert row["is_drifting"] is False
     assert row["drift_start_date"] is None
+
+
+def test_get_models_with_sigma_data_excludes_untrimmed_only(tmp_path):
+    """Models whose only records are UNTRIMMED (test-sweep, no laser trim)
+    must not appear in the sigma-data list — they have no sigma to drift
+    over. Without this, the Drift filter dropdown would offer models that
+    can't actually be analyzed."""
+    db = DatabaseManager(tmp_path / "untrimmed.db")
+    today = datetime.now()
+    # One untrimmed-only model: track row written with sigma_gradient=None
+    # and status=UNTRIMMED (the path the processor uses for test-sweep
+    # files). Should NOT appear in the dropdown.
+    with db.session() as s:
+        ar = DBAnalysisResult(
+            filename="UNTRIMMED-MODEL_0001.xls",
+            file_path="/fake/UNTRIMMED-MODEL_0001.xls",
+            file_hash="untrimmed-only-1",
+            model="UNTRIMMED-MODEL",
+            serial="0001",
+            system=DBSystemType.B,
+            file_date=today - timedelta(days=1),
+            timestamp=datetime.now(),
+            overall_status=DBStatusType.UNTRIMMED,
+            has_multi_tracks=False,
+            processing_time=0.1,
+        )
+        s.add(ar)
+        s.flush()
+        tr = DBTrackResult(
+            analysis_id=ar.id,
+            track_id="TRK1",
+            status=DBStatusType.UNTRIMMED,
+            sigma_gradient=None,  # No trim ran → no sigma.
+            sigma_threshold=None,
+            sigma_pass=None,
+            travel_length=1.0,
+            linearity_spec=0.01,
+            risk_category=DBRiskCategory.LOW,
+        )
+        s.add(tr)
+        s.commit()
+    # Add a normal model alongside so we know the function still returns
+    # something — it just shouldn't return the untrimmed-only one.
+    _add_analysis(db, "NORMAL", today - timedelta(days=1), sigma_values=(0.01,))
+
+    models = db.get_models_with_sigma_data(days_back=30)
+    assert "NORMAL" in models
+    assert "UNTRIMMED-MODEL" not in models

@@ -570,7 +570,13 @@ def _create_batch_summary_sheet(wb: "Workbook", results: List[AnalysisResult]) -
     warnings = sum(1 for r in results if r.overall_status == AnalysisStatus.WARNING)
     failed = sum(1 for r in results if r.overall_status == AnalysisStatus.FAIL)
     errors = sum(1 for r in results if r.overall_status == AnalysisStatus.ERROR)
-    pass_rate = (passed / total * 100) if total > 0 else 0
+    # UNTRIMMED = test-sweep-only files (no laser trim ran). They belong in
+    # the total but NOT in the pass-rate denominator — pass/fail isn't
+    # defined for a unit that was never trimmed. Otherwise the rate is
+    # artificially deflated by every untrimmed file in the batch.
+    untrimmed = sum(1 for r in results if r.overall_status == AnalysisStatus.UNTRIMMED)
+    trimmed_total = total - untrimmed
+    pass_rate = (passed / trimmed_total * 100) if trimmed_total > 0 else 0
 
     # Count anomalies (trim failures with linear slope pattern)
     anomalies = sum(
@@ -584,8 +590,9 @@ def _create_batch_summary_sheet(wb: "Workbook", results: List[AnalysisResult]) -
         ("Warnings:", f"{warnings} (partial pass - e.g., pass linearity but fail sigma)"),
         ("Failed:", failed),
         ("Errors:", errors),
+        ("Untrimmed:", f"{untrimmed} (test-sweep only, no laser trim ran)"),
         ("Anomalies:", f"{anomalies} (likely trim failures - linear slope pattern)"),
-        ("Pass Rate:", f"{pass_rate:.1f}%"),
+        ("Pass Rate:", f"{pass_rate:.1f}% (of {trimmed_total} trimmed files)"),
         ("Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     ]
 
