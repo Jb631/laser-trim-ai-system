@@ -162,6 +162,18 @@ def export_batch_results(
         # All results sheet
         _create_all_results_sheet(wb, results)
 
+        # Yield by Unit sheet (feature-flag-gated)
+        try:
+            from laser_trim_analyzer.config import get_config
+            cfg = get_config()
+            show_unit_yield = bool(getattr(
+                cfg.active_models, "enable_unit_yield_view", True
+            ))
+        except Exception:
+            show_unit_yield = True
+        if show_unit_yield:
+            _create_yield_by_unit_sheet(wb, results)
+
         # Remove default empty sheet
         if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
             del wb["Sheet"]
@@ -797,6 +809,122 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
     # Adjust column widths — must match number of headers (Trim Passes col added)
     widths = [12, 12, 8, 12, 8, 6, 12, 14, 14, 12, 10, 14, 12, 10, 12, 12, 10, 8, 14, 12, 12, 12, 10, 14, 14, 35]
     assert len(widths) == len(headers), f"Column widths ({len(widths)}) != headers ({len(headers)})"
+    for col, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def _create_yield_by_unit_sheet(wb: "Workbook", results: List[AnalysisResult]) -> None:
+    """One row per physical unit (model+shop+date), applying the unit pass rule.
+
+    Unit passes only if every section's latest attempt is PASS. NULL/junk
+    unit_ids are excluded.
+    """
+    from collections import defaultdict
+    import re as _re
+
+    ws = wb.create_sheet("Yield by Unit")
+
+    headers = [
+        "Shop Number", "Date", "Sections",
+        "Attempts", "P Final", "R Final", "Unit Status",
+        "First Trim", "Last Trim",
+    ]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = THIN_BORDER
+
+    def _shop_and_section(serial):
+        if not serial:
+            return None, ""
+        m = _re.match(r"^(\d+)(.*)$", serial.strip(), _re.ASCII)
+        if not m:
+            return None, ""
+        return m.group(1), m.group(2).upper()
+
+    # Group result rows by (model, shop, date). For each group, track each
+    # section's latest status by file_date timestamp.
+    groups: dict = defaultdict(lambda: {
+        "sections": defaultdict(lambda: {"ts": None, "status": None}),
+        "all_attempts": [],
+        "first": None, "last": None,
+    })
+
+    for r in results:
+        md = r.metadata
+        shop, section = _shop_and_section(md.serial)
+        if shop is None or not md.model or md.file_date is None:
+            continue
+        key = (md.model, shop, md.file_date.strftime("%Y-%m-%d"))
+        g = groups[key]
+        sec = g["sections"][section]
+        ts = md.file_date
+        if sec["ts"] is None or ts > sec["ts"]:
+            sec["ts"] = ts
+            sec["status"] = r.overall_status
+        g["all_attempts"].append(ts)
+        g["first"] = min(g["first"], ts) if g["first"] else ts
+        g["last"] = max(g["last"], ts) if g["last"] else ts
+
+    # Sort by date desc, then shop number ascending (numerically when possible)
+    def sort_key(item):
+        (_, shop, date), _ = item
+        try:
+            shop_num = int(shop)
+        except (TypeError, ValueError):
+            shop_num = 0
+        return (date, shop_num)
+
+    sorted_items = sorted(groups.items(), key=sort_key, reverse=True)
+
+    passed_total = 0
+    fail_total = 0
+    for i, ((model, shop, date), g) in enumerate(sorted_items, start=2):
+        sections_present = sorted(g["sections"].keys())
+        section_letters = ", ".join(s or "(none)" for s in sections_present)
+        p_final = g["sections"].get("P", {}).get("status")
+        r_final = g["sections"].get("R", {}).get("status")
+
+        # Unit passes iff every section's latest status is PASS
+        all_pass = all(
+            sec["status"] == AnalysisStatus.PASS
+            for sec in g["sections"].values()
+        )
+        unit_status_text = "PASS" if all_pass else "FAIL"
+        if all_pass:
+            passed_total += 1
+        else:
+            fail_total += 1
+
+        ws.cell(row=i, column=1, value=shop)
+        ws.cell(row=i, column=2, value=date)
+        ws.cell(row=i, column=3, value=section_letters)
+        ws.cell(row=i, column=4, value=len(g["all_attempts"]))
+        ws.cell(row=i, column=5, value=p_final.value if p_final else "")
+        ws.cell(row=i, column=6, value=r_final.value if r_final else "")
+        cell = ws.cell(row=i, column=7, value=unit_status_text)
+        cell.fill = PASS_FILL if all_pass else FAIL_FILL
+        ws.cell(row=i, column=8,
+                value=g["first"].strftime("%Y-%m-%d %H:%M") if g["first"] else "")
+        ws.cell(row=i, column=9,
+                value=g["last"].strftime("%Y-%m-%d %H:%M") if g["last"] else "")
+
+    # Summary footer
+    total_units = passed_total + fail_total
+    footer_row = len(sorted_items) + 3
+    yield_pct = (passed_total / total_units * 100) if total_units else 0
+    ws.cell(row=footer_row, column=1, value="TOTAL UNITS").font = Font(bold=True)
+    ws.cell(row=footer_row, column=2, value=total_units)
+    ws.cell(row=footer_row + 1, column=1, value="PASSED").font = Font(bold=True)
+    ws.cell(row=footer_row + 1, column=2, value=passed_total)
+    ws.cell(row=footer_row + 2, column=1, value="FAILED").font = Font(bold=True)
+    ws.cell(row=footer_row + 2, column=2, value=fail_total)
+    ws.cell(row=footer_row + 3, column=1, value="UNIT YIELD").font = Font(bold=True)
+    ws.cell(row=footer_row + 3, column=2, value=f"{yield_pct:.1f}%")
+
+    widths = [12, 12, 14, 10, 10, 10, 14, 18, 18]
     for col, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
