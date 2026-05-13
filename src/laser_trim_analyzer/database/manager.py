@@ -51,6 +51,46 @@ from laser_trim_analyzer.utils.hashing import calculate_file_hash
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Unit identity helpers — used at write time and by the migration backfill.
+# A "unit" is one physical part: same model + same shop number + same day.
+# Sections (P, R, etc.) and same-day retrims all collapse to the same unit_id.
+# See docs/superpowers/specs/2026-05-08-unit-level-yield-design.md.
+# ---------------------------------------------------------------------------
+import re as _re
+
+def extract_shop_number(serial: Optional[str]) -> Optional[str]:
+    """Return the leading-digit prefix of a serial, or None if absent.
+
+    Examples: "3P" -> "3", "0009" -> "0009", "1A" -> "1", "TEST" -> None.
+    Whitespace is stripped first. None / empty string return None.
+    """
+    if not serial:
+        return None
+    match = _re.match(r"^\d+", serial.strip())
+    return match.group(0) if match else None
+
+
+def compute_unit_id(
+    model: Optional[str],
+    serial: Optional[str],
+    file_date: Optional[datetime],
+) -> Optional[str]:
+    """Compute the canonical unit identifier for a trim record.
+
+    Returns None if any input is missing or the serial has no shop number —
+    such rows are excluded from unit-level yield queries by design.
+
+    Format: "<model>/<shop_number>/<YYYY-MM-DD>".
+    """
+    if not model or file_date is None:
+        return None
+    shop = extract_shop_number(serial)
+    if shop is None:
+        return None
+    return f"{model}/{shop}/{file_date.strftime('%Y-%m-%d')}"
+
+
 def _model_sort_key(model: str) -> tuple:
     """
     Sort key for numerical model sorting.
