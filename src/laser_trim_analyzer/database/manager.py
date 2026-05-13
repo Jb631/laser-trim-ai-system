@@ -983,6 +983,17 @@ class DatabaseManager:
             f"{distinct_units} distinct units"
         )
 
+        # Spot-check: log three sample unit_ids so an operator can verify
+        # the format on customer hardware where the DB isn't accessible.
+        samples = (
+            session.query(DBAR.unit_id)
+            .filter(DBAR.unit_id.isnot(None))
+            .limit(3)
+            .all()
+        )
+        sample_strs = [r[0] for r in samples]
+        logger.info(f"unit_id backfill sample unit_ids: {sample_strs}")
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         """

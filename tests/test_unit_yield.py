@@ -1,6 +1,6 @@
 """Tests for the unit-level yield feature."""
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -185,7 +185,7 @@ class TestUnitIdBackfill:
                 "fp": f"/fake/{model}_{serial}.xls",
                 "fd": file_date_str,
                 "m": model, "sn": serial,
-                "ts": datetime.utcnow(),
+                "ts": datetime.now(timezone.utc),
             })
             s.commit()
 
