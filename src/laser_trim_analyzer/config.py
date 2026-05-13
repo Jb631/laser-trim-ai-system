@@ -107,6 +107,11 @@ class ActiveModelsConfig:
     recent_days: int = 90  # Days to consider "recently active"
     model_prices: Dict[str, float] = field(default_factory=dict)  # Model → unit price ($)
     cost_ratio: float = 0.50  # Fraction of unit price representing invested labor+material
+    # Show the new unit-level yield surfaces (Trends single-model chart line
+    # + Excel "Yield by Unit" sheet). Set to False to hide both instantly
+    # without removing the underlying data. See
+    # docs/superpowers/specs/2026-05-08-unit-level-yield-design.md.
+    enable_unit_yield_view: bool = True
 
 
 @dataclass
@@ -220,6 +225,7 @@ class Config:
                 "recent_days": self.active_models.recent_days,
                 "model_prices": self.active_models.model_prices,
                 "cost_ratio": self.active_models.cost_ratio,
+                "enable_unit_yield_view": self.active_models.enable_unit_yield_view,
             },
             "export_path": self.export_path,
         }
