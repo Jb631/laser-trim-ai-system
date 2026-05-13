@@ -3169,6 +3169,108 @@ class DatabaseManager:
     # Trends Page Methods (Active Models Summary)
     # =========================================================================
 
+    def get_unit_yield_trend(
+        self,
+        model: str,
+        days_back: int = 90,
+    ) -> List[Dict[str, Any]]:
+        """Daily unit-level yield for one model.
+
+        Pass rule: a unit passes only if every section's most recent
+        attempt is PASS. Retrim tiebreak uses row `timestamp` (write
+        time). NULL unit_id rows (junk serials, missing date) are
+        excluded entirely.
+
+        Returns rows of {"date", "total_units", "passed_units", "yield_pct"},
+        sorted by date ascending. Days with no qualifying units omitted.
+        """
+        from laser_trim_analyzer.database.models import (
+            AnalysisResult as DBAR,
+            StatusType as DBStatusType,
+        )
+        from collections import defaultdict
+
+        cutoff = datetime.now() - timedelta(days=days_back)
+        with self.session() as s:
+            # Pull (unit_id, serial, file_date, timestamp, overall_status)
+            # for each qualifying row. We do the section-grouping and
+            # latest-attempt-by-timestamp logic in Python because the
+            # tie-breaking is awkward in SQL and the row count per
+            # model+window is small (hundreds, not millions).
+            rows = (
+                s.query(
+                    DBAR.unit_id,
+                    DBAR.serial,
+                    DBAR.file_date,
+                    DBAR.timestamp,
+                    DBAR.overall_status,
+                )
+                .filter(
+                    DBAR.model == model,
+                    DBAR.unit_id.isnot(None),
+                    DBAR.file_date >= cutoff,
+                )
+                .all()
+            )
+
+        # Group rows by unit_id, then within each unit by section (trailing
+        # non-digit part of the serial after the shop number). For each
+        # (unit, section) pick the row with the largest timestamp -- that's
+        # the section's authoritative status.
+        section_status_by_unit: Dict[str, Dict[str, Any]] = defaultdict(dict)
+        unit_date: Dict[str, datetime] = {}
+
+        def section_of(serial: Optional[str]) -> str:
+            """Return the section suffix (everything after the leading digits).
+            Default to '' if there's no suffix, so single-section units (just
+            digits like '196') still group cleanly."""
+            if not serial:
+                return ""
+            m = re.match(r"^\d+(.*)$", serial.strip(), re.ASCII)
+            return (m.group(1) if m else "").upper()
+
+        for unit_id, serial, file_date, ts, status in rows:
+            section = section_of(serial)
+            existing = section_status_by_unit[unit_id].get(section)
+            if existing is None or (ts or datetime.min) > existing["ts"]:
+                section_status_by_unit[unit_id][section] = {
+                    "ts": ts or datetime.min,
+                    "status": status,
+                }
+            # Remember the unit's date (all rows for a unit share file_date)
+            if file_date is not None:
+                unit_date[unit_id] = file_date
+
+        # Apply the pass rule per unit and bucket by date.
+        per_date: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {"total": 0, "passed": 0}
+        )
+        for unit_id, sections in section_status_by_unit.items():
+            fd = unit_date.get(unit_id)
+            if fd is None:
+                continue
+            day = fd.strftime("%Y-%m-%d")
+            per_date[day]["total"] += 1
+            # All sections must be PASS for the unit to pass
+            all_pass = all(
+                _status_matches(sec["status"], DBStatusType.PASS)
+                for sec in sections.values()
+            )
+            if all_pass:
+                per_date[day]["passed"] += 1
+
+        return [
+            {
+                "date": day,
+                "total_units": counts["total"],
+                "passed_units": counts["passed"],
+                "yield_pct": (
+                    counts["passed"] / counts["total"] * 100.0
+                ) if counts["total"] > 0 else 0.0,
+            }
+            for day, counts in sorted(per_date.items())
+        ]
+
     def get_active_models_summary(
         self,
         days_back: int = 90,

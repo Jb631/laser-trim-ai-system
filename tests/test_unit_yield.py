@@ -1,6 +1,6 @@
 """Tests for the unit-level yield feature."""
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -230,3 +230,56 @@ class TestUnitIdBackfill:
         with db.session() as s:
             row = s.query(DBAR).filter(DBAR.serial == "3P").one()
             assert row.unit_id == "8895/3/2025-03-26"
+
+
+class TestGetUnitYieldTrend:
+    def _setup(self, tmp_path):
+        """Build a tiny DB exercising each branch of the unit pass rule."""
+        from laser_trim_analyzer.database.manager import DatabaseManager, compute_unit_id
+        from laser_trim_analyzer.database.models import (
+            AnalysisResult as DBAR,
+            StatusType as DBStatusType,
+        )
+        db = DatabaseManager(database_path=tmp_path / "y.db")
+
+        def ar(model, serial, file_date, ts_offset_min, status):
+            """Create one trim record with a single passing track."""
+            with db.session() as s:
+                row = DBAR(
+                    filename=f"{model}_{serial}_{file_date.strftime('%Y%m%d')}_{ts_offset_min}.xls",
+                    file_path=f"/fake/{model}_{serial}_{ts_offset_min}.xls",
+                    file_date=file_date,
+                    model=model, serial=serial,
+                    system="B", has_multi_tracks=False,
+                    overall_status=status,
+                    timestamp=datetime(2025, 3, 26, 9, 0) +
+                              timedelta(minutes=ts_offset_min),
+                    unit_id=compute_unit_id(model, serial, file_date),
+                )
+                s.add(row)
+                s.commit()
+                return row.id
+
+        d = datetime(2025, 3, 26)
+        # Unit 8895/3: 3P passes + 3R passes -> unit passes
+        ar("8895", "3P", d, 0, DBStatusType.PASS)
+        ar("8895", "3R", d, 5, DBStatusType.PASS)
+        # Unit 8895/4: 4P fails + 4R passes -> unit fails (one section fails)
+        ar("8895", "4P", d, 10, DBStatusType.FAIL)
+        ar("8895", "4R", d, 15, DBStatusType.PASS)
+        # Unit 8895/5: 5P fails THEN retrim passes; no R recorded -> unit passes
+        ar("8895", "5P", d, 20, DBStatusType.FAIL)
+        ar("8895", "5P", d, 60, DBStatusType.PASS)  # retrim 40 min later
+        # Junk serial -- should be excluded
+        ar("8895", "TEST", d, 100, DBStatusType.PASS)
+        return db
+
+    def test_yield_trend_applies_pass_rule(self, tmp_path):
+        db = self._setup(tmp_path)
+        rows = db.get_unit_yield_trend(model="8895", days_back=365 * 50)
+        # Expect one bucket (single day, single model)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["total_units"] == 3   # units 3, 4, 5 (TEST excluded)
+        assert r["passed_units"] == 2  # units 3 and 5 pass
+        assert r["yield_pct"] == pytest.approx(66.6667, rel=1e-3)
