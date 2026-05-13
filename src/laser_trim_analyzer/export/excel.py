@@ -868,16 +868,20 @@ def _create_yield_by_unit_sheet(wb: "Workbook", results: List[AnalysisResult]) -
         g["first"] = min(g["first"], ts) if g["first"] else ts
         g["last"] = max(g["last"], ts) if g["last"] else ts
 
-    # Sort by date desc, then shop number ascending (numerically when possible)
-    def sort_key(item):
-        (_, shop, date), _ = item
+    # Sort by date desc, then shop number ascending within a date.
+    # Python's sort is stable, so applying the secondary key first then
+    # the primary key second yields the correct composite ordering.
+    def _shop_int(item):
+        shop = item[0][1]
         try:
-            shop_num = int(shop)
+            return int(shop)
         except (TypeError, ValueError):
-            shop_num = 0
-        return (date, shop_num)
+            return 0
 
-    sorted_items = sorted(groups.items(), key=sort_key, reverse=True)
+    # Pass 1: shop ascending (secondary key, applied first)
+    sorted_items = sorted(groups.items(), key=_shop_int)
+    # Pass 2: date descending (primary key, stable preserves shop order)
+    sorted_items = sorted(sorted_items, key=lambda x: x[0][2], reverse=True)
 
     passed_total = 0
     fail_total = 0
