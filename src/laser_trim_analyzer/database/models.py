@@ -200,7 +200,7 @@ class AnalysisResult(Base):
     # Computed at write time from model/serial/file_date. NULL when serial
     # has no leading digits (TEST, x, etc.) — those rows are excluded from
     # unit-yield queries by design.
-    unit_id = Column(String(80), nullable=True, index=True)
+    unit_id = Column(String(80), nullable=True)
 
     # Overall results - required
     overall_status = Column(Enum(StatusType), nullable=False)

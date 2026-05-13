@@ -640,15 +640,24 @@ class DatabaseManager:
                     session.execute(text(
                         "ALTER TABLE analysis_results ADD COLUMN unit_id VARCHAR(80)"
                     ))
-                    session.execute(text(
-                        "CREATE INDEX IF NOT EXISTS idx_analysis_unit_id "
-                        "ON analysis_results(unit_id)"
-                    ))
                     session.commit()
                     logger.info("Migration: Added unit_id column to analysis_results")
                 except Exception as e:
                     session.rollback()
                     logger.warning(f"Migration error adding unit_id: {e}")
+            # Ensure the index exists on both new and migrated DBs. Project
+            # convention uses idx_* naming (not SQLAlchemy's auto ix_*),
+            # so we manage it explicitly here rather than via index=True
+            # on the column declaration.
+            try:
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_analysis_unit_id "
+                    "ON analysis_results(unit_id)"
+                ))
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"Migration error creating unit_id index: {e}")
 
             # Migration: Add aliases column to model_specs.
             # Stores pipe-separated alternate model numbers so a single spec
