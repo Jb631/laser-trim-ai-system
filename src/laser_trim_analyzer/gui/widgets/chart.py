@@ -1828,8 +1828,13 @@ class ChartWidget(ctk.CTkFrame):
         # Series may contain None for missing dates; matplotlib handles
         # None by breaking the line, which is the right behavior.
         x = list(range(len(series)))
+        # Convert None → np.nan explicitly. Raw Python None in a list
+        # passed to ax.plot is version-dependent behavior — older
+        # matplotlib raises TypeError, newer versions coerce silently.
+        # np.array(..., dtype=float) handles None → nan uniformly.
+        y = np.array(series, dtype=float)
         ax.plot(
-            x, series,
+            x, y,
             color=color, linestyle=linestyle, linewidth=1.8,
             marker="o", markersize=3,
             label=label, alpha=0.85,
