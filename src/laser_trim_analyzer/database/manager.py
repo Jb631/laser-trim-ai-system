@@ -3208,6 +3208,12 @@ class DatabaseManager:
                 .filter(
                     DBAR.model == model,
                     DBAR.unit_id.isnot(None),
+                    # Belt-and-suspenders: the backfill uses '' as a
+                    # progress sentinel and converts it back to NULL at
+                    # the end. If a process crash leaves '' in place,
+                    # IS NOT NULL alone would let those rows through
+                    # and collapse them into a phantom '' unit.
+                    DBAR.unit_id != "",
                     DBAR.file_date >= cutoff,
                 )
                 .all()
@@ -3237,8 +3243,12 @@ class DatabaseManager:
                     "ts": ts or datetime.min,
                     "status": status,
                 }
-            # Remember the unit's date (all rows for a unit share file_date)
-            if file_date is not None:
+            # Remember the unit's date. The unit_id format embeds the
+            # canonical date, so in practice all rows for one unit share
+            # the same file_date. Use first-seen-wins to keep behavior
+            # deterministic regardless of query result order, in case
+            # of any future data drift.
+            if file_date is not None and unit_id not in unit_date:
                 unit_date[unit_id] = file_date
 
         # Apply the pass rule per unit and bucket by date.
