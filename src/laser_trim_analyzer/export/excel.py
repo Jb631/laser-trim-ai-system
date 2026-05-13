@@ -229,6 +229,8 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
         status_cell.fill = PASS_FILL
     elif result.overall_status == AnalysisStatus.FAIL:
         status_cell.fill = FAIL_FILL
+    elif result.overall_status == AnalysisStatus.UNTRIMMED:
+        pass  # Leave default fill — UNTRIMMED isn't a pass/fail outcome.
     else:
         status_cell.fill = WARNING_FILL
 
@@ -257,14 +259,19 @@ def _create_summary_sheet(wb: "Workbook", result: AnalysisResult) -> None:
     # Track data rows
     for track in result.tracks:
         is_anomaly = getattr(track, 'is_anomaly', False)
+        # UNTRIMMED tracks have no sigma/linearity to summarise; render
+        # the absent fields as "—" rather than misleading 0/FAIL values.
         cells = [
             (track.track_id, None),
             (track.status.value, None),
-            (track.sigma_gradient, "0.000000"),
-            (track.sigma_threshold, "0.000000"),
-            ("PASS" if track.sigma_pass else "FAIL", None),
-            (track.linearity_error, "0.000000"),
-            ("PASS" if track.linearity_pass else "FAIL", None),
+            (track.sigma_gradient if track.sigma_gradient is not None else "—",
+             "0.000000" if track.sigma_gradient is not None else None),
+            (track.sigma_threshold if track.sigma_threshold is not None else "—",
+             "0.000000" if track.sigma_threshold is not None else None),
+            ("PASS" if track.sigma_pass else ("—" if track.sigma_pass is None else "FAIL"), None),
+            (track.linearity_error if track.linearity_error is not None else "—",
+             "0.000000" if track.linearity_error is not None else None),
+            ("PASS" if track.linearity_pass else ("—" if track.linearity_pass is None else "FAIL"), None),
             (track.risk_category.value, None),
             (track.failure_probability if track.failure_probability is not None else "N/A",
              "0.0%" if track.failure_probability is not None else None),
@@ -318,9 +325,39 @@ def _create_tracks_sheet(wb: "Workbook", result: AnalysisResult) -> None:
             status_cell.fill = PASS_FILL
         elif track.status == AnalysisStatus.FAIL:
             status_cell.fill = FAIL_FILL
+        elif track.status == AnalysisStatus.UNTRIMMED:
+            pass  # No fill — UNTRIMMED isn't a pass/fail outcome.
         else:
             status_cell.fill = WARNING_FILL
         row += 2
+
+        # UNTRIMMED tracks: skip sigma/linearity blocks (no values to render).
+        # Still emit a note + unit properties so the sheet isn't empty.
+        if track.status == AnalysisStatus.UNTRIMMED:
+            ws[f"A{row}"] = "No trim run recorded — test sweep only."
+            ws[f"A{row}"].font = Font(italic=True)
+            row += 1
+            ws[f"A{row}"] = "Sigma and linearity are not computed for untrimmed files."
+            ws[f"A{row}"].font = Font(italic=True)
+            row += 2
+            if track.unit_length or track.untrimmed_resistance or track.measured_electrical_angle is not None:
+                ws[f"A{row}"] = "Unit Properties"
+                ws[f"A{row}"].font = Font(bold=True)
+                row += 1
+                if track.measured_electrical_angle is not None:
+                    ws[f"A{row}"] = "Meas. Elec. Angle:"
+                    ws[f"B{row}"] = track.measured_electrical_angle
+                    row += 1
+                if track.unit_length:
+                    ws[f"A{row}"] = "Unit Length:"
+                    ws[f"B{row}"] = f"{track.unit_length}"
+                    row += 1
+                if track.untrimmed_resistance:
+                    ws[f"A{row}"] = "Untrimmed R:"
+                    ws[f"B{row}"] = f"{track.untrimmed_resistance}"
+                    row += 1
+            row += 2
+            continue
 
         # Sigma analysis section
         ws[f"A{row}"] = "Sigma Analysis"
@@ -590,16 +627,18 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
 
     # Data rows
     for row_idx, result in enumerate(results, 2):
-        # Get track data - for multi-track files, aggregate appropriately
-        sigma_gradient = 0
-        sigma_threshold = 0
-        sigma_margin_pct = 0
-        linearity_error = 0
+        # Get track data - for multi-track files, aggregate appropriately.
+        # Use None (not 0/True) as the unknown sentinel so UNTRIMMED rows can
+        # be distinguished from "real value of zero" downstream.
+        sigma_gradient = None
+        sigma_threshold = None
+        sigma_margin_pct = None
+        linearity_error = None
         linearity_spec = 0
         fail_points = 0
         travel_length = 0
-        sigma_pass = True
-        linearity_pass = True
+        sigma_pass = None
+        linearity_pass = None
         risk = "Unknown"
         fail_prob = None
         is_anomaly = False
@@ -685,8 +724,10 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
                 trim_pass_vals = [v for v in trim_pass_vals if v is not None]
                 trim_pass_count = max(trim_pass_vals) if trim_pass_vals else None
 
-            # Calculate sigma margin percentage
-            if sigma_threshold > 0:
+            # Calculate sigma margin percentage. None for UNTRIMMED rows (no
+            # sigma metrics) — guard so the comparison doesn't blow up.
+            if (sigma_threshold is not None and sigma_threshold > 0
+                    and sigma_gradient is not None):
                 sigma_margin_pct = ((sigma_threshold - sigma_gradient) / sigma_threshold) * 100
 
         # Use file_date which is the trim date (we set file_date = test_date in parser)
@@ -698,18 +739,18 @@ def _create_all_results_sheet(wb: "Workbook", results: List[AnalysisResult]) -> 
             (result.metadata.model, None),
             (result.metadata.serial, None),
             (result.metadata.system.value, None),
-            (trim_date.strftime("%Y-%m-%d") if trim_date else "", None),
+            (trim_date if trim_date else "", "yyyy-mm-dd" if trim_date else None),
             (result.overall_status.value, None),
             (len(result.tracks), None),
             (trim_pass_count if trim_pass_count is not None else "", None),
-            (sigma_gradient, "0.000000"),
-            (sigma_threshold, "0.000000"),
-            (sigma_margin_pct / 100 if sigma_margin_pct else 0, "0.0%"),
-            ("PASS" if sigma_pass else "FAIL", None),
-            (linearity_error, "0.000000"),
+            (sigma_gradient if sigma_gradient is not None else "—", "0.000000" if sigma_gradient is not None else None),
+            (sigma_threshold if sigma_threshold is not None else "—", "0.000000" if sigma_threshold is not None else None),
+            (sigma_margin_pct / 100 if sigma_margin_pct is not None else "—", "0.0%" if sigma_margin_pct is not None else None),
+            ("PASS" if sigma_pass else ("—" if sigma_pass is None else "FAIL"), None),
+            (linearity_error if linearity_error is not None else "—", "0.000000" if linearity_error is not None else None),
             (linearity_spec, "0.000000"),
             (fail_points, None),
-            ("PASS" if linearity_pass else "FAIL", None),
+            ("PASS" if linearity_pass else ("—" if linearity_pass is None else "FAIL"), None),
             (risk, None),
             (fail_prob if fail_prob is not None else "N/A", "0.0%" if fail_prob is not None else None),
             ("YES" if is_anomaly else "", None),

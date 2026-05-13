@@ -1,4 +1,4 @@
-# Claude Code Configuration for Laser Trim Analyzer V4
+# Claude Code Configuration for Laser Trim Analyzer V5
 
 ## Session Checklist
 
@@ -13,14 +13,16 @@
 
 ## Project Overview
 
-**Laser Trim Analyzer v4** - Production quality analysis platform for potentiometer laser trim data.
+**Laser Trim Analyzer v5** - Production quality analysis platform for potentiometer laser trim data.
 
 ### Key Features
-- **6 pages**: Dashboard, Process, Analyze, Compare, Trends, Settings
-- **Final Test support**: Parse and compare post-assembly test files
-- **SQLite database** with SQLAlchemy ORM
-- **Excel-only export**
-- **Per-model ML** (in development) - threshold optimization and drift detection
+- **10 pages**: Dashboard, Process, Analyze, Compare, Trends, Quality Health, Scorecard, Smoothness, Specs, Settings
+- **Final Test support**: Parse and fuzzy-match post-assembly test files to trim data
+- **Operational intelligence**: Near-miss detection, cost impact analysis, linearity prioritization
+- **Cpk/Ppk** process capability per model
+- **SQLite database** with SQLAlchemy 2.0 ORM
+- **Excel-only export** (executive summary option)
+- **Per-model ML**: threshold optimization, drift detection (CUSUM + EWMA), statistical profiling, failure prediction
 
 ### Source Code
 - **Main code**: `src/laser_trim_analyzer/`
@@ -61,7 +63,7 @@ src/laser_trim_analyzer/
 │   └── models.py        # SQLAlchemy models
 ├── gui/
 │   ├── app.py           # GUI application
-│   ├── pages/           # Dashboard, Process, Analyze, Compare, Trends, Settings
+│   ├── pages/           # Dashboard, Process, Analyze, Compare, Trends, Quality Health, Scorecard, Smoothness, Specs, Settings
 │   └── widgets/chart.py # Chart widget
 ├── ml/
 │   ├── predictor.py           # Per-model failure prediction
@@ -95,19 +97,24 @@ src/laser_trim_analyzer/
 
 ## Active Development
 
+### V5 — Released (tag `v5.0.0`, 2026-04-16)
+`pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
+
+**Current focus:** `docs/BUGFIX_PLAN_V5.md` — 5-phase bugfix plan from a 6-agent code review swarm (20 issues: 5 critical, 7 high, 8 medium).
+
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
 **Plan:** `docs/UPGRADE_PLAN_V4.md`
 **Tracker:** `docs/UPGRADE_TRACKER.md`
 
-V4 transforms the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
-- **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation) — COMPLETE
-- **Phase 1.5:** Dashboard & Chart Fixes (Pareto, P-chart, layout, focus panel) — COMPLETE
-- **Phase 2:** Operational Analytics (pricing, near-miss, cost dashboard, trends filters) — COMPLETE
-- **Phase 3:** Predictive Improvements (FT fuzzy matching, Cpk, ML staleness) — COMPLETE
-- **Phase 4:** Operational Integration (executive export, screening recommendations) — COMPLETE
+V4 transformed the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
+- **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation)
+- **Phase 1.5:** Dashboard & Chart Fixes (Pareto, P-chart, layout, focus panel)
+- **Phase 2:** Operational Analytics (pricing, near-miss, cost dashboard, trends filters)
+- **Phase 3:** Predictive Improvements (FT fuzzy matching, Cpk, ML staleness)
+- **Phase 4:** Operational Integration (executive export, screening recommendations)
 
-### Per-Model ML System - **COMPLETE**
-Per-model ML is fully implemented with threshold optimization and drift detection using Final Test data as ground truth. Train models in Settings page.
+### Per-Model ML System — **COMPLETE**
+Per-model ML is fully implemented: threshold optimization, drift detection, statistical profiling, and failure prediction using Final Test data as ground truth. Train models in Settings page.
 
 Design docs archived in `archive/completed_docs/`.
 

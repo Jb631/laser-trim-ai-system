@@ -184,6 +184,40 @@ class Processor:
             analyzed_tracks: List[TrackData] = []
             predictor = self._model_predictors.get(metadata.model)
             for track_data in tracks_data:
+                # Test-sweep-only files (no laser-trim runs) skip analysis —
+                # sigma/linearity aren't defined without a trim result. We
+                # still record the track so the untrimmed sweep is visible
+                # in the app and the file isn't silently dropped.
+                if track_data.get("is_untrimmed_only"):
+                    untrimmed_positions = track_data.get("untrimmed_positions") or []
+                    untrimmed_errors = track_data.get("untrimmed_errors") or []
+                    track_result = TrackData(
+                        track_id=track_data.get("track_id", "default"),
+                        status=AnalysisStatus.UNTRIMMED,
+                        travel_length=track_data.get("travel_length") or 0.0,
+                        linearity_spec=track_data.get("linearity_spec") or 0.0,
+                        sigma_gradient=None,
+                        sigma_threshold=None,
+                        sigma_pass=None,
+                        optimal_offset=None,
+                        linearity_error=None,
+                        linearity_pass=None,
+                        linearity_fail_points=0,
+                        unit_length=track_data.get("unit_length"),
+                        untrimmed_resistance=track_data.get("untrimmed_resistance"),
+                        trimmed_resistance=None,
+                        measured_electrical_angle=track_data.get("measured_electrical_angle"),
+                        station_compensation=track_data.get("station_compensation"),
+                        linearity_type=str(linearity_type.value) if hasattr(linearity_type, "value") else (str(linearity_type) if linearity_type else None),
+                        trim_pass_count=track_data.get("trim_pass_count", 0),
+                        theory_volts=track_data.get("theory_volts"),
+                        test_volts=track_data.get("test_volts"),
+                        untrimmed_positions=untrimmed_positions or None,
+                        untrimmed_errors=untrimmed_errors or None,
+                    )
+                    analyzed_tracks.append(track_result)
+                    continue
+
                 track_data["exclude_points"] = spec["exclude_points"]
                 track_result = self.analyzer.analyze_track(
                     track_data,
@@ -797,8 +831,9 @@ class Processor:
         for track in tracks:
             tid = track.track_id
 
-            # Check 1: Negative sigma gradient (should always be >= 0)
-            if track.sigma_gradient < 0:
+            # Check 1: Negative sigma gradient (should always be >= 0).
+            # None is valid for UNTRIMMED tracks; only flag actual negatives.
+            if track.sigma_gradient is not None and track.sigma_gradient < 0:
                 issues.append(f"{tid}: negative sigma_gradient ({track.sigma_gradient:.4f})")
 
             # Check 2: All-zero error data (element wasn't actually measured)
@@ -973,11 +1008,23 @@ class Processor:
 
         statuses = [t.status for t in tracks]
 
-        if all(s == AnalysisStatus.PASS for s in statuses):
+        # UNTRIMMED-only files (every track is just a test sweep) get their
+        # own top-level status so the GUI / queries can recognise them.
+        if all(s == AnalysisStatus.UNTRIMMED for s in statuses):
+            return AnalysisStatus.UNTRIMMED
+
+        # Mixed: ignore UNTRIMMED tracks when judging pass/fail — they don't
+        # have a trim result to grade. Decision is based on the real tracks.
+        judged = [s for s in statuses if s != AnalysisStatus.UNTRIMMED]
+        if not judged:
+            # Shouldn't happen (caught above), but fall back safely.
+            return AnalysisStatus.UNTRIMMED
+
+        if all(s == AnalysisStatus.PASS for s in judged):
             return AnalysisStatus.PASS
-        elif any(s == AnalysisStatus.ERROR for s in statuses):
+        elif any(s == AnalysisStatus.ERROR for s in judged):
             return AnalysisStatus.ERROR
-        elif any(s == AnalysisStatus.FAIL for s in statuses):
+        elif any(s == AnalysisStatus.FAIL for s in judged):
             return AnalysisStatus.FAIL
         else:
             return AnalysisStatus.WARNING
@@ -996,17 +1043,21 @@ class Processor:
         elif result.overall_status == AnalysisStatus.FAIL:
             summary.failed += 1
 
-        # Update average sigma
+        # Update average sigma. UNTRIMMED tracks carry sigma_gradient=None
+        # because no trim ran; filter them out before averaging. Skip the
+        # update entirely if every track in this result is untrimmed.
         if result.tracks:
-            sigmas = [t.sigma_gradient for t in result.tracks]
-            if summary.avg_sigma_gradient is None:
-                summary.avg_sigma_gradient = sum(sigmas) / len(sigmas)
-            else:
-                # Running average
-                n = summary.processed
-                summary.avg_sigma_gradient = (
-                    (summary.avg_sigma_gradient * (n - 1) + sum(sigmas) / len(sigmas)) / n
-                )
+            sigmas = [t.sigma_gradient for t in result.tracks if t.sigma_gradient is not None]
+            if sigmas:
+                file_avg = sum(sigmas) / len(sigmas)
+                if summary.avg_sigma_gradient is None:
+                    summary.avg_sigma_gradient = file_avg
+                else:
+                    # Running average across processed files
+                    n = summary.processed
+                    summary.avg_sigma_gradient = (
+                        (summary.avg_sigma_gradient * (n - 1) + file_avg) / n
+                    )
 
         # Count high risk
         if any(t.risk_category.value == "High" for t in result.tracks):

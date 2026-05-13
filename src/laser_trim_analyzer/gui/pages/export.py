@@ -715,7 +715,19 @@ class ExportPage(ctk.CTkFrame):
         }
 
         if not track.position_data or not track.error_data:
-            ax.text(0.5, 0.5, "No data available", ha='center', va='center')
+            # UNTRIMMED tracks carry their sweep in untrimmed_* — render that
+            # instead of an empty placeholder so the export isn't blank.
+            if track.untrimmed_positions and track.untrimmed_errors:
+                ax.plot(track.untrimmed_positions, track.untrimmed_errors,
+                       '--', linewidth=1.5,
+                       label='Untrimmed (test sweep — no trim run)',
+                       color=QA_COLORS['untrimmed'], alpha=0.8)
+                ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+                ax.set_xlabel('Position', fontsize=12)
+                ax.set_ylabel('Error (Volts)', fontsize=12)
+                ax.legend(loc='best', fontsize=10)
+            else:
+                ax.text(0.5, 0.5, "No data available", ha='center', va='center')
             return
 
         positions = np.array(track.position_data)
@@ -865,6 +877,24 @@ class ExportPage(ctk.CTkFrame):
         ax.axis('off')
         ax.set_facecolor('white')
 
+        # UNTRIMMED tracks have no sigma/linearity metrics — render a stub.
+        if track.status == AnalysisStatus.UNTRIMMED:
+            metrics = [
+                "Sigma:     N/A (no trim run)",
+                "Linearity: N/A (no trim run)",
+                "",
+                "Test sweep only — no laser-trim",
+                "data was recorded for this file.",
+            ]
+            y_pos = 0.95
+            ax.text(0.05, 0.98, "Analysis Metrics", fontsize=11, fontweight='bold',
+                   transform=ax.transAxes, va='top', color='black')
+            for metric in metrics:
+                y_pos -= 0.085
+                ax.text(0.05, y_pos, metric, fontsize=10, transform=ax.transAxes,
+                       va='top', color='black')
+            return
+
         # Use corrected values if provided (recalculated from actual spec limits)
         fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
         linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
@@ -905,6 +935,22 @@ class ExportPage(ctk.CTkFrame):
         ax.axis('off')
         ax.set_facecolor('white')
 
+        # UNTRIMMED tracks: don't claim pass/fail — no trim result exists.
+        if track.status == AnalysisStatus.UNTRIMMED:
+            status = "UNTRIMMED"
+            color = '#7f8c8d'
+            rect = Rectangle((0.1, 0.6), 0.8, 0.25,
+                             linewidth=3, edgecolor=color,
+                             facecolor='white', alpha=0.9)
+            ax.add_patch(rect)
+            ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
+                   fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
+            ax.text(0.5, 0.45, 'Test sweep only', ha='center', va='center',
+                   fontsize=11, color=color, transform=ax.transAxes)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            return
+
         # Use corrected values if provided (recalculated from actual spec limits)
         fail_points = corrected_values['fail_points'] if corrected_values else track.linearity_fail_points
         linearity_pass = corrected_values['linearity_pass'] if corrected_values else track.linearity_pass
@@ -930,11 +976,13 @@ class ExportPage(ctk.CTkFrame):
         ax.text(0.5, 0.72, f'STATUS: {status}', ha='center', va='center',
                fontsize=16, color=color, fontweight='bold', transform=ax.transAxes)
 
-        # Add failure details
+        # Add failure details. Use `is False` so None (UNTRIMMED) doesn't
+        # render as FAIL if this path is ever reached without the early
+        # UNTRIMMED return above firing.
         details = []
-        if not track.sigma_pass:
+        if track.sigma_pass is False:
             details.append("Sigma: FAIL")
-        if not linearity_pass:
+        if linearity_pass is False:
             details.append(f"Linearity: FAIL ({fail_points} pts)")
 
         if details:

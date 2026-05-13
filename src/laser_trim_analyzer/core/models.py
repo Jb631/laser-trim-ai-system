@@ -31,6 +31,9 @@ class AnalysisStatus(str, Enum):
     FAIL = "Fail"
     WARNING = "Warning"
     ERROR = "Error"
+    # Test-sweep file with no laser-trim runs. Sigma/linearity metrics are
+    # not defined; only the untrimmed sweep is recorded.
+    UNTRIMMED = "Untrimmed"
 
 
 class RiskCategory(str, Enum):
@@ -94,15 +97,17 @@ class TrackData(BaseAnalysisModel):
     travel_length: float = Field(..., ge=0, description="Travel length")
     linearity_spec: float = Field(..., ge=0, description="Linearity spec")
 
-    # Sigma analysis (required)
-    sigma_gradient: float = Field(..., ge=0, description="Sigma gradient value")
-    sigma_threshold: float = Field(..., gt=0, description="Sigma threshold")
-    sigma_pass: bool = Field(..., description="Sigma test passed")
+    # Sigma analysis (None for UNTRIMMED tracks — no trim run, sigma undefined)
+    sigma_gradient: Optional[float] = Field(None, ge=0, description="Sigma gradient value")
+    sigma_threshold: Optional[float] = Field(None, gt=0, description="Sigma threshold")
+    sigma_pass: Optional[bool] = Field(None, description="Sigma test passed")
 
-    # Linearity analysis (required)
-    optimal_offset: float = Field(..., description="Optimal offset")
-    linearity_error: float = Field(..., ge=0, description="Linearity error")
-    linearity_pass: bool = Field(..., description="Linearity test passed")
+    # Linearity analysis (None for UNTRIMMED tracks — no trim result to judge)
+    # optimal_offset is Optional so UNTRIMMED rows can record "no measurement"
+    # rather than a placeholder 0.0 that would skew any future histogram.
+    optimal_offset: Optional[float] = Field(default=0.0, description="Optimal offset")
+    linearity_error: Optional[float] = Field(None, ge=0, description="Linearity error")
+    linearity_pass: Optional[bool] = Field(None, description="Linearity test passed")
     linearity_fail_points: int = Field(default=0, ge=0, description="Failing points count")
 
     # Spec-aware optimization results (Phase 2)
@@ -168,13 +173,17 @@ class TrackData(BaseAnalysisModel):
     plot_path: Optional[Path] = Field(None, description="Path to plot image")
 
     @property
-    def gradient_margin(self) -> float:
-        """Margin between gradient and threshold."""
+    def gradient_margin(self) -> Optional[float]:
+        """Margin between gradient and threshold. None for untrimmed tracks."""
+        if self.sigma_threshold is None or self.sigma_gradient is None:
+            return None
         return self.sigma_threshold - self.sigma_gradient
 
     @property
-    def sigma_ratio(self) -> float:
-        """Ratio of gradient to threshold (lower is better)."""
+    def sigma_ratio(self) -> Optional[float]:
+        """Ratio of gradient to threshold (lower is better). None for untrimmed tracks."""
+        if self.sigma_threshold is None or self.sigma_gradient is None:
+            return None
         return self.sigma_gradient / self.sigma_threshold if self.sigma_threshold > 0 else float('inf')
 
     @property
@@ -240,8 +249,11 @@ class AnalysisResult(BaseAnalysisModel):
 
     @property
     def all_tracks_pass(self) -> bool:
-        """Check if all tracks pass both sigma and linearity."""
-        return all(t.sigma_pass and t.linearity_pass for t in self.tracks)
+        """Check if all tracks pass both sigma and linearity. Untrimmed tracks never count as passing."""
+        return all(
+            t.sigma_pass is True and t.linearity_pass is True
+            for t in self.tracks
+        )
 
     @property
     def any_high_risk(self) -> bool:

@@ -251,7 +251,10 @@ class QualityHealthPage(ctk.CTkFrame):
                     return result
 
                 # Single query: get counts per model split by older/recent
-                # using each model's midpoint via CASE
+                # using each model's midpoint via CASE.
+                # Exclude UNTRIMMED tracks — they have linearity_pass=None
+                # which would silently fall out of both pass and fail
+                # branches below, deflating both rates.
                 mid_models = list(model_midpoints.keys())
                 rows = (
                     session.query(
@@ -263,6 +266,7 @@ class QualityHealthPage(ctk.CTkFrame):
                     .filter(
                         DBAnalysisResult.model.in_(mid_models),
                         DBAnalysisResult.file_date.isnot(None),
+                        DBTrackResult.linearity_pass.isnot(None),
                     )
                     .all()
                 )

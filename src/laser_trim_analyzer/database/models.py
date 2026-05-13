@@ -135,12 +135,20 @@ class SystemType(PyEnum):
 
 
 class StatusType(PyEnum):
-    """Processing status types."""
+    """Processing status types.
+
+    Persisted as the enum NAME (e.g. 'PASS', 'UNTRIMMED'), not the string
+    value — that's SQLAlchemy's default for `Column(Enum(...))`. All
+    server-side comparisons against this column must use `StatusType.X.name`
+    or the bare string `'X'`, never `StatusType.X.value`.
+    """
     PASS = "Pass"
     FAIL = "Fail"
     WARNING = "Warning"
     ERROR = "Error"
     PROCESSING_FAILED = "Processing Failed"
+    # Test-sweep file with no laser-trim runs; sigma/linearity undefined.
+    UNTRIMMED = "Untrimmed"
 
 
 class RiskCategory(PyEnum):
@@ -314,12 +322,14 @@ class TrackResult(Base):
     track_id = Column(String(20), nullable=False)  # 'TRK1', 'TRK2', or 'default'
     status = Column(Enum(StatusType), nullable=False)
 
-    # Core measurements - sigma analysis is required for production
+    # Core measurements. Sigma is nullable so untrimmed-only tracks (status=UNTRIMMED)
+    # can be persisted with sigma metrics absent. SQLite CHECK constraints below
+    # treat NULL as passing.
     travel_length = Column(Float)
     linearity_spec = Column(Float)
-    sigma_gradient = Column(Float, nullable=False)
-    sigma_threshold = Column(Float, nullable=False)
-    sigma_pass = Column(Boolean, nullable=False)
+    sigma_gradient = Column(Float, nullable=True)
+    sigma_threshold = Column(Float, nullable=True)
+    sigma_pass = Column(Boolean, nullable=True)
 
     # Unit properties
     unit_length = Column(Float)

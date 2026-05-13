@@ -475,17 +475,25 @@ class ExcelParser:
             else:
                 trim_pass_count = 0
 
-            # Use trimmed sheet if available, otherwise use untrimmed
-            # (allows processing of files where trimming was aborted/incomplete)
-            data_sheet = trimmed_sheet or untrimmed_sheet
-            if data_sheet:
+            # Two paths:
+            #   - Normal trim file → extract with trimmed sheet as primary
+            #   - Test-sweep-only (no trim runs) → route data into untrimmed_*
+            #     fields so the test sweep isn't mis-labeled as a trim result.
+            if trimmed_sheet:
                 track_data = self._extract_track_data(
-                    xl, file_path, data_sheet, untrimmed_sheet if trimmed_sheet else None,
+                    xl, file_path, trimmed_sheet, untrimmed_sheet,
                     SystemType.A, track_id
                 )
-                if track_data:
-                    track_data["trim_pass_count"] = trim_pass_count
-                    tracks.append(track_data)
+            elif untrimmed_sheet:
+                track_data = self._extract_untrimmed_only_track(
+                    xl, file_path, untrimmed_sheet, SystemType.A, track_id
+                )
+            else:
+                track_data = None
+
+            if track_data:
+                track_data["trim_pass_count"] = trim_pass_count
+                tracks.append(track_data)
 
         return tracks
 
@@ -532,25 +540,32 @@ class ExcelParser:
         else:
             trim_pass_count = 0
 
-        if trimmed_sheet:
-            # Extract track ID from filename if present.
+        # Resolve System B track ID (used for both normal and untrimmed-only paths)
+        if trimmed_sheet or untrimmed_sheet:
             # Newer LTS files embed the track letter: e.g.
             #   6607_175_TB_Test Data_...  → Track B
             #   8232-1_196_TA_Test Data_... → Track A
             import re as _re
-            _track_match = _re.search(
-                r'_T([A-Z])_', file_path.name
-            )
+            _track_match = _re.search(r'_T([A-Z])_', file_path.name)
             sys_b_track_id = (
                 f"Track {_track_match.group(1)}"
                 if _track_match
                 else "default"
             )
 
-            track_data = self._extract_track_data(
-                xl, file_path, trimmed_sheet, untrimmed_sheet,
-                SystemType.B, sys_b_track_id
-            )
+            # Same two paths as System A: route test-sweep-only files into
+            # untrimmed_* so they aren't dropped (prior behavior) and aren't
+            # mis-labeled as trim results.
+            if trimmed_sheet:
+                track_data = self._extract_track_data(
+                    xl, file_path, trimmed_sheet, untrimmed_sheet,
+                    SystemType.B, sys_b_track_id
+                )
+            else:
+                track_data = self._extract_untrimmed_only_track(
+                    xl, file_path, untrimmed_sheet, SystemType.B, sys_b_track_id
+                )
+
             if track_data:
                 track_data["trim_pass_count"] = trim_pass_count
                 tracks.append(track_data)
@@ -807,6 +822,83 @@ class ExcelParser:
                 exc_info=True,
             )
             return None
+
+    def _extract_untrimmed_only_track(
+        self,
+        xl: pd.ExcelFile,
+        file_path: Path,
+        untrimmed_sheet: str,
+        system_type: SystemType,
+        track_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract a track from a file that has only a test-sweep sheet (no trim runs).
+
+        Routes the test-sweep data into the untrimmed_* fields and leaves the
+        trimmed_* fields empty. Caller is responsible for setting trim_pass_count=0
+        and skipping the analyzer downstream.
+        """
+        # Load-bearing invariant: this helper relies on untrimmed_resistance
+        # and trimmed_resistance being aliased to the same cell so reading
+        # the test sweep returns the untrimmed value through either mapping.
+        # If someone splits these without updating this helper, the original
+        # mislabeling bug returns silently — assert to fail loudly instead.
+        cells = SYSTEM_A_CELLS if system_type == SystemType.A else SYSTEM_B_CELLS
+        assert cells["untrimmed_resistance"] == cells["trimmed_resistance"], (
+            f"{system_type} cell mapping must alias untrimmed_resistance and "
+            f"trimmed_resistance to the same cell for the untrimmed-only "
+            f"extraction path to work correctly. Got "
+            f"untrimmed={cells['untrimmed_resistance']!r}, "
+            f"trimmed={cells['trimmed_resistance']!r}."
+        )
+
+        # Read by treating the untrimmed sheet as the data sheet, then move
+        # the resulting fields from trimmed_* → untrimmed_*. This keeps the
+        # extraction logic in one place (_extract_track_data) and avoids
+        # duplicating ~200 lines of pandas reads / sanity checks.
+        raw = self._extract_track_data(
+            xl, file_path, untrimmed_sheet, None, system_type, track_id
+        )
+        if raw is None:
+            return None
+
+        # The cell mapped as "trimmed_resistance" was just read from the test
+        # sweep, where that cell semantically holds the untrimmed resistance.
+        # Promote it to untrimmed_resistance and clear the trimmed value.
+        if raw.get("untrimmed_resistance") is None:
+            raw["untrimmed_resistance"] = raw.get("trimmed_resistance")
+        raw["trimmed_resistance"] = None
+
+        # System B fixup: _extract_track_data skips reading K1 from the trimmed
+        # sheet for System B (because Lin Error.K1 holds a spec limit, not the
+        # measured angle). The test sheet's K1 IS the measured angle though, so
+        # read it directly here. Without this, untrimmed-only B-files fall
+        # through to the unit_length (= theoretical L1) fallback.
+        if system_type == SystemType.B and "measured_electrical_angle" in cells:
+            try:
+                df_untrim = pd.read_excel(xl, sheet_name=untrimmed_sheet, header=None)
+                mea = self._get_cell_from_df(df_untrim, cells["measured_electrical_angle"])
+                if mea is not None:
+                    raw["measured_electrical_angle"] = mea
+                del df_untrim
+            except Exception as e:
+                logger.debug(f"Could not re-read K1 for untrimmed-only B file: {e}")
+
+        # Move position/error/limit arrays into the untrimmed slots so the
+        # analyzer/chart see no trim result. Spec limits are aligned with
+        # untrimmed positions, not trim positions, so we drop them here —
+        # there's no trim result to judge against the spec.
+        if raw.get("untrimmed_positions") is None:
+            raw["untrimmed_positions"] = raw.get("positions")
+        if raw.get("untrimmed_errors") is None:
+            raw["untrimmed_errors"] = raw.get("errors")
+        raw["positions"] = None
+        raw["errors"] = None
+        raw["upper_limits"] = None
+        raw["lower_limits"] = None
+
+        raw["is_untrimmed_only"] = True
+        return raw
 
     def _validate_track_data(
         self,

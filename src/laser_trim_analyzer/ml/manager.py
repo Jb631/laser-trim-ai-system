@@ -880,11 +880,15 @@ class MLManager:
             records = []
 
             with self.db.session() as session:
-                # Get trim data
+                # Get trim data. Exclude UNTRIMMED tracks — test-sweep-only
+                # files have no sigma/linearity to train on, and the .notna()
+                # filter below has a "return everything" fallback that would
+                # otherwise leak them into training when nothing else exists.
                 trim_results = (
                     session.query(TrackResult, AnalysisResult.file_date)
                     .join(AnalysisResult)
                     .filter(AnalysisResult.model == model_name)
+                    .filter(TrackResult.status != StatusType.UNTRIMMED.name)
                     .all()
                 )
 

@@ -248,6 +248,33 @@ class ChartWidget(ctk.CTkFrame):
         ax = self.figure.add_subplot(111)
         self._style_axis(ax)
 
+        # UNTRIMMED-only path: test-sweep-only files (no laser-trim runs) carry
+        # no trim positions/errors. Draw the untrimmed sweep alone and return —
+        # there's nothing to "correct" and no spec bands to overlay.
+        if not positions or not trimmed_errors:
+            if untrimmed_positions and untrimmed_errors:
+                ax.plot(
+                    untrimmed_positions, untrimmed_errors,
+                    color=COLORS['untrimmed'],
+                    linestyle='--',
+                    linewidth=self.style.line_width,
+                    label='Untrimmed (test sweep — no trim run)',
+                )
+                ax.set_xlabel('Position', fontsize=self.style.font_size)
+                ax.set_ylabel('Error', fontsize=self.style.font_size)
+                ax.legend(loc='best', fontsize=self.style.font_size - 2)
+            else:
+                ax.text(
+                    0.5, 0.5, 'No measurement data',
+                    ha='center', va='center',
+                    transform=ax.transAxes,
+                    fontsize=self.style.font_size,
+                )
+            ax.set_title(title, fontsize=self.style.title_size)
+            self.figure.tight_layout()
+            self.canvas.draw_idle()
+            return
+
         # Apply theory-based rotation if theory data available, otherwise offset-only
         if theory_data and k != 0:
             shifted_errors = [trimmed_errors[i] + theory_data[i] * k + offset
@@ -848,8 +875,12 @@ class ChartWidget(ctk.CTkFrame):
                                 fail_count += 1
             if fail_count > 0:
                 return f"FAIL ({fail_count} pts)"
-            elif not track.sigma_pass:
+            # sigma_pass is None for UNTRIMMED tracks — treat as "no judgment"
+            # rather than implicit fail.
+            elif track.sigma_pass is False:
                 return "FAIL (Sigma)"
+            elif track.sigma_pass is None:
+                return "UNTRIMMED"
             else:
                 return "PASS"
 

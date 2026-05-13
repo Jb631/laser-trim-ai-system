@@ -735,6 +735,76 @@ class DatabaseManager:
                     logger.warning(f"ft theory_data migration: {e}")
                 session.rollback()
 
+            # Migration: Relax NOT NULL on sigma_gradient / sigma_threshold / sigma_pass
+            # so UNTRIMMED tracks (test-sweep-only files with no laser-trim runs) can
+            # be saved with sigma metrics absent. SQLite can't ALTER COLUMN nullability
+            # directly, so this rebuilds track_results via the rename-table pattern.
+            try:
+                info = session.execute(text("PRAGMA table_info(track_results)")).fetchall()
+                # PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+                sigma_grad_notnull = next(
+                    (row[3] for row in info if row[1] == 'sigma_gradient'), 0
+                )
+                if sigma_grad_notnull == 1:
+                    logger.info(
+                        "Running migration: relaxing NOT NULL on sigma_gradient / "
+                        "sigma_threshold / sigma_pass in track_results"
+                    )
+                    create_sql = session.execute(text(
+                        "SELECT sql FROM sqlite_master WHERE type='table' "
+                        "AND name='track_results'"
+                    )).scalar()
+                    indexes = session.execute(text(
+                        "SELECT name, sql FROM sqlite_master WHERE type='index' "
+                        "AND tbl_name='track_results' AND sql IS NOT NULL"
+                    )).fetchall()
+
+                    new_sql = create_sql
+                    for _col in ('sigma_gradient', 'sigma_threshold', 'sigma_pass'):
+                        # Strip the column-level NOT NULL declaration. Preserves
+                        # the type/length so the column data is untouched.
+                        new_sql = re.sub(
+                            rf'(\b{_col}\b\s+\w+(?:\(\d+\))?)\s+NOT\s+NULL',
+                            r'\1',
+                            new_sql,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                    new_sql = new_sql.replace(
+                        'CREATE TABLE track_results',
+                        'CREATE TABLE track_results_new',
+                        1,
+                    )
+
+                    # NOTE: No PRAGMA foreign_keys toggling here. SQLite ignores
+                    # PRAGMA foreign_keys when issued inside an open transaction,
+                    # so the typical "OFF / rebuild / ON" recipe is a no-op in
+                    # this session-scoped path. The rebuild is FK-safe today
+                    # because no table references track_results.id — if that
+                    # changes, the recipe needs to move outside this transaction
+                    # via a dedicated raw connection.
+                    session.execute(text(new_sql))
+                    session.execute(text(
+                        "INSERT INTO track_results_new SELECT * FROM track_results"
+                    ))
+                    session.execute(text("DROP TABLE track_results"))
+                    session.execute(text(
+                        "ALTER TABLE track_results_new RENAME TO track_results"
+                    ))
+                    for _idx_name, _idx_sql in indexes:
+                        # Re-raise on failure so the outer try/except triggers a
+                        # rollback. Silently losing an index would degrade query
+                        # performance without any signal to the operator.
+                        session.execute(text(_idx_sql))
+                    session.commit()
+                    logger.info(
+                        "Migration completed: sigma_gradient / sigma_threshold / "
+                        "sigma_pass are now nullable"
+                    )
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"sigma-nullable migration warning: {e}")
+
         # After session closes, re-run FT matching if model names were corrected
         if needs_rematch:
             try:
@@ -1373,7 +1443,9 @@ class DatabaseManager:
 
             pass_rate = (passed / total_analyses * 100) if total_analyses > 0 else 0.0
 
-            # Get track-level sigma and linearity pass rates - filter by trim date
+            # Get track-level sigma and linearity pass rates - filter by trim date.
+            # Exclude UNTRIMMED tracks (sigma_pass/linearity_pass are NULL) so
+            # they don't sit in the denominator and deflate the pass rate.
             track_stats_q = (
                 session.query(
                     func.count(DBTrackResult.id).label('total_tracks'),
@@ -1381,7 +1453,10 @@ class DatabaseManager:
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
                 )
                 .join(DBAnalysisResult)
-                .filter(DBAnalysisResult.file_date >= cutoff_date)
+                .filter(
+                    DBAnalysisResult.file_date >= cutoff_date,
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+                )
             )
             if filter_models is not None:
                 track_stats_q = track_stats_q.filter(DBAnalysisResult.model.in_(filter_models))
@@ -1458,7 +1533,8 @@ class DatabaseManager:
                     "pass_rate": day_pass_rate,
                 })
 
-            # Linearity daily trend (track-level, independent of sigma)
+            # Linearity daily trend (track-level, independent of sigma).
+            # Exclude UNTRIMMED — their linearity_pass is NULL.
             lin_daily_q = (
                 session.query(
                     func.date(DBAnalysisResult.file_date).label('day'),
@@ -1466,7 +1542,10 @@ class DatabaseManager:
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('passed')
                 )
                 .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
-                .filter(DBAnalysisResult.file_date >= trend_start)
+                .filter(
+                    DBAnalysisResult.file_date >= trend_start,
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+                )
             )
             if filter_models is not None:
                 lin_daily_q = lin_daily_q.filter(DBAnalysisResult.model.in_(filter_models))
@@ -2095,7 +2174,12 @@ class DatabaseManager:
             List of model statistics dictionaries
         """
         with self.session() as session:
-            # Single query with conditional aggregation including track-level stats
+            # Single query with conditional aggregation including track-level stats.
+            # Outerjoin filters UNTRIMMED tracks at the JOIN level so they don't
+            # inflate total_tracks (which is the denominator for pass rates).
+            # The outerjoin still includes parent files that ONLY have UNTRIMMED
+            # tracks — those rows just show 0 / 0 = 0% which is correct (no
+            # trim outcome to grade).
             model_stats = (
                 session.query(
                     DBAnalysisResult.model,
@@ -2108,7 +2192,13 @@ class DatabaseManager:
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
                 )
-                .outerjoin(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .outerjoin(
+                    DBTrackResult,
+                    and_(
+                        DBAnalysisResult.id == DBTrackResult.analysis_id,
+                        DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+                    ),
+                )
                 .filter(DBAnalysisResult.model.isnot(None))
                 .group_by(DBAnalysisResult.model)
                 .order_by(func.count(func.distinct(DBAnalysisResult.id)).desc())
@@ -2284,6 +2374,7 @@ class DatabaseManager:
             AnalysisStatus.FAIL: DBStatusType.FAIL,
             AnalysisStatus.WARNING: DBStatusType.WARNING,
             AnalysisStatus.ERROR: DBStatusType.ERROR,
+            AnalysisStatus.UNTRIMMED: DBStatusType.UNTRIMMED,
         }
         overall_status = status_map.get(analysis.overall_status, DBStatusType.ERROR)
 
@@ -2316,6 +2407,7 @@ class DatabaseManager:
             AnalysisStatus.FAIL: DBStatusType.FAIL,
             AnalysisStatus.WARNING: DBStatusType.WARNING,
             AnalysisStatus.ERROR: DBStatusType.ERROR,
+            AnalysisStatus.UNTRIMMED: DBStatusType.UNTRIMMED,
         }
         status = status_map.get(track.status, DBStatusType.ERROR)
 
@@ -2399,6 +2491,7 @@ class DatabaseManager:
             DBStatusType.FAIL: AnalysisStatus.FAIL,
             DBStatusType.WARNING: AnalysisStatus.WARNING,
             DBStatusType.ERROR: AnalysisStatus.ERROR,
+            DBStatusType.UNTRIMMED: AnalysisStatus.UNTRIMMED,
         }
 
         if isinstance(db_status, DBStatusType):
@@ -2490,21 +2583,34 @@ class DatabaseManager:
         }
         risk_category = risk_map.get(db_track.risk_category, RiskCategory.UNKNOWN)
 
-        # Handle missing required fields - these are required for TrackData
+        # Sigma/linearity fields are optional. For UNTRIMMED tracks (no trim
+        # run) they are legitimately None and we want to preserve that so the
+        # GUI/exports can tell "no measurement" apart from "measured zero".
+        # For pre-UNTRIMMED legacy rows with missing sigma, fall back to
+        # defaults to keep loading non-fatal.
+        is_untrimmed = status == AnalysisStatus.UNTRIMMED
         sigma_gradient = db_track.sigma_gradient
         sigma_threshold = db_track.sigma_threshold
         sigma_pass = db_track.sigma_pass
 
-        # If any required sigma fields are None, provide defaults or skip
-        if sigma_gradient is None:
-            logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
-            sigma_gradient = 0.0
-        if sigma_threshold is None:
-            logger.warning(f"Track {db_track.track_id} has None sigma_threshold, using 0.01")
-            sigma_threshold = 0.01
-        if sigma_pass is None:
-            # Calculate from gradient and threshold
-            sigma_pass = sigma_gradient <= sigma_threshold
+        if not is_untrimmed:
+            if sigma_gradient is None:
+                logger.warning(f"Track {db_track.track_id} has None sigma_gradient, using 0.0")
+                sigma_gradient = 0.0
+            if sigma_threshold is None:
+                logger.warning(f"Track {db_track.track_id} has None sigma_threshold, using 0.01")
+                sigma_threshold = 0.01
+            if sigma_pass is None:
+                sigma_pass = sigma_gradient <= sigma_threshold
+
+        if is_untrimmed:
+            linearity_error_val = None
+            linearity_pass_val = None
+            optimal_offset_val = None  # No trim ran → no offset was applied.
+        else:
+            linearity_error_val = abs(db_track.final_linearity_error_shifted or 0.0)
+            linearity_pass_val = db_track.linearity_pass if db_track.linearity_pass is not None else False
+            optimal_offset_val = db_track.optimal_offset or 0.0
 
         try:
             return TrackData(
@@ -2515,9 +2621,9 @@ class DatabaseManager:
                 sigma_gradient=sigma_gradient,
                 sigma_threshold=sigma_threshold,
                 sigma_pass=sigma_pass,
-                optimal_offset=db_track.optimal_offset or 0.0,
-                linearity_error=abs(db_track.final_linearity_error_shifted or 0.0),
-                linearity_pass=db_track.linearity_pass if db_track.linearity_pass is not None else False,
+                optimal_offset=optimal_offset_val,
+                linearity_error=linearity_error_val,
+                linearity_pass=linearity_pass_val,
                 linearity_fail_points=db_track.linearity_fail_points or 0,
                 unit_length=db_track.unit_length,
                 untrimmed_resistance=db_track.untrimmed_resistance,
@@ -2882,7 +2988,9 @@ class DatabaseManager:
             cutoff_date = datetime.now() - timedelta(days=days_back)
 
             # Single query with join to get all data at once - no N+1 problem
-            # Filter by trim date (file_date)
+            # Filter by trim date (file_date). UNTRIMMED tracks filtered at the
+            # JOIN level so they don't pollute avg_sigma/threshold or deflate
+            # pass rates (their sigma columns are NULL anyway).
             model_data = (
                 session.query(
                     DBAnalysisResult.model,
@@ -2899,7 +3007,13 @@ class DatabaseManager:
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
                 )
-                .outerjoin(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                .outerjoin(
+                    DBTrackResult,
+                    and_(
+                        DBAnalysisResult.id == DBTrackResult.analysis_id,
+                        DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+                    ),
+                )
                 .filter(
                     DBAnalysisResult.model.isnot(None),
                     DBAnalysisResult.file_date >= cutoff_date
@@ -3020,7 +3134,8 @@ class DatabaseManager:
                         .filter(
                             DBAnalysisResult.model == model,
                             DBAnalysisResult.file_date >= older_cutoff,
-                            DBAnalysisResult.file_date < older_end
+                            DBAnalysisResult.file_date < older_end,
+                            DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                         )
                         .first()
                     )
@@ -3032,7 +3147,8 @@ class DatabaseManager:
                         .join(DBAnalysisResult)
                         .filter(
                             DBAnalysisResult.model == model,
-                            DBAnalysisResult.file_date >= rolling_cutoff
+                            DBAnalysisResult.file_date >= rolling_cutoff,
+                            DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                         )
                         .first()
                     )
@@ -3183,6 +3299,9 @@ class DatabaseManager:
                     DBAnalysisResult.model.isnot(None),
                     DBAnalysisResult.model != "Unknown",
                     DBAnalysisResult.file_date >= cutoff_date,
+                    # UNTRIMMED tracks have no linearity outcome and would
+                    # inflate the denominator for "fail rate" / "near-miss".
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBAnalysisResult.model)
                 .having(func.count(DBTrackResult.id) >= min_samples)
@@ -7035,6 +7154,10 @@ class DatabaseManager:
         retrim_rate = % of units that needed >1 trim cycle.
 
         FT-derived rows have NULL trim_pass_count and are excluded.
+        UNTRIMMED tracks (test-sweep-only files) carry trim_pass_count=0
+        but never went through a laser-trim cycle, so they would skew the
+        average toward "easy" and inflate the retrim_rate denominator;
+        excluded by status.
         Models with fewer than `min_units` qualifying records are excluded
         so a single outlier doesn't dominate the chart.
 
@@ -7060,6 +7183,7 @@ class DatabaseManager:
             ).join(DBTrackResult).filter(
                 DBAnalysisResult.file_date >= cutoff,
                 DBTrackResult.trim_pass_count.isnot(None),
+                DBTrackResult.status != DBStatusType.UNTRIMMED.name,
             ).group_by(DBAnalysisResult.model).having(
                 func.count(DBTrackResult.id) >= min_units
             ).order_by(desc("avg_passes")).limit(limit).all()
