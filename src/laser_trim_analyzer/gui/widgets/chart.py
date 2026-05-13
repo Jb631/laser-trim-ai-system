@@ -1809,6 +1809,37 @@ class ChartWidget(ctk.CTkFrame):
         self.figure.tight_layout()
         self.canvas.draw_idle()
 
+    def overlay_line(
+        self,
+        series: list,
+        label: str,
+        color: str = "#0d6efd",
+        linestyle: str = "--",
+    ) -> None:
+        """Draw an additional line on the most-recently-rendered axes.
+
+        Intended to overlay a secondary metric onto plot_pchart's axes
+        without redrawing the primary plot. Skip silently if the chart
+        has no axes yet.
+        """
+        ax = self.figure.gca() if self.figure.axes else None
+        if ax is None:
+            return
+        # Series may contain None for missing dates; matplotlib handles
+        # None by breaking the line, which is the right behavior.
+        x = list(range(len(series)))
+        ax.plot(
+            x, series,
+            color=color, linestyle=linestyle, linewidth=1.8,
+            marker="o", markersize=3,
+            label=label, alpha=0.85,
+        )
+        # Refresh legend to include the overlay
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, loc="lower right", fontsize=8, framealpha=0.85)
+        self.canvas.draw_idle()
+
     def plot_pareto(
         self,
         labels: List[str],

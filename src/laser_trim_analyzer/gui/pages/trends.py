@@ -1481,6 +1481,40 @@ class TrendsPage(ctk.CTkFrame):
             ylabel="Pass Rate (%)",
         )
 
+        # Overlay unit-yield line on the P-chart so the operator can see
+        # the divergence — track-level pass rate (sensitive to retrims)
+        # vs unit-level yield (sensitive to whether anything actually
+        # shipped). Gated by the enable_unit_yield_view feature flag so
+        # the new view can be hidden without removing the data.
+        try:
+            cfg = get_config()
+            show_unit_yield = bool(getattr(
+                cfg.active_models, "enable_unit_yield_view", True
+            ))
+        except Exception:
+            show_unit_yield = True
+
+        if show_unit_yield:
+            model_for_query = self.selected_model.replace(" (inactive)", "")
+            try:
+                db = get_database()
+                unit_rows = db.get_unit_yield_trend(
+                    model=model_for_query, days_back=self.selected_days
+                )
+            except Exception as e:
+                logger.debug(f"unit yield trend unavailable: {e}")
+                unit_rows = []
+            if unit_rows:
+                # Align unit-yield to the same date axis the P-chart uses.
+                yield_by_date = {r["date"]: r["yield_pct"] for r in unit_rows}
+                unit_yield_series = [yield_by_date.get(d) for d in dates]
+                self.linearity_chart.overlay_line(
+                    series=unit_yield_series,
+                    label="Unit Yield (sections all-pass)",
+                    color="#2c7fb8",
+                    linestyle="--",
+                )
+
     def _refresh_data(self):
         """Refresh data from database."""
         self.status_label.configure(text="Loading...")
