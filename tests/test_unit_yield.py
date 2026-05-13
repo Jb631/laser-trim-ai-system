@@ -28,6 +28,7 @@ class TestExtractShopNumber:
 
     @pytest.mark.parametrize("serial", [
         "TEST", "test", "x", "Unknown", "", None,
+        "٣P",  # Persian digit 3 + P — must not match under re.ASCII
     ])
     def test_returns_none_for_junk_serials(self, serial):
         assert extract_shop_number(serial) is None

@@ -14,6 +14,7 @@ Operations:
 
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,17 +58,18 @@ logger = logging.getLogger(__name__)
 # Sections (P, R, etc.) and same-day retrims all collapse to the same unit_id.
 # See docs/superpowers/specs/2026-05-08-unit-level-yield-design.md.
 # ---------------------------------------------------------------------------
-import re as _re
 
 def extract_shop_number(serial: Optional[str]) -> Optional[str]:
     """Return the leading-digit prefix of a serial, or None if absent.
 
     Examples: "3P" -> "3", "0009" -> "0009", "1A" -> "1", "TEST" -> None.
     Whitespace is stripped first. None / empty string return None.
+    The re.ASCII flag restricts \\d to [0-9] so Unicode decimal digits
+    (e.g. Arabic-Indic '٣') do not silently match.
     """
     if not serial:
         return None
-    match = _re.match(r"^\d+", serial.strip())
+    match = re.match(r"^\d+", serial.strip(), re.ASCII)
     return match.group(0) if match else None
 
 
