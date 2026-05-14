@@ -2997,41 +2997,56 @@ class TrendsPage(ctk.CTkFrame):
             fig = chart.figure
             gs = fig.add_gridspec(2, 2, hspace=0.55, wspace=0.25)
 
-            # ---- Top-left: Sigma drift with control limits ----
+            # Compute the bucket index that marks the baseline → recent boundary.
+            # Used as the x-coordinate for the orange vertical line on each panel.
+            baseline_cutoff_iso = data.get("baseline_cutoff_date")
+            def _cutoff_bucket(series, n_per_bucket=50):
+                if not baseline_cutoff_iso or not series:
+                    return None
+                from datetime import datetime as _dt
+                cutoff = _dt.fromisoformat(baseline_cutoff_iso)
+                # Index of the first row whose date >= cutoff
+                for i, (iso, _) in enumerate(series):
+                    if _dt.fromisoformat(iso) >= cutoff:
+                        return i // n_per_bucket
+                return None  # cutoff is past the end of the window
+
+            process = data.get("process", {})
+
+            # ---- Top-left: Sigma drift (hybrid SPC) ----
             ax_sigma = fig.add_subplot(gs[0, 0])
             chart._style_axis(ax_sigma)
-            sigma_pts = data["sigma_series"]
+            sigma_pts = data.get("sigma_series", [])
+
             if not sigma_pts:
+                self._draw_empty_state(ax_sigma, "No data in window")
+            elif not (detector and detector.has_baseline):
                 self._draw_empty_state(
                     ax_sigma,
-                    "No sigma data in window",
+                    f"Need ≥30 baseline samples to enable SPC; "
+                    f"have {len(sigma_pts)}. Train this model in Settings.",
                 )
             else:
-                from datetime import datetime as _dt
-                dates = [_dt.fromisoformat(d) for d, _ in sigma_pts]
-                values = [v for _, v in sigma_pts]
-                ax_sigma.plot(dates, values, color="#0d6efd", linewidth=1.2)
-                if detector and detector.has_baseline:
-                    lower, center, upper = detector.get_control_limits()
-                    ax_sigma.axhline(upper, color="#dc3545",
-                                     linestyle="--", linewidth=0.6)
-                    ax_sigma.axhline(lower, color="#dc3545",
-                                     linestyle="--", linewidth=0.6)
-                    ax_sigma.axhline(center, color="#666", linewidth=0.5)
-                    if detector.baseline_cutoff_date:
-                        ax_sigma.axvline(
-                            detector.baseline_cutoff_date,
-                            color="#fd7e14", linestyle="--", linewidth=0.6,
-                        )
-            ax_sigma.set_title("Sigma Drift", loc="left",
-                              fontsize=11, fontweight="bold")
-            ax_sigma.tick_params(axis="x", rotation=30, labelsize=8)
+                violations = _draw_sigma_panel(
+                    ax_sigma,
+                    sigma_series=sigma_pts,
+                    detector=detector,
+                    baseline_cutoff_bucket_index=_cutoff_bucket(sigma_pts),
+                )
+                if violations > 0:
+                    title_status = f"↑ OOC · {violations} violations"
+                else:
+                    title_status = "✓ stable"
+                ax_sigma.set_title(
+                    f"Sigma Drift  ·  {title_status}",
+                    loc="left", fontsize=11, fontweight="bold",
+                )
+            ax_sigma.tick_params(axis="x", rotation=0, labelsize=8)
 
-            # ---- Three process panels ----
+            # ---- Top-right + bottom-left: continuous process panels ----
             metric_axes = (
                 ("untrimmed_resistance", gs[0, 1], "Untrimmed Resistance"),
                 ("measured_electrical_angle", gs[1, 0], "Electrical Angle"),
-                ("trim_pass_count", gs[1, 1], "Trim Passes"),
             )
             meta = self._db_metric_meta()
             for metric, slot, title in metric_axes:
@@ -3040,29 +3055,33 @@ class TrendsPage(ctk.CTkFrame):
                 panel = process.get(metric, {})
                 series = panel.get("series", [])
                 if not series:
-                    self._draw_empty_state(
-                        ax, f"No {title.lower()} data in window",
-                    )
-                    ax.set_title(title, loc="left",
-                                 fontsize=11, fontweight="bold")
-                    ax.tick_params(axis="x", rotation=30, labelsize=8)
+                    self._draw_empty_state(ax, f"No {title.lower()} data in window")
+                    ax.tick_params(axis="x", rotation=0, labelsize=8)
                     continue
-                from datetime import datetime as _dt
-                dates = [_dt.fromisoformat(d) for d, _ in series]
-                values = [v for _, v in series]
+
+                buckets = _compute_buckets(series, n_per_bucket=50)
                 z = panel.get("z_score") or 0.0
-                color = (
-                    "#ff8080" if abs(z) >= 3.0
-                    else "#ffb060" if abs(z) >= 2.0
-                    else "#7ed99e"
+                if abs(z) >= 3.0:
+                    color = "#ff8080"
+                    pill = ("↑ OOC" if z > 0 else "↓ OOC")
+                elif abs(z) >= 2.0:
+                    color = "#ffb060"
+                    pill = ("↑ DRIFT" if z > 0 else "↓ DRIFT")
+                else:
+                    color = "#7ed99e"
+                    pill = "✓ stable"
+
+                _draw_smoothed_panel(
+                    ax,
+                    buckets=buckets,
+                    baseline_mean=panel.get("baseline_mean"),
+                    baseline_cutoff_bucket_index=_cutoff_bucket(series),
+                    color=color,
                 )
-                ax.plot(dates, values, color=color, linewidth=1.1)
-                base_mean = panel.get("baseline_mean")
-                if base_mean is not None:
-                    ax.axhline(base_mean, color="#666", linewidth=0.5)
-                # Subtitle line under the title with values
+
                 fmt = meta.get(metric, {}).get("fmt", "{:.2f}")
                 unit = meta.get(metric, {}).get("unit", "")
+                base_mean = panel.get("baseline_mean")
                 base_s = fmt.format(base_mean) if base_mean is not None else "—"
                 rec_s = (
                     fmt.format(panel["recent_mean"])
@@ -3072,10 +3091,84 @@ class TrendsPage(ctk.CTkFrame):
                 pct_s = f"({pct:+.1f}%)" if pct is not None else ""
                 z_s = f"z={z:+.1f}" if panel.get("z_score") is not None else ""
                 ax.set_title(
-                    f"{title}  ·  {base_s} → {rec_s} {unit} {pct_s}  {z_s}",
+                    f"{title}  ·  {pill}  ·  "
+                    f"{base_s} → {rec_s} {unit} {pct_s}  {z_s}",
                     loc="left", fontsize=10, fontweight="bold",
                 )
-                ax.tick_params(axis="x", rotation=30, labelsize=8)
+                ax.tick_params(axis="x", rotation=0, labelsize=8)
+
+            # ---- Bottom-right: Retrim Rate ----
+            ax_retrim = fig.add_subplot(gs[1, 1])
+            chart._style_axis(ax_retrim)
+            retrim_series = process.get("retrim_rate_series", [])
+
+            if not retrim_series:
+                self._draw_empty_state(
+                    ax_retrim,
+                    "trim_pass_count not captured for this window's rows. "
+                    "Re-parse to populate.",
+                )
+            else:
+                # Convert 0/1 → bucket retrim rate %.
+                buckets = _compute_buckets(retrim_series, n_per_bucket=50)
+                # Mean of 0/1 values * 100 = percentage. SE scales the same way.
+                for b in buckets:
+                    b["mean"] = b["mean"] * 100.0
+                    b["stddev"] = b["stddev"] * 100.0
+                    b["se"] = b["se"] * 100.0
+
+                # baseline retrim rate from the rows before baseline_cutoff
+                baseline_rate = None
+                recent_rate = None
+                if baseline_cutoff_iso:
+                    from datetime import datetime as _dt
+                    cutoff = _dt.fromisoformat(baseline_cutoff_iso)
+                    base_vals = [v for iso, v in retrim_series
+                                 if _dt.fromisoformat(iso) < cutoff]
+                    recent_vals = [v for iso, v in retrim_series
+                                   if _dt.fromisoformat(iso) >= cutoff]
+                    if base_vals:
+                        baseline_rate = sum(base_vals) / len(base_vals) * 100.0
+                    if recent_vals:
+                        recent_rate = sum(recent_vals) / len(recent_vals) * 100.0
+
+                # Status pill: rising if recent ≥ 2× baseline AND recent ≥ 10%
+                if (baseline_rate is not None and recent_rate is not None
+                        and recent_rate >= 10.0
+                        and recent_rate >= 2.0 * max(baseline_rate, 1.0)):
+                    pill = "↑ rising"
+                    color = "#ffb060"
+                elif recent_rate is not None and recent_rate >= 15.0:
+                    pill = "↑ OOC"
+                    color = "#ff8080"
+                else:
+                    pill = "✓ stable"
+                    color = "#7ed99e"
+
+                _draw_smoothed_panel(
+                    ax_retrim,
+                    buckets=buckets,
+                    baseline_mean=baseline_rate,
+                    baseline_cutoff_bucket_index=_cutoff_bucket(retrim_series),
+                    color=color,
+                )
+                # Y-axis: 0% lower bound; upper bound max(20%, 1.5 × peak).
+                peak = max((b["mean"] for b in buckets), default=0.0)
+                ax_retrim.set_ylim(0.0, max(20.0, 1.5 * peak))
+
+                base_s = f"{baseline_rate:.1f}%" if baseline_rate is not None else "—"
+                rec_s = f"{recent_rate:.1f}%" if recent_rate is not None else "—"
+                delta_pp = (
+                    f"({recent_rate - baseline_rate:+.1f} pp)"
+                    if baseline_rate is not None and recent_rate is not None
+                    else ""
+                )
+                ax_retrim.set_title(
+                    f"Retrim Rate  ·  {pill}  ·  "
+                    f"{base_s} → {rec_s}  {delta_pp}",
+                    loc="left", fontsize=10, fontweight="bold",
+                )
+            ax_retrim.tick_params(axis="x", rotation=0, labelsize=8)
 
             try:
                 fig.tight_layout()
