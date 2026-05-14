@@ -2927,7 +2927,7 @@ class TrendsPage(ctk.CTkFrame):
           Header pills (model · status · days drifting · score · units)
           2×2 chart grid:
             [ Sigma Drift           | Untrimmed Resistance ]
-            [ Electrical Angle      | Trim Passes          ]
+            [ Electrical Angle      | Retrim Rate          ]
         """
         if not self._drift_filter_model:
             return
@@ -3063,6 +3063,12 @@ class TrendsPage(ctk.CTkFrame):
                 )
                 if violations > 0:
                     title_status = f"↑ OOC · {violations} violations"
+                elif detector.is_drifting:
+                    direction = "↑" if (
+                        detector.drift_direction
+                        and detector.drift_direction.value == "up"
+                    ) else "↓"
+                    title_status = f"{direction} DRIFT"
                 else:
                     title_status = "✓ stable"
                 ax_sigma.set_title(

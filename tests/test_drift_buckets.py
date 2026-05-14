@@ -312,3 +312,34 @@ def test_draw_sigma_panel_no_baseline_dots_only():
     # No control-limit reference lines (axhline) drawn — primary contract is
     # "violations=0, no crash"
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: _cutoff_bucket_index tests
+# ---------------------------------------------------------------------------
+
+def test_cutoff_bucket_index_returns_correct_bucket():
+    """The cutoff bucket index is computed via i // n_per_bucket on the first
+    row whose date is on or after the cutoff."""
+    from laser_trim_analyzer.gui.pages.trends import _cutoff_bucket_index
+    base = datetime(2026, 1, 1)
+    series = [((base + timedelta(hours=i)).isoformat(), 1.0) for i in range(100)]
+    cutoff = (base + timedelta(hours=55)).isoformat()
+    # Row 55 // 50 = bucket 1
+    assert _cutoff_bucket_index(series, cutoff, n_per_bucket=50) == 1
+
+
+def test_cutoff_bucket_index_past_end_returns_none():
+    """When the cutoff is past every row, no bucket index applies."""
+    from laser_trim_analyzer.gui.pages.trends import _cutoff_bucket_index
+    series = [("2026-01-01T00:00:00", 1.0)]
+    assert _cutoff_bucket_index(series, "2027-01-01T00:00:00") is None
+
+
+def test_cutoff_bucket_index_no_series_or_cutoff_returns_none():
+    """Empty series OR None cutoff → None (no vertical line to draw)."""
+    from laser_trim_analyzer.gui.pages.trends import _cutoff_bucket_index
+    assert _cutoff_bucket_index([], "2026-01-01T00:00:00") is None
+    assert _cutoff_bucket_index(
+        [("2026-01-01T00:00:00", 1.0)], None
+    ) is None
