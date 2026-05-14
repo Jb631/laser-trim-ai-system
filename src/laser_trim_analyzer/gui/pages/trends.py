@@ -69,6 +69,8 @@ _SIGMA_IN_CONTROL_DOT = "#7ed99e"  # green dot
 _SIGMA_OOC_DOT = "#ff4040"         # red dot for out-of-control points
 _SIGMA_NO_BASELINE_DOT = "#888888" # gray when there's no baseline
 _SIGMA_OVERLAY_COLOR = "#ffffff"   # smoothed mean overlay
+_SIGMA_CENTER_COLOR = "#666"
+_SIGMA_CENTER_LINEWIDTH = 0.5
 
 
 def _compute_buckets(
@@ -212,6 +214,7 @@ def _draw_sigma_panel(
     violations = 0
     for i, (_, value) in enumerate(sigma_series):
         bucket_idx = i // n_per_bucket
+        # Divisor 2.5 keeps max |jitter| below 0.2, well inside the bucket width.
         jitter = ((i % n_per_bucket) - n_per_bucket / 2) / (n_per_bucket * 2.5)
         xs.append(bucket_idx + jitter)
         ys.append(value)
@@ -230,7 +233,7 @@ def _draw_sigma_panel(
         if lcl is not None:
             ax.axhline(lcl, color=_SIGMA_LIMIT_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH)
         if center is not None:
-            ax.axhline(center, color="#666", linewidth=0.5)
+            ax.axhline(center, color=_SIGMA_CENTER_COLOR, linewidth=_SIGMA_CENTER_LINEWIDTH)
     if baseline_cutoff_bucket_index is not None:
         ax.axvline(
             baseline_cutoff_bucket_index,
@@ -246,7 +249,7 @@ def _draw_sigma_panel(
         if len(buckets) >= 2:
             bxs = [b["bucket_index"] for b in buckets]
             means = [b["mean"] for b in buckets]
-            ax.plot(bxs, means, color=_SIGMA_OVERLAY_COLOR, linewidth=1.6, zorder=3)
+            ax.plot(bxs, means, color=_SIGMA_OVERLAY_COLOR, linewidth=_MEAN_LINEWIDTH, zorder=3)
 
     return violations
 
