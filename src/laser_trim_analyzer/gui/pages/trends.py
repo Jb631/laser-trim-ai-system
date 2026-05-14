@@ -56,6 +56,14 @@ def _ensure_chart_module():
 # Drift-dashboard helpers (module-level for testability)
 # ============================================================================
 
+# Drift-panel visual constants — shared across _draw_smoothed_panel and
+# (in Task 4) _draw_sigma_panel so palette changes are a single-point edit.
+_BASELINE_COLOR = "#888"
+_BASELINE_CUTOFF_COLOR = "#fd7e14"
+_REF_LINEWIDTH = 0.7
+_MEAN_LINEWIDTH = 1.8
+
+
 def _compute_buckets(
     series: List[Tuple[str, float]],
     n_per_bucket: int = 50,
@@ -127,8 +135,8 @@ def _draw_smoothed_panel(
     Adds, in order:
       - a horizontal gray dashed line at baseline_mean (if not None)
       - a vertical orange dashed line at baseline_cutoff_bucket_index (if not None)
-      - the smoothed mean line (always, when >= 2 buckets)
       - the +/-1 SE confidence band (filled, alpha 0.15; when >= 2 buckets)
+      - the smoothed mean line, drawn on top of the band (always, when >= 2 buckets)
       - a single dot at the bucket value when there's exactly one bucket
         (single-bucket case)
 
@@ -141,11 +149,11 @@ def _draw_smoothed_panel(
 
     # Reference lines first so they end up under the series
     if baseline_mean is not None:
-        ax.axhline(baseline_mean, color="#888", linestyle="--", linewidth=0.7)
+        ax.axhline(baseline_mean, color=_BASELINE_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH)
     if baseline_cutoff_bucket_index is not None:
         ax.axvline(
             baseline_cutoff_bucket_index,
-            color="#fd7e14", linestyle="--", linewidth=0.7,
+            color=_BASELINE_CUTOFF_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH,
         )
 
     xs = [b["bucket_index"] for b in buckets]
@@ -162,7 +170,7 @@ def _draw_smoothed_panel(
     lower = [m - s for m, s in zip(means, ses)]
 
     ax.fill_between(xs, lower, upper, color=color, alpha=0.15, linewidth=0)
-    ax.plot(xs, means, color=color, linewidth=1.8)
+    ax.plot(xs, means, color=color, linewidth=_MEAN_LINEWIDTH)
 
 
 class _Sparkline(tk.Canvas):

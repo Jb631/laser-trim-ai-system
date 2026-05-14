@@ -5,6 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import matplotlib
+matplotlib.use("Agg")  # headless; must run before any pyplot import
+import matplotlib.pyplot as plt
+
 import pytest
 
 
@@ -144,12 +148,6 @@ def test_compute_buckets_single_value_zero_stddev(series_factory):
 # Task 3: _draw_smoothed_panel tests
 # ---------------------------------------------------------------------------
 
-import matplotlib
-matplotlib.use("Agg")  # headless; do this before pyplot import
-import matplotlib.pyplot as plt
-from datetime import datetime as _dt
-
-
 def _make_axes():
     fig, ax = plt.subplots()
     return fig, ax
@@ -160,7 +158,7 @@ def test_draw_smoothed_panel_renders_line_and_band():
         _compute_buckets, _draw_smoothed_panel,
     )
     series = [
-        ((_dt(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0 + i * 0.01)
+        ((datetime(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0 + i * 0.01)
         for i in range(20)
     ]
     buckets = _compute_buckets(series, n_per_bucket=10)
@@ -187,7 +185,7 @@ def test_draw_smoothed_panel_no_baseline_skips_baseline_line():
         _compute_buckets, _draw_smoothed_panel,
     )
     series = [
-        ((_dt(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0)
+        ((datetime(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0)
         for i in range(20)
     ]
     buckets = _compute_buckets(series, n_per_bucket=10)
@@ -211,7 +209,7 @@ def test_draw_smoothed_panel_single_bucket_dot_no_line():
     from laser_trim_analyzer.gui.pages.trends import (
         _compute_buckets, _draw_smoothed_panel,
     )
-    series = [(_dt(2026, 1, 1).isoformat(), 1.0)]
+    series = [(datetime(2026, 1, 1).isoformat(), 1.0)]
     buckets = _compute_buckets(series, n_per_bucket=50)
     assert len(buckets) == 1
     fig, ax = _make_axes()
