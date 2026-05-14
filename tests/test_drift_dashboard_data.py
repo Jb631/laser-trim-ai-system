@@ -22,7 +22,8 @@ def db(tmp_path):
     return DatabaseManager(tmp_path / "test.db")
 
 
-def _add_analysis(db, model, file_date, sigma_values=(0.01,), serial="0001"):
+def _add_analysis(db, model, file_date, sigma_values=(0.01,), serial="0001",
+                  trim_pass_count=None):
     """Helper: insert one analysis row with N tracks, each with given sigma."""
     with db.session() as s:
         ar = DBAnalysisResult(
@@ -51,6 +52,7 @@ def _add_analysis(db, model, file_date, sigma_values=(0.01,), serial="0001"):
                 travel_length=1.0,
                 linearity_spec=0.01,
                 risk_category=DBRiskCategory.LOW,
+                trim_pass_count=trim_pass_count,
             )
             s.add(tr)
         s.commit()
@@ -245,6 +247,72 @@ def test_get_drift_state_for_models_includes_stable_models(tmp_path):
     row = data["8275"]
     assert row["is_drifting"] is False
     assert row["drift_start_date"] is None
+
+
+def test_get_model_drift_dashboard_includes_baseline_cutoff_date(db):
+    """baseline_cutoff_date must be `now - recent_days`, in ISO format,
+    so all four panels can draw the same vertical reference line."""
+    from datetime import datetime, timedelta
+
+    _add_analysis(db, "TEST-A", datetime.now() - timedelta(days=5),
+                  sigma_values=(0.01,))
+
+    result = db.get_model_drift_dashboard(
+        model="TEST-A", days_back=90, recent_days=14
+    )
+
+    assert "baseline_cutoff_date" in result, (
+        "Top-level dict must include baseline_cutoff_date"
+    )
+    cutoff = datetime.fromisoformat(result["baseline_cutoff_date"])
+    expected = datetime.now() - timedelta(days=14)
+    # within a small wall-clock delta of expected
+    assert abs((cutoff - expected).total_seconds()) < 5
+
+
+def test_get_model_drift_dashboard_includes_retrim_rate_series(db):
+    """retrim_rate_series is one (iso_date, 0_or_1) per non-NULL row,
+    where 1 means trim_pass_count > 1."""
+    from datetime import datetime, timedelta
+
+    # Three rows: first two needed only 1 pass, third needed 2.
+    base_date = datetime.now() - timedelta(days=10)
+    for i, tpc in enumerate([1, 1, 2]):
+        _add_analysis(
+            db, "TEST-B",
+            base_date + timedelta(hours=i),
+            sigma_values=(0.01,),
+            serial=f"{i:04d}",
+            trim_pass_count=tpc,
+        )
+
+    result = db.get_model_drift_dashboard(
+        model="TEST-B", days_back=90, recent_days=14
+    )
+
+    series = result["process"]["retrim_rate_series"]
+    # 3 rows in, 3 entries out, values 0,0,1
+    assert len(series) == 3
+    assert [v for _, v in series] == [0, 0, 1]
+
+
+def test_get_model_drift_dashboard_retrim_rate_skips_null_trim_pass_count(db):
+    """Rows with NULL trim_pass_count (pre-feature data) must be excluded
+    from retrim_rate_series so the panel can detect the all-NULL case."""
+    from datetime import datetime, timedelta
+
+    _add_analysis(
+        db, "TEST-C",
+        datetime.now() - timedelta(days=5),
+        sigma_values=(0.01,),
+        trim_pass_count=None,
+    )
+
+    result = db.get_model_drift_dashboard(
+        model="TEST-C", days_back=90, recent_days=14
+    )
+
+    assert result["process"]["retrim_rate_series"] == []
 
 
 def test_get_models_with_sigma_data_excludes_untrimmed_only(tmp_path):

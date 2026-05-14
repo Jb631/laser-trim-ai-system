@@ -7795,6 +7795,7 @@ class DatabaseManager:
         }
         process_baseline: Dict[str, List[float]] = {k: [] for k in process_series}
         process_recent: Dict[str, List[float]] = {k: [] for k in process_series}
+        retrim_rate_series: List[Tuple[str, int]] = []
 
         for file_date, sigma, ur, mea, tpc in rows:
             if file_date is None:
@@ -7818,6 +7819,17 @@ class DatabaseManager:
                     process_recent[metric].append(value)
                 else:
                     process_baseline[metric].append(value)
+
+            # Retrim rate: one (iso_date, 0_or_1) per non-NULL trim_pass_count row.
+            # 1 iff this row needed more than one trim pass. NULL rows are
+            # skipped so the panel can detect the "all pre-feature" case.
+            if tpc is not None:
+                try:
+                    tpc_int = int(tpc)
+                except (TypeError, ValueError):
+                    tpc_int = None
+                if tpc_int is not None:
+                    retrim_rate_series.append((iso, 1 if tpc_int > 1 else 0))
 
         process: Dict[str, Dict[str, Any]] = {}
         for metric in process_series:
@@ -7856,8 +7868,12 @@ class DatabaseManager:
         return {
             "model": model,
             "unit_count": len(rows),
+            "baseline_cutoff_date": recent_cutoff.isoformat(),
             "sigma_series": sigma_series,
-            "process": process,
+            "process": {
+                **process,
+                "retrim_rate_series": retrim_rate_series,
+            },
         }
 
     def get_drift_state_for_models(
