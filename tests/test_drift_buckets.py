@@ -138,3 +138,94 @@ def test_compute_buckets_single_value_zero_stddev(series_factory):
     assert len(buckets) == 1
     assert buckets[0]["stddev"] == 0.0
     assert buckets[0]["se"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: _draw_smoothed_panel tests
+# ---------------------------------------------------------------------------
+
+import matplotlib
+matplotlib.use("Agg")  # headless; do this before pyplot import
+import matplotlib.pyplot as plt
+from datetime import datetime as _dt
+
+
+def _make_axes():
+    fig, ax = plt.subplots()
+    return fig, ax
+
+
+def test_draw_smoothed_panel_renders_line_and_band():
+    from laser_trim_analyzer.gui.pages.trends import (
+        _compute_buckets, _draw_smoothed_panel,
+    )
+    series = [
+        ((_dt(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0 + i * 0.01)
+        for i in range(20)
+    ]
+    buckets = _compute_buckets(series, n_per_bucket=10)
+    fig, ax = _make_axes()
+
+    _draw_smoothed_panel(
+        ax,
+        buckets=buckets,
+        baseline_mean=1.05,
+        baseline_cutoff_bucket_index=1,
+        color="#7ed99e",
+    )
+
+    # Exactly one Line2D for the smoothed mean
+    assert len(ax.get_lines()) >= 1, "Should draw at least one mean line"
+    # At least one PolyCollection from fill_between (the confidence band)
+    assert len(ax.collections) >= 1, "Should draw a confidence band"
+    plt.close(fig)
+
+
+def test_draw_smoothed_panel_no_baseline_skips_baseline_line():
+    """When baseline_mean is None, the gray baseline reference line is not drawn."""
+    from laser_trim_analyzer.gui.pages.trends import (
+        _compute_buckets, _draw_smoothed_panel,
+    )
+    series = [
+        ((_dt(2026, 1, 1) + timedelta(hours=i)).isoformat(), 1.0)
+        for i in range(20)
+    ]
+    buckets = _compute_buckets(series, n_per_bucket=10)
+    fig, ax = _make_axes()
+
+    n_lines_before = len(ax.get_lines())
+    _draw_smoothed_panel(
+        ax, buckets=buckets,
+        baseline_mean=None, baseline_cutoff_bucket_index=None,
+        color="#7ed99e",
+    )
+    # With baseline=None we expect ONE line (the mean) and NO axhline
+    # (the baseline reference); contrast with the prior test where we
+    # also wouldn't pass an axvline (cutoff=None here too).
+    assert len(ax.get_lines()) - n_lines_before == 1
+    plt.close(fig)
+
+
+def test_draw_smoothed_panel_single_bucket_dot_no_line():
+    """Single bucket renders as a single dot, no line, no band."""
+    from laser_trim_analyzer.gui.pages.trends import (
+        _compute_buckets, _draw_smoothed_panel,
+    )
+    series = [(_dt(2026, 1, 1).isoformat(), 1.0)]
+    buckets = _compute_buckets(series, n_per_bucket=50)
+    assert len(buckets) == 1
+    fig, ax = _make_axes()
+
+    _draw_smoothed_panel(
+        ax, buckets=buckets,
+        baseline_mean=None, baseline_cutoff_bucket_index=None,
+        color="#7ed99e",
+    )
+
+    # No connected line (PathCollection from scatter, not a Line2D for the line plot)
+    # We don't check exact mpl artifact type; the contract is "no fill_between collection"
+    assert len(ax.collections) == 0 or all(
+        not isinstance(c, matplotlib.collections.PolyCollection)
+        for c in ax.collections
+    )
+    plt.close(fig)

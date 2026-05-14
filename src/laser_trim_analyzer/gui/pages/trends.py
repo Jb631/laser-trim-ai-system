@@ -115,6 +115,56 @@ def _compute_buckets(
     return out
 
 
+def _draw_smoothed_panel(
+    ax,
+    buckets: List[Dict[str, Any]],
+    baseline_mean: Optional[float],
+    baseline_cutoff_bucket_index: Optional[int],
+    color: str,
+) -> None:
+    """Draw a process-metric panel: smoothed mean + confidence band.
+
+    Adds, in order:
+      - a horizontal gray dashed line at baseline_mean (if not None)
+      - a vertical orange dashed line at baseline_cutoff_bucket_index (if not None)
+      - the smoothed mean line (always, when >= 2 buckets)
+      - the +/-1 SE confidence band (filled, alpha 0.15; when >= 2 buckets)
+      - a single dot at the bucket value when there's exactly one bucket
+        (single-bucket case)
+
+    The caller is responsible for setting the title, subtitle, x/y limits,
+    and ticks. This helper is intentionally pure with respect to those —
+    it only draws series content into the Axes.
+    """
+    if not buckets:
+        return
+
+    # Reference lines first so they end up under the series
+    if baseline_mean is not None:
+        ax.axhline(baseline_mean, color="#888", linestyle="--", linewidth=0.7)
+    if baseline_cutoff_bucket_index is not None:
+        ax.axvline(
+            baseline_cutoff_bucket_index,
+            color="#fd7e14", linestyle="--", linewidth=0.7,
+        )
+
+    xs = [b["bucket_index"] for b in buckets]
+    means = [b["mean"] for b in buckets]
+
+    if len(buckets) == 1:
+        # Single-bucket case: dot only, no line / no band.
+        ax.scatter([xs[0]], [means[0]], color=color, s=40, zorder=3)
+        return
+
+    # >= 2 buckets: smoothed line + confidence band
+    ses = [b["se"] for b in buckets]
+    upper = [m + s for m, s in zip(means, ses)]
+    lower = [m - s for m, s in zip(means, ses)]
+
+    ax.fill_between(xs, lower, upper, color=color, alpha=0.15, linewidth=0)
+    ax.plot(xs, means, color=color, linewidth=1.8)
+
+
 class _Sparkline(tk.Canvas):
     """Tiny inline line chart drawn on a tk.Canvas. Used inside table rows.
 
