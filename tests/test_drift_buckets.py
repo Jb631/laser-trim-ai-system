@@ -91,6 +91,8 @@ def test_compute_buckets_small_trailing_folds_into_previous():
 
     assert len(buckets) == 1
     assert buckets[0]["n"] == 52
+    assert buckets[0]["max_date"] == series[-1][0]   # folded rows extend max_date
+    assert buckets[0]["min_date"] == series[0][0]    # start date unchanged
 
 
 def test_compute_buckets_small_trailing_with_no_previous_renders_anyway():

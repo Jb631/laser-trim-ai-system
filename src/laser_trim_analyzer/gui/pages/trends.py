@@ -13,6 +13,7 @@ Features:
 """
 
 import customtkinter as ctk
+import math
 import tkinter as tk
 import logging
 from datetime import datetime, timedelta
@@ -74,8 +75,6 @@ def _compute_buckets(
     """
     if not series:
         return []
-
-    import math
 
     raw_buckets: List[List[Tuple[str, float]]] = []
     cur: List[Tuple[str, float]] = []
