@@ -315,6 +315,35 @@ def test_get_model_drift_dashboard_retrim_rate_skips_null_trim_pass_count(db):
     assert result["process"]["retrim_rate_series"] == []
 
 
+def test_get_model_drift_dashboard_retrim_rate_excludes_untrimmed_sweeps(db):
+    """trim_pass_count == 0 (test-sweep-only files) must be excluded from
+    retrim_rate_series — they weren't trimmed, so they don't belong in the
+    denominator. Spec language was 'non-NULL'; this pins the actual
+    contract (real trim runs only)."""
+    from datetime import datetime, timedelta
+
+    base_date = datetime.now() - timedelta(days=10)
+    # One real trim that passed (tpc=1), one untrimmed sweep (tpc=0),
+    # one real trim that needed a retrim (tpc=2).
+    for i, tpc in enumerate([1, 0, 2]):
+        _add_analysis(
+            db, "TEST-D",
+            base_date + timedelta(hours=i),
+            sigma_values=(0.01,),
+            serial=f"{i:04d}",
+            trim_pass_count=tpc,
+        )
+
+    result = db.get_model_drift_dashboard(
+        model="TEST-D", days_back=90, recent_days=14
+    )
+
+    series = result["process"]["retrim_rate_series"]
+    # 3 rows in, ONE (tpc=0) excluded, 2 entries out, values [0, 1]
+    assert len(series) == 2
+    assert [v for _, v in series] == [0, 1]
+
+
 def test_get_models_with_sigma_data_excludes_untrimmed_only(tmp_path):
     """Models whose only records are UNTRIMMED (test-sweep, no laser trim)
     must not appear in the sigma-data list — they have no sigma to drift

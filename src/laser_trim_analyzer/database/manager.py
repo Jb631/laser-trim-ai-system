@@ -7820,15 +7820,16 @@ class DatabaseManager:
                 else:
                     process_baseline[metric].append(value)
 
-            # Retrim rate: one (iso_date, 0_or_1) per non-NULL trim_pass_count row.
-            # 1 iff this row needed more than one trim pass. NULL rows are
-            # skipped so the panel can detect the "all pre-feature" case.
+            # Retrim rate: one (iso_date, 0_or_1) per row that was actually trimmed.
+            # NULL trim_pass_count = pre-feature data (not parsed yet).
+            # trim_pass_count == 0 = test-sweep-only file (no laser trim ran).
+            # Both are excluded so the rate denominator only counts real trim runs.
             if tpc is not None:
                 try:
                     tpc_int = int(tpc)
                 except (TypeError, ValueError):
                     tpc_int = None
-                if tpc_int is not None:
+                if tpc_int is not None and tpc_int > 0:
                     retrim_rate_series.append((iso, 1 if tpc_int > 1 else 0))
 
         process: Dict[str, Dict[str, Any]] = {}
