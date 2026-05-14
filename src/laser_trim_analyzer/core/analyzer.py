@@ -204,7 +204,10 @@ class Analyzer:
         # Validate data
         if len(positions) < 10 or len(errors) < 10:
             logger.warning(f"Insufficient data points for track {track_id}")
-            return self._create_failed_track(track_id, "Insufficient data points")
+            return self._create_failed_track(
+                track_id, "Insufficient data points",
+                trim_pass_count=track_data.get("trim_pass_count"),
+            )
 
         # Sigma analysis (with optional ML threshold)
         sigma_gradient, sigma_threshold = self._calculate_sigma(
@@ -1070,7 +1073,10 @@ class Analyzer:
 
         return result
 
-    def _create_failed_track(self, track_id: str, reason: str) -> TrackData:
+    def _create_failed_track(
+        self, track_id: str, reason: str,
+        trim_pass_count: Optional[int] = None,
+    ) -> TrackData:
         """Create a failed track result."""
         return TrackData(
             track_id=track_id,
@@ -1088,4 +1094,5 @@ class Analyzer:
             risk_category=RiskCategory.UNKNOWN,
             is_anomaly=True,
             anomaly_reason=reason,
+            trim_pass_count=trim_pass_count,
         )

@@ -229,6 +229,45 @@ class Processor:
                     station_compensation=track_data.get("station_compensation"),
                 )
 
+                # 8340 dual-spec reclassification: operators trim every unit on
+                # the 8340 sheet, then classify post-trim — units passing the
+                # tight ±0.02 spec stay as 8340; units that fail tight but pass
+                # the wider 8340-3 ±0.05 spec become 8340-3; units failing both
+                # stay as 8340 (a standard fail). Only triggers when the parsed
+                # model is "8340" (exact) AND a wide spec was extracted from
+                # cols 9/10 of the Lin Error sheet.
+                if (
+                    metadata.model == "8340"
+                    and not track_result.linearity_pass
+                    and track_data.get("upper_limits_wide")
+                ):
+                    wide_data = dict(track_data)
+                    wide_data["upper_limits"] = track_data["upper_limits_wide"]
+                    wide_data["lower_limits"] = track_data["lower_limits_wide"]
+                    wide_data["linearity_spec"] = (
+                        track_data["linearity_spec_wide"] or track_result.linearity_spec
+                    )
+                    wide_spec = self._get_spec_for_analysis("8340-3", is_final_test=False)
+                    wide_result = self.analyzer.analyze_track(
+                        wide_data,
+                        model="8340-3",
+                        linearity_type=wide_spec["linearity_type"],
+                        angle_spec=wide_spec["angle_spec"],
+                        angle_tol=wide_spec["angle_tol"],
+                        angle_tol_type=wide_spec["angle_tol_type"],
+                        station_compensation=track_data.get("station_compensation"),
+                    )
+                    if wide_result.linearity_pass:
+                        logger.info(
+                            f"{file_path.name}: reclassified 8340 -> 8340-3 "
+                            f"(passed wider ±{track_data['linearity_spec_wide']:.3f} spec)"
+                        )
+                        track_result = wide_result
+                        metadata.model = "8340-3"
+                        # Refresh predictor for the new model so the ML
+                        # override below uses the 8340-3 model's predictor.
+                        predictor = self._model_predictors.get("8340-3")
+
                 # Override failure_probability with ML predictor if available
                 if predictor:
                     try:

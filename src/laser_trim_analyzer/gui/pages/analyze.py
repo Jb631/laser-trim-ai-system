@@ -7,6 +7,7 @@ All file processing is done through the Process Files page.
 
 import customtkinter as ctk
 import logging
+import numpy as np
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
@@ -28,6 +29,35 @@ if TYPE_CHECKING:
     from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
 
 logger = logging.getLogger(__name__)
+
+
+def _recompute_fail_indices(shifted_errors, upper_limits, lower_limits):
+    """
+    Recompute per-position fail indices for chart display.
+
+    Must stay byte-for-byte aligned with Analyzer._count_fail_points so the
+    chart's visual judgment (and the export's title status) matches the
+    DB-stored linearity_pass exactly. Specifically: NaN error at a spec'd
+    position is a fail (zero-tolerance), NaN limits are skipped. Diverging
+    here is what caused chart-PASS / DB-FAIL disconnects in the past.
+    """
+    fail = []
+    if not upper_limits or not lower_limits:
+        return fail
+    for i, e in enumerate(shifted_errors):
+        if i >= len(upper_limits) or i >= len(lower_limits):
+            continue
+        u, l = upper_limits[i], lower_limits[i]
+        if u is None or l is None:
+            continue
+        if (isinstance(u, float) and np.isnan(u)) or (isinstance(l, float) and np.isnan(l)):
+            continue
+        if e is None or (isinstance(e, float) and np.isnan(e)):
+            fail.append(i)
+            continue
+        if e > u or e < l:
+            fail.append(i)
+    return fail
 
 
 class AnalyzePage(ctk.CTkFrame):
@@ -935,6 +965,8 @@ class AnalyzePage(ctk.CTkFrame):
                 self.chart.plot_error_vs_position(
                     positions=[],
                     trimmed_errors=[],
+                    upper_limits=track.upper_limits,
+                    lower_limits=track.lower_limits,
                     untrimmed_positions=track.untrimmed_positions,
                     untrimmed_errors=track.untrimmed_errors,
                     title=title,
@@ -956,11 +988,10 @@ class AnalyzePage(ctk.CTkFrame):
                 upper_limits = [track.linearity_spec] * len(track.position_data)
                 lower_limits = [-track.linearity_spec] * len(track.position_data)
 
-        # ALWAYS recalculate fail point indices (old DB data may have incorrect fail_points=0)
-        # Skip positions where limit is None (no spec = unlimited at that position)
+        # ALWAYS recalculate fail point indices (old DB data may have incorrect fail_points=0).
+        # Uses shared helper that mirrors Analyzer._count_fail_points.
         fail_indices = []
         if upper_limits and lower_limits:
-            # Apply theory-based rotation if theory data available, otherwise offset-only
             _k = getattr(track, 'optimal_slope', 0.0) or 0.0  # k factor (was slope)
             _theory = getattr(track, 'theory_volts', None)
             if _theory and _k != 0:
@@ -968,12 +999,7 @@ class AnalyzePage(ctk.CTkFrame):
                                   for i in range(len(track.error_data))]
             else:
                 shifted_errors = [e + track.optimal_offset for e in track.error_data]
-            for i, e in enumerate(shifted_errors):
-                if i < len(upper_limits) and i < len(lower_limits):
-                    # Only check positions that have spec limits (not None)
-                    if upper_limits[i] is not None and lower_limits[i] is not None:
-                        if e > upper_limits[i] or e < lower_limits[i]:
-                            fail_indices.append(i)
+            fail_indices = _recompute_fail_indices(shifted_errors, upper_limits, lower_limits)
 
         # Look up excluded points for this model
         excluded_indices = set()
@@ -992,19 +1018,20 @@ class AnalyzePage(ctk.CTkFrame):
         real_fail_indices = [i for i in fail_indices if i not in excluded_indices]
         actual_fail_count = len(real_fail_indices)
 
-        # Determine actual status based on recalculated fail points
-        # Use WARNING when one passes and one fails
+        # Determine actual status based on recalculated fail points.
+        # Mirror Analyzer status logic exactly (zero-tolerance linearity per
+        # the April 20 domain-rule fix): linearity fail → FAIL regardless of
+        # sigma. WARNING is reserved for sigma-fail-only (process health
+        # signal, no out-of-spec measurement).
         lin_pass = actual_fail_count == 0
         sigma_pass = track.sigma_pass
 
-        if lin_pass and sigma_pass:
-            status_str = "PASS"
-        elif lin_pass and not sigma_pass:
-            status_str = "WARNING (Sigma Fail)"
-        elif not lin_pass and sigma_pass:
-            status_str = "WARNING (Lin Fail)"
-        else:
+        if not lin_pass:
             status_str = "FAIL"
+        elif sigma_pass:
+            status_str = "PASS"
+        else:
+            status_str = "WARNING (Sigma Fail)"
 
         # Build title with model and SN for identification
         model = self.current_result.metadata.model if self.current_result else "?"
@@ -1994,23 +2021,13 @@ class AnalyzePage(ctk.CTkFrame):
                            alpha=0.15, color=QA_COLORS['spec_limit'],
                            where=~np.isnan(upper_plot) & ~np.isnan(lower_plot))
 
-        # Find and mark fail points (skip positions with None = no spec)
-        fail_indices = []
-        if upper_limits and lower_limits:
-            for i, e in enumerate(errors_shifted):
-                if i < len(upper_limits) and i < len(lower_limits):
-                    if upper_limits[i] is not None and lower_limits[i] is not None:
-                        if e > upper_limits[i] or e < lower_limits[i]:
-                            fail_indices.append(i)
+        # Find fail points — shared helper keeps this in lockstep with the
+        # interactive chart and with Analyzer._count_fail_points.
+        fail_indices = _recompute_fail_indices(errors_shifted, upper_limits, lower_limits)
 
-        if fail_indices:
-            fail_pos = [positions[i] for i in fail_indices]
-            fail_err = [errors_shifted[i] for i in fail_indices]
-            ax.scatter(fail_pos, fail_err, color=QA_COLORS['fail'],
-                      s=100, marker='x', linewidth=3,
-                      label=f'Fail Points ({len(fail_indices)})', zorder=5)
-
-        # Look up excluded points for this model and render them
+        # Look up excluded points for this model so the fail scatter and the
+        # pass/fail status both honor the model's exclusion list (matches the
+        # analyzer, which skips excluded indices during _count_fail_points).
         excluded_indices = set()
         try:
             from laser_trim_analyzer.database import get_database
@@ -2021,6 +2038,15 @@ class AnalyzePage(ctk.CTkFrame):
                 excluded_indices = parse_exclude_points(spec.get("exclude_points"))
         except Exception:
             pass
+
+        real_fail_indices = [i for i in fail_indices if i not in excluded_indices]
+
+        if real_fail_indices:
+            fail_pos = [positions[i] for i in real_fail_indices]
+            fail_err = [errors_shifted[i] for i in real_fail_indices]
+            ax.scatter(fail_pos, fail_err, color=QA_COLORS['fail'],
+                      s=100, marker='x', linewidth=3,
+                      label=f'Fail Points ({len(real_fail_indices)})', zorder=5)
 
         if excluded_indices:
             excluded_positions = [positions[i] for i in excluded_indices if i < len(positions)]
@@ -2037,17 +2063,18 @@ class AnalyzePage(ctk.CTkFrame):
         ax.set_xlabel('Position', fontsize=12)
         ax.set_ylabel('Error (Volts)', fontsize=12)
 
-        # Use recalculated lin_pass from fail_indices, not stored value
-        lin_pass = len(fail_indices) == 0
+        # Mirror Analyzer status logic exactly: linearity fail → FAIL
+        # (zero-tolerance, per April 20 cd0a250). WARNING is reserved for
+        # sigma-fail-only. Diverging here makes exported QA records say
+        # something different than the DB-stored status.
+        lin_pass = len(real_fail_indices) == 0
         sigma_pass = track.sigma_pass
-        if lin_pass and sigma_pass:
-            status_str = "PASS"
-        elif lin_pass and not sigma_pass:
-            status_str = "WARNING (Sigma Fail)"
-        elif not lin_pass and sigma_pass:
-            status_str = "WARNING (Lin Fail)"
-        else:
+        if not lin_pass:
             status_str = "FAIL"
+        elif sigma_pass:
+            status_str = "PASS"
+        else:
+            status_str = "WARNING (Sigma Fail)"
         ax.set_title(f'Track {track.track_id} - {status_str}', fontsize=14, fontweight='bold')
 
         ax.legend(loc='best', fontsize=9)

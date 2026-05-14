@@ -443,31 +443,51 @@ class ExcelParser:
             untrimmed_sheet = None
             trimmed_sheet = None
             # Count laser trim passes for this track. System A names sheets
-            # "<section> TRK<n> 0" (untrimmed), "<section> TRK<n> 1",
-            # "<section> TRK<n> 2", ... (intermediate passes), and
-            # "<section> TRK<n> TRM" (final).  Highest numeric suffix tells
-            # us how many trim cycles the equipment ran.
+            # in two conventions:
+            #   Older: "<sec> TRK<n> 0", "<sec> TRK<n> 1", "<sec> TRK<n> 2",
+            #     ... (intermediate passes), "<sec> TRK<n> TRM" (final).
+            #   Newer (e.g. 8895): "<sec> TRK<n> 0", "<sec> TRK<n> 1 TRM1",
+            #     "<sec> TRK<n> 2 TRM1", ... — every pass carries the TRM
+            #     suffix and the numeric position-3 part is the pass index.
+            # Read parts[2] (the pass index) for both styles and take the max
+            # across all matching sheets. The previous logic short-circuited on
+            # "TRM in name" and undercounted the newer convention to 1.
             max_trim_n = 0
             has_trm = False
+            highest_trm_sheet = None  # sheet for the highest numbered TRM pass
+            highest_trm_n = 0
 
             for sheet in xl.sheet_names:
                 sheet_upper = sheet.upper()
-                if track_id in sheet_upper:
-                    if " 0" in sheet or "_0" in sheet:
-                        untrimmed_sheet = sheet
-                    elif "TRM" in sheet_upper:
-                        trimmed_sheet = sheet
-                        has_trm = True
-                    else:
-                        # Look for trailing positive integer (intermediate trim pass)
-                        tail = sheet.rsplit(" ", 1)[-1]
-                        if tail.isdigit():
-                            n = int(tail)
-                            if n > 0 and n > max_trim_n:
-                                max_trim_n = n
+                if track_id not in sheet_upper:
+                    continue
+                parts = sheet.split()
+                if len(parts) < 3:
+                    continue
+                pass_part = parts[2]
+                sheet_has_trm = "TRM" in sheet_upper
 
-            # 0 intermediate sheets but a TRM exists → single trim pass.
-            # Otherwise the highest numbered sheet is the pass count.
+                if pass_part in ("0", "_0"):
+                    untrimmed_sheet = sheet
+                elif pass_part.isdigit() and int(pass_part) > 0:
+                    n = int(pass_part)
+                    if n > max_trim_n:
+                        max_trim_n = n
+                    if sheet_has_trm:
+                        has_trm = True
+                        if n > highest_trm_n:
+                            highest_trm_n = n
+                            highest_trm_sheet = sheet
+                elif pass_part.upper().startswith("TRM"):
+                    # Older convention: final sheet has no pass number, just "TRM".
+                    trimmed_sheet = sheet
+                    has_trm = True
+
+            # Prefer the highest-numbered TRM sheet for data extraction; that's
+            # the most recent trim result.
+            if highest_trm_sheet:
+                trimmed_sheet = highest_trm_sheet
+
             if max_trim_n > 0:
                 trim_pass_count = max_trim_n
             elif has_trm:
@@ -545,8 +565,7 @@ class ExcelParser:
             # Newer LTS files embed the track letter: e.g.
             #   6607_175_TB_Test Data_...  → Track B
             #   8232-1_196_TA_Test Data_... → Track A
-            import re as _re
-            _track_match = _re.search(r'_T([A-Z])_', file_path.name)
+            _track_match = re.search(r'_T([A-Z])_', file_path.name)
             sys_b_track_id = (
                 f"Track {_track_match.group(1)}"
                 if _track_match
@@ -671,6 +690,56 @@ class ExcelParser:
             num_data_points = len(positions)
             upper_limits = self._get_limit_column_data(df, columns["upper_limit"], data_start, num_data_points)
             lower_limits = self._get_limit_column_data(df, columns["lower_limit"], data_start, num_data_points)
+
+            # 8340 dual-spec: the Lin Error sheet for model 8340 carries a SECOND
+            # spec band — the wider 8340-3 ±0.05 tolerance — somewhere to the
+            # right of the tight spec. Older 8340 files put it at cols 9/10;
+            # newer "Optimized" files put cols 9/10 as a duplicate of the tight
+            # band and place the wide band at cols 25/26 instead. Rather than
+            # hard-code positions, scan for any (col, col+1) pair where the
+            # median differs from the tight spec. Operators trim against the
+            # tight spec; units that fail tight but pass wide are reclassified
+            # to 8340-3 in the processor.
+            #
+            # Gated on filename model == "8340" exactly. Per domain confirmation
+            # only 8340 has this dual-band layout; restricting here keeps the
+            # scan from running on every System B parse and removes any chance
+            # of a non-8340 file producing a false-positive wide spec that
+            # could mis-trigger reclassification if the processor guard ever
+            # regressed.
+            upper_limits_wide = None
+            lower_limits_wide = None
+            linearity_spec_wide = None
+            file_model, _ = self._parse_filename(file_path.name)
+            if system_type == SystemType.B and file_model == "8340":
+                tight_med_upper = self._median_valid(upper_limits)
+                # Need most rows populated so we don't false-match a metadata
+                # column that happens to have one or two +/- looking values.
+                min_valid = max(5, int(num_data_points * 0.8))
+                for col in range(columns["upper_limit"] + 2, df.shape[1] - 1):
+                    uw = self._get_limit_column_data(df, col, data_start, num_data_points)
+                    lw = self._get_limit_column_data(df, col + 1, data_start, num_data_points)
+                    valid_u = [u for u in uw if u is not None and not np.isnan(u)]
+                    valid_l = [l for l in lw if l is not None and not np.isnan(l)]
+                    if len(valid_u) < min_valid or len(valid_l) < min_valid:
+                        continue
+                    med_u = float(np.median(valid_u))
+                    med_l = float(np.median(valid_l))
+                    if med_u <= 0 or med_l >= 0:
+                        continue  # Not a +/- limit pair
+                    if tight_med_upper is not None and abs(med_u - tight_med_upper) < 0.001:
+                        continue  # Duplicate of tight spec, keep scanning
+                    spec_wide = abs(med_u - med_l) / 2
+                    # Physical sanity: a linearity spec outside ~[0.001, 0.5] V
+                    # is almost certainly an unrelated numeric column (e.g.,
+                    # resistance, voltage). Skip it.
+                    if not (0.001 < spec_wide < 0.5):
+                        continue
+                    # Found a distinct second spec band.
+                    upper_limits_wide = uw
+                    lower_limits_wide = lw
+                    linearity_spec_wide = spec_wide
+                    break
 
             # Extract resistance and unit length from DataFrame already in memory
             trimmed_resistance = self._get_cell_from_df(df, cells["trimmed_resistance"])
@@ -803,6 +872,9 @@ class ExcelParser:
                 "errors": errors,
                 "upper_limits": upper_limits,
                 "lower_limits": lower_limits,
+                "upper_limits_wide": upper_limits_wide,
+                "lower_limits_wide": lower_limits_wide,
+                "linearity_spec_wide": linearity_spec_wide,
                 "untrimmed_positions": untrimmed_positions,
                 "untrimmed_errors": untrimmed_errors,
                 "travel_length": travel_length,
@@ -884,18 +956,18 @@ class ExcelParser:
             except Exception as e:
                 logger.debug(f"Could not re-read K1 for untrimmed-only B file: {e}")
 
-        # Move position/error/limit arrays into the untrimmed slots so the
-        # analyzer/chart see no trim result. Spec limits are aligned with
-        # untrimmed positions, not trim positions, so we drop them here —
-        # there's no trim result to judge against the spec.
+        # Move position/error arrays into the untrimmed slots so the analyzer
+        # sees no trim result. Keep upper_limits/lower_limits — they're aligned
+        # with the (now-untrimmed) positions and are used by the chart to draw
+        # the spec band as a reference. Pass/fail logic is skipped for
+        # untrimmed-only tracks via the is_untrimmed_only flag, so retaining
+        # the limits has no effect on judgment.
         if raw.get("untrimmed_positions") is None:
             raw["untrimmed_positions"] = raw.get("positions")
         if raw.get("untrimmed_errors") is None:
             raw["untrimmed_errors"] = raw.get("errors")
         raw["positions"] = None
         raw["errors"] = None
-        raw["upper_limits"] = None
-        raw["lower_limits"] = None
 
         raw["is_untrimmed_only"] = True
         return raw
@@ -1118,6 +1190,13 @@ class ExcelParser:
         except Exception:
             return None
 
+    def _median_valid(self, values: Optional[List[float]]) -> Optional[float]:
+        """Median of a limit column, ignoring None/NaN. Returns None if empty."""
+        if not values:
+            return None
+        valid = [v for v in values if v is not None and not np.isnan(v)]
+        return float(np.median(valid)) if valid else None
+
     def _calculate_linearity_spec(
         self, upper_limits: List[float], lower_limits: List[float]
     ) -> float:
@@ -1134,13 +1213,18 @@ class ExcelParser:
         valid_lower = [l for l in lower_limits if l is not None and not np.isnan(l)]
 
         if valid_upper and valid_lower:
-            # Spec is half the average band width
-            avg_upper = np.mean(valid_upper)
-            avg_lower = np.mean(valid_lower)
+            # Spec is half the band width at the typical (median) position.
+            # Median (not mean) is used so endpoint widening rows — common in
+            # 8340-style spec sheets where rows 0 and N have intentionally
+            # looser ±0.20 limits to allow physical edge variance — don't
+            # inflate the headline spec value. Median picks the value that
+            # actually represents the customer-facing tolerance.
+            med_upper = float(np.median(valid_upper))
+            med_lower = float(np.median(valid_lower))
             # abs() guards against inverted limits (upper < lower due to
             # column ordering in some file formats).  A negative spec would
             # crash Pydantic validation or invert pass/fail logic.
-            return abs(avg_upper - avg_lower) / 2
+            return abs(med_upper - med_lower) / 2
 
         logger.warning(
             "linearity_spec defaulting to 0.01 — limit columns present but all "

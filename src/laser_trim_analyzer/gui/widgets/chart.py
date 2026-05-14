@@ -249,8 +249,9 @@ class ChartWidget(ctk.CTkFrame):
         self._style_axis(ax)
 
         # UNTRIMMED-only path: test-sweep-only files (no laser-trim runs) carry
-        # no trim positions/errors. Draw the untrimmed sweep alone and return —
-        # there's nothing to "correct" and no spec bands to overlay.
+        # no trim positions/errors. Draw the untrimmed sweep with the spec band
+        # as a reference so the operator can see how far the sweep sits from
+        # spec, then return — there's nothing to "correct" here.
         if not positions or not trimmed_errors:
             if untrimmed_positions and untrimmed_errors:
                 ax.plot(
@@ -260,6 +261,26 @@ class ChartWidget(ctk.CTkFrame):
                     linewidth=self.style.line_width,
                     label='Untrimmed (test sweep — no trim run)',
                 )
+                if upper_limits and lower_limits:
+                    n = min(len(untrimmed_positions), len(upper_limits), len(lower_limits))
+                    pos_array = np.array(untrimmed_positions[:n])
+                    upper_plot = np.array([u if u is not None else np.nan for u in upper_limits[:n]])
+                    lower_plot = np.array([l if l is not None else np.nan for l in lower_limits[:n]])
+                    ax.plot(
+                        pos_array, upper_plot,
+                        color=COLORS['spec_limit'], linestyle='--',
+                        linewidth=1, alpha=0.8, label='Spec Limits',
+                    )
+                    ax.plot(
+                        pos_array, lower_plot,
+                        color=COLORS['spec_limit'], linestyle='--',
+                        linewidth=1, alpha=0.8,
+                    )
+                    ax.fill_between(
+                        pos_array, lower_plot, upper_plot,
+                        alpha=0.1, color=COLORS['spec_limit'],
+                        where=~np.isnan(upper_plot) & ~np.isnan(lower_plot),
+                    )
                 ax.set_xlabel('Position', fontsize=self.style.font_size)
                 ax.set_ylabel('Error', fontsize=self.style.font_size)
                 ax.legend(loc='best', fontsize=self.style.font_size - 2)
