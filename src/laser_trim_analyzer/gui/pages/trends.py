@@ -72,6 +72,22 @@ _SIGMA_OVERLAY_COLOR = "#ffffff"   # smoothed mean overlay
 _SIGMA_CENTER_COLOR = "#666"
 _SIGMA_CENTER_LINEWIDTH = 0.5
 
+# Z-score thresholds for status pill color in process panels.
+_DRIFT_Z_WARN = 2.0      # orange "↑ DRIFT" if |z| >= this
+_DRIFT_Z_ALARM = 3.0     # red "↑ OOC" if |z| >= this
+
+# Retrim-rate panel pill thresholds (panel-specific).
+_RETRIM_RISING_FLOOR_PCT = 10.0   # "rising" requires recent rate >= this %
+_RETRIM_RISING_RATIO = 2.0        # "rising" requires recent >= ratio × baseline
+_RETRIM_OOC_PCT = 15.0            # "OOC" if recent rate >= this %
+_RETRIM_Y_MIN_UPPER = 20.0        # retrim panel y-axis upper bound floor
+
+# Status colors used for chart line/band fills (process + retrim panels).
+# Differ from the sigma-dot colors; lighter so they read well behind data.
+_STATUS_STABLE_COLOR = "#7ed99e"
+_STATUS_WARN_COLOR = "#ffb060"
+_STATUS_ALARM_COLOR = "#ff8080"
+
 
 def _compute_buckets(
     series: List[Tuple[str, float]],
@@ -130,6 +146,29 @@ def _compute_buckets(
         })
 
     return out
+
+
+def _cutoff_bucket_index(
+    series: List[Tuple[str, float]],
+    baseline_cutoff_iso: Optional[str],
+    n_per_bucket: int = 50,
+) -> Optional[int]:
+    """Find the bucket index that marks the baseline → recent boundary.
+
+    Walks the series until the first row whose date is on or after the
+    cutoff, then returns that row's bucket index (using the same
+    `i // n_per_bucket` formula as _compute_buckets).
+
+    Returns None when there's no series, no cutoff supplied, or the
+    cutoff is past the end of the window.
+    """
+    if not baseline_cutoff_iso or not series:
+        return None
+    cutoff = datetime.fromisoformat(baseline_cutoff_iso)
+    for i, (iso, _) in enumerate(series):
+        if datetime.fromisoformat(iso) >= cutoff:
+            return i // n_per_bucket
+    return None
 
 
 def _draw_smoothed_panel(
@@ -2939,7 +2978,6 @@ class TrendsPage(ctk.CTkFrame):
 
             model = data["model"]
             unit_count = data["unit_count"]
-            process = data["process"]
 
             # Header pill bar
             pills = ctk.CTkFrame(self._drift_content_frame, fg_color="transparent")
@@ -3000,16 +3038,6 @@ class TrendsPage(ctk.CTkFrame):
             # Compute the bucket index that marks the baseline → recent boundary.
             # Used as the x-coordinate for the orange vertical line on each panel.
             baseline_cutoff_iso = data.get("baseline_cutoff_date")
-            def _cutoff_bucket(series, n_per_bucket=50):
-                if not baseline_cutoff_iso or not series:
-                    return None
-                from datetime import datetime as _dt
-                cutoff = _dt.fromisoformat(baseline_cutoff_iso)
-                # Index of the first row whose date >= cutoff
-                for i, (iso, _) in enumerate(series):
-                    if _dt.fromisoformat(iso) >= cutoff:
-                        return i // n_per_bucket
-                return None  # cutoff is past the end of the window
 
             process = data.get("process", {})
 
@@ -3031,7 +3059,7 @@ class TrendsPage(ctk.CTkFrame):
                     ax_sigma,
                     sigma_series=sigma_pts,
                     detector=detector,
-                    baseline_cutoff_bucket_index=_cutoff_bucket(sigma_pts),
+                    baseline_cutoff_bucket_index=_cutoff_bucket_index(sigma_pts, baseline_cutoff_iso),
                 )
                 if violations > 0:
                     title_status = f"↑ OOC · {violations} violations"
@@ -3061,21 +3089,21 @@ class TrendsPage(ctk.CTkFrame):
 
                 buckets = _compute_buckets(series, n_per_bucket=50)
                 z = panel.get("z_score") or 0.0
-                if abs(z) >= 3.0:
-                    color = "#ff8080"
+                if abs(z) >= _DRIFT_Z_ALARM:
+                    color = _STATUS_ALARM_COLOR
                     pill = ("↑ OOC" if z > 0 else "↓ OOC")
-                elif abs(z) >= 2.0:
-                    color = "#ffb060"
+                elif abs(z) >= _DRIFT_Z_WARN:
+                    color = _STATUS_WARN_COLOR
                     pill = ("↑ DRIFT" if z > 0 else "↓ DRIFT")
                 else:
-                    color = "#7ed99e"
+                    color = _STATUS_STABLE_COLOR
                     pill = "✓ stable"
 
                 _draw_smoothed_panel(
                     ax,
                     buckets=buckets,
                     baseline_mean=panel.get("baseline_mean"),
-                    baseline_cutoff_bucket_index=_cutoff_bucket(series),
+                    baseline_cutoff_bucket_index=_cutoff_bucket_index(series, baseline_cutoff_iso),
                     color=color,
                 )
 
@@ -3121,12 +3149,11 @@ class TrendsPage(ctk.CTkFrame):
                 baseline_rate = None
                 recent_rate = None
                 if baseline_cutoff_iso:
-                    from datetime import datetime as _dt
-                    cutoff = _dt.fromisoformat(baseline_cutoff_iso)
+                    cutoff = datetime.fromisoformat(baseline_cutoff_iso)
                     base_vals = [v for iso, v in retrim_series
-                                 if _dt.fromisoformat(iso) < cutoff]
+                                 if datetime.fromisoformat(iso) < cutoff]
                     recent_vals = [v for iso, v in retrim_series
-                                   if _dt.fromisoformat(iso) >= cutoff]
+                                   if datetime.fromisoformat(iso) >= cutoff]
                     if base_vals:
                         baseline_rate = sum(base_vals) / len(base_vals) * 100.0
                     if recent_vals:
@@ -3134,27 +3161,27 @@ class TrendsPage(ctk.CTkFrame):
 
                 # Status pill: rising if recent ≥ 2× baseline AND recent ≥ 10%
                 if (baseline_rate is not None and recent_rate is not None
-                        and recent_rate >= 10.0
-                        and recent_rate >= 2.0 * max(baseline_rate, 1.0)):
+                        and recent_rate >= _RETRIM_RISING_FLOOR_PCT
+                        and recent_rate >= _RETRIM_RISING_RATIO * max(baseline_rate, 1.0)):
                     pill = "↑ rising"
-                    color = "#ffb060"
-                elif recent_rate is not None and recent_rate >= 15.0:
+                    color = _STATUS_WARN_COLOR
+                elif recent_rate is not None and recent_rate >= _RETRIM_OOC_PCT:
                     pill = "↑ OOC"
-                    color = "#ff8080"
+                    color = _STATUS_ALARM_COLOR
                 else:
                     pill = "✓ stable"
-                    color = "#7ed99e"
+                    color = _STATUS_STABLE_COLOR
 
                 _draw_smoothed_panel(
                     ax_retrim,
                     buckets=buckets,
                     baseline_mean=baseline_rate,
-                    baseline_cutoff_bucket_index=_cutoff_bucket(retrim_series),
+                    baseline_cutoff_bucket_index=_cutoff_bucket_index(retrim_series, baseline_cutoff_iso),
                     color=color,
                 )
                 # Y-axis: 0% lower bound; upper bound max(20%, 1.5 × peak).
                 peak = max((b["mean"] for b in buckets), default=0.0)
-                ax_retrim.set_ylim(0.0, max(20.0, 1.5 * peak))
+                ax_retrim.set_ylim(0.0, max(_RETRIM_Y_MIN_UPPER, 1.5 * peak))
 
                 base_s = f"{baseline_rate:.1f}%" if baseline_rate is not None else "—"
                 rec_s = f"{recent_rate:.1f}%" if recent_rate is not None else "—"
