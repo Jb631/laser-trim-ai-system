@@ -57,11 +57,18 @@ def _ensure_chart_module():
 # ============================================================================
 
 # Drift-panel visual constants — shared across _draw_smoothed_panel and
-# (in Task 4) _draw_sigma_panel so palette changes are a single-point edit.
+# _draw_sigma_panel so palette changes are a single-point edit.
 _BASELINE_COLOR = "#888"
 _BASELINE_CUTOFF_COLOR = "#fd7e14"
 _REF_LINEWIDTH = 0.7
 _MEAN_LINEWIDTH = 1.8
+
+# Sigma-panel specific colors
+_SIGMA_LIMIT_COLOR = "#dc3545"      # red dashed UCL/LCL
+_SIGMA_IN_CONTROL_DOT = "#7ed99e"  # green dot
+_SIGMA_OOC_DOT = "#ff4040"         # red dot for out-of-control points
+_SIGMA_NO_BASELINE_DOT = "#888888" # gray when there's no baseline
+_SIGMA_OVERLAY_COLOR = "#ffffff"   # smoothed mean overlay
 
 
 def _compute_buckets(
@@ -171,6 +178,77 @@ def _draw_smoothed_panel(
 
     ax.fill_between(xs, lower, upper, color=color, alpha=0.15, linewidth=0)
     ax.plot(xs, means, color=color, linewidth=_MEAN_LINEWIDTH)
+
+
+def _draw_sigma_panel(
+    ax,
+    sigma_series: List[Tuple[str, float]],
+    detector,
+    baseline_cutoff_bucket_index: Optional[int],
+    n_per_bucket: int = 50,
+) -> int:
+    """Draw the hybrid SPC sigma panel: individual unit dots (green = in-control,
+    red = out-of-control by Western Electric rule 1) + smoothed white mean
+    overlay + UCL/LCL/center reference lines.
+
+    Returns the count of out-of-control unit dots in the entire window (for the
+    header pill).
+    """
+    if not sigma_series:
+        return 0
+
+    has_baseline = bool(getattr(detector, "has_baseline", False))
+    if has_baseline:
+        lcl, center, ucl = detector.get_control_limits()
+    else:
+        lcl, center, ucl = None, None, None
+
+    # Slight per-dot horizontal jitter so coincident sigma values at the same
+    # bucket index don't completely overlap. Deterministic (index-based) so
+    # rendering is reproducible.
+    xs: List[float] = []
+    ys: List[float] = []
+    colors: List[str] = []
+    violations = 0
+    for i, (_, value) in enumerate(sigma_series):
+        bucket_idx = i // n_per_bucket
+        jitter = ((i % n_per_bucket) - n_per_bucket / 2) / (n_per_bucket * 2.5)
+        xs.append(bucket_idx + jitter)
+        ys.append(value)
+        if has_baseline and (
+            (lcl is not None and value < lcl) or (ucl is not None and value > ucl)
+        ):
+            colors.append(_SIGMA_OOC_DOT)
+            violations += 1
+        else:
+            colors.append(_SIGMA_IN_CONTROL_DOT if has_baseline else _SIGMA_NO_BASELINE_DOT)
+
+    # Reference lines before dots so they end up under the series.
+    if has_baseline:
+        if ucl is not None:
+            ax.axhline(ucl, color=_SIGMA_LIMIT_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH)
+        if lcl is not None:
+            ax.axhline(lcl, color=_SIGMA_LIMIT_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH)
+        if center is not None:
+            ax.axhline(center, color="#666", linewidth=0.5)
+    if baseline_cutoff_bucket_index is not None:
+        ax.axvline(
+            baseline_cutoff_bucket_index,
+            color=_BASELINE_CUTOFF_COLOR, linestyle="--", linewidth=_REF_LINEWIDTH,
+        )
+
+    ax.scatter(xs, ys, c=colors, s=10, alpha=0.6, linewidths=0, zorder=2)
+
+    # Smoothed mean overlay on top of the dots — only when baseline exists
+    # (no point smoothing into nonexistent control bands).
+    if has_baseline:
+        buckets = _compute_buckets(sigma_series, n_per_bucket=n_per_bucket)
+        if len(buckets) >= 2:
+            bxs = [b["bucket_index"] for b in buckets]
+            means = [b["mean"] for b in buckets]
+            ax.plot(bxs, means, color=_SIGMA_OVERLAY_COLOR, linewidth=1.6, zorder=3)
+
+    return violations
 
 
 class _Sparkline(tk.Canvas):

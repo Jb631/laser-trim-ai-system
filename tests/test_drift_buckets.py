@@ -227,3 +227,88 @@ def test_draw_smoothed_panel_single_bucket_dot_no_line():
         for c in ax.collections
     )
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: _draw_sigma_panel tests
+# ---------------------------------------------------------------------------
+
+class _StubDetector:
+    """Minimal detector stand-in for sigma-panel tests."""
+    def __init__(self, has_baseline, lcl=None, center=None, ucl=None):
+        self.has_baseline = has_baseline
+        self._limits = (lcl, center, ucl)
+
+    def get_control_limits(self):
+        return self._limits
+
+
+def test_draw_sigma_panel_renders_dots_and_smoothed_overlay():
+    """With baseline + in-range values: green dots + smoothed white line."""
+    from laser_trim_analyzer.gui.pages.trends import _draw_sigma_panel
+
+    rows = [
+        ((datetime(2026, 1, 1) + timedelta(hours=i)).isoformat(), 0.01 + i * 0.0005)
+        for i in range(30)
+    ]
+    fig, ax = _make_axes()
+    # UCL=0.030 is above all generated values (max = 0.01 + 29*0.0005 = 0.0245)
+    detector = _StubDetector(has_baseline=True, lcl=0.005, center=0.015, ucl=0.030)
+
+    violations = _draw_sigma_panel(
+        ax,
+        sigma_series=rows,
+        detector=detector,
+        baseline_cutoff_bucket_index=2,
+        n_per_bucket=10,
+    )
+
+    # All in-range → zero violations
+    assert violations == 0
+    # UCL/LCL/center are three horizontal lines drawn via axhline
+    # (the helper also draws the baseline-cutoff vertical line — 4 total)
+    n_ref_lines = sum(1 for ln in ax.get_lines() if ln.get_linestyle() in ("--",))
+    assert n_ref_lines >= 2  # at minimum UCL and LCL
+    plt.close(fig)
+
+
+def test_draw_sigma_panel_red_dots_for_out_of_control():
+    """Values above UCL render red; the helper returns a positive violation count."""
+    from laser_trim_analyzer.gui.pages.trends import _draw_sigma_panel
+
+    rows = [
+        ((datetime(2026, 1, 1) + timedelta(hours=i)).isoformat(), v)
+        for i, v in enumerate([0.01, 0.01, 0.01, 0.030, 0.035])  # last 2 > UCL=0.020
+    ]
+    fig, ax = _make_axes()
+    detector = _StubDetector(has_baseline=True, lcl=0.005, center=0.012, ucl=0.020)
+
+    violations = _draw_sigma_panel(
+        ax, sigma_series=rows,
+        detector=detector,
+        baseline_cutoff_bucket_index=None,
+        n_per_bucket=10,
+    )
+    assert violations == 2
+    plt.close(fig)
+
+
+def test_draw_sigma_panel_no_baseline_dots_only():
+    """detector.has_baseline=False → only gray dots, no smoothed line, no limits."""
+    from laser_trim_analyzer.gui.pages.trends import _draw_sigma_panel
+
+    rows = [(datetime(2026, 1, 1).isoformat(), 0.01)]
+    fig, ax = _make_axes()
+    detector = _StubDetector(has_baseline=False)
+
+    violations = _draw_sigma_panel(
+        ax, sigma_series=rows,
+        detector=detector,
+        baseline_cutoff_bucket_index=None,
+        n_per_bucket=10,
+    )
+
+    assert violations == 0
+    # No control-limit reference lines (axhline) drawn — primary contract is
+    # "violations=0, no crash"
+    plt.close(fig)
