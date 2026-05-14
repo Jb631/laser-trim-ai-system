@@ -17,7 +17,7 @@ import tkinter as tk
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from laser_trim_analyzer.utils.threads import get_thread_manager
 
@@ -49,6 +49,71 @@ def _ensure_chart_module():
         _chart_module_loaded = True
         logger.debug("ChartWidget module loaded (matplotlib initialized)")
     return _ChartWidget, _ChartStyle
+
+
+# ============================================================================
+# Drift-dashboard helpers (module-level for testability)
+# ============================================================================
+
+def _compute_buckets(
+    series: List[Tuple[str, float]],
+    n_per_bucket: int = 50,
+) -> List[Dict[str, Any]]:
+    """Group a time-ordered (iso_date, value) series into adaptive buckets.
+
+    A new bucket is emitted every `n_per_bucket` rows. The trailing partial
+    bucket is kept as its own bucket if it holds at least 5 rows; otherwise
+    it folds into the previous bucket (so a tail of a few stragglers doesn't
+    distort the chart with a tiny low-confidence point). If there's no
+    previous bucket to fold into, the tail is rendered as-is.
+
+    Returns a list of dicts with keys:
+        bucket_index, n, mean, stddev, se, min_date, max_date
+
+    `stddev` and `se` are 0.0 for n=1 (avoids division-by-zero).
+    """
+    if not series:
+        return []
+
+    import math
+
+    raw_buckets: List[List[Tuple[str, float]]] = []
+    cur: List[Tuple[str, float]] = []
+    for entry in series:
+        cur.append(entry)
+        if len(cur) >= n_per_bucket:
+            raw_buckets.append(cur)
+            cur = []
+
+    if cur:
+        if len(cur) >= 5 or not raw_buckets:
+            raw_buckets.append(cur)
+        else:
+            raw_buckets[-1].extend(cur)
+
+    out: List[Dict[str, Any]] = []
+    for idx, rows in enumerate(raw_buckets):
+        values = [v for _, v in rows]
+        n = len(values)
+        mean = sum(values) / n
+        if n > 1:
+            var = sum((x - mean) ** 2 for x in values) / (n - 1)
+            stddev = var ** 0.5
+            se = stddev / math.sqrt(n)
+        else:
+            stddev = 0.0
+            se = 0.0
+        out.append({
+            "bucket_index": idx,
+            "n": n,
+            "mean": mean,
+            "stddev": stddev,
+            "se": se,
+            "min_date": rows[0][0],
+            "max_date": rows[-1][0],
+        })
+
+    return out
 
 
 class _Sparkline(tk.Canvas):
