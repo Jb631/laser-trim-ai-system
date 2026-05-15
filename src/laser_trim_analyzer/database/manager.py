@@ -4200,125 +4200,151 @@ class DatabaseManager:
             FinalTestTrack as DBFinalTestTrack,
         )
 
+        # Resolve verdict and matching trim once — reused on insert and update.
+        linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
+        overall_status = (
+            DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
+        )
+
+        def _apply_to_row(db_result, linked_trim_id, match_confidence, days_since_trim, match_method):
+            db_result.file_path = str(metadata.get("file_path", ""))
+            db_result.file_hash = file_hash
+            db_result.file_date = metadata.get("file_date")
+            db_result.test_date = metadata.get("test_date")
+            db_result.overall_status = overall_status
+            db_result.linearity_pass = linearity_pass
+            db_result.linearity_error = tracks[0].get("linearity_error") if tracks else None
+            db_result.resistance_pass = test_results.get("resistance_pass")
+            db_result.resistance_value = test_results.get("resistance_value")
+            db_result.resistance_tolerance = test_results.get("resistance_tolerance")
+            db_result.electrical_angle_pass = test_results.get("electrical_angle_pass")
+            db_result.hysteresis_pass = test_results.get("hysteresis_pass")
+            db_result.phasing_pass = test_results.get("phasing_pass")
+            db_result.linked_trim_id = linked_trim_id
+            db_result.match_confidence = match_confidence
+            db_result.days_since_trim = days_since_trim
+            db_result.match_method = match_method
+
+        def _build_track(result_id, track_data):
+            # electrical_angles is the X-axis (inches for linear, degrees for rotary).
+            position_values = track_data.get("electrical_angles") or track_data.get("positions")
+            return DBFinalTestTrack(
+                final_test_id=result_id,
+                track_id=track_data.get("track_id", "default"),
+                status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
+                linearity_spec=track_data.get("linearity_spec"),
+                linearity_error=track_data.get("linearity_error"),
+                linearity_pass=track_data.get("linearity_pass"),
+                linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                position_data=position_values,
+                error_data=track_data.get("errors"),
+                theory_data=track_data.get("theory_values"),
+                electrical_angle_data=track_data.get("electrical_angles"),
+                upper_limits=track_data.get("upper_limits"),
+                lower_limits=track_data.get("lower_limits"),
+                max_deviation=track_data.get("max_deviation"),
+                max_deviation_position=track_data.get("max_deviation_angle"),
+                optimal_offset=track_data.get("optimal_offset"),
+                optimal_slope=track_data.get("optimal_slope"),
+                linearity_type=track_data.get("linearity_type"),
+            )
+
+        def _find_existing(session):
+            row = (
+                session.query(DBFinalTestResult)
+                .filter(DBFinalTestResult.file_hash == file_hash)
+                .first()
+            )
+            if row is None:
+                # File content edited (different hash) but same unique key —
+                # still the same logical FT result.
+                row = (
+                    session.query(DBFinalTestResult)
+                    .filter(
+                        DBFinalTestResult.filename == metadata.get("filename", "unknown"),
+                        DBFinalTestResult.file_date == metadata.get("file_date"),
+                        DBFinalTestResult.model == metadata.get("model", "unknown"),
+                        DBFinalTestResult.serial == metadata.get("serial", "unknown"),
+                    )
+                    .first()
+                )
+            return row
+
         # Use lock to prevent race conditions with SQLite
         with self._write_lock:
             try:
                 with self.session() as session:
-                    # Check for duplicate by file_hash
-                    existing = (
-                        session.query(DBFinalTestResult)
-                        .filter(DBFinalTestResult.file_hash == file_hash)
-                        .first()
-                    )
-                    if existing:
-                        logger.info(f"Final test already exists: {metadata.get('filename')}")
-                        return existing.id
+                    # Reprocess existing rows. Previously this returned the
+                    # existing row's id without changes, so analyzer-rule
+                    # updates never propagated to already-imported files —
+                    # users had to delete and re-add to refresh a stuck
+                    # PASS/FAIL verdict.
+                    existing = _find_existing(session)
 
-                    # Determine overall status from corrected track-level
-                    # linearity first. The raw FT header can be stale after
-                    # analyzer correction; any corrected track failure wins.
-                    linearity_pass = self._resolve_final_test_linearity_pass(test_results, tracks)
-                    overall_status = (
-                        DBStatusType.FAIL if linearity_pass is False else DBStatusType.PASS
-                    )
-
-                    # Find matching trim result
                     linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
                         session,
                         metadata.get("model"),
                         metadata.get("serial"),
-                        metadata.get("file_date") or metadata.get("test_date")
+                        metadata.get("file_date") or metadata.get("test_date"),
                     )
 
-                    # Create FinalTestResult
+                    if existing is not None:
+                        _apply_to_row(existing, linked_trim_id, match_confidence, days_since_trim, match_method)
+                        # Replace tracks wholesale — analyzer output is authoritative.
+                        for old in list(existing.tracks):
+                            session.delete(old)
+                        session.flush()
+                        for track_data in tracks:
+                            session.add(_build_track(existing.id, track_data))
+                        session.commit()
+                        logger.info(
+                            f"Updated Final Test: {metadata.get('filename')} "
+                            f"(ID: {existing.id}, linked_trim: {linked_trim_id})"
+                        )
+                        return existing.id
+
                     db_result = DBFinalTestResult(
                         filename=metadata.get("filename", "unknown"),
-                        file_path=str(metadata.get("file_path", "")),
-                        file_hash=file_hash,
-                        file_date=metadata.get("file_date"),
                         model=metadata.get("model", "unknown"),
                         serial=metadata.get("serial", "unknown"),
-                        test_date=metadata.get("test_date"),
-                        overall_status=overall_status,
-                        linearity_pass=linearity_pass,
-                        linearity_error=tracks[0].get("linearity_error") if tracks else None,
-                        resistance_pass=test_results.get("resistance_pass"),
-                        resistance_value=test_results.get("resistance_value"),
-                        resistance_tolerance=test_results.get("resistance_tolerance"),
-                        electrical_angle_pass=test_results.get("electrical_angle_pass"),
-                        hysteresis_pass=test_results.get("hysteresis_pass"),
-                        phasing_pass=test_results.get("phasing_pass"),
-                        linked_trim_id=linked_trim_id,
-                        match_confidence=match_confidence,
-                        days_since_trim=days_since_trim,
-                        match_method=match_method,
                     )
-
+                    _apply_to_row(db_result, linked_trim_id, match_confidence, days_since_trim, match_method)
                     session.add(db_result)
                     session.flush()
                     result_id = db_result.id
 
-                    # Add tracks
                     for track_data in tracks:
-                        # Use electrical_angles as position_data (X-axis for charts)
-                        # electrical_angles contains: inches for linear pots, degrees for rotary
-                        position_values = track_data.get("electrical_angles") or track_data.get("positions")
-
-                        db_track = DBFinalTestTrack(
-                            final_test_id=result_id,
-                            track_id=track_data.get("track_id", "default"),
-                            status=DBStatusType.PASS if track_data.get("linearity_pass", True) else DBStatusType.FAIL,
-                            linearity_spec=track_data.get("linearity_spec"),
-                            linearity_error=track_data.get("linearity_error"),
-                            linearity_pass=track_data.get("linearity_pass"),
-                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                            position_data=position_values,
-                            error_data=track_data.get("errors"),
-                            theory_data=track_data.get("theory_values"),
-                            electrical_angle_data=track_data.get("electrical_angles"),
-                            upper_limits=track_data.get("upper_limits"),
-                            lower_limits=track_data.get("lower_limits"),
-                            max_deviation=track_data.get("max_deviation"),
-                            max_deviation_position=track_data.get("max_deviation_angle"),
-                            optimal_offset=track_data.get("optimal_offset"),
-                            optimal_slope=track_data.get("optimal_slope"),
-                            linearity_type=track_data.get("linearity_type"),
-                        )
-                        session.add(db_track)
+                        session.add(_build_track(result_id, track_data))
 
                     session.commit()
                     logger.info(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
                     return result_id
 
-            except IntegrityError as e:
-                # The unique constraint that can fire is on
-                # (filename, file_date, model, serial), not on file_hash.
-                # When the same file is reprocessed with edited content the
-                # hash differs but the tuple still matches, so the previous
-                # hash-only fallback couldn't find the existing row and the
-                # error propagated to the user as "Error processing Final
-                # Test ... UNIQUE constraint failed". Query by both keys.
+            except IntegrityError:
+                # Race: another writer inserted the row between our SELECT and
+                # INSERT. Re-find and update in place so caller's changes still
+                # land instead of being silently dropped.
                 logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
                 try:
                     with self.session() as session:
-                        existing = (
-                            session.query(DBFinalTestResult)
-                            .filter(DBFinalTestResult.file_hash == file_hash)
-                            .first()
-                        )
+                        existing = _find_existing(session)
                         if existing is None:
-                            existing = (
-                                session.query(DBFinalTestResult)
-                                .filter(
-                                    DBFinalTestResult.filename == metadata.get("filename"),
-                                    DBFinalTestResult.file_date == metadata.get("file_date"),
-                                    DBFinalTestResult.model == metadata.get("model"),
-                                    DBFinalTestResult.serial == metadata.get("serial"),
-                                )
-                                .first()
-                            )
-                        if existing:
-                            return existing.id
+                            raise
+
+                        linked_trim_id, match_confidence, days_since_trim, match_method = self._find_matching_trim(
+                            session,
+                            metadata.get("model"),
+                            metadata.get("serial"),
+                            metadata.get("file_date") or metadata.get("test_date"),
+                        )
+                        _apply_to_row(existing, linked_trim_id, match_confidence, days_since_trim, match_method)
+                        for old in list(existing.tracks):
+                            session.delete(old)
+                        session.flush()
+                        for track_data in tracks:
+                            session.add(_build_track(existing.id, track_data))
+                        session.commit()
+                        return existing.id
                 except Exception:
                     logger.debug("FT duplicate-recovery query failed", exc_info=True)
                 raise
