@@ -152,7 +152,7 @@ class FinalTestParser:
                     raise
                 fallback_sheet = xl.sheet_names[0]
                 logger.warning(
-                    f"'Sheet1' not found while reading metadata, "
+                    f"'Sheet1' not found while reading metadata in {file_path.name!r}, "
                     f"falling back to first sheet {fallback_sheet!r}"
                 )
                 df = pd.read_excel(xl, sheet_name=fallback_sheet, header=None)
@@ -1263,13 +1263,25 @@ class FinalTestParser:
             try:
                 df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
             except ValueError:
-                # See _extract_format1_tracks for rationale.  Same workbooks
-                # that mis-route to Format 1 also hit this extractor; fall
-                # back to the first sheet so test-result pass/fail flags are
-                # still recovered instead of silently nulling.
-                if not xl.sheet_names:
+                # _extract_test_results is called from both _parse_format1
+                # and _parse_format3_multitrack.  Format 3 is defined as
+                # Sheet1-absent with single-letter track sheets + 'Data
+                # Table' (see _detect_format_from_sheets line 115), and its
+                # test results are not in any single sheet -- so the
+                # fallback would spam a misleading warning on every format3
+                # file.  Detect that signature and return defaults without
+                # warning; only fall back when the workbook actually looks
+                # like a misrouted format1.
+                names = xl.sheet_names or []
+                looks_like_format3 = (
+                    "Data Table" in names
+                    and any(len(s) == 1 and s.isalpha() for s in names)
+                )
+                if looks_like_format3:
+                    return results
+                if not names:
                     raise
-                fallback_sheet = xl.sheet_names[0]
+                fallback_sheet = names[0]
                 logger.warning(
                     f"'Sheet1' not found while reading test results, "
                     f"falling back to first sheet {fallback_sheet!r}"

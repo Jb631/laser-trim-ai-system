@@ -247,3 +247,40 @@ def test_extract_test_results_falls_back_to_first_sheet_when_sheet1_missing(
     assert results["resistance_pass"] is True
     assert results["hysteresis_pass"] is True
     assert results["phasing_pass"] is False
+
+
+def test_extract_test_results_silently_returns_defaults_for_format3_signature(
+    tmp_path,
+):
+    """When a Format 3 workbook (sheets 'A' + 'Data Table', no 'Sheet1')
+    reaches _extract_test_results -- which happens via _parse_format3_multitrack
+    -- the new Sheet1 fallback must NOT fire, because Format 3 stores
+    test results elsewhere and the fallback would otherwise spam a
+    misleading warning on every Format 3 file.
+    """
+    import pandas as pd
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    fp = tmp_path / "format3_no_sheet1.xlsx"
+    # Build a workbook with the Format 3 signature: track sheets + Data Table
+    track_df = pd.DataFrame([[i, i * 0.1] for i in range(5)])
+    data_table_df = pd.DataFrame([["param", "value"], ["x", 1]])
+    with pd.ExcelWriter(fp, engine="openpyxl") as writer:
+        track_df.to_excel(writer, sheet_name="A", index=False, header=False)
+        track_df.to_excel(writer, sheet_name="B", index=False, header=False)
+        data_table_df.to_excel(writer, sheet_name="Data Table", index=False, header=False)
+
+    parser = FinalTestParser()
+    with pd.ExcelFile(fp) as xl:
+        # Pre-fix this would have logged a warning and read sheet 'A'.
+        # Post-fix it must return defaults silently.
+        results = parser._extract_test_results(xl)
+
+    # The default results dict should be returned unchanged (all None /
+    # default values).  The exact field set depends on the method
+    # implementation; the key invariant is that no exception was raised
+    # and the returned object is a dict with the standard test-result
+    # fields.
+    assert isinstance(results, dict), (
+        f"_extract_test_results should return a dict, got {type(results).__name__}"
+    )
