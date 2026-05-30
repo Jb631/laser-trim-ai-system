@@ -56,3 +56,62 @@ def test_track_result_accepts_none_for_untrimmed_sigma_gradient():
         untrimmed_sigma_gradient=None,
     )
     assert tr.untrimmed_sigma_gradient is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2: startup migration -- existing DBs (pre-Spec-1) gain the column
+# idempotently at app startup.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_adds_column_to_preexisting_db(tmp_path):
+    """A DB created BEFORE Spec 1 (column not in schema) must gain the column
+    when DatabaseManager initializes against it.  Running DatabaseManager
+    a second time on the same DB must be a no-op (idempotent).
+    """
+    import sqlite3
+
+    db_path = tmp_path / "preexisting.db"
+
+    # Build a track_results table WITHOUT the new column, simulating a pre-
+    # Spec-1 database.  Minimum columns: id, analysis_id, track_id,
+    # sigma_gradient.  Real schema has more but this is enough to verify
+    # the migration probe + ALTER path.
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE track_results (
+            id INTEGER PRIMARY KEY,
+            analysis_id INTEGER NOT NULL,
+            track_id TEXT NOT NULL,
+            sigma_gradient FLOAT
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    # Confirm pre-state: no untrimmed_sigma_gradient column.
+    conn = sqlite3.connect(db_path)
+    cols_before = {row[1] for row in conn.execute("PRAGMA table_info(track_results)")}
+    conn.close()
+    assert "untrimmed_sigma_gradient" not in cols_before
+
+    # Run DatabaseManager init -- this is where startup migrations fire.
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    mgr = DatabaseManager(db_path)
+
+    # Verify post-state: column now exists.
+    conn = sqlite3.connect(db_path)
+    cols_after = {row[1] for row in conn.execute("PRAGMA table_info(track_results)")}
+    conn.close()
+    assert "untrimmed_sigma_gradient" in cols_after, (
+        f"Migration failed to add column; got columns: {sorted(cols_after)}"
+    )
+
+    # Idempotency: build a second DatabaseManager against the same path; no
+    # raise, no duplicate column.
+    mgr2 = DatabaseManager(db_path)
+    conn = sqlite3.connect(db_path)
+    cols_repeat = {row[1] for row in conn.execute("PRAGMA table_info(track_results)")}
+    conn.close()
+    assert cols_repeat == cols_after, "Second init shouldn't change the schema"

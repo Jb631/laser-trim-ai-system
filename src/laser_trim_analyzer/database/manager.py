@@ -556,6 +556,37 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Max deviation migration warning (may already exist): {e}")
 
+            # Migration: Add untrimmed_sigma_gradient column to track_results.
+            # Spec 1 (2026-05-30): upstream element-quality signal independent
+            # of post-trim sigma_gradient.  Backfilled by natural reprocess flow.
+            try:
+                session.execute(
+                    text("SELECT untrimmed_sigma_gradient FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()
+                logger.info(
+                    "Running migration: Adding untrimmed_sigma_gradient column"
+                )
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN untrimmed_sigma_gradient FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_track_untrimmed_sigma_gradient "
+                        "ON track_results (untrimmed_sigma_gradient)"
+                    ))
+                    session.commit()
+                    logger.info(
+                        "Migration completed: Added untrimmed_sigma_gradient"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Migration warning (may already exist): {e}"
+                    )
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
