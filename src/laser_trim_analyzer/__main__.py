@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Main entry point for v3."""
-    logger.info("Starting Laser Trim Analyzer v3...")
+    logger.info("Starting Laser Trim Analyzer v5...")
 
     try:
         # Import here to avoid circular imports
