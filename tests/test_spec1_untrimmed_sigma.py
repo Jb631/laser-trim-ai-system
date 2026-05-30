@@ -115,3 +115,58 @@ def test_migration_adds_column_to_preexisting_db(tmp_path):
     cols_repeat = {row[1] for row in conn.execute("PRAGMA table_info(track_results)")}
     conn.close()
     assert cols_repeat == cols_after, "Second init shouldn't change the schema"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Pydantic -- TrackData accepts untrimmed_sigma_gradient (optional).
+# ---------------------------------------------------------------------------
+
+
+def test_track_data_accepts_untrimmed_sigma_gradient_field():
+    """TrackData must define the field as Optional[float], default None,
+    with the same ge=0 constraint sigma_gradient uses.
+    """
+    from laser_trim_analyzer.core.models import TrackData
+
+    # Field exists and defaults to None
+    fields = TrackData.model_fields
+    assert "untrimmed_sigma_gradient" in fields
+    assert fields["untrimmed_sigma_gradient"].default is None
+
+    # Round-trip a value
+    td_kwargs = _minimal_track_data_kwargs()
+    td_kwargs["untrimmed_sigma_gradient"] = 0.012
+    td = TrackData(**td_kwargs)
+    assert td.untrimmed_sigma_gradient == 0.012
+
+    # Negative rejected by the ge=0 constraint
+    td_kwargs["untrimmed_sigma_gradient"] = -0.001
+    with pytest.raises(Exception):  # pydantic ValidationError
+        TrackData(**td_kwargs)
+
+
+def _minimal_track_data_kwargs():
+    """Build the minimal valid kwargs for TrackData.
+
+    Inspect TrackData's required fields in
+    src/laser_trim_analyzer/core/models.py:86 and fill in sentinel values.
+    The exact set may differ from what's shown here; if construction fails,
+    add the missing fields with sentinel values.  Goal is to exercise the
+    new field, not the rest of TrackData.
+    """
+    from laser_trim_analyzer.core.models import AnalysisStatus
+
+    return dict(
+        track_id="TRK1",
+        status=AnalysisStatus.PASS,
+        travel_length=1.0,
+        linearity_spec=0.01,
+        sigma_gradient=0.008,
+        sigma_threshold=0.02,
+        sigma_pass=True,
+        optimal_offset=0.0,
+        optimal_slope=0.0,
+        linearity_error=0.005,
+        linearity_pass=True,
+        linearity_fail_points=0,
+    )

@@ -99,6 +99,12 @@ class TrackData(BaseAnalysisModel):
 
     # Sigma analysis (None for UNTRIMMED tracks — no trim run, sigma undefined)
     sigma_gradient: Optional[float] = Field(None, ge=0, description="Sigma gradient value")
+    untrimmed_sigma_gradient: Optional[float] = Field(
+        None, ge=0,
+        description="Sigma gradient calculated on untrimmed (pre-trim) arrays. "
+                    "Upstream element-quality signal; independent of post-trim "
+                    "process. NULL when untrimmed arrays absent or all-NaN.",
+    )
     sigma_threshold: Optional[float] = Field(None, gt=0, description="Sigma threshold")
     sigma_pass: Optional[bool] = Field(None, description="Sigma test passed")
 
