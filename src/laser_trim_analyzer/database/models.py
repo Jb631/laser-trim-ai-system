@@ -461,11 +461,11 @@ class TrackResult(Base):
         return sigma_gradient
 
     @validates('untrimmed_sigma_gradient')
-    def validate_untrimmed_sigma_gradient(self, key, value):
+    def validate_untrimmed_sigma_gradient(self, key, untrimmed_sigma_gradient):
         """Validate untrimmed_sigma_gradient is non-negative when present."""
-        if value is not None and value < 0:
+        if untrimmed_sigma_gradient is not None and untrimmed_sigma_gradient < 0:
             raise ValueError("untrimmed_sigma_gradient cannot be negative")
-        return value
+        return untrimmed_sigma_gradient
 
     @validates('sigma_threshold')
     def validate_sigma_threshold(self, key, sigma_threshold):

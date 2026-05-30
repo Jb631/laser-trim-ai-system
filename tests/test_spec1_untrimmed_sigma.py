@@ -38,10 +38,6 @@ def test_track_result_validates_untrimmed_sigma_gradient_non_negative():
     """The @validates hook should reject a negative value."""
     from laser_trim_analyzer.database.models import TrackResult
 
-    tr = TrackResult.__new__(TrackResult)  # skip __init__, just exercise validator
-    # SQLAlchemy validators are bound to instances; the @validates decorator
-    # wires them into setattr.  Easiest way to exercise: instantiate via the
-    # constructor with the bad value and assert ValueError.
     with pytest.raises(ValueError, match="untrimmed_sigma_gradient cannot be negative"):
         TrackResult(
             analysis_id=1,
