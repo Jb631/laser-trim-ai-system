@@ -1,7 +1,7 @@
 # App Mission Realignment — Working Spec
 
-**Date:** 2026-05-14
-**Status:** 🟡 Working draft — captures discussion through 2026-05-14. Several decisions still pending (see Open Questions). Do not start implementation from this doc; it needs another review pass once the deployment-strategy question is answered.
+**Date:** 2026-05-14 (drafted), 2026-05-30 (Q1-Q3 resolved)
+**Status:** Approved 2026-05-30. Q1, Q2, Q3 resolved (see Open Questions section). Q4 (page audit) deferred per doc's own recommendation — revisit after Spec 3 lands. Ready to derive downstream feature specs.
 **Source:** Conversation with James on 2026-05-14. James reported the app "is a little all over the place and it kinda flags everything as a problem" and asked to rethink the app to better align with his actual workflow.
 
 This is the **anchor spec** for the V5 → V6 (or V5 → new app — TBD) realignment. Once approved, three downstream feature specs derive from it.
@@ -68,6 +68,15 @@ James said: *"i dont know the best plan, maybe this should be a completely new b
 
 **Decision required before implementation specs are drafted.** Defer to James.
 
+**Resolution (2026-05-30): C — Long-lived V6 branch.** Cut from `main` on 2026-05-30 after the log-derived bugfix push (commits 37f8674..ca43287). Operational rules for the split:
+
+- **Spec 1 (upstream signals capture) lands on `main`.** It's a pure additive DB column + analyzer change, useful to both V5 and V6. V6 inherits it free at next merge-forward.
+- **Specs 2 and 3 (multi-metric detector, new mission UI) land on `V6`.** V5 main does not gain the new drift detector or the new landing/investigation views.
+- **Bug fixes go on `main`** and are merged forward into `V6` periodically (or `V6` cherry-picks). Avoid merging `V6` → `main` until/unless V6 graduates to be the deployed version.
+- **Deploy target:** V5 from `main` continues to be the production deployment until you choose to switch. Switching is a separate decision when V6's mission UI proves itself.
+
+Trade-off acknowledged: long-lived branches drift, and the merge-forward cadence has to be deliberate. Plan to merge `main` → `V6` after every set of bugfixes lands on main so the V6 branch never falls more than a session or two behind.
+
 ### Q2: Watched metrics — final list
 
 Working list of metrics the multi-metric drift detector should watch per model:
@@ -82,6 +91,8 @@ Working list of metrics the multi-metric drift detector should watch per model:
 
 That's 7 metrics. James confirmed all are useful. Confirm this is the final list before drafting the drift detector spec.
 
+**Resolution (2026-05-30): All 7 metrics confirmed final.** Spec 2 (multi-metric drift detector) builds against this list verbatim. If a metric proves unhelpful in practice it can be silenced via per-metric configuration rather than removed; if a new metric becomes interesting it gets added in a follow-up. No churn at the drift-detector level for the initial build.
+
 ### Q3: Alert taxonomy — keep current, just tighten
 
 The existing tiers stay. We need to enumerate them precisely from the current code (`StatusType` enum and however alerts are categorized in `ml/drift_detector.py`) and document each tier's current trigger condition. Then propose per-tier **threshold tightening** to reduce false positives.
@@ -94,6 +105,8 @@ The two new alert *types* this realignment surfaces are orthogonal to the tiers 
 | **Slow drift** | Linear regression slope over `M`-day window is statistically non-zero and worsening | "This model is gradually getting worse (or better) over time" |
 
 Both can fire at any of the existing tier severities. Step change is usually higher-severity because it's actionable today; slow drift is medium because it's an emerging concern, not an emergency.
+
+**Resolution (2026-05-30): Confirmed — keep existing tiers, tighten thresholds.** Spec 2 will enumerate each tier's current trigger condition from `ml/drift_detector.py` and propose per-tier threshold adjustments to reduce the "flags everything" false-positive rate. No tier is renamed, removed, or restructured.
 
 ### Q4: Page audit — defer
 
@@ -195,11 +208,21 @@ This is a **reporting/UI need**, not a new ML feature. The data is already in th
 
 ## Next steps (when picking this up)
 
-1. **Decide Q1** (deployment strategy: new repo vs. additive vs. branch). Default recommendation is **B (additive)**, but James asked to defer.
-2. **Confirm Q2** (the seven watched metrics are final, or some get dropped/added).
-3. **Confirm Q3** (existing tiers stay; we'll enumerate and propose tightened thresholds in the multi-metric-detector spec).
-4. **Start Spec 1** (untrimmed_sigma_gradient capture) — safe to start *independent of Q1* because it's a pure analyzer/DB addition.
-5. Iterate Spec 2 and Spec 3 after Spec 1 lands.
+1. ~~**Decide Q1**~~ — **Resolved 2026-05-30:** C, long-lived V6 branch.
+2. ~~**Confirm Q2**~~ — **Resolved 2026-05-30:** all 7 metrics final.
+3. ~~**Confirm Q3**~~ — **Resolved 2026-05-30:** existing tiers stay; threshold tightening in Spec 2.
+4. **Start Spec 1** (untrimmed_sigma_gradient capture) — drafted 2026-05-30 at `docs/superpowers/specs/2026-05-30-spec1-upstream-signals-capture.md`. Targets `main` because the column is useful to both V5 and V6.
+5. Iterate Spec 2 and Spec 3 on the `V6` branch after Spec 1 lands.
+
+### Pre-implementation context check (verified 2026-05-30)
+
+Before Spec 1 was drafted, the codebase was grepped to ensure no shadow implementation of `untrimmed_sigma` already exists. Findings:
+
+- Zero references to `untrimmed_sigma`, `pre_trim_sigma`, `pretrim_sigma`, or `raw_sigma` anywhere in `src/` or `tests/`.
+- `sigma_gradient` is calculated only on post-trim `errors` at `analyzer.py:213` via `_calculate_sigma()` (definition at line 338). The untrimmed arrays are passed to `_calculate_trim_effectiveness` (line 1030) for RMS/improvement metrics but never to `_calculate_sigma`.
+- An existing `UNTRIMMED` overall_status path already exists for test-sweep files (no laser pass). For those records `sigma_gradient` is `NULL` today (see `test_drift_dashboard_data.py:347-354`). Post-Spec-1 those records will have ONLY `untrimmed_sigma_gradient` populated — clean by design, but the multi-metric detector built in Spec 2 must treat NULL-on-post-trim as "no post-trim sigma exists for this record."
+
+No collisions, no shadow code to delete. Spec 1 is purely additive.
 
 ---
 
