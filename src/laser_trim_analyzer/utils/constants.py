@@ -211,6 +211,22 @@ NON_TRIM_FILENAME_REGEXES: Final[list] = [
     # Real trim and FT filenames carry hyphens / spaces / 'sn'/'final'/'Trimmed',
     # so this anchored pattern won't false-positive on production data.
     r"^\d+[a-z](_\d{6})?(_(pass|fail))?\.xlsx?$",
+    # Excel lock files (e.g. "~$1844205_Final_Data.xlsx") appear briefly while
+    # the file is open in Excel on the network share; opening one throws
+    # PermissionError in the parser.
+    r"^~\$",
+    # Template / master copies (e.g. "master-sn108_*.xls",
+    # "master-snN_*.xls").  These have no real serial — the "sn" token is
+    # part of the template name itself.
+    r"^master[-_]",
+    # ChemCubed ink-test lab experiments (e.g. "ChemCubed Ink Test 1.xlsx").
+    # Not production FT data; no model parseable from filename.
+    r"^chemcubed\b",
+    # Scratch files named exactly "temp.xls" / "temp.xlsx".
+    r"^temp\.xlsx?$",
+    # Template files with the literal "#" placeholder for shop number
+    # (e.g. "SN - Shop#.xlsx").  Real shop traveler files use digits.
+    r"shop#",
 ]
 
 # Matching parameters for Final Test to Trim linking
