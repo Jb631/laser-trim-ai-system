@@ -334,6 +334,7 @@ class TrackResult(Base):
     travel_length = Column(Float)
     linearity_spec = Column(Float)
     sigma_gradient = Column(Float, nullable=True)
+    untrimmed_sigma_gradient = Column(Float, nullable=True)
     sigma_threshold = Column(Float, nullable=True)
     sigma_pass = Column(Boolean, nullable=True)
 
@@ -420,6 +421,7 @@ class TrackResult(Base):
     __table_args__ = (
         Index('idx_track_analysis', 'analysis_id', 'track_id'),
         Index('idx_track_sigma_gradient', 'sigma_gradient'),
+        Index('idx_track_untrimmed_sigma_gradient', 'untrimmed_sigma_gradient'),
         Index('idx_track_sigma_pass', 'sigma_pass'),
         Index('idx_track_linearity_pass', 'linearity_pass'),
         Index('idx_track_risk_category', 'risk_category'),
@@ -430,6 +432,10 @@ class TrackResult(Base):
         UniqueConstraint('analysis_id', 'track_id', name='uq_analysis_track'),
         # Data validation constraints for production
         CheckConstraint('sigma_gradient >= 0', name='check_sigma_gradient_positive'),
+        CheckConstraint(
+            'untrimmed_sigma_gradient >= 0 OR untrimmed_sigma_gradient IS NULL',
+            name='check_untrimmed_sigma_gradient_non_negative',
+        ),
         CheckConstraint('sigma_threshold > 0', name='check_sigma_threshold_positive'),
         CheckConstraint('failure_probability >= 0 AND failure_probability <= 1', name='check_probability_range'),
         CheckConstraint('travel_length >= 0', name='check_travel_length_positive'),
@@ -453,6 +459,13 @@ class TrackResult(Base):
         if sigma_gradient is not None and sigma_gradient < 0:
             raise ValueError("Sigma gradient cannot be negative")
         return sigma_gradient
+
+    @validates('untrimmed_sigma_gradient')
+    def validate_untrimmed_sigma_gradient(self, key, value):
+        """Validate untrimmed_sigma_gradient is non-negative when present."""
+        if value is not None and value < 0:
+            raise ValueError("untrimmed_sigma_gradient cannot be negative")
+        return value
 
     @validates('sigma_threshold')
     def validate_sigma_threshold(self, key, sigma_threshold):
