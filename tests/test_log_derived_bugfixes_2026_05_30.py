@@ -284,3 +284,20 @@ def test_extract_test_results_silently_returns_defaults_for_format3_signature(
     assert isinstance(results, dict), (
         f"_extract_test_results should return a dict, got {type(results).__name__}"
     )
+    # The pristine results dict must contain the standard fields with None
+    # values -- the guard returns the same default dict it would have
+    # returned via the old code path, so callers downstream can still
+    # destructure these keys safely.
+    expected_keys = {
+        "linearity_pass",
+        "resistance_pass",
+        "electrical_angle_pass",
+        "hysteresis_pass",
+        "phasing_pass",
+    }
+    assert expected_keys <= set(results.keys()), (
+        f"Missing default keys: expected {expected_keys}, got {set(results.keys())}"
+    )
+    assert all(v is None for v in results.values()), (
+        f"Default values should all be None; got {results}"
+    )

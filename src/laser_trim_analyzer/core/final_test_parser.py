@@ -1276,6 +1276,7 @@ class FinalTestParser:
                 looks_like_format3 = (
                     "Data Table" in names
                     and any(len(s) == 1 and s.isalpha() for s in names)
+                    and "Sheet1" not in names   # mirror _detect_format_from_sheets line 115
                 )
                 if looks_like_format3:
                     return results
