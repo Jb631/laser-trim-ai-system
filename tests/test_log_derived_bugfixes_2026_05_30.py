@@ -123,3 +123,37 @@ def test_final_test_serial_existing_patterns_still_work(filename, expected_seria
         f"{filename!r}: regression — expected {expected_serial!r}, "
         f"got {metadata['serial']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue: shop traveler ID used as serial at some stations (2026-05-18 batch)
+# Decision recorded 2026-05-30: shop ID is the unit identifier, use verbatim.
+# ---------------------------------------------------------------------------
+
+FT_SHOP_FILENAMES = [
+    ("1844205-shop1_5-18-2026 8-31-14 AM.xlsx", "shop1"),
+    ("1844205-shop3_5-18-2026 9-46-24 AM.xlsx", "shop3"),
+    ("1844205-shop4_5-18-2026 10-13-51 AM.xlsx", "shop4"),
+    ("1844205-shop6_5-18-2026 10-22-42 AM.xlsx", "shop6"),
+    ("1844205-shop9_5-18-2026 10-47-50 AM.xlsx", "shop9"),
+]
+
+
+@pytest.mark.parametrize("filename,expected_serial", FT_SHOP_FILENAMES)
+def test_final_test_serial_extracted_from_shop_traveler_id(filename, expected_serial):
+    """Files with '-shop<N>_<date>' use the shop ID as the unit serial.
+    Production decision: this IS the unit identifier at those stations.
+    Stored verbatim (lowercase) so it survives database lookups and matching.
+    """
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    parser = FinalTestParser()
+    metadata = parser._extract_metadata_from_filename(filename)
+    assert metadata["serial"] == expected_serial, (
+        f"{filename!r}: expected serial {expected_serial!r}, "
+        f"got {metadata['serial']!r}"
+    )
+    # Sanity: model should also be parsed.
+    assert metadata["model"] == "1844205", (
+        f"{filename!r}: expected model '1844205', got {metadata['model']!r}"
+    )

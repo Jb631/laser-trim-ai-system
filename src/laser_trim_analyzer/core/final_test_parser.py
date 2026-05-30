@@ -321,6 +321,20 @@ class FinalTestParser:
             )
             if final_match:
                 metadata["serial"] = final_match.group(1)
+            else:
+                # Fallback B: "model-shop<N>" traveler-ID pattern.
+                # Some FY26 production stations identify the unit by shop traveler rather
+                # than a serial number (e.g. "1844205-shop1_<date>.xlsx").
+                # Per 2026-05-30 decision, the shop ID IS the unit identifier
+                # at those stations, so we store it verbatim (lowercased) as
+                # the serial.
+                # NOTE: \d+ is greedy so it eats the full shop number; we use
+                # a negative-lookahead (?!\d) instead of \b because the digits
+                # are typically followed by '_' which is itself a word
+                # character in Python regex (so \b would not fire there).
+                shop_match = re.search(r'[-_](shop\d+)(?!\d)', base, re.IGNORECASE)
+                if shop_match:
+                    metadata["serial"] = shop_match.group(1).lower()
 
         # Try to extract date - multiple patterns:
         # Pattern 1: M-D-YYYY (e.g., 3-16-2011)
