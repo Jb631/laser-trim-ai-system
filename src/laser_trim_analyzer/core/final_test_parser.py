@@ -307,9 +307,18 @@ class FinalTestParser:
         if sn_match:
             metadata["serial"] = sn_match.group(1)
         else:
-            # Fallback: "model final serial" pattern (e.g., "8340-1 final 215_6-4-2025")
-            # The word "final" separates model from serial number
-            final_match = re.search(r'\bfinal\s+(\d+)', base, re.IGNORECASE)
+            # Fallback: "model final [sn] serial" pattern.  Production stations
+            # write filenames as any of:
+            #   "8340-1 final 215_6-4-2025_..."     -> serial 215  (legacy)
+            #   "8340-1 final SN 5140.xls"          -> serial 5140 (FY26 batches)
+            #   "8340-1 final sn  116xls.xls"       -> serial 116  (rename artifact:
+            #                                                       extra space + "xls"
+            #                                                       embedded before ext)
+            # The optional "sn " token and one-or-more whitespace handle all three.
+            # \s+ is intentional (not \s) so a double-space doesn't break the match.
+            final_match = re.search(
+                r'\bfinal\s+(?:sn\s+)?(\d+)', base, re.IGNORECASE
+            )
             if final_match:
                 metadata["serial"] = final_match.group(1)
 

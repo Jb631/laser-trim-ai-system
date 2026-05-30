@@ -63,3 +63,63 @@ def test_non_trim_filter_does_not_match_real_files(filename):
     assert not matched_by, (
         f"{filename!r} unexpectedly matched non-trim regex(es): {matched_by}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue: 851 'Serial cannot be empty' from FT regex misses
+# Filenames pulled verbatim from log.1, 2026-05-18 13:48-14:30 batch
+# ---------------------------------------------------------------------------
+
+FT_FILENAMES_AND_EXPECTED_SERIAL = [
+    # (filename, expected_serial)
+    # Pattern: "final SN <num>" (uppercase, space-separated)
+    ("8340-1 final SN 5140.xls", "5140"),
+    ("8340-1 final SN 5141.xls", "5141"),
+    ("8340-1 final SN 5156.xls", "5156"),
+    # Pattern: "final sn <num>xls" (lowercase, rename artifact)
+    ("8340-1 final sn  116xls.xls", "116"),
+    ("8340-1 final sn  119xls.xls", "119"),
+    ("8340-1 final sn  140xls.xls", "140"),
+    # Existing supported pattern: "final <num>" (no sn token) — must still work
+    ("8340-1 final 215_6-4-2025_7-38 PM.xls", "215"),
+]
+
+
+@pytest.mark.parametrize(
+    "filename,expected_serial", FT_FILENAMES_AND_EXPECTED_SERIAL
+)
+def test_final_test_serial_extracted_from_final_sn_pattern(filename, expected_serial):
+    """Filenames with 'final [SN] <num>' must yield the numeric serial.
+    Covers both new patterns from 2026-05-18 logs and existing 'final <num>'.
+    """
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    parser = FinalTestParser()
+    metadata = parser._extract_metadata_from_filename(filename)
+    assert metadata["serial"] == expected_serial, (
+        f"{filename!r}: expected serial {expected_serial!r}, "
+        f"got {metadata['serial']!r}"
+    )
+
+
+# Existing supported patterns — guard against regressions from the regex broadening.
+EXISTING_FT_FILENAMES = [
+    # (filename, expected_serial)
+    ("1081313-sn108_3-16-2011_12-17 PM.xls", "108"),
+    ("1844202-sn1004a_7-27-2022_1-26 PM.xls", "1004a"),
+    ("8340-1-sn470_5-30-2025_1-52 PM.xls", "470"),
+    ("Rout_1091701_sn1695a_vo.xls", "1695a"),
+]
+
+
+@pytest.mark.parametrize("filename,expected_serial", EXISTING_FT_FILENAMES)
+def test_final_test_serial_existing_patterns_still_work(filename, expected_serial):
+    """Existing -sn/_sn extraction must continue to work after broadening."""
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    parser = FinalTestParser()
+    metadata = parser._extract_metadata_from_filename(filename)
+    assert metadata["serial"] == expected_serial, (
+        f"{filename!r}: regression — expected {expected_serial!r}, "
+        f"got {metadata['serial']!r}"
+    )
