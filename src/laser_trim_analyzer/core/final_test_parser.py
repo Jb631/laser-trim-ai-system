@@ -144,7 +144,18 @@ class FinalTestParser:
         # Try to get additional metadata from file content
         df = None
         try:
-            df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            try:
+                df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            except ValueError:
+                # See _extract_format1_tracks for rationale.
+                if not xl.sheet_names:
+                    raise
+                fallback_sheet = xl.sheet_names[0]
+                logger.warning(
+                    f"'Sheet1' not found while reading metadata, "
+                    f"falling back to first sheet {fallback_sheet!r}"
+                )
+                df = pd.read_excel(xl, sheet_name=fallback_sheet, header=None)
 
             # Extract model from cell (around column L/M, row 0)
             if df.shape[1] > 11:
@@ -390,7 +401,21 @@ class FinalTestParser:
         df = None
 
         try:
-            df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            try:
+                df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            except ValueError:
+                # Format detector routed this to Format 1 but the workbook's
+                # main sheet isn't named 'Sheet1'.  Some FY26 station exports
+                # use station-specific sheet names while keeping the same
+                # column layout.  Fall back to the first sheet.
+                if not xl.sheet_names:
+                    raise
+                fallback_sheet = xl.sheet_names[0]
+                logger.warning(
+                    f"'Sheet1' not found in {getattr(xl, 'io', '?')}, "
+                    f"falling back to first sheet {fallback_sheet!r}"
+                )
+                df = pd.read_excel(xl, sheet_name=fallback_sheet, header=None)
 
             # Helper function to check if value is numeric (handles numpy types)
             def is_numeric(val):

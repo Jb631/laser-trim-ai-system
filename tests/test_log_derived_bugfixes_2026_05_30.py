@@ -157,3 +157,50 @@ def test_final_test_serial_extracted_from_shop_traveler_id(filename, expected_se
     assert metadata["model"] == "1844205", (
         f"{filename!r}: expected model '1844205', got {metadata['model']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue: 40 'Worksheet named Sheet1 not found' errors -- hardcoded sheet name
+# ---------------------------------------------------------------------------
+
+
+def test_extract_format1_tracks_falls_back_to_first_sheet_when_sheet1_missing(
+    tmp_path,
+):
+    """If the format detector mis-routes a file to _extract_format1_tracks
+    but the workbook's main sheet isn't named 'Sheet1', the parser should
+    fall back to the first available sheet instead of raising ValueError.
+    """
+    import pandas as pd
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    # Build a workbook whose first sheet is named something else.  The data
+    # layout matches Format 1 columns A..H so the tracks extractor can read
+    # a valid track from it.  Columns:
+    #   A=Measured, B=Index, C=Theory, D=Error, E=Angle, F=blank,
+    #   G=Upper, H=Lower
+    rows = [
+        [0.10, 1, 0.10, 0.00, 0.00, None, 0.05, -0.05],
+        [0.20, 2, 0.20, 0.00, 0.10, None, 0.05, -0.05],
+        [0.30, 3, 0.30, 0.00, 0.20, None, 0.05, -0.05],
+        [0.40, 4, 0.40, 0.00, 0.30, None, 0.05, -0.05],
+        [0.50, 5, 0.50, 0.00, 0.40, None, 0.05, -0.05],
+    ]
+    df = pd.DataFrame(rows)
+
+    fp = tmp_path / "format1_with_renamed_sheet.xlsx"
+    # Write with a non-'Sheet1' sheet name -- this is the failure condition
+    # we saw in production (some old stations exported with names like
+    # 'Data', 'Test', or station-specific labels).
+    with pd.ExcelWriter(fp, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Test", index=False, header=False)
+
+    parser = FinalTestParser()
+    with pd.ExcelFile(fp) as xl:
+        # This call raised ValueError before the fix.
+        tracks = parser._extract_format1_tracks(xl)
+
+    assert tracks, "Fallback should produce at least one track from the first sheet"
+    assert "positions" in tracks[0] or "errors" in tracks[0], (
+        f"Track payload missing expected keys; got keys={list(tracks[0].keys())}"
+    )
