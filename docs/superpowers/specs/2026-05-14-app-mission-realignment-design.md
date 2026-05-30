@@ -47,10 +47,11 @@ The app succeeds when, on a routine daily visit:
 These are explicit guardrails based on James' feedback. The realignment must preserve them.
 
 - **Existing alert tier system stays.** James noted "im nervouse about losing the current teirs because it took a long time to get the app where it is today." The cure for "flags everything" is to **tighten the thresholds** that gate the existing tiers, not to delete a tier. The current Stable / Warning / Drift / Out-of-Control taxonomy (or whatever the in-code names are) is retained.
-- **Smoothness page is critical** and stays. It is not a candidate for the page audit.
+- **Smoothness functionality is critical** and stays. ~~The Smoothness page stays as a top-level page.~~ **Revised 2026-05-30 (V6 redesign):** Smoothness functionality stays, but lives as a **tab inside Model** rather than as a standalone top-level page. Per-model smoothness investigation lives next to per-model drift investigation. See `docs/superpowers/specs/2026-05-30-app-redesign-design.md`.
 - **Excel export and per-unit chart drill-down** stay exactly as they are.
 - **File ingest behavior** (Process page) is not in scope.
 - **Per-unit failure predictor** is demoted to "available but not headline." Not deleted in this work. May be revisited later but James will not lose access to existing trained models.
+- **Specs functionality** (per-model spec limits, exclude_points) stays. **Revised 2026-05-30 (V6 redesign):** Specs functionality is folded into **Settings as a section** rather than its own top-level page. Admin task, not daily flow.
 
 ## Open Questions (must resolve before implementation)
 
@@ -117,6 +118,23 @@ Don't audit pages now. Defer until the new mission views are built and James can
 **Trends**: stays — it's the per-model historical-lookback view, which the mission actively requires.
 
 Page audit becomes its own (later) spec when James has the new views in hand and wants to consolidate.
+
+**Resolution (2026-05-30): Q4 resolved by the V6 app redesign.** The page audit was not deferred — it became the redesign itself. Final V6 page set is **4 pages**: Triage · Process · Model · Settings. Mapping from the 10 V5 pages:
+
+| V5 page | V6 destination |
+|---|---|
+| Dashboard | Folded into Triage (landing) |
+| Process | Kept as Process (port verbatim, restyled chrome) |
+| Analyze | Folded into Model (per-unit drill-down lives in Units tab) |
+| Compare | Folded into Model (baseline-vs-recent already on glance pills + focus chart) |
+| Trends | Folded into Model (focus chart is the per-model historical lookback) |
+| Quality Health | Folded into Triage |
+| Scorecard | Folded into Triage |
+| Smoothness | Folded into Model as Smoothness tab |
+| Specs | Folded into Settings as Per-model specs section |
+| Settings | Kept as Settings, restructured to absorb Specs + new Alert thresholds section |
+
+See `docs/superpowers/specs/2026-05-30-app-redesign-design.md` for the full V6 design.
 
 ---
 
@@ -211,8 +229,10 @@ This is a **reporting/UI need**, not a new ML feature. The data is already in th
 1. ~~**Decide Q1**~~ — **Resolved 2026-05-30:** C, long-lived V6 branch.
 2. ~~**Confirm Q2**~~ — **Resolved 2026-05-30:** all 7 metrics final.
 3. ~~**Confirm Q3**~~ — **Resolved 2026-05-30:** existing tiers stay; threshold tightening in Spec 2.
-4. **Start Spec 1** (untrimmed_sigma_gradient capture) — drafted 2026-05-30 at `docs/superpowers/specs/2026-05-30-spec1-upstream-signals-capture.md`. Targets `main` because the column is useful to both V5 and V6.
-5. Iterate Spec 2 and Spec 3 on the `V6` branch after Spec 1 lands.
+4. ~~**Start Spec 1**~~ — **Drafted 2026-05-30** at `docs/superpowers/specs/2026-05-30-spec1-upstream-signals-capture.md`. Targets `main` because the column is useful to both V5 and V6.
+5. ~~**Iterate Spec 2 and Spec 3 on V6 after Spec 1 lands.**~~ — **Updated 2026-05-30:** umbrella V6 redesign drafted at `docs/superpowers/specs/2026-05-30-app-redesign-design.md`. Specs 2 and 3 will be drafted against that design. Sequence:
+   - Spec 2 (multi-metric drift detector + threshold tightening) — draft after Spec 1 lands on main.
+   - Spec 3 (new shell, Triage, Model, Settings restructure) — draft after Spec 2 lands on V6.
 
 ### Pre-implementation context check (verified 2026-05-30)
 
