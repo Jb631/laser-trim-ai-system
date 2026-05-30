@@ -170,3 +170,120 @@ def _minimal_track_data_kwargs():
         linearity_pass=True,
         linearity_fail_points=0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: analyzer -- analyze_track computes untrimmed_sigma_gradient
+# correctly in four scenarios.
+# ---------------------------------------------------------------------------
+
+
+def _build_track_input(*, n=30, untrimmed_positions=None, untrimmed_errors=None,
+                      include_untrimmed=True):
+    """Build a synthetic track_data dict shaped like what the parser emits.
+
+    Defaults to n=30 well-formed points so _calculate_sigma succeeds.
+    Pass include_untrimmed=False to omit the untrimmed_* keys entirely.
+    """
+    import numpy as np
+
+    positions = list(np.linspace(0.0, 1.0, n))
+    # Errors with a small sinusoidal pattern -- non-zero gradients.
+    errors = [0.001 * np.sin(2 * np.pi * i / n) for i in range(n)]
+
+    out = dict(
+        track_id="TRK1",
+        positions=positions,
+        errors=errors,
+        upper_limits=[0.01] * n,
+        lower_limits=[-0.01] * n,
+        travel_length=1.0,
+        linearity_spec=0.01,
+        unit_length=1.0,
+        untrimmed_resistance=1000.0,
+        trimmed_resistance=950.0,
+    )
+    if include_untrimmed:
+        out["untrimmed_positions"] = (
+            untrimmed_positions if untrimmed_positions is not None else positions
+        )
+        out["untrimmed_errors"] = (
+            untrimmed_errors
+            if untrimmed_errors is not None
+            else [0.002 * np.sin(2 * np.pi * i / n) for i in range(n)]
+        )
+    return out
+
+
+def _run_analyze(track_input):
+    """Invoke Analyzer.analyze_track with sane wrapping context.
+
+    Note: the plan references ``LaserTrimAnalyzer(config=Config())`` but
+    the actual class in core/analyzer.py is ``Analyzer`` with no Config
+    parameter (it takes optional scaling_factor + model_thresholds).
+    Using the real construction pattern from processor.py.
+    """
+    from laser_trim_analyzer.core.analyzer import Analyzer
+
+    analyzer = Analyzer()
+    return analyzer.analyze_track(track_input, model="TEST-MODEL")
+
+
+def test_untrimmed_sigma_populated_when_arrays_present():
+    """Well-formed untrimmed arrays produce a finite positive sigma."""
+    track_input = _build_track_input()
+    result = _run_analyze(track_input)
+
+    assert result.untrimmed_sigma_gradient is not None
+    assert result.untrimmed_sigma_gradient >= 0
+    # Spec says no Inf/NaN allowed
+    import math
+    assert math.isfinite(result.untrimmed_sigma_gradient)
+
+
+def test_untrimmed_sigma_none_when_arrays_absent():
+    """Missing the untrimmed_* keys entirely -> None, no error."""
+    track_input = _build_track_input(include_untrimmed=False)
+    result = _run_analyze(track_input)
+    assert result.untrimmed_sigma_gradient is None
+
+
+def test_untrimmed_sigma_none_when_arrays_empty():
+    """Empty lists -> None."""
+    track_input = _build_track_input(
+        untrimmed_positions=[], untrimmed_errors=[]
+    )
+    result = _run_analyze(track_input)
+    assert result.untrimmed_sigma_gradient is None
+
+
+def test_untrimmed_sigma_none_when_arrays_all_nan():
+    """All NaN -> filtered to empty -> None."""
+    import math
+    n = 30
+    nans = [math.nan] * n
+    track_input = _build_track_input(
+        untrimmed_positions=nans, untrimmed_errors=nans
+    )
+    result = _run_analyze(track_input)
+    assert result.untrimmed_sigma_gradient is None
+
+
+def test_untrimmed_sigma_none_when_arrays_too_short():
+    """Fewer than 2*END_POINT_FILTER_COUNT + 3 valid points -> None.
+
+    Reads the threshold from constants so the test stays correct if
+    END_POINT_FILTER_COUNT is tuned.
+    """
+    from laser_trim_analyzer.utils.constants import END_POINT_FILTER_COUNT
+
+    too_short = 2 * END_POINT_FILTER_COUNT + 3 - 1  # one below the gate
+    short_positions = [i * 0.01 for i in range(too_short)]
+    short_errors = [i * 0.001 for i in range(too_short)]
+
+    track_input = _build_track_input(
+        untrimmed_positions=short_positions,
+        untrimmed_errors=short_errors,
+    )
+    result = _run_analyze(track_input)
+    assert result.untrimmed_sigma_gradient is None

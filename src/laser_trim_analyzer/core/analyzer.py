@@ -216,6 +216,36 @@ class Analyzer:
         )
         sigma_pass = sigma_gradient <= sigma_threshold
 
+        # Untrimmed (upstream) sigma -- independent signal for Spec 2 drift
+        # detection.  Not used for pass/fail.  Gated on data availability;
+        # exception-safe because the per-track save must still proceed even
+        # if the untrimmed arrays are malformed.
+        untrimmed_sigma_gradient: Optional[float] = None
+        _untrimmed_positions = track_data.get("untrimmed_positions") or []
+        _untrimmed_errors = track_data.get("untrimmed_errors") or []
+        if _untrimmed_positions and _untrimmed_errors:
+            try:
+                # Filter NaN consistently with _calculate_trim_effectiveness.
+                _valid_pairs = [
+                    (p, e)
+                    for p, e in zip(_untrimmed_positions, _untrimmed_errors)
+                    if p is not None and e is not None
+                    and not np.isnan(p) and not np.isnan(e)
+                ]
+                if len(_valid_pairs) > 2 * END_POINT_FILTER_COUNT + 3:
+                    _up = [p for p, _ in _valid_pairs]
+                    _ue = [e for _, e in _valid_pairs]
+                    _sig, _ = self._calculate_sigma(
+                        _up, _ue, linearity_spec, travel_length, unit_length, model
+                    )
+                    untrimmed_sigma_gradient = _sig
+            except Exception as e:
+                logger.warning(
+                    f"Untrimmed sigma calculation failed for track "
+                    f"{track_id!r}: {e}; storing NULL"
+                )
+                untrimmed_sigma_gradient = None
+
         # Linearity analysis (spec-aware). angle_spec/tol/tol_type drive the
         # rotation rule: k stays at 0 unless an angle tolerance exists.
         (optimal_offset, optimal_k, linearity_error, linearity_pass,
@@ -290,6 +320,7 @@ class Analyzer:
             sigma_gradient=sigma_gradient,
             sigma_threshold=sigma_threshold,
             sigma_pass=sigma_pass,
+            untrimmed_sigma_gradient=untrimmed_sigma_gradient,
             # Linearity results
             optimal_offset=optimal_offset,
             optimal_slope=optimal_k,  # k factor (theory rotation); field name kept for compat
