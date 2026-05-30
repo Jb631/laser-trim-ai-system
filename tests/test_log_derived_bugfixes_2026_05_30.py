@@ -204,3 +204,46 @@ def test_extract_format1_tracks_falls_back_to_first_sheet_when_sheet1_missing(
     assert "positions" in tracks[0] or "errors" in tracks[0], (
         f"Track payload missing expected keys; got keys={list(tracks[0].keys())}"
     )
+
+
+def test_extract_test_results_falls_back_to_first_sheet_when_sheet1_missing(
+    tmp_path,
+):
+    """Same Sheet1 fallback as the tracks extractor, but on the
+    _extract_test_results path.  Production logs showed 40 'Worksheet named
+    Sheet1 not found' errors split evenly between the two extractors; both
+    must tolerate non-'Sheet1' Format 1 workbooks.
+    """
+    import pandas as pd
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    # Build a workbook whose Format 1 layout has the test-result block in
+    # columns 10-11.  Column 10 = test name, column 11 = PASSED/FAILED.
+    # We pad with empty columns 0..9 so column indices line up.
+    blank = [None] * 10
+    rows = [
+        blank + ["header_row", "header_row"],            # row 0 (skipped)
+        blank + ["Linearity Test:", "PASSED"],           # row 1
+        blank + ["Electrical Angle:", "FAILED"],         # row 2
+        blank + ["Resistance:", "PASSED"],               # row 3
+        blank + ["Hysteresis:", "PASSED"],               # row 4
+        blank + ["Phasing:", "FAILED"],                  # row 5
+        blank + ["pad", "pad"],                          # row 6 (shape guard)
+    ]
+    df = pd.DataFrame(rows)
+
+    fp = tmp_path / "format1_test_results_renamed_sheet.xlsx"
+    with pd.ExcelWriter(fp, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Data", index=False, header=False)
+
+    parser = FinalTestParser()
+    with pd.ExcelFile(fp) as xl:
+        # This call raised ValueError before the fix.
+        results = parser._extract_test_results(xl)
+
+    # The five test types in rows 1-5 should be parsed despite the rename.
+    assert results["linearity_pass"] is True
+    assert results["electrical_angle_pass"] is False
+    assert results["resistance_pass"] is True
+    assert results["hysteresis_pass"] is True
+    assert results["phasing_pass"] is False

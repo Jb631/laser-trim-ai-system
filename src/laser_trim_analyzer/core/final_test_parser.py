@@ -1260,7 +1260,21 @@ class FinalTestParser:
         df = None
 
         try:
-            df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            try:
+                df = pd.read_excel(xl, sheet_name="Sheet1", header=None)
+            except ValueError:
+                # See _extract_format1_tracks for rationale.  Same workbooks
+                # that mis-route to Format 1 also hit this extractor; fall
+                # back to the first sheet so test-result pass/fail flags are
+                # still recovered instead of silently nulling.
+                if not xl.sheet_names:
+                    raise
+                fallback_sheet = xl.sheet_names[0]
+                logger.warning(
+                    f"'Sheet1' not found while reading test results, "
+                    f"falling back to first sheet {fallback_sheet!r}"
+                )
+                df = pd.read_excel(xl, sheet_name=fallback_sheet, header=None)
 
             # Test results are in columns 10-11, rows 1-5
             # Col 10 = test name, Col 11 = PASSED/FAILED
