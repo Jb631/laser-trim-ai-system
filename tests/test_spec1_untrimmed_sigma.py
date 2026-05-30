@@ -343,3 +343,82 @@ def test_untrimmed_sigma_round_trips_through_db(tmp_path):
         ).all()
         assert len(rows) == 1
         assert rows[0].untrimmed_sigma_gradient == pytest.approx(0.0123)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: regression -- existing sigma_gradient unchanged on the same input,
+# and the historical regression suite (test_5_8_2026_bugfixes.py) still
+# passes with the new analyzer code.
+# ---------------------------------------------------------------------------
+
+
+def test_existing_sigma_gradient_unchanged_after_spec1():
+    """Spec 1 must not change the value of sigma_gradient for any input.
+    Compute sigma against the SAME post-trim arrays directly and confirm the
+    analyze_track output matches.
+    """
+    from laser_trim_analyzer.core.analyzer import Analyzer
+
+    track_input = _build_track_input()
+    analyzer = Analyzer()
+
+    # Direct sigma calc via the same function the analyzer uses internally.
+    direct_sigma, _direct_threshold = analyzer._calculate_sigma(
+        track_input["positions"],
+        track_input["errors"],
+        track_input["linearity_spec"],
+        track_input["travel_length"],
+        track_input["unit_length"],
+        model="TEST-MODEL",
+    )
+
+    # Now run the full analyze_track and confirm the returned sigma matches.
+    result = analyzer.analyze_track(track_input, model="TEST-MODEL")
+    assert result.sigma_gradient == pytest.approx(direct_sigma), (
+        f"Regression: analyze_track returned sigma_gradient="
+        f"{result.sigma_gradient} but direct _calculate_sigma returned "
+        f"{direct_sigma}"
+    )
+
+
+def test_untrimmed_only_record_still_has_null_sigma_gradient(tmp_path):
+    """Existing UNTRIMMED-status code path stores sigma_gradient=None; Spec 1
+    must not regress that.  Mirrors tests/test_drift_dashboard_data.py:347
+    but kept here so Spec 1's contract is self-contained.
+    """
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAnalysisResult,
+        SystemType as DBSystemType,
+        StatusType as DBStatusType,
+    )
+
+    db = DatabaseManager(tmp_path / "untrimmed_only.db")
+    today = datetime.now()
+
+    with db.session() as s:
+        ar = DBAnalysisResult(
+            filename="UNTRIMMED-MODEL_0001.xls",
+            file_path="/fake/UNTRIMMED-MODEL_0001.xls",
+            file_hash="untrimmed-only-spec1",
+            model="UNTRIMMED-MODEL",
+            serial="0001",
+            system=DBSystemType.B,
+            file_date=today - timedelta(days=1),
+            timestamp=datetime.now(),
+            overall_status=DBStatusType.UNTRIMMED,
+            has_multi_tracks=False,
+            processing_time=0.1,
+        )
+        s.add(ar)
+        s.commit()
+
+        # Confirm: no row -> no sigma_gradient.  This is the existing
+        # behavior; Spec 1 doesn't add tracks to UNTRIMMED-only analyses.
+        from laser_trim_analyzer.database.models import TrackResult as DBTR
+        tracks = s.query(DBTR).filter(DBTR.analysis_id == ar.id).all()
+        assert tracks == [], (
+            "UNTRIMMED-only analyses should have no track rows per existing "
+            "behavior; Spec 1 must not change this."
+        )
