@@ -387,3 +387,80 @@ def test_save_analysis_dedupes_on_metadata_not_file_path(tmp_path):
         f"Re-saving same logical record should hit the existing row "
         f"(id={id1}), but got id={id2}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Smoke test: filenames-only run through the routing + metadata pipeline.
+# Confirms every distinct filename pattern from the 2026-05-30 log corpus
+# either routes to non_trim OR produces non-empty (model, serial).
+# ---------------------------------------------------------------------------
+
+LOG_CORPUS = [
+    # (filename, expected_route, expected_model_or_None, expected_serial_or_None)
+    # Non-trim
+    ("~$1844205_Final_Data.xlsx",           "non_trim", None, None),
+    ("master-sn108_5-30-2025_1-52 PM.xls",  "non_trim", None, None),
+    ("ChemCubed Ink Test 1.xlsx",           "non_trim", None, None),
+    ("temp.xls",                            "non_trim", None, None),
+    ("SN - Shop#.xlsx",                     "non_trim", None, None),
+    # FT -- final SN <num>
+    ("8340-1 final SN 5140.xls",            "final_test", "8340-1", "5140"),
+    ("8340-1 final sn  116xls.xls",         "final_test", "8340-1", "116"),
+    ("8340-1 final 215_6-4-2025_7-38 PM.xls", "final_test", "8340-1", "215"),
+    # FT -- shop traveler
+    ("1844205-shop1_5-18-2026 8-31-14 AM.xlsx", "final_test", "1844205", "shop1"),
+    # FT -- existing patterns (regression guard)
+    ("8340-1-sn470_5-30-2025_1-52 PM.xls",  "final_test", "8340-1", "470"),
+    ("1081313-sn108_3-16-2011_12-17 PM.xls", "final_test", "1081313", "108"),
+]
+
+
+@pytest.mark.parametrize(
+    "filename,expected_route,expected_model,expected_serial", LOG_CORPUS
+)
+def test_log_corpus_pipeline_smoke(
+    filename, expected_route, expected_model, expected_serial, tmp_path
+):
+    """For each distinct filename pattern from the 2026-05-30 log corpus,
+    detect_file_type must produce the expected route, and (for final_test
+    files) the FT metadata extractor must populate model+serial.
+
+    Path setup mirrors production:
+      - non_trim files: caught by NON_TRIM_FILENAME_REGEXES at the filename
+        branch -- no folder context needed.
+      - final_test files: caught by FINAL_TEST_FOLDER_INDICATORS because
+        production stores them in \\\\share\\TEST_DATA\\Test Station\\... .
+        The filename-only FT regex at parser.py:1289 (\\bfinal\\s+\\d) does
+        NOT match 'final SN 5140' or 'shop1' on its own; the folder
+        heuristic is what routes them in real batches.  We mirror that.
+    """
+    from laser_trim_analyzer.core.parser import detect_file_type
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser
+
+    # For FT files, place under a "Test Station" parent so the folder
+    # heuristic routes them as final_test (same as production).
+    # For non_trim files, the filename regex catches them at the top of
+    # detect_file_type before any folder/sheet check -- tmp_path is fine.
+    if expected_route == "final_test":
+        station = tmp_path / "Test Station"
+        station.mkdir()
+        fp = station / filename
+    else:
+        fp = tmp_path / filename
+
+    route = detect_file_type(fp)
+    assert route == expected_route, (
+        f"{filename!r}: expected route {expected_route!r}, got {route!r}"
+    )
+
+    if expected_route == "final_test":
+        parser = FinalTestParser()
+        meta = parser._extract_metadata_from_filename(filename)
+        assert meta["model"] == expected_model, (
+            f"{filename!r}: expected model {expected_model!r}, "
+            f"got {meta['model']!r}"
+        )
+        assert meta["serial"] == expected_serial, (
+            f"{filename!r}: expected serial {expected_serial!r}, "
+            f"got {meta['serial']!r}"
+        )
