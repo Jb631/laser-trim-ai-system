@@ -287,3 +287,59 @@ def test_untrimmed_sigma_none_when_arrays_too_short():
     )
     result = _run_analyze(track_input)
     assert result.untrimmed_sigma_gradient is None
+
+
+# ---------------------------------------------------------------------------
+# Task 5: DB save mapping -- TrackData.untrimmed_sigma_gradient persists
+# through save and reloads correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_untrimmed_sigma_round_trips_through_db(tmp_path):
+    """A TrackData with untrimmed_sigma_gradient set, saved via
+    DatabaseManager, must reload with the same value.
+    """
+    from datetime import datetime
+    from laser_trim_analyzer.core.models import (
+        AnalysisResult, AnalysisStatus, FileMetadata, SystemType, TrackData,
+    )
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        TrackResult as DBTrackResult,
+    )
+
+    mgr = DatabaseManager(tmp_path / "roundtrip.db")
+
+    # Build a minimal AnalysisResult that carries a TrackData with the new
+    # field populated.  Use AnalysisStatus.PASS so the analyzer's track
+    # validator (which permits empty tracks only for ERROR) is satisfied
+    # by including one TrackData entry.
+    td_kwargs = _minimal_track_data_kwargs()
+    td_kwargs["untrimmed_sigma_gradient"] = 0.0123
+    td = TrackData(**td_kwargs)
+
+    ar = AnalysisResult(
+        metadata=FileMetadata(
+            filename="roundtrip.xls",
+            file_path=Path("/fake/roundtrip.xls"),
+            file_date=datetime(2026, 5, 30),
+            model="TEST-MODEL",
+            serial="0001",
+            system=SystemType.A,
+            has_multi_tracks=False,
+        ),
+        overall_status=AnalysisStatus.PASS,
+        tracks=[td],
+        processing_time=0.1,
+    )
+
+    analysis_id = mgr.save_analysis(ar)
+    assert analysis_id > 0
+
+    # Reload and verify.
+    with mgr.session() as session:
+        rows = session.query(DBTrackResult).filter(
+            DBTrackResult.analysis_id == analysis_id
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].untrimmed_sigma_gradient == pytest.approx(0.0123)

@@ -2660,6 +2660,7 @@ class DatabaseManager:
             travel_length=track.travel_length,
             linearity_spec=track.linearity_spec,
             sigma_gradient=track.sigma_gradient,
+            untrimmed_sigma_gradient=track.untrimmed_sigma_gradient,
             sigma_threshold=track.sigma_threshold,
             sigma_pass=track.sigma_pass,
             unit_length=track.unit_length,
