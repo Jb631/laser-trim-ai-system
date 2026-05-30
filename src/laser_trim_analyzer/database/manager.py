@@ -485,6 +485,7 @@ class DatabaseManager:
                     # track_results indexes
                     "CREATE INDEX IF NOT EXISTS idx_track_analysis ON track_results(analysis_id, track_id)",
                     "CREATE INDEX IF NOT EXISTS idx_track_sigma_gradient ON track_results(sigma_gradient)",
+                    "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
                     "CREATE INDEX IF NOT EXISTS idx_track_sigma_pass ON track_results(sigma_pass)",
                     "CREATE INDEX IF NOT EXISTS idx_track_linearity_pass ON track_results(linearity_pass)",
                     "CREATE INDEX IF NOT EXISTS idx_track_risk_category ON track_results(risk_category)",
@@ -564,7 +565,7 @@ class DatabaseManager:
                     text("SELECT untrimmed_sigma_gradient FROM track_results LIMIT 1")
                 )
             except OperationalError:
-                session.rollback()
+                session.rollback()  # Clear error state from failed probe
                 logger.info(
                     "Running migration: Adding untrimmed_sigma_gradient column"
                 )
