@@ -301,3 +301,89 @@ def test_extract_test_results_silently_returns_defaults_for_format3_signature(
     assert all(v is None for v in results.values()), (
         f"Default values should all be None; got {results}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue: 24+ IntegrityErrors per batch from save_analysis using the wrong
+# existence-check key.  DB UNIQUE constraint is (filename, file_date, model,
+# serial) but save_analysis checks (filename, file_path).
+# Evidence: Work Files/5-30-26/2026-05-28 160741,148 - laser_trim_.txt
+# ---------------------------------------------------------------------------
+
+
+def _build_analysis_result(filename, file_path, model, serial, file_date):
+    """Minimal AnalysisResult sufficient for save_analysis().
+
+    Uses AnalysisStatus.ERROR + empty tracks so the AnalysisResult validator
+    (which requires >=1 track unless status is ERROR) is satisfied without
+    constructing a full TrackData payload -- this test only exercises the
+    dedupe/existence-check path, not the track-mapping path.
+    """
+    from datetime import datetime as _dt
+    from laser_trim_analyzer.core.models import (
+        AnalysisResult,
+        AnalysisStatus,
+        FileMetadata,
+        SystemType,
+    )
+
+    metadata = FileMetadata(
+        filename=filename,
+        file_path=Path(file_path),
+        file_date=file_date or _dt(2025, 12, 7),
+        model=model,
+        serial=serial,
+        system=SystemType.A,
+        has_multi_tracks=False,
+    )
+    return AnalysisResult(
+        metadata=metadata,
+        overall_status=AnalysisStatus.ERROR,
+        tracks=[],
+        processing_time=0.1,
+    )
+
+
+def test_save_analysis_dedupes_on_metadata_not_file_path(tmp_path):
+    """Saving the same logical record (same filename+date+model+serial) via
+    two DIFFERENT file_path strings should be idempotent -- the second save
+    must UPDATE the existing row, not raise IntegrityError.
+
+    Pre-fix the existence check filtered on (filename, file_path), so the
+    re-presentation with a different path missed the lookup, an INSERT was
+    attempted, and SQLite raised IntegrityError on the
+    (filename, file_date, model, serial) UNIQUE constraint.
+    """
+    from datetime import datetime as _dt
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    # Fresh on-disk DB so we exercise the real schema + constraint.
+    mgr = DatabaseManager(tmp_path / "dedupe.db")
+
+    common = dict(
+        filename="8877_5_deg_2_TEST DATA_12-7-2025_4-25 AM.xls",
+        model="8877",
+        serial="2",
+        file_date=_dt(2025, 12, 7),
+    )
+
+    # First save: insert.
+    a1 = _build_analysis_result(
+        file_path=r"\\192.168.66.9\BTXData\TEST_DATA\DLTS\8877-4\8877_5_deg\8877_5_deg_2_TEST DATA_12-7-2025_4-25 AM.xls",
+        **common,
+    )
+    id1 = mgr.save_analysis(a1)
+    assert id1 > 0, "First save should produce a valid row id"
+
+    # Second save: same metadata, DIFFERENT file_path string (mapped drive
+    # vs UNC).  Pre-fix, this raises IntegrityError.  Post-fix, it should
+    # find the existing row and update it.
+    a2 = _build_analysis_result(
+        file_path=r"Z:\TEST_DATA\DLTS\8877-4\8877_5_deg\8877_5_deg_2_TEST DATA_12-7-2025_4-25 AM.xls",
+        **common,
+    )
+    id2 = mgr.save_analysis(a2)  # must NOT raise
+    assert id2 == id1, (
+        f"Re-saving same logical record should hit the existing row "
+        f"(id={id1}), but got id={id2}"
+    )

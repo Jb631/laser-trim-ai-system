@@ -1052,12 +1052,20 @@ class DatabaseManager:
         # only adds confusion to the lock graph. The session context is
         # sufficient for SQLite serialization.
         with self.session() as session:
-            # Check for existing record by filename (stable identifier)
-            # This ensures re-analysis updates the existing record even if
-            # model/serial/date parsing changed
+            # Check for existing record by the DB's UNIQUE-constraint key
+            # (filename, file_date, model, serial).  Pre-fix this filtered on
+            # (filename, file_path), but the UNIQUE constraint is keyed on
+            # the metadata tuple -- the same file on a different path string
+            # (UNC vs mapped drive, folder reorg, network share migration)
+            # missed this lookup and then raised IntegrityError at INSERT
+            # time.  Aligning the lookup with the constraint turns these
+            # re-presentations into idempotent UPDATEs.
+            # See save_final_test for the parallel lesson.
             existing = session.query(DBAnalysisResult).filter(
                 DBAnalysisResult.filename == analysis.metadata.filename,
-                DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+                DBAnalysisResult.file_date == analysis.metadata.file_date,
+                DBAnalysisResult.model == analysis.metadata.model,
+                DBAnalysisResult.serial == analysis.metadata.serial,
             ).first()
 
             if existing:
@@ -1103,11 +1111,14 @@ class DatabaseManager:
                             saved_ids.append(getattr(analysis, 'final_test_id', -1) or -1)
                             continue
 
-                        # Check for existing record by filename + file_path
-                        # (must match save_analysis to avoid cross-directory overwrites)
+                        # Check for existing record by the DB UNIQUE key
+                        # (filename, file_date, model, serial).  Must match
+                        # save_analysis; see comment there for rationale.
                         existing = session.query(DBAnalysisResult).filter(
                             DBAnalysisResult.filename == analysis.metadata.filename,
-                            DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+                            DBAnalysisResult.file_date == analysis.metadata.file_date,
+                            DBAnalysisResult.model == analysis.metadata.model,
+                            DBAnalysisResult.serial == analysis.metadata.serial,
                         ).first()
 
                         if existing:
@@ -2867,12 +2878,18 @@ class DatabaseManager:
         analysis: AnalysisResult
     ) -> int:
         """Update an existing analysis record."""
-        # Find existing record by filename + file_path (model/serial may have changed due to parsing fixes)
+        # Find existing record by the DB UNIQUE-constraint key
+        # (filename, file_date, model, serial).  Must match save_analysis /
+        # save_batch -- if we re-query by (filename, file_path) here and the
+        # path string differs from what's stored, we miss the row, fall
+        # through to INSERT, and trip the UNIQUE constraint.
         existing = (
             session.query(DBAnalysisResult)
             .filter(
                 DBAnalysisResult.filename == analysis.metadata.filename,
-                DBAnalysisResult.file_path == str(analysis.metadata.file_path),
+                DBAnalysisResult.file_date == analysis.metadata.file_date,
+                DBAnalysisResult.model == analysis.metadata.model,
+                DBAnalysisResult.serial == analysis.metadata.serial,
             )
             .first()
         )
