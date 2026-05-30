@@ -485,7 +485,6 @@ class DatabaseManager:
                     # track_results indexes
                     "CREATE INDEX IF NOT EXISTS idx_track_analysis ON track_results(analysis_id, track_id)",
                     "CREATE INDEX IF NOT EXISTS idx_track_sigma_gradient ON track_results(sigma_gradient)",
-                    "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
                     "CREATE INDEX IF NOT EXISTS idx_track_sigma_pass ON track_results(sigma_pass)",
                     "CREATE INDEX IF NOT EXISTS idx_track_linearity_pass ON track_results(linearity_pass)",
                     "CREATE INDEX IF NOT EXISTS idx_track_risk_category ON track_results(risk_category)",
@@ -504,6 +503,11 @@ class DatabaseManager:
                     # ORDER BY file_date DESC LIMIT 500 with no leading filter,
                     # which the composite indexes don't satisfy.
                     "CREATE INDEX IF NOT EXISTS idx_ft_file_date ON final_test_results(file_date)",
+                    # Placed last so the bulk loop on pre-Spec-1 DBs re-confirms all
+                    # existing indexes before failing on this one new-column entry.
+                    # The Spec 1 column migration immediately after (untrimmed_sigma_gradient
+                    # block) creates both the column and this index on first upgrade.
+                    "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
                 ]
                 created = 0
                 for stmt in index_statements:
