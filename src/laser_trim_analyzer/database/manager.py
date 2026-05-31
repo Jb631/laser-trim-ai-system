@@ -592,6 +592,20 @@ class DatabaseManager:
                         f"Migration warning (may already exist): {e}"
                     )
 
+            # Migration: Create model_metric_state table for Spec 2.
+            # This is a CREATE TABLE rather than ALTER TABLE because the
+            # table is entirely new in V6.  Use Base.metadata.create_all
+            # with checkfirst=True for idempotency.
+            try:
+                from laser_trim_analyzer.database.models import ModelMetricState
+                ModelMetricState.__table__.create(bind=session.bind, checkfirst=True)
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                logger.warning(
+                    f"Migration warning for model_metric_state (may already exist): {e}"
+                )
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))

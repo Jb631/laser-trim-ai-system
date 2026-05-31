@@ -1148,6 +1148,58 @@ class ModelMLState(Base):
 
 
 # =============================================================================
+# Per-Model Per-Metric Drift State - Spec 2 (2026-05-30)
+# =============================================================================
+
+class ModelMetricState(Base):
+    """
+    Per-model per-metric drift detection state and learned thresholds.
+
+    Spec 2 (2026-05-30): replaces the single-metric drift state held by
+    the old ModelDriftDetector class.  One row per (model, metric) tuple.
+    8 metrics watched per model: 7 trim + max_smoothness_value.
+
+    Thresholds (h/L/z per tier) are recomputed in place whenever the
+    sensitivity preset changes — they derive from baseline_std and the
+    target FP rate for the (preset, tier) pair.
+    """
+    __tablename__ = 'model_metric_state'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(String(50), nullable=False, index=True)
+    metric = Column(String(50), nullable=False, index=True)
+
+    # Baseline (learned during training)
+    baseline_cutoff_date = Column(DateTime)
+    baseline_mean = Column(Float)
+    baseline_std = Column(Float)
+    baseline_count = Column(Integer, nullable=False, default=0)
+    is_trained = Column(Boolean, nullable=False, default=False)
+
+    # Per-tier thresholds (derived from baseline_std + preset target FP rate)
+    h_warning = Column(Float)
+    h_drift = Column(Float)
+    h_oc = Column(Float)
+    L_warning = Column(Float)
+    L_drift = Column(Float)
+    L_oc = Column(Float)
+    z_warning = Column(Float)
+    z_drift = Column(Float)
+    z_oc = Column(Float)
+
+    # Live runtime state (updated on each new sample)
+    ewma_state = Column(Float)
+    cusum_pos = Column(Float, nullable=False, default=0.0)
+    cusum_neg = Column(Float, nullable=False, default=0.0)
+    last_updated = Column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint('model', 'metric', name='uq_model_metric_state'),
+        Index('idx_model_metric_state_model_metric', 'model', 'metric'),
+    )
+
+
+# =============================================================================
 # Model Specifications - Engineering specs for each model
 # =============================================================================
 
