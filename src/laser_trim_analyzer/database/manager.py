@@ -503,6 +503,11 @@ class DatabaseManager:
                     # ORDER BY file_date DESC LIMIT 500 with no leading filter,
                     # which the composite indexes don't satisfy.
                     "CREATE INDEX IF NOT EXISTS idx_ft_file_date ON final_test_results(file_date)",
+                    # Placed last so the bulk loop on pre-Spec-1 DBs re-confirms all
+                    # existing indexes before failing on this one new-column entry.
+                    # The Spec 1 column migration immediately after (untrimmed_sigma_gradient
+                    # block) creates both the column and this index on first upgrade.
+                    "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_sigma_gradient ON track_results(untrimmed_sigma_gradient)",
                 ]
                 created = 0
                 for stmt in index_statements:
@@ -555,6 +560,37 @@ class DatabaseManager:
                     logger.info("Migration completed: Added max deviation columns")
                 except Exception as e:
                     logger.warning(f"Max deviation migration warning (may already exist): {e}")
+
+            # Migration: Add untrimmed_sigma_gradient column to track_results.
+            # Spec 1 (2026-05-30): upstream element-quality signal independent
+            # of post-trim sigma_gradient.  Backfilled by natural reprocess flow.
+            try:
+                session.execute(
+                    text("SELECT untrimmed_sigma_gradient FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info(
+                    "Running migration: Adding untrimmed_sigma_gradient column"
+                )
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN untrimmed_sigma_gradient FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_track_untrimmed_sigma_gradient "
+                        "ON track_results (untrimmed_sigma_gradient)"
+                    ))
+                    session.commit()
+                    logger.info(
+                        "Migration completed: Added untrimmed_sigma_gradient"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Migration warning (may already exist): {e}"
+                    )
 
             # Migration: Add data_quality columns to analysis_results
             try:
@@ -2628,6 +2664,7 @@ class DatabaseManager:
             travel_length=track.travel_length,
             linearity_spec=track.linearity_spec,
             sigma_gradient=track.sigma_gradient,
+            untrimmed_sigma_gradient=track.untrimmed_sigma_gradient,
             sigma_threshold=track.sigma_threshold,
             sigma_pass=track.sigma_pass,
             unit_length=track.unit_length,
