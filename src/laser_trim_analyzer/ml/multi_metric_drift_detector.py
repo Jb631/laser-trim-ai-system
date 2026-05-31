@@ -1,0 +1,223 @@
+"""Spec 2 — MetricDetector + MultiMetricDriftDetector.
+
+The detector logic lives here.  Threshold math uses scipy.stats.norm
+for inverse normal CDF.  Three independent checks per sample: CUSUM,
+EWMA, step-change.
+
+This file replaces the analytical core of the old ml/drift_detector.py
+ModelDriftDetector class for V6.  The old class is retained until Spec 3
+retires the UI that uses it.
+"""
+from __future__ import annotations
+
+import math
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque, Dict, Optional
+
+import numpy as np
+from scipy import stats
+
+from laser_trim_analyzer.ml.drift_types import (
+    AlertType,
+    DriftTier,
+    MetricStatus,
+    ModelAlertSummary,
+    ModelDriftStatus,
+    WATCHED_METRICS,
+)
+
+
+# EWMA smoothing constant.  Fixed in v1 per spec.
+EWMA_LAMBDA: float = 0.2
+
+# CUSUM allowance (k).  Half the baseline std.  Fixed in v1 per spec.
+CUSUM_K_SIGMAS: float = 0.5
+
+# Step-change window size N (number of recent samples averaged).
+STEP_CHANGE_WINDOW: int = 5
+
+
+def compute_thresholds(sigma: float, target_fp: float) -> tuple[float, float, float]:
+    """Compute (h, L, z) thresholds for a target false-positive rate.
+
+    - L = phi^-1(1 - p/2)         (EWMA two-sided control-limit width)
+    - z = phi^-1(1 - p)           (step-change one-sided cutoff)
+    - h = -ln(p) / k_cusum * sigma  (SPC approximation; see spec)
+
+    sigma is the baseline standard deviation; needed only for h.
+    """
+    if target_fp <= 0 or target_fp >= 1:
+        raise ValueError(f"target_fp must be in (0, 1), got {target_fp}")
+
+    L = float(stats.norm.ppf(1.0 - target_fp / 2.0))
+    z = float(stats.norm.ppf(1.0 - target_fp))
+    h = -math.log(target_fp) / CUSUM_K_SIGMAS * sigma
+    return h, L, z
+
+
+@dataclass
+class MetricDetector:
+    """One model × one metric detector.
+
+    Holds baseline stats, per-tier thresholds, and live runtime state.
+    update() processes a new sample and returns the current MetricStatus.
+    """
+    metric: str
+    baseline_mean: float
+    baseline_std: float
+    baseline_count: int
+    is_trained: bool
+
+    # Thresholds keyed by tier name ("WARNING", "DRIFT", "OUT_OF_CONTROL")
+    h_per_tier: Dict[str, float] = field(default_factory=dict)
+    L_per_tier: Dict[str, float] = field(default_factory=dict)
+    z_per_tier: Dict[str, float] = field(default_factory=dict)
+
+    # Runtime state
+    cusum_pos: float = 0.0
+    cusum_neg: float = 0.0
+    ewma_state: Optional[float] = None
+    recent_window: Deque[float] = field(default_factory=lambda: deque(maxlen=STEP_CHANGE_WINDOW))
+
+    # Last computed status (for get_status without re-processing)
+    _last_status: Optional[MetricStatus] = None
+
+    def update(self, value: float) -> MetricStatus:
+        """Process a new sample; update state; return current status."""
+        # Ignore NaN/Inf -- they shouldn't move state
+        if value is None or not math.isfinite(value):
+            return self.get_status()
+
+        # If never trained, runtime updates still happen so a later
+        # training pass can flip is_trained=True with non-zero state.
+        # Use baseline_mean=0 as a no-op if baseline is also None.
+        mu = self.baseline_mean if self.baseline_mean is not None else 0.0
+        sigma = self.baseline_std if self.baseline_std is not None else 1.0
+
+        # Initialize EWMA to baseline mean on first update
+        if self.ewma_state is None:
+            self.ewma_state = mu
+
+        # CUSUM update with allowance k = 0.5σ
+        k = CUSUM_K_SIGMAS * sigma
+        self.cusum_pos = max(0.0, self.cusum_pos + (value - mu) - k)
+        self.cusum_neg = min(0.0, self.cusum_neg + (value - mu) + k)
+
+        # EWMA update
+        self.ewma_state = EWMA_LAMBDA * value + (1.0 - EWMA_LAMBDA) * self.ewma_state
+
+        # Step-change window
+        self.recent_window.append(value)
+
+        status = self._compute_status()
+        self._last_status = status
+        return status
+
+    def _compute_status(self) -> MetricStatus:
+        """Evaluate current state against per-tier thresholds.
+
+        Returns the highest tier any check trips at.  When step-change and
+        slow-drift tie at the same tier, step-change is preferred for the
+        displayed alert_type.
+        """
+        if not self.is_trained:
+            return MetricStatus(
+                metric=self.metric,
+                tier=DriftTier.STABLE,
+                alert_type=None,
+                magnitude=0.0,
+                baseline_mean=self.baseline_mean or 0.0,
+                baseline_std=self.baseline_std or 0.0,
+                recent_mean=None,
+                recent_count=len(self.recent_window),
+                is_trained=False,
+            )
+
+        sigma = self.baseline_std
+        mu = self.baseline_mean
+        # EWMA control limits use sigma_ewma = sigma * sqrt(lambda / (2-lambda))
+        sigma_ewma = sigma * math.sqrt(EWMA_LAMBDA / (2.0 - EWMA_LAMBDA))
+
+        recent_mean = (
+            float(np.mean(list(self.recent_window))) if self.recent_window else None
+        )
+        recent_n = len(self.recent_window)
+
+        # Test each tier from strictest to loosest; pick the highest tier
+        # that any check trips at.
+        winning_tier = DriftTier.STABLE
+        winning_alert_type: Optional[AlertType] = None
+        winning_magnitude = 0.0
+
+        for tier in (DriftTier.OUT_OF_CONTROL, DriftTier.DRIFT, DriftTier.WARNING):
+            tier_key = tier.name
+            h = self.h_per_tier.get(tier_key)
+            L = self.L_per_tier.get(tier_key)
+            z = self.z_per_tier.get(tier_key)
+            if h is None or L is None or z is None:
+                continue
+
+            cusum_trip = self.cusum_pos > h or self.cusum_neg < -h
+            ewma_trip = (
+                abs(self.ewma_state - mu) > L * sigma_ewma
+            )
+            step_trip = False
+            step_magnitude = 0.0
+            if recent_mean is not None and recent_n >= STEP_CHANGE_WINDOW:
+                step_magnitude = (
+                    abs(recent_mean - mu) * math.sqrt(recent_n) / sigma
+                    if sigma > 0 else 0.0
+                )
+                step_trip = step_magnitude > z
+
+            if cusum_trip or ewma_trip or step_trip:
+                # First tier we hit (strictest) wins.
+                winning_tier = tier
+                # Alert-type tiebreaker:
+                # - step_trip alone (no CUSUM at this tier) -> STEP_CHANGE
+                # - CUSUM has caught up at this tier -> SLOW_DRIFT
+                # This matches the spec's intent: CUSUM is an integrator,
+                # so if it has accumulated enough to trip at the winning
+                # tier the change has been gradual / sustained; if step
+                # fires first (CUSUM hasn't caught up) it's an abrupt shift.
+                if step_trip and not cusum_trip:
+                    winning_alert_type = AlertType.STEP_CHANGE
+                    winning_magnitude = step_magnitude
+                else:
+                    winning_alert_type = AlertType.SLOW_DRIFT
+                    winning_magnitude = max(
+                        abs(self.cusum_pos) / h if h > 0 else 0.0,
+                        abs(self.ewma_state - mu) / (L * sigma_ewma) if (L * sigma_ewma) > 0 else 0.0,
+                    )
+                break  # strictest wins; no need to check lower tiers
+
+        return MetricStatus(
+            metric=self.metric,
+            tier=winning_tier,
+            alert_type=winning_alert_type,
+            magnitude=winning_magnitude,
+            baseline_mean=mu,
+            baseline_std=sigma,
+            recent_mean=recent_mean,
+            recent_count=recent_n,
+            is_trained=True,
+        )
+
+    def get_status(self) -> MetricStatus:
+        """Current status without processing a new sample."""
+        if self._last_status is None:
+            return self._compute_status()
+        return self._last_status
+
+    def reset_runtime(self) -> None:
+        """Zero out CUSUM and re-init EWMA to baseline mean.
+
+        Called after a baseline refresh (training) so the detector
+        starts fresh against the new baseline.
+        """
+        self.cusum_pos = 0.0
+        self.cusum_neg = 0.0
+        self.ewma_state = self.baseline_mean
+        self.recent_window.clear()
+        self._last_status = None

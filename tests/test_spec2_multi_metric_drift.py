@@ -167,3 +167,127 @@ def test_metric_status_dataclass_round_trip():
     )
     assert ms.metric == "sigma_gradient"
     assert ms.tier == DriftTier.WARNING
+
+
+# ---------------------------------------------------------------------------
+# Task 3: MetricDetector -- threshold math + three checks
+# ---------------------------------------------------------------------------
+
+
+def test_threshold_math_at_known_fp_rates():
+    """compute_thresholds returns the inverse-CDF values for known p."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        compute_thresholds,
+    )
+
+    sigma = 1.0  # makes L and z numeric
+    # Per spec: L = phi^-1(1 - p/2), z = phi^-1(1 - p), h via SPC approx
+    h_05, L_05, z_05 = compute_thresholds(sigma=sigma, target_fp=0.05)
+    assert L_05 == pytest.approx(1.96, abs=0.01)
+    assert z_05 == pytest.approx(1.645, abs=0.01)
+
+    h_01, L_01, z_01 = compute_thresholds(sigma=sigma, target_fp=0.01)
+    assert L_01 == pytest.approx(2.576, abs=0.01)
+    assert z_01 == pytest.approx(2.326, abs=0.01)
+
+    # h should grow as p shrinks (stricter)
+    assert h_01 > h_05
+
+
+def test_metric_detector_flat_baseline_never_flags():
+    """A series of samples at baseline_mean never elevates the tier."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    det = _build_trained_detector(baseline_mean=10.0, baseline_std=1.0)
+
+    for _ in range(100):
+        status = det.update(10.0)
+        assert status.tier == DriftTier.STABLE
+
+
+def test_metric_detector_step_change_trips_step_check():
+    """An abrupt mean shift of 3σ trips step-change at some tier."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier, AlertType
+
+    det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+
+    # Feed 5 samples at the new mean to fill the step-change window
+    for _ in range(5):
+        status = det.update(3.0)
+
+    assert status.tier > DriftTier.STABLE
+    assert status.alert_type == AlertType.STEP_CHANGE
+
+
+def test_metric_detector_slow_ramp_trips_cusum_or_ewma():
+    """A linear ramp from 0 to 2σ over 50 samples trips slow-drift."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier, AlertType
+
+    det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+
+    for i in range(50):
+        value = (i / 50.0) * 2.0  # 0 → 2σ over 50 samples
+        status = det.update(value)
+
+    assert status.tier > DriftTier.STABLE
+    assert status.alert_type == AlertType.SLOW_DRIFT
+
+
+def test_metric_detector_handles_nan_input():
+    """NaN samples are ignored; no crash, runtime state unchanged."""
+    import math
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+
+    det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    # Prime with a real sample so we have a non-zero ewma
+    det.update(0.0)
+    cusum_before = det.cusum_pos
+
+    status = det.update(math.nan)
+    assert det.cusum_pos == cusum_before  # unchanged
+
+
+def test_metric_detector_untrained_never_elevates():
+    """is_trained=False means tier stays Stable forever."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    det.is_trained = False
+
+    for v in (0.0, 5.0, -5.0, 100.0):
+        status = det.update(v)
+        assert status.tier == DriftTier.STABLE
+
+
+def _build_trained_detector(*, baseline_mean, baseline_std):
+    """Helper: build a MetricDetector with standard-preset thresholds
+    pre-computed.  Use this in every detector test below.
+    """
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MetricDetector, compute_thresholds,
+    )
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, target_fp_for_tier,
+    )
+
+    h = {}
+    L = {}
+    z = {}
+    for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
+        p = target_fp_for_tier("standard", tier)
+        h[tier], L[tier], z[tier] = compute_thresholds(baseline_std, p)
+
+    return MetricDetector(
+        metric="test_metric",
+        baseline_mean=baseline_mean,
+        baseline_std=baseline_std,
+        baseline_count=100,
+        is_trained=True,
+        h_per_tier={t.name: v for t, v in h.items()},
+        L_per_tier={t.name: v for t, v in L.items()},
+        z_per_tier={t.name: v for t, v in z.items()},
+    )
