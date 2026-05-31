@@ -536,3 +536,86 @@ def test_training_idempotent(tmp_path):
         count_after_second = s.query(ModelMetricState).count()
 
     assert count_after_first == count_after_second
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Public API in ml/manager.py
+# ---------------------------------------------------------------------------
+
+
+def test_get_drifting_models_empty_when_nothing_flagged(tmp_path):
+    """Fresh DB with no training data -> no flagged models."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.ml.manager import get_drifting_models
+
+    db = DatabaseManager(tmp_path / "empty.db")
+    result = get_drifting_models(db, sensitivity_preset="standard")
+    assert result == []
+
+
+def test_get_drifting_models_returns_flagged_only(tmp_path):
+    """Models with overall_tier > Stable appear in the result list."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    from laser_trim_analyzer.ml.manager import get_drifting_models
+
+    db = DatabaseManager(tmp_path / "flagged.db")
+
+    # Hand-write a row that puts model 8340-1 into a flag-tripping state.
+    # Trick: set cusum_pos > h_warning so the detector's evaluate path
+    # reports Warning when checked.
+    with db.session() as s:
+        row = ModelMetricState(
+            model="8340-1",
+            metric="sigma_gradient",
+            baseline_mean=0.01,
+            baseline_std=0.001,
+            baseline_count=100,
+            is_trained=True,
+            h_warning=1.0, h_drift=5.0, h_oc=10.0,
+            L_warning=2.0, L_drift=3.0, L_oc=4.0,
+            z_warning=1.6, z_drift=2.3, z_oc=3.0,
+            cusum_pos=2.0,  # > h_warning -> trips Warning
+            cusum_neg=0.0,
+            ewma_state=0.01,
+            last_updated=datetime.now(),
+        )
+        s.add(row)
+        s.commit()
+
+    result = get_drifting_models(db, sensitivity_preset="standard")
+    flagged_models = [r.model for r in result]
+    assert "8340-1" in flagged_models
+
+
+def test_get_model_drift_status_includes_all_eight_metric_slots(tmp_path):
+    """For any known model, get_model_drift_status returns a per_metric
+    dict with all 8 metric keys (some may be is_trained=False).
+    """
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.ml.manager import get_model_drift_status
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+
+    db = DatabaseManager(tmp_path / "single.db")
+    status = get_model_drift_status(db, "UNKNOWN-MODEL")
+
+    assert set(status.per_metric.keys()) == set(WATCHED_METRICS)
+
+
+def test_preview_alert_count_returns_per_tier_counts(tmp_path):
+    """preview_alert_count returns a dict with the three tier names as keys."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.ml.manager import preview_alert_count
+
+    db = DatabaseManager(tmp_path / "preview.db")
+    counts = preview_alert_count(db, sensitivity_preset="standard")
+
+    assert "warning" in counts
+    assert "drift" in counts
+    assert "out_of_control" in counts
+    # Empty DB -> zero counts
+    assert counts["warning"] == 0
+    assert counts["drift"] == 0
+    assert counts["out_of_control"] == 0

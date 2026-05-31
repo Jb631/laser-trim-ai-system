@@ -1357,3 +1357,205 @@ class MLManager:
             logger.debug(f"Could not generate recommendations for {model}: {e}")
 
         return recommendations
+
+
+def get_drifting_models(db, sensitivity_preset: str = "standard"):
+    """Return sorted list of currently-flagged models.
+
+    Reads model_metric_state directly (no historical re-scan).  Each
+    model's overall_tier is computed by hydrating its 8 MetricDetector
+    rows and running the worst-of aggregation.  Sorted by (tier desc,
+    magnitude desc).
+
+    Returns empty list when nothing is above Stable.
+    """
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, ModelAlertSummary, WATCHED_METRICS,
+    )
+
+    summaries: list[ModelAlertSummary] = []
+    with db.session() as s:
+        # Get unique models that have at least one row
+        models = [
+            r[0] for r in s.query(ModelMetricState.model).distinct().all()
+        ]
+
+    for model in models:
+        status = get_model_drift_status(db, model)
+        if status.overall_tier > DriftTier.STABLE:
+            summaries.append(ModelAlertSummary(
+                model=model,
+                tier=status.overall_tier,
+                alert_type=status.worst_alert_type,
+                worst_metric=status.worst_metric or "",
+                magnitude=status.per_metric[status.worst_metric].magnitude
+                          if status.worst_metric else 0.0,
+            ))
+
+    summaries.sort(key=lambda r: (int(r.tier), r.magnitude), reverse=True)
+    return summaries
+
+
+def get_model_drift_status(db, model: str):
+    """Return full per-metric breakdown for one model.
+
+    Hydrates MetricDetector instances from model_metric_state rows and
+    asks the container for its current status.
+    """
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MetricDetector, MultiMetricDriftDetector,
+    )
+
+    metrics = {}
+    # Materialize row data inside the session to avoid DetachedInstanceError
+    # when expire_on_commit=True causes attributes to be reloaded post-close.
+    rows_by_metric: dict = {}
+    with db.session() as s:
+        rows = s.query(ModelMetricState).filter(
+            ModelMetricState.model == model,
+        ).all()
+        for r in rows:
+            rows_by_metric[r.metric] = {
+                "baseline_mean": r.baseline_mean,
+                "baseline_std": r.baseline_std,
+                "baseline_count": r.baseline_count,
+                "is_trained": r.is_trained,
+                "h_warning": r.h_warning,
+                "h_drift": r.h_drift,
+                "h_oc": r.h_oc,
+                "L_warning": r.L_warning,
+                "L_drift": r.L_drift,
+                "L_oc": r.L_oc,
+                "z_warning": r.z_warning,
+                "z_drift": r.z_drift,
+                "z_oc": r.z_oc,
+                "cusum_pos": r.cusum_pos,
+                "cusum_neg": r.cusum_neg,
+                "ewma_state": r.ewma_state,
+            }
+
+    for metric_name in WATCHED_METRICS:
+        row = rows_by_metric.get(metric_name)
+        if row is None:
+            # No DB row -> create a placeholder untrained detector
+            metrics[metric_name] = MetricDetector(
+                metric=metric_name,
+                baseline_mean=0.0,
+                baseline_std=0.0,
+                baseline_count=0,
+                is_trained=False,
+            )
+        else:
+            det = MetricDetector(
+                metric=metric_name,
+                baseline_mean=row["baseline_mean"] or 0.0,
+                baseline_std=row["baseline_std"] or 0.0,
+                baseline_count=row["baseline_count"],
+                is_trained=row["is_trained"],
+                h_per_tier={
+                    "WARNING": row["h_warning"] or 0.0,
+                    "DRIFT": row["h_drift"] or 0.0,
+                    "OUT_OF_CONTROL": row["h_oc"] or 0.0,
+                },
+                L_per_tier={
+                    "WARNING": row["L_warning"] or 0.0,
+                    "DRIFT": row["L_drift"] or 0.0,
+                    "OUT_OF_CONTROL": row["L_oc"] or 0.0,
+                },
+                z_per_tier={
+                    "WARNING": row["z_warning"] or 0.0,
+                    "DRIFT": row["z_drift"] or 0.0,
+                    "OUT_OF_CONTROL": row["z_oc"] or 0.0,
+                },
+                cusum_pos=row["cusum_pos"] or 0.0,
+                cusum_neg=row["cusum_neg"] or 0.0,
+                ewma_state=row["ewma_state"],
+            )
+            metrics[metric_name] = det
+
+    container = MultiMetricDriftDetector(model=model, metrics=metrics)
+    return container.get_status()
+
+
+def preview_alert_count(db, sensitivity_preset: str) -> dict:
+    """Count models that would flag at each tier under the candidate preset.
+
+    Cheap -- doesn't re-scan history.  Recomputes per-tier thresholds for
+    each existing row, then evaluates against cached runtime state.
+    """
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, target_fp_for_tier, WATCHED_METRICS,
+    )
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MetricDetector, MultiMetricDriftDetector, compute_thresholds,
+    )
+
+    counts = {"warning": 0, "drift": 0, "out_of_control": 0}
+
+    with db.session() as s:
+        models = [
+            r[0] for r in s.query(ModelMetricState.model).distinct().all()
+        ]
+
+    for model in models:
+        # Build detectors with candidate-preset thresholds in place of cached ones
+        metrics = {}
+        # Materialize row data inside the session to avoid DetachedInstanceError
+        row_data: list[dict] = []
+        with db.session() as s:
+            rows = s.query(ModelMetricState).filter(
+                ModelMetricState.model == model
+            ).all()
+            for r in rows:
+                row_data.append({
+                    "metric": r.metric,
+                    "is_trained": r.is_trained,
+                    "baseline_mean": r.baseline_mean,
+                    "baseline_std": r.baseline_std,
+                    "baseline_count": r.baseline_count,
+                    "cusum_pos": r.cusum_pos,
+                    "cusum_neg": r.cusum_neg,
+                    "ewma_state": r.ewma_state,
+                })
+
+        for row in row_data:
+            if not row["is_trained"] or row["baseline_std"] is None:
+                continue
+            h_per_tier = {}
+            L_per_tier = {}
+            z_per_tier = {}
+            for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
+                p = target_fp_for_tier(sensitivity_preset, tier)
+                h, L, z = compute_thresholds(row["baseline_std"], p)
+                h_per_tier[tier.name] = h
+                L_per_tier[tier.name] = L
+                z_per_tier[tier.name] = z
+
+            metrics[row["metric"]] = MetricDetector(
+                metric=row["metric"],
+                baseline_mean=row["baseline_mean"],
+                baseline_std=row["baseline_std"],
+                baseline_count=row["baseline_count"],
+                is_trained=True,
+                h_per_tier=h_per_tier,
+                L_per_tier=L_per_tier,
+                z_per_tier=z_per_tier,
+                cusum_pos=row["cusum_pos"] or 0.0,
+                cusum_neg=row["cusum_neg"] or 0.0,
+                ewma_state=row["ewma_state"],
+            )
+
+        container = MultiMetricDriftDetector(model=model, metrics=metrics)
+        status = container.get_status()
+        if status.overall_tier == DriftTier.WARNING:
+            counts["warning"] += 1
+        elif status.overall_tier == DriftTier.DRIFT:
+            counts["drift"] += 1
+        elif status.overall_tier == DriftTier.OUT_OF_CONTROL:
+            counts["out_of_control"] += 1
+
+    return counts
