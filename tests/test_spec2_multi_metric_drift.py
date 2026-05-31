@@ -96,3 +96,74 @@ def _table_cols(db_path, table):
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     conn.close()
     return cols
+
+
+# ---------------------------------------------------------------------------
+# Task 2: types -- enums, dataclasses, preset mapping
+# ---------------------------------------------------------------------------
+
+
+def test_drift_tier_ordering():
+    """DriftTier values must compare in severity order."""
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    assert DriftTier.STABLE < DriftTier.WARNING
+    assert DriftTier.WARNING < DriftTier.DRIFT
+    assert DriftTier.DRIFT < DriftTier.OUT_OF_CONTROL
+
+
+def test_alert_type_values():
+    """AlertType has the two values from the spec."""
+    from laser_trim_analyzer.ml.drift_types import AlertType
+
+    assert AlertType.STEP_CHANGE
+    assert AlertType.SLOW_DRIFT
+
+
+def test_target_fp_rate_matrix_standard_preset():
+    """target_fp_for_tier('standard', ...) returns the spec's matrix."""
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, target_fp_for_tier,
+    )
+
+    assert target_fp_for_tier("standard", DriftTier.WARNING) == pytest.approx(0.05)
+    assert target_fp_for_tier("standard", DriftTier.DRIFT) == pytest.approx(0.01)
+    assert target_fp_for_tier("standard", DriftTier.OUT_OF_CONTROL) == pytest.approx(0.001)
+
+
+def test_target_fp_rate_matrix_all_presets():
+    """Verify all four presets produce strictly-monotone-stricter FP rates."""
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, target_fp_for_tier,
+    )
+
+    for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
+        loose = target_fp_for_tier("loose", tier)
+        standard = target_fp_for_tier("standard", tier)
+        tight = target_fp_for_tier("tight", tier)
+        strict = target_fp_for_tier("strict", tier)
+        assert loose > standard > tight > strict, (
+            f"Tier {tier}: presets should be strictly stricter; "
+            f"got loose={loose}, standard={standard}, tight={tight}, strict={strict}"
+        )
+
+
+def test_metric_status_dataclass_round_trip():
+    """MetricStatus dataclass holds all spec fields."""
+    from laser_trim_analyzer.ml.drift_types import (
+        MetricStatus, DriftTier, AlertType,
+    )
+
+    ms = MetricStatus(
+        metric="sigma_gradient",
+        tier=DriftTier.WARNING,
+        alert_type=AlertType.STEP_CHANGE,
+        magnitude=2.3,
+        baseline_mean=0.010,
+        baseline_std=0.002,
+        recent_mean=0.012,
+        recent_count=5,
+        is_trained=True,
+    )
+    assert ms.metric == "sigma_gradient"
+    assert ms.tier == DriftTier.WARNING
