@@ -367,3 +367,172 @@ def test_multi_metric_detector_partial_sample_ok():
     status = mmd.update({"sigma_gradient": 0.5})
     # Should not crash; the missing metric stays at its prior state
     assert "untrimmed_sigma_gradient" in status.per_metric
+
+
+# ---------------------------------------------------------------------------
+# Task 5: train_drift_detector -- baseline computation + threshold writing
+# ---------------------------------------------------------------------------
+
+
+def test_training_writes_one_row_per_model_per_metric(tmp_path):
+    """For each (model, metric) with sufficient history, one row is
+    written to model_metric_state.
+    """
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR,
+        SystemType as DBSystemType, StatusType as DBStatusType,
+        ModelMetricState,
+    )
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+
+    db = DatabaseManager(tmp_path / "train.db")
+    today = datetime.now()
+
+    # Build 50 TrackResults for one model so baseline_count >= 30
+    with db.session() as s:
+        for i in range(50):
+            ar = DBAR(
+                filename=f"f{i}.xls",
+                file_path=f"/fake/f{i}.xls",
+                file_hash=f"hash-{i}",
+                model="TEST-MODEL",
+                serial=f"sn{i}",
+                system=DBSystemType.A,
+                file_date=today - timedelta(days=60 - i),
+                timestamp=today,
+                overall_status=DBStatusType.PASS,
+                has_multi_tracks=False,
+                processing_time=0.1,
+            )
+            s.add(ar)
+            s.flush()
+            tr = DBTR(
+                analysis_id=ar.id,
+                track_id="TRK1",
+                status=DBStatusType.PASS,
+                sigma_gradient=0.01 + 0.0005 * i,
+                untrimmed_sigma_gradient=0.015 + 0.0003 * i,
+                untrimmed_resistance=1000.0 + i,
+                # TrackResult has no plain `linearity_error`; the canonical
+                # spec-shifted column is what predictor.py + the drift
+                # detector watch.
+                final_linearity_error_shifted=0.005 + 0.0001 * i,
+                measured_electrical_angle=170.0,
+                trim_pass_count=2,
+                resistance_change_percent=15.0,
+            )
+            s.add(tr)
+        s.commit()
+
+    summary = train_drift_detector(db, sensitivity_preset="standard")
+
+    assert summary.models_trained >= 1
+    with db.session() as s:
+        rows = s.query(ModelMetricState).filter(
+            ModelMetricState.model == "TEST-MODEL"
+        ).all()
+        # 7 trim metrics get rows; max_smoothness_value gets skipped
+        # because there are no SmoothnessResult rows in this fixture.
+        metric_names = {r.metric for r in rows}
+        for trim_metric in WATCHED_METRICS:
+            if trim_metric != "max_smoothness_value":
+                assert trim_metric in metric_names, (
+                    f"Missing trained row for metric {trim_metric}"
+                )
+
+
+def test_training_marks_insufficient_history_untrained(tmp_path):
+    """Models with fewer than 30 baseline samples get is_trained=False."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR,
+        SystemType as DBSystemType, StatusType as DBStatusType,
+        ModelMetricState,
+    )
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+
+    db = DatabaseManager(tmp_path / "thin.db")
+    today = datetime.now()
+
+    with db.session() as s:
+        for i in range(10):  # only 10 samples -- below threshold
+            ar = DBAR(
+                filename=f"f{i}.xls",
+                file_path=f"/fake/f{i}.xls",
+                file_hash=f"hash-{i}",
+                model="THIN-MODEL",
+                serial=f"sn{i}",
+                system=DBSystemType.A,
+                file_date=today - timedelta(days=30 - i),
+                timestamp=today,
+                overall_status=DBStatusType.PASS,
+                has_multi_tracks=False,
+                processing_time=0.1,
+            )
+            s.add(ar)
+            s.flush()
+            tr = DBTR(analysis_id=ar.id, track_id="TRK1", status=DBStatusType.PASS, sigma_gradient=0.01)
+            s.add(tr)
+        s.commit()
+
+    train_drift_detector(db, sensitivity_preset="standard")
+
+    with db.session() as s:
+        rows = s.query(ModelMetricState).filter(
+            ModelMetricState.model == "THIN-MODEL"
+        ).all()
+        for r in rows:
+            assert r.is_trained is False, (
+                f"Metric {r.metric}: expected is_trained=False with only "
+                f"10 samples; got baseline_count={r.baseline_count}"
+            )
+
+
+def test_training_idempotent(tmp_path):
+    """Running training twice doesn't double-write rows."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR,
+        SystemType as DBSystemType, StatusType as DBStatusType,
+        ModelMetricState,
+    )
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+
+    db = DatabaseManager(tmp_path / "twice.db")
+    today = datetime.now()
+
+    with db.session() as s:
+        for i in range(50):
+            ar = DBAR(
+                filename=f"f{i}.xls",
+                file_path=f"/fake/f{i}.xls",
+                file_hash=f"hash-{i}",
+                model="REPEAT-MODEL",
+                serial=f"sn{i}",
+                system=DBSystemType.A,
+                file_date=today - timedelta(days=60 - i),
+                timestamp=today,
+                overall_status=DBStatusType.PASS,
+                has_multi_tracks=False,
+                processing_time=0.1,
+            )
+            s.add(ar)
+            s.flush()
+            tr = DBTR(analysis_id=ar.id, track_id="TRK1", status=DBStatusType.PASS, sigma_gradient=0.01)
+            s.add(tr)
+        s.commit()
+
+    train_drift_detector(db, sensitivity_preset="standard")
+    with db.session() as s:
+        count_after_first = s.query(ModelMetricState).count()
+
+    train_drift_detector(db, sensitivity_preset="standard")
+    with db.session() as s:
+        count_after_second = s.query(ModelMetricState).count()
+
+    assert count_after_first == count_after_second
