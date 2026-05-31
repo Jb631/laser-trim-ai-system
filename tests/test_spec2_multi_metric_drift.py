@@ -82,6 +82,10 @@ def test_migration_idempotent_on_existing_db(tmp_path):
     DatabaseManager(db_path)
     cols_second = _table_cols(db_path, "model_metric_state")
 
+    assert len(cols_first) > 0, (
+        "Table was not created on first DatabaseManager init; "
+        "idempotency test would have passed spuriously"
+    )
     assert cols_first == cols_second
 
 

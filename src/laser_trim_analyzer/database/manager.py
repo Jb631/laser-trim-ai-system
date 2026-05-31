@@ -598,7 +598,7 @@ class DatabaseManager:
             # with checkfirst=True for idempotency.
             try:
                 from laser_trim_analyzer.database.models import ModelMetricState
-                ModelMetricState.__table__.create(bind=session.bind, checkfirst=True)
+                ModelMetricState.__table__.create(bind=self._engine, checkfirst=True)
                 session.commit()
             except Exception as e:
                 session.rollback()
