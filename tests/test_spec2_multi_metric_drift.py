@@ -291,3 +291,79 @@ def _build_trained_detector(*, baseline_mean, baseline_std):
         L_per_tier={t.name: v for t, v in L.items()},
         z_per_tier={t.name: v for t, v in z.items()},
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: MultiMetricDriftDetector -- worst-of aggregation
+# ---------------------------------------------------------------------------
+
+
+def test_multi_metric_detector_worst_of_tier():
+    """Model's overall_tier is the max of its metric tiers."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MultiMetricDriftDetector,
+    )
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    det1 = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    det2 = _build_trained_detector(baseline_mean=10.0, baseline_std=2.0)
+    det1.metric = "sigma_gradient"
+    det2.metric = "linearity_error"
+
+    mmd = MultiMetricDriftDetector("8340-1", {
+        "sigma_gradient": det1,
+        "linearity_error": det2,
+    })
+
+    # Inject step changes -- det1 sees mild drift, det2 sees big drift
+    for _ in range(5):
+        mmd.update({"sigma_gradient": 1.5, "linearity_error": 18.0})
+
+    status = mmd.get_status()
+    # det2 (linearity_error) saw the bigger deviation -> drives overall
+    assert status.overall_tier >= DriftTier.WARNING
+    assert status.worst_metric == "linearity_error"
+
+
+def test_multi_metric_detector_step_change_wins_tier_tie():
+    """Within the worst metric, step-change wins alert_type when tied."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MultiMetricDriftDetector,
+    )
+    from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier
+
+    # Single-metric detector hit with a sharp step
+    det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    det.metric = "sigma_gradient"
+
+    mmd = MultiMetricDriftDetector("test-model", {"sigma_gradient": det})
+
+    for _ in range(5):
+        mmd.update({"sigma_gradient": 4.0})
+
+    status = mmd.get_status()
+    assert status.worst_alert_type == AlertType.STEP_CHANGE
+
+
+def test_multi_metric_detector_partial_sample_ok():
+    """A sample missing some metrics still works -- absent keys treated
+    as 'no new data this tick' for that metric.
+    """
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MultiMetricDriftDetector,
+    )
+
+    det1 = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    det2 = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    det1.metric = "sigma_gradient"
+    det2.metric = "untrimmed_sigma_gradient"
+
+    mmd = MultiMetricDriftDetector("test", {
+        "sigma_gradient": det1,
+        "untrimmed_sigma_gradient": det2,
+    })
+
+    # Only update one metric
+    status = mmd.update({"sigma_gradient": 0.5})
+    # Should not crash; the missing metric stays at its prior state
+    assert "untrimmed_sigma_gradient" in status.per_metric

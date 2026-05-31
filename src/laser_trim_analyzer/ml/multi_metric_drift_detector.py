@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Deque, Dict, Optional
 
 import numpy as np
@@ -139,6 +140,10 @@ class MetricDetector:
         # EWMA control limits use sigma_ewma = sigma * sqrt(lambda / (2-lambda))
         sigma_ewma = sigma * math.sqrt(EWMA_LAMBDA / (2.0 - EWMA_LAMBDA))
 
+        # If we've never seen a sample, EWMA is uninitialized.  Treat as
+        # baseline mean (no deviation) so all checks read as not-tripped.
+        ewma_value = self.ewma_state if self.ewma_state is not None else mu
+
         recent_mean = (
             float(np.mean(list(self.recent_window))) if self.recent_window else None
         )
@@ -160,7 +165,7 @@ class MetricDetector:
 
             cusum_trip = self.cusum_pos > h or self.cusum_neg < -h
             ewma_trip = (
-                abs(self.ewma_state - mu) > L * sigma_ewma
+                abs(ewma_value - mu) > L * sigma_ewma
             )
             step_trip = False
             step_magnitude = 0.0
@@ -174,22 +179,29 @@ class MetricDetector:
             if cusum_trip or ewma_trip or step_trip:
                 # First tier we hit (strictest) wins.
                 winning_tier = tier
-                # Alert-type tiebreaker:
-                # - step_trip alone (no CUSUM at this tier) -> STEP_CHANGE
-                # - CUSUM has caught up at this tier -> SLOW_DRIFT
-                # This matches the spec's intent: CUSUM is an integrator,
-                # so if it has accumulated enough to trip at the winning
-                # tier the change has been gradual / sustained; if step
-                # fires first (CUSUM hasn't caught up) it's an abrupt shift.
-                if step_trip and not cusum_trip:
+
+                # Alert-type tiebreaker: compare normalized magnitudes at
+                # the winning tier.  Step's "how far over the trigger" is
+                # step_magnitude / z; CUSUM/EWMA's is max(cusum_pos/h,
+                # |ewma-mu|/(L*sigma_ewma)).  Whichever is larger drives
+                # the alert type.  This makes a sudden 4σ jump read as
+                # STEP_CHANGE (step >> cusum at the OC tier) while a slow
+                # 50-sample ramp reads as SLOW_DRIFT (CUSUM has integrated
+                # past h faster than the recent window can shift).
+                step_norm = (step_magnitude / z) if (step_trip and z > 0) else 0.0
+                cusum_norm = (abs(self.cusum_pos) / h) if (cusum_trip and h > 0) else 0.0
+                ewma_norm = (
+                    abs(ewma_value - mu) / (L * sigma_ewma)
+                    if (ewma_trip and (L * sigma_ewma) > 0) else 0.0
+                )
+                slow_norm = max(cusum_norm, ewma_norm)
+
+                if step_norm > slow_norm:
                     winning_alert_type = AlertType.STEP_CHANGE
                     winning_magnitude = step_magnitude
                 else:
                     winning_alert_type = AlertType.SLOW_DRIFT
-                    winning_magnitude = max(
-                        abs(self.cusum_pos) / h if h > 0 else 0.0,
-                        abs(self.ewma_state - mu) / (L * sigma_ewma) if (L * sigma_ewma) > 0 else 0.0,
-                    )
+                    winning_magnitude = slow_norm
                 break  # strictest wins; no need to check lower tiers
 
         return MetricStatus(
@@ -221,3 +233,78 @@ class MetricDetector:
         self.ewma_state = self.baseline_mean
         self.recent_window.clear()
         self._last_status = None
+
+
+@dataclass
+class MultiMetricDriftDetector:
+    """Container for one model's 8 MetricDetector instances.
+
+    Renamed from the old ModelDriftDetector to avoid collision while
+    the legacy class still lives in ml/drift_detector.py.  Spec 3 will
+    retire the old class and consumers will swap to import this one.
+    """
+    model: str
+    metrics: Dict[str, MetricDetector]
+    last_processed: Optional[datetime] = None
+
+    def update(self, sample: Dict[str, float]) -> ModelDriftStatus:
+        """Process a per-metric sample dict.  Returns the new model status.
+
+        Missing keys in `sample` mean 'no new data this tick' for that
+        metric; its state is unchanged.
+        """
+        for metric_name, detector in self.metrics.items():
+            if metric_name in sample:
+                value = sample[metric_name]
+                if value is not None:
+                    detector.update(value)
+        self.last_processed = datetime.now()
+        return self.get_status()
+
+    def get_status(self) -> ModelDriftStatus:
+        """Aggregate per-metric status into a model-level status.
+
+        Overall tier = max of metric tiers.  Worst-metric and alert-type
+        come from the metric driving the max tier.
+        """
+        per_metric = {
+            name: det.get_status() for name, det in self.metrics.items()
+        }
+
+        # Find the worst metric.  Sort by (tier, recent σ-shift) descending.
+        # We use |recent_mean - baseline_mean| / baseline_std as the tier
+        # tiebreaker rather than MetricStatus.magnitude because magnitude
+        # is scaled per alert-type (step uses sqrt(N)*shift/σ; slow_drift
+        # uses cusum/h) and is not comparable across metrics.  The σ-shift
+        # is the natural common unit for "how far has this metric moved".
+        def _sigma_shift(ms) -> float:
+            if ms.recent_mean is None or ms.baseline_std is None or ms.baseline_std <= 0:
+                return 0.0
+            return abs(ms.recent_mean - ms.baseline_mean) / ms.baseline_std
+
+        ranked = sorted(
+            per_metric.items(),
+            key=lambda kv: (int(kv[1].tier), _sigma_shift(kv[1])),
+            reverse=True,
+        )
+        if ranked:
+            worst_name, worst_status = ranked[0]
+        else:
+            worst_name, worst_status = None, None
+
+        overall_tier = worst_status.tier if worst_status else DriftTier.STABLE
+        worst_metric = worst_name if overall_tier > DriftTier.STABLE else None
+        worst_alert_type = (
+            worst_status.alert_type
+            if (worst_status and overall_tier > DriftTier.STABLE)
+            else None
+        )
+
+        return ModelDriftStatus(
+            model=self.model,
+            overall_tier=overall_tier,
+            worst_metric=worst_metric,
+            worst_alert_type=worst_alert_type,
+            per_metric=per_metric,
+            last_processed=self.last_processed,
+        )
