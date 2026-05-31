@@ -77,6 +77,7 @@ class MLConfig:
     use_threshold_optimizer: bool = True
     use_drift_detector: bool = True
     min_samples_for_training: int = 20
+    drift_sensitivity: str = "standard"  # Spec 2: loose / standard / tight / strict
 
 
 @dataclass

@@ -619,3 +619,41 @@ def test_preview_alert_count_returns_per_tier_counts(tmp_path):
     assert counts["warning"] == 0
     assert counts["drift"] == 0
     assert counts["out_of_control"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Config + first-startup auto-train hook
+# ---------------------------------------------------------------------------
+
+
+def test_ml_config_has_drift_sensitivity_default():
+    """MLConfig defaults drift_sensitivity to 'standard'."""
+    from laser_trim_analyzer.config import MLConfig
+
+    cfg = MLConfig()
+    assert cfg.drift_sensitivity == "standard"
+
+
+def test_config_load_reads_drift_sensitivity(tmp_path):
+    """Loading config.yaml with ml.drift_sensitivity sets the field."""
+    import yaml
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(yaml.safe_dump({
+        "ml": {"drift_sensitivity": "tight"},
+    }))
+
+    cfg = Config.load(yaml_path)
+    assert cfg.ml.drift_sensitivity == "tight"
+
+
+def test_first_startup_does_not_crash_on_empty_db(tmp_path):
+    """A brand-new DB initializes without raising, even though model_metric_
+    state is empty and auto-train would have nothing to do.
+    """
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    db = DatabaseManager(tmp_path / "first.db")
+    # No exception = pass
+    assert db is not None
