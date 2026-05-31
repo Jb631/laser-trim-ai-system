@@ -1368,10 +1368,18 @@ def get_drifting_models(db, sensitivity_preset: str = "standard"):
     magnitude desc).
 
     Returns empty list when nothing is above Stable.
+
+    ``sensitivity_preset`` is currently unused -- the active thresholds
+    are whatever was written to model_metric_state at last training
+    time.  Callers wanting a "what-if at a different preset" view
+    should use ``preview_alert_count(db, preset)`` instead.  The
+    parameter is preserved on the signature for API symmetry with the
+    other Spec 2 entry points; future versions may honor it by
+    recomputing thresholds in-flight.
     """
     from laser_trim_analyzer.database.models import ModelMetricState
     from laser_trim_analyzer.ml.drift_types import (
-        DriftTier, ModelAlertSummary, WATCHED_METRICS,
+        DriftTier, ModelAlertSummary,
     )
 
     summaries: list[ModelAlertSummary] = []
