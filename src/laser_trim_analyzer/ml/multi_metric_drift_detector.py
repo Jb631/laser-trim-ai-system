@@ -189,7 +189,7 @@ class MetricDetector:
                 # 50-sample ramp reads as SLOW_DRIFT (CUSUM has integrated
                 # past h faster than the recent window can shift).
                 step_norm = (step_magnitude / z) if (step_trip and z > 0) else 0.0
-                cusum_norm = (abs(self.cusum_pos) / h) if (cusum_trip and h > 0) else 0.0
+                cusum_norm = (max(self.cusum_pos, -self.cusum_neg) / h) if (cusum_trip and h > 0) else 0.0
                 ewma_norm = (
                     abs(ewma_value - mu) / (L * sigma_ewma)
                     if (ewma_trip and (L * sigma_ewma) > 0) else 0.0
