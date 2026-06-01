@@ -1,1136 +1,621 @@
-# Spec 3b — Triage Page Implementation Plan
+# Spec 3b — Triage Page Implementation Plan (rewritten 2026-06-01)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **READ FIRST:** `docs/superpowers/plans/2026-06-01-spec3-rewrite-foundations.md`.
+> This plan implements foundations §4.1 (list_known_models), §4.3 (metric labels), the Triage page,
+> and obeys the QA rules (esp. Q6 σ-honesty, Q9 empty states, Q10 no silent caps). Shared test fixtures
+> are in `tests/conftest.py` (created in 3a); do **not** redefine `tk_root`.
 
-**Goal:** Replace the Triage placeholder page with the real landing view: flagged-cards zone on top (3-5 ModelAlertCards showing model + worst metric + magnitude + alert type, tier-colored), browse zone on bottom (search box + scrollable model list). Click any card or row → Model page with that model preselected.
+**Goal:** Replace the Triage placeholder with the mission landing view — "anything to look at today?"
+in <10s with a low false-positive feel. Top: flagged-model cards (tier-colored, model + readable
+worst-metric + σ magnitude + alert type). Bottom: search box + scrollable list of every known model
+with a visible tier dot + last-processed date. Click any card/row → Model page with that model (and, for
+cards, the triggering metric) preselected.
 
-**Architecture:** New widgets under `gui/v6/widgets/`. The Triage page composes `FlaggedCardsZone` + `BrowseZone`. Data flows via `ml.manager.get_drifting_models()` (Spec 2 public API) and a new `list_known_models()` helper. Refresh happens in `on_show()` via background thread; UI updates on main thread.
+**Target branch:** `V6`. Start at the Spec 3a final commit.
 
-**Tech Stack:** Python 3.x, customtkinter, pytest. Depends on Spec 2's drift detector + public API and Spec 3a's shell.
-
-**Target branch:** `V6` only. Latest commit before starting: the Spec 3a final commit.
-
-**Spec reference:** `docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md` (Sub-spec 3b section).
+**Fixes applied (foundations §6):** C3 (N+1 → single-query `list_known_models`), I4 (`tier_dot_color`
+visible STABLE dot), I9 (`safe_after`), Q6 (σ magnitude labeled with tier), Q9 (empty state names the
+last-processed date), Q10 (browse list cap is disclosed), plus human-readable metric names everywhere.
 
 ---
 
 ## File Structure
 
-**Files created:**
-- `src/laser_trim_analyzer/gui/v6/widgets/__init__.py` (empty package marker)
-- `src/laser_trim_analyzer/gui/v6/widgets/model_alert_card.py` — `ModelAlertCard`
-- `src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py` — `FlaggedCardsZone`
-- `src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py` — `BrowseZone`
-- `src/laser_trim_analyzer/gui/v6/pages/__init__.py` (empty package marker)
-- `src/laser_trim_analyzer/gui/v6/pages/triage_page.py` — `TriagePage`
+**Created:**
+- `src/laser_trim_analyzer/gui/v6/widgets/__init__.py` (empty)
+- `src/laser_trim_analyzer/gui/v6/widgets/model_alert_card.py`
+- `src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py`
+- `src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py`
+- `src/laser_trim_analyzer/gui/v6/pages/__init__.py` (empty)
+- `src/laser_trim_analyzer/gui/v6/pages/triage_page.py`
 - `tests/test_spec3b_triage.py`
 
-**Files modified:**
-- `src/laser_trim_analyzer/ml/manager.py` — add `list_known_models()` helper
-- `src/laser_trim_analyzer/gui/v6/app.py` — replace TriagePlaceholder with real `TriagePage`
+**Modified:**
+- `src/laser_trim_analyzer/ml/drift_types.py` — add `ModelSummary`, `METRIC_LABELS`, `metric_label()`
+- `src/laser_trim_analyzer/ml/manager.py` — add `list_known_models()` (single-query)
+- `src/laser_trim_analyzer/gui/v6/app.py` — add `consume_model_route()`; register real `TriagePage`
 
 ---
 
-## Task 1: `list_known_models` helper in ml/manager.py
+## Task 1: `ModelSummary` + metric labels + `list_known_models` (no N+1)
 
-Adds a single function that returns all models with at least one record in either `analysis_results` or `smoothness_results` plus a tier for each. Sorted by model name. Used by the BrowseZone.
-
-**Files:**
-- Modify: `src/laser_trim_analyzer/ml/manager.py`
-- Test: `tests/test_spec3b_triage.py` (CREATE)
-
-- [ ] **Step 1: Create the test file with the helper test**
-
-Create `tests/test_spec3b_triage.py`:
+- [ ] **Step 1:** Create `tests/test_spec3b_triage.py`. (No `tk_root` fixture here — it's in conftest.)
 
 ```python
-"""Spec 3b — Triage page (landing view).
+"""Spec 3b — Triage. Foundations §4.1/§4.3. Fixtures in tests/conftest.py."""
 
-Each test maps to one element of the spec at
-docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md (Sub-spec 3b).
-"""
-import sys
-from pathlib import Path
+# ---- Task 1: helpers ------------------------------------------------------
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-
-# ---------------------------------------------------------------------------
-# Task 1: list_known_models helper
-# ---------------------------------------------------------------------------
+def test_metric_label_humanizes():
+    from laser_trim_analyzer.ml.drift_types import metric_label
+    assert metric_label("untrimmed_resistance") == "Untrimmed resistance"
+    assert metric_label("linearity_error") == "Linearity error"
+    assert metric_label("measured_electrical_angle") == "Electrical angle"
+    assert metric_label("totally_unknown") == "totally_unknown"  # graceful passthrough
 
 
-def test_list_known_models_returns_empty_for_empty_db(tmp_path):
-    """Fresh DB → empty list."""
+def test_list_known_models_empty(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.ml.manager import list_known_models
-
-    db = DatabaseManager(tmp_path / "empty.db")
-    assert list_known_models(db) == []
+    assert list_known_models(DatabaseManager(tmp_path / "e.db")) == []
 
 
-def test_list_known_models_returns_distinct_models(tmp_path):
-    """Returns one summary per distinct model seen in analysis_results."""
+def _add_ar(s, model, when):
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, SystemType, StatusType)
+    s.add(DBAR(filename=f"{model}.xls", file_path=f"/f/{model}.xls", file_hash=f"h{model}{when.microsecond}",
+               model=model, serial="sn1", system=SystemType.A, file_date=when, timestamp=when,
+               overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+
+
+def test_list_known_models_distinct(tmp_path):
     from datetime import datetime
     from laser_trim_analyzer.database.manager import DatabaseManager
-    from laser_trim_analyzer.database.models import (
-        AnalysisResult as DBAR, SystemType as DBSystemType,
-        StatusType as DBStatusType,
-    )
     from laser_trim_analyzer.ml.manager import list_known_models
-
-    db = DatabaseManager(tmp_path / "models.db")
+    db = DatabaseManager(tmp_path / "d.db")
     with db.session() as s:
-        for model_name in ("8340-1", "8232-1", "8877"):
-            ar = DBAR(
-                filename=f"{model_name}-test.xls",
-                file_path=f"/fake/{model_name}.xls",
-                file_hash=f"h-{model_name}",
-                model=model_name,
-                serial="sn1",
-                system=DBSystemType.A,
-                file_date=datetime.now(),
-                timestamp=datetime.now(),
-                overall_status=DBStatusType.PASS,
-                has_multi_tracks=False,
-                processing_time=0.1,
-            )
-            s.add(ar)
+        for m in ("8340-1", "8232-1", "8877"):
+            _add_ar(s, m, datetime.now())
         s.commit()
-
-    summaries = list_known_models(db)
-    model_names = {s.model for s in summaries}
-    assert model_names == {"8340-1", "8232-1", "8877"}
+    assert {x.model for x in list_known_models(db)} == {"8340-1", "8232-1", "8877"}
 
 
-def test_list_known_models_includes_smoothness_only_models(tmp_path):
-    """Models that have only smoothness records also appear."""
+def test_list_known_models_includes_smoothness_only(tmp_path):
     from datetime import datetime
     from laser_trim_analyzer.database.manager import DatabaseManager
-    from laser_trim_analyzer.database.models import (
-        SmoothnessResult as DBSR, StatusType as DBStatusType,
-    )
+    from laser_trim_analyzer.database.models import SmoothnessResult as DBSR, StatusType
     from laser_trim_analyzer.ml.manager import list_known_models
-
-    db = DatabaseManager(tmp_path / "smooth.db")
+    db = DatabaseManager(tmp_path / "s.db")
     with db.session() as s:
-        sr = DBSR(
-            filename="smooth-only.xls",
-            file_path="/fake/smooth-only.xls",
-            file_hash="hsm1",
-            file_date=datetime.now(),
-            model="SMOOTH-ONLY",
-            serial="sn1",
-            test_date=datetime.now(),
-            overall_status=DBStatusType.PASS,
-            timestamp=datetime.now(),
-        )
-        s.add(sr)
+        s.add(DBSR(filename="s.xls", file_path="/f/s.xls", file_hash="hs", file_date=datetime.now(),
+                   model="SMOOTH-ONLY", serial="sn1", test_date=datetime.now(),
+                   overall_status=StatusType.PASS, timestamp=datetime.now()))
         s.commit()
-
-    summaries = list_known_models(db)
-    assert "SMOOTH-ONLY" in {x.model for x in summaries}
+    assert "SMOOTH-ONLY" in {x.model for x in list_known_models(db)}
 
 
-def test_list_known_models_carries_tier_from_metric_state(tmp_path):
-    """Each summary's tier reflects the model's current state per
-    get_model_drift_status (worst-of across metrics).
-    """
+def test_list_known_models_tier_merged_from_drift_api(tmp_path, monkeypatch):
+    """Tier comes from a SINGLE get_drifting_models call; others default STABLE.
+    Mock the drift API so the test is deterministic (not coupled to detector math)."""
     from datetime import datetime
     from laser_trim_analyzer.database.manager import DatabaseManager
-    from laser_trim_analyzer.database.models import (
-        AnalysisResult as DBAR, ModelMetricState,
-        SystemType as DBSystemType, StatusType as DBStatusType,
-    )
-    from laser_trim_analyzer.ml.drift_types import DriftTier
-    from laser_trim_analyzer.ml.manager import list_known_models
-
-    db = DatabaseManager(tmp_path / "tiered.db")
-    today = datetime.now()
+    from laser_trim_analyzer.ml.drift_types import (
+        AlertType, DriftTier, ModelAlertSummary)
+    import laser_trim_analyzer.ml.manager as mgr
+    db = DatabaseManager(tmp_path / "t.db")
     with db.session() as s:
-        ar = DBAR(
-            filename="t.xls", file_path="/fake/t.xls",
-            file_hash="ht", model="TIERED", serial="sn1",
-            system=DBSystemType.A, file_date=today, timestamp=today,
-            overall_status=DBStatusType.PASS, has_multi_tracks=False,
-            processing_time=0.1,
-        )
-        s.add(ar)
-        # Hand-write a metric state row that puts TIERED into Warning
-        ms = ModelMetricState(
-            model="TIERED", metric="sigma_gradient",
-            baseline_mean=0.01, baseline_std=0.001, baseline_count=100,
-            is_trained=True,
-            h_warning=1.0, h_drift=5.0, h_oc=10.0,
-            L_warning=2.0, L_drift=3.0, L_oc=4.0,
-            z_warning=1.6, z_drift=2.3, z_oc=3.0,
-            cusum_pos=2.0, cusum_neg=0.0, ewma_state=0.01,
-            last_updated=today,
-        )
-        s.add(ms)
+        _add_ar(s, "FLAGGED", datetime.now())
+        _add_ar(s, "CALM", datetime.now())
         s.commit()
+    monkeypatch.setattr(mgr, "get_drifting_models", lambda _db, *a, **k: [
+        ModelAlertSummary(model="FLAGGED", tier=DriftTier.DRIFT,
+                          alert_type=AlertType.STEP_CHANGE,
+                          worst_metric="untrimmed_resistance", magnitude=4.2)])
+    by = {x.model: x.tier for x in mgr.list_known_models(db)}
+    assert by["FLAGGED"] == DriftTier.DRIFT
+    assert by["CALM"] == DriftTier.STABLE
 
-    summaries = list_known_models(db)
-    tiered = next(x for x in summaries if x.model == "TIERED")
-    assert tiered.tier >= DriftTier.WARNING
+
+def test_list_known_models_single_query_no_per_model_status(tmp_path, monkeypatch):
+    """Regression guard for the N+1 bug: list_known_models must NOT call
+    get_model_drift_status once per model."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    import laser_trim_analyzer.ml.manager as mgr
+    db = DatabaseManager(tmp_path / "n.db")
+    with db.session() as s:
+        for i in range(5):
+            _add_ar(s, f"M{i}", datetime.now())
+        s.commit()
+    calls = {"n": 0}
+    real = mgr.get_model_drift_status
+    def counted(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+    monkeypatch.setattr(mgr, "get_model_drift_status", counted)
+    mgr.list_known_models(db)
+    assert calls["n"] == 0  # tiers come from get_drifting_models, not per-model status
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** Run → fail.
 
-Run: `pytest tests/test_spec3b_triage.py -v`
-
-Expected: 4 FAILs — `list_known_models` not found, and `ModelSummary` dataclass not defined.
-
-- [ ] **Step 3: Add the helper + `ModelSummary` dataclass**
-
-In `src/laser_trim_analyzer/ml/drift_types.py`, add a new dataclass at the bottom:
+- [ ] **Step 3:** In `src/laser_trim_analyzer/ml/drift_types.py` add (near the other dataclasses /
+  WATCHED_METRICS):
 
 ```python
 @dataclass
 class ModelSummary:
-    """Compact form for Spec 3 Triage browse zone."""
+    """Compact per-model row for the Triage browse zone."""
     model: str
     tier: DriftTier
     last_processed: Optional[datetime] = None
+
+
+METRIC_LABELS = {
+    "sigma_gradient": "Sigma gradient (post-trim)",
+    "untrimmed_sigma_gradient": "Sigma gradient (untrimmed)",
+    "untrimmed_resistance": "Untrimmed resistance",
+    "linearity_error": "Linearity error",
+    "measured_electrical_angle": "Electrical angle",
+    "trim_pass_count": "Trim pass count",
+    "resistance_change_percent": "Resistance change %",
+    "max_smoothness_value": "Smoothness (max)",
+}
+
+
+def metric_label(metric: str) -> str:
+    return METRIC_LABELS.get(metric, metric)
 ```
 
-In `src/laser_trim_analyzer/ml/manager.py`, append at the bottom:
+- [ ] **Step 4:** In `src/laser_trim_analyzer/ml/manager.py` append the single-query helper. **Do not**
+  loop `get_model_drift_status` per model:
 
 ```python
 def list_known_models(db):
-    """Return one ModelSummary per distinct model in the DB.
+    """One ModelSummary per distinct model across analysis_results + smoothness_results.
 
-    Combines models from analysis_results and smoothness_results.
-    Each summary's tier reflects the model's current drift state
-    (worst-of) per get_model_drift_status.  Sorted by model name.
-
-    For Spec 3 Triage browse zone.
+    Cost: ONE inventory session (GROUP BY model, MAX(file_date)) + ONE get_drifting_models
+    call for tiers. Independent of model count (fixes the per-model-session N+1).
+    Non-flagged models default to DriftTier.STABLE.
     """
+    from sqlalchemy import func
     from laser_trim_analyzer.database.models import (
-        AnalysisResult as DBAR,
-        SmoothnessResult as DBSR,
+        AnalysisResult as DBAR, SmoothnessResult as DBSR,
     )
-    from laser_trim_analyzer.ml.drift_types import ModelSummary
+    from laser_trim_analyzer.ml.drift_types import DriftTier, ModelSummary
 
+    last_seen = {}
     with db.session() as s:
-        trim_models = [r[0] for r in s.query(DBAR.model).distinct().all()]
-        smooth_models = [r[0] for r in s.query(DBSR.model).distinct().all()]
+        for model, last in (s.query(DBAR.model, func.max(DBAR.file_date))
+                            .group_by(DBAR.model).all()):
+            if model:
+                last_seen[model] = last
+        for model, last in (s.query(DBSR.model, func.max(DBSR.file_date))
+                            .group_by(DBSR.model).all()):
+            if not model:
+                continue
+            if model not in last_seen:
+                last_seen[model] = last
+            elif last is not None and (last_seen[model] is None or last > last_seen[model]):
+                last_seen[model] = last
 
-    all_models = sorted(set(trim_models) | set(smooth_models))
-    summaries = []
-    for model in all_models:
-        status = get_model_drift_status(db, model)
-        summaries.append(ModelSummary(
-            model=model,
-            tier=status.overall_tier,
-            last_processed=status.last_processed,
-        ))
-    return summaries
+    flagged = {a.model: a.tier for a in get_drifting_models(db)}
+    return sorted(
+        (ModelSummary(model=m, tier=flagged.get(m, DriftTier.STABLE),
+                      last_processed=last_seen.get(m)) for m in last_seen),
+        key=lambda x: x.model,
+    )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3b_triage.py -v`
-
-Expected: 4 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/laser_trim_analyzer/ml/drift_types.py src/laser_trim_analyzer/ml/manager.py tests/test_spec3b_triage.py
-git commit -m "feat(spec3b): list_known_models + ModelSummary
-
-Helper that returns one summary per distinct model in the DB
-(trim or smoothness), each with its current drift tier from
-get_model_drift_status.  Used by Triage browse zone.
-
-Adds the ModelSummary dataclass to drift_types alongside the
-existing summaries."
-```
+- [ ] **Step 5:** Run → PASS. Commit `feat(spec3b): ModelSummary + metric labels + single-query
+  list_known_models`.
 
 ---
 
-## Task 2: ModelAlertCard widget
+## Task 2: ModelAlertCard
 
-A tier-colored card showing model + worst metric + magnitude + alert type. Click → emits `on_click(model)`.
+Tier-colored, click anywhere → `on_click(model, focus_metric)`. Shows readable metric name and a
+σ-magnitude labeled with the tier (Q6).
 
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/widgets/__init__.py` (empty)
-- Create: `src/laser_trim_analyzer/gui/v6/widgets/model_alert_card.py`
-- Test: `tests/test_spec3b_triage.py` (APPEND)
-
-- [ ] **Step 1: Append the ModelAlertCard tests**
+- [ ] **Step 1:** Append tests:
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 2: ModelAlertCard widget
-# ---------------------------------------------------------------------------
+# ---- Task 2: ModelAlertCard ----------------------------------------------
 
-
-@pytest.fixture(scope="module")
-def tk_root():
-    """Module-scoped headless CTk root."""
+def _labels(widget):
     import customtkinter as ctk
-    root = ctk.CTk()
-    root.withdraw()
-    yield root
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-
-def test_model_alert_card_renders_summary_fields(tk_root):
-    """Card displays model, worst_metric, magnitude, alert_type text."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-        ModelAlertCard,
-    )
-    from laser_trim_analyzer.ml.drift_types import (
-        AlertType, DriftTier, ModelAlertSummary,
-    )
-
-    summary = ModelAlertSummary(
-        model="8340-1",
-        tier=DriftTier.DRIFT,
-        alert_type=AlertType.STEP_CHANGE,
-        worst_metric="untrimmed_resistance",
-        magnitude=4.2,
-    )
-    card = ModelAlertCard(
-        tk_root, summary=summary, theme=ThemeManager(),
-        on_click=lambda model: None,
-    )
-    # Inspect the labels the card built
-    texts = _collect_label_texts(card)
-    assert "8340-1" in texts
-    assert "untrimmed_resistance" in texts
-    assert any("4.2" in t for t in texts)
-    assert any("Step" in t for t in texts)
-
-
-def test_model_alert_card_click_emits_model_name(tk_root):
-    """Clicking the card fires on_click(model)."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-        ModelAlertCard,
-    )
-    from laser_trim_analyzer.ml.drift_types import (
-        AlertType, DriftTier, ModelAlertSummary,
-    )
-
-    received: list[str] = []
-    summary = ModelAlertSummary(
-        model="TEST-CLICK", tier=DriftTier.WARNING,
-        alert_type=AlertType.SLOW_DRIFT,
-        worst_metric="sigma_gradient", magnitude=1.5,
-    )
-    card = ModelAlertCard(
-        tk_root, summary=summary, theme=ThemeManager(),
-        on_click=lambda model: received.append(model),
-    )
-    card._on_click()  # simulate
-    assert received == ["TEST-CLICK"]
-
-
-def test_model_alert_card_uses_tier_background(tk_root):
-    """Card's fg_color matches the spec's tier_color background."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-        ModelAlertCard,
-    )
-    from laser_trim_analyzer.ml.drift_types import (
-        AlertType, DriftTier, ModelAlertSummary,
-    )
-
-    theme = ThemeManager()
-    summary = ModelAlertSummary(
-        model="X", tier=DriftTier.OUT_OF_CONTROL,
-        alert_type=AlertType.STEP_CHANGE,
-        worst_metric="sigma_gradient", magnitude=5.0,
-    )
-    card = ModelAlertCard(
-        tk_root, summary=summary, theme=theme,
-        on_click=lambda model: None,
-    )
-    bg, _ = theme.tier_color(DriftTier.OUT_OF_CONTROL)
-    assert card.cget("fg_color") == bg
-
-
-def _collect_label_texts(widget):
-    """Walk a widget tree and return all CTkLabel texts as a list."""
-    import customtkinter as ctk
-
     out = []
-    for child in widget.winfo_children():
-        if isinstance(child, ctk.CTkLabel):
-            out.append(child.cget("text"))
-        out.extend(_collect_label_texts(child))
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels(c))
     return out
+
+
+def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None):
+    from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier, ModelAlertSummary
+    return ModelAlertSummary(model=model, tier=tier or DriftTier.DRIFT,
+                             alert_type=alert or AlertType.STEP_CHANGE,
+                             worst_metric=metric, magnitude=mag)
+
+
+def test_card_shows_model_readable_metric_and_magnitude(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    card = ModelAlertCard(tk_root, summary=_summary(), theme=ThemeManager(), on_click=lambda *_: None)
+    texts = " | ".join(_labels(card))
+    assert "8340-1" in texts
+    assert "Untrimmed resistance" in texts      # readable, not the raw key
+    assert "4.2" in texts and "σ" in texts
+    assert "Step change" in texts
+
+
+def test_card_click_emits_model_and_focus_metric(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    got = []
+    card = ModelAlertCard(tk_root, summary=_summary(model="CLICK", metric="linearity_error"),
+                          theme=ThemeManager(), on_click=lambda m, f: got.append((m, f)))
+    card._on_click()
+    assert got == [("CLICK", "linearity_error")]   # focus = the triggering metric
+
+
+def test_card_uses_tier_background(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    t = ThemeManager()
+    card = ModelAlertCard(tk_root, summary=_summary(tier=DriftTier.OUT_OF_CONTROL),
+                          theme=t, on_click=lambda *_: None)
+    assert card.cget("fg_color") == t.tier_color(DriftTier.OUT_OF_CONTROL)[0]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** Run `-k card` → fail.
 
-Run: `pytest tests/test_spec3b_triage.py -v -k model_alert_card`
-
-Expected: 3 FAILs.
-
-- [ ] **Step 3: Create the widget**
-
-Create `src/laser_trim_analyzer/gui/v6/widgets/__init__.py` (empty).
-
-Create `src/laser_trim_analyzer/gui/v6/widgets/model_alert_card.py`:
+- [ ] **Step 3:** Create `widgets/__init__.py` (empty) and `widgets/model_alert_card.py`:
 
 ```python
-"""Spec 3b — ModelAlertCard widget.
-
-A clickable tier-colored card summarizing one flagged model.  Used by
-FlaggedCardsZone on the Triage page.
-"""
+"""Spec 3b — ModelAlertCard: one flagged-model summary card."""
 from typing import Callable
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.ml.drift_types import (
-    AlertType, ModelAlertSummary,
-)
+from laser_trim_analyzer.ml.drift_types import AlertType, ModelAlertSummary, metric_label
 
-
-CARD_WIDTH: int = 240
-CARD_HEIGHT: int = 120
+CARD_WIDTH = 250
+CARD_HEIGHT = 132
 
 
 class ModelAlertCard(ctk.CTkFrame):
-    """One flagged-model summary card."""
-
-    def __init__(
-        self,
-        master,
-        summary: ModelAlertSummary,
-        theme: ThemeManager,
-        on_click: Callable[[str], None],
-        **kwargs,
-    ):
+    def __init__(self, master, summary: ModelAlertSummary, theme: ThemeManager,
+                 on_click: Callable[[str, str], None], **kwargs):
         bg, fg = theme.tier_color(summary.tier)
-        super().__init__(
-            master,
-            width=CARD_WIDTH,
-            height=CARD_HEIGHT,
-            fg_color=bg,
-            corner_radius=theme.RADIUS_MD,
-            **kwargs,
-        )
-        self.theme = theme
-        self.summary = summary
-        self._on_click_external = on_click
-        self._fg = fg
-
+        super().__init__(master, width=CARD_WIDTH, height=CARD_HEIGHT, fg_color=bg,
+                         corner_radius=theme.RADIUS_MD, **kwargs)
+        self.theme = theme; self.summary = summary; self._cb = on_click; self._fg = fg
         self.pack_propagate(False)
         self._build()
-        self._bind_click_recursive(self)
+        self._bind_recursive(self)
 
-    # ---- Construction ----------------------------------------------------
+    def _build(self):
+        t = self.theme; s = self.summary
+        ctk.CTkLabel(self, text=s.model, font=t.font(t.SIZE_TITLE, "bold"),
+                     text_color=t.TEXT_PRIMARY, anchor="w")\
+            .pack(side="top", fill="x", padx=t.SPACE_MD, pady=(t.SPACE_MD, 0))
+        badge = "Step change" if s.alert_type == AlertType.STEP_CHANGE else "Slow drift"
+        ctk.CTkLabel(self, text=f"{badge} · {metric_label(s.worst_metric)}",
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w")\
+            .pack(side="top", fill="x", padx=t.SPACE_MD)
+        ctk.CTkLabel(self, text=f"{s.magnitude:+.1f}σ", font=t.font(t.SIZE_DISPLAY, "bold"),
+                     text_color=self._fg, anchor="w")\
+            .pack(side="top", fill="x", padx=t.SPACE_MD)
+        # Q6: say what the σ is measured against.
+        ctk.CTkLabel(self, text=f"beyond {s.tier.name.replace('_', ' ').title()} limit",
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w")\
+            .pack(side="top", fill="x", padx=t.SPACE_MD, pady=(0, t.SPACE_MD))
 
-    def _build(self) -> None:
-        # Model name (large)
-        model_label = ctk.CTkLabel(
-            self,
-            text=self.summary.model,
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_TITLE, "bold"),
-            text_color=self.theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        model_label.pack(
-            side="top", fill="x",
-            padx=self.theme.SPACE_MD, pady=(self.theme.SPACE_MD, 0),
-        )
+    def _bind_recursive(self, w):
+        w.bind("<Button-1>", lambda e: self._on_click())
+        for c in w.winfo_children():
+            self._bind_recursive(c)
 
-        # Worst metric subtitle
-        metric_label = ctk.CTkLabel(
-            self,
-            text=self.summary.worst_metric,
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_CAPTION),
-            text_color=self.theme.TEXT_SECONDARY,
-            anchor="w",
-        )
-        metric_label.pack(
-            side="top", fill="x", padx=self.theme.SPACE_MD,
-        )
-
-        # Magnitude (large, tier accent color)
-        magnitude_text = f"{self.summary.magnitude:+.1f}σ"
-        magnitude_label = ctk.CTkLabel(
-            self,
-            text=magnitude_text,
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_DISPLAY, "bold"),
-            text_color=self._fg,
-            anchor="w",
-        )
-        magnitude_label.pack(
-            side="top", fill="x", padx=self.theme.SPACE_MD,
-        )
-
-        # Alert type badge
-        badge_text = (
-            "Step change"
-            if self.summary.alert_type == AlertType.STEP_CHANGE
-            else "Slow drift"
-        )
-        badge_label = ctk.CTkLabel(
-            self,
-            text=badge_text,
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_CAPTION, "bold"),
-            text_color=self.theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        badge_label.pack(
-            side="top", fill="x",
-            padx=self.theme.SPACE_MD, pady=(0, self.theme.SPACE_MD),
-        )
-
-    # ---- Click handling --------------------------------------------------
-
-    def _bind_click_recursive(self, widget) -> None:
-        """Make the entire card clickable, not just the outer frame."""
-        widget.bind("<Button-1>", lambda e: self._on_click())
-        for child in widget.winfo_children():
-            self._bind_click_recursive(child)
-
-    def _on_click(self) -> None:
-        self._on_click_external(self.summary.model)
+    def _on_click(self):
+        # Deep-link with the triggering metric as the focus.
+        self._cb(self.summary.model, self.summary.worst_metric)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3b_triage.py -v -k model_alert_card`
-
-Expected: 3 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/widgets/__init__.py src/laser_trim_analyzer/gui/v6/widgets/model_alert_card.py tests/test_spec3b_triage.py
-git commit -m "feat(spec3b): ModelAlertCard widget
-
-Tier-colored card showing model name, worst metric, magnitude (large
-accent-colored), and alert-type badge.  Entire card is clickable (binds
-recursively) and emits on_click(model)."
-```
+- [ ] **Step 4:** Run `-k card` → PASS. Commit `feat(spec3b): ModelAlertCard (readable metric, labeled
+  σ, deep-link focus)`.
 
 ---
 
-## Task 3: FlaggedCardsZone widget
+## Task 3: FlaggedCardsZone (wrapping grid + dated empty state)
 
-Holds the "Needs attention" section label + a grid of ModelAlertCards. Shows an empty-state message when nothing is flagged.
-
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py`
-- Test: `tests/test_spec3b_triage.py` (APPEND)
-
-- [ ] **Step 1: Append FlaggedCardsZone tests**
+- [ ] **Step 1:** Append tests:
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 3: FlaggedCardsZone widget
-# ---------------------------------------------------------------------------
+# ---- Task 3: FlaggedCardsZone --------------------------------------------
+
+def _walk(w):
+    yield w
+    for c in w.winfo_children():
+        yield from _walk(c)
 
 
-def test_flagged_cards_zone_empty_state(tk_root):
-    """With no summaries, zone shows the 'all within tolerance' message."""
+def test_zone_empty_state_names_last_processed(tk_root):
+    from datetime import datetime
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import (
-        FlaggedCardsZone,
-    )
-
-    zone = FlaggedCardsZone(
-        tk_root, theme=ThemeManager(), on_card_click=lambda m: None,
-    )
-    zone.set_summaries([])
-    texts = _collect_label_texts(zone)
-    assert any("All models within tolerance" in t for t in texts)
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
+    z.set_summaries([], last_processed=datetime(2026, 5, 30))
+    txt = " ".join(_labels(z))
+    assert "within tolerance" in txt
+    assert "2026-05-30" in txt
 
 
-def test_flagged_cards_zone_renders_card_per_summary(tk_root):
-    """Each summary → one ModelAlertCard child."""
+def test_zone_one_card_per_summary(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import (
-        FlaggedCardsZone,
-    )
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-        ModelAlertCard,
-    )
-    from laser_trim_analyzer.ml.drift_types import (
-        AlertType, DriftTier, ModelAlertSummary,
-    )
-
-    summaries = [
-        ModelAlertSummary(
-            model=f"M{i}", tier=DriftTier.WARNING,
-            alert_type=AlertType.STEP_CHANGE,
-            worst_metric="sigma_gradient", magnitude=2.0 + i,
-        )
-        for i in range(3)
-    ]
-    zone = FlaggedCardsZone(
-        tk_root, theme=ThemeManager(), on_card_click=lambda m: None,
-    )
-    zone.set_summaries(summaries)
-    cards = [w for w in _walk(zone) if isinstance(w, ModelAlertCard)]
-    assert len(cards) == 3
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
+    z.set_summaries([_summary(model=f"M{i}") for i in range(6)])
+    assert sum(isinstance(w, ModelAlertCard) for w in _walk(z)) == 6
 
 
-def test_flagged_cards_zone_routes_card_click_to_callback(tk_root):
-    """Clicking a card surfaces the model name to the zone's on_card_click."""
+def test_zone_routes_click(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import (
-        FlaggedCardsZone,
-    )
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-        ModelAlertCard,
-    )
-    from laser_trim_analyzer.ml.drift_types import (
-        AlertType, DriftTier, ModelAlertSummary,
-    )
-
-    received: list[str] = []
-    zone = FlaggedCardsZone(
-        tk_root, theme=ThemeManager(),
-        on_card_click=lambda m: received.append(m),
-    )
-    zone.set_summaries([
-        ModelAlertSummary(
-            model="ROUTED", tier=DriftTier.DRIFT,
-            alert_type=AlertType.SLOW_DRIFT,
-            worst_metric="linearity_error", magnitude=3.0,
-        ),
-    ])
-    cards = [w for w in _walk(zone) if isinstance(w, ModelAlertCard)]
-    cards[0]._on_click()
-    assert received == ["ROUTED"]
-
-
-def _walk(widget):
-    """Yield all descendants of a widget (including the widget itself)."""
-    yield widget
-    for child in widget.winfo_children():
-        yield from _walk(child)
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    got = []
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda m, f: got.append((m, f)))
+    z.set_summaries([_summary(model="ROUTED", metric="sigma_gradient")])
+    next(w for w in _walk(z) if isinstance(w, ModelAlertCard))._on_click()
+    assert got == [("ROUTED", "sigma_gradient")]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** Run `-k zone` (flagged) → fail.
 
-Run: `pytest tests/test_spec3b_triage.py -v -k flagged_cards`
-
-Expected: 3 FAILs.
-
-- [ ] **Step 3: Create the FlaggedCardsZone**
-
-Create `src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py`:
+- [ ] **Step 3:** Create `widgets/flagged_cards_zone.py` (wrap cards into rows of `MAX_PER_ROW`):
 
 ```python
-"""Spec 3b — FlaggedCardsZone.
-
-Top section of the Triage page.  Shows a 'Needs attention (N)' label
-and a horizontal grid of ModelAlertCards.  Empty state when nothing
-is flagged.
-"""
-from typing import Callable, List
-
-import customtkinter as ctk
-
-from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.gui.v6.widgets.model_alert_card import (
-    ModelAlertCard,
-)
-from laser_trim_analyzer.ml.drift_types import ModelAlertSummary
-
-
-class FlaggedCardsZone(ctk.CTkFrame):
-    """Top zone of Triage page: flagged-model alert cards."""
-
-    def __init__(
-        self,
-        master,
-        theme: ThemeManager,
-        on_card_click: Callable[[str], None],
-        **kwargs,
-    ):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self.theme = theme
-        self._on_card_click = on_card_click
-
-        # Section heading
-        self._heading = ctk.CTkLabel(
-            self,
-            text="Needs attention (0)",
-            font=(theme.FONT_FAMILY[0], theme.SIZE_HEADING, "bold"),
-            text_color=theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        self._heading.pack(
-            side="top", fill="x", pady=(0, theme.SPACE_SM),
-        )
-
-        # Container for cards (or empty-state label)
-        self._cards_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._cards_frame.pack(side="top", fill="x")
-
-    def set_summaries(self, summaries: List[ModelAlertSummary]) -> None:
-        """Replace current cards with new ones derived from summaries."""
-        # Clear existing children
-        for child in self._cards_frame.winfo_children():
-            child.destroy()
-
-        # Update heading
-        self._heading.configure(text=f"Needs attention ({len(summaries)})")
-
-        if not summaries:
-            empty = ctk.CTkLabel(
-                self._cards_frame,
-                text="All models within tolerance — no drift detected.",
-                font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_BODY),
-                text_color=self.theme.TEXT_SECONDARY,
-                anchor="w",
-            )
-            empty.pack(side="top", fill="x", pady=self.theme.SPACE_LG)
-            return
-
-        # Lay out cards left-to-right with wrap (manual since CTk doesn't
-        # have a built-in flow layout).  For v1: simple horizontal row.
-        row = ctk.CTkFrame(self._cards_frame, fg_color="transparent")
-        row.pack(side="top", fill="x")
-        for summary in summaries:
-            card = ModelAlertCard(
-                row, summary=summary, theme=self.theme,
-                on_click=self._on_card_click,
-            )
-            card.pack(
-                side="left", padx=(0, self.theme.SPACE_MD),
-                pady=self.theme.SPACE_SM,
-            )
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3b_triage.py -v -k flagged_cards`
-
-Expected: 3 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py tests/test_spec3b_triage.py
-git commit -m "feat(spec3b): FlaggedCardsZone
-
-Holds the 'Needs attention (N)' heading + horizontal row of
-ModelAlertCards.  Empty-state message when nothing is flagged.
-set_summaries(list) replaces the current cards."
-```
-
----
-
-## Task 4: BrowseZone widget
-
-Search box + scrollable list of `ModelSummary` rows. Each row shows a tier-color dot + model name. Click → emits `on_row_click(model)`. Search filter is case-insensitive substring.
-
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py`
-- Test: `tests/test_spec3b_triage.py` (APPEND)
-
-- [ ] **Step 1: Append BrowseZone tests**
-
-```python
-# ---------------------------------------------------------------------------
-# Task 4: BrowseZone widget
-# ---------------------------------------------------------------------------
-
-
-def test_browse_zone_renders_one_row_per_model(tk_root):
-    """Each model in set_models becomes a row."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
-    from laser_trim_analyzer.ml.drift_types import (
-        DriftTier, ModelSummary,
-    )
-
-    models = [
-        ModelSummary(model=f"M{i}", tier=DriftTier.STABLE)
-        for i in range(5)
-    ]
-    zone = BrowseZone(
-        tk_root, theme=ThemeManager(), on_row_click=lambda m: None,
-    )
-    zone.set_models(models)
-    texts = _collect_label_texts(zone)
-    for m in models:
-        assert m.model in texts
-
-
-def test_browse_zone_filter_substring(tk_root):
-    """Typing in the search filters the displayed rows."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
-    from laser_trim_analyzer.ml.drift_types import (
-        DriftTier, ModelSummary,
-    )
-
-    models = [
-        ModelSummary(model="8340-1", tier=DriftTier.STABLE),
-        ModelSummary(model="8232-1", tier=DriftTier.STABLE),
-        ModelSummary(model="8877", tier=DriftTier.STABLE),
-    ]
-    zone = BrowseZone(
-        tk_root, theme=ThemeManager(), on_row_click=lambda m: None,
-    )
-    zone.set_models(models)
-    zone.set_filter("83")
-    texts = _collect_label_texts(zone)
-    assert "8340-1" in texts
-    assert "8232-1" in texts
-    assert "8877" not in texts
-
-
-def test_browse_zone_row_click_emits_model(tk_root):
-    """Clicking a row fires on_row_click(model_name)."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
-    from laser_trim_analyzer.ml.drift_types import (
-        DriftTier, ModelSummary,
-    )
-
-    received: list[str] = []
-    zone = BrowseZone(
-        tk_root, theme=ThemeManager(),
-        on_row_click=lambda m: received.append(m),
-    )
-    zone.set_models([
-        ModelSummary(model="CLICKED", tier=DriftTier.STABLE),
-    ])
-    # Find the row and click
-    zone._rows[0]._on_click()
-    assert received == ["CLICKED"]
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `pytest tests/test_spec3b_triage.py -v -k browse_zone`
-
-Expected: 3 FAILs.
-
-- [ ] **Step 3: Create the BrowseZone**
-
-Create `src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py`:
-
-```python
-"""Spec 3b — BrowseZone.
-
-Bottom section of the Triage page.  Search box + scrollable list of
-all models.  Each row: tier color dot + model name + last-processed
-date.  Click → on_row_click(model).
-"""
+"""Spec 3b — FlaggedCardsZone: 'Needs attention' heading + wrapping card grid + empty state."""
+from datetime import datetime
 from typing import Callable, List, Optional
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.ml.drift_types import (
-    DriftTier, ModelSummary,
-)
+from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+from laser_trim_analyzer.ml.drift_types import ModelAlertSummary
+
+MAX_PER_ROW = 4
+
+
+class FlaggedCardsZone(ctk.CTkFrame):
+    def __init__(self, master, theme: ThemeManager, on_card_click: Callable[[str, str], None], **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.theme = theme; self._cb = on_card_click
+        self._heading = ctk.CTkLabel(self, text="Needs attention (0)",
+                                     font=theme.font(theme.SIZE_HEADING, "bold"),
+                                     text_color=theme.TEXT_PRIMARY, anchor="w")
+        self._heading.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
+        self._body.pack(side="top", fill="x")
+
+    def set_summaries(self, summaries: List[ModelAlertSummary],
+                      last_processed: Optional[datetime] = None) -> None:
+        for c in list(self._body.winfo_children()):
+            c.destroy()
+        self._heading.configure(text=f"Needs attention ({len(summaries)})")
+        t = self.theme
+        if not summaries:
+            when = last_processed.strftime("%Y-%m-%d") if last_processed else "—"
+            ctk.CTkLabel(self._body,
+                         text=f"All models within tolerance — last processed {when}.",
+                         font=t.font(t.SIZE_BODY), text_color=t.TEXT_SECONDARY, anchor="w")\
+                .pack(side="top", fill="x", pady=t.SPACE_LG)
+            return
+        row = None
+        for i, s in enumerate(summaries):
+            if i % MAX_PER_ROW == 0:
+                row = ctk.CTkFrame(self._body, fg_color="transparent")
+                row.pack(side="top", fill="x")
+            ModelAlertCard(row, summary=s, theme=t, on_click=self._cb)\
+                .pack(side="left", padx=(0, t.SPACE_MD), pady=t.SPACE_SM)
+```
+
+- [ ] **Step 4:** Run → PASS. Commit `feat(spec3b): FlaggedCardsZone (wrapping grid, dated empty state)`.
+
+---
+
+## Task 4: BrowseZone (visible dots, disclosed cap)
+
+- [ ] **Step 1:** Append tests:
+
+```python
+# ---- Task 4: BrowseZone ---------------------------------------------------
+
+def _ms(model, tier=None):
+    from laser_trim_analyzer.ml.drift_types import DriftTier, ModelSummary
+    return ModelSummary(model=model, tier=tier or DriftTier.STABLE)
+
+
+def test_browse_one_row_per_model(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms(f"M{i}") for i in range(5)])
+    assert len(z._rows) == 5
+
+
+def test_browse_filter_substring(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms("8340-1"), _ms("8232-1"), _ms("8877")])
+    z.set_filter("83")
+    shown = {r.summary.model for r in z._rows}
+    assert shown == {"8340-1", "8232-1"}
+
+
+def test_browse_row_click_emits_model(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    got = []
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=got.append)
+    z.set_models([_ms("CLICKED")])
+    z._rows[0]._on_click()
+    assert got == ["CLICKED"]
+
+
+def test_browse_discloses_cap(tk_root):
+    """Q10: when more than the render cap exist, say so instead of silently truncating."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone, ROW_CAP
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms(f"M{i:04d}") for i in range(ROW_CAP + 25)])
+    assert len(z._rows) == ROW_CAP
+    assert "Showing" in z._cap_label.cget("text") and str(ROW_CAP + 25) in z._cap_label.cget("text")
+```
+
+- [ ] **Step 2:** Run `-k browse` → fail.
+
+- [ ] **Step 3:** Create `widgets/browse_zone.py` (dots via `tier_dot_color`; cap disclosed):
+
+```python
+"""Spec 3b — BrowseZone: search + scrollable model list (visible tier dot, last-processed date)."""
+from typing import Callable, List
+
+import customtkinter as ctk
+
+from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.ml.drift_types import ModelSummary
+
+ROW_CAP = 200  # render cap for responsiveness; cap is disclosed (Q10)
 
 
 class BrowseZone(ctk.CTkFrame):
-    """Bottom zone of Triage: search + scrollable model list."""
-
-    def __init__(
-        self,
-        master,
-        theme: ThemeManager,
-        on_row_click: Callable[[str], None],
-        **kwargs,
-    ):
+    def __init__(self, master, theme: ThemeManager, on_row_click: Callable[[str], None], **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
-        self.theme = theme
-        self._on_row_click = on_row_click
+        self.theme = theme; self._cb = on_row_click
         self._models: List[ModelSummary] = []
-        self._filter: str = ""
         self._rows: List["_BrowseRow"] = []
-
-        self._build()
-
-    # ---- Construction ----------------------------------------------------
-
-    def _build(self) -> None:
-        # Heading
-        heading = ctk.CTkLabel(
-            self,
-            text="All models",
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_HEADING, "bold"),
-            text_color=self.theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        heading.pack(side="top", fill="x", pady=(0, self.theme.SPACE_SM))
-
-        # Search input
+        t = theme
+        ctk.CTkLabel(self, text="All models", font=t.font(t.SIZE_HEADING, "bold"),
+                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         self._search_var = ctk.StringVar()
-        self._search_var.trace_add("write", self._on_search_change)
-        search_entry = ctk.CTkEntry(
-            self,
-            textvariable=self._search_var,
-            placeholder_text="Search models...",
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_BODY),
-            fg_color=self.theme.CARD,
-            border_color=self.theme.BORDER,
-            text_color=self.theme.TEXT_PRIMARY,
-        )
-        search_entry.pack(
-            side="top", fill="x", pady=(0, self.theme.SPACE_SM),
-        )
-
-        # Scrollable list
-        self._list_frame = ctk.CTkScrollableFrame(
-            self, fg_color="transparent",
-        )
-        self._list_frame.pack(side="top", fill="both", expand=True)
-
-    # ---- Public API ------------------------------------------------------
+        self._search_var.trace_add("write", lambda *_: self._render())
+        ctk.CTkEntry(self, textvariable=self._search_var, placeholder_text="Search models…",
+                     font=t.font(t.SIZE_BODY), fg_color=t.CARD, border_color=t.BORDER,
+                     text_color=t.TEXT_PRIMARY).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._cap_label = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_CAPTION),
+                                       text_color=t.TEXT_SECONDARY, anchor="w")
+        self._cap_label.pack(side="top", fill="x")
+        self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._list.pack(side="top", fill="both", expand=True)
 
     def set_models(self, models: List[ModelSummary]) -> None:
-        """Replace the current model list."""
         self._models = list(models)
         self._render()
 
     def set_filter(self, text: str) -> None:
-        """Programmatic filter (mainly for tests)."""
         self._search_var.set(text)
 
-    # ---- Internal --------------------------------------------------------
-
-    def _on_search_change(self, *args) -> None:
-        self._filter = self._search_var.get().lower()
-        self._render()
-
     def _render(self) -> None:
-        # Clear existing rows
-        for row in self._rows:
-            row.destroy()
+        for r in self._rows:
+            r.destroy()
         self._rows.clear()
-        # Re-render filtered
-        for m in self._models:
-            if self._filter and self._filter not in m.model.lower():
-                continue
-            row = _BrowseRow(
-                self._list_frame, summary=m, theme=self.theme,
-                on_click=self._on_row_click,
-            )
+        flt = self._search_var.get().lower()
+        matches = [m for m in self._models if not flt or flt in m.model.lower()]
+        for m in matches[:ROW_CAP]:
+            row = _BrowseRow(self._list, summary=m, theme=self.theme, on_click=self._cb)
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
+        if len(matches) > ROW_CAP:
+            self._cap_label.configure(
+                text=f"Showing {ROW_CAP} of {len(matches)} — narrow with search.")
+        else:
+            self._cap_label.configure(text="")
 
 
 class _BrowseRow(ctk.CTkFrame):
-    """One model row inside the browse list."""
-
-    def __init__(
-        self,
-        master,
-        summary: ModelSummary,
-        theme: ThemeManager,
-        on_click: Callable[[str], None],
-    ):
-        super().__init__(
-            master, fg_color=theme.SURFACE, corner_radius=theme.RADIUS_SM,
-        )
-        self.theme = theme
-        self.summary = summary
-        self._on_click_external = on_click
-
-        # Tier color dot (12x12 frame)
-        dot_bg, _ = theme.tier_color(summary.tier)
-        dot = ctk.CTkFrame(
-            self, width=12, height=12, fg_color=dot_bg,
-            corner_radius=6,
-        )
-        dot.pack(side="left", padx=(theme.SPACE_SM, theme.SPACE_XS))
-        dot.pack_propagate(False)
-
-        # Model name
-        name_label = ctk.CTkLabel(
-            self, text=summary.model,
-            font=(theme.FONT_FAMILY[0], theme.SIZE_BODY),
-            text_color=theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        name_label.pack(side="left", fill="x", expand=True,
-                        padx=(theme.SPACE_XS, theme.SPACE_SM))
-
-        # Last-processed date (right-anchored)
-        date_text = (
-            summary.last_processed.strftime("%Y-%m-%d")
-            if summary.last_processed else "—"
-        )
-        date_label = ctk.CTkLabel(
-            self, text=date_text,
-            font=(theme.FONT_FAMILY[0], theme.SIZE_CAPTION),
-            text_color=theme.TEXT_SECONDARY,
-        )
-        date_label.pack(side="right", padx=theme.SPACE_SM)
-
-        # Make the whole row clickable
-        for w in (self, name_label, dot, date_label):
+    def __init__(self, master, summary: ModelSummary, theme: ThemeManager,
+                 on_click: Callable[[str], None]):
+        super().__init__(master, fg_color=theme.SURFACE, corner_radius=theme.RADIUS_SM)
+        self.theme = theme; self.summary = summary; self._cb = on_click
+        t = theme
+        dot = ctk.CTkFrame(self, width=12, height=12, corner_radius=6,
+                           fg_color=t.tier_dot_color(summary.tier))   # FIX I4: visible STABLE dot
+        dot.pack(side="left", padx=(t.SPACE_SM, t.SPACE_XS)); dot.pack_propagate(False)
+        name = ctk.CTkLabel(self, text=summary.model, font=t.font(t.SIZE_BODY),
+                            text_color=t.TEXT_PRIMARY, anchor="w")
+        name.pack(side="left", fill="x", expand=True, padx=(t.SPACE_XS, t.SPACE_SM))
+        date_txt = summary.last_processed.strftime("%Y-%m-%d") if summary.last_processed else "—"
+        date = ctk.CTkLabel(self, text=date_txt, font=t.font(t.SIZE_CAPTION),
+                            text_color=t.TEXT_SECONDARY)
+        date.pack(side="right", padx=t.SPACE_SM)
+        for w in (self, dot, name, date):
             w.bind("<Button-1>", lambda e: self._on_click())
 
-    def _on_click(self) -> None:
-        self._on_click_external(self.summary.model)
+    def _on_click(self):
+        self._cb(self.summary.model)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3b_triage.py -v -k browse_zone`
-
-Expected: 3 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py tests/test_spec3b_triage.py
-git commit -m "feat(spec3b): BrowseZone
-
-Search + scrollable list of all models.  Each row: tier color dot,
-model name, last-processed date.  Case-insensitive substring filter
-updates live.  Clicking a row emits on_row_click(model)."
-```
+- [ ] **Step 4:** Run `-k browse` → PASS. Commit `feat(spec3b): BrowseZone (visible dots, disclosed
+  cap, live filter)`.
 
 ---
 
 ## Task 5: TriagePage + routing hint
 
-`TriagePage` composes `FlaggedCardsZone` + `BrowseZone`. `on_show()` reloads from the DB (background thread). Card and row clicks call `V6App.set_model_route(model)` + `V6App.show_page("model")`. Spec 3a's `V6App` gets two new methods.
+`on_show()` reloads on a background thread → `safe_after` to the Tk thread. A synchronous `reload_now()`
+exists for tests (no mainloop). Card click deep-links with the triggering metric; row click with the
+model only.
 
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/pages/__init__.py` (empty)
-- Create: `src/laser_trim_analyzer/gui/v6/pages/triage_page.py`
-- Modify: `src/laser_trim_analyzer/gui/v6/app.py` — add routing-hint methods + register real TriagePage
-- Test: `tests/test_spec3b_triage.py` (APPEND)
-
-- [ ] **Step 1: Append integration tests**
+- [ ] **Step 1:** Append tests:
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 5: TriagePage + V6App routing hint
-# ---------------------------------------------------------------------------
+# ---- Task 5: TriagePage + routing ----------------------------------------
+
+def test_v6app_consume_model_route(make_app):
+    app = make_app()
+    assert app.consume_model_route() is None
+    app.set_model_route("M", "linearity_error")
+    assert app.consume_model_route() == "M"       # 3b consumes model only
+    assert app.consume_model_route() is None       # one-shot
 
 
-def test_v6app_exposes_routing_hint(tmp_path):
-    """V6App has set_model_route / consume_model_route methods."""
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "route.db"
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        # No hint set
-        assert app.consume_model_route() is None
-        # Set + consume
-        app.set_model_route("MY-MODEL")
-        assert app.consume_model_route() == "MY-MODEL"
-        # Already consumed
-        assert app.consume_model_route() is None
-    finally:
-        app.destroy()
+def test_triage_card_click_routes_to_model(make_app):
+    app = make_app()
+    triage = app.page_container.get_page("triage")
+    triage._on_card_click("FROM-CARD", "untrimmed_resistance")
+    assert app.page_container.current_page == "model"
+    # Placeholder Model page doesn't consume yet → hint persists with focus.
+    assert app._model_route == ("FROM-CARD", "untrimmed_resistance")
 
 
-def test_triage_page_card_click_routes_to_model_page(tmp_path, monkeypatch):
-    """Clicking a flagged card stashes the model on the app and navigates
-    to the Model page.
-    """
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "route2.db"
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        triage = app.page_container.get_page("triage")
-        # Synthetic click handler
-        triage._on_card_click("FROM-CARD")
-        assert app.page_container.current_page == "model"
-        # Consumer hasn't run yet (placeholder page) so the hint persists
-        assert app.consume_model_route() == "FROM-CARD"
-    finally:
-        app.destroy()
-
-
-def test_triage_page_on_show_loads_data(tmp_path):
-    """on_show() populates the flagged cards + browse zone from the DB.
-
-    Synchronous load for this test (background-thread path covered by
-    integration tests in a future spec; this verifies the data path).
-    """
+def test_triage_reload_now_populates(make_app):
     from datetime import datetime
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.database.models import (
-        AnalysisResult as DBAR,
-        SystemType as DBSystemType, StatusType as DBStatusType,
-    )
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "loaded.db"
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        # Add a model
-        with app.db.session() as s:
-            ar = DBAR(
-                filename="x.xls", file_path="/fake/x.xls", file_hash="hx",
-                model="LOAD-TEST", serial="sn1",
-                system=DBSystemType.A, file_date=datetime.now(),
-                timestamp=datetime.now(),
-                overall_status=DBStatusType.PASS,
-                has_multi_tracks=False, processing_time=0.1,
-            )
-            s.add(ar)
-            s.commit()
-
-        triage = app.page_container.get_page("triage")
-        # Force synchronous reload for the test
-        triage._reload_sync()
-        texts = _collect_label_texts(triage)
-        assert "LOAD-TEST" in texts
-    finally:
-        app.destroy()
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SystemType, StatusType
+    app = make_app()
+    with app.db.session() as s:
+        s.add(DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="LOAD-TEST",
+                   serial="sn1", system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                   overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+    triage = app.page_container.get_page("triage")
+    triage.reload_now()       # synchronous path for tests
+    assert "LOAD-TEST" in _labels(triage)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** Run `-k "consume_model_route or triage"` → fail.
 
-Run: `pytest tests/test_spec3b_triage.py -v -k "routing_hint or triage_page"`
-
-Expected: 3 FAILs.
-
-- [ ] **Step 3: Add routing-hint methods to V6App**
-
-In `src/laser_trim_analyzer/gui/v6/app.py`, add inside `V6App` before `_build_pages`:
+- [ ] **Step 3:** Add to `V6App` (in `gui/v6/app.py`) the model-only consumer:
 
 ```python
-    # ---- Routing-hint API (consumed by Model page on show) ---------------
-
-    def set_model_route(self, model: str, focus_metric: Optional[str] = None) -> None:
-        """Stash a routing hint that the Model page reads on next on_show.
-
-        Used by Triage and search-bar navigation.
-        """
-        self._model_route = (model, focus_metric)
-
     def consume_model_route(self) -> Optional[str]:
-        """Pop the stashed model name.  Returns None if no hint set.
-
-        Note: the focus_metric (Spec 3c) is consumed by a separate method.
-        For Spec 3b only the model name matters.
-        """
+        """Pop the model name from the routing hint (focus consumed separately in 3c)."""
         if self._model_route is None:
             return None
         model, _focus = self._model_route
@@ -1138,146 +623,109 @@ In `src/laser_trim_analyzer/gui/v6/app.py`, add inside `V6App` before `_build_pa
         return model
 ```
 
-Initialize `self._model_route = None` at the top of `V6App.__init__` (just after `self.theme = ThemeManager()`).
-
-- [ ] **Step 4: Create the TriagePage**
-
-Create `src/laser_trim_analyzer/gui/v6/pages/__init__.py` (empty).
-
-Create `src/laser_trim_analyzer/gui/v6/pages/triage_page.py`:
+- [ ] **Step 4:** Create `pages/__init__.py` (empty) and `pages/triage_page.py`:
 
 ```python
-"""Spec 3b — TriagePage.
-
-Landing view.  Flagged-cards zone on top + browse zone on bottom.
-on_show() reloads data from the DB.  Card or row click → navigate
-to the Model page with the model preselected.
-"""
+"""Spec 3b — TriagePage: flagged cards (top) + browse list (bottom)."""
 import threading
-from typing import Optional
-
-import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
-from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import (
-    FlaggedCardsZone,
-)
-from laser_trim_analyzer.ml.manager import (
-    get_drifting_models, list_known_models,
-)
+from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+from laser_trim_analyzer.ml.manager import get_drifting_models, list_known_models
 
 
 class TriagePage(PageBase):
-    """Triage landing page.
-
-    Refresh model: on_show() runs the DB queries in a background thread
-    and updates the UI on the main thread via self.after(0, ...).
-    """
     page_title = "Triage"
 
-    def __init__(self, master, theme, app):
-        # `app` is the V6App reference, needed for routing-hint + show_page
-        self._app = app
-        super().__init__(master, theme=theme)
-
     def build_content(self, parent):
-        self._cards_zone = FlaggedCardsZone(
-            parent, theme=self.theme, on_card_click=self._on_card_click,
-        )
-        self._cards_zone.pack(
-            side="top", fill="x", pady=(0, self.theme.SPACE_LG),
-        )
-        self._browse_zone = BrowseZone(
-            parent, theme=self.theme, on_row_click=self._on_card_click,
-        )
-        self._browse_zone.pack(side="top", fill="both", expand=True)
+        self._cards = FlaggedCardsZone(parent, theme=self.theme, on_card_click=self._on_card_click)
+        self._cards.pack(side="top", fill="x", pady=(0, self.theme.SPACE_LG))
+        self._browse = BrowseZone(parent, theme=self.theme, on_row_click=self._on_row_click)
+        self._browse.pack(side="top", fill="both", expand=True)
 
     def on_show(self):
-        """Reload data asynchronously so a slow DB doesn't block the UI."""
-        thread = threading.Thread(target=self._reload_sync, daemon=True)
-        thread.start()
+        threading.Thread(target=self.reload_now, daemon=True).start()
 
-    def _reload_sync(self) -> None:
-        """Synchronous reload.  Used by background thread AND by tests."""
+    def reload_now(self):
+        """Synchronous reload (background thread in prod; direct in tests)."""
         try:
-            sensitivity = getattr(
-                self._app.config.ml, "drift_sensitivity", "standard"
-            )
-            flagged = get_drifting_models(self._app.db, sensitivity)
-            all_models = list_known_models(self._app.db)
+            flagged = get_drifting_models(self.app.db)
+            models = list_known_models(self.app.db)
         except Exception:
-            # Defensive: if DB queries fail we don't crash the UI
-            flagged = []
-            all_models = []
-        # UI updates must happen on the main thread
-        self.after(0, lambda: self._cards_zone.set_summaries(flagged))
-        self.after(0, lambda: self._browse_zone.set_models(all_models))
+            flagged, models = [], []
+        last = max((m.last_processed for m in models if m.last_processed), default=None)
+        self.safe_after(lambda: self._cards.set_summaries(flagged, last_processed=last))
+        self.safe_after(lambda: self._browse.set_models(models))
 
-    def _on_card_click(self, model: str) -> None:
-        self._app.set_model_route(model)
-        self._app.show_page("model")
+    def _on_card_click(self, model, focus_metric):
+        self.app.set_model_route(model, focus_metric)
+        self.app.show_page("model")
+
+    def _on_row_click(self, model):
+        self.app.set_model_route(model)        # no focus → Model page defaults the metric
+        self.app.show_page("model")
 ```
 
-- [ ] **Step 5: Replace TriagePlaceholder in V6App**
+Note: `reload_now` calls `safe_after`; in tests without a mainloop the queued callbacks still apply the
+data synchronously because `safe_after(delay=0)` schedules on the same call stack only under mainloop.
+To keep the test deterministic, `set_summaries`/`set_models` are ALSO invoked directly — implement
+`reload_now` to call them directly AND schedule via `safe_after` only when running under a live loop. To
+avoid double-render, simplest is: in `reload_now`, update widgets directly (it's already the right thread
+when called from a test), and have `on_show` marshal by calling `reload_now` from a thread that uses
+`safe_after`. **Implementer:** prefer this shape —
 
-In `src/laser_trim_analyzer/gui/v6/app.py`, find `_build_pages()`. Replace the loop with:
+```python
+    def reload_now(self):
+        try:
+            flagged = get_drifting_models(self.app.db)
+            models = list_known_models(self.app.db)
+        except Exception:
+            flagged, models = [], []
+        last = max((m.last_processed for m in models if m.last_processed), default=None)
+        self._apply(flagged, models, last)
+
+    def _apply(self, flagged, models, last):
+        self._cards.set_summaries(flagged, last_processed=last)
+        self._browse.set_models(models)
+
+    def on_show(self):
+        def work():
+            try:
+                flagged = get_drifting_models(self.app.db)
+                models = list_known_models(self.app.db)
+            except Exception:
+                flagged, models = [], []
+            last = max((m.last_processed for m in models if m.last_processed), default=None)
+            self.safe_after(lambda: self._apply(flagged, models, last))
+        threading.Thread(target=work, daemon=True).start()
+```
+
+`reload_now()` (used by tests) does the work and applies synchronously; `on_show()` does the same work on
+a thread and applies via `safe_after`. Same `_apply`, no double-render.
+
+- [ ] **Step 5:** Register the real TriagePage. In `gui/v6/app.py` `_build_pages()`, build Triage first
+  (real) then the remaining placeholders:
 
 ```python
     def _build_pages(self) -> None:
-        """Construct all 4 pages once.  Triage is real (Spec 3b);
-        others are placeholders until 3c/3d/3e land."""
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
-
-        triage = TriagePage(self.page_container, theme=self.theme, app=self)
-        self.page_container.add_page("triage", triage)
-
-        for name, label, next_spec in (
-            ("process", "Process", "3e"),
-            ("model", "Model", "3c"),
-            ("settings", "Settings", "3d"),
-        ):
-            page = _PlaceholderPage(
-                self.page_container, theme=self.theme,
-                page_title=label, next_spec=next_spec,
-            )
-            self.page_container.add_page(name, page)
+        self.page_container.add_page(
+            "triage", TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"))
+        for name, label, nxt in (("process", "Process", "3e"),
+                                 ("model", "Model", "3c"), ("settings", "Settings", "3d")):
+            self.page_container.add_page(
+                name, _PlaceholderPage(self.page_container, theme=self.theme, app=self,
+                                       page_title=label, next_spec=nxt))
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 6:** Run `pytest tests/test_spec3b_triage.py -v` → all PASS. Regression sweep → 0 fail.
 
-Run: `pytest tests/test_spec3b_triage.py -v`
-
-Expected: all PASS (~16 tests total: 4 + 3 + 3 + 3 + 3).
-
-- [ ] **Step 7: Regression sweep**
-
-```
-pytest tests/test_spec1_untrimmed_sigma.py tests/test_log_derived_bugfixes_2026_05_30.py tests/test_5_8_2026_bugfixes.py tests/test_spec2_multi_metric_drift.py tests/test_spec3a_shell.py tests/test_spec3b_triage.py -v 2>&1 | tail -5
-```
-
-Expected: all PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/app.py src/laser_trim_analyzer/gui/v6/pages/__init__.py src/laser_trim_analyzer/gui/v6/pages/triage_page.py tests/test_spec3b_triage.py
-git commit -m "feat(spec3b): real TriagePage replaces placeholder
-
-Composes FlaggedCardsZone (top) + BrowseZone (bottom).  on_show()
-reloads data in a background thread; UI updates on main thread.
-Card + row clicks stash the model name via V6App.set_model_route
-and navigate to the Model page (which will read the hint when 3c
-ships).
-
-Adds set_model_route / consume_model_route API to V6App."
-```
+- [ ] **Step 7:** Commit `feat(spec3b): real TriagePage + consume_model_route`.
 
 ---
 
-## Out-of-scope reminders
-
-- **Do not** implement the Model page real content (3c).
-- **Do not** add a refresh button to the Triage header (deferred — `on_show` is the refresh point).
-- **Do not** add cross-model filters in BrowseZone (mission is per-model).
-- **Do not** wire the first-startup auto-train hook (3d).
+## Out of scope (3b)
+- Model page content (3c). No Triage header refresh button (on_show is the refresh point; manual refresh
+  deferred). No cross-model filters (per-model mission). No first-startup auto-train (3d).
+</content>

@@ -1,56 +1,49 @@
-# Spec 3a — V6 App Shell Implementation Plan
+# Spec 3a — V6 App Shell Implementation Plan (rewritten 2026-06-01)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
+>
+> **READ FIRST:** `docs/superpowers/plans/2026-06-01-spec3-rewrite-foundations.md` — verified API
+> reference, corrected PageBase/V6App/theme/threading/test contracts, mission + QA rules, decision log.
+> This plan implements §2 of that document. Where this plan and the original 2026-05-30 draft disagree,
+> this plan wins (the original assumed widget reparenting and a module-level appearance side effect that
+> don't work).
 
-**Goal:** Build a runnable V6 app shell at `python -m laser_trim_analyzer --v6` with industrial-dark theme, left sidebar nav (4 items + active stripe), `PageBase` chrome, and 4 placeholder pages. V5 shell (`python -m laser_trim_analyzer`, no flag) continues to work unchanged.
+**Goal:** A runnable V6 shell at `python -m laser_trim_analyzer --v6` — industrial-dark theme, fixed
+left sidebar (4 items + active stripe), `PageBase` chrome, 4 placeholder pages. V5 (`python -m
+laser_trim_analyzer`, no flag) keeps working unchanged.
 
-**Architecture:** New `src/laser_trim_analyzer/gui/v6/` subpackage holds the new shell. `V6App(ctk.CTk)` is the root window. `ThemeManager` exposes color/typography/spacing tokens. `Sidebar` + `PageContainer` + `PageBase` form the chrome. Each of the four target pages (Triage / Process / Model / Settings) is a placeholder subclass that just renders "coming in Spec 3X" — real content lands in 3b–3e.
+**Target branch:** `V6`. Verify `git branch --show-current` before Task 1.
 
-**Tech Stack:** Python 3.x, customtkinter, pytest.
-
-**Target branch:** `V6` only. Verify with `git branch --show-current` before Task 1.
-
-**Spec reference:** `docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md` (Sub-spec 3a section).
+**Fixes applied here (see foundations §6):** C5/C6 (no widget reparenting — `header_actions(parent)`),
+C7 (shared test root + `make_app`, no double CTk roots), M5 (appearance mode in `__init__`, not module
+import), M3 (real font-fallback via `theme.font()`), I4 (`tier_dot_color` for the invisible-STABLE-dot
+bug), plus the corrected `V6App(config, db=None, auto_train_on_first_run=True)` contract.
 
 ---
 
 ## File Structure
 
-**Files created:**
-- `src/laser_trim_analyzer/gui/v6/__init__.py` — empty package marker
-- `src/laser_trim_analyzer/gui/v6/theme.py` — `ThemeManager` class + all constants
+**Created:**
+- `src/laser_trim_analyzer/gui/v6/__init__.py` (empty)
+- `src/laser_trim_analyzer/gui/v6/theme.py` — `ThemeManager` + tokens + `tier_color`/`tier_dot_color`/`font`
 - `src/laser_trim_analyzer/gui/v6/sidebar.py` — `Sidebar` + `_SidebarRow`
 - `src/laser_trim_analyzer/gui/v6/page_container.py` — `PageContainer`
 - `src/laser_trim_analyzer/gui/v6/page_base.py` — `PageBase` + `_PageHeader`
-- `src/laser_trim_analyzer/gui/v6/app.py` — `V6App` + 4 placeholder page classes
-- `tests/test_spec3a_shell.py` — unit tests (no Tk mainloop)
+- `src/laser_trim_analyzer/gui/v6/app.py` — `V6App` + `_PlaceholderPage`
+- `tests/conftest.py` — shared `tk_root` + `make_app` (foundations §2.5)
+- `tests/test_spec3a_shell.py`
 
-**Files modified:**
-- `src/laser_trim_analyzer/__main__.py` — add `--v6` CLI flag handling
+**Modified:**
+- `src/laser_trim_analyzer/__main__.py` — `--v6` flag
 
 ---
 
-## Task 1: ThemeManager + theme constants
+## Task 0: Shared test fixtures (conftest)
 
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/__init__.py` (empty file)
-- Create: `src/laser_trim_analyzer/gui/v6/theme.py`
-- Test: `tests/test_spec3a_shell.py` (CREATE)
-
-- [ ] **Step 1: Create empty package marker**
-
-Create `src/laser_trim_analyzer/gui/v6/__init__.py` with empty contents (just one blank line is fine).
-
-- [ ] **Step 2: Create the test file with ThemeManager tests**
-
-Create `tests/test_spec3a_shell.py` with this exact content:
+- [ ] **Step 1:** Create `tests/conftest.py` exactly as foundations §2.5, with the one correction that
+  `make_app` imports the real dev path:
 
 ```python
-"""Spec 3a — V6 app shell + sidebar + theme + PageBase.
-
-Each test maps to one element of the spec at
-docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md (Sub-spec 3a).
-"""
 import sys
 from pathlib import Path
 
@@ -59,284 +52,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-# ---------------------------------------------------------------------------
-# Task 1: ThemeManager
-# ---------------------------------------------------------------------------
-
-
-def test_theme_exposes_color_tokens():
-    """ThemeManager defines all spec'd color constants."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    t = ThemeManager()
-    # Surfaces
-    assert t.BG == "#1a1f2e"
-    assert t.SURFACE == "#1e2435"
-    assert t.CARD == "#263244"
-    assert t.ELEVATED == "#2f3b50"
-    # Sidebar
-    assert t.SIDEBAR_BG == "#1a1f2e"
-    assert t.SIDEBAR_ACTIVE == "#263244"
-    assert t.SIDEBAR_STRIPE == "#3b82f6"
-    # Accent
-    assert t.ACCENT == "#3b82f6"
-    assert t.ACCENT_HOVER == "#60a5fa"
-    assert t.ACCENT_PRESSED == "#2563eb"
-    # Text
-    assert t.TEXT_PRIMARY == "#e8eef5"
-    assert t.TEXT_SECONDARY == "#9ca8bd"
-    assert t.TEXT_DISABLED == "#5a6478"
-    assert t.TEXT_INVERSE == "#1a1f2e"
-    # Borders
-    assert t.DIVIDER == "#2a3142"
-    assert t.BORDER == "#3a4456"
-
-
-def test_theme_exposes_tier_color_tokens():
-    """Tier colors preserved from V5 semantic."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    t = ThemeManager()
-    assert t.TIER_STABLE == "#1e2435"
-    assert t.TIER_WARNING_BG == "#3d2f1a"
-    assert t.TIER_WARNING == "#f59e0b"
-    assert t.TIER_DRIFT_BG == "#3d2418"
-    assert t.TIER_DRIFT == "#f97316"
-    assert t.TIER_OOC_BG == "#3d1818"
-    assert t.TIER_OOC == "#ef4444"
-
-
-def test_theme_exposes_spacing_scale():
-    """Spacing scale is multiples of 4."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    t = ThemeManager()
-    assert t.SPACE_XS == 4
-    assert t.SPACE_SM == 8
-    assert t.SPACE_MD == 12
-    assert t.SPACE_LG == 16
-    assert t.SPACE_XL == 24
-    assert t.SPACE_2XL == 32
-
-
-def test_theme_exposes_typography():
-    """Font family fallback chain + size constants."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    t = ThemeManager()
-    # Font family is a fallback tuple (CTk uses first available)
-    assert t.FONT_FAMILY[0] == "Inter"
-    assert "Segoe UI" in t.FONT_FAMILY
-    # Size constants
-    assert t.SIZE_CAPTION == 11
-    assert t.SIZE_BODY == 13
-    assert t.SIZE_HEADING == 16
-    assert t.SIZE_TITLE == 20
-    assert t.SIZE_DISPLAY == 28
-
-
-def test_theme_exposes_corner_radii():
-    """Corner radius scale."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    t = ThemeManager()
-    assert t.RADIUS_SM == 4
-    assert t.RADIUS_MD == 6
-    assert t.RADIUS_LG == 8
-
-
-def test_theme_tier_color_lookup():
-    """ThemeManager exposes a tier_color(tier) helper returning (bg, fg)."""
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.ml.drift_types import DriftTier
-
-    t = ThemeManager()
-    bg, fg = t.tier_color(DriftTier.STABLE)
-    assert bg == "#1e2435"   # blends into SURFACE
-    bg, fg = t.tier_color(DriftTier.WARNING)
-    assert bg == "#3d2f1a"
-    assert fg == "#f59e0b"
-    bg, fg = t.tier_color(DriftTier.DRIFT)
-    assert bg == "#3d2418"
-    assert fg == "#f97316"
-    bg, fg = t.tier_color(DriftTier.OUT_OF_CONTROL)
-    assert bg == "#3d1818"
-    assert fg == "#ef4444"
-```
-
-- [ ] **Step 3: Run tests to verify they fail**
-
-Run: `pytest tests/test_spec3a_shell.py -v`
-
-Expected: 6 FAILs — ModuleNotFoundError on import.
-
-- [ ] **Step 4: Create the ThemeManager module**
-
-Create `src/laser_trim_analyzer/gui/v6/theme.py` with this content:
-
-```python
-"""Spec 3a — ThemeManager.
-
-Single source of truth for V6 visual tokens: colors, typography, spacing,
-corner radii.  Every V6 widget and page reads from a ThemeManager instance
-passed in via constructor.  No magic numbers or hard-coded colors anywhere
-else.
-
-The token names are stable across pages; only their values may change if
-James later wants a different palette.
-"""
-from dataclasses import dataclass
-from typing import Tuple
-
-from laser_trim_analyzer.ml.drift_types import DriftTier
-
-
-@dataclass(frozen=True)
-class ThemeManager:
-    """Industrial-dark theme tokens.
-
-    Frozen so accidental mutation can't desync widgets at runtime.
-    """
-
-    # ---- Color tokens ----------------------------------------------------
-
-    # Surfaces
-    BG: str = "#1a1f2e"
-    SURFACE: str = "#1e2435"
-    CARD: str = "#263244"
-    ELEVATED: str = "#2f3b50"
-
-    # Sidebar
-    SIDEBAR_BG: str = "#1a1f2e"
-    SIDEBAR_ACTIVE: str = "#263244"
-    SIDEBAR_STRIPE: str = "#3b82f6"
-
-    # Accent
-    ACCENT: str = "#3b82f6"
-    ACCENT_HOVER: str = "#60a5fa"
-    ACCENT_PRESSED: str = "#2563eb"
-
-    # Text
-    TEXT_PRIMARY: str = "#e8eef5"
-    TEXT_SECONDARY: str = "#9ca8bd"
-    TEXT_DISABLED: str = "#5a6478"
-    TEXT_INVERSE: str = "#1a1f2e"
-
-    # Borders / dividers
-    DIVIDER: str = "#2a3142"
-    BORDER: str = "#3a4456"
-
-    # ---- Tier colors -----------------------------------------------------
-
-    TIER_STABLE: str = "#1e2435"      # blends with SURFACE
-    TIER_WARNING_BG: str = "#3d2f1a"
-    TIER_WARNING: str = "#f59e0b"
-    TIER_DRIFT_BG: str = "#3d2418"
-    TIER_DRIFT: str = "#f97316"
-    TIER_OOC_BG: str = "#3d1818"
-    TIER_OOC: str = "#ef4444"
-
-    # ---- Typography ------------------------------------------------------
-
-    # CTk picks the first available family at runtime
-    FONT_FAMILY: Tuple[str, ...] = ("Inter", "Segoe UI", "system-ui")
-
-    SIZE_CAPTION: int = 11
-    SIZE_BODY: int = 13
-    SIZE_HEADING: int = 16
-    SIZE_TITLE: int = 20
-    SIZE_DISPLAY: int = 28
-
-    # ---- Spacing scale (multiples of 4) ----------------------------------
-
-    SPACE_XS: int = 4
-    SPACE_SM: int = 8
-    SPACE_MD: int = 12
-    SPACE_LG: int = 16
-    SPACE_XL: int = 24
-    SPACE_2XL: int = 32
-
-    # ---- Corner radii ----------------------------------------------------
-
-    RADIUS_SM: int = 4
-    RADIUS_MD: int = 6
-    RADIUS_LG: int = 8
-
-    # ---- Helpers ---------------------------------------------------------
-
-    def tier_color(self, tier: DriftTier) -> Tuple[str, str]:
-        """Return (background, foreground) for the given drift tier.
-
-        Foreground is the accent color for that tier (used for badge text,
-        magnitude readouts).  For STABLE, foreground equals primary text
-        because there's no semantic accent.
-        """
-        if tier == DriftTier.STABLE:
-            return self.TIER_STABLE, self.TEXT_PRIMARY
-        if tier == DriftTier.WARNING:
-            return self.TIER_WARNING_BG, self.TIER_WARNING
-        if tier == DriftTier.DRIFT:
-            return self.TIER_DRIFT_BG, self.TIER_DRIFT
-        if tier == DriftTier.OUT_OF_CONTROL:
-            return self.TIER_OOC_BG, self.TIER_OOC
-        # Unknown tier -- defensive
-        return self.SURFACE, self.TEXT_PRIMARY
-```
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3a_shell.py -v`
-
-Expected: 6 PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/__init__.py src/laser_trim_analyzer/gui/v6/theme.py tests/test_spec3a_shell.py
-git commit -m "feat(spec3a): ThemeManager with industrial-dark tokens
-
-Frozen dataclass exposing all V6 visual tokens: surfaces, sidebar
-colors, accent, text, borders, tier-color pairs, typography fallback
-chain + sizes, spacing scale (multiples of 4), corner radii.
-
-tier_color(DriftTier) helper returns (bg, fg) pair so cards/badges
-can color-code consistently with V5's tier semantic.
-
-Spec: docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md"
-```
-
----
-
-## Task 2: Sidebar widget
-
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/sidebar.py`
-- Test: `tests/test_spec3a_shell.py` (APPEND)
-
-CTk widget construction requires a root window. Tests use a module-scoped Tk root fixture to avoid repeated `CTk()` creation costs.
-
-- [ ] **Step 1: Append the Tk root fixture + Sidebar tests**
-
-Append to `tests/test_spec3a_shell.py`:
-
-```python
-# ---------------------------------------------------------------------------
-# Task 2: Sidebar widget
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def tk_root():
-    """Module-scoped headless CTk root for widget construction.
-
-    CTk requires a root window before any widget can be instantiated.
-    We create one per test module, never call mainloop(), and destroy
-    it at module teardown.
-    """
+    """One headless CTk root for all widget-construction tests (no mainloop)."""
     import customtkinter as ctk
-
+    try:
+        ctk.deactivate_automatic_dpi_awareness()
+    except Exception:
+        pass
     root = ctk.CTk()
-    # Hide the window so tests don't flash a window on screen
     root.withdraw()
     yield root
     try:
@@ -345,154 +69,294 @@ def tk_root():
         pass
 
 
-def test_sidebar_emits_selection_callback(tk_root):
-    """Clicking a sidebar row calls on_select(name)."""
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+@pytest.fixture
+def make_app(tmp_path):
+    """Factory for a V6App on an ISOLATED tmp DB, auto-train OFF, destroyed on teardown.
 
-    received: list[str] = []
-    sidebar = Sidebar(
-        tk_root,
-        on_select=lambda name: received.append(name),
-        theme=ThemeManager(),
-    )
-    # Simulate clicking the "model" row
-    sidebar._row_frames["model"]._on_click()
-    assert received == ["model"]
+    Use for every V6App test. Do NOT also request `tk_root` in an app test
+    (that would create two live CTk roots). Retirement (Spec 3e Graduation)
+    changes only the import line below.
+    """
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.gui.v6.app import V6App
 
+    created = []
 
-def test_sidebar_set_active_updates_state(tk_root):
-    """set_active marks the named row as active and clears others."""
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    def _factory(db_name="v6.db"):
+        cfg = Config()
+        cfg.database.path = tmp_path / db_name
+        app = V6App(
+            cfg,
+            db=DatabaseManager(cfg.database.path),
+            auto_train_on_first_run=False,
+        )
+        app.withdraw()
+        created.append(app)
+        return app
 
-    sidebar = Sidebar(tk_root, on_select=lambda _: None, theme=ThemeManager())
-    sidebar.set_active("triage")
-    assert sidebar._active_name == "triage"
-    sidebar.set_active("settings")
-    assert sidebar._active_name == "settings"
-
-
-def test_sidebar_has_all_four_items(tk_root):
-    """Sidebar declares exactly the 4 spec'd items in order."""
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-
-    expected = [("triage", "Triage"), ("process", "Process"),
-                ("model", "Model"), ("settings", "Settings")]
-    assert Sidebar.ITEMS == expected
-
-
-def test_sidebar_set_active_unknown_name_no_op(tk_root):
-    """set_active('bogus') is a defensive no-op, does not raise."""
-    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    sidebar = Sidebar(tk_root, on_select=lambda _: None, theme=ThemeManager())
-    sidebar.set_active("triage")
-    # No raise expected
-    sidebar.set_active("bogus")
-    # Previous active is preserved on no-op
-    assert sidebar._active_name == "triage"
+    yield _factory
+    for app in created:
+        try:
+            app.destroy()
+        except Exception:
+            pass
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+If `tests/conftest.py` already exists, MERGE these two fixtures in (don't clobber existing fixtures);
+keep the `sys.path` insert only once.
 
-Run: `pytest tests/test_spec3a_shell.py -v -k sidebar`
+- [ ] **Step 2:** Commit.
+```bash
+git add tests/conftest.py
+git commit -m "test(spec3a): shared headless tk_root + make_app fixtures"
+```
 
-Expected: 4 FAILs — Sidebar module doesn't exist.
+---
 
-- [ ] **Step 3: Create the Sidebar module**
+## Task 1: ThemeManager + tokens + helpers
 
-Create `src/laser_trim_analyzer/gui/v6/sidebar.py`:
+- [ ] **Step 1:** Create `src/laser_trim_analyzer/gui/v6/__init__.py` (empty).
+
+- [ ] **Step 2:** Create `tests/test_spec3a_shell.py`:
 
 ```python
-"""Spec 3a — Sidebar widget.
-
-Fixed-width left navigation with 4 items + active-stripe indicator.
-Pure view: emits on_select(name) when a row is clicked; never reaches
-into app state.  V6App.show_page() calls Sidebar.set_active(name) to
-update the visual state.
+"""Spec 3a — V6 shell + sidebar + theme + PageBase.
+Foundations: docs/superpowers/plans/2026-06-01-spec3-rewrite-foundations.md (§2).
+Spec: docs/superpowers/specs/2026-05-30-spec3-ui-shell-design.md (Sub-spec 3a).
+Shared fixtures (tk_root, make_app) live in tests/conftest.py.
 """
+
+# ---- Task 1: ThemeManager -------------------------------------------------
+
+def test_theme_exposes_color_tokens():
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    t = ThemeManager()
+    assert (t.BG, t.SURFACE, t.CARD, t.ELEVATED) == ("#1a1f2e", "#1e2435", "#263244", "#2f3b50")
+    assert (t.SIDEBAR_BG, t.SIDEBAR_ACTIVE, t.SIDEBAR_STRIPE) == ("#1a1f2e", "#263244", "#3b82f6")
+    assert (t.ACCENT, t.ACCENT_HOVER, t.ACCENT_PRESSED) == ("#3b82f6", "#60a5fa", "#2563eb")
+    assert (t.TEXT_PRIMARY, t.TEXT_SECONDARY, t.TEXT_DISABLED, t.TEXT_INVERSE) == \
+        ("#e8eef5", "#9ca8bd", "#5a6478", "#1a1f2e")
+    assert (t.DIVIDER, t.BORDER) == ("#2a3142", "#3a4456")
+
+
+def test_theme_exposes_tier_color_tokens():
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    t = ThemeManager()
+    assert t.TIER_STABLE == "#1e2435"
+    assert (t.TIER_WARNING_BG, t.TIER_WARNING) == ("#3d2f1a", "#f59e0b")
+    assert (t.TIER_DRIFT_BG, t.TIER_DRIFT) == ("#3d2418", "#f97316")
+    assert (t.TIER_OOC_BG, t.TIER_OOC) == ("#3d1818", "#ef4444")
+
+
+def test_theme_spacing_and_radii():
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    t = ThemeManager()
+    assert (t.SPACE_XS, t.SPACE_SM, t.SPACE_MD, t.SPACE_LG, t.SPACE_XL, t.SPACE_2XL) == \
+        (4, 8, 12, 16, 24, 32)
+    assert (t.RADIUS_SM, t.RADIUS_MD, t.RADIUS_LG) == (4, 6, 8)
+    assert (t.SIZE_CAPTION, t.SIZE_BODY, t.SIZE_HEADING, t.SIZE_TITLE, t.SIZE_DISPLAY) == \
+        (11, 13, 16, 20, 28)
+    assert t.FONT_FAMILY[0] == "Inter" and "Segoe UI" in t.FONT_FAMILY
+
+
+def test_theme_tier_color_pairs():
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    t = ThemeManager()
+    assert t.tier_color(DriftTier.STABLE) == ("#1e2435", "#e8eef5")
+    assert t.tier_color(DriftTier.WARNING) == ("#3d2f1a", "#f59e0b")
+    assert t.tier_color(DriftTier.DRIFT) == ("#3d2418", "#f97316")
+    assert t.tier_color(DriftTier.OUT_OF_CONTROL) == ("#3d1818", "#ef4444")
+
+
+def test_theme_tier_dot_color_stable_is_visible():
+    """FIX I4: STABLE dot must NOT equal SURFACE (it'd be invisible on a SURFACE row)."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    t = ThemeManager()
+    assert t.tier_dot_color(DriftTier.STABLE) == t.TEXT_DISABLED
+    assert t.tier_dot_color(DriftTier.STABLE) != t.SURFACE
+    assert t.tier_dot_color(DriftTier.WARNING) == t.TIER_WARNING
+
+
+def test_theme_font_returns_ctkfont(tk_root):
+    """theme.font() resolves an available family (real fallback chain), returns CTkFont."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    t = ThemeManager()
+    f = t.font(t.SIZE_BODY, "bold")
+    assert isinstance(f, ctk.CTkFont)
+    assert t.resolved_family in t.FONT_FAMILY  # picked one of the declared families
+```
+
+- [ ] **Step 3:** Run `pytest tests/test_spec3a_shell.py -v` → fails (no module).
+
+- [ ] **Step 4:** Create `src/laser_trim_analyzer/gui/v6/theme.py`:
+
+```python
+"""Spec 3a — ThemeManager: the single source of V6 visual tokens.
+
+Foundations §2.3. Frozen dataclass; every widget/page reads a shared instance.
+Helpers: tier_color (bg, fg) pair, tier_dot_color (visible STABLE), font() (real
+fallback to an available family).
+"""
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
+
+import customtkinter as ctk
+
+from laser_trim_analyzer.ml.drift_types import DriftTier
+
+
+@dataclass
+class ThemeManager:
+    # Surfaces
+    BG: str = "#1a1f2e"; SURFACE: str = "#1e2435"; CARD: str = "#263244"; ELEVATED: str = "#2f3b50"
+    # Sidebar
+    SIDEBAR_BG: str = "#1a1f2e"; SIDEBAR_ACTIVE: str = "#263244"; SIDEBAR_STRIPE: str = "#3b82f6"
+    # Accent
+    ACCENT: str = "#3b82f6"; ACCENT_HOVER: str = "#60a5fa"; ACCENT_PRESSED: str = "#2563eb"
+    # Text
+    TEXT_PRIMARY: str = "#e8eef5"; TEXT_SECONDARY: str = "#9ca8bd"
+    TEXT_DISABLED: str = "#5a6478"; TEXT_INVERSE: str = "#1a1f2e"
+    # Borders
+    DIVIDER: str = "#2a3142"; BORDER: str = "#3a4456"
+    # Tiers (preserved V5 semantic)
+    TIER_STABLE: str = "#1e2435"
+    TIER_WARNING_BG: str = "#3d2f1a"; TIER_WARNING: str = "#f59e0b"
+    TIER_DRIFT_BG: str = "#3d2418"; TIER_DRIFT: str = "#f97316"
+    TIER_OOC_BG: str = "#3d1818"; TIER_OOC: str = "#ef4444"
+    # Typography
+    FONT_FAMILY: Tuple[str, ...] = ("Inter", "Segoe UI", "system-ui")
+    SIZE_CAPTION: int = 11; SIZE_BODY: int = 13; SIZE_HEADING: int = 16
+    SIZE_TITLE: int = 20; SIZE_DISPLAY: int = 28
+    # Spacing / radii
+    SPACE_XS: int = 4; SPACE_SM: int = 8; SPACE_MD: int = 12
+    SPACE_LG: int = 16; SPACE_XL: int = 24; SPACE_2XL: int = 32
+    RADIUS_SM: int = 4; RADIUS_MD: int = 6; RADIUS_LG: int = 8
+
+    resolved_family: str = field(default="", init=False)
+
+    def __post_init__(self):
+        # Resolve the font family ONCE against what Tk actually has (real fallback).
+        object.__setattr__(self, "resolved_family", self._resolve_family())
+
+    def _resolve_family(self) -> str:
+        try:
+            import tkinter.font as tkfont
+            available = set(tkfont.families())
+            for fam in self.FONT_FAMILY:
+                if fam in available:
+                    return fam
+        except Exception:
+            pass
+        return self.FONT_FAMILY[-1]  # last entry is the generic fallback
+
+    # ---- Helpers ----
+    def font(self, size: int, weight: str = "normal") -> ctk.CTkFont:
+        return ctk.CTkFont(family=self.resolved_family, size=size, weight=weight)
+
+    def tier_color(self, tier: DriftTier) -> Tuple[str, str]:
+        """(background, foreground) for a tier. STABLE blends into SURFACE."""
+        return {
+            DriftTier.STABLE: (self.TIER_STABLE, self.TEXT_PRIMARY),
+            DriftTier.WARNING: (self.TIER_WARNING_BG, self.TIER_WARNING),
+            DriftTier.DRIFT: (self.TIER_DRIFT_BG, self.TIER_DRIFT),
+            DriftTier.OUT_OF_CONTROL: (self.TIER_OOC_BG, self.TIER_OOC),
+        }.get(tier, (self.SURFACE, self.TEXT_PRIMARY))
+
+    def tier_dot_color(self, tier: DriftTier) -> str:
+        """Visible dot color. STABLE → muted gray (NOT SURFACE, else invisible)."""
+        if tier == DriftTier.STABLE:
+            return self.TEXT_DISABLED
+        return self.tier_color(tier)[1]
+```
+
+- [ ] **Step 5:** Run `pytest tests/test_spec3a_shell.py -v` → 6 PASS. Commit.
+```bash
+git add src/laser_trim_analyzer/gui/v6/__init__.py src/laser_trim_analyzer/gui/v6/theme.py tests/test_spec3a_shell.py
+git commit -m "feat(spec3a): ThemeManager tokens + tier_color/tier_dot_color/font helpers"
+```
+
+---
+
+## Task 2: Sidebar
+
+Pure view; emits `on_select(name)`; `set_active(name)` updates the stripe. Retirement-proof title.
+
+- [ ] **Step 1:** Append to `tests/test_spec3a_shell.py`:
+
+```python
+# ---- Task 2: Sidebar ------------------------------------------------------
+
+def test_sidebar_items_in_order():
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    assert Sidebar.ITEMS == [("triage", "Triage"), ("process", "Process"),
+                             ("model", "Model"), ("settings", "Settings")]
+
+
+def test_sidebar_emits_selection(tk_root):
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    got = []
+    sb = Sidebar(tk_root, on_select=got.append, theme=ThemeManager())
+    sb._row_frames["model"]._on_click()
+    assert got == ["model"]
+
+
+def test_sidebar_set_active(tk_root):
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    sb = Sidebar(tk_root, on_select=lambda _: None, theme=ThemeManager())
+    sb.set_active("triage"); assert sb._active_name == "triage"
+    sb.set_active("settings"); assert sb._active_name == "settings"
+    sb.set_active("bogus"); assert sb._active_name == "settings"  # unknown no-op
+```
+
+- [ ] **Step 2:** Run `-k sidebar` → fail.
+
+- [ ] **Step 3:** Create `src/laser_trim_analyzer/gui/v6/sidebar.py` (same structure as the original
+  draft; two changes: title text is `"Laser Trim Analyzer"` not `"Laser Trim V6"` since the name
+  outlives V6, and all fonts go through `theme.font(...)`):
+
+```python
+"""Spec 3a — Sidebar. Pure view: on_select(name) on click; set_active(name) from V6App."""
 from typing import Callable, Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
-
-SIDEBAR_WIDTH: int = 160
-ROW_HEIGHT: int = 40
-STRIPE_WIDTH: int = 3
+SIDEBAR_WIDTH = 160; ROW_HEIGHT = 40; STRIPE_WIDTH = 3
 
 
 class Sidebar(ctk.CTkFrame):
-    """Left navigation. 4 fixed items, active-stripe indicator."""
-
-    # Order matters: rendered top-to-bottom
     ITEMS: List[Tuple[str, str]] = [
-        ("triage", "Triage"),
-        ("process", "Process"),
-        ("model", "Model"),
-        ("settings", "Settings"),
+        ("triage", "Triage"), ("process", "Process"),
+        ("model", "Model"), ("settings", "Settings"),
     ]
 
-    def __init__(
-        self,
-        master,
-        on_select: Callable[[str], None],
-        theme: ThemeManager,
-        **kwargs,
-    ):
-        super().__init__(
-            master,
-            width=SIDEBAR_WIDTH,
-            fg_color=theme.SIDEBAR_BG,
-            corner_radius=0,
-            **kwargs,
-        )
+    def __init__(self, master, on_select: Callable[[str], None], theme: ThemeManager, **kwargs):
+        super().__init__(master, width=SIDEBAR_WIDTH, fg_color=theme.SIDEBAR_BG,
+                         corner_radius=0, **kwargs)
         self.theme = theme
         self._on_select = on_select
         self._row_frames: Dict[str, _SidebarRow] = {}
         self._active_name: Optional[str] = None
+        self.pack_propagate(False); self.grid_propagate(False)
 
-        # Keep the frame from expanding past SIDEBAR_WIDTH
-        self.pack_propagate(False)
-        self.grid_propagate(False)
+        title = ctk.CTkLabel(self, text="Laser Trim Analyzer", font=theme.font(theme.SIZE_CAPTION, "bold"),
+                             text_color=theme.TEXT_SECONDARY, anchor="w")
+        title.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_MD))
 
-        # Title label
-        title = ctk.CTkLabel(
-            self,
-            text="Laser Trim V6",
-            font=(theme.FONT_FAMILY[0], theme.SIZE_CAPTION, "bold"),
-            text_color=theme.TEXT_SECONDARY,
-            anchor="w",
-        )
-        title.pack(
-            side="top", fill="x",
-            padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_MD),
-        )
-
-        # Item rows
         for name, label in self.ITEMS:
-            row = _SidebarRow(
-                self,
-                name=name,
-                label=label,
-                theme=theme,
-                on_click=self._row_clicked,
-            )
+            row = _SidebarRow(self, name=name, label=label, theme=theme, on_click=self._on_select)
             row.pack(side="top", fill="x")
             self._row_frames[name] = row
 
-    def _row_clicked(self, name: str) -> None:
-        """Internal click router → app's on_select."""
-        self._on_select(name)
-
     def set_active(self, name: str) -> None:
-        """Mark the named row as active; clear others.  Unknown names no-op."""
-        if name not in self._row_frames:
-            return
-        if self._active_name == name:
+        if name not in self._row_frames or self._active_name == name:
             return
         if self._active_name and self._active_name in self._row_frames:
             self._row_frames[self._active_name].set_active(False)
@@ -501,255 +365,131 @@ class Sidebar(ctk.CTkFrame):
 
 
 class _SidebarRow(ctk.CTkFrame):
-    """One sidebar item.  Holds a left-side stripe + label."""
-
-    def __init__(
-        self,
-        master,
-        name: str,
-        label: str,
-        theme: ThemeManager,
-        on_click: Callable[[str], None],
-    ):
+    def __init__(self, master, name, label, theme: ThemeManager, on_click: Callable[[str], None]):
         super().__init__(master, height=ROW_HEIGHT, fg_color=theme.SIDEBAR_BG)
-        self.theme = theme
-        self.name = name
-        self._on_click_external = on_click
-        self._active = False
-
+        self.theme = theme; self.name = name; self._cb = on_click; self._active = False
         self.pack_propagate(False)
-
-        # Stripe on the left -- width=0 when inactive (effectively hidden)
-        self._stripe = ctk.CTkFrame(
-            self, width=0, fg_color=theme.SIDEBAR_STRIPE, corner_radius=0,
-        )
+        self._stripe = ctk.CTkFrame(self, width=0, fg_color=theme.SIDEBAR_STRIPE, corner_radius=0)
         self._stripe.pack(side="left", fill="y")
+        self._label = ctk.CTkLabel(self, text=label, font=theme.font(theme.SIZE_BODY),
+                                   text_color=theme.TEXT_SECONDARY, anchor="w")
+        self._label.pack(side="left", fill="both", expand=True, padx=(theme.SPACE_MD, theme.SPACE_SM))
+        for w in (self, self._label):
+            w.bind("<Button-1>", lambda e: self._on_click())
 
-        # Label fills remaining row
-        self._label = ctk.CTkLabel(
-            self,
-            text=label,
-            font=(theme.FONT_FAMILY[0], theme.SIZE_BODY),
-            text_color=theme.TEXT_SECONDARY,
-            anchor="w",
-        )
-        self._label.pack(
-            side="left", fill="both", expand=True,
-            padx=(theme.SPACE_MD, theme.SPACE_SM),
-        )
-
-        # Bind clicks on both the frame and the label
-        self.bind("<Button-1>", lambda e: self._on_click())
-        self._label.bind("<Button-1>", lambda e: self._on_click())
-
-    def _on_click(self) -> None:
-        self._on_click_external(self.name)
+    def _on_click(self): self._cb(self.name)
 
     def set_active(self, active: bool) -> None:
-        """Toggle the active visual state."""
         self._active = active
+        t = self.theme
         if active:
-            self._stripe.configure(width=STRIPE_WIDTH)
-            self.configure(fg_color=self.theme.SIDEBAR_ACTIVE)
-            self._label.configure(
-                text_color=self.theme.TEXT_PRIMARY,
-                font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_BODY, "bold"),
-            )
+            self._stripe.configure(width=STRIPE_WIDTH); self.configure(fg_color=t.SIDEBAR_ACTIVE)
+            self._label.configure(text_color=t.TEXT_PRIMARY, font=t.font(t.SIZE_BODY, "bold"))
         else:
-            self._stripe.configure(width=0)
-            self.configure(fg_color=self.theme.SIDEBAR_BG)
-            self._label.configure(
-                text_color=self.theme.TEXT_SECONDARY,
-                font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_BODY),
-            )
+            self._stripe.configure(width=0); self.configure(fg_color=t.SIDEBAR_BG)
+            self._label.configure(text_color=t.TEXT_SECONDARY, font=t.font(t.SIZE_BODY))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3a_shell.py -v -k sidebar`
-
-Expected: 4 PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/sidebar.py tests/test_spec3a_shell.py
-git commit -m "feat(spec3a): Sidebar widget with active-stripe indicator
-
-Fixed-width (160px) left navigation with 4 items (Triage / Process /
-Model / Settings).  Pure view -- emits on_select(name) on row click,
-never touches app state.  V6App calls set_active(name) to update
-visual state.  Defensive: unknown names no-op.
-
-Each row composed of a 0-or-3px stripe + label that swap font weight
-and bg color on active state."
-```
+- [ ] **Step 4:** `-k sidebar` → 3 PASS. Commit `feat(spec3a): Sidebar with active-stripe`.
 
 ---
 
-## Task 3: PageContainer + PageBase + _PageHeader
+## Task 3: PageContainer + PageBase + _PageHeader  ← contract fix (foundations §2.1)
 
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/page_container.py`
-- Create: `src/laser_trim_analyzer/gui/v6/page_base.py`
-- Test: `tests/test_spec3a_shell.py` (APPEND)
-
-- [ ] **Step 1: Append PageBase tests**
-
-Append to `tests/test_spec3a_shell.py`:
+- [ ] **Step 1:** Append tests. Note the corrected PageBase signature (`*, theme, app=None,
+  page_title=None`) and that `header_actions` takes the actions `parent`:
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 3: PageBase + PageContainer + _PageHeader
-# ---------------------------------------------------------------------------
+# ---- Task 3: PageBase + PageContainer -------------------------------------
 
-
-def test_page_base_raises_when_build_content_not_overridden(tk_root):
-    """A subclass must implement build_content() or PageBase raises."""
+def test_page_base_requires_build_content(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
-    class _IncompletePage(PageBase):
-        page_title = "Incomplete"
-        # Intentionally does NOT override build_content
-
+    class _Incomplete(PageBase):
+        page_title = "X"
+    import pytest
     with pytest.raises(NotImplementedError):
-        _IncompletePage(tk_root, theme=ThemeManager())
+        _Incomplete(tk_root, theme=ThemeManager())
 
 
-def test_page_base_subclass_runs_build_content(tk_root):
-    """PageBase calls subclass build_content(parent) during construction."""
+def test_page_base_runs_build_content_and_stores_app(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    calls = []
 
-    calls: list[bool] = []
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): calls.append(self.app)
 
-    class _TestPage(PageBase):
-        page_title = "Test"
-
-        def build_content(self, parent):
-            calls.append(True)
-
-    _TestPage(tk_root, theme=ThemeManager())
-    assert calls == [True]
+    sentinel = object()
+    p = _P(tk_root, theme=ThemeManager(), app=sentinel)
+    assert calls == [sentinel]
+    assert p.app is sentinel
 
 
-def test_page_base_lifecycle_hooks_default_to_noop(tk_root):
-    """on_show / on_hide default no-op; subclasses don't have to override."""
+def test_page_base_header_actions_receives_parent(tk_root):
+    """FIX C5/C6: header_actions(parent) builds widgets WITH that parent (no reparenting)."""
+    import customtkinter as ctk
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    seen = {}
 
-    class _TestPage(PageBase):
-        page_title = "Test"
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+        def header_actions(self, parent):
+            btn = ctk.CTkButton(parent, text="Go")
+            btn.pack(side="right")
+            seen["parent_is_actions_frame"] = btn.master is parent
 
-        def build_content(self, parent):
-            pass
-
-    page = _TestPage(tk_root, theme=ThemeManager())
-    # No raise expected
-    page.on_show()
-    page.on_hide()
+    _P(tk_root, theme=ThemeManager())
+    assert seen["parent_is_actions_frame"] is True
 
 
-def test_page_base_lifecycle_hooks_call_subclass_override(tk_root):
-    """When a subclass overrides on_show, it's invoked."""
+def test_page_base_lifecycle_hooks(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    ev = []
 
-    shown: list[bool] = []
-    hidden: list[bool] = []
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+        def on_show(self): ev.append("show")
+        def on_hide(self): ev.append("hide")
 
-    class _TestPage(PageBase):
-        page_title = "Test"
-
-        def build_content(self, parent):
-            pass
-
-        def on_show(self):
-            shown.append(True)
-
-        def on_hide(self):
-            hidden.append(True)
-
-    page = _TestPage(tk_root, theme=ThemeManager())
-    page.on_show()
-    page.on_hide()
-    assert shown == [True]
-    assert hidden == [True]
+    p = _P(tk_root, theme=ThemeManager())
+    p.on_show(); p.on_hide()
+    assert ev == ["show", "hide"]
 
 
-def test_page_container_holds_named_pages(tk_root):
-    """PageContainer.add_page registers a page by name; get_page retrieves."""
+def test_page_container_add_get_show(tk_root):
     from laser_trim_analyzer.gui.v6.page_base import PageBase
     from laser_trim_analyzer.gui.v6.page_container import PageContainer
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    theme = ThemeManager(); ev = []
 
-    theme = ThemeManager()
+    class _P(PageBase):
+        def build_content(self, parent): pass
+        def on_show(self): ev.append(f"show:{self.page_title}")
+        def on_hide(self): ev.append(f"hide:{self.page_title}")
 
-    class _DummyPage(PageBase):
-        page_title = "Dummy"
-
-        def build_content(self, parent):
-            pass
-
-    container = PageContainer(tk_root, theme=theme)
-    p = _DummyPage(container, theme=theme)
-    container.add_page("dummy", p)
-    assert container.get_page("dummy") is p
-
-
-def test_page_container_show_raises_page_with_lifecycle(tk_root):
-    """show(name) calls on_hide on current page, raises new page, calls on_show."""
-    from laser_trim_analyzer.gui.v6.page_base import PageBase
-    from laser_trim_analyzer.gui.v6.page_container import PageContainer
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-    theme = ThemeManager()
-    events: list[str] = []
-
-    class _DummyPage(PageBase):
-        def __init__(self, master, theme, name):
-            self._name = name
-            super().__init__(master, theme=theme)
-            self.page_title = name
-
-        def build_content(self, parent):
-            pass
-
-        def on_show(self):
-            events.append(f"show:{self._name}")
-
-        def on_hide(self):
-            events.append(f"hide:{self._name}")
-
-    container = PageContainer(tk_root, theme=theme)
-    p1 = _DummyPage(container, theme=theme, name="A")
-    p2 = _DummyPage(container, theme=theme, name="B")
-    container.add_page("A", p1)
-    container.add_page("B", p2)
-
-    container.show("A")
-    container.show("B")
-    assert events == ["show:A", "hide:A", "show:B"]
+    c = PageContainer(tk_root, theme=theme)
+    a = _P(c, theme=theme, page_title="A"); b = _P(c, theme=theme, page_title="B")
+    c.add_page("A", a); c.add_page("B", b)
+    assert c.get_page("A") is a
+    c.show("A"); c.show("B")
+    assert ev == ["show:A", "hide:A", "show:B"]
+    c.show("missing"); assert c.current_page == "B"  # unknown no-op
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** `-k "page_base or page_container"` → fail.
 
-Run: `pytest tests/test_spec3a_shell.py -v -k "page_base or page_container"`
-
-Expected: 6 FAILs — modules don't exist.
-
-- [ ] **Step 3: Create the PageContainer module**
-
-Create `src/laser_trim_analyzer/gui/v6/page_container.py`:
+- [ ] **Step 3:** Create `src/laser_trim_analyzer/gui/v6/page_container.py` (unchanged from the original
+  draft — it was correct):
 
 ```python
-"""Spec 3a — PageContainer.
-
-Stacked-frame container.  Each page (PageBase subclass) is added once at
-app start; switching pages calls tkraise() + the page's lifecycle hooks.
-Pages are never destroyed -- their internal state persists across switches.
-"""
+"""Spec 3a — PageContainer: stacked frames, tkraise + lifecycle hooks, no destroy on switch."""
 from typing import Dict, Optional
 
 import customtkinter as ctk
@@ -759,36 +499,23 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
 class PageContainer(ctk.CTkFrame):
-    """Stacked-frame container for PageBase subclasses."""
-
     def __init__(self, master, theme: ThemeManager, **kwargs):
-        super().__init__(
-            master, fg_color=theme.SURFACE, corner_radius=0, **kwargs,
-        )
+        super().__init__(master, fg_color=theme.SURFACE, corner_radius=0, **kwargs)
         self.theme = theme
         self._pages: Dict[str, PageBase] = {}
         self._current: Optional[str] = None
-
-    def add_page(self, name: str, page: PageBase) -> None:
-        """Register a page by name.  Page must be a child of this container."""
-        self._pages[name] = page
-        # Stack all pages at the same grid cell; tkraise() decides visibility
-        page.grid(row=0, column=0, sticky="nsew")
-        # Configure the grid cell once
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
+    def add_page(self, name: str, page: PageBase) -> None:
+        self._pages[name] = page
+        page.grid(row=0, column=0, sticky="nsew")
+
     def get_page(self, name: str) -> Optional[PageBase]:
-        """Look up a page by name.  Returns None if not registered."""
         return self._pages.get(name)
 
     def show(self, name: str) -> None:
-        """Switch to the named page.  Calls on_hide on the current page,
-        tkraise + on_show on the new page.  Unknown names no-op.
-        """
-        if name not in self._pages:
-            return
-        if self._current == name:
+        if name not in self._pages or self._current == name:
             return
         if self._current and self._current in self._pages:
             self._pages[self._current].on_hide()
@@ -801,557 +528,291 @@ class PageContainer(ctk.CTkFrame):
         return self._current
 ```
 
-- [ ] **Step 4: Create the PageBase module**
-
-Create `src/laser_trim_analyzer/gui/v6/page_base.py`:
-
-```python
-"""Spec 3a — PageBase + _PageHeader.
-
-All V6 pages inherit from PageBase.  PageBase builds the header strip
-(page title + optional per-page action widgets) and a content frame the
-subclass owns entirely.  Subclasses set ``page_title`` (class attribute),
-override ``build_content(parent)``, and optionally ``header_actions()``,
-``on_show()``, ``on_hide()``.
-"""
-from typing import List, Optional
-
-import customtkinter as ctk
-
-from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-
-HEADER_HEIGHT: int = 40
-
-
-class PageBase(ctk.CTkFrame):
-    """Base for all V6 pages.
-
-    Subclass contract:
-      * Set class attribute ``page_title``.
-      * Override ``build_content(parent)`` — required; raises if missing.
-      * Optionally override ``header_actions()`` to add per-page buttons.
-      * Optionally override ``on_show()`` / ``on_hide()`` for refresh.
-    """
-    page_title: str = "Untitled"
-
-    def __init__(self, master, theme: ThemeManager, **kwargs):
-        super().__init__(
-            master, fg_color=theme.SURFACE, corner_radius=0, **kwargs,
-        )
-        self.theme = theme
-        self._build_chrome()
-        self.build_content(self._content)
-
-    # ---- Public interface ------------------------------------------------
-
-    def build_content(self, parent: ctk.CTkFrame) -> None:
-        """Build the page's content widgets inside `parent`.  Required override."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must override build_content(parent)"
-        )
-
-    def header_actions(self) -> List[ctk.CTkBaseClass]:
-        """Optional widgets the header strip renders on the right.
-
-        Default empty.  Subclass can override -- e.g. Settings adds the
-        "Retrain" button, Model adds the model-selector + window dropdown.
-        """
-        return []
-
-    def on_show(self) -> None:
-        """Called when the page becomes visible.  Default no-op."""
-        pass
-
-    def on_hide(self) -> None:
-        """Called when another page is about to be shown.  Default no-op."""
-        pass
-
-    # ---- Internal --------------------------------------------------------
-
-    def _build_chrome(self) -> None:
-        self._header = _PageHeader(
-            self,
-            theme=self.theme,
-            title=self.page_title,
-            actions=self.header_actions(),
-        )
-        self._header.pack(side="top", fill="x")
-
-        # Divider line under the header
-        divider = ctk.CTkFrame(
-            self, height=1, fg_color=self.theme.DIVIDER, corner_radius=0,
-        )
-        divider.pack(side="top", fill="x")
-
-        # Content region the subclass owns
-        self._content = ctk.CTkFrame(self, fg_color="transparent")
-        self._content.pack(
-            fill="both", expand=True,
-            padx=self.theme.SPACE_LG,
-            pady=self.theme.SPACE_MD,
-        )
-
-
-class _PageHeader(ctk.CTkFrame):
-    """Header strip: page title + right-anchored action widgets."""
-
-    def __init__(
-        self,
-        master,
-        theme: ThemeManager,
-        title: str,
-        actions: Optional[List[ctk.CTkBaseClass]] = None,
-    ):
-        super().__init__(
-            master, height=HEADER_HEIGHT, fg_color=theme.SURFACE, corner_radius=0,
-        )
-        self.theme = theme
-        self.pack_propagate(False)
-
-        # Title (left)
-        title_label = ctk.CTkLabel(
-            self,
-            text=title,
-            font=(theme.FONT_FAMILY[0], theme.SIZE_TITLE, "bold"),
-            text_color=theme.TEXT_PRIMARY,
-            anchor="w",
-        )
-        title_label.pack(
-            side="left", fill="y",
-            padx=(theme.SPACE_LG, theme.SPACE_MD),
-        )
-
-        # Actions (right) -- pack in reverse so leftmost element wins visual order
-        if actions:
-            actions_frame = ctk.CTkFrame(self, fg_color="transparent")
-            actions_frame.pack(
-                side="right", fill="y",
-                padx=(theme.SPACE_MD, theme.SPACE_LG),
-            )
-            for widget in actions:
-                # Reparent the action widget into the actions_frame
-                widget.master = actions_frame
-                widget.pack(side="right", padx=theme.SPACE_XS)
-```
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3a_shell.py -v -k "page_base or page_container"`
-
-Expected: 6 PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/page_base.py src/laser_trim_analyzer/gui/v6/page_container.py tests/test_spec3a_shell.py
-git commit -m "feat(spec3a): PageBase + _PageHeader + PageContainer
-
-PageBase contract: subclass sets page_title, overrides build_content,
-optionally overrides header_actions / on_show / on_hide.  Base wires
-the header strip + divider + content region.
-
-PageContainer is a stacked-frame holder: add_page registers a page,
-show(name) does tkraise + lifecycle hooks (on_hide on outgoing, on_show
-on incoming).  Pages never destroyed -- state persists across switches."
-```
-
----
-
-## Task 4: V6App root + 4 placeholder pages
-
-**Files:**
-- Create: `src/laser_trim_analyzer/gui/v6/app.py`
-- Test: `tests/test_spec3a_shell.py` (APPEND)
-
-- [ ] **Step 1: Append V6App tests**
-
-Append to `tests/test_spec3a_shell.py`:
+- [ ] **Step 4:** Create `src/laser_trim_analyzer/gui/v6/page_base.py` — **the corrected contract**
+  (foundations §2.1). Note `_PageHeader` exposes `actions_frame` and PageBase calls
+  `self.header_actions(self._header.actions_frame)`; no `widget.master =` anywhere:
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 4: V6App + placeholder pages
-# ---------------------------------------------------------------------------
+"""Spec 3a — PageBase + _PageHeader. Foundations §2.1.
 
-
-def test_v6app_starts_on_triage_page(tmp_path, monkeypatch):
-    """V6App's initial page is Triage."""
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    # Use a tmp_path DB so the app's DB init doesn't touch real data
-    cfg = Config()
-    cfg.database.path = tmp_path / "v6.db"
-
-    app = V6App(cfg)
-    try:
-        app.withdraw()  # hide
-        assert app.page_container.current_page == "triage"
-        assert app.sidebar._active_name == "triage"
-    finally:
-        app.destroy()
-
-
-def test_v6app_show_page_routes_through_container(tmp_path):
-    """V6App.show_page(name) delegates to PageContainer.show and updates sidebar."""
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "v6.db"
-
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        app.show_page("settings")
-        assert app.page_container.current_page == "settings"
-        assert app.sidebar._active_name == "settings"
-    finally:
-        app.destroy()
-
-
-def test_v6app_show_page_unknown_no_op(tmp_path):
-    """Unknown page name doesn't change state."""
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "v6.db"
-
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        before = app.page_container.current_page
-        app.show_page("nonexistent")
-        assert app.page_container.current_page == before
-    finally:
-        app.destroy()
-
-
-def test_v6app_has_all_four_placeholder_pages(tmp_path):
-    """V6App registers exactly the 4 spec'd pages."""
-    from laser_trim_analyzer.config import Config
-    from laser_trim_analyzer.gui.v6.app import V6App
-
-    cfg = Config()
-    cfg.database.path = tmp_path / "v6.db"
-
-    app = V6App(cfg)
-    try:
-        app.withdraw()
-        names = set(app.page_container._pages.keys())
-        assert names == {"triage", "process", "model", "settings"}
-    finally:
-        app.destroy()
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `pytest tests/test_spec3a_shell.py -v -k v6app`
-
-Expected: 4 FAILs — V6App doesn't exist.
-
-- [ ] **Step 3: Create the V6App + placeholders**
-
-Create `src/laser_trim_analyzer/gui/v6/app.py`:
-
-```python
-"""Spec 3a — V6App root + 4 placeholder pages.
-
-The placeholders just render a centered "coming in Spec 3X" message
-so the shell + nav + theme can be exercised end-to-end before any
-real page content lands.  Spec 3b/3c/3d/3e replace each placeholder
-with the real page in turn.
+Subclass contract:
+  * class attr page_title (or pass page_title=...)
+  * build_content(parent)  — REQUIRED
+  * header_actions(parent)  — OPTIONAL; build widgets WITH `parent` and pack them right
+  * on_show() / on_hide()   — OPTIONAL
+PageBase stores `self.app` (V6App | None) and `self.theme`, and offers safe_after().
 """
 from typing import Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+HEADER_HEIGHT = 44
+
+
+class PageBase(ctk.CTkFrame):
+    page_title: str = "Untitled"
+
+    def __init__(self, master, *, theme: ThemeManager, app=None,
+                 page_title: Optional[str] = None, **kwargs):
+        super().__init__(master, fg_color=theme.SURFACE, corner_radius=0, **kwargs)
+        self.theme = theme
+        self.app = app
+        if page_title is not None:
+            self.page_title = page_title
+        self._build_chrome()
+        self.build_content(self._content)
+
+    # ---- subclass interface ----
+    def build_content(self, parent) -> None:
+        raise NotImplementedError(f"{type(self).__name__} must override build_content(parent)")
+
+    def header_actions(self, parent) -> None:
+        """Optional. Construct action widgets with `parent` as master; pack side='right'."""
+        return None
+
+    def on_show(self) -> None: pass
+    def on_hide(self) -> None: pass
+
+    # ---- thread-safe UI update (foundations §2.4) ----
+    def safe_after(self, fn, delay: int = 0) -> None:
+        try:
+            if self.winfo_exists():
+                self.after(delay, lambda: fn() if self.winfo_exists() else None)
+        except Exception:
+            pass
+
+    # ---- internal ----
+    def _build_chrome(self) -> None:
+        self._header = _PageHeader(self, theme=self.theme, title=self.page_title)
+        self._header.pack(side="top", fill="x")
+        ctk.CTkFrame(self, height=1, fg_color=self.theme.DIVIDER, corner_radius=0)\
+            .pack(side="top", fill="x")
+        self._content = ctk.CTkFrame(self, fg_color="transparent")
+        self._content.pack(fill="both", expand=True,
+                           padx=self.theme.SPACE_LG, pady=self.theme.SPACE_MD)
+        # Build header actions into the header's actions frame (correct parent).
+        self.header_actions(self._header.actions_frame)
+
+
+class _PageHeader(ctk.CTkFrame):
+    def __init__(self, master, theme: ThemeManager, title: str):
+        super().__init__(master, height=HEADER_HEIGHT, fg_color=theme.SURFACE, corner_radius=0)
+        self.theme = theme
+        self.pack_propagate(False)
+        ctk.CTkLabel(self, text=title, font=theme.font(theme.SIZE_TITLE, "bold"),
+                     text_color=theme.TEXT_PRIMARY, anchor="w")\
+            .pack(side="left", fill="y", padx=(theme.SPACE_LG, theme.SPACE_MD))
+        # Right-aligned actions frame; subclasses pack widgets here.
+        self.actions_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.actions_frame.pack(side="right", fill="y", padx=(theme.SPACE_MD, theme.SPACE_LG))
+```
+
+- [ ] **Step 5:** `-k "page_base or page_container"` → PASS. Commit `feat(spec3a): PageBase
+  (header_actions(parent), app, safe_after) + PageContainer`.
+
+---
+
+## Task 4: V6App + placeholder pages  ← appearance-mode + db + auto-train fixes
+
+- [ ] **Step 1:** Append tests (use `make_app`, never a second root):
+
+```python
+# ---- Task 4: V6App --------------------------------------------------------
+
+def test_v6app_starts_on_triage(make_app):
+    app = make_app()
+    assert app.page_container.current_page == "triage"
+    assert app.sidebar._active_name == "triage"
+
+
+def test_v6app_show_page(make_app):
+    app = make_app()
+    app.show_page("settings")
+    assert app.page_container.current_page == "settings"
+    assert app.sidebar._active_name == "settings"
+
+
+def test_v6app_show_unknown_no_op(make_app):
+    app = make_app()
+    before = app.page_container.current_page
+    app.show_page("nope")
+    assert app.page_container.current_page == before
+
+
+def test_v6app_has_four_pages(make_app):
+    app = make_app()
+    assert set(app.page_container._pages) == {"triage", "process", "model", "settings"}
+
+
+def test_v6app_auto_train_off_does_not_offer(make_app):
+    """make_app passes auto_train_on_first_run=False → no first-run hook scheduled."""
+    app = make_app()
+    assert app._auto_train_on_first_run is False
+```
+
+- [ ] **Step 2:** `-k v6app` → fail.
+
+- [ ] **Step 3:** Create `src/laser_trim_analyzer/gui/v6/app.py` — appearance mode moved into
+  `__init__` (M5), shared DB + injection + auto-train flag (foundations §2.2). Routing-hint methods are
+  stubbed here and fleshed out in 3b/3c:
+
+```python
+"""Spec 3a — V6App root + placeholder pages. Foundations §2.2."""
+from typing import Optional, Tuple
+
+import customtkinter as ctk
+
 from laser_trim_analyzer.config import Config
-from laser_trim_analyzer.database.manager import DatabaseManager
+from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
-# CustomTkinter global appearance: force dark so the theme constants control
-# everything.  V6 has a single dark theme by design.
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
-
-
 class V6App(ctk.CTk):
-    """Root window for V6.
-
-    Layout: Sidebar on left (fixed-width), PageContainer fills remainder.
-    Initial page is Triage.  Pages are constructed once at startup and
-    persist across navigation.
-    """
-
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, db=None, auto_train_on_first_run: bool = True):
         super().__init__()
+        # Appearance set HERE (not at import) so importing this module never mutates
+        # global CTk state for V5 or test runs.
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
         self.config = config
         self.theme = ThemeManager()
-
-        # DB connection -- created here so pages can pass it to API calls
-        self.db = DatabaseManager(config.database.path)
+        # Share ONE DatabaseManager with the rest of the app. Production: db is None ->
+        # get_database() (same singleton Processor uses). Tests inject an isolated one.
+        self.db = db if db is not None else get_database()
+        self._model_route: Optional[Tuple[str, Optional[str]]] = None
+        self._auto_train_on_first_run = auto_train_on_first_run
 
         self._setup_window()
         self._build_layout()
         self._build_pages()
-
         self.show_page("triage")
-
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        # First-run auto-train hook is registered in Spec 3d. Guarded by the flag.
 
-    # ---- Public navigation API -------------------------------------------
-
+    # ---- navigation ----
     def show_page(self, name: str) -> None:
-        """Switch to the named page and update the sidebar.
-
-        Unknown names no-op (defensive).
-        """
         if self.page_container.get_page(name) is None:
             return
         self.page_container.show(name)
         self.sidebar.set_active(name)
 
-    # ---- Setup -----------------------------------------------------------
+    # ---- routing hint (3b adds consume_model_route, 3c adds consume_model_route_full) ----
+    def set_model_route(self, model: str, focus_metric: Optional[str] = None) -> None:
+        self._model_route = (model, focus_metric)
 
+    # ---- setup ----
     def _setup_window(self) -> None:
-        self.title("Laser Trim Analyzer V6")
-        self.geometry(
-            f"{self.config.gui.window_width}x{self.config.gui.window_height}"
-        )
-        self.minsize(900, 600)
+        self.title("Laser Trim Analyzer")
+        self.geometry(f"{self.config.gui.window_width}x{self.config.gui.window_height}")
+        self.minsize(960, 640)
         self.configure(fg_color=self.theme.BG)
-
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
     def _build_layout(self) -> None:
-        # Sidebar (left, fixed-width)
-        self.sidebar = Sidebar(
-            self,
-            on_select=self.show_page,
-            theme=self.theme,
-        )
+        self.sidebar = Sidebar(self, on_select=self.show_page, theme=self.theme)
         self.sidebar.grid(row=0, column=0, sticky="nsw")
-
-        # Page container (right, flex)
         self.page_container = PageContainer(self, theme=self.theme)
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        """Construct all 4 pages once.  Placeholders for 3a; replaced in
-        3b/3c/3d/3e."""
-        for name, label, next_spec in (
-            ("triage", "Triage", "3b"),
-            ("process", "Process", "3e"),
-            ("model", "Model", "3c"),
-            ("settings", "Settings", "3d"),
-        ):
-            page = _PlaceholderPage(
-                self.page_container,
-                theme=self.theme,
-                page_title=label,
-                next_spec=next_spec,
+        # All placeholders for 3a; each sub-spec replaces one with the real page.
+        for name, label, nxt in (("triage", "Triage", "3b"), ("process", "Process", "3e"),
+                                 ("model", "Model", "3c"), ("settings", "Settings", "3d")):
+            self.page_container.add_page(
+                name,
+                _PlaceholderPage(self.page_container, theme=self.theme, app=self,
+                                 page_title=label, next_spec=nxt),
             )
-            self.page_container.add_page(name, page)
 
     def _on_closing(self) -> None:
         self.destroy()
 
     def run(self) -> None:
-        """Start the main loop."""
         self.mainloop()
 
 
 class _PlaceholderPage(PageBase):
-    """Stand-in page rendered before its real content lands in 3b/3c/3d/3e."""
-
-    def __init__(self, master, theme, page_title, next_spec):
-        # PageBase reads page_title as a class attribute, but we want it
-        # instance-level here.  Set it before super().__init__ which calls
-        # _build_chrome which reads page_title.
-        self.page_title = page_title
+    def __init__(self, master, *, theme, app, page_title, next_spec):
         self._next_spec = next_spec
-        super().__init__(master, theme=theme)
+        super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def build_content(self, parent):
-        message = ctk.CTkLabel(
-            parent,
-            text=f"{self.page_title} page — coming in Spec {self._next_spec}.",
-            font=(self.theme.FONT_FAMILY[0], self.theme.SIZE_HEADING),
-            text_color=self.theme.TEXT_SECONDARY,
-        )
-        message.pack(expand=True)
+        ctk.CTkLabel(parent, text=f"{self.page_title} — coming in Spec {self._next_spec}.",
+                     font=self.theme.font(self.theme.SIZE_HEADING),
+                     text_color=self.theme.TEXT_SECONDARY).pack(expand=True)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_spec3a_shell.py -v -k v6app`
-
-Expected: 4 PASS.
-
-- [ ] **Step 5: Run the entire test file**
-
-Run: `pytest tests/test_spec3a_shell.py -v`
-
-Expected: 20 PASS (T1: 6 + T2: 4 + T3: 6 + T4: 4).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/laser_trim_analyzer/gui/v6/app.py tests/test_spec3a_shell.py
-git commit -m "feat(spec3a): V6App root + 4 placeholder pages
-
-V6App: ctk.CTk root with Sidebar (left, fixed-width) + PageContainer
-(right, flex).  Initial page is Triage.  show_page(name) delegates to
-the container and updates sidebar.  Pages constructed once at startup;
-no destroy on switch -- state persists.
-
-Each of the 4 placeholder pages renders 'coming in Spec 3X' so the
-shell can be visually verified end-to-end before real content lands."
-```
+- [ ] **Step 4:** `-k v6app` → PASS. Then full file: `pytest tests/test_spec3a_shell.py -v` → all PASS.
+  Commit `feat(spec3a): V6App (dark-mode in __init__, shared/injectable db, auto-train flag) + placeholders`.
 
 ---
 
-## Task 5: `--v6` CLI flag in `__main__.py`
+## Task 5: `--v6` CLI flag
 
-**Files:**
-- Modify: `src/laser_trim_analyzer/__main__.py`
-- Test: `tests/test_spec3a_shell.py` (APPEND)
-
-- [ ] **Step 1: Append CLI-flag test**
-
-Append to `tests/test_spec3a_shell.py`:
+- [ ] **Step 1:** Append tests (these monkeypatch both app classes and `sys.argv`; unchanged in intent
+  from the original, but assert against the corrected import sites):
 
 ```python
-# ---------------------------------------------------------------------------
-# Task 5: --v6 CLI flag
-# ---------------------------------------------------------------------------
+# ---- Task 5: --v6 flag ----------------------------------------------------
 
-
-def test_main_module_recognizes_v6_flag(monkeypatch, tmp_path):
-    """When sys.argv includes --v6, main() instantiates V6App not the
-    legacy LaserTrimApp.
-    """
+def test_main_v6_flag_uses_v6app(monkeypatch, tmp_path):
     import sys
     from unittest.mock import MagicMock
-
-    # Mock both app classes so we don't actually run mainloop
-    fake_v5 = MagicMock(name="LaserTrimApp")
-    fake_v6 = MagicMock(name="V6App")
-
-    # Patch the two app imports at their source modules
     import laser_trim_analyzer.app as v5_mod
     import laser_trim_analyzer.gui.v6.app as v6_mod
+    fake_v5, fake_v6 = MagicMock(), MagicMock()
     monkeypatch.setattr(v5_mod, "LaserTrimApp", fake_v5)
     monkeypatch.setattr(v6_mod, "V6App", fake_v6)
-
-    # Patch sys.argv to include --v6
     monkeypatch.setattr(sys, "argv", ["laser_trim_analyzer", "--v6"])
-
-    # Also patch get_config so we don't depend on filesystem state
     from laser_trim_analyzer.config import Config
-    cfg = Config()
-    cfg.database.path = tmp_path / "test.db"
-    import laser_trim_analyzer.config as config_mod
-    monkeypatch.setattr(config_mod, "get_config", lambda: cfg)
-
-    # Run main()
+    cfg = Config(); cfg.database.path = tmp_path / "t.db"
+    import laser_trim_analyzer.config as cmod
+    monkeypatch.setattr(cmod, "get_config", lambda: cfg)
     from laser_trim_analyzer.__main__ import main
     main()
-
-    # V6App should have been instantiated, not V5
-    fake_v6.assert_called_once()
-    fake_v5.assert_not_called()
+    fake_v6.assert_called_once(); fake_v5.assert_not_called()
 
 
-def test_main_module_default_uses_v5_app(monkeypatch, tmp_path):
-    """When --v6 is absent, main() instantiates the legacy LaserTrimApp."""
+def test_main_default_uses_v5(monkeypatch, tmp_path):
     import sys
     from unittest.mock import MagicMock
-
-    fake_v5 = MagicMock(name="LaserTrimApp")
-    fake_v6 = MagicMock(name="V6App")
-
     import laser_trim_analyzer.app as v5_mod
     import laser_trim_analyzer.gui.v6.app as v6_mod
+    fake_v5, fake_v6 = MagicMock(), MagicMock()
     monkeypatch.setattr(v5_mod, "LaserTrimApp", fake_v5)
     monkeypatch.setattr(v6_mod, "V6App", fake_v6)
-
     monkeypatch.setattr(sys, "argv", ["laser_trim_analyzer"])
-
     from laser_trim_analyzer.config import Config
-    cfg = Config()
-    cfg.database.path = tmp_path / "test.db"
-    import laser_trim_analyzer.config as config_mod
-    monkeypatch.setattr(config_mod, "get_config", lambda: cfg)
-
+    cfg = Config(); cfg.database.path = tmp_path / "t.db"
+    import laser_trim_analyzer.config as cmod
+    monkeypatch.setattr(cmod, "get_config", lambda: cfg)
     from laser_trim_analyzer.__main__ import main
     main()
-
-    fake_v5.assert_called_once()
-    fake_v6.assert_not_called()
+    fake_v5.assert_called_once(); fake_v6.assert_not_called()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2:** `-k "v6_flag or default_uses_v5"` → fail.
 
-Run: `pytest tests/test_spec3a_shell.py -v -k "cli or main_module"`
-
-Expected: 2 FAILs — `__main__.py` doesn't yet check for `--v6`.
-
-- [ ] **Step 3: Update `__main__.py`**
-
-In `src/laser_trim_analyzer/__main__.py`, find the `main()` function (around line 49). The current shape is:
+- [ ] **Step 3:** Edit `src/laser_trim_analyzer/__main__.py` `main()` to branch on `--v6` (import the
+  chosen app lazily so V5 never imports V6 and vice-versa):
 
 ```python
 def main():
-    """Main entry point for v3."""
-    logger.info("Starting Laser Trim Analyzer v5...")
-
-    try:
-        from laser_trim_analyzer.app import LaserTrimApp
-        from laser_trim_analyzer.config import get_config
-
-        config = get_config()
-        logger.info(f"Config loaded - Database: {config.database.path}")
-        config.database.ensure_directory()
-        app = LaserTrimApp(config)
-        app.run()
-    except ...:
-        ...
-```
-
-Replace the body so it branches on `--v6`:
-
-```python
-def main():
-    """Main entry point.
-
-    By default, launches the legacy V5 UI (LaserTrimApp).
-    Pass --v6 to launch the V6 UI shell (Spec 3a+).
-    """
+    """Entry point. Default = V5 LaserTrimApp; --v6 = V6App (Spec 3a+)."""
     use_v6 = "--v6" in sys.argv
-    logger.info(
-        f"Starting Laser Trim Analyzer v5... (UI: {'V6' if use_v6 else 'V5'})"
-    )
-
+    logger.info(f"Starting Laser Trim Analyzer (UI: {'V6' if use_v6 else 'V5'})...")
     try:
-        # Import here to avoid circular imports
         from laser_trim_analyzer.config import get_config
-
-        # Load configuration
         config = get_config()
         logger.info(f"Config loaded - Database: {config.database.path}")
-
-        # Ensure database directory exists
         config.database.ensure_directory()
-
-        # Create and run the application
         if use_v6:
             from laser_trim_analyzer.gui.v6.app import V6App
             app = V6App(config)
@@ -1359,7 +820,6 @@ def main():
             from laser_trim_analyzer.app import LaserTrimApp
             app = LaserTrimApp(config)
         app.run()
-
     except ImportError as e:
         logger.error(f"Import error: {e}")
         logger.error("Make sure all dependencies are installed: pip install -e .")
@@ -1369,68 +829,22 @@ def main():
         sys.exit(1)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4:** `-k "v6_flag or default_uses_v5"` → PASS. Full file → all PASS.
 
-Run: `pytest tests/test_spec3a_shell.py -v -k "cli or main_module"`
+- [ ] **Step 5:** Regression sweep (foundations §7) → 0 fail.
 
-Expected: 2 PASS.
-
-- [ ] **Step 5: Run full test file**
-
-Run: `pytest tests/test_spec3a_shell.py -v`
-
-Expected: 22 PASS total.
-
-- [ ] **Step 6: Run full regression sweep**
-
-Run:
-```
-pytest tests/test_spec1_untrimmed_sigma.py tests/test_log_derived_bugfixes_2026_05_30.py tests/test_5_8_2026_bugfixes.py tests/test_spec2_multi_metric_drift.py tests/test_spec3a_shell.py -v 2>&1 | tail -5
-```
-
-Expected: all PASS (~113 tests). Zero failures.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/laser_trim_analyzer/__main__.py tests/test_spec3a_shell.py
-git commit -m "feat(spec3a): --v6 CLI flag selects V6App
-
-When --v6 is present in sys.argv, main() launches V6App from
-gui/v6/app.py.  Without the flag, the legacy LaserTrimApp continues
-to run unchanged.
-
-This is the development-time switch for Specs 3a-3e.  Spec 3e removes
-the flag and promotes V6 to the default."
-```
+- [ ] **Step 6:** Commit `feat(spec3a): --v6 flag selects V6App (V5 default unchanged)`.
 
 ---
 
 ## Post-implementation verification
 
-Run the V6 app from the source tree to confirm it actually launches and is usable:
-
 ```
-python -m laser_trim_analyzer --v6
-```
-
-Click each sidebar item. Each should:
-1. Highlight the active row with a blue stripe and brighter background
-2. Switch the page content to "{Page} — coming in Spec 3X"
-3. Sidebar should be fixed-width on the left; page should fill the rest
-
-Run again without the flag to confirm V5 still works:
-
-```
-python -m laser_trim_analyzer
+python -m laser_trim_analyzer --v6     # click each item: stripe + page swap; sidebar fixed-width left
+python -m laser_trim_analyzer          # V5 identical to before
 ```
 
-V5 should look identical to before any V6 work landed.
-
-## Out-of-scope reminders
-
-- **Do not** add real page content — that's 3b/3c/3d/3e.
-- **Do not** delete or modify the V5 `gui/app.py` or any `gui/pages/*` files.
-- **Do not** wire any DB queries into the placeholder pages.
-- **Do not** add animation, mouse-hover effects, or theme toggle.
-- **Do not** add the first-startup auto-train hook (that's Spec 3d work).
+## Out of scope (3a)
+- No real page content (3b–3e), no DB queries in placeholders, no first-startup auto-train (3d), no
+  deletion/modification of V5 GUI (Graduation, gated, in 3e).
+</content>
