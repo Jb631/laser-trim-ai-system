@@ -606,10 +606,13 @@ class Processor:
                 file_paths, progress_callback, incremental, summary
             )
 
-        # Finalize summary
+        # Finalize summary. Yield is over the GRADEABLE population (files that
+        # actually have a trim result); UNTRIMMED test-sweeps are excluded from
+        # the denominator so the rate isn't diluted.
         summary.end_time = datetime.now()
-        if summary.processed > 0:
-            summary.pass_rate = (summary.passed / summary.processed) * 100
+        gradeable = summary.gradeable_count
+        if gradeable > 0:
+            summary.pass_rate = (summary.passed / gradeable) * 100
 
         logger.info(f"Batch complete: {summary.processed}/{total_files} processed, "
                    f"{summary.passed} passed, {summary.failed} failed")
@@ -1073,14 +1076,10 @@ class Processor:
         summary.processed += 1
         summary.total_processing_time += result.processing_time
 
-        if result.overall_status == AnalysisStatus.PASS:
-            summary.passed += 1
-        elif result.overall_status == AnalysisStatus.WARNING:
-            summary.warnings += 1
-        elif result.overall_status == AnalysisStatus.ERROR:
-            summary.errors += 1
-        elif result.overall_status == AnalysisStatus.FAIL:
-            summary.failed += 1
+        # Single source of truth for status bucketing (incl. the UNTRIMMED
+        # bucket, which was previously dropped -- diluting pass_rate and
+        # making counts not sum to `processed`).
+        summary.record_status(result.overall_status)
 
         # Update average sigma. UNTRIMMED tracks carry sigma_gradient=None
         # because no trim ran; filter them out before averaging. Skip the
