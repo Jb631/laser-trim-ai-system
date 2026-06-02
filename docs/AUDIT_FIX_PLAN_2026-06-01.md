@@ -250,3 +250,43 @@ both:  J  (reprocess + retrain)  — gated on F (analyzer) and I (drift)
    an in-control process.
 5. Full `pytest tests/` green throughout; reprocess + retrain completed and verified.
 </content>
+
+---
+
+## Completion status (2026-06-01)
+
+All code batches implemented, tested, and committed. Running test suite green
+throughout (148 on main; full V6 suite green incl. drift-advance proofs).
+
+| Batch | Branch | Commit(s) | Status |
+|---|---|---|---|
+| A — UNTRIMMED denominators (H1,H2,H7) | main | 65be558, 40fe41e | ✅ done |
+| B — one-sided linearity Cpk (H3) | main | 996fcf7 | ✅ done |
+| C — FT/smoothness fabrication (H6,C2) | main | ea36b6d | ✅ done |
+| D — content-hash dedup (H4,H5) | main | 4211e14 | ✅ done |
+| E — ML leakage/validation (C1,H11) | main | 7553b5c | ✅ done (H10 → Batch I retarget) |
+| F — analyzer robustness | main | 3de4c87 | ✅ done (FT pos auto-detect deferred) |
+| G+H — UI + low-severity | main | d85bfc2 | ✅ done |
+| I — drift signal redesign | main + V6 | 3c11ebd (main); 15d6412, 9477ed2 (V6) | ✅ core done |
+| J — reprocess + retrain | operational | — | ⏳ runbook below (user-executed) |
+
+**Batch I detail:**
+- main `3c11ebd` — legacy V5 drift detector keys on untrimmed_sigma_gradient (D-SIGMA), both train + apply paths; post-trim sigma stays the quality gate. **Deployable now.**
+- V6 `15d6412` — drop post-trim sigma from WATCHED_METRICS (7 metrics); Bonferroni FP budget across metrics (the big "flags everything" lever).
+- V6 `9477ed2` — fixed-baseline + replay training and `advance_drift_state()` so the detector reflects drift in history and responds to new data (fixes the H8 "always Stable" bug). Tests prove a drifted model flags.
+
+### Batch J — reprocess + retrain (operational runbook; run on the real DB)
+
+Required because D-SIGMA + the analyzer changes change stored signals/baselines.
+
+1. **Back up** `./data/analysis.db`.
+2. **Reprocess all files** (Process page, incremental OFF, or re-point at the source folders) so every record gets `untrimmed_sigma_gradient` + the recomputed analyzer metrics. (Reprocessing is the documented normal mechanism.)
+3. **Retrain** in Settings: drift detector (now on untrimmed sigma) + per-model threshold optimizer/predictor/profiler.
+4. **Verify**: per-model pages show drift on the untrimmed signal; yield numbers agree across Dashboard/Trends; Cpk reads one-sided.
+
+### Remaining follow-ups (documented, not blocking)
+
+- **H9 — full ARL₀ threshold calibration** (V6): the per-observation FP target + Bonferroni is implemented; the deeper fix is to derive `h`/`L` from run-length (ARL₀) targets (CUSUM via Siegmund; EWMA via Crowder/Lucas-Saccucci) so a single metric doesn't false-alarm every ~20 parts. Captured in the Spec 3 foundations as H9.
+- **Wire `advance_drift_state()` into the Process flow** (Spec 3e) so Triage reflects new data automatically.
+- **Merge `main` → `V6`** to bring audit Batches A–H forward (per D-BRANCH; manager.py will need careful conflict resolution since both branches edited it).
+- **FT Format-1 position-column auto-detect** hardening (Batch F medium, deferred — heuristic).
