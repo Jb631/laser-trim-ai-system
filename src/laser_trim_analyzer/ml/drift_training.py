@@ -113,55 +113,55 @@ def _train_one_metric(
 
     Returns True if the row was written with is_trained=True.
     """
-    values = _load_historical_values(db, model, metric)
+    # Load dated samples so we can fix the baseline to an EARLY window and then
+    # REPLAY the recent window through the detector. Without this, the baseline
+    # is computed over all history (laundering any drift into it) and the runtime
+    # state is reset, so the detector can never flag (the H8 "always Stable" bug).
+    samples = [
+        (d, v) for (d, v) in _load_samples_with_dates(db, model, metric)
+        if v is not None and not (isinstance(v, float) and np.isnan(v))
+    ]
 
-    if len(values) < MIN_BASELINE_SAMPLES:
-        # Write an untrained sentinel row so future passes can detect it
+    if len(samples) < MIN_BASELINE_SAMPLES:
         _upsert_metric_state(
             db, model, metric,
             baseline_mean=None, baseline_std=None,
-            baseline_count=len(values),
-            is_trained=False,
-            thresholds=None,
+            baseline_count=len(samples), is_trained=False, thresholds=None,
         )
         return False
 
-    arr = np.asarray(values, dtype=float)
-    arr = arr[~np.isnan(arr)]
-    if len(arr) < MIN_BASELINE_SAMPLES:
-        _upsert_metric_state(
-            db, model, metric,
-            baseline_mean=None, baseline_std=None,
-            baseline_count=len(arr),
-            is_trained=False,
-            thresholds=None,
-        )
-        return False
+    # Baseline = oldest ~70% (>= MIN_BASELINE_SAMPLES); replay = the remainder.
+    split = min(len(samples), max(MIN_BASELINE_SAMPLES, int(len(samples) * 0.7)))
+    baseline_samples = samples[:split]
+    replay_samples = samples[split:]
 
+    arr = np.asarray([v for (_d, v) in baseline_samples], dtype=float)
     baseline_mean = float(np.mean(arr))
     baseline_std = float(np.std(arr, ddof=1))
-    # Avoid divide-by-zero in threshold math
     if baseline_std <= 0.0:
         baseline_std = 1e-9
 
-    # Bonferroni multiplicity correction: a model's tier is the worst-of N
-    # independent per-metric detectors, so testing each at the full per-tier FP
-    # rate inflates the family-wise false-alarm rate ~N-fold (the "flags
-    # everything" complaint). Spend the per-tier budget across the watched
-    # metrics so the MODEL-level false-alarm rate matches the preset.
+    # Bonferroni multiplicity correction across the watched metrics (worst-of-N
+    # aggregation would otherwise inflate the family-wise false-alarm rate).
     n_metrics = max(1, len(WATCHED_METRICS))
     thresholds: dict[DriftTier, tuple[float, float, float]] = {}
     for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
         p = target_fp_for_tier(sensitivity_preset, tier) / n_metrics
         thresholds[tier] = compute_thresholds(sigma=baseline_std, target_fp=p)
 
+    # Replay the recent window so persisted runtime state reflects drift already
+    # present in history.
+    det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_samples),
+                          thresholds_dict=thresholds)
+    for (_d, v) in replay_samples:
+        det.update(float(v))
+
     _upsert_metric_state(
         db, model, metric,
-        baseline_mean=baseline_mean,
-        baseline_std=baseline_std,
-        baseline_count=len(arr),
-        is_trained=True,
-        thresholds=thresholds,
+        baseline_mean=baseline_mean, baseline_std=baseline_std,
+        baseline_count=len(baseline_samples), is_trained=True, thresholds=thresholds,
+        cusum_pos=det.cusum_pos, cusum_neg=det.cusum_neg, ewma_state=det.ewma_state,
+        baseline_cutoff_date=baseline_samples[-1][0], last_sample_date=samples[-1][0],
     )
     return True
 
@@ -197,8 +197,19 @@ def _upsert_metric_state(
     baseline_count: int,
     is_trained: bool,
     thresholds: Optional[dict],
+    cusum_pos: Optional[float] = None,
+    cusum_neg: Optional[float] = None,
+    ewma_state: Optional[float] = None,
+    baseline_cutoff_date=None,
+    last_sample_date=None,
 ) -> None:
-    """Insert or update a single model_metric_state row."""
+    """Insert or update a single model_metric_state row.
+
+    Runtime state (cusum/ewma) uses the REPLAYED values when provided (so the
+    detector reflects drift already in history); otherwise it resets to the
+    baseline. last_updated stores the last SAMPLE date (a file_date marker for
+    advance_drift_state), not wall-clock time.
+    """
     with db.session() as s:
         row = s.query(ModelMetricState).filter(
             ModelMetricState.model == model,
@@ -213,11 +224,13 @@ def _upsert_metric_state(
         row.baseline_std = baseline_std
         row.baseline_count = baseline_count
         row.is_trained = is_trained
-        row.last_updated = datetime.now()
-        # Reset runtime state so the detector starts fresh against the new baseline
-        row.cusum_pos = 0.0
-        row.cusum_neg = 0.0
-        row.ewma_state = baseline_mean
+        row.baseline_cutoff_date = baseline_cutoff_date
+        # last_updated = last processed SAMPLE date (advance starts after this).
+        row.last_updated = last_sample_date or datetime.now()
+        # Runtime state: replayed values if given, else reset to baseline.
+        row.cusum_pos = cusum_pos if cusum_pos is not None else 0.0
+        row.cusum_neg = cusum_neg if cusum_neg is not None else 0.0
+        row.ewma_state = ewma_state if ewma_state is not None else baseline_mean
 
         if thresholds is not None:
             row.h_warning, row.L_warning, row.z_warning = thresholds[DriftTier.WARNING]
@@ -230,3 +243,118 @@ def _upsert_metric_state(
                 setattr(row, col, None)
 
         s.commit()
+
+
+def _load_samples_with_dates(db, model: str, metric: str, after=None):
+    """Return [(file_date, value)] for a model+metric, oldest first.
+
+    `after` (a datetime) restricts to samples strictly newer than it -- used by
+    advance_drift_state to process only data that arrived since last_updated.
+    """
+    out = []
+    if metric == "max_smoothness_value":
+        with db.session() as s:
+            q = s.query(DBSR.file_date, DBSR.max_smoothness_value).filter(
+                DBSR.model == model, DBSR.max_smoothness_value.isnot(None))
+            if after is not None:
+                q = q.filter(DBSR.file_date > after)
+            for d, v in q.order_by(DBSR.file_date).all():
+                if d is not None and v is not None:
+                    out.append((d, v))
+        return out
+
+    col = _TRACK_METRIC_COLUMNS.get(metric)
+    if col is None:
+        return out
+    with db.session() as s:
+        q = (s.query(DBAR.file_date, col)
+             .join(DBTR, DBTR.analysis_id == DBAR.id)
+             .filter(DBAR.model == model, col.isnot(None)))
+        if after is not None:
+            q = q.filter(DBAR.file_date > after)
+        for d, v in q.order_by(DBAR.file_date).all():
+            if d is not None and v is not None:
+                out.append((d, v))
+    return out
+
+
+def _build_detector(metric, baseline_mean, baseline_std, baseline_count, *,
+                    thresholds_dict=None, hLz=None,
+                    cusum_pos=0.0, cusum_neg=0.0, ewma_state=None):
+    """Construct a MetricDetector from either a {DriftTier:(h,L,z)} dict
+    (training) or a triple of per-tier h/L/z dicts (advance, from a DB row)."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+
+    if thresholds_dict is not None:
+        h = {"WARNING": thresholds_dict[DriftTier.WARNING][0],
+             "DRIFT": thresholds_dict[DriftTier.DRIFT][0],
+             "OUT_OF_CONTROL": thresholds_dict[DriftTier.OUT_OF_CONTROL][0]}
+        L = {"WARNING": thresholds_dict[DriftTier.WARNING][1],
+             "DRIFT": thresholds_dict[DriftTier.DRIFT][1],
+             "OUT_OF_CONTROL": thresholds_dict[DriftTier.OUT_OF_CONTROL][1]}
+        z = {"WARNING": thresholds_dict[DriftTier.WARNING][2],
+             "DRIFT": thresholds_dict[DriftTier.DRIFT][2],
+             "OUT_OF_CONTROL": thresholds_dict[DriftTier.OUT_OF_CONTROL][2]}
+    else:
+        h, L, z = hLz
+
+    return MetricDetector(
+        metric=metric,
+        baseline_mean=baseline_mean or 0.0,
+        baseline_std=baseline_std or 0.0,
+        baseline_count=baseline_count or 0,
+        is_trained=True,
+        h_per_tier=h, L_per_tier=L, z_per_tier=z,
+        cusum_pos=cusum_pos or 0.0, cusum_neg=cusum_neg or 0.0,
+        ewma_state=ewma_state if ewma_state is not None else (baseline_mean or 0.0),
+    )
+
+
+def advance_drift_state(db, model: Optional[str] = None) -> int:
+    """Advance each trained (model, metric) detector over samples that arrived
+    AFTER its last_updated marker, persisting the new cusum/ewma state.
+
+    This is what makes the V6 detector respond to NEW data -- without it the
+    runtime state is frozen at training time and get_drifting_models always
+    reads Stable. Call it after a processing batch (or from Settings). Returns
+    the number of (model, metric) rows actually advanced.
+    """
+    with db.session() as s:
+        q = s.query(ModelMetricState).filter(ModelMetricState.is_trained == True)  # noqa: E712
+        if model is not None:
+            q = q.filter(ModelMetricState.model == model)
+        targets = [(r.model, r.metric) for r in q.all()]
+
+    advanced = 0
+    for mdl, metric in targets:
+        with db.session() as s:
+            row = s.query(ModelMetricState).filter(
+                ModelMetricState.model == mdl,
+                ModelMetricState.metric == metric,
+            ).first()
+            if row is None or not row.is_trained or row.baseline_std is None:
+                continue
+            new_samples = _load_samples_with_dates(db, mdl, metric, after=row.last_updated)
+            if not new_samples:
+                continue
+            det = _build_detector(
+                metric, row.baseline_mean, row.baseline_std, row.baseline_count,
+                hLz=(
+                    {"WARNING": row.h_warning or 0.0, "DRIFT": row.h_drift or 0.0,
+                     "OUT_OF_CONTROL": row.h_oc or 0.0},
+                    {"WARNING": row.L_warning or 0.0, "DRIFT": row.L_drift or 0.0,
+                     "OUT_OF_CONTROL": row.L_oc or 0.0},
+                    {"WARNING": row.z_warning or 0.0, "DRIFT": row.z_drift or 0.0,
+                     "OUT_OF_CONTROL": row.z_oc or 0.0},
+                ),
+                cusum_pos=row.cusum_pos, cusum_neg=row.cusum_neg, ewma_state=row.ewma_state,
+            )
+            for _d, v in new_samples:
+                det.update(float(v))
+            row.cusum_pos = det.cusum_pos
+            row.cusum_neg = det.cusum_neg
+            row.ewma_state = det.ewma_state
+            row.last_updated = new_samples[-1][0]
+            s.commit()
+            advanced += 1
+    return advanced
