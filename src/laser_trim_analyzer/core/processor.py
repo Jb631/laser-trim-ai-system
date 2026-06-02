@@ -1138,19 +1138,29 @@ class Processor:
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
-        Uses full file path lookup (O(1)) when cache is loaded.
-        Falls back to DB query only if cache wasn't loaded.
+        Identity is the CONTENT hash, not the path. A path miss is a cheap
+        early-out (a brand-new filename can't have been processed); a path hit
+        is confirmed by hash so a re-export of NEW content to a reused filename
+        is processed rather than silently skipped.
 
-        IMPORTANT: Compares full paths, not just filenames, to handle
-        duplicate filenames in different folders correctly.
+        Falls back to the (hash-based) DB query only if the cache wasn't loaded.
         """
         try:
-            # If cache was loaded (even if empty), use fast set lookup
+            # If cache was loaded (even if empty), use it.
             if self._processed_filenames is not None:
-                # Compare full path (as string) for accurate matching
-                return str(file_path) in self._processed_filenames
+                # A path we've never seen -> definitely new (cheap, no hash read).
+                if str(file_path) not in self._processed_filenames:
+                    return False
+                # Path seen before -> CONFIRM the content still matches before
+                # skipping. The file_hash is the identity, not the path, so a
+                # re-export of new content to a fixed filename is NOT dropped.
+                try:
+                    file_hash = calculate_file_hash(file_path)
+                except Exception:
+                    return False  # can't hash -> don't skip; let it process
+                return file_hash in self._processed_hashes
 
-            # Cache not loaded - query database directly (slower)
+            # Cache not loaded - query database directly (already hash-based).
             from laser_trim_analyzer.database import get_database
             db = get_database()
             return db.is_file_processed(file_path)
@@ -1180,9 +1190,11 @@ class Processor:
                 file_modified_date=datetime.fromtimestamp(stat.st_mtime),
             )
 
-            # Update in-memory cache if loaded
+            # Update in-memory cache if loaded (path + content hash).
             if self._processed_filenames is not None:
                 self._processed_filenames.add(str(file_path))
+                if self._processed_hashes is not None:
+                    self._processed_hashes.add(file_hash)
 
         except Exception as e:
             logger.debug(f"Could not record skipped file {file_path.name}: {e}")
@@ -1206,30 +1218,41 @@ class Processor:
 
             db = get_database()
             with db.session() as session:
-                # Load FULL PATHS for accurate lookup (handles duplicate filenames)
-                # Only load successfully processed files - errors should be retried
-                file_paths = session.query(DBProcessedFile.file_path).filter(
-                    DBProcessedFile.success == True
-                ).all()
-                self._processed_filenames = set(row.file_path for row in file_paths if row.file_path)
+                # Load paths AND content hashes for successfully processed files.
+                # The hash is the identity (skip only when content matches); the
+                # path is a cheap early-out. Errors (success=False) are excluded
+                # so they're retried.
+                rows = session.query(
+                    DBProcessedFile.file_path, DBProcessedFile.file_hash
+                ).filter(DBProcessedFile.success == True).all()
+                self._processed_filenames = set(r.file_path for r in rows if r.file_path)
+                self._processed_hashes = set(r.file_hash for r in rows if r.file_hash)
 
-                # Also load Final Test file paths (they're always "successful" if in DB)
-                ft_paths = session.query(FinalTestResult.file_path).all()
+                # Also load Final Test file paths + hashes (always "successful" if in DB)
+                ft_rows = session.query(
+                    FinalTestResult.file_path, FinalTestResult.file_hash
+                ).all()
                 ft_count = 0
-                for row in ft_paths:
+                for row in ft_rows:
                     if row.file_path:
                         self._processed_filenames.add(row.file_path)
                         ft_count += 1
+                    if row.file_hash:
+                        self._processed_hashes.add(row.file_hash)
 
                 # Also load Smoothness file paths
                 smoothness_count = 0
                 try:
                     from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
-                    smoothness_paths = session.query(DBSmoothnessResult.file_path).all()
-                    for row in smoothness_paths:
+                    smoothness_rows = session.query(
+                        DBSmoothnessResult.file_path, DBSmoothnessResult.file_hash
+                    ).all()
+                    for row in smoothness_rows:
                         if row.file_path:
                             self._processed_filenames.add(row.file_path)
                             smoothness_count += 1
+                        if row.file_hash:
+                            self._processed_hashes.add(row.file_hash)
                 except Exception as e:
                     logger.debug(f"Could not load smoothness paths: {e}")
 

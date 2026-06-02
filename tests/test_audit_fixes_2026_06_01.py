@@ -181,3 +181,36 @@ def test_smoothness_generic_uses_magnitude_not_signed_max(tmp_path):
     # 0.08 > 0.05 spec must never read as a pass (signed max gave 0.02 -> false pass).
     assert t["smoothness_pass"] in (False, None)
     assert t["smoothness_pass"] is not True
+
+
+# ---------------------------------------------------------------------------
+# Batch D / H4 -- incremental skip confirms by CONTENT hash, so a re-export of
+# new content to a reused filename is processed, not silently skipped.
+# ---------------------------------------------------------------------------
+
+
+def test_incremental_skip_confirms_by_content_hash(tmp_path):
+    import os
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.utils.hashing import calculate_file_hash
+
+    f = tmp_path / "test.xls"
+    f.write_text("original content")
+    os.utime(f, (1000, 1000))
+
+    p = Processor(use_ml=False)
+    p._processed_filenames = {str(f)}
+    p._processed_hashes = {calculate_file_hash(f)}
+
+    # Same path + same content -> already processed (skip).
+    assert p._is_processed(f) is True
+
+    # NEW content re-exported to the SAME path -> must NOT be skipped.
+    f.write_text("new re-trimmed content -- different bytes entirely")
+    os.utime(f, (2000, 2000))  # distinct mtime so the hash cache recomputes
+    assert p._is_processed(f) is False
+
+    # A brand-new path we've never seen -> not processed (cheap early-out).
+    g = tmp_path / "brand_new.xls"
+    g.write_text("x")
+    assert p._is_processed(g) is False

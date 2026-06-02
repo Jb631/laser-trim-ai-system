@@ -1438,6 +1438,20 @@ class DatabaseManager:
             )
             session.add(processed_file)
             session.flush()
+        else:
+            # Relink an existing hash row (e.g. a prior ERROR, or a file that was
+            # skipped/misclassified earlier) to this analysis so a transient
+            # failure isn't permanent. The old behavior silently no-op'd, leaving
+            # the row stuck at its prior (e.g. success=False) state.
+            session.query(DBProcessedFile).filter(
+                DBProcessedFile.file_hash == file_hash
+            ).update({
+                DBProcessedFile.analysis_id: analysis_id,
+                DBProcessedFile.success: success,
+                DBProcessedFile.file_path: str(file_path),
+                DBProcessedFile.filename: file_path.name,
+            })
+            session.flush()
 
     # =========================================================================
     # QA Alerts
