@@ -395,6 +395,18 @@ class DatabaseManager:
                     session.execute(text("UPDATE track_results SET status = 'FAIL' WHERE status = 'Fail'"))
                     session.execute(text("UPDATE track_results SET status = 'WARNING' WHERE status = 'Warning'"))
                     session.execute(text("UPDATE track_results SET status = 'ERROR' WHERE status = 'Error'"))
+                    # Fix final_test_results / smoothness_results too (the original
+                    # migration missed these tables). Idempotent if already uppercase.
+                    for _tbl in ("final_test_results", "smoothness_results"):
+                        for _old, _new in (("Pass", "PASS"), ("Fail", "FAIL"),
+                                           ("Warning", "WARNING"), ("Error", "ERROR"),
+                                           ("Untrimmed", "UNTRIMMED")):
+                            try:
+                                session.execute(text(
+                                    f"UPDATE {_tbl} SET overall_status = '{_new}' "
+                                    f"WHERE overall_status = '{_old}'"))
+                            except Exception:
+                                pass  # table/column may not exist on older schemas
                     session.commit()
                     logger.info("Migration completed: Status values normalized")
             except Exception as e:
@@ -4456,7 +4468,12 @@ class DatabaseManager:
 
                 training_samples = state.training_samples or 0
                 new_records = max(0, current_count - training_samples)
-                days_since = (datetime.now() - state.training_date).days if state.training_date else 999
+                # tz-robust: training_date may be stored tz-aware (utc_now); strip
+                # tzinfo so subtracting from naive datetime.now() never raises.
+                _td = state.training_date
+                if _td is not None and _td.tzinfo is not None:
+                    _td = _td.replace(tzinfo=None)
+                days_since = (datetime.now() - _td).days if _td else 999
 
                 results.append({
                     "model": state.model,

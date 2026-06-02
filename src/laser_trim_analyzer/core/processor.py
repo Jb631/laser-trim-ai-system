@@ -47,10 +47,12 @@ from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
 
-# Memory thresholds for 8GB systems
-MEMORY_WARNING_PERCENT = 90  # Start throttling at 75% usage
-MEMORY_CRITICAL_PERCENT = 95  # Force sequential at 85% usage
-MAX_WORKERS_LOW_MEMORY = 2  # Workers when memory is tight
+# Memory thresholds. NOTE: these are the ACTUAL trigger points (the previous
+# comments claimed 75/85, which was misleading). If an 8GB target needs earlier
+# throttling, lower these constants -- don't just edit the comments.
+MEMORY_WARNING_PERCENT = 90   # Throttle (reduce workers) above this RAM usage %
+MEMORY_CRITICAL_PERCENT = 95  # Force sequential processing above this RAM usage %
+MAX_WORKERS_LOW_MEMORY = 2    # Workers when memory is tight
 
 
 class Processor:

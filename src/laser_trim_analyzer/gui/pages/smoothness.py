@@ -219,7 +219,15 @@ class SmoothnessPage(ctk.CTkFrame):
         frame.grid(row=row, column=0, sticky="ew", padx=2, pady=1)
         frame.grid_columnconfigure(1, weight=1)
 
-        color = "#27ae60" if is_pass else "#e74c3c"
+        # Neutral colour for non-PASS/non-FAIL (WARNING/UNKNOWN) so "not evaluated"
+        # isn't painted as a red fail.
+        _su = status.upper() if status else "UNKNOWN"
+        if _su == "PASS":
+            color = "#27ae60"
+        elif _su in ("FAIL", "FAILED"):
+            color = "#e74c3c"
+        else:
+            color = "#95a5a6"
         ctk.CTkLabel(frame, text="  ", width=8,
                     fg_color=color, corner_radius=2).grid(row=0, column=0, padx=(2, 5), pady=2)
 

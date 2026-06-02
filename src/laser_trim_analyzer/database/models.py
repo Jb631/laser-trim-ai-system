@@ -246,6 +246,7 @@ class AnalysisResult(Base):
         Index('idx_system', 'system'),
         Index('idx_status_timestamp', 'overall_status', 'timestamp'),  # Dashboard queries
         Index('idx_model_status', 'model', 'overall_status'),  # Model statistics queries
+        Index('idx_unit_id', 'unit_id'),  # unit-yield-trend lookups
         # Prevent duplicate processing of same file on same date
         UniqueConstraint('filename', 'file_date', 'model', 'serial', name='uq_file_analysis'),
         # Data validation constraints
