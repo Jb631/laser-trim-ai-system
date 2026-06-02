@@ -275,3 +275,29 @@ def test_sigma_not_inflated_by_tiny_position_step():
     assert math.isfinite(sigma_spike)
     # The tiny-step pair is rejected, so sigma is not blown up by orders of magnitude.
     assert sigma_spike <= sigma_clean * 3 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Batch K -- sigma threshold confidence reflects REAL separation (rank-AUC),
+# not an in-sample lucky 0.95.
+# ---------------------------------------------------------------------------
+
+
+def test_threshold_confidence_reflects_separation():
+    import numpy as np
+    from laser_trim_analyzer.ml.threshold_optimizer import ModelThresholdOptimizer
+
+    # No real relationship between sigma and pass/fail -> honest LOW confidence.
+    rng = np.random.RandomState(0)
+    sig = list(rng.rand(200) * 0.01)
+    passed = list(rng.rand(200) > 0.3)
+    r = ModelThresholdOptimizer("WEAK").calculate_threshold(sigma_values=sig, passed=passed)
+    assert r.confidence < 0.2
+
+    # Cleanly separated (passers low sigma, failers high) -> HIGH confidence.
+    sig2 = [0.001 + 1e-6 * i for i in range(150)] + [0.010 + 1e-6 * i for i in range(150)]
+    passed2 = [True] * 150 + [False] * 150
+    r2 = ModelThresholdOptimizer("STRONG").calculate_threshold(sigma_values=sig2, passed=passed2)
+    assert r2.confidence > 0.8
+    # Threshold sits between the passing and failing untrimmed-sigma groups.
+    assert 0.001 < r2.threshold < 0.010

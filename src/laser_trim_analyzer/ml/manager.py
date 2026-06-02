@@ -237,16 +237,22 @@ class MLManager:
             result.profile_built = profiler.is_profiled
 
             # 2. Calculate threshold (needs 20+ samples)
-            if len(data) >= self.MIN_THRESHOLD_SAMPLES:
+            # Calibrate the per-model sigma threshold on the UNTRIMMED (raw-element)
+            # sigma vs the post-trim trim outcome -- "how noisy can a raw element be
+            # and still trim to pass linearity?". Post-trim sigma was the wrong,
+            # weakly-linked input (smoothness != deviation magnitude).
+            thr_data = (data[data['untrimmed_sigma_gradient'].notna()]
+                        if 'untrimmed_sigma_gradient' in data.columns else data.iloc[0:0])
+            if len(thr_data) >= self.MIN_THRESHOLD_SAMPLES:
                 if progress_callback:
                     progress_callback(f"Calculating threshold for {model_name}...")
 
                 optimizer = self.get_threshold_optimizer(model_name)
                 threshold_result = optimizer.calculate_threshold(
-                    sigma_values=data['sigma_gradient'],
-                    passed=data['passed'],
-                    fail_points=data.get('linearity_fail_points'),
-                    linearity_spec=data['linearity_spec'].iloc[0] if 'linearity_spec' in data.columns else None
+                    sigma_values=thr_data['untrimmed_sigma_gradient'],
+                    passed=thr_data['passed'],
+                    fail_points=thr_data.get('linearity_fail_points'),
+                    linearity_spec=thr_data['linearity_spec'].iloc[0] if 'linearity_spec' in thr_data.columns else None
                 )
                 result.threshold_calculated = optimizer.is_calculated
                 result.threshold_value = threshold_result.threshold
@@ -518,19 +524,26 @@ class MLManager:
                             )
                             track_count = result1.rowcount  # Get count from UPDATE result
 
-                            # Bulk update sigma_pass based on threshold comparison
-                            # sigma_pass = True if sigma_gradient <= threshold, else False
+                            # Bulk update sigma_pass: the threshold is calibrated on
+                            # UNTRIMMED sigma, so gate on untrimmed (raw-element) sigma,
+                            # falling back to post-trim only when the sweep is absent.
                             session.execute(
                                 update(TrackResult)
                                 .where(
                                     and_(
                                         TrackResult.analysis_id.in_(analysis_subquery),
-                                        TrackResult.sigma_gradient.isnot(None)
+                                        func.coalesce(
+                                            TrackResult.untrimmed_sigma_gradient,
+                                            TrackResult.sigma_gradient,
+                                        ).isnot(None),
                                     )
                                 )
                                 .values(
                                     sigma_pass=case(
-                                        (TrackResult.sigma_gradient <= new_threshold, True),
+                                        (func.coalesce(
+                                            TrackResult.untrimmed_sigma_gradient,
+                                            TrackResult.sigma_gradient,
+                                        ) <= new_threshold, True),
                                         else_=False
                                     )
                                 )

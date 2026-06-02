@@ -214,18 +214,17 @@ class Analyzer:
             positions, errors, linearity_spec, travel_length, unit_length,
             model=model
         )
-        sigma_pass = sigma_gradient <= sigma_threshold
 
-        # Untrimmed (upstream) sigma -- independent signal for Spec 2 drift
-        # detection.  Not used for pass/fail.  Gated on data availability;
-        # exception-safe because the per-track save must still proceed even
-        # if the untrimmed arrays are malformed.
+        # Untrimmed (upstream) sigma -- the RAW element's noise. This is the signal
+        # the per-model threshold is now calibrated on (D-SIGMA): a noisier raw
+        # element is harder to trim to spec, so this is the meaningful "trim-risk"
+        # screen. Computed BEFORE sigma_pass so the gate can use it. Exception-safe
+        # because the per-track save must still proceed if the arrays are malformed.
         untrimmed_sigma_gradient: Optional[float] = None
         _untrimmed_positions = track_data.get("untrimmed_positions") or []
         _untrimmed_errors = track_data.get("untrimmed_errors") or []
         if _untrimmed_positions and _untrimmed_errors:
             try:
-                # Filter NaN consistently with _calculate_trim_effectiveness.
                 _valid_pairs = [
                     (p, e)
                     for p, e in zip(_untrimmed_positions, _untrimmed_errors)
@@ -245,6 +244,13 @@ class Analyzer:
                     f"{track_id!r}: {e}; storing NULL"
                 )
                 untrimmed_sigma_gradient = None
+
+        # sigma_pass = per-model TRIM-RISK screen on the untrimmed (raw-element)
+        # sigma vs the per-model threshold. Fall back to post-trim sigma only when
+        # the untrimmed sweep is unavailable so older/edge records still gate.
+        _gate_sigma = (untrimmed_sigma_gradient
+                       if untrimmed_sigma_gradient is not None else sigma_gradient)
+        sigma_pass = _gate_sigma <= sigma_threshold
 
         # Linearity analysis (spec-aware). angle_spec/tol/tol_type drive the
         # rotation rule: k stays at 0 unless an angle tolerance exists.

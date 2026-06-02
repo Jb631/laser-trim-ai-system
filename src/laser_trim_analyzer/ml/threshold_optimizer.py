@@ -185,6 +185,21 @@ class ModelThresholdOptimizer:
                 np.array(fail_points)[valid_mask] if fail_points is not None else None
             )
 
+        # Honest confidence = how well sigma ACTUALLY separates pass/fail, not the
+        # in-sample separation_ratio (which can hit 0.95 on a lucky clean split).
+        # Use rank-AUC: P(a failing unit's sigma > a passing unit's sigma). A weak
+        # signal -> AUC ~0.5 -> confidence ~0; an inverse/no relationship -> 0.
+        try:
+            if self.n_pass > 0 and self.n_fail > 0:
+                from sklearn.metrics import roc_auc_score
+                auc = roc_auc_score((~is_pass).astype(int), sigma)
+                strength = max(0.0, min(1.0, 2.0 * (auc - 0.5)))   # 0.5->0, 1.0->1
+                n_factor = min(1.0, self.n_samples / 200.0)         # damp small n
+                result.confidence = round(float(strength * n_factor), 3)
+                self.separation_auc = float(auc)
+        except Exception:
+            pass  # keep the strategy's confidence if AUC can't be computed
+
         # Store results (enforce minimum to satisfy DB CHECK constraint)
         self.threshold = max(0.00005, result.threshold)
         result.threshold = self.threshold
