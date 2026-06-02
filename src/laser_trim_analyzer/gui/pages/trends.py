@@ -1621,10 +1621,15 @@ class TrendsPage(ctk.CTkFrame):
             return
 
         # Extract values for plotting (normal samples only) - include year in date format
-        # Build aligned arrays - only include points with valid sigma
-        valid_points = [d for d in normal_points if d["sigma_gradient"] is not None]
+        # Chart the UNTRIMMED (raw-element) sigma -- the upstream process signal the
+        # threshold is now calibrated on -- falling back to post-trim only when the
+        # untrimmed sweep is absent.
+        def _disp_sigma(d):
+            u = d.get("untrimmed_sigma_gradient")
+            return u if u is not None else d.get("sigma_gradient")
+        valid_points = [d for d in normal_points if _disp_sigma(d) is not None]
         dates = [d["date"].strftime("%m/%d/%y") if hasattr(d["date"], 'strftime') else str(d["date"])[:8] for d in valid_points]
-        sigma_values = [d["sigma_gradient"] for d in valid_points]
+        sigma_values = [_disp_sigma(d) for d in valid_points]
         pass_flags = [d.get("sigma_pass", False) for d in valid_points]
 
         # Calculate rolling average for filtered data (normal samples only)
@@ -1647,7 +1652,7 @@ class TrendsPage(ctk.CTkFrame):
             pass_flags=pass_flags,
             threshold=threshold,
             rolling_avg=rolling_vals,
-            title=f"Sigma Gradient Trend - {self.selected_model}{filter_suffix}",
+            title=f"Untrimmed Sigma Trend - {self.selected_model}{filter_suffix}",
             ylabel="Sigma Gradient",
         )
 
@@ -2271,7 +2276,13 @@ class TrendsPage(ctk.CTkFrame):
         normal_sample_count = len(normal_points)
 
         # Calculate stats from NORMAL samples only (excludes anomalies)
-        sigma_values = [d["sigma_gradient"] for d in normal_points if d["sigma_gradient"] is not None]
+        # Untrimmed sigma (prefer it; fall back to post-trim) for consistency with the chart.
+        sigma_values = [
+            (d.get("untrimmed_sigma_gradient") if d.get("untrimmed_sigma_gradient") is not None
+             else d.get("sigma_gradient"))
+            for d in normal_points
+            if (d.get("untrimmed_sigma_gradient") is not None or d.get("sigma_gradient") is not None)
+        ]
 
         # Sigma pass rate (track-level). Exclude points with no sigma result
         # (UNTRIMMED -> sigma_pass is None) from BOTH numerator and denominator,

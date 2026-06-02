@@ -4131,6 +4131,7 @@ class DatabaseManager:
                     DBTrackResult.linearity_spec,
                     DBTrackResult.linearity_pass,
                     DBTrackResult.linearity_fail_points,
+                    DBTrackResult.untrimmed_sigma_gradient,
                 )
                 .join(DBTrackResult)
                 .filter(
@@ -4153,11 +4154,14 @@ class DatabaseManager:
             # Extract data points
             data_points = []
             for file_date, status, sigma_gradient, sigma_threshold, sigma_pass, is_anomaly, \
-                linearity_error, linearity_spec, linearity_pass, fail_points in results:
-                if file_date and sigma_gradient is not None:
+                linearity_error, linearity_spec, linearity_pass, fail_points, \
+                untrimmed_sigma_gradient in results:
+                if file_date and (sigma_gradient is not None
+                                  or untrimmed_sigma_gradient is not None):
                     data_points.append({
                         "date": file_date,
                         "sigma_gradient": sigma_gradient,
+                        "untrimmed_sigma_gradient": untrimmed_sigma_gradient,
                         "sigma_threshold": sigma_threshold,
                         "sigma_pass": sigma_pass,
                         "status": status.value if hasattr(status, 'value') else str(status) if status else "UNKNOWN",
