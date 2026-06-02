@@ -246,3 +246,32 @@ def test_predictor_trains_with_serial_grouped_split():
     result = ModelPredictor("TESTMODEL").train(features, labels, severity=None, groups=groups)
     assert result.success is True
     assert result.metrics is not None
+
+
+# ---------------------------------------------------------------------------
+# Batch F -- analyzer robustness: a tiny position step (near-coincident points)
+# must not inflate sigma_gradient.
+# ---------------------------------------------------------------------------
+
+
+def test_sigma_not_inflated_by_tiny_position_step():
+    import math
+    from laser_trim_analyzer.core.analyzer import Analyzer
+
+    a = Analyzer(model_thresholds={})
+    n = 80
+    positions = [i * 0.01 for i in range(n)]
+    errors = [0.002 * math.sin(i * 0.5) for i in range(n)]  # real, bounded variation
+
+    sigma_clean, _ = a._calculate_sigma(positions, errors, 0.05, positions[-1], None)
+
+    # Inject one near-coincident pair (dx well below the 0.01 spacing). Under the
+    # old 1e-6 floor this produced a giant dy/dx that swamped np.std.
+    positions2 = list(positions)
+    positions2[40] = positions2[39] + 2e-5
+
+    sigma_spike, _ = a._calculate_sigma(positions2, errors, 0.05, positions[-1], None)
+
+    assert math.isfinite(sigma_spike)
+    # The tiny-step pair is rejected, so sigma is not blown up by orders of magnitude.
+    assert sigma_spike <= sigma_clean * 3 + 1e-9

@@ -799,6 +799,10 @@ class Processor:
 
                     except Exception as e:
                         logger.error(f"Error processing {file_path}: {e}")
+                        # Count as processed-with-error so the buckets sum to
+                        # `processed`, matching the sequential path (where
+                        # process_file returns an ERROR result via _update_summary).
+                        summary.processed += 1
                         summary.errors += 1
 
                         if progress_callback:

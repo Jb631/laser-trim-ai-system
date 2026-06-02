@@ -295,21 +295,30 @@ class Analyzer:
             shifted_errors, upper_limits, lower_limits, exclude_indices
         )
 
-        # Calculate max deviation position and uniformity
+        # Calculate max deviation position and uniformity. Respect exclude_indices
+        # (an intentionally-excluded dead-zone point must not define the reported
+        # "worst" deviation or skew uniformity) and skip NaN (an equipment dropout
+        # must not crash statistics.stdev).
         max_deviation = linearity_error  # Already max(abs(e)) from shifted errors
         max_deviation_position = None
         deviation_uniformity = None
         if shifted_errors and positions:
-            abs_errors = [abs(e) for e in shifted_errors]
-            max_idx = abs_errors.index(max(abs_errors))
-            if max_idx < len(positions):
-                max_deviation_position = positions[max_idx]
-            # Deviation uniformity: std/mean of absolute errors (0=uniform, higher=concentrated)
-            if len(abs_errors) > 1:
-                import statistics
-                mean_abs = statistics.mean(abs_errors)
-                if mean_abs > 0:
-                    deviation_uniformity = statistics.stdev(abs_errors) / mean_abs
+            excl = exclude_indices or set()
+            graded = [
+                (i, abs(e)) for i, e in enumerate(shifted_errors)
+                if i not in excl and e is not None and not np.isnan(e)
+            ]
+            if graded:
+                max_idx = max(graded, key=lambda t: t[1])[0]
+                if max_idx < len(positions):
+                    max_deviation_position = positions[max_idx]
+                # Deviation uniformity: std/mean of |error| (0=uniform, higher=concentrated)
+                abs_vals = [v for _, v in graded]
+                if len(abs_vals) > 1:
+                    import statistics
+                    mean_abs = statistics.mean(abs_vals)
+                    if mean_abs > 0:
+                        deviation_uniformity = statistics.stdev(abs_vals) / mean_abs
 
         return TrackData(
             track_id=track_id,
@@ -408,11 +417,19 @@ class Analyzer:
             logger.warning(f"Array too short for gradient: {min_len} points")
             return 0.0, self._get_threshold(model, unit_length, linearity_spec, travel_length)
 
+        # Reject near-coincident point pairs: a tiny dx (well below the typical
+        # sample spacing) yields a huge dy/dx that would swamp np.std and spuriously
+        # inflate sigma. Floor at 10% of the median spacing (and never below 1e-6).
+        dxs = [positions[i + step_size] - positions[i] for i in range(min_len - step_size)]
+        abs_dxs = [abs(d) for d in dxs if abs(d) > 1e-6]
+        median_dx = float(np.median(abs_dxs)) if abs_dxs else 0.0
+        min_dx = max(1e-6, 0.1 * median_dx)
+
         for i in range(min_len - step_size):
-            dx = positions[i + step_size] - positions[i]
+            dx = dxs[i]
             dy = filtered_errors[i + step_size] - filtered_errors[i]
 
-            if abs(dx) > 1e-6:
+            if abs(dx) >= min_dx:
                 gradient = dy / dx
                 if not (np.isnan(gradient) or np.isinf(gradient)):
                     gradients.append(gradient)
