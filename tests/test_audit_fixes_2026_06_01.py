@@ -5,6 +5,8 @@ Plan: docs/AUDIT_FIX_PLAN_2026-06-01.md
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
@@ -124,3 +126,27 @@ def test_get_model_stats_excludes_untrimmed(tmp_path):
     assert row["passed"] == 3
     assert row["failed"] == 1           # NOT 3 (was count-passed = 6-3)
     assert round(row["pass_rate"], 1) == 75.0
+
+
+# ---------------------------------------------------------------------------
+# Batch B / H3 -- linearity Cpk/Ppk is one-sided upper (max-abs-error >= 0),
+# not a symmetric two-sided spec.
+# ---------------------------------------------------------------------------
+
+
+def test_linearity_cpk_is_one_sided_upper():
+    from laser_trim_analyzer.core.cpk import calculate_cpk
+
+    devs = [0.10, 0.12, 0.18, 0.09, 0.15, 0.20, 0.11, 0.13, 0.17, 0.14]
+    r = calculate_cpk(devs, spec_limit_pct=0.5, subgroup_size=1)
+
+    assert r.lsl == 0.0           # one-sided floor, NOT -0.5
+    assert r.usl == 0.5
+    # Cpk == Cpu computed from the result's own mean/within-sigma.
+    expected_cpu = (r.usl - r.mean) / (3 * r.std_within)
+    assert r.cpk == pytest.approx(expected_cpu)
+    assert r.cp == pytest.approx(expected_cpu)   # one-sided: Cp == Cpu
+    assert r.ppk == pytest.approx((r.usl - r.mean) / (3 * r.std_overall))
+    # We are NOT reporting the old inflated two-sided Cp = (usl-(-spec))/(6*std).
+    two_sided_cp = (r.usl - (-0.5)) / (6 * r.std_within)
+    assert r.cp < two_sided_cp
