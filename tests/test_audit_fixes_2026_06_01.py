@@ -150,3 +150,34 @@ def test_linearity_cpk_is_one_sided_upper():
     # We are NOT reporting the old inflated two-sided Cp = (usl-(-spec))/(6*std).
     two_sided_cp = (r.usl - (-0.5)) / (6 * r.std_within)
     assert r.cp < two_sided_cp
+
+
+# ---------------------------------------------------------------------------
+# Batch C / C2 -- generic smoothness uses deviation MAGNITUDE, so a worst
+# NEGATIVE excursion beyond spec cannot pass a failing unit.
+# ---------------------------------------------------------------------------
+
+
+def test_smoothness_generic_uses_magnitude_not_signed_max(tmp_path):
+    import pandas as pd
+    from laser_trim_analyzer.core.smoothness_parser import SmoothnessParser
+
+    path = tmp_path / "smooth_generic.xlsx"
+    rows = [
+        ["Position", "Smoothness", "Spec"],
+        [0.00, 0.01, 0.05],
+        [0.25, -0.08, 0.05],   # worst excursion is negative, magnitude 0.08 > 0.05
+        [0.50, 0.02, 0.05],
+        [0.75, -0.03, 0.05],
+        [1.00, 0.01, 0.05],
+    ]
+    pd.DataFrame(rows).to_excel(path, index=False, header=False, sheet_name="Test Data")
+
+    tracks = SmoothnessParser().parse_file(path).get("tracks", [])
+    assert tracks, "expected at least one parsed track"
+    t = tracks[0]
+    # Magnitude, not signed peak: 0.08 (abs of -0.08), NOT 0.02.
+    assert round(t["max_smoothness"], 3) == 0.08
+    # 0.08 > 0.05 spec must never read as a pass (signed max gave 0.02 -> false pass).
+    assert t["smoothness_pass"] in (False, None)
+    assert t["smoothness_pass"] is not True

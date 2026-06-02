@@ -1128,55 +1128,42 @@ class FinalTestParser:
             for i in range(data_start, len(df)):
                 row = df.iloc[i]
 
-                # Position from column 3
-                if df.shape[1] > 3 and is_numeric(row.iloc[3]):
-                    electrical_angles.append(float(row.iloc[3]))
-                else:
+                # Position (col 3) and Measured (col 7) are both required. Skip the
+                # whole row if either is missing -- never fabricate a 0.0 measurement
+                # (that desyncs the arrays and creates phantom multi-volt errors).
+                if not (df.shape[1] > 3 and is_numeric(row.iloc[3])):
+                    continue
+                if not (df.shape[1] > 7 and is_numeric(row.iloc[7])):
                     continue
 
-                # Theory from column 4
-                if df.shape[1] > 4 and is_numeric(row.iloc[4]):
-                    theory_values.append(float(row.iloc[4]))
-                else:
-                    theory_values.append(None)
-
-                # Upper limit from column 5
-                if df.shape[1] > 5 and is_numeric(row.iloc[5]):
-                    upper_limits.append(float(row.iloc[5]))
-                else:
-                    upper_limits.append(None)
-
-                # Lower limit from column 6
-                if df.shape[1] > 6 and is_numeric(row.iloc[6]):
-                    lower_limits.append(float(row.iloc[6]))
-                else:
-                    lower_limits.append(None)
-
-                # Measured from column 7
-                if df.shape[1] > 7 and is_numeric(row.iloc[7]):
-                    measured_values.append(float(row.iloc[7]))
-                else:
-                    measured_values.append(0.0)
-
-                # Error from column 8
-                if df.shape[1] > 8 and is_numeric(row.iloc[8]):
-                    file_errors.append(float(row.iloc[8]))
-                else:
-                    file_errors.append(None)
+                # Append atomically so every array stays aligned to the same rows.
+                electrical_angles.append(float(row.iloc[3]))
+                theory_values.append(
+                    float(row.iloc[4]) if df.shape[1] > 4 and is_numeric(row.iloc[4]) else None)
+                upper_limits.append(
+                    float(row.iloc[5]) if df.shape[1] > 5 and is_numeric(row.iloc[5]) else None)
+                lower_limits.append(
+                    float(row.iloc[6]) if df.shape[1] > 6 and is_numeric(row.iloc[6]) else None)
+                measured_values.append(float(row.iloc[7]))
+                file_errors.append(
+                    float(row.iloc[8]) if df.shape[1] > 8 and is_numeric(row.iloc[8]) else None)
 
             if electrical_angles and measured_values:
                 n_points = len(electrical_angles)
 
-                # Use file errors if available
+                # Use file errors when present; for any missing error compute it
+                # from measured - theory rather than fabricating a 0.0.
                 valid_file_errors = [e for e in file_errors if e is not None]
-                if len(valid_file_errors) >= n_points * 0.9:
-                    errors = [e if e is not None else 0.0 for e in file_errors]
-                else:
-                    # Calculate errors from measured vs theory
-                    errors = []
-                    for i in range(len(measured_values)):
+                use_file = len(valid_file_errors) >= n_points * 0.9
+                errors = []
+                for i in range(len(measured_values)):
+                    if use_file and file_errors[i] is not None:
+                        errors.append(file_errors[i])
+                    else:
                         meas = measured_values[i]
-                        theory = theory_values[i] if i < len(theory_values) and theory_values[i] is not None else meas
+                        theory = (theory_values[i]
+                                  if i < len(theory_values) and theory_values[i] is not None
+                                  else meas)
                         errors.append(meas - theory)
 
                 linearity_error = max(abs(e) for e in errors) if errors else 0.0
