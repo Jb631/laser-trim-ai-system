@@ -2083,16 +2083,16 @@ class TrendsPage(ctk.CTkFrame):
             # "total_samples"). Using the wrong key silently produced 0 for
             # the Total Samples stat tile.
             total_samples = sum(m.get("total", 0) for m in active_models)
-            avg_pass_rate = (
-                sum(m.get("pass_rate", 0) for m in active_models) / total_models
-            ) if total_models else 0
-            avg_sigma_rate = (
-                sum(m.get("sigma_pass_rate", 0) for m in active_models) / total_models
-            ) if total_models else 0
-            avg_linearity_rate = (
-                sum(m.get("linearity_pass_rate", 0) for m in active_models)
-                / total_models
-            ) if total_models else 0
+
+            # Volume-weighted fleet rates (NOT an unweighted mean of per-model %),
+            # so a high-volume bad lot isn't diluted by many tiny healthy models.
+            def _weighted(key):
+                num = sum(m.get(key, 0) * m.get("total", 0) for m in active_models)
+                return (num / total_samples) if total_samples else 0
+
+            avg_pass_rate = _weighted("pass_rate")
+            avg_sigma_rate = _weighted("sigma_pass_rate")
+            avg_linearity_rate = _weighted("linearity_pass_rate")
             models_at_risk = sum(
                 1 for m in active_models if m.get("linearity_pass_rate", 100) < 80
             )
@@ -2273,9 +2273,12 @@ class TrendsPage(ctk.CTkFrame):
         # Calculate stats from NORMAL samples only (excludes anomalies)
         sigma_values = [d["sigma_gradient"] for d in normal_points if d["sigma_gradient"] is not None]
 
-        # Sigma pass rate (track-level: did sigma gradient pass?) - from normal samples
-        sigma_pass_count = sum(1 for d in normal_points if d.get("sigma_pass", False))
-        sigma_pass_rate = (sigma_pass_count / normal_sample_count * 100) if normal_sample_count > 0 else 0
+        # Sigma pass rate (track-level). Exclude points with no sigma result
+        # (UNTRIMMED -> sigma_pass is None) from BOTH numerator and denominator,
+        # matching the DB-side denominator; otherwise the rate is deflated.
+        sigma_gradeable = [d for d in normal_points if d.get("sigma_pass") is not None]
+        sigma_pass_count = sum(1 for d in sigma_gradeable if d.get("sigma_pass"))
+        sigma_pass_rate = (sigma_pass_count / len(sigma_gradeable) * 100) if sigma_gradeable else 0
 
         # Overall pass rate - use model_stats from get_active_models_summary for consistency with alerts
         # This counts analysis-level pass (both sigma AND linearity must pass for all tracks)

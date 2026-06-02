@@ -66,3 +66,61 @@ def test_yield_denominator_uses_gradeable_not_processed():
         s.record_status(st)
     pass_rate = (s.passed / s.gradeable_count) * 100
     assert round(pass_rate, 1) == 62.5
+
+
+# ---------------------------------------------------------------------------
+# Batch A / H1 -- DB yield denominators exclude UNTRIMMED.
+# ---------------------------------------------------------------------------
+
+
+def _seed_mixed(db):
+    """3 PASS, 1 FAIL, 2 UNTRIMMED (one model 'M'), each with one track."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as AR, TrackResult as TR, SystemType, StatusType,
+    )
+    now = datetime.now()
+    rows = [
+        ("p1", StatusType.PASS, True, True, StatusType.PASS),
+        ("p2", StatusType.PASS, True, True, StatusType.PASS),
+        ("p3", StatusType.PASS, True, True, StatusType.PASS),
+        ("f1", StatusType.FAIL, False, False, StatusType.FAIL),
+        ("u1", StatusType.UNTRIMMED, None, None, StatusType.UNTRIMMED),
+        ("u2", StatusType.UNTRIMMED, None, None, StatusType.UNTRIMMED),
+    ]
+    with db.session() as s:
+        for serial, status, sig, lin, tstatus in rows:
+            ar = AR(filename=f"{serial}.xls", file_path=f"/f/{serial}", file_hash=serial,
+                    model="M", serial=serial, system=SystemType.A, file_date=now,
+                    timestamp=now, overall_status=status, has_multi_tracks=False,
+                    processing_time=0.1)
+            s.add(ar); s.flush()
+            s.add(TR(analysis_id=ar.id, track_id="T1", status=tstatus,
+                     sigma_pass=sig, linearity_pass=lin))
+        s.commit()
+
+
+def test_get_overall_stats_excludes_untrimmed(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(tmp_path / "overall.db")
+    _seed_mixed(db)
+    stats = db.get_overall_stats()
+    # 3 pass over 4 GRADEABLE files = 75% (NOT 3/6 = 50%).
+    assert stats["trimmed_total"] == 4
+    assert round(stats["pass_rate"], 1) == 75.0
+    # Track rates over the 4 trimmed tracks (UNTRIMMED tracks excluded).
+    assert stats["total_tracks"] == 4
+    assert round(stats["sigma_pass_rate"], 1) == 75.0
+    assert round(stats["linearity_pass_rate"], 1) == 75.0
+
+
+def test_get_model_stats_excludes_untrimmed(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    db = DatabaseManager(tmp_path / "modelstats.db")
+    _seed_mixed(db)
+    row = next(r for r in db.get_model_stats() if r["model"] == "M")
+    assert row["count"] == 6            # total throughput keeps every file
+    assert row["trimmed_count"] == 4    # gradeable denominator excludes UNTRIMMED
+    assert row["passed"] == 3
+    assert row["failed"] == 1           # NOT 3 (was count-passed = 6-3)
+    assert round(row["pass_rate"], 1) == 75.0

@@ -1738,7 +1738,12 @@ class DatabaseManager:
                         )
                     ).label('passed')
                 )
-                .filter(DBAnalysisResult.file_date >= trend_start)
+                .filter(
+                    DBAnalysisResult.file_date >= trend_start,
+                    # Exclude UNTRIMMED so the per-day pass_rate uses the gradeable
+                    # denominator and matches the headline (was ~20pts off).
+                    DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                )
             )
             if filter_models is not None:
                 daily_q = daily_q.filter(DBAnalysisResult.model.in_(filter_models))
@@ -2003,9 +2008,12 @@ class DatabaseManager:
                 .scalar()
             ) or 0
 
-            # Track-level pass rates (sigma and linearity)
+            # Track-level pass rates (sigma and linearity). Exclude UNTRIMMED
+            # tracks -- their sigma_pass/linearity_pass are NULL, so they belong
+            # in neither numerator nor denominator (would deflate the rate).
             total_tracks = (
                 session.query(func.count(DBTrackResult.id))
+                .filter(DBTrackResult.status != DBStatusType.UNTRIMMED.name)
                 .scalar()
             ) or 0
 
@@ -2021,12 +2029,22 @@ class DatabaseManager:
                 .scalar()
             ) or 0
 
+            # Yield denominator = trimmed (gradeable) files. UNTRIMMED test-sweeps
+            # have no trim result, so excluding them keeps pass_rate honest and
+            # consistent with the dashboard headline.
+            trimmed_total = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name)
+                .scalar()
+            ) or 0
+
             return {
                 "total_files": total_files,
+                "trimmed_total": trimmed_total,
                 "passed": passed,
                 "warnings": warnings,
                 "failed": failed,
-                "pass_rate": (passed / total_files * 100) if total_files > 0 else 0.0,
+                "pass_rate": (passed / trimmed_total * 100) if trimmed_total > 0 else 0.0,
                 "oldest_date": oldest_date,
                 "newest_date": newest_date,
                 "unique_models": unique_models,
@@ -2056,6 +2074,8 @@ class DatabaseManager:
                 .filter(
                     DBAnalysisResult.file_date >= cutoff_date,
                     DBAnalysisResult.system.isnot(None),
+                    # Exclude UNTRIMMED tracks from the rate denominator (NULL pass flags).
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBAnalysisResult.system)
                 .all()
@@ -2173,6 +2193,9 @@ class DatabaseManager:
                     DBFinalTestResult.linked_trim_id.isnot(None),
                     DBFinalTestResult.linearity_pass.isnot(None),
                     DBFinalTestResult.match_confidence >= min_confidence,
+                    # Exclude UNTRIMMED tracks: their NULL linearity_pass would force
+                    # trim_all_pass=0, fabricating overkills and masking escapes.
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBFinalTestResult.id, DBFinalTestResult.model, DBFinalTestResult.linearity_pass)
                 .all()
@@ -2425,6 +2448,13 @@ class DatabaseManager:
                     func.count(DBTrackResult.id).label('total_tracks'),
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
+                    # Gradeable file count (excludes UNTRIMMED) -- the honest
+                    # denominator for the file-level pass_rate / failed count.
+                    func.count(func.distinct(case(
+                        (DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                         DBAnalysisResult.id),
+                        else_=None,
+                    ))).label('trimmed_count'),
                 )
                 .outerjoin(
                     DBTrackResult,
@@ -2441,21 +2471,25 @@ class DatabaseManager:
             )
 
             result = []
-            for model, count, passed, total_tracks, sigma_passed, linearity_passed in model_stats:
+            for model, count, passed, total_tracks, sigma_passed, linearity_passed, trimmed_count in model_stats:
                 passed = passed or 0
                 total_tracks = total_tracks or 0
                 sigma_passed = sigma_passed or 0
                 linearity_passed = linearity_passed or 0
+                trimmed_count = trimmed_count or 0
 
-                pass_rate = (passed / count * 100) if count > 0 else 0.0
+                # File-level yield over the gradeable (trimmed) population so
+                # UNTRIMMED test-sweeps are not counted as failures.
+                pass_rate = (passed / trimmed_count * 100) if trimmed_count > 0 else 0.0
                 sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
                 linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
 
                 result.append({
                     "model": model,
                     "count": count,
+                    "trimmed_count": trimmed_count,
                     "passed": passed,
-                    "failed": count - passed,
+                    "failed": trimmed_count - passed,
                     "pass_rate": pass_rate,
                     "sigma_pass_rate": sigma_pass_rate,
                     "linearity_pass_rate": linearity_pass_rate,
@@ -3979,7 +4013,8 @@ class DatabaseManager:
                     .filter(
                         DBAnalysisResult.model == model,
                         DBAnalysisResult.file_date >= cutoff_date,
-                        DBAnalysisResult.file_date < rolling_cutoff
+                        DBAnalysisResult.file_date < rolling_cutoff,
+                        DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
                     )
                     .first()
                 )
@@ -3997,7 +4032,8 @@ class DatabaseManager:
                     )
                     .filter(
                         DBAnalysisResult.model == model,
-                        DBAnalysisResult.file_date >= rolling_cutoff
+                        DBAnalysisResult.file_date >= rolling_cutoff,
+                        DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
                     )
                     .first()
                 )
@@ -7632,6 +7668,8 @@ class DatabaseManager:
                     DBAnalysisResult.model.isnot(None),
                     DBAnalysisResult.model != "Unknown",
                     DBAnalysisResult.file_date >= cutoff,
+                    # Exclude UNTRIMMED tracks (is_anomaly defaults False) from the rate denominator.
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBAnalysisResult.model)
                 .having(func.count(DBTrackResult.id) >= min_samples)
