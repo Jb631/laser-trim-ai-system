@@ -259,8 +259,16 @@ class MLManager:
 
                 detector = self.get_drift_detector(model_name)
 
-                # Sort by file_date for temporal split
-                data_with_sigma = data[data['sigma_gradient'].notna()].copy()
+                # D-SIGMA: monitor drift on the UNTRIMMED-sweep sigma (the upstream
+                # element-production signal), NOT post-trim sigma -- the latter is
+                # corrected by trimming and only LAGS the process, so it's the wrong
+                # signal for "is the process drifting?". Post-trim sigma remains the
+                # product-quality gate (the threshold optimizer above).
+                drift_col = 'untrimmed_sigma_gradient'
+                if drift_col in data.columns:
+                    data_with_sigma = data[data[drift_col].notna()].copy()
+                else:
+                    data_with_sigma = data.iloc[0:0].copy()
                 if 'file_date' in data_with_sigma.columns:
                     data_with_sigma = data_with_sigma.sort_values('file_date')
 
@@ -277,7 +285,7 @@ class MLManager:
                         if pd.notna(last_baseline_date):
                             cutoff_date = last_baseline_date
 
-                    sigma_values = baseline_data['sigma_gradient'].values
+                    sigma_values = baseline_data[drift_col].values
                     result.drift_baseline_set = detector.set_baseline(sigma_values, cutoff_date)
 
                     # Reset detector state before running on detection period
@@ -285,7 +293,7 @@ class MLManager:
                         detector.reset()
 
                         # Run drift detection on the newest 30%
-                        for sigma in detection_data['sigma_gradient'].values:
+                        for sigma in detection_data[drift_col].values:
                             detector.detect(sigma)
 
                         logger.info(
@@ -710,12 +718,15 @@ class MLManager:
                                 cutoff_date = detector.baseline_cutoff_date
 
                                 if cutoff_date:
+                                    # D-SIGMA: detect on the same UNTRIMMED signal the
+                                    # baseline was set on (post-trim sigma is the wrong,
+                                    # lagging signal for process drift).
                                     detection_tracks = (
-                                        session.query(TrackResult.sigma_gradient, AnalysisResult.id)
+                                        session.query(TrackResult.untrimmed_sigma_gradient, AnalysisResult.id)
                                         .join(AnalysisResult)
                                         .filter(AnalysisResult.model == model_name)
                                         .filter(AnalysisResult.file_date > cutoff_date)
-                                        .filter(TrackResult.sigma_gradient.isnot(None))
+                                        .filter(TrackResult.untrimmed_sigma_gradient.isnot(None))
                                         .order_by(AnalysisResult.file_date)
                                         .all()
                                     )
@@ -898,6 +909,9 @@ class MLManager:
                 for track, file_date, serial in trim_results:
                     records.append({
                         'sigma_gradient': track.sigma_gradient,
+                        # Upstream process signal used for DRIFT (D-SIGMA): the
+                        # untrimmed-sweep sigma, not the trim-corrected one.
+                        'untrimmed_sigma_gradient': track.untrimmed_sigma_gradient,
                         'linearity_error': track.final_linearity_error_shifted or 0,
                         'linearity_fail_points': track.linearity_fail_points or 0,
                         'optimal_offset': track.optimal_offset or 0,
@@ -925,6 +939,7 @@ class MLManager:
                     # Final Test data overwrites trim outcome for linked records
                     records.append({
                         'sigma_gradient': None,  # Final test doesn't have sigma
+                        'untrimmed_sigma_gradient': None,  # nor an untrimmed sweep
                         'linearity_error': track.linearity_error or 0,
                         'linearity_fail_points': track.linearity_fail_points or 0,
                         'optimal_offset': 0,
