@@ -569,7 +569,9 @@ def test_get_drifting_models_returns_flagged_only(tmp_path):
     with db.session() as s:
         row = ModelMetricState(
             model="8340-1",
-            metric="sigma_gradient",
+            # D-SIGMA: drift watches the untrimmed-sweep sigma (post-trim
+            # sigma_gradient is no longer a watched drift metric).
+            metric="untrimmed_sigma_gradient",
             baseline_mean=0.01,
             baseline_std=0.001,
             baseline_count=100,

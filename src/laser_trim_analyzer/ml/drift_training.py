@@ -144,9 +144,15 @@ def _train_one_metric(
     if baseline_std <= 0.0:
         baseline_std = 1e-9
 
+    # Bonferroni multiplicity correction: a model's tier is the worst-of N
+    # independent per-metric detectors, so testing each at the full per-tier FP
+    # rate inflates the family-wise false-alarm rate ~N-fold (the "flags
+    # everything" complaint). Spend the per-tier budget across the watched
+    # metrics so the MODEL-level false-alarm rate matches the preset.
+    n_metrics = max(1, len(WATCHED_METRICS))
     thresholds: dict[DriftTier, tuple[float, float, float]] = {}
     for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
-        p = target_fp_for_tier(sensitivity_preset, tier)
+        p = target_fp_for_tier(sensitivity_preset, tier) / n_metrics
         thresholds[tier] = compute_thresholds(sigma=baseline_std, target_fp=p)
 
     _upsert_metric_state(

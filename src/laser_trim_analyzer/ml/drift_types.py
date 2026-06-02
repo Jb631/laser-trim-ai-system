@@ -49,8 +49,14 @@ def target_fp_for_tier(preset: str, tier: DriftTier) -> float:
 
 # Allowed metric names.  Single source of truth -- detector, training,
 # and queries import from here.
+#
+# D-SIGMA: post-trim `sigma_gradient` is intentionally NOT watched for drift.
+# It is computed on the trim-CORRECTED curve, so it's a lagging, confounded
+# signal for element-production drift. The upstream `untrimmed_sigma_gradient`
+# (raw sweep) is the correct process signal. Post-trim sigma remains only a
+# finished-unit quality gate (the per-model threshold optimizer), not a drift
+# metric. (7 metrics -> 7 glance pills on the Model page.)
 WATCHED_METRICS: Tuple[str, ...] = (
-    "sigma_gradient",
     "untrimmed_sigma_gradient",
     "untrimmed_resistance",
     "linearity_error",
