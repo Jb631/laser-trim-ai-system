@@ -306,8 +306,11 @@ class MLManager:
                 features = self._extract_features_from_data(data)
                 labels = ~data['passed']  # 1 = failed
                 severity = data.get('linearity_fail_points')
+                # Group by serial so repeated trims of one physical unit can't
+                # straddle the train/test split (optimistic-bias leakage).
+                groups = data['serial'] if 'serial' in data.columns else None
 
-                training_result = predictor.train(features, labels, severity)
+                training_result = predictor.train(features, labels, severity, groups=groups)
                 result.predictor_trained = training_result.success
                 if training_result.metrics:
                     result.predictor_accuracy = training_result.metrics.accuracy
@@ -885,14 +888,14 @@ class MLManager:
                 # filter below has a "return everything" fallback that would
                 # otherwise leak them into training when nothing else exists.
                 trim_results = (
-                    session.query(TrackResult, AnalysisResult.file_date)
+                    session.query(TrackResult, AnalysisResult.file_date, AnalysisResult.serial)
                     .join(AnalysisResult)
                     .filter(AnalysisResult.model == model_name)
                     .filter(TrackResult.status != StatusType.UNTRIMMED.name)
                     .all()
                 )
 
-                for track, file_date in trim_results:
+                for track, file_date, serial in trim_results:
                     records.append({
                         'sigma_gradient': track.sigma_gradient,
                         'linearity_error': track.final_linearity_error_shifted or 0,
@@ -903,18 +906,22 @@ class MLManager:
                         'sigma_pass': track.sigma_pass,
                         'passed': track.linearity_pass if track.linearity_pass is not None else True,
                         'file_date': file_date,
+                        # serial groups repeated trims of one physical unit so they
+                        # don't leak across the train/test split (a unit can be
+                        # re-trimmed many times -- valid, not a duplicate).
+                        'serial': serial,
                         'source': 'trim',
                     })
 
                 # Get Final Test data (higher priority when linked)
                 final_results = (
-                    session.query(FinalTestTrack, FinalTestResult.file_date)
+                    session.query(FinalTestTrack, FinalTestResult.file_date, FinalTestResult.serial)
                     .join(FinalTestResult)
                     .filter(FinalTestResult.model == model_name)
                     .all()
                 )
 
-                for track, file_date in final_results:
+                for track, file_date, serial in final_results:
                     # Final Test data overwrites trim outcome for linked records
                     records.append({
                         'sigma_gradient': None,  # Final test doesn't have sigma
@@ -926,6 +933,7 @@ class MLManager:
                         'sigma_pass': None,
                         'passed': track.linearity_pass if track.linearity_pass is not None else True,
                         'file_date': file_date,
+                        'serial': serial,
                         'source': 'final_test',
                     })
 

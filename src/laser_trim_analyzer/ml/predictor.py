@@ -40,16 +40,23 @@ def _class_label_is_failure(label: Any) -> bool:
     return bool(label == 1 or label is True)
 
 
-# Feature columns used for prediction
+# Feature columns used for prediction.
+#
+# linearity_error / fail_points / error_to_spec are DELIBERATELY excluded: the
+# training label is linearity_pass == (fail_points == 0), and linearity_error > spec
+# iff fail_points > 0, so feeding any of them is target leakage -- it makes the
+# reported accuracy/AUC tautological (~1.0) and gives the "prediction" zero lead
+# time (it only fires once the unit has already failed). Only trim/process features
+# that are NOT derived from the pass/fail outcome are used.
 FEATURE_COLUMNS = [
     'sigma_gradient',
-    'linearity_error',
-    'fail_points',
     'optimal_offset',
     'linearity_spec',
     'sigma_to_spec',
-    'error_to_spec',
 ]
+
+# Features that must never be added back (they leak the label).
+_LEAKED_FEATURES = frozenset({'linearity_error', 'fail_points', 'error_to_spec'})
 
 
 @dataclass
@@ -155,7 +162,8 @@ class ModelPredictor:
         self,
         features: pd.DataFrame,
         labels: pd.Series,
-        severity: Optional[pd.Series] = None
+        severity: Optional[pd.Series] = None,
+        groups: Optional[pd.Series] = None,
     ) -> PredictorTrainingResult:
         """
         Train the predictor on this model's data.
@@ -164,6 +172,9 @@ class ModelPredictor:
             features: DataFrame with feature columns
             labels: Series with 1=failed, 0=passed
             severity: Optional Series with fail_points for sample weighting
+            groups: Optional Series (e.g. serial) used for a GROUPED train/test
+                split + CV, so repeated trims of one physical unit never straddle
+                the split (which would optimistically bias the reported metrics).
 
         Returns:
             PredictorTrainingResult with metrics and status
@@ -214,8 +225,39 @@ class ModelPredictor:
             can_stratify = y.nunique() > 1 and min_class_count >= 2
             stratify = y if can_stratify else None
 
-            # Split data
-            if sample_weight is not None:
+            # Split data. With serial groups, use a GROUPED split so repeated
+            # trims of one physical unit can't straddle train/test (leakage);
+            # otherwise fall back to the stratified random split.
+            groups_train = None
+            use_groups = False
+            g = None
+            if groups is not None:
+                try:
+                    g = pd.Series(list(groups)).reset_index(drop=True)
+                    use_groups = g.nunique() > 1
+                except Exception:
+                    use_groups = False
+
+            if use_groups:
+                from sklearn.model_selection import GroupShuffleSplit
+                Xr = X.reset_index(drop=True)
+                yr = y.reset_index(drop=True)
+                gss = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=self.config.test_size,
+                    random_state=self.config.random_state,
+                )
+                train_idx, test_idx = next(gss.split(Xr, yr, groups=g))
+                X_train, X_test = Xr.iloc[train_idx], Xr.iloc[test_idx]
+                y_train, y_test = yr.iloc[train_idx], yr.iloc[test_idx]
+                groups_train = g.iloc[train_idx]
+                if sample_weight is not None:
+                    swr = pd.Series(list(sample_weight)).reset_index(drop=True)
+                    sw_train = swr.iloc[train_idx].to_numpy()
+                    sw_test = swr.iloc[test_idx].to_numpy()
+                else:
+                    sw_train = sw_test = None
+            elif sample_weight is not None:
                 X_train, X_test, y_train, y_test, sw_train, sw_test = train_test_split(
                     X, y, sample_weight,
                     test_size=self.config.test_size,
@@ -279,10 +321,24 @@ class ModelPredictor:
                 metrics.auc_roc = roc_auc_score(y_test, y_proba)
 
             # Cross-validation — cap folds at minority class count
-            # (StratifiedKFold needs at least n_splits members per class)
+            # (StratifiedKFold needs at least n_splits members per class).
+            # With serial groups, use GroupKFold so a unit's repeated trims stay
+            # within one fold (no within-CV leakage).
             train_min_class = y_train.value_counts().min()
             max_cv = min(self.config.cv_folds, len(y_train) // 2, train_min_class)
-            if max_cv >= 2:
+            if groups_train is not None:
+                max_cv = min(max_cv, pd.Series(list(groups_train)).nunique())
+            if groups_train is not None and max_cv >= 2:
+                from sklearn.model_selection import GroupKFold
+                cv_scores = cross_val_score(
+                    self.classifier, X_train_scaled, y_train,
+                    groups=list(groups_train),
+                    cv=GroupKFold(n_splits=max_cv),
+                    scoring='accuracy'
+                )
+                metrics.cv_mean = float(cv_scores.mean())
+                metrics.cv_std = float(cv_scores.std())
+            elif max_cv >= 2:
                 cv_scores = cross_val_score(
                     self.classifier, X_train_scaled, y_train,
                     cv=max_cv,

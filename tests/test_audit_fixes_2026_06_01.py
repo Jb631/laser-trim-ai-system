@@ -214,3 +214,35 @@ def test_incremental_skip_confirms_by_content_hash(tmp_path):
     g = tmp_path / "brand_new.xls"
     g.write_text("x")
     assert p._is_processed(g) is False
+
+
+# ---------------------------------------------------------------------------
+# Batch E / C1 + H11 -- predictor no longer leaks the label via features, and
+# trains with a serial-grouped split.
+# ---------------------------------------------------------------------------
+
+
+def test_predictor_excludes_leaked_features():
+    from laser_trim_analyzer.ml.predictor import FEATURE_COLUMNS, _LEAKED_FEATURES
+    assert _LEAKED_FEATURES.isdisjoint(FEATURE_COLUMNS)
+    for leaked in ("linearity_error", "fail_points", "error_to_spec"):
+        assert leaked not in FEATURE_COLUMNS
+
+
+def test_predictor_trains_with_serial_grouped_split():
+    import pandas as pd
+    from laser_trim_analyzer.ml.predictor import ModelPredictor
+
+    n = 80
+    sig = [0.010 + 0.0002 * i for i in range(n)]
+    features = pd.DataFrame({
+        "sigma_gradient": sig,
+        "optimal_offset": [0.001 * (i % 5) for i in range(n)],
+        "linearity_spec": [0.05] * n,
+        "sigma_to_spec": [v / 0.05 for v in sig],
+    })
+    labels = pd.Series([(i % 4 == 0) for i in range(n)])          # ~25% fail, both classes
+    groups = pd.Series([f"sn{i // 4}" for i in range(n)])          # each serial repeats 4x
+    result = ModelPredictor("TESTMODEL").train(features, labels, severity=None, groups=groups)
+    assert result.success is True
+    assert result.metrics is not None
