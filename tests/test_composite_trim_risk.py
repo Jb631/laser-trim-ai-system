@@ -233,3 +233,17 @@ def test_apply_scores_units_for_deployed_model(tmp_path):
         "SELECT composite_trim_risk_score FROM track_results").fetchall()]
     con.close()
     assert all(v is not None and 0.0 <= v <= 1.0 for v in vals)
+
+
+# ---------------------------------------------------------------------------
+# Task 10: composite_trim_risk_score registered as 8th drift metric
+# ---------------------------------------------------------------------------
+
+def test_composite_is_watched_metric():
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+    assert "composite_trim_risk_score" in WATCHED_METRICS
+
+
+def test_composite_has_drift_column_mapping():
+    from laser_trim_analyzer.ml import drift_training
+    assert "composite_trim_risk_score" in drift_training._TRACK_METRIC_COLUMNS

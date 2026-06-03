@@ -48,6 +48,7 @@ _TRACK_METRIC_COLUMNS = {
     "measured_electrical_angle": DBTR.measured_electrical_angle,
     "trim_pass_count": DBTR.trim_pass_count,
     "resistance_change_percent": DBTR.resistance_change_percent,
+    "composite_trim_risk_score": DBTR.composite_trim_risk_score,
 }
 
 

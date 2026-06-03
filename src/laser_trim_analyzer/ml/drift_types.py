@@ -64,6 +64,7 @@ WATCHED_METRICS: Tuple[str, ...] = (
     "trim_pass_count",
     "resistance_change_percent",
     "max_smoothness_value",
+    "composite_trim_risk_score",
 )
 
 
