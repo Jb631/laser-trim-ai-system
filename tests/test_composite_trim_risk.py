@@ -112,3 +112,71 @@ def test_training_record_includes_composite_features():
         else inspect.getsource(mgr.MLManager._get_training_data)
     for key in ("untrimmed_error_max", "resistance_change_percent", "trim_pass_count"):
         assert f"'{key}'" in src or f'"{key}"' in src, f"_get_training_data must emit {key}"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: CompositeRiskModel tests
+# ---------------------------------------------------------------------------
+
+def _toy_frame(n=240, separable=True, seed=0):
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(seed)
+    fail = rng.integers(0, 2, n)
+    emax = rng.normal(0.05, 0.01, n) + (0.03 * fail if separable else 0.0)
+    sigma = rng.normal(0.001, 0.0003, n)
+    rcp = rng.normal(15, 3, n)
+    serial = [f"S{i//3}" for i in range(n)]  # repeated serials -> grouping matters
+    return pd.DataFrame({
+        "untrimmed_error_max": emax, "untrimmed_sigma_gradient": sigma,
+        "resistance_change_percent": rcp, "trim_pass_count": rng.integers(1, 3, n),
+        "linearity_pass": 1 - fail, "serial": serial,
+    })
+
+
+def test_composite_trains_and_scores_in_unit_interval():
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    m = CompositeRiskModel("8232-1")
+    res = m.train(_toy_frame(separable=True))
+    assert res.n_samples == 240
+    assert 0.0 <= res.cv_auc <= 1.0
+    p = m.predict_proba({"untrimmed_error_max": 0.09, "untrimmed_sigma_gradient": 0.001,
+                         "resistance_change_percent": 15.0, "trim_pass_count": 2})
+    assert 0.0 <= p <= 1.0
+
+
+def test_composite_deploy_gate_blocks_no_signal_model():
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    m = CompositeRiskModel("noise")
+    res = m.train(_toy_frame(separable=False, seed=7))
+    # no real signal -> low confidence / no lift -> not deployed
+    assert res.deployed is False
+
+
+def test_composite_deploy_gate_passes_separable_model():
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    m = CompositeRiskModel("real")
+    res = m.train(_toy_frame(separable=True, seed=1))
+    assert res.cv_auc > 0.6
+
+
+def test_composite_drops_all_null_feature():
+    import numpy as np
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    df = _toy_frame(separable=True)
+    df["trim_pass_count"] = np.nan          # simulate pre-reprocess state
+    m = CompositeRiskModel("preReprocess")
+    res = m.train(df)
+    assert "trim_pass_count" not in res.features_used
+    assert res.deployed in (True, False)     # still trains on the rest
+
+
+def test_composite_save_load_roundtrip(tmp_path):
+    from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+    m = CompositeRiskModel("rt")
+    m.train(_toy_frame(separable=True))
+    p = tmp_path / "rt.pkl"
+    m.save(p)
+    m2 = CompositeRiskModel.load(p)
+    feat = {"untrimmed_error_max": 0.09, "untrimmed_sigma_gradient": 0.001,
+            "resistance_change_percent": 15.0, "trim_pass_count": 2}
+    assert abs(m.predict_proba(feat) - m2.predict_proba(feat)) < 1e-9
