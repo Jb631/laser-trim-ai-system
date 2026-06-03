@@ -89,6 +89,12 @@ class Processor:
         # Load per-model thresholds and predictors from database
         self._model_thresholds: Dict[str, float] = {}
         self._model_predictors: Dict = {}  # model_name -> ModelPredictor
+        # Composite trim-risk models (lazy-loaded per model, keyed by model name).
+        # False sentinel means "checked and absent/non-deployed", to avoid repeated
+        # filesystem lookups for models that don't have a deployed model yet.
+        self._composite_models: Dict = {}
+        # Storage path for composite risk pickle files (mirrors MLManager convention).
+        self.ml_storage_path = Path("data/ml_models")
         if use_ml:
             self._load_ml_thresholds()
 
@@ -301,6 +307,25 @@ class Processor:
                                 track_result.risk_category = RiskCategory.LOW
                     except Exception as e:
                         logger.debug(f"ML predictor failed for track {track_result.track_id}: {e}")
+
+                # Composite trim-risk score for the live unit (drift early-warning).
+                try:
+                    _model = metadata.model
+                    crm = self._composite_models.get(_model)
+                    if crm is None:
+                        from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+                        _p = self.ml_storage_path / "composite_risk" / f"{_model}.pkl"
+                        crm = CompositeRiskModel.load(_p) if _p.exists() else False
+                        self._composite_models[_model] = crm
+                    if crm and crm.is_trained and crm.result and crm.result.deployed:
+                        track_result.composite_trim_risk_score = crm.predict_proba({
+                            "untrimmed_error_max": track_result.untrimmed_error_max,
+                            "untrimmed_sigma_gradient": track_result.untrimmed_sigma_gradient,
+                            "resistance_change_percent": getattr(track_result, "resistance_change_percent", None),
+                            "trim_pass_count": track_result.trim_pass_count,
+                        })
+                except Exception:
+                    pass  # scoring is non-essential; never fail a unit over it
 
                 analyzed_tracks.append(track_result)
 

@@ -119,6 +119,7 @@ class MLManager:
         self.predictors: Dict[str, ModelPredictor] = {}
         self.threshold_optimizers: Dict[str, ModelThresholdOptimizer] = {}
         self.drift_detectors: Dict[str, ModelDriftDetector] = {}
+        self.composite_models: Dict[str, "CompositeRiskModel"] = {}
         self.profilers: Dict[str, ModelProfiler] = {}
 
         # State
@@ -798,6 +799,18 @@ class MLManager:
                         # Commit after each model to avoid holding locks too long
                         session.commit()
 
+                        # Score composite_trim_risk_score for deployed models.
+                        # Done AFTER the commit (a separate raw-sqlite3 connection)
+                        # so the bulk UPDATE doesn't contend with the session's
+                        # uncommitted writes -- that contention raises
+                        # "database is locked" and would silently skip scoring.
+                        try:
+                            self._score_composite_for_model(
+                                str(self.db.database_path), model_name
+                            )
+                        except Exception as e:
+                            logger.warning("Composite scoring failed for %s: %s", model_name, e)
+
                         # Log completion with timing and counts for verification
                         model_elapsed = time.time() - model_start_time
                         logger.info(
@@ -1382,6 +1395,36 @@ class MLManager:
             self.composite_models = {}
         self.composite_models[model_name] = crm
         return crm
+
+    def _score_composite_for_model(self, db_path: str, model_name: str) -> int:
+        """Write composite_trim_risk_score for all of a model's tracks.
+        Only runs for deployed models; returns rows scored."""
+        import sqlite3
+        from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel, FEATURES
+        crm = getattr(self, "composite_models", {}).get(model_name)
+        if crm is None:
+            p = self.storage_path / "composite_risk" / f"{model_name}.pkl"
+            if not p.exists():
+                return 0
+            crm = CompositeRiskModel.load(p)
+        if not (crm.is_trained and crm.result and crm.result.deployed):
+            return 0
+        cols = ", ".join(FEATURES)
+        con = sqlite3.connect(db_path); cur = con.cursor()
+        rows = cur.execute(
+            f"SELECT t.id, {cols} FROM track_results t "
+            f"JOIN analysis_results ar ON t.analysis_id = ar.id WHERE ar.model = ?",
+            (model_name,)).fetchall()
+        scored = 0
+        for r in rows:
+            tid = r[0]
+            feat = {f: r[1 + i] for i, f in enumerate(FEATURES)}
+            s = crm.predict_proba(feat)
+            if s == s:  # not NaN
+                cur.execute("UPDATE track_results SET composite_trim_risk_score=? WHERE id=?",
+                            (s, tid)); scored += 1
+        con.commit(); con.close()
+        return scored
 
     def get_adjustment_recommendations(self, model: str) -> List[Dict[str, Any]]:
         """

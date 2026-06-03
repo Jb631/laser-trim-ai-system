@@ -181,6 +181,16 @@ class TrackData(BaseAnalysisModel):
     trimmed_rms_error: Optional[float] = Field(None, description="RMS error after trim")
     max_error_reduction_percent: Optional[float] = Field(None, description="Max error reduction from trim (%)")
 
+    # Composite trim-risk score (0..1). Written during live processing for
+    # deployed CompositeRiskModel instances; NULL if no deployed model exists.
+    # This score is the primary input for the group-level drift early-warning.
+    composite_trim_risk_score: Optional[float] = Field(
+        None, ge=0, le=1,
+        description="Per-unit composite trim-risk score from the deployed logistic "
+                    "regression. Group trend of this field is the drift early-warning "
+                    "signal. NULL means no deployed model for this product model.",
+    )
+
     # Plot reference
     plot_path: Optional[Path] = Field(None, description="Path to plot image")
 

@@ -196,3 +196,40 @@ def test_mlmanager_trains_composite(tmp_path):
     crm = mm._train_composite_risk("8232-1", df)   # new helper
     assert crm.is_trained
     assert (tmp_path / "composite_risk" / "8232-1.pkl").exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 9: _score_composite_for_model (apply path)
+# ---------------------------------------------------------------------------
+
+def test_apply_scores_units_for_deployed_model(tmp_path):
+    import sqlite3
+    from laser_trim_analyzer.ml.manager import MLManager
+    # minimal DB with a few tracks for one model
+    db = tmp_path / "a.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+      CREATE TABLE analysis_results (id INTEGER PRIMARY KEY, model TEXT, serial TEXT);
+      CREATE TABLE track_results (
+        id INTEGER PRIMARY KEY, analysis_id INTEGER,
+        untrimmed_error_max REAL, untrimmed_sigma_gradient REAL,
+        resistance_change_percent REAL, trim_pass_count INTEGER,
+        composite_trim_risk_score REAL);
+    """)
+    con.execute("INSERT INTO analysis_results VALUES (1,'M','S1')")
+    for i in range(3):
+        con.execute("INSERT INTO track_results (analysis_id, untrimmed_error_max, "
+                    "untrimmed_sigma_gradient, resistance_change_percent, trim_pass_count) "
+                    "VALUES (1, ?, 0.001, 15.0, 2)", (0.05 + 0.01*i,))
+    con.commit(); con.close()
+
+    mm = MLManager(db_manager=None, ml_storage_path=tmp_path)
+    mm._train_composite_risk("M", _toy_frame(separable=True))
+    mm.composite_models["M"].result.deployed = True  # force-deploy for the test
+    n = mm._score_composite_for_model(str(db), "M")
+    assert n == 3
+    con = sqlite3.connect(db)
+    vals = [r[0] for r in con.execute(
+        "SELECT composite_trim_risk_score FROM track_results").fetchall()]
+    con.close()
+    assert all(v is not None and 0.0 <= v <= 1.0 for v in vals)

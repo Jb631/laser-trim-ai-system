@@ -2840,6 +2840,8 @@ class DatabaseManager:
             raw_fail_points=getattr(track, 'raw_fail_points', None),
             # Trim difficulty (number of laser-trim passes recorded in file)
             trim_pass_count=getattr(track, 'trim_pass_count', None),
+            # Composite trim-risk score (live-scored during processing for deployed models)
+            composite_trim_risk_score=getattr(track, 'composite_trim_risk_score', None),
             # Computed metrics
             gradient_margin=track.gradient_margin,
             plot_path=str(track.plot_path) if track.plot_path else None,
