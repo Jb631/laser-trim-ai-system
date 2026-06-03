@@ -34,6 +34,11 @@ These were settled during the 2026-06-01 brainstorm; do not re-litigate them whi
 - **`untrimmed_resistance` (93%) and `trimmed_resistance` (98%)** are populated → `resistance_change` and `resistance_change_percent` are backfillable with no reprocess.
 - **`trim_pass_count` is NOT derivable** from stored data (counted from file sheets) → needs a reprocess on the work machine.
 
+### Execution environment (read before running any step)
+
+- **Use `python3`, not `python`** — there is no `python` on PATH. Every `python -m pytest ...` command in this plan means `python3 -m pytest ...`.
+- **Every new ORM Column REQUIRES a matching migration** in `DatabaseManager._run_migrations()` (`database/manager.py`). Adding a Column without the migration breaks *all* `track_results` queries against existing DBs with `OperationalError: no such column`. The `untrimmed_sigma_gradient` block (~L576) is the canonical template (migrates column **and** index). This applies to Task 1 (`untrimmed_error_max`) and Task 5 (`composite_trim_risk_score`). Always run the **full** suite after a schema change, not just the new tests.
+
 ### Key file locations (exact)
 
 | What | File | Anchor |
@@ -132,10 +137,40 @@ In the `__table_args__` index block (~L425), beside `Index('idx_track_untrimmed_
         Index('idx_track_untrimmed_error_max', 'untrimmed_error_max'),
 ```
 
+- [ ] **Step 4b: Register the column in the existing-DB migration (REQUIRED)**
+
+> Adding a Column to the ORM makes every `track_results` SELECT include it. Existing databases (`data/analysis.db`) don't have the physical column, so without a migration **every historical-data query raises `OperationalError: no such column: untrimmed_error_max`**. The app migrates existing DBs in `DatabaseManager._run_migrations()` (`src/laser_trim_analyzer/database/manager.py`, called during init). Add a migration block following the existing `untrimmed_sigma_gradient` template (which migrates column **and** index), placed right after it:
+
+```python
+            # Migration: Add untrimmed_error_max column to track_results.
+            # Worst-case |error| across untrimmed points; complements
+            # untrimmed_sigma_gradient as an element-quality signal.
+            try:
+                session.execute(
+                    text("SELECT untrimmed_error_max FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info("Running migration: Adding untrimmed_error_max column")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN untrimmed_error_max FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_track_untrimmed_error_max "
+                        "ON track_results (untrimmed_error_max)"
+                    ))
+                    session.commit()
+                    logger.info("Migration completed: Added untrimmed_error_max")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
+```
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_composite_trim_risk.py -v`
-Expected: PASS (both tests).
+Expected: PASS (both tests). **Also run the full suite** (`python -m pytest tests/ -q`) — the migration must keep historical-data queries green: any test that queries the real `data/analysis.db` (e.g. `tests/test_5_8_2026_bugfixes.py::test_get_historical_data_light_load_returns_rows`) will fail with `no such column` if Step 4b is skipped.
 
 - [ ] **Step 6: Commit**
 
@@ -501,6 +536,34 @@ In `__table_args__`:
 
 ```python
         Index('idx_track_composite_trim_risk_score', 'composite_trim_risk_score'),
+```
+
+- [ ] **Step 3b: Register the column in the existing-DB migration (REQUIRED)**
+
+Same as Phase 1 Task 1 Step 4b — add a migration block in `DatabaseManager._run_migrations()` (`src/laser_trim_analyzer/database/manager.py`) so existing DBs get the physical column, otherwise every `track_results` query raises `OperationalError: no such column: composite_trim_risk_score`. Follow the `untrimmed_error_max` migration block as the template:
+
+```python
+            # Migration: Add composite_trim_risk_score column to track_results.
+            try:
+                session.execute(
+                    text("SELECT composite_trim_risk_score FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()
+                logger.info("Running migration: Adding composite_trim_risk_score column")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN composite_trim_risk_score FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_track_composite_trim_risk_score "
+                        "ON track_results (composite_trim_risk_score)"
+                    ))
+                    session.commit()
+                    logger.info("Migration completed: Added composite_trim_risk_score")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
