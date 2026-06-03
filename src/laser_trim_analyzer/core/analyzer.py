@@ -1106,6 +1106,13 @@ class Analyzer:
             valid_trimmed = [e for e in trimmed_errors
                              if e is not None and not np.isnan(e)]
 
+            # Worst single point on the raw sweep -- governs zero-tolerance
+            # linearity; the strongest single upstream-drift signal. Guarded by
+            # valid_untrimmed ALONE so untrimmed-only test-sweep tracks still get
+            # it. Matches the existing max(abs(...)) idiom used a few lines below.
+            if valid_untrimmed:
+                result["untrimmed_error_max"] = float(max(abs(e) for e in valid_untrimmed))
+
             if valid_untrimmed and valid_trimmed:
                 untrimmed_rms = float(np.sqrt(np.mean(np.array(valid_untrimmed) ** 2)))
                 trimmed_rms = float(np.sqrt(np.mean(np.array(valid_trimmed) ** 2)))

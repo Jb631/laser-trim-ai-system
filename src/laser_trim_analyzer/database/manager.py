@@ -2784,6 +2784,7 @@ class DatabaseManager:
             resistance_change_percent=track.resistance_change_percent,
             trim_improvement_percent=track.trim_improvement_percent,
             untrimmed_rms_error=track.untrimmed_rms_error,
+            untrimmed_error_max=getattr(track, 'untrimmed_error_max', None),
             trimmed_rms_error=track.trimmed_rms_error,
             max_error_reduction_percent=track.max_error_reduction_percent,
             # Max deviation metrics
