@@ -636,6 +636,28 @@ class DatabaseManager:
                         f"Migration warning (may already exist): {e}"
                     )
 
+            # Migration: Add composite_trim_risk_score column to track_results.
+            try:
+                session.execute(
+                    text("SELECT composite_trim_risk_score FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()
+                logger.info("Running migration: Adding composite_trim_risk_score column")
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN composite_trim_risk_score FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS idx_track_composite_trim_risk_score "
+                        "ON track_results (composite_trim_risk_score)"
+                    ))
+                    session.commit()
+                    logger.info("Migration completed: Added composite_trim_risk_score")
+                except Exception as e:
+                    logger.warning(f"Migration warning (may already exist): {e}")
+
             # Migration: Create model_metric_state table for Spec 2.
             # This is a CREATE TABLE rather than ALTER TABLE because the
             # table is entirely new in V6.  Use Base.metadata.create_all

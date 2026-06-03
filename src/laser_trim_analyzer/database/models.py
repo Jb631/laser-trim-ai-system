@@ -379,6 +379,10 @@ class TrackResult(Base):
     trimmed_rms_error = Column(Float)
     max_error_reduction_percent = Column(Float)
 
+    # Per-unit composite trim-risk score in [0,1] from the per-model logistic.
+    # Watched at the group level for upstream drift (2026-06-01 composite plan).
+    composite_trim_risk_score = Column(Float, nullable=True)
+
     # Raw data for detailed analysis and comparison
     position_data = Column(SafeJSON, nullable=True)  # Array of position values
     error_data = Column(SafeJSON, nullable=True)     # Array of error values
@@ -425,6 +429,7 @@ class TrackResult(Base):
         Index('idx_track_sigma_gradient', 'sigma_gradient'),
         Index('idx_track_untrimmed_sigma_gradient', 'untrimmed_sigma_gradient'),
         Index('idx_track_untrimmed_error_max', 'untrimmed_error_max'),
+        Index('idx_track_composite_trim_risk_score', 'composite_trim_risk_score'),
         Index('idx_track_sigma_pass', 'sigma_pass'),
         Index('idx_track_linearity_pass', 'linearity_pass'),
         Index('idx_track_risk_category', 'risk_category'),

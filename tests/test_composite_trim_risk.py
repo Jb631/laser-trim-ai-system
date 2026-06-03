@@ -98,3 +98,8 @@ def test_backfill_fills_only_null_rows(tmp_path):
     r2 = con.execute("SELECT untrimmed_error_max FROM track_results WHERE id=2").fetchone()
     assert r2[0] == 999.0                      # untouched
     con.close()
+
+
+def test_trackresult_has_composite_score_column():
+    from laser_trim_analyzer.database.models import TrackResult
+    assert hasattr(TrackResult, "composite_trim_risk_score")
