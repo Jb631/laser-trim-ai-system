@@ -103,3 +103,12 @@ def test_backfill_fills_only_null_rows(tmp_path):
 def test_trackresult_has_composite_score_column():
     from laser_trim_analyzer.database.models import TrackResult
     assert hasattr(TrackResult, "composite_trim_risk_score")
+
+
+def test_training_record_includes_composite_features():
+    import inspect
+    from laser_trim_analyzer.ml import manager as mgr
+    src = inspect.getsource(mgr._get_training_data) if hasattr(mgr, "_get_training_data") \
+        else inspect.getsource(mgr.MLManager._get_training_data)
+    for key in ("untrimmed_error_max", "resistance_change_percent", "trim_pass_count"):
+        assert f"'{key}'" in src or f'"{key}"' in src, f"_get_training_data must emit {key}"

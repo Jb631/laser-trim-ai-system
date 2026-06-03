@@ -938,6 +938,11 @@ class MLManager:
                         # re-trimmed many times -- valid, not a duplicate).
                         'serial': serial,
                         'source': 'trim',
+                        # Composite trim-risk features (task 6): worst raw-element
+                        # deviation, resistance shift mode, and trim-headroom mode.
+                        'untrimmed_error_max': track.untrimmed_error_max,
+                        'resistance_change_percent': track.resistance_change_percent,
+                        'trim_pass_count': track.trim_pass_count,
                     })
 
                 # Get Final Test data (higher priority when linked)
