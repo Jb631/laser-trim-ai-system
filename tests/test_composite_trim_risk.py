@@ -180,3 +180,19 @@ def test_composite_save_load_roundtrip(tmp_path):
     feat = {"untrimmed_error_max": 0.09, "untrimmed_sigma_gradient": 0.001,
             "resistance_change_percent": 15.0, "trim_pass_count": 2}
     assert abs(m.predict_proba(feat) - m2.predict_proba(feat)) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Task 8: MLManager._train_composite_risk integration
+# ---------------------------------------------------------------------------
+
+def test_mlmanager_trains_composite(tmp_path):
+    import pandas as pd
+    from laser_trim_analyzer.ml.manager import MLManager
+    # MLManager requires db_manager as first positional arg; pass None since
+    # _train_composite_risk doesn't touch the DB — it only uses the storage path.
+    mm = MLManager(db_manager=None, ml_storage_path=tmp_path)
+    df = _toy_frame(separable=True)
+    crm = mm._train_composite_risk("8232-1", df)   # new helper
+    assert crm.is_trained
+    assert (tmp_path / "composite_risk" / "8232-1.pkl").exists()

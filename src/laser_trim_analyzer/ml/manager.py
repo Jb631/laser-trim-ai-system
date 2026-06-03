@@ -329,6 +329,13 @@ class MLManager:
                 if training_result.metrics:
                     result.predictor_accuracy = training_result.metrics.accuracy
 
+            # Composite trim-risk model (2026-06-01 plan). Reuses the same
+            # per-model training frame; grouped-CV + deploy-gate inside.
+            try:
+                self._train_composite_risk(model_name, data)
+            except Exception as e:
+                logger.warning("Composite risk training failed for %s: %s", model_name, e)
+
             result.success = True
 
             # Track trained model
@@ -1357,6 +1364,24 @@ class MLManager:
             ]
 
         return insights
+
+    def _train_composite_risk(self, model_name: str, data) -> "CompositeRiskModel":
+        """Train and persist the per-model composite trim-risk model."""
+        from laser_trim_analyzer.ml.composite_risk import CompositeRiskModel
+        crm = CompositeRiskModel(model_name)
+        res = crm.train(data)
+        logger.info(
+            "Composite risk [%s]: cv_auc=%.3f best_single=%.3f conf=%.3f deployed=%s (%s)",
+            model_name, res.cv_auc, res.best_single_auc, res.confidence,
+            res.deployed, res.reason,
+        )
+        out_dir = self.storage_path / "composite_risk"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        crm.save(out_dir / f"{model_name}.pkl")
+        if not hasattr(self, "composite_models"):
+            self.composite_models = {}
+        self.composite_models[model_name] = crm
+        return crm
 
     def get_adjustment_recommendations(self, model: str) -> List[Dict[str, Any]]:
         """
