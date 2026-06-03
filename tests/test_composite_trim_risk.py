@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def test_trackdata_has_untrimmed_error_max_field():
@@ -47,3 +48,53 @@ def test_untrimmed_error_max_present_for_untrimmed_only_track():
     )
     assert abs(res["untrimmed_error_max"] - 0.064) < 1e-9
     assert "untrimmed_rms_error" not in res  # both-sweep guard still gates RMS
+
+
+def test_backfill_fills_only_null_rows(tmp_path):
+    import sqlite3, json
+    from scripts.backfill_trim_effort import backfill_trim_effort
+
+    db = tmp_path / "t.db"
+    con = sqlite3.connect(db)
+    con.executescript(
+        """
+        CREATE TABLE track_results (
+            id INTEGER PRIMARY KEY,
+            untrimmed_errors TEXT,
+            untrimmed_resistance REAL,
+            trimmed_resistance REAL,
+            untrimmed_error_max REAL,
+            untrimmed_rms_error REAL,
+            resistance_change REAL,
+            resistance_change_percent REAL
+        );
+        """
+    )
+    # row 1: everything NULL -> should be filled
+    con.execute(
+        "INSERT INTO track_results (id, untrimmed_errors, untrimmed_resistance, trimmed_resistance) "
+        "VALUES (1, ?, 4486.0, 5256.0)",
+        (json.dumps([0.01, -0.05, 0.03]),),
+    )
+    # row 2: untrimmed_error_max already set -> must NOT be overwritten
+    con.execute(
+        "INSERT INTO track_results (id, untrimmed_errors, untrimmed_error_max) VALUES (2, ?, 999.0)",
+        (json.dumps([0.01, -0.05, 0.03]),),
+    )
+    con.commit(); con.close()
+
+    n = backfill_trim_effort(str(db))
+    assert n >= 1
+
+    con = sqlite3.connect(db)
+    r1 = con.execute(
+        "SELECT untrimmed_error_max, untrimmed_rms_error, resistance_change, resistance_change_percent "
+        "FROM track_results WHERE id=1"
+    ).fetchone()
+    assert abs(r1[0] - 0.05) < 1e-9          # error_max
+    assert r1[1] > 0                          # rms filled
+    assert abs(r1[2] - 770.0) < 1e-9          # resistance_change
+    assert abs(r1[3] - (770.0 / 4486.0 * 100)) < 1e-6
+    r2 = con.execute("SELECT untrimmed_error_max FROM track_results WHERE id=2").fetchone()
+    assert r2[0] == 999.0                      # untouched
+    con.close()
