@@ -604,6 +604,38 @@ class DatabaseManager:
                         f"Migration warning (may already exist): {e}"
                     )
 
+            # Migration: Add untrimmed_error_max column to track_results.
+            # Spec 2 (2026-06-02): worst-case linearity error across untrimmed
+            # data points; complements untrimmed_sigma_gradient as an element-
+            # quality signal.  Backfilled by natural reprocess flow.
+            try:
+                session.execute(
+                    text("SELECT untrimmed_error_max FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info(
+                    "Running migration: Adding untrimmed_error_max column"
+                )
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN untrimmed_error_max FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_track_untrimmed_error_max "
+                        "ON track_results (untrimmed_error_max)"
+                    ))
+                    session.commit()
+                    logger.info(
+                        "Migration completed: Added untrimmed_error_max"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Migration warning (may already exist): {e}"
+                    )
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))

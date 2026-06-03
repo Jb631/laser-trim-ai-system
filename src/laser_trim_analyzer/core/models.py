@@ -172,6 +172,12 @@ class TrackData(BaseAnalysisModel):
     resistance_change: Optional[float] = Field(None, description="Resistance change (ohms)")
     trim_improvement_percent: Optional[float] = Field(None, description="RMS error improvement from trim (%)")
     untrimmed_rms_error: Optional[float] = Field(None, description="RMS error before trim")
+    untrimmed_error_max: Optional[float] = Field(
+        None, ge=0,
+        description="Max |error| on the untrimmed (pre-trim) sweep. Zero-tolerance "
+                    "linearity is governed by the worst point; this is the strongest "
+                    "single upstream-drift signal. Exclude-aware, NaN-safe.",
+    )
     trimmed_rms_error: Optional[float] = Field(None, description="RMS error after trim")
     max_error_reduction_percent: Optional[float] = Field(None, description="Max error reduction from trim (%)")
 
