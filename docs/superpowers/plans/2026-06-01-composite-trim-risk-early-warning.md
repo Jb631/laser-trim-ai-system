@@ -425,7 +425,7 @@ for col in ["untrimmed_error_max","untrimmed_rms_error","resistance_change","res
     print(f"{col}: {n:,} populated")
 PY
 ```
-Expected: each of the four columns now populated for the large majority of rows (error_max/rms ~100%, resistance ~93%). Re-running the script must report ~0 new updates (idempotent).
+Expected: each of the four columns now populated for the large majority of rows — error_max/rms ≈ 82% (bounded by *usable* untrimmed arrays — the same ~18% of rows that lack `untrimmed_sigma_gradient` have empty/all-NaN untrimmed sweeps), resistance ≈ 93%. Re-running the script must report ~0 new updates (idempotent).
 
 - [ ] **Step 6: Commit**
 
