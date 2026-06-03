@@ -1410,6 +1410,14 @@ class ChartWidget(ctk.CTkFrame):
         anomaly_x = [i for i, a in enumerate(anomaly_flags) if a]
         anomaly_y = [sigma_values[i] for i in anomaly_x]
 
+        # Never clip a FAILING or anomalous point off-canvas: those are exactly
+        # what an operator must see -- a percentile clip that hides the worst
+        # fails understates severity (a drifting model looks more in-control).
+        critical_y = fail_y + anomaly_y
+        if critical_y:
+            y_max = max(y_max, max(critical_y) * 1.05)
+            outlier_count = sum(1 for v in sigma_values if v > y_max)
+
         # Plot points
         if pass_x:
             ax.scatter(pass_x, pass_y, color=COLORS['pass'], s=30, alpha=0.7,

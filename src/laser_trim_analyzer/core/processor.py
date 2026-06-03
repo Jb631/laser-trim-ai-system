@@ -47,10 +47,12 @@ from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
 
-# Memory thresholds for 8GB systems
-MEMORY_WARNING_PERCENT = 90  # Start throttling at 75% usage
-MEMORY_CRITICAL_PERCENT = 95  # Force sequential at 85% usage
-MAX_WORKERS_LOW_MEMORY = 2  # Workers when memory is tight
+# Memory thresholds. NOTE: these are the ACTUAL trigger points (the previous
+# comments claimed 75/85, which was misleading). If an 8GB target needs earlier
+# throttling, lower these constants -- don't just edit the comments.
+MEMORY_WARNING_PERCENT = 90   # Throttle (reduce workers) above this RAM usage %
+MEMORY_CRITICAL_PERCENT = 95  # Force sequential processing above this RAM usage %
+MAX_WORKERS_LOW_MEMORY = 2    # Workers when memory is tight
 
 
 class Processor:
@@ -606,10 +608,13 @@ class Processor:
                 file_paths, progress_callback, incremental, summary
             )
 
-        # Finalize summary
+        # Finalize summary. Yield is over the GRADEABLE population (files that
+        # actually have a trim result); UNTRIMMED test-sweeps are excluded from
+        # the denominator so the rate isn't diluted.
         summary.end_time = datetime.now()
-        if summary.processed > 0:
-            summary.pass_rate = (summary.passed / summary.processed) * 100
+        gradeable = summary.gradeable_count
+        if gradeable > 0:
+            summary.pass_rate = (summary.passed / gradeable) * 100
 
         logger.info(f"Batch complete: {summary.processed}/{total_files} processed, "
                    f"{summary.passed} passed, {summary.failed} failed")
@@ -796,6 +801,10 @@ class Processor:
 
                     except Exception as e:
                         logger.error(f"Error processing {file_path}: {e}")
+                        # Count as processed-with-error so the buckets sum to
+                        # `processed`, matching the sequential path (where
+                        # process_file returns an ERROR result via _update_summary).
+                        summary.processed += 1
                         summary.errors += 1
 
                         if progress_callback:
@@ -1073,14 +1082,10 @@ class Processor:
         summary.processed += 1
         summary.total_processing_time += result.processing_time
 
-        if result.overall_status == AnalysisStatus.PASS:
-            summary.passed += 1
-        elif result.overall_status == AnalysisStatus.WARNING:
-            summary.warnings += 1
-        elif result.overall_status == AnalysisStatus.ERROR:
-            summary.errors += 1
-        elif result.overall_status == AnalysisStatus.FAIL:
-            summary.failed += 1
+        # Single source of truth for status bucketing (incl. the UNTRIMMED
+        # bucket, which was previously dropped -- diluting pass_rate and
+        # making counts not sum to `processed`).
+        summary.record_status(result.overall_status)
 
         # Update average sigma. UNTRIMMED tracks carry sigma_gradient=None
         # because no trim ran; filter them out before averaging. Skip the
@@ -1139,19 +1144,29 @@ class Processor:
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
-        Uses full file path lookup (O(1)) when cache is loaded.
-        Falls back to DB query only if cache wasn't loaded.
+        Identity is the CONTENT hash, not the path. A path miss is a cheap
+        early-out (a brand-new filename can't have been processed); a path hit
+        is confirmed by hash so a re-export of NEW content to a reused filename
+        is processed rather than silently skipped.
 
-        IMPORTANT: Compares full paths, not just filenames, to handle
-        duplicate filenames in different folders correctly.
+        Falls back to the (hash-based) DB query only if the cache wasn't loaded.
         """
         try:
-            # If cache was loaded (even if empty), use fast set lookup
+            # If cache was loaded (even if empty), use it.
             if self._processed_filenames is not None:
-                # Compare full path (as string) for accurate matching
-                return str(file_path) in self._processed_filenames
+                # A path we've never seen -> definitely new (cheap, no hash read).
+                if str(file_path) not in self._processed_filenames:
+                    return False
+                # Path seen before -> CONFIRM the content still matches before
+                # skipping. The file_hash is the identity, not the path, so a
+                # re-export of new content to a fixed filename is NOT dropped.
+                try:
+                    file_hash = calculate_file_hash(file_path)
+                except Exception:
+                    return False  # can't hash -> don't skip; let it process
+                return file_hash in self._processed_hashes
 
-            # Cache not loaded - query database directly (slower)
+            # Cache not loaded - query database directly (already hash-based).
             from laser_trim_analyzer.database import get_database
             db = get_database()
             return db.is_file_processed(file_path)
@@ -1181,9 +1196,11 @@ class Processor:
                 file_modified_date=datetime.fromtimestamp(stat.st_mtime),
             )
 
-            # Update in-memory cache if loaded
+            # Update in-memory cache if loaded (path + content hash).
             if self._processed_filenames is not None:
                 self._processed_filenames.add(str(file_path))
+                if self._processed_hashes is not None:
+                    self._processed_hashes.add(file_hash)
 
         except Exception as e:
             logger.debug(f"Could not record skipped file {file_path.name}: {e}")
@@ -1207,30 +1224,41 @@ class Processor:
 
             db = get_database()
             with db.session() as session:
-                # Load FULL PATHS for accurate lookup (handles duplicate filenames)
-                # Only load successfully processed files - errors should be retried
-                file_paths = session.query(DBProcessedFile.file_path).filter(
-                    DBProcessedFile.success == True
-                ).all()
-                self._processed_filenames = set(row.file_path for row in file_paths if row.file_path)
+                # Load paths AND content hashes for successfully processed files.
+                # The hash is the identity (skip only when content matches); the
+                # path is a cheap early-out. Errors (success=False) are excluded
+                # so they're retried.
+                rows = session.query(
+                    DBProcessedFile.file_path, DBProcessedFile.file_hash
+                ).filter(DBProcessedFile.success == True).all()
+                self._processed_filenames = set(r.file_path for r in rows if r.file_path)
+                self._processed_hashes = set(r.file_hash for r in rows if r.file_hash)
 
-                # Also load Final Test file paths (they're always "successful" if in DB)
-                ft_paths = session.query(FinalTestResult.file_path).all()
+                # Also load Final Test file paths + hashes (always "successful" if in DB)
+                ft_rows = session.query(
+                    FinalTestResult.file_path, FinalTestResult.file_hash
+                ).all()
                 ft_count = 0
-                for row in ft_paths:
+                for row in ft_rows:
                     if row.file_path:
                         self._processed_filenames.add(row.file_path)
                         ft_count += 1
+                    if row.file_hash:
+                        self._processed_hashes.add(row.file_hash)
 
                 # Also load Smoothness file paths
                 smoothness_count = 0
                 try:
                     from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
-                    smoothness_paths = session.query(DBSmoothnessResult.file_path).all()
-                    for row in smoothness_paths:
+                    smoothness_rows = session.query(
+                        DBSmoothnessResult.file_path, DBSmoothnessResult.file_hash
+                    ).all()
+                    for row in smoothness_rows:
                         if row.file_path:
                             self._processed_filenames.add(row.file_path)
                             smoothness_count += 1
+                        if row.file_hash:
+                            self._processed_hashes.add(row.file_hash)
                 except Exception as e:
                     logger.debug(f"Could not load smoothness paths: {e}")
 

@@ -395,6 +395,18 @@ class DatabaseManager:
                     session.execute(text("UPDATE track_results SET status = 'FAIL' WHERE status = 'Fail'"))
                     session.execute(text("UPDATE track_results SET status = 'WARNING' WHERE status = 'Warning'"))
                     session.execute(text("UPDATE track_results SET status = 'ERROR' WHERE status = 'Error'"))
+                    # Fix final_test_results / smoothness_results too (the original
+                    # migration missed these tables). Idempotent if already uppercase.
+                    for _tbl in ("final_test_results", "smoothness_results"):
+                        for _old, _new in (("Pass", "PASS"), ("Fail", "FAIL"),
+                                           ("Warning", "WARNING"), ("Error", "ERROR"),
+                                           ("Untrimmed", "UNTRIMMED")):
+                            try:
+                                session.execute(text(
+                                    f"UPDATE {_tbl} SET overall_status = '{_new}' "
+                                    f"WHERE overall_status = '{_old}'"))
+                            except Exception:
+                                pass  # table/column may not exist on older schemas
                     session.commit()
                     logger.info("Migration completed: Status values normalized")
             except Exception as e:
@@ -586,6 +598,38 @@ class DatabaseManager:
                     session.commit()
                     logger.info(
                         "Migration completed: Added untrimmed_sigma_gradient"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Migration warning (may already exist): {e}"
+                    )
+
+            # Migration: Add untrimmed_error_max column to track_results.
+            # Spec 2 (2026-06-02): worst-case linearity error across untrimmed
+            # data points; complements untrimmed_sigma_gradient as an element-
+            # quality signal.  Backfilled by natural reprocess flow.
+            try:
+                session.execute(
+                    text("SELECT untrimmed_error_max FROM track_results LIMIT 1")
+                )
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info(
+                    "Running migration: Adding untrimmed_error_max column"
+                )
+                try:
+                    session.execute(text(
+                        "ALTER TABLE track_results "
+                        "ADD COLUMN untrimmed_error_max FLOAT"
+                    ))
+                    session.execute(text(
+                        "CREATE INDEX IF NOT EXISTS "
+                        "idx_track_untrimmed_error_max "
+                        "ON track_results (untrimmed_error_max)"
+                    ))
+                    session.commit()
+                    logger.info(
+                        "Migration completed: Added untrimmed_error_max"
                     )
                 except Exception as e:
                     logger.warning(
@@ -1452,6 +1496,20 @@ class DatabaseManager:
             )
             session.add(processed_file)
             session.flush()
+        else:
+            # Relink an existing hash row (e.g. a prior ERROR, or a file that was
+            # skipped/misclassified earlier) to this analysis so a transient
+            # failure isn't permanent. The old behavior silently no-op'd, leaving
+            # the row stuck at its prior (e.g. success=False) state.
+            session.query(DBProcessedFile).filter(
+                DBProcessedFile.file_hash == file_hash
+            ).update({
+                DBProcessedFile.analysis_id: analysis_id,
+                DBProcessedFile.success: success,
+                DBProcessedFile.file_path: str(file_path),
+                DBProcessedFile.filename: file_path.name,
+            })
+            session.flush()
 
     # =========================================================================
     # QA Alerts
@@ -1752,7 +1810,12 @@ class DatabaseManager:
                         )
                     ).label('passed')
                 )
-                .filter(DBAnalysisResult.file_date >= trend_start)
+                .filter(
+                    DBAnalysisResult.file_date >= trend_start,
+                    # Exclude UNTRIMMED so the per-day pass_rate uses the gradeable
+                    # denominator and matches the headline (was ~20pts off).
+                    DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                )
             )
             if filter_models is not None:
                 daily_q = daily_q.filter(DBAnalysisResult.model.in_(filter_models))
@@ -2017,9 +2080,12 @@ class DatabaseManager:
                 .scalar()
             ) or 0
 
-            # Track-level pass rates (sigma and linearity)
+            # Track-level pass rates (sigma and linearity). Exclude UNTRIMMED
+            # tracks -- their sigma_pass/linearity_pass are NULL, so they belong
+            # in neither numerator nor denominator (would deflate the rate).
             total_tracks = (
                 session.query(func.count(DBTrackResult.id))
+                .filter(DBTrackResult.status != DBStatusType.UNTRIMMED.name)
                 .scalar()
             ) or 0
 
@@ -2035,12 +2101,22 @@ class DatabaseManager:
                 .scalar()
             ) or 0
 
+            # Yield denominator = trimmed (gradeable) files. UNTRIMMED test-sweeps
+            # have no trim result, so excluding them keeps pass_rate honest and
+            # consistent with the dashboard headline.
+            trimmed_total = (
+                session.query(func.count(DBAnalysisResult.id))
+                .filter(DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name)
+                .scalar()
+            ) or 0
+
             return {
                 "total_files": total_files,
+                "trimmed_total": trimmed_total,
                 "passed": passed,
                 "warnings": warnings,
                 "failed": failed,
-                "pass_rate": (passed / total_files * 100) if total_files > 0 else 0.0,
+                "pass_rate": (passed / trimmed_total * 100) if trimmed_total > 0 else 0.0,
                 "oldest_date": oldest_date,
                 "newest_date": newest_date,
                 "unique_models": unique_models,
@@ -2070,6 +2146,8 @@ class DatabaseManager:
                 .filter(
                     DBAnalysisResult.file_date >= cutoff_date,
                     DBAnalysisResult.system.isnot(None),
+                    # Exclude UNTRIMMED tracks from the rate denominator (NULL pass flags).
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBAnalysisResult.system)
                 .all()
@@ -2187,6 +2265,9 @@ class DatabaseManager:
                     DBFinalTestResult.linked_trim_id.isnot(None),
                     DBFinalTestResult.linearity_pass.isnot(None),
                     DBFinalTestResult.match_confidence >= min_confidence,
+                    # Exclude UNTRIMMED tracks: their NULL linearity_pass would force
+                    # trim_all_pass=0, fabricating overkills and masking escapes.
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBFinalTestResult.id, DBFinalTestResult.model, DBFinalTestResult.linearity_pass)
                 .all()
@@ -2439,6 +2520,13 @@ class DatabaseManager:
                     func.count(DBTrackResult.id).label('total_tracks'),
                     func.sum(case((DBTrackResult.sigma_pass == True, 1), else_=0)).label('sigma_passed'),
                     func.sum(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label('linearity_passed'),
+                    # Gradeable file count (excludes UNTRIMMED) -- the honest
+                    # denominator for the file-level pass_rate / failed count.
+                    func.count(func.distinct(case(
+                        (DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+                         DBAnalysisResult.id),
+                        else_=None,
+                    ))).label('trimmed_count'),
                 )
                 .outerjoin(
                     DBTrackResult,
@@ -2455,21 +2543,25 @@ class DatabaseManager:
             )
 
             result = []
-            for model, count, passed, total_tracks, sigma_passed, linearity_passed in model_stats:
+            for model, count, passed, total_tracks, sigma_passed, linearity_passed, trimmed_count in model_stats:
                 passed = passed or 0
                 total_tracks = total_tracks or 0
                 sigma_passed = sigma_passed or 0
                 linearity_passed = linearity_passed or 0
+                trimmed_count = trimmed_count or 0
 
-                pass_rate = (passed / count * 100) if count > 0 else 0.0
+                # File-level yield over the gradeable (trimmed) population so
+                # UNTRIMMED test-sweeps are not counted as failures.
+                pass_rate = (passed / trimmed_count * 100) if trimmed_count > 0 else 0.0
                 sigma_pass_rate = (sigma_passed / total_tracks * 100) if total_tracks > 0 else 0.0
                 linearity_pass_rate = (linearity_passed / total_tracks * 100) if total_tracks > 0 else 0.0
 
                 result.append({
                     "model": model,
                     "count": count,
+                    "trimmed_count": trimmed_count,
                     "passed": passed,
-                    "failed": count - passed,
+                    "failed": trimmed_count - passed,
                     "pass_rate": pass_rate,
                     "sigma_pass_rate": sigma_pass_rate,
                     "linearity_pass_rate": linearity_pass_rate,
@@ -2706,6 +2798,7 @@ class DatabaseManager:
             resistance_change_percent=track.resistance_change_percent,
             trim_improvement_percent=track.trim_improvement_percent,
             untrimmed_rms_error=track.untrimmed_rms_error,
+            untrimmed_error_max=getattr(track, 'untrimmed_error_max', None),
             trimmed_rms_error=track.trimmed_rms_error,
             max_error_reduction_percent=track.max_error_reduction_percent,
             # Max deviation metrics
@@ -3993,7 +4086,8 @@ class DatabaseManager:
                     .filter(
                         DBAnalysisResult.model == model,
                         DBAnalysisResult.file_date >= cutoff_date,
-                        DBAnalysisResult.file_date < rolling_cutoff
+                        DBAnalysisResult.file_date < rolling_cutoff,
+                        DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
                     )
                     .first()
                 )
@@ -4011,7 +4105,8 @@ class DatabaseManager:
                     )
                     .filter(
                         DBAnalysisResult.model == model,
-                        DBAnalysisResult.file_date >= rolling_cutoff
+                        DBAnalysisResult.file_date >= rolling_cutoff,
+                        DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
                     )
                     .first()
                 )
@@ -4083,6 +4178,7 @@ class DatabaseManager:
                     DBTrackResult.linearity_spec,
                     DBTrackResult.linearity_pass,
                     DBTrackResult.linearity_fail_points,
+                    DBTrackResult.untrimmed_sigma_gradient,
                 )
                 .join(DBTrackResult)
                 .filter(
@@ -4105,11 +4201,14 @@ class DatabaseManager:
             # Extract data points
             data_points = []
             for file_date, status, sigma_gradient, sigma_threshold, sigma_pass, is_anomaly, \
-                linearity_error, linearity_spec, linearity_pass, fail_points in results:
-                if file_date and sigma_gradient is not None:
+                linearity_error, linearity_spec, linearity_pass, fail_points, \
+                untrimmed_sigma_gradient in results:
+                if file_date and (sigma_gradient is not None
+                                  or untrimmed_sigma_gradient is not None):
                     data_points.append({
                         "date": file_date,
                         "sigma_gradient": sigma_gradient,
+                        "untrimmed_sigma_gradient": untrimmed_sigma_gradient,
                         "sigma_threshold": sigma_threshold,
                         "sigma_pass": sigma_pass,
                         "status": status.value if hasattr(status, 'value') else str(status) if status else "UNKNOWN",
@@ -4420,7 +4519,12 @@ class DatabaseManager:
 
                 training_samples = state.training_samples or 0
                 new_records = max(0, current_count - training_samples)
-                days_since = (datetime.now() - state.training_date).days if state.training_date else 999
+                # tz-robust: training_date may be stored tz-aware (utc_now); strip
+                # tzinfo so subtracting from naive datetime.now() never raises.
+                _td = state.training_date
+                if _td is not None and _td.tzinfo is not None:
+                    _td = _td.replace(tzinfo=None)
+                days_since = (datetime.now() - _td).days if _td else 999
 
                 results.append({
                     "model": state.model,
@@ -7646,6 +7750,8 @@ class DatabaseManager:
                     DBAnalysisResult.model.isnot(None),
                     DBAnalysisResult.model != "Unknown",
                     DBAnalysisResult.file_date >= cutoff,
+                    # Exclude UNTRIMMED tracks (is_anomaly defaults False) from the rate denominator.
+                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
                 )
                 .group_by(DBAnalysisResult.model)
                 .having(func.count(DBTrackResult.id) >= min_samples)

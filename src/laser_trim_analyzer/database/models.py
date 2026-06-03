@@ -246,6 +246,7 @@ class AnalysisResult(Base):
         Index('idx_system', 'system'),
         Index('idx_status_timestamp', 'overall_status', 'timestamp'),  # Dashboard queries
         Index('idx_model_status', 'model', 'overall_status'),  # Model statistics queries
+        Index('idx_unit_id', 'unit_id'),  # unit-yield-trend lookups
         # Prevent duplicate processing of same file on same date
         UniqueConstraint('filename', 'file_date', 'model', 'serial', name='uq_file_analysis'),
         # Data validation constraints
@@ -374,6 +375,7 @@ class TrackResult(Base):
     # Trim effectiveness
     trim_improvement_percent = Column(Float)
     untrimmed_rms_error = Column(Float)
+    untrimmed_error_max = Column(Float)
     trimmed_rms_error = Column(Float)
     max_error_reduction_percent = Column(Float)
 
@@ -422,6 +424,7 @@ class TrackResult(Base):
         Index('idx_track_analysis', 'analysis_id', 'track_id'),
         Index('idx_track_sigma_gradient', 'sigma_gradient'),
         Index('idx_track_untrimmed_sigma_gradient', 'untrimmed_sigma_gradient'),
+        Index('idx_track_untrimmed_error_max', 'untrimmed_error_max'),
         Index('idx_track_sigma_pass', 'sigma_pass'),
         Index('idx_track_linearity_pass', 'linearity_pass'),
         Index('idx_track_risk_category', 'risk_category'),

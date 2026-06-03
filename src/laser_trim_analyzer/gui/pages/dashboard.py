@@ -676,7 +676,7 @@ class DashboardPage(ctk.CTkFrame):
         else:
             total_files = stats.get("total_files", 0)
             passed = stats.get("passed", 0)
-            warnings = 0
+            warnings = stats.get("warnings", 0)  # don't show a false confident "0"
             failed = stats.get("failed", 0)
             unique_models = 0
 

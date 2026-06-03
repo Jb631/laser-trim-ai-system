@@ -5,9 +5,13 @@ Cpk uses within-subgroup variation (short-term capability).
 Ppk uses overall variation (long-term performance).
 Both require a spec limit — sourced from model_specs.linearity_spec_pct.
 
-For linearity, the spec is symmetric: +/-spec_pct, so:
-  USL = +spec_pct, LSL = -spec_pct
-  Cpk = min((USL - mean) / (3*sigma), (mean - LSL) / (3*sigma))
+Linearity is stored as the max ABSOLUTE error per unit (>= 0) -- a one-sided
+(folded) characteristic, not a signed zero-centered deviation. So capability is
+one-sided upper:
+  USL = spec_pct, lower bound = 0
+  Cpk = Cpu = (USL - mean) / (3*sigma)
+(Treating it as a symmetric +/-spec spec doubles Cp/Pp and adds a meaningless
+lower term -- a max-abs-error can never be negative.)
 """
 
 import logging
@@ -87,7 +91,7 @@ def calculate_cpk(
 
     result.n_samples = len(data)
     result.usl = spec_limit_pct
-    result.lsl = -spec_limit_pct
+    result.lsl = 0.0  # one-sided upper: the natural floor of a max-abs-error
     result.mean = float(np.mean(data))
 
     # Overall standard deviation (for Ppk)
@@ -114,22 +118,24 @@ def calculate_cpk(
         d2 = d2_table.get(subgroup_size, 2.326)
         result.std_within = float(r_bar / d2) if r_bar > 0 else result.std_overall
 
-    # Calculate capability indices
+    # Capability indices -- ONE-SIDED UPPER.
+    # Linearity here is the max ABSOLUTE error per unit (>= 0): a folded,
+    # one-sided characteristic, NOT a signed zero-centered deviation. Only the
+    # upper side is meaningful. The previous symmetric form (USL-LSL)/6sigma
+    # doubled Cp/Pp, and the lower term (mean - (-spec)) was physically
+    # meaningless (a max-abs-error can never be below zero).
     usl = result.usl
-    lsl = result.lsl
     mean = result.mean
 
     if result.std_within and result.std_within > 0:
-        result.cp = float((usl - lsl) / (6 * result.std_within))
         cpu = (usl - mean) / (3 * result.std_within)
-        cpl = (mean - lsl) / (3 * result.std_within)
-        result.cpk = float(min(cpu, cpl))
+        result.cpk = float(cpu)
+        result.cp = float(cpu)   # one-sided: no lower limit, so Cp == Cpu
 
     if result.std_overall and result.std_overall > 0:
-        result.pp = float((usl - lsl) / (6 * result.std_overall))
         ppu = (usl - mean) / (3 * result.std_overall)
-        ppl = (mean - lsl) / (3 * result.std_overall)
-        result.ppk = float(min(ppu, ppl))
+        result.ppk = float(ppu)
+        result.pp = float(ppu)
 
     result.rating = rate_cpk(result.cpk)
 

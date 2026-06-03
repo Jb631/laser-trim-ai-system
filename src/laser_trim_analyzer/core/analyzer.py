@@ -214,18 +214,17 @@ class Analyzer:
             positions, errors, linearity_spec, travel_length, unit_length,
             model=model
         )
-        sigma_pass = sigma_gradient <= sigma_threshold
 
-        # Untrimmed (upstream) sigma -- independent signal for Spec 2 drift
-        # detection.  Not used for pass/fail.  Gated on data availability;
-        # exception-safe because the per-track save must still proceed even
-        # if the untrimmed arrays are malformed.
+        # Untrimmed (upstream) sigma -- the RAW element's noise. This is the signal
+        # the per-model threshold is now calibrated on (D-SIGMA): a noisier raw
+        # element is harder to trim to spec, so this is the meaningful "trim-risk"
+        # screen. Computed BEFORE sigma_pass so the gate can use it. Exception-safe
+        # because the per-track save must still proceed if the arrays are malformed.
         untrimmed_sigma_gradient: Optional[float] = None
         _untrimmed_positions = track_data.get("untrimmed_positions") or []
         _untrimmed_errors = track_data.get("untrimmed_errors") or []
         if _untrimmed_positions and _untrimmed_errors:
             try:
-                # Filter NaN consistently with _calculate_trim_effectiveness.
                 _valid_pairs = [
                     (p, e)
                     for p, e in zip(_untrimmed_positions, _untrimmed_errors)
@@ -245,6 +244,13 @@ class Analyzer:
                     f"{track_id!r}: {e}; storing NULL"
                 )
                 untrimmed_sigma_gradient = None
+
+        # sigma_pass = per-model TRIM-RISK screen on the untrimmed (raw-element)
+        # sigma vs the per-model threshold. Fall back to post-trim sigma only when
+        # the untrimmed sweep is unavailable so older/edge records still gate.
+        _gate_sigma = (untrimmed_sigma_gradient
+                       if untrimmed_sigma_gradient is not None else sigma_gradient)
+        sigma_pass = _gate_sigma <= sigma_threshold
 
         # Linearity analysis (spec-aware). angle_spec/tol/tol_type drive the
         # rotation rule: k stays at 0 unless an angle tolerance exists.
@@ -295,21 +301,30 @@ class Analyzer:
             shifted_errors, upper_limits, lower_limits, exclude_indices
         )
 
-        # Calculate max deviation position and uniformity
+        # Calculate max deviation position and uniformity. Respect exclude_indices
+        # (an intentionally-excluded dead-zone point must not define the reported
+        # "worst" deviation or skew uniformity) and skip NaN (an equipment dropout
+        # must not crash statistics.stdev).
         max_deviation = linearity_error  # Already max(abs(e)) from shifted errors
         max_deviation_position = None
         deviation_uniformity = None
         if shifted_errors and positions:
-            abs_errors = [abs(e) for e in shifted_errors]
-            max_idx = abs_errors.index(max(abs_errors))
-            if max_idx < len(positions):
-                max_deviation_position = positions[max_idx]
-            # Deviation uniformity: std/mean of absolute errors (0=uniform, higher=concentrated)
-            if len(abs_errors) > 1:
-                import statistics
-                mean_abs = statistics.mean(abs_errors)
-                if mean_abs > 0:
-                    deviation_uniformity = statistics.stdev(abs_errors) / mean_abs
+            excl = exclude_indices or set()
+            graded = [
+                (i, abs(e)) for i, e in enumerate(shifted_errors)
+                if i not in excl and e is not None and not np.isnan(e)
+            ]
+            if graded:
+                max_idx = max(graded, key=lambda t: t[1])[0]
+                if max_idx < len(positions):
+                    max_deviation_position = positions[max_idx]
+                # Deviation uniformity: std/mean of |error| (0=uniform, higher=concentrated)
+                abs_vals = [v for _, v in graded]
+                if len(abs_vals) > 1:
+                    import statistics
+                    mean_abs = statistics.mean(abs_vals)
+                    if mean_abs > 0:
+                        deviation_uniformity = statistics.stdev(abs_vals) / mean_abs
 
         return TrackData(
             track_id=track_id,
@@ -408,11 +423,19 @@ class Analyzer:
             logger.warning(f"Array too short for gradient: {min_len} points")
             return 0.0, self._get_threshold(model, unit_length, linearity_spec, travel_length)
 
+        # Reject near-coincident point pairs: a tiny dx (well below the typical
+        # sample spacing) yields a huge dy/dx that would swamp np.std and spuriously
+        # inflate sigma. Floor at 10% of the median spacing (and never below 1e-6).
+        dxs = [positions[i + step_size] - positions[i] for i in range(min_len - step_size)]
+        abs_dxs = [abs(d) for d in dxs if abs(d) > 1e-6]
+        median_dx = float(np.median(abs_dxs)) if abs_dxs else 0.0
+        min_dx = max(1e-6, 0.1 * median_dx)
+
         for i in range(min_len - step_size):
-            dx = positions[i + step_size] - positions[i]
+            dx = dxs[i]
             dy = filtered_errors[i + step_size] - filtered_errors[i]
 
-            if abs(dx) > 1e-6:
+            if abs(dx) >= min_dx:
                 gradient = dy / dx
                 if not (np.isnan(gradient) or np.isinf(gradient)):
                     gradients.append(gradient)
@@ -1082,6 +1105,13 @@ class Analyzer:
                                if e is not None and not np.isnan(e)]
             valid_trimmed = [e for e in trimmed_errors
                              if e is not None and not np.isnan(e)]
+
+            # Worst single point on the raw sweep -- governs zero-tolerance
+            # linearity; the strongest single upstream-drift signal. Guarded by
+            # valid_untrimmed ALONE so untrimmed-only test-sweep tracks still get
+            # it. Matches the existing max(abs(...)) idiom used a few lines below.
+            if valid_untrimmed:
+                result["untrimmed_error_max"] = float(max(abs(e) for e in valid_untrimmed))
 
             if valid_untrimmed and valid_trimmed:
                 untrimmed_rms = float(np.sqrt(np.mean(np.array(valid_untrimmed) ** 2)))

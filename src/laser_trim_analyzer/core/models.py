@@ -172,6 +172,12 @@ class TrackData(BaseAnalysisModel):
     resistance_change: Optional[float] = Field(None, description="Resistance change (ohms)")
     trim_improvement_percent: Optional[float] = Field(None, description="RMS error improvement from trim (%)")
     untrimmed_rms_error: Optional[float] = Field(None, description="RMS error before trim")
+    untrimmed_error_max: Optional[float] = Field(
+        None, ge=0,
+        description="Max |error| on the untrimmed (pre-trim) sweep. Zero-tolerance "
+                    "linearity is governed by the worst point; this is the strongest "
+                    "single upstream-drift signal. Exclude-aware, NaN-safe.",
+    )
     trimmed_rms_error: Optional[float] = Field(None, description="RMS error after trim")
     max_error_reduction_percent: Optional[float] = Field(None, description="Max error reduction from trim (%)")
 
@@ -347,7 +353,37 @@ class BatchSummary(BaseAnalysisModel):
     warnings: int = 0  # Pass linearity but fail sigma (or vice versa)
     skipped: int = 0
     errors: int = 0
+    # Test-sweep files with no laser-trim run. A valid, expected state -- NOT an
+    # error -- and excluded from the yield denominator (see gradeable_count).
+    untrimmed: int = 0
     anomalies: int = 0  # Trim failures with linear slope pattern
+
+    def record_status(self, status: "AnalysisStatus") -> None:
+        """Bucket one result's overall_status into the right counter.
+
+        Single source of truth so the processor and GUI never disagree.
+        UNTRIMMED is its own bucket -- never an error, never in the yield
+        denominator.
+        """
+        if status == AnalysisStatus.PASS:
+            self.passed += 1
+        elif status == AnalysisStatus.WARNING:
+            self.warnings += 1
+        elif status == AnalysisStatus.FAIL:
+            self.failed += 1
+        elif status == AnalysisStatus.UNTRIMMED:
+            self.untrimmed += 1
+        else:  # ERROR or anything unexpected
+            self.errors += 1
+
+    @property
+    def gradeable_count(self) -> int:
+        """Processed files that actually have a trim result.
+
+        Excludes UNTRIMMED test-sweeps -- 'no trim result' is not 'a fail',
+        so it must not sit in the yield denominator.
+        """
+        return max(0, self.processed - self.untrimmed)
 
     # Timing
     start_time: Optional[datetime] = None

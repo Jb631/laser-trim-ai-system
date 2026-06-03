@@ -237,16 +237,22 @@ class MLManager:
             result.profile_built = profiler.is_profiled
 
             # 2. Calculate threshold (needs 20+ samples)
-            if len(data) >= self.MIN_THRESHOLD_SAMPLES:
+            # Calibrate the per-model sigma threshold on the UNTRIMMED (raw-element)
+            # sigma vs the post-trim trim outcome -- "how noisy can a raw element be
+            # and still trim to pass linearity?". Post-trim sigma was the wrong,
+            # weakly-linked input (smoothness != deviation magnitude).
+            thr_data = (data[data['untrimmed_sigma_gradient'].notna()]
+                        if 'untrimmed_sigma_gradient' in data.columns else data.iloc[0:0])
+            if len(thr_data) >= self.MIN_THRESHOLD_SAMPLES:
                 if progress_callback:
                     progress_callback(f"Calculating threshold for {model_name}...")
 
                 optimizer = self.get_threshold_optimizer(model_name)
                 threshold_result = optimizer.calculate_threshold(
-                    sigma_values=data['sigma_gradient'],
-                    passed=data['passed'],
-                    fail_points=data.get('linearity_fail_points'),
-                    linearity_spec=data['linearity_spec'].iloc[0] if 'linearity_spec' in data.columns else None
+                    sigma_values=thr_data['untrimmed_sigma_gradient'],
+                    passed=thr_data['passed'],
+                    fail_points=thr_data.get('linearity_fail_points'),
+                    linearity_spec=thr_data['linearity_spec'].iloc[0] if 'linearity_spec' in thr_data.columns else None
                 )
                 result.threshold_calculated = optimizer.is_calculated
                 result.threshold_value = threshold_result.threshold
@@ -259,8 +265,16 @@ class MLManager:
 
                 detector = self.get_drift_detector(model_name)
 
-                # Sort by file_date for temporal split
-                data_with_sigma = data[data['sigma_gradient'].notna()].copy()
+                # D-SIGMA: monitor drift on the UNTRIMMED-sweep sigma (the upstream
+                # element-production signal), NOT post-trim sigma -- the latter is
+                # corrected by trimming and only LAGS the process, so it's the wrong
+                # signal for "is the process drifting?". Post-trim sigma remains the
+                # product-quality gate (the threshold optimizer above).
+                drift_col = 'untrimmed_sigma_gradient'
+                if drift_col in data.columns:
+                    data_with_sigma = data[data[drift_col].notna()].copy()
+                else:
+                    data_with_sigma = data.iloc[0:0].copy()
                 if 'file_date' in data_with_sigma.columns:
                     data_with_sigma = data_with_sigma.sort_values('file_date')
 
@@ -277,7 +291,7 @@ class MLManager:
                         if pd.notna(last_baseline_date):
                             cutoff_date = last_baseline_date
 
-                    sigma_values = baseline_data['sigma_gradient'].values
+                    sigma_values = baseline_data[drift_col].values
                     result.drift_baseline_set = detector.set_baseline(sigma_values, cutoff_date)
 
                     # Reset detector state before running on detection period
@@ -285,7 +299,7 @@ class MLManager:
                         detector.reset()
 
                         # Run drift detection on the newest 30%
-                        for sigma in detection_data['sigma_gradient'].values:
+                        for sigma in detection_data[drift_col].values:
                             detector.detect(sigma)
 
                         logger.info(
@@ -306,8 +320,11 @@ class MLManager:
                 features = self._extract_features_from_data(data)
                 labels = ~data['passed']  # 1 = failed
                 severity = data.get('linearity_fail_points')
+                # Group by serial so repeated trims of one physical unit can't
+                # straddle the train/test split (optimistic-bias leakage).
+                groups = data['serial'] if 'serial' in data.columns else None
 
-                training_result = predictor.train(features, labels, severity)
+                training_result = predictor.train(features, labels, severity, groups=groups)
                 result.predictor_trained = training_result.success
                 if training_result.metrics:
                     result.predictor_accuracy = training_result.metrics.accuracy
@@ -507,19 +524,26 @@ class MLManager:
                             )
                             track_count = result1.rowcount  # Get count from UPDATE result
 
-                            # Bulk update sigma_pass based on threshold comparison
-                            # sigma_pass = True if sigma_gradient <= threshold, else False
+                            # Bulk update sigma_pass: the threshold is calibrated on
+                            # UNTRIMMED sigma, so gate on untrimmed (raw-element) sigma,
+                            # falling back to post-trim only when the sweep is absent.
                             session.execute(
                                 update(TrackResult)
                                 .where(
                                     and_(
                                         TrackResult.analysis_id.in_(analysis_subquery),
-                                        TrackResult.sigma_gradient.isnot(None)
+                                        func.coalesce(
+                                            TrackResult.untrimmed_sigma_gradient,
+                                            TrackResult.sigma_gradient,
+                                        ).isnot(None),
                                     )
                                 )
                                 .values(
                                     sigma_pass=case(
-                                        (TrackResult.sigma_gradient <= new_threshold, True),
+                                        (func.coalesce(
+                                            TrackResult.untrimmed_sigma_gradient,
+                                            TrackResult.sigma_gradient,
+                                        ) <= new_threshold, True),
                                         else_=False
                                     )
                                 )
@@ -707,12 +731,15 @@ class MLManager:
                                 cutoff_date = detector.baseline_cutoff_date
 
                                 if cutoff_date:
+                                    # D-SIGMA: detect on the same UNTRIMMED signal the
+                                    # baseline was set on (post-trim sigma is the wrong,
+                                    # lagging signal for process drift).
                                     detection_tracks = (
-                                        session.query(TrackResult.sigma_gradient, AnalysisResult.id)
+                                        session.query(TrackResult.untrimmed_sigma_gradient, AnalysisResult.id)
                                         .join(AnalysisResult)
                                         .filter(AnalysisResult.model == model_name)
                                         .filter(AnalysisResult.file_date > cutoff_date)
-                                        .filter(TrackResult.sigma_gradient.isnot(None))
+                                        .filter(TrackResult.untrimmed_sigma_gradient.isnot(None))
                                         .order_by(AnalysisResult.file_date)
                                         .all()
                                     )
@@ -885,16 +912,19 @@ class MLManager:
                 # filter below has a "return everything" fallback that would
                 # otherwise leak them into training when nothing else exists.
                 trim_results = (
-                    session.query(TrackResult, AnalysisResult.file_date)
+                    session.query(TrackResult, AnalysisResult.file_date, AnalysisResult.serial)
                     .join(AnalysisResult)
                     .filter(AnalysisResult.model == model_name)
                     .filter(TrackResult.status != StatusType.UNTRIMMED.name)
                     .all()
                 )
 
-                for track, file_date in trim_results:
+                for track, file_date, serial in trim_results:
                     records.append({
                         'sigma_gradient': track.sigma_gradient,
+                        # Upstream process signal used for DRIFT (D-SIGMA): the
+                        # untrimmed-sweep sigma, not the trim-corrected one.
+                        'untrimmed_sigma_gradient': track.untrimmed_sigma_gradient,
                         'linearity_error': track.final_linearity_error_shifted or 0,
                         'linearity_fail_points': track.linearity_fail_points or 0,
                         'optimal_offset': track.optimal_offset or 0,
@@ -903,21 +933,26 @@ class MLManager:
                         'sigma_pass': track.sigma_pass,
                         'passed': track.linearity_pass if track.linearity_pass is not None else True,
                         'file_date': file_date,
+                        # serial groups repeated trims of one physical unit so they
+                        # don't leak across the train/test split (a unit can be
+                        # re-trimmed many times -- valid, not a duplicate).
+                        'serial': serial,
                         'source': 'trim',
                     })
 
                 # Get Final Test data (higher priority when linked)
                 final_results = (
-                    session.query(FinalTestTrack, FinalTestResult.file_date)
+                    session.query(FinalTestTrack, FinalTestResult.file_date, FinalTestResult.serial)
                     .join(FinalTestResult)
                     .filter(FinalTestResult.model == model_name)
                     .all()
                 )
 
-                for track, file_date in final_results:
+                for track, file_date, serial in final_results:
                     # Final Test data overwrites trim outcome for linked records
                     records.append({
                         'sigma_gradient': None,  # Final test doesn't have sigma
+                        'untrimmed_sigma_gradient': None,  # nor an untrimmed sweep
                         'linearity_error': track.linearity_error or 0,
                         'linearity_fail_points': track.linearity_fail_points or 0,
                         'optimal_offset': 0,
@@ -926,6 +961,7 @@ class MLManager:
                         'sigma_pass': None,
                         'passed': track.linearity_pass if track.linearity_pass is not None else True,
                         'file_date': file_date,
+                        'serial': serial,
                         'source': 'final_test',
                     })
 

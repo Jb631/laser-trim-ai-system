@@ -50,6 +50,7 @@ class ProcessPage(ctk.CTkFrame):
         self._warning_count = 0
         self._fail_count = 0
         self._error_count = 0
+        self._untrimmed_count = 0
         self._anomaly_count = 0
         self._ft_count = 0
         self._smoothness_count = 0
@@ -590,6 +591,7 @@ class ProcessPage(ctk.CTkFrame):
         self._warning_count = 0
         self._fail_count = 0
         self._error_count = 0
+        self._untrimmed_count = 0
         self._anomaly_count = 0
         self._ft_count = 0
         self._smoothness_count = 0
@@ -669,6 +671,8 @@ class ProcessPage(ctk.CTkFrame):
                     self._warning_count += 1
                 elif result.overall_status == AnalysisStatus.FAIL:
                     self._fail_count += 1
+                elif result.overall_status == AnalysisStatus.UNTRIMMED:
+                    self._untrimmed_count += 1  # valid test-sweep, NOT an error
                 else:
                     self._error_count += 1
 
@@ -757,6 +761,8 @@ class ProcessPage(ctk.CTkFrame):
                 status_str = "WARN"
             elif result.overall_status == AnalysisStatus.FAIL:
                 status_str = "FAIL"
+            elif result.overall_status == AnalysisStatus.UNTRIMMED:
+                status_str = "UNTRIM"
             else:
                 status_str = "ERROR"
             self._append_result(

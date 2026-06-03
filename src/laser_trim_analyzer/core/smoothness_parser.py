@@ -282,8 +282,10 @@ class SmoothnessParser:
                         "positions": positions[:min_len],
                         "smoothness_values": values[:min_len],
                         "smoothness_spec": None,
-                        "max_smoothness": max(values[:min_len]),
-                        "avg_smoothness": sum(values[:min_len]) / min_len,
+                        # Deviation MAGNITUDE: a signed max() can understate/negate
+                        # the worst excursion and pass a failing unit.
+                        "max_smoothness": max(abs(v) for v in values[:min_len]),
+                        "avg_smoothness": sum(abs(v) for v in values[:min_len]) / min_len,
                         "smoothness_pass": None,
                     })
                 else:
@@ -330,8 +332,10 @@ class SmoothnessParser:
             min_len = min(len(positions), len(values))
             pos = positions[:min_len]
             vals = values[:min_len]
-            max_val = max(vals) if vals else 0
-            avg_val = sum(vals) / len(vals) if vals else 0
+            # Use deviation MAGNITUDE: a signed max() understates (or negates) a
+            # worst negative excursion and can pass a failing unit.
+            max_val = max(abs(v) for v in vals) if vals else 0
+            avg_val = sum(abs(v) for v in vals) / len(vals) if vals else 0
             passes = max_val <= spec_value if spec_value and spec_value > 0 else None
             tracks.append({
                 "track_id": "default",
