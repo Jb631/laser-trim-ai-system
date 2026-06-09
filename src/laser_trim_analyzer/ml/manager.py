@@ -466,7 +466,7 @@ class MLManager:
         counts = {'updated': 0, 'skipped': 0, 'errors': 0, 'drift_alerts': []}
 
         try:
-            from sqlalchemy import update, case, and_
+            from sqlalchemy import update, case, and_, func
             from laser_trim_analyzer.database.models import (
                 TrackResult, AnalysisResult, QAAlert, AlertType
             )
