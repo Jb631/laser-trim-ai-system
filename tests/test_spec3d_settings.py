@@ -44,3 +44,23 @@ def test_apply_sensitivity_preset_skips_untrained(tmp_path):
     db = DatabaseManager(tmp_path / "u.db")
     _seed_metric_state(db, model="U", trained=False)
     assert apply_sensitivity_preset(db, "tight") == 0   # untrained skipped, no raise
+
+
+# ---- Task 2: SettingsCard -------------------------------------------------
+
+def test_settings_card_states(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.settings_card import SettingsCard
+    t = ThemeManager()
+    assert SettingsCard(tk_root, theme=t, title="A")._expanded is False
+    c = SettingsCard(tk_root, theme=t, title="B", expanded=True)
+    assert c._expanded is True
+    c.toggle(); assert c._expanded is False
+
+
+def test_settings_card_body_frame_is_fillable(tk_root):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.settings_card import SettingsCard
+    c = SettingsCard(tk_root, theme=ThemeManager(), title="C", expanded=True)
+    ctk.CTkLabel(c.body_frame(), text="hi").pack()   # no raise
