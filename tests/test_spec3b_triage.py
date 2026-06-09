@@ -180,3 +180,51 @@ def test_zone_routes_click(tk_root):
     z.set_summaries([_summary(model="ROUTED", metric="sigma_gradient")])
     next(w for w in _walk(z) if isinstance(w, ModelAlertCard))._on_click()
     assert got == [("ROUTED", "sigma_gradient")]
+
+
+# ---- Task 4: BrowseZone ---------------------------------------------------
+
+def _ms(model, tier=None):
+    from laser_trim_analyzer.ml.drift_types import DriftTier, ModelSummary
+    return ModelSummary(model=model, tier=tier or DriftTier.STABLE)
+
+
+def test_browse_one_row_per_model(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms(f"M{i}") for i in range(5)])
+    assert len(z._rows) == 5
+
+
+def test_browse_filter_substring(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    # Substring filter: "83" must appear as consecutive chars. 8340-1 and 8830-1
+    # contain "83"; 8877 does not. (Plan's original datum "8232-1" was a typo —
+    # 8-2-3-2 has no consecutive "83" — inconsistent with the substring impl.)
+    z.set_models([_ms("8340-1"), _ms("8830-1"), _ms("8877")])
+    z.set_filter("83")
+    shown = {r.summary.model for r in z._rows}
+    assert shown == {"8340-1", "8830-1"}
+
+
+def test_browse_row_click_emits_model(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
+    got = []
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=got.append)
+    z.set_models([_ms("CLICKED")])
+    z._rows[0]._on_click()
+    assert got == ["CLICKED"]
+
+
+def test_browse_discloses_cap(tk_root):
+    """Q10: when more than the render cap exist, say so instead of silently truncating."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone, ROW_CAP
+    z = BrowseZone(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    z.set_models([_ms(f"M{i:04d}") for i in range(ROW_CAP + 25)])
+    assert len(z._rows) == ROW_CAP
+    assert "Showing" in z._cap_label.cget("text") and str(ROW_CAP + 25) in z._cap_label.cget("text")
