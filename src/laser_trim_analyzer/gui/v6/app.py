@@ -53,6 +53,14 @@ class V6App(ctk.CTk):
         self._model_route = None
         return model
 
+    def consume_model_route_full(self) -> Tuple[Optional[str], Optional[str]]:
+        """Pop (model, focus_metric). Either may be None. Used by the Model page."""
+        if self._model_route is None:
+            return (None, None)
+        route = self._model_route
+        self._model_route = None
+        return route
+
     # ---- setup ----
     def _setup_window(self) -> None:
         self.title("Laser Trim Analyzer")

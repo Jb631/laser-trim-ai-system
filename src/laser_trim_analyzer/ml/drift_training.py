@@ -51,6 +51,10 @@ _TRACK_METRIC_COLUMNS = {
     "composite_trim_risk_score": DBTR.composite_trim_risk_score,
 }
 
+# Public alias so the Spec 3 UI charts the SAME column the detector trained on
+# (prevents the linearity_error/final_linearity_error_shifted mismatch). Read-only.
+TRACK_METRIC_COLUMNS = _TRACK_METRIC_COLUMNS
+
 
 def train_drift_detector(
     db,
