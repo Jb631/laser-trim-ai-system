@@ -102,3 +102,18 @@ def test_focus_chart_empty_no_crash(tk_root):
     from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
     chart = FocusChart(tk_root, theme=ThemeManager())
     chart.set_series(metric="linearity_error", dates=[], values=[])  # empty state, no raise
+
+
+# ---- Task 5: DriftMetricsTab ----------------------------------------------
+
+def test_drift_tab_row_per_metric_and_click(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+    got = []
+    tab = DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=got.append)
+    tab.set_status(_status())
+    assert set(tab._rows) == set(WATCHED_METRICS)
+    # DEVIATION: untrimmed_sigma_gradient (sigma_gradient no longer watched).
+    tab._rows["untrimmed_sigma_gradient"]._on_click()
+    assert got == ["untrimmed_sigma_gradient"]
