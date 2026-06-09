@@ -1712,3 +1712,35 @@ def list_known_models(db):
                       last_processed=last_seen.get(m)) for m in last_seen),
         key=lambda x: x.model,
     )
+
+
+def apply_sensitivity_preset(db, preset: str) -> int:
+    """Recompute per-tier (h, L, z) in place from each trained row's cached baseline_std
+    using `preset`'s target FP rates. Preserves baseline_* and runtime cusum/ewma state
+    (no history re-scan). Returns rows updated. Lets Settings 'Save preset' change what
+    Triage flags without a full retrain (get_drifting_models ignores its preset arg)."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.ml.drift_types import DriftTier, target_fp_for_tier
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import compute_thresholds
+
+    updated = 0
+    with db.session() as s:
+        rows = s.query(ModelMetricState).filter(
+            ModelMetricState.is_trained == True,                # noqa: E712
+            ModelMetricState.baseline_std.isnot(None)).all()
+        for row in rows:
+            sigma = row.baseline_std
+            for tier, (hc, lc, zc) in (
+                (DriftTier.WARNING, ("h_warning", "L_warning", "z_warning")),
+                (DriftTier.DRIFT, ("h_drift", "L_drift", "z_drift")),
+                (DriftTier.OUT_OF_CONTROL, ("h_oc", "L_oc", "z_oc")),
+            ):
+                h, L, z = compute_thresholds(sigma, target_fp_for_tier(preset, tier))
+                setattr(row, hc, h)
+                setattr(row, lc, L)
+                setattr(row, zc, z)
+            row.last_updated = datetime.now()
+            updated += 1
+        s.commit()
+    return updated
