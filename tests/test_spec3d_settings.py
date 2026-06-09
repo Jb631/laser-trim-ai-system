@@ -148,3 +148,19 @@ def test_per_model_specs_save_roundtrip(tmp_path):
     assert got["linearity_spec_text"] == "±0.05%"
     assert parse_exclude_points(got["exclude_points"]) == {0, 1, 2, 48, 49, 50}
     assert got["exclude_points_ft"] is None
+
+
+def test_pricing_section_builds(tk_root, tmp_path):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.pricing import build_pricing_section
+    build_pricing_section(ctk.CTkFrame(tk_root), theme=ThemeManager(), app=_fake_app(tmp_path, "pr.db"))
+
+
+def test_extract_model_prices_flexible_columns():
+    import pandas as pd
+    from laser_trim_analyzer.gui.v6.sections.pricing import extract_model_prices
+    df = pd.DataFrame({"Item ID": ["8340", "8340", "9000"], "Unit Price": [10.0, 10.0, 5.0]})
+    assert extract_model_prices(df) == {"8340": 10.0, "9000": 5.0}
+    # Missing/unknown columns → empty (no crash).
+    assert extract_model_prices(pd.DataFrame({"foo": [1], "bar": [2]})) == {}
