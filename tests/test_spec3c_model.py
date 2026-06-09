@@ -21,3 +21,14 @@ def test_track_metric_columns_public_and_linearity_maps_to_shifted():
     # Q4: the detector trains linearity_error on final_linearity_error_shifted; the UI must match.
     assert TRACK_METRIC_COLUMNS["linearity_error"] is DBTR.final_linearity_error_shifted
     assert "max_smoothness_value" not in TRACK_METRIC_COLUMNS  # lives on SmoothnessResult
+
+
+# ---- Task 2: ThemedTabView ------------------------------------------------
+
+def test_themed_tab_view(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.tab_view import ThemedTabView
+    tv = ThemedTabView(tk_root, theme=ThemeManager())
+    assert tv.add("Drift Metrics") is not None
+    tv.add("Units"); tv.set("Units")
+    assert tv.get() == "Units"
