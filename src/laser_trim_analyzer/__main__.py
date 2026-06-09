@@ -48,25 +48,21 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main entry point for v3."""
-    logger.info("Starting Laser Trim Analyzer v5...")
-
+    """Entry point. Default = V5 LaserTrimApp; --v6 = V6App (Spec 3a+)."""
+    use_v6 = "--v6" in sys.argv
+    logger.info(f"Starting Laser Trim Analyzer (UI: {'V6' if use_v6 else 'V5'})...")
     try:
-        # Import here to avoid circular imports
-        from laser_trim_analyzer.app import LaserTrimApp
         from laser_trim_analyzer.config import get_config
-
-        # Load configuration
         config = get_config()
         logger.info(f"Config loaded - Database: {config.database.path}")
-
-        # Ensure database directory exists
         config.database.ensure_directory()
-
-        # Create and run the application
-        app = LaserTrimApp(config)
+        if use_v6:
+            from laser_trim_analyzer.gui.v6.app import V6App
+            app = V6App(config)
+        else:
+            from laser_trim_analyzer.app import LaserTrimApp
+            app = LaserTrimApp(config)
         app.run()
-
     except ImportError as e:
         logger.error(f"Import error: {e}")
         logger.error("Make sure all dependencies are installed: pip install -e .")

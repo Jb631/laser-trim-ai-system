@@ -207,3 +207,41 @@ def test_v6app_auto_train_off_does_not_offer(make_app):
     """make_app passes auto_train_on_first_run=False → no first-run hook scheduled."""
     app = make_app()
     assert app._auto_train_on_first_run is False
+
+
+# ---- Task 5: --v6 flag ----------------------------------------------------
+
+def test_main_v6_flag_uses_v6app(monkeypatch, tmp_path):
+    import sys
+    from unittest.mock import MagicMock
+    import laser_trim_analyzer.app as v5_mod
+    import laser_trim_analyzer.gui.v6.app as v6_mod
+    fake_v5, fake_v6 = MagicMock(), MagicMock()
+    monkeypatch.setattr(v5_mod, "LaserTrimApp", fake_v5)
+    monkeypatch.setattr(v6_mod, "V6App", fake_v6)
+    monkeypatch.setattr(sys, "argv", ["laser_trim_analyzer", "--v6"])
+    from laser_trim_analyzer.config import Config
+    cfg = Config(); cfg.database.path = tmp_path / "t.db"
+    import laser_trim_analyzer.config as cmod
+    monkeypatch.setattr(cmod, "get_config", lambda: cfg)
+    from laser_trim_analyzer.__main__ import main
+    main()
+    fake_v6.assert_called_once(); fake_v5.assert_not_called()
+
+
+def test_main_default_uses_v5(monkeypatch, tmp_path):
+    import sys
+    from unittest.mock import MagicMock
+    import laser_trim_analyzer.app as v5_mod
+    import laser_trim_analyzer.gui.v6.app as v6_mod
+    fake_v5, fake_v6 = MagicMock(), MagicMock()
+    monkeypatch.setattr(v5_mod, "LaserTrimApp", fake_v5)
+    monkeypatch.setattr(v6_mod, "V6App", fake_v6)
+    monkeypatch.setattr(sys, "argv", ["laser_trim_analyzer"])
+    from laser_trim_analyzer.config import Config
+    cfg = Config(); cfg.database.path = tmp_path / "t.db"
+    import laser_trim_analyzer.config as cmod
+    monkeypatch.setattr(cmod, "get_config", lambda: cfg)
+    from laser_trim_analyzer.__main__ import main
+    main()
+    fake_v5.assert_called_once(); fake_v6.assert_not_called()
