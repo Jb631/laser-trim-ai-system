@@ -119,3 +119,10 @@ def test_alert_thresholds_section_builds(tk_root, tmp_path):
     from laser_trim_analyzer.gui.v6.sections.alert_thresholds import build_alert_thresholds_section
     parent = ctk.CTkFrame(tk_root)
     build_alert_thresholds_section(parent, theme=ThemeManager(), app=_fake_app(tmp_path))
+
+
+def test_ml_training_section_builds(tk_root, tmp_path):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.ml_training import build_ml_training_section
+    build_ml_training_section(ctk.CTkFrame(tk_root), theme=ThemeManager(), app=_fake_app(tmp_path, "ml.db"))
