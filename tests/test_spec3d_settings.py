@@ -164,3 +164,24 @@ def test_extract_model_prices_flexible_columns():
     assert extract_model_prices(df) == {"8340": 10.0, "9000": 5.0}
     # Missing/unknown columns → empty (no crash).
     assert extract_model_prices(pd.DataFrame({"foo": [1], "bar": [2]})) == {}
+
+
+def test_database_cleanup_section_builds(tk_root, tmp_path):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_database_cleanup_section
+    build_database_cleanup_section(ctk.CTkFrame(tk_root), theme=ThemeManager(),
+                                   app=_fake_app(tmp_path, "dc.db"))
+
+
+def test_build_cleanup_options():
+    from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_cleanup_options
+    base = dict(non_mps=False, before_date_enabled=False, date_str="", suspect=False,
+                unknown=False, error=False, no_tracks=False, misclassified_ft=False, mps_models=[])
+    assert build_cleanup_options(**base) is None                       # nothing selected
+    assert build_cleanup_options(**{**base, "suspect": True})["delete_suspect_quality"] is True
+    assert build_cleanup_options(**{**base, "non_mps": True}) is None   # non_mps needs an MPS list
+    assert build_cleanup_options(**{**base, "non_mps": True, "mps_models": ["A"]})["mps_models"] == ["A"]
+    assert build_cleanup_options(**{**base, "before_date_enabled": True, "date_str": "nope"}) is None
+    ok = build_cleanup_options(**{**base, "before_date_enabled": True, "date_str": "2026-01-01"})
+    assert ok["delete_before_date"] is not None
