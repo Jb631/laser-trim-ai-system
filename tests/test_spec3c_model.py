@@ -32,3 +32,52 @@ def test_themed_tab_view(tk_root):
     assert tv.add("Drift Metrics") is not None
     tv.add("Units"); tv.set("Units")
     assert tv.get() == "Units"
+
+
+# ---- Task 3: MetricPillRow ------------------------------------------------
+
+def _status(model="M1", **tiers):
+    """Build a ModelDriftStatus; pass metric=Tier kwargs to override specific metrics."""
+    from datetime import datetime
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, MetricStatus, ModelDriftStatus, WATCHED_METRICS)
+    per = {}
+    for m in WATCHED_METRICS:
+        tier = tiers.get(m, DriftTier.STABLE)
+        per[m] = MetricStatus(metric=m, tier=tier, alert_type=None,
+                              magnitude=0.0 if tier == DriftTier.STABLE else 3.1,
+                              baseline_mean=0.01, baseline_std=0.001,
+                              recent_mean=0.012, recent_count=5, is_trained=True)
+    return ModelDriftStatus(model=model, overall_tier=DriftTier.STABLE, worst_metric=None,
+                            worst_alert_type=None, per_metric=per, last_processed=datetime.now())
+
+
+def test_pill_row_has_eight_pills(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
+    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=lambda _: None)
+    row.set_status(_status())
+    assert set(row._pills) == set(WATCHED_METRICS)
+
+
+def test_pill_shows_readable_label(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
+    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=lambda _: None)
+    row.set_status(_status())
+    assert row._pills["untrimmed_resistance"]._name_label.cget("text") == "Untrimmed resistance"
+
+
+def test_pill_click_and_select(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
+    got = []
+    row = MetricPillRow(tk_root, theme=ThemeManager(), on_pill_click=got.append)
+    row.set_status(_status())
+    # DEVIATION: sigma_gradient is no longer a watched metric (replaced by
+    # untrimmed_sigma_gradient + composite_trim_risk_score). Use a real pill key.
+    row._pills["untrimmed_sigma_gradient"]._on_click()
+    assert got == ["untrimmed_sigma_gradient"]
+    row.set_selected("linearity_error")
+    assert row._selected_metric == "linearity_error"
