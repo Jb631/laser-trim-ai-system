@@ -185,3 +185,25 @@ def test_build_cleanup_options():
     assert build_cleanup_options(**{**base, "before_date_enabled": True, "date_str": "nope"}) is None
     ok = build_cleanup_options(**{**base, "before_date_enabled": True, "date_str": "2026-01-01"})
     assert ok["delete_before_date"] is not None
+
+
+# ---- Task 10: SettingsPage + auto-train ------------------------------------
+
+def test_settings_page_has_five_cards(make_app):
+    app = make_app()
+    page = app.page_container.get_page("settings")
+    assert len(page._cards) == 5
+
+
+def test_should_offer_first_startup_train_is_data_gated(make_app):
+    """D3: empty DB → no offer (nothing to train). Data present + empty metric_state → offer."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SystemType, StatusType
+    app = make_app()
+    assert app._should_offer_first_startup_train() is False     # empty DB
+    with app.db.session() as s:
+        s.add(DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="M", serial="sn1",
+                   system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                   overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+    assert app._should_offer_first_startup_train() is True      # data, no metric_state yet

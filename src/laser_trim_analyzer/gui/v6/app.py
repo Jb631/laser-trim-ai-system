@@ -32,7 +32,10 @@ class V6App(ctk.CTk):
         self._build_pages()
         self.show_page("triage")
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
-        # First-run auto-train hook is registered in Spec 3d. Guarded by the flag.
+        # Data-gated first-startup auto-train (Spec 3d / D3). Disabled in tests via
+        # the flag; the method itself re-checks the flag and the data gate.
+        if self._auto_train_on_first_run:
+            self.after(500, self._maybe_run_first_startup_train)
 
     # ---- navigation ----
     def show_page(self, name: str) -> None:
@@ -61,6 +64,27 @@ class V6App(ctk.CTk):
         self._model_route = None
         return route
 
+    # ---- first-startup auto-train (Spec 3d / decision D3) ----
+    def _should_offer_first_startup_train(self) -> bool:
+        """True only when there is data to train on AND model_metric_state is empty."""
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR, ModelMetricState
+        try:
+            with self.db.session() as s:
+                has_data = s.query(DBAR.id).first() is not None
+                trained = s.query(ModelMetricState.id).first() is not None
+            return has_data and not trained
+        except Exception:
+            return False
+
+    def _maybe_run_first_startup_train(self) -> None:
+        if not self._auto_train_on_first_run:
+            return
+        if not self._should_offer_first_startup_train():
+            return
+        from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
+        preset = getattr(self.config.ml, "drift_sensitivity", "standard")
+        TrainingModal(self, theme=self.theme, db=self.db, preset=preset).start()
+
     # ---- setup ----
     def _setup_window(self) -> None:
         self.title("Laser Trim Analyzer")
@@ -77,9 +101,10 @@ class V6App(ctk.CTk):
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # Triage (3b) and Model (3c) are real; Process/Settings remain placeholders.
+        # Triage (3b), Model (3c), Settings (3d) are real; Process is a placeholder until 3e.
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
         from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
+        from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         self.page_container.add_page(
             "triage",
             TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),
@@ -88,13 +113,15 @@ class V6App(ctk.CTk):
             "model",
             ModelPage(self.page_container, theme=self.theme, app=self, page_title="Model"),
         )
-        for name, label, nxt in (("process", "Process", "3e"),
-                                 ("settings", "Settings", "3d")):
-            self.page_container.add_page(
-                name,
-                _PlaceholderPage(self.page_container, theme=self.theme, app=self,
-                                 page_title=label, next_spec=nxt),
-            )
+        self.page_container.add_page(
+            "settings",
+            SettingsPage(self.page_container, theme=self.theme, app=self, page_title="Settings"),
+        )
+        self.page_container.add_page(
+            "process",
+            _PlaceholderPage(self.page_container, theme=self.theme, app=self,
+                             page_title="Process", next_spec="3e"),
+        )
 
     def _on_closing(self) -> None:
         self.destroy()
