@@ -45,6 +45,14 @@ class V6App(ctk.CTk):
     def set_model_route(self, model: str, focus_metric: Optional[str] = None) -> None:
         self._model_route = (model, focus_metric)
 
+    def consume_model_route(self) -> Optional[str]:
+        """Pop the model name from the routing hint (focus consumed separately in 3c)."""
+        if self._model_route is None:
+            return None
+        model, _focus = self._model_route
+        self._model_route = None
+        return model
+
     # ---- setup ----
     def _setup_window(self) -> None:
         self.title("Laser Trim Analyzer")
@@ -61,8 +69,13 @@ class V6App(ctk.CTk):
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # All placeholders for 3a; each sub-spec replaces one with the real page.
-        for name, label, nxt in (("triage", "Triage", "3b"), ("process", "Process", "3e"),
+        # Triage is real (Spec 3b); the rest remain placeholders until their sub-spec.
+        from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
+        self.page_container.add_page(
+            "triage",
+            TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),
+        )
+        for name, label, nxt in (("process", "Process", "3e"),
                                  ("model", "Model", "3c"), ("settings", "Settings", "3d")):
             self.page_container.add_page(
                 name,

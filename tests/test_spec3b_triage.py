@@ -228,3 +228,36 @@ def test_browse_discloses_cap(tk_root):
     z.set_models([_ms(f"M{i:04d}") for i in range(ROW_CAP + 25)])
     assert len(z._rows) == ROW_CAP
     assert "Showing" in z._cap_label.cget("text") and str(ROW_CAP + 25) in z._cap_label.cget("text")
+
+
+# ---- Task 5: TriagePage + routing ----------------------------------------
+
+def test_v6app_consume_model_route(make_app):
+    app = make_app()
+    assert app.consume_model_route() is None
+    app.set_model_route("M", "linearity_error")
+    assert app.consume_model_route() == "M"       # 3b consumes model only
+    assert app.consume_model_route() is None       # one-shot
+
+
+def test_triage_card_click_routes_to_model(make_app):
+    app = make_app()
+    triage = app.page_container.get_page("triage")
+    triage._on_card_click("FROM-CARD", "untrimmed_resistance")
+    assert app.page_container.current_page == "model"
+    # Placeholder Model page doesn't consume yet → hint persists with focus.
+    assert app._model_route == ("FROM-CARD", "untrimmed_resistance")
+
+
+def test_triage_reload_now_populates(make_app):
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SystemType, StatusType
+    app = make_app()
+    with app.db.session() as s:
+        s.add(DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="LOAD-TEST",
+                   serial="sn1", system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                   overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+    triage = app.page_container.get_page("triage")
+    triage.reload_now()       # synchronous path for tests
+    assert "LOAD-TEST" in _labels(triage)
