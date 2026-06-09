@@ -181,3 +181,35 @@ def test_predictor_panel_load_failure_is_graceful(tk_root):
     p = PredictorPanel(tk_root, theme=ThemeManager(), load_fn=boom)
     p.set_model("X"); p.toggle()
     assert "No predictor" in p._body_label.cget("text")
+
+
+# ---- Task 9: evidence export ----------------------------------------------
+
+def test_build_summary_text_has_evidence_metrics():
+    from laser_trim_analyzer.export.evidence import build_summary_text
+    txt = build_summary_text("8340-1", _status())
+    assert "8340-1" in txt
+    # Q8: the three evidence metrics James hands engineers must be present, readable.
+    for label in ("Untrimmed resistance", "Linearity error", "Electrical angle"):
+        assert label in txt
+
+
+def test_export_evidence_pack_writes_xlsx(tmp_path):
+    from datetime import datetime
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType)
+    from laser_trim_analyzer.export.evidence import export_evidence_pack
+    db = DatabaseManager(tmp_path / "ev.db")
+    with db.session() as s:
+        ar = DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="8340-1", serial="sn1",
+                  system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                  overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1)
+        s.add(ar); s.flush()
+        # TrackResult.status is NOT NULL — set it on any committed row.
+        s.add(DBTR(analysis_id=ar.id, track_id="TRK1", status=StatusType.PASS,
+                   sigma_gradient=0.01, final_linearity_error_shifted=0.004))
+        s.commit()
+    out = tmp_path / "pack.xlsx"
+    export_evidence_pack(db, "8340-1", out, window_days=365)
+    assert out.exists() and out.stat().st_size > 0
