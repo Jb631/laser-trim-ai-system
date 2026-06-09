@@ -96,3 +96,26 @@ def test_training_modal_uses_injected_train_fn(tk_root, tmp_path):
     modal._run_training()           # synchronous path (no thread) for the test
     assert called["preset"] == "standard"
     modal.destroy()
+
+
+# ---- Task 5: sections ------------------------------------------------------
+
+class _FakeApp:
+    def __init__(self, db, cfg):
+        self.db = db
+        self.config = cfg
+
+
+def _fake_app(tmp_path, name="x.db"):
+    from laser_trim_analyzer.config import Config
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    cfg = Config(); cfg.database.path = tmp_path / name
+    return _FakeApp(DatabaseManager(cfg.database.path), cfg)
+
+
+def test_alert_thresholds_section_builds(tk_root, tmp_path):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.alert_thresholds import build_alert_thresholds_section
+    parent = ctk.CTkFrame(tk_root)
+    build_alert_thresholds_section(parent, theme=ThemeManager(), app=_fake_app(tmp_path))
