@@ -91,3 +91,53 @@ def test_list_known_models_single_query_no_per_model_status(tmp_path, monkeypatc
     monkeypatch.setattr(mgr, "get_model_drift_status", counted)
     mgr.list_known_models(db)
     assert calls["n"] == 0  # tiers come from get_drifting_models, not per-model status
+
+
+# ---- Task 2: ModelAlertCard ----------------------------------------------
+
+def _labels(widget):
+    import customtkinter as ctk
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels(c))
+    return out
+
+
+def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None):
+    from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier, ModelAlertSummary
+    return ModelAlertSummary(model=model, tier=tier or DriftTier.DRIFT,
+                             alert_type=alert or AlertType.STEP_CHANGE,
+                             worst_metric=metric, magnitude=mag)
+
+
+def test_card_shows_model_readable_metric_and_magnitude(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    card = ModelAlertCard(tk_root, summary=_summary(), theme=ThemeManager(), on_click=lambda *_: None)
+    texts = " | ".join(_labels(card))
+    assert "8340-1" in texts
+    assert "Untrimmed resistance" in texts      # readable, not the raw key
+    assert "4.2" in texts and "σ" in texts
+    assert "Step change" in texts
+
+
+def test_card_click_emits_model_and_focus_metric(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    got = []
+    card = ModelAlertCard(tk_root, summary=_summary(model="CLICK", metric="linearity_error"),
+                          theme=ThemeManager(), on_click=lambda m, f: got.append((m, f)))
+    card._on_click()
+    assert got == [("CLICK", "linearity_error")]   # focus = the triggering metric
+
+
+def test_card_uses_tier_background(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    t = ThemeManager()
+    card = ModelAlertCard(tk_root, summary=_summary(tier=DriftTier.OUT_OF_CONTROL),
+                          theme=t, on_click=lambda *_: None)
+    assert card.cget("fg_color") == t.tier_color(DriftTier.OUT_OF_CONTROL)[0]
