@@ -1676,3 +1676,39 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
             counts["out_of_control"] += 1
 
     return counts
+
+
+def list_known_models(db):
+    """One ModelSummary per distinct model across analysis_results + smoothness_results.
+
+    Cost: ONE inventory session (GROUP BY model, MAX(file_date)) + ONE
+    get_drifting_models call for tiers.  Independent of model count (fixes the
+    per-model-session N+1).  Non-flagged models default to DriftTier.STABLE.
+    """
+    from sqlalchemy import func
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, SmoothnessResult as DBSR,
+    )
+    from laser_trim_analyzer.ml.drift_types import DriftTier, ModelSummary
+
+    last_seen = {}
+    with db.session() as s:
+        for model, last in (s.query(DBAR.model, func.max(DBAR.file_date))
+                            .group_by(DBAR.model).all()):
+            if model:
+                last_seen[model] = last
+        for model, last in (s.query(DBSR.model, func.max(DBSR.file_date))
+                            .group_by(DBSR.model).all()):
+            if not model:
+                continue
+            if model not in last_seen:
+                last_seen[model] = last
+            elif last is not None and (last_seen[model] is None or last > last_seen[model]):
+                last_seen[model] = last
+
+    flagged = {a.model: a.tier for a in get_drifting_models(db)}
+    return sorted(
+        (ModelSummary(model=m, tier=flagged.get(m, DriftTier.STABLE),
+                      last_processed=last_seen.get(m)) for m in last_seen),
+        key=lambda x: x.model,
+    )

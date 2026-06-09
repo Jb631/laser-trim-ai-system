@@ -106,9 +106,40 @@ class ModelAlertSummary:
 
 
 @dataclass
+class ModelSummary:
+    """Compact per-model row for the Triage browse zone (Spec 3b)."""
+    model: str
+    tier: DriftTier
+    last_processed: Optional[datetime] = None
+
+
+@dataclass
 class TrainingSummary:
     """Returned by train_drift_detector for progress reporting."""
     models_trained: int
     metrics_per_model: int = 8
     skipped_insufficient_data: List[Tuple[str, str]] = field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+# Human-readable labels for every metric the UI can surface (cards, pills,
+# the drift table, exports).  Single source of truth so no page renders a raw
+# key like ``untrimmed_resistance``.  Covers all WATCHED_METRICS plus the
+# post-trim ``sigma_gradient`` quality-gate metric, which is no longer drift-
+# watched but can still appear in per-model diagnostics.
+METRIC_LABELS = {
+    "sigma_gradient": "Sigma gradient (post-trim)",
+    "untrimmed_sigma_gradient": "Sigma gradient (untrimmed)",
+    "untrimmed_resistance": "Untrimmed resistance",
+    "linearity_error": "Linearity error",
+    "measured_electrical_angle": "Electrical angle",
+    "trim_pass_count": "Trim pass count",
+    "resistance_change_percent": "Resistance change %",
+    "max_smoothness_value": "Smoothness (max)",
+    "composite_trim_risk_score": "Composite trim-risk",
+}
+
+
+def metric_label(metric: str) -> str:
+    """Human-readable label for a metric key (graceful passthrough)."""
+    return METRIC_LABELS.get(metric, metric)
