@@ -81,3 +81,24 @@ def test_pill_click_and_select(tk_root):
     assert got == ["untrimmed_sigma_gradient"]
     row.set_selected("linearity_error")
     assert row._selected_metric == "linearity_error"
+
+
+# ---- Task 4: FocusChart ---------------------------------------------------
+
+def test_focus_chart_set_series_no_crash(tk_root):
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    today = datetime.now()
+    dates = [today - timedelta(days=i) for i in range(20, 0, -1)]
+    values = [0.01 + 0.0001 * i for i in range(20)]
+    chart.set_series(metric="untrimmed_sigma_gradient", dates=dates, values=values,
+                     baseline_mean=0.011, baseline_std=0.0005)
+
+
+def test_focus_chart_empty_no_crash(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.set_series(metric="linearity_error", dates=[], values=[])  # empty state, no raise
