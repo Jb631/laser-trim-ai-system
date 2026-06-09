@@ -141,3 +141,42 @@ def test_card_uses_tier_background(tk_root):
     card = ModelAlertCard(tk_root, summary=_summary(tier=DriftTier.OUT_OF_CONTROL),
                           theme=t, on_click=lambda *_: None)
     assert card.cget("fg_color") == t.tier_color(DriftTier.OUT_OF_CONTROL)[0]
+
+
+# ---- Task 3: FlaggedCardsZone --------------------------------------------
+
+def _walk(w):
+    yield w
+    for c in w.winfo_children():
+        yield from _walk(c)
+
+
+def test_zone_empty_state_names_last_processed(tk_root):
+    from datetime import datetime
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
+    z.set_summaries([], last_processed=datetime(2026, 5, 30))
+    txt = " ".join(_labels(z))
+    assert "within tolerance" in txt
+    assert "2026-05-30" in txt
+
+
+def test_zone_one_card_per_summary(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
+    z.set_summaries([_summary(model=f"M{i}") for i in range(6)])
+    assert sum(isinstance(w, ModelAlertCard) for w in _walk(z)) == 6
+
+
+def test_zone_routes_click(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    got = []
+    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda m, f: got.append((m, f)))
+    z.set_summaries([_summary(model="ROUTED", metric="sigma_gradient")])
+    next(w for w in _walk(z) if isinstance(w, ModelAlertCard))._on_click()
+    assert got == [("ROUTED", "sigma_gradient")]
