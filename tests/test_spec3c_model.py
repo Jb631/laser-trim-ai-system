@@ -117,3 +117,21 @@ def test_drift_tab_row_per_metric_and_click(tk_root):
     # DEVIATION: untrimmed_sigma_gradient (sigma_gradient no longer watched).
     tab._rows["untrimmed_sigma_gradient"]._on_click()
     assert got == ["untrimmed_sigma_gradient"]
+
+
+# ---- Task 6: SmoothnessTab ------------------------------------------------
+
+def test_smoothness_tab_empty(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
+    SmoothnessTab(tk_root, theme=ThemeManager()).set_records([])  # no raise
+
+
+def test_smoothness_tab_with_records(tk_root):
+    from datetime import datetime
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
+    tab = SmoothnessTab(tk_root, theme=ThemeManager())
+    tab.set_records([{"serial": "sn1", "file_date": datetime.now(),
+                      "max_smoothness_value": 0.4, "avg_smoothness_value": 0.2}])
+    assert len(tab._rows) == 1
