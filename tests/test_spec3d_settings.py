@@ -64,3 +64,14 @@ def test_settings_card_body_frame_is_fillable(tk_root):
     from laser_trim_analyzer.gui.v6.widgets.settings_card import SettingsCard
     c = SettingsCard(tk_root, theme=ThemeManager(), title="C", expanded=True)
     ctk.CTkLabel(c.body_frame(), text="hi").pack()   # no raise
+
+
+# ---- Task 3: SensitivitySlider --------------------------------------------
+
+def test_sensitivity_slider(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.sensitivity_slider import SensitivitySlider
+    got = []
+    s = SensitivitySlider(tk_root, theme=ThemeManager(), initial="standard", on_change=got.append)
+    assert s.value() == "standard"
+    s.set_value("tight"); assert s.value() == "tight"
