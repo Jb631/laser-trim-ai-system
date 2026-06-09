@@ -75,3 +75,24 @@ def test_sensitivity_slider(tk_root):
     s = SensitivitySlider(tk_root, theme=ThemeManager(), initial="standard", on_change=got.append)
     assert s.value() == "standard"
     s.set_value("tight"); assert s.value() == "tight"
+
+
+# ---- Task 4: TrainingModal ------------------------------------------------
+
+def test_training_modal_uses_injected_train_fn(tk_root, tmp_path):
+    """Inject a fake train_fn so the widget test never runs real training threads."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
+    db = DatabaseManager(tmp_path / "tm.db")
+    called = {}
+    def fake_train(d, preset, progress_callback=None):
+        called["preset"] = preset
+        if progress_callback:
+            progress_callback("M1", 0, 1)
+        class _S: pass
+        return _S()
+    modal = TrainingModal(tk_root, theme=ThemeManager(), db=db, preset="standard", train_fn=fake_train)
+    modal._run_training()           # synchronous path (no thread) for the test
+    assert called["preset"] == "standard"
+    modal.destroy()
