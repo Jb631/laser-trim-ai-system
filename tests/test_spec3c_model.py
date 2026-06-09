@@ -135,3 +135,27 @@ def test_smoothness_tab_with_records(tk_root):
     tab.set_records([{"serial": "sn1", "file_date": datetime.now(),
                       "max_smoothness_value": 0.4, "avg_smoothness_value": 0.2}])
     assert len(tab._rows) == 1
+
+
+# ---- Task 7: UnitsTab + UnitChartModal -----------------------------------
+
+def test_units_tab_row_per_unit_keeps_duplicate_serials(tk_root):
+    from datetime import datetime
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
+    tab = UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=lambda u: None, on_export=lambda: None)
+    # Same serial twice = two valid trims (Q2). Both rows must appear.
+    units = [{"analysis_id": 1, "serial": "sn1", "file_date": datetime.now(),
+              "overall_status": "Pass", "sigma_gradient": 0.01, "linearity_error": 0.004},
+             {"analysis_id": 2, "serial": "sn1", "file_date": datetime.now(),
+              "overall_status": "Fail", "sigma_gradient": 0.02, "linearity_error": 0.05}]
+    tab.set_units(units)
+    assert len(tab._rows) == 2
+
+
+def test_unit_chart_modal_marks_fail_points(tk_root):
+    """Q1: every point shown; out-of-limit points become fail_points."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
+    err = [0.0, 0.5, -0.2, 0.9]
+    upper = [0.4, 0.4, 0.4, 0.4]; lower = [-0.4, -0.4, -0.4, -0.4]
+    assert compute_fail_points(err, upper, lower) == [1, 3]  # 0.5>0.4 and 0.9>0.4
