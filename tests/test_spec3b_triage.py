@@ -245,8 +245,12 @@ def test_triage_card_click_routes_to_model(make_app):
     triage = app.page_container.get_page("triage")
     triage._on_card_click("FROM-CARD", "untrimmed_resistance")
     assert app.page_container.current_page == "model"
-    # Placeholder Model page doesn't consume yet → hint persists with focus.
-    assert app._model_route == ("FROM-CARD", "untrimmed_resistance")
+    # The real Model page (3c) consumes the route on show and applies it — the
+    # deep-link lands on FROM-CARD with the triggering metric preselected.
+    model_page = app.page_container.get_page("model")
+    assert model_page._current_model == "FROM-CARD"
+    assert model_page._current_metric == "untrimmed_resistance"
+    assert app._model_route is None
 
 
 def test_triage_reload_now_populates(make_app):

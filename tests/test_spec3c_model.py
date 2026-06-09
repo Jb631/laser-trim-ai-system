@@ -213,3 +213,49 @@ def test_export_evidence_pack_writes_xlsx(tmp_path):
     out = tmp_path / "pack.xlsx"
     export_evidence_pack(db, "8340-1", out, window_days=365)
     assert out.exists() and out.stat().st_size > 0
+
+
+# ---- Task 10: ModelPage ---------------------------------------------------
+
+def test_model_page_consumes_route_on_show(make_app):
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SystemType, StatusType
+    app = make_app()
+    with app.db.session() as s:
+        s.add(DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="ROUTED-MODEL",
+                   serial="sn1", system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                   overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+    app.set_model_route("ROUTED-MODEL", "linearity_error")
+    app.show_page("model")
+    page = app.page_container.get_page("model")
+    assert page._current_model == "ROUTED-MODEL"
+    assert page._current_metric == "linearity_error"
+
+
+def test_model_page_empty_state_when_no_model(make_app):
+    app = make_app()
+    app.show_page("model")        # no route set
+    page = app.page_container.get_page("model")
+    assert page._current_model is None
+    assert page._empty_label.winfo_ismapped() or page._empty_label.winfo_exists()
+
+
+def test_model_page_focus_series_uses_shifted_linearity(make_app):
+    """Q4: requesting linearity_error reads final_linearity_error_shifted."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType)
+    app = make_app()
+    with app.db.session() as s:
+        ar = DBAR(filename="x.xls", file_path="/f/x.xls", file_hash="hx", model="QM", serial="sn1",
+                  system=SystemType.A, file_date=datetime.now(), timestamp=datetime.now(),
+                  overall_status=StatusType.PASS, has_multi_tracks=False, processing_time=0.1)
+        s.add(ar); s.flush()
+        # TrackResult.status is NOT NULL — set it on any committed row.
+        s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                   final_linearity_error_shifted=0.0042))
+        s.commit()
+    page = app.page_container.get_page("model")
+    dates, values, baseline = page._load_focus_series("QM", "linearity_error")
+    assert values == [0.0042]

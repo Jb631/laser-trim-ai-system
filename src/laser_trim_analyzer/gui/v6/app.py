@@ -77,14 +77,19 @@ class V6App(ctk.CTk):
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # Triage is real (Spec 3b); the rest remain placeholders until their sub-spec.
+        # Triage (3b) and Model (3c) are real; Process/Settings remain placeholders.
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
+        from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
         self.page_container.add_page(
             "triage",
             TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),
         )
+        self.page_container.add_page(
+            "model",
+            ModelPage(self.page_container, theme=self.theme, app=self, page_title="Model"),
+        )
         for name, label, nxt in (("process", "Process", "3e"),
-                                 ("model", "Model", "3c"), ("settings", "Settings", "3d")):
+                                 ("settings", "Settings", "3d")):
             self.page_container.add_page(
                 name,
                 _PlaceholderPage(self.page_container, theme=self.theme, app=self,
