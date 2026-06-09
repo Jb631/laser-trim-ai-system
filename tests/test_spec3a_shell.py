@@ -174,3 +174,36 @@ def test_page_container_add_get_show(tk_root):
     c.show("A"); c.show("B")
     assert ev == ["show:A", "hide:A", "show:B"]
     c.show("missing"); assert c.current_page == "B"  # unknown no-op
+
+
+# ---- Task 4: V6App --------------------------------------------------------
+
+def test_v6app_starts_on_triage(make_app):
+    app = make_app()
+    assert app.page_container.current_page == "triage"
+    assert app.sidebar._active_name == "triage"
+
+
+def test_v6app_show_page(make_app):
+    app = make_app()
+    app.show_page("settings")
+    assert app.page_container.current_page == "settings"
+    assert app.sidebar._active_name == "settings"
+
+
+def test_v6app_show_unknown_no_op(make_app):
+    app = make_app()
+    before = app.page_container.current_page
+    app.show_page("nope")
+    assert app.page_container.current_page == before
+
+
+def test_v6app_has_four_pages(make_app):
+    app = make_app()
+    assert set(app.page_container._pages) == {"triage", "process", "model", "settings"}
+
+
+def test_v6app_auto_train_off_does_not_offer(make_app):
+    """make_app passes auto_train_on_first_run=False → no first-run hook scheduled."""
+    app = make_app()
+    assert app._auto_train_on_first_run is False
