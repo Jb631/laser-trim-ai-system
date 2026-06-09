@@ -126,3 +126,25 @@ def test_ml_training_section_builds(tk_root, tmp_path):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.sections.ml_training import build_ml_training_section
     build_ml_training_section(ctk.CTkFrame(tk_root), theme=ThemeManager(), app=_fake_app(tmp_path, "ml.db"))
+
+
+def test_per_model_specs_section_builds(tk_root, tmp_path):
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.sections.per_model_specs import build_per_model_specs_section
+    build_per_model_specs_section(ctk.CTkFrame(tk_root), theme=ThemeManager(), app=_fake_app(tmp_path, "sp.db"))
+
+
+def test_per_model_specs_save_roundtrip(tmp_path):
+    """exclude_points feeds ML correctness (flip FAIL<->PASS), so the human->JSON
+    storage conversion must round-trip through the DB exactly."""
+    from laser_trim_analyzer.core.analyzer import parse_exclude_points
+    from laser_trim_analyzer.gui.v6.sections.per_model_specs import build_spec_save_data
+    app = _fake_app(tmp_path, "spx.db")
+    data = build_spec_save_data("8340-1", "±0.05%", "0.05", "0-2, 48-50", "")
+    app.db.save_model_spec(data)
+    got = app.db.get_model_spec("8340-1")
+    assert got["linearity_spec_pct"] == 0.05
+    assert got["linearity_spec_text"] == "±0.05%"
+    assert parse_exclude_points(got["exclude_points"]) == {0, 1, 2, 48, 49, 50}
+    assert got["exclude_points_ft"] is None
