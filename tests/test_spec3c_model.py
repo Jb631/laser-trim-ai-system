@@ -159,3 +159,25 @@ def test_unit_chart_modal_marks_fail_points(tk_root):
     err = [0.0, 0.5, -0.2, 0.9]
     upper = [0.4, 0.4, 0.4, 0.4]; lower = [-0.4, -0.4, -0.4, -0.4]
     assert compute_fail_points(err, upper, lower) == [1, 3]  # 0.5>0.4 and 0.9>0.4
+
+
+# ---- Task 8: PredictorPanel -----------------------------------------------
+
+def test_predictor_panel_collapsed_then_toggles(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
+    p = PredictorPanel(tk_root, theme=ThemeManager(), load_fn=lambda model: "Risk: LOW (demo)")
+    assert p._expanded is False
+    p.set_model("8340-1")
+    p.toggle()                 # expand → triggers lazy load
+    assert p._expanded is True
+    assert "Risk" in p._body_label.cget("text")
+
+
+def test_predictor_panel_load_failure_is_graceful(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
+    def boom(model): raise RuntimeError("no predictor")
+    p = PredictorPanel(tk_root, theme=ThemeManager(), load_fn=boom)
+    p.set_model("X"); p.toggle()
+    assert "No predictor" in p._body_label.cget("text")
