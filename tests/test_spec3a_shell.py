@@ -65,3 +65,29 @@ def test_theme_font_returns_ctkfont(tk_root):
     f = t.font(t.SIZE_BODY, "bold")
     assert isinstance(f, ctk.CTkFont)
     assert t.resolved_family in t.FONT_FAMILY  # picked one of the declared families
+
+
+# ---- Task 2: Sidebar ------------------------------------------------------
+
+def test_sidebar_items_in_order():
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    assert Sidebar.ITEMS == [("triage", "Triage"), ("process", "Process"),
+                             ("model", "Model"), ("settings", "Settings")]
+
+
+def test_sidebar_emits_selection(tk_root):
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    got = []
+    sb = Sidebar(tk_root, on_select=got.append, theme=ThemeManager())
+    sb._row_frames["model"]._on_click()
+    assert got == ["model"]
+
+
+def test_sidebar_set_active(tk_root):
+    from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    sb = Sidebar(tk_root, on_select=lambda _: None, theme=ThemeManager())
+    sb.set_active("triage"); assert sb._active_name == "triage"
+    sb.set_active("settings"); assert sb._active_name == "settings"
+    sb.set_active("bogus"); assert sb._active_name == "settings"  # unknown no-op
