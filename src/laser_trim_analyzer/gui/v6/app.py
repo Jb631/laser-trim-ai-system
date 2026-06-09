@@ -1,11 +1,10 @@
-"""Spec 3a — V6App root + placeholder pages. Foundations §2.2."""
+"""V6App root — sidebar + page container + the four real pages. Foundations §2.2."""
 from typing import Optional, Tuple
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.config import Config
 from laser_trim_analyzer.database import get_database
-from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
@@ -101,10 +100,11 @@ class V6App(ctk.CTk):
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # Triage (3b), Model (3c), Settings (3d) are real; Process is a placeholder until 3e.
+        # All four pages are real (Triage 3b, Model 3c, Settings 3d, Process 3e).
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
         from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
+        from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
         self.page_container.add_page(
             "triage",
             TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),
@@ -119,8 +119,7 @@ class V6App(ctk.CTk):
         )
         self.page_container.add_page(
             "process",
-            _PlaceholderPage(self.page_container, theme=self.theme, app=self,
-                             page_title="Process", next_spec="3e"),
+            ProcessPage(self.page_container, theme=self.theme, app=self, page_title="Process"),
         )
 
     def _on_closing(self) -> None:
@@ -128,14 +127,3 @@ class V6App(ctk.CTk):
 
     def run(self) -> None:
         self.mainloop()
-
-
-class _PlaceholderPage(PageBase):
-    def __init__(self, master, *, theme, app, page_title, next_spec):
-        self._next_spec = next_spec
-        super().__init__(master, theme=theme, app=app, page_title=page_title)
-
-    def build_content(self, parent):
-        ctk.CTkLabel(parent, text=f"{self.page_title} — coming in Spec {self._next_spec}.",
-                     font=self.theme.font(self.theme.SIZE_HEADING),
-                     text_color=self.theme.TEXT_SECONDARY).pack(expand=True)
