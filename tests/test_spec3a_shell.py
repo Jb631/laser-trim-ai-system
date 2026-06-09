@@ -91,3 +91,86 @@ def test_sidebar_set_active(tk_root):
     sb.set_active("triage"); assert sb._active_name == "triage"
     sb.set_active("settings"); assert sb._active_name == "settings"
     sb.set_active("bogus"); assert sb._active_name == "settings"  # unknown no-op
+
+
+# ---- Task 3: PageBase + PageContainer -------------------------------------
+
+def test_page_base_requires_build_content(tk_root):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+    class _Incomplete(PageBase):
+        page_title = "X"
+    import pytest
+    with pytest.raises(NotImplementedError):
+        _Incomplete(tk_root, theme=ThemeManager())
+
+
+def test_page_base_runs_build_content_and_stores_app(tk_root):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    calls = []
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): calls.append(self.app)
+
+    sentinel = object()
+    p = _P(tk_root, theme=ThemeManager(), app=sentinel)
+    assert calls == [sentinel]
+    assert p.app is sentinel
+
+
+def test_page_base_header_actions_receives_parent(tk_root):
+    """FIX C5/C6: header_actions(parent) builds widgets WITH that parent (no reparenting)."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    seen = {}
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+        def header_actions(self, parent):
+            btn = ctk.CTkButton(parent, text="Go")
+            btn.pack(side="right")
+            seen["parent_is_actions_frame"] = btn.master is parent
+
+    _P(tk_root, theme=ThemeManager())
+    assert seen["parent_is_actions_frame"] is True
+
+
+def test_page_base_lifecycle_hooks(tk_root):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    ev = []
+
+    class _P(PageBase):
+        page_title = "T"
+        def build_content(self, parent): pass
+        def on_show(self): ev.append("show")
+        def on_hide(self): ev.append("hide")
+
+    p = _P(tk_root, theme=ThemeManager())
+    p.on_show(); p.on_hide()
+    assert ev == ["show", "hide"]
+
+
+def test_page_container_add_get_show(tk_root):
+    from laser_trim_analyzer.gui.v6.page_base import PageBase
+    from laser_trim_analyzer.gui.v6.page_container import PageContainer
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    theme = ThemeManager(); ev = []
+
+    class _P(PageBase):
+        def build_content(self, parent): pass
+        def on_show(self): ev.append(f"show:{self.page_title}")
+        def on_hide(self): ev.append(f"hide:{self.page_title}")
+
+    c = PageContainer(tk_root, theme=theme)
+    a = _P(c, theme=theme, page_title="A"); b = _P(c, theme=theme, page_title="B")
+    c.add_page("A", a); c.add_page("B", b)
+    assert c.get_page("A") is a
+    c.show("A"); c.show("B")
+    assert ev == ["show:A", "hide:A", "show:B"]
+    c.show("missing"); assert c.current_page == "B"  # unknown no-op
