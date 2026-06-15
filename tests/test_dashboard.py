@@ -128,3 +128,16 @@ def test_worst_models_joins_ft_rate(tmp_path):
         s.commit()
     rows, _ = worst_models_by_yield(db, None, min_units=5, limit=10)
     assert rows[0]["ft_rate"] == pytest.approx(50.0)
+
+
+def test_mini_trend_chart_set_points_no_crash(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.mini_trend_chart import MiniTrendChart
+    c = MiniTrendChart(tk_root, theme=ThemeManager())
+    c.set_points([("2026-05-01", 90.0), ("2026-05-02", 80.0), ("2026-05-03", 95.0)])
+
+
+def test_mini_trend_chart_empty_no_crash(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.mini_trend_chart import MiniTrendChart
+    MiniTrendChart(tk_root, theme=ThemeManager()).set_points([])

@@ -1,0 +1,44 @@
+"""Dashboard — MiniTrendChart: a compact pass-rate-over-time line (no SPC overlays)."""
+from typing import List, Tuple
+
+import customtkinter as ctk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+from laser_trim_analyzer.gui.v6.theme import ThemeManager
+
+
+class MiniTrendChart(ctk.CTkFrame):
+    def __init__(self, master, theme: ThemeManager, **kwargs):
+        super().__init__(master, fg_color=theme.CARD, corner_radius=theme.RADIUS_SM, **kwargs)
+        self.theme = theme
+        self._fig = Figure(figsize=(3.2, 1.0), dpi=96, facecolor=theme.CARD)
+        self._ax = self._fig.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self._fig, master=self)   # NOTE: `canvas`, not `_canvas`
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.bind("<Destroy>", self._on_destroy)
+
+    def set_points(self, points: List[Tuple[str, float]]) -> None:
+        ax, t = self._ax, self.theme
+        ax.clear()
+        ax.set_facecolor(t.CARD)
+        for side in ("top", "right", "bottom", "left"):
+            ax.spines[side].set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if points:
+            ys = [p[1] for p in points]
+            ax.plot(range(len(ys)), ys, lw=1.5, color=t.ACCENT)
+            ax.set_ylim(0, 100)
+        else:
+            ax.text(0.5, 0.5, "no trend", transform=ax.transAxes, ha="center", va="center",
+                    color=t.TEXT_DISABLED, fontsize=8)
+        self._fig.tight_layout(pad=0.2)
+        self.canvas.draw_idle()
+
+    def _on_destroy(self, _evt=None):
+        try:
+            import matplotlib.pyplot as plt
+            plt.close(self._fig)
+        except Exception:
+            pass
