@@ -299,3 +299,15 @@ def test_model_recent_means_computed_from_data(make_app):
     page = app.page_container.get_page("model")
     means = page._recent_means("RM")
     assert means["linearity_error"] == pytest.approx(0.0042)   # mean(0.0040, 0.0044)
+
+
+def test_drift_tab_uses_grid_columns(tk_root):
+    """Header and rows lay their cells out on a shared grid, so columns line up."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab, _COLUMNS
+    tab = DriftMetricsTab(tk_root, theme=ThemeManager(), on_metric_select=lambda _: None)
+    tab.set_status(_status())
+    row = tab._rows["linearity_error"]
+    slaves = row.grid_slaves()
+    assert len(slaves) == len(_COLUMNS)                                  # cells gridded, not packed
+    assert sorted(int(w.grid_info()["column"]) for w in slaves) == list(range(len(_COLUMNS)))

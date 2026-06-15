@@ -17,10 +17,12 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         self._rows: Dict[str, _MetricRow] = {}
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
-        for col in _COLUMNS:
+        for i in range(len(_COLUMNS)):
+            header.grid_columnconfigure(i, weight=1, uniform="dm")
+        for i, col in enumerate(_COLUMNS):
             ctk.CTkLabel(header, text=col, font=theme.font(theme.SIZE_CAPTION, "bold"),
-                         text_color=theme.TEXT_SECONDARY)\
-                .pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
+                         text_color=theme.TEXT_SECONDARY, anchor="w")\
+                .grid(row=0, column=i, sticky="ew", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
 
     def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
         recent_means = recent_means or {}
@@ -48,10 +50,12 @@ class _MetricRow(ctk.CTkFrame):
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  ms.alert_type.value if ms.alert_type else "—",
                  f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, f"{ms.magnitude:+.2f}"]
-        for txt in cells:
+        for i in range(len(cells)):
+            self.grid_columnconfigure(i, weight=1, uniform="dm")
+        for i, txt in enumerate(cells):
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
-                               text_color=theme.TEXT_PRIMARY)
-            lbl.pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
+                               text_color=theme.TEXT_PRIMARY, anchor="w")
+            lbl.grid(row=0, column=i, sticky="ew", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
             lbl.bind("<Button-1>", lambda e: self._on_click())
         self.bind("<Button-1>", lambda e: self._on_click())
 
