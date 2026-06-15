@@ -29,7 +29,7 @@ class V6App(ctk.CTk):
         self._setup_window()
         self._build_layout()
         self._build_pages()
-        self.show_page("triage")
+        self.show_page("dashboard")
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         # Data-gated first-startup auto-train (Spec 3d / D3). Disabled in tests via
         # the flag; the method itself re-checks the flag and the data gate.
@@ -100,11 +100,16 @@ class V6App(ctk.CTk):
         self.page_container.grid(row=0, column=1, sticky="nsew")
 
     def _build_pages(self) -> None:
-        # All four pages are real (Triage 3b, Model 3c, Settings 3d, Process 3e).
+        # All pages are real. Dashboard is the landing; the rest follow in the sidebar.
+        from laser_trim_analyzer.gui.v6.pages.dashboard_page import DashboardPage
         from laser_trim_analyzer.gui.v6.pages.triage_page import TriagePage
         from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
         from laser_trim_analyzer.gui.v6.pages.settings_page import SettingsPage
         from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
+        self.page_container.add_page(
+            "dashboard",
+            DashboardPage(self.page_container, theme=self.theme, app=self, page_title="Dashboard"),
+        )
         self.page_container.add_page(
             "triage",
             TriagePage(self.page_container, theme=self.theme, app=self, page_title="Triage"),

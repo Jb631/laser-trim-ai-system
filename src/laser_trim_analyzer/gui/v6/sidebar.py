@@ -10,7 +10,7 @@ SIDEBAR_WIDTH = 160; ROW_HEIGHT = 40; STRIPE_WIDTH = 3
 
 class Sidebar(ctk.CTkFrame):
     ITEMS: List[Tuple[str, str]] = [
-        ("triage", "Triage"), ("process", "Process"),
+        ("dashboard", "Dashboard"), ("triage", "Triage"), ("process", "Process"),
         ("model", "Model"), ("settings", "Settings"),
     ]
 

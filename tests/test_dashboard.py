@@ -204,3 +204,34 @@ def test_worst_models_list_empty(tk_root):
     w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
     w.set_rows([], total=0)
     assert w._rows == []
+
+
+def test_dashboard_is_landing(make_app):
+    app = make_app()
+    assert app.page_container.current_page == "dashboard"
+    assert app.page_container.get_page("dashboard") is not None
+
+
+def test_dashboard_reload_now_populates(make_app):
+    app = make_app()
+    now = datetime.now()
+    with app.db.session() as s:
+        for _ in range(5):
+            _add_ar(s, "DASH", StatusType.PASS, now)
+        _add_ar(s, "DASH", StatusType.FAIL, now)
+        s.commit()
+    page = app.page_container.get_page("dashboard")
+    page.reload_now()
+    # trim panel shows a rate; worst-models has DASH (5 pass + 1 fail = 6 gradeable >= 5)
+    assert any("83" in x or "%" in x for x in _labels_text(page._trim_panel))
+    assert any(r.row["model"] == "DASH" for r in page._worst._rows)
+
+
+def test_dashboard_row_click_routes_to_model(make_app):
+    app = make_app()
+    page = app.page_container.get_page("dashboard")
+    page._on_model_click("ROUTED")
+    assert app.page_container.current_page == "model"
+    # The real Model page consumes the route on show and lands on the model.
+    assert app.page_container.get_page("model")._current_model == "ROUTED"
+    assert app._model_route is None
