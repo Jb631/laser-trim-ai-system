@@ -79,3 +79,52 @@ def test_compute_yield_on_final_test(tmp_path):
         s.commit()
     y = compute_yield(db, DBFT, None)
     assert y["passed"] == 1 and y["failed"] == 1 and y["pass_rate"] == pytest.approx(50.0)
+
+
+def test_worst_models_ranks_and_min_units(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.core.yield_stats import worst_models_by_yield
+    db = DatabaseManager(tmp_path / "wm.db")
+    now = datetime.now()
+    with db.session() as s:
+        for _ in range(5):
+            _add_ar(s, "GOOD", StatusType.PASS, now)
+        for _ in range(3):
+            _add_ar(s, "BAD", StatusType.PASS, now)
+        for _ in range(2):
+            _add_ar(s, "BAD", StatusType.FAIL, now)
+        _add_ar(s, "TINY", StatusType.FAIL, now)        # below min_units, excluded
+        s.commit()
+    rows, total = worst_models_by_yield(db, None, min_units=5, limit=10)
+    assert [r["model"] for r in rows] == ["BAD", "GOOD"]   # worst first
+    assert total == 2                                       # TINY excluded by min_units
+    assert rows[0]["units"] == 5 and rows[0]["trim_rate"] == pytest.approx(60.0)
+
+
+def test_worst_models_cap_disclosed(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.core.yield_stats import worst_models_by_yield
+    db = DatabaseManager(tmp_path / "cap.db")
+    now = datetime.now()
+    with db.session() as s:
+        for i in range(12):
+            for _ in range(5):
+                _add_ar(s, f"M{i:02d}", StatusType.PASS, now)
+        s.commit()
+    rows, total = worst_models_by_yield(db, None, min_units=5, limit=10)
+    assert len(rows) == 10 and total == 12
+
+
+def test_worst_models_joins_ft_rate(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.core.yield_stats import worst_models_by_yield
+    db = DatabaseManager(tmp_path / "j.db")
+    now = datetime.now()
+    with db.session() as s:
+        for _ in range(5):
+            _add_ar(s, "M", StatusType.PASS, now)
+        _add_ft(s, "M", StatusType.PASS, now)
+        _add_ft(s, "M", StatusType.FAIL, now)     # FT 50%
+        s.commit()
+    rows, _ = worst_models_by_yield(db, None, min_units=5, limit=10)
+    assert rows[0]["ft_rate"] == pytest.approx(50.0)

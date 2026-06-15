@@ -48,3 +48,51 @@ def compute_yield(db, model_cls, cutoff: Optional[datetime]) -> dict:
              for d, (t, p) in sorted(per_day.items())]
     return {**counts, "gradeable": gradeable, "total": sum(counts.values()),
             "pass_rate": pass_rate, "trend": trend}
+
+
+def worst_models_by_yield(db, cutoff: Optional[datetime], min_units: int = 5, limit: int = 10):
+    """Rank models by trim yield (worst first) over the window.
+
+    'units' = gradeable trim records (pass+warning+fail) for the model; only models
+    with units >= min_units are ranked (so a 1-unit 0% model can't dominate). Each
+    row: {model, units, trim_rate, ft_rate}. trim_rate/ft_rate are % or None.
+    Returns (rows[:limit], total_qualifying) so the caller can disclose the cap.
+    """
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT)
+
+    def _by_model(model_cls):
+        acc: dict = {}
+        with db.session() as s:
+            q = s.query(model_cls.model, model_cls.overall_status)
+            if cutoff is not None:
+                q = q.filter(model_cls.file_date >= cutoff)
+            rows = q.all()
+        for model, status in rows:
+            if not model:
+                continue
+            b = _bucket(status)
+            if b not in ("passed", "warnings", "failed"):
+                continue
+            slot = acc.setdefault(model, [0, 0])   # [gradeable, passed]
+            slot[0] += 1
+            if b == "passed":
+                slot[1] += 1
+        return acc
+
+    trim = _by_model(DBAR)
+    ft = _by_model(DBFT)
+
+    rows = []
+    for model, (gradeable, passed) in trim.items():
+        if gradeable < min_units:
+            continue
+        ftv = ft.get(model)
+        rows.append({
+            "model": model,
+            "units": gradeable,
+            "trim_rate": (passed / gradeable * 100.0) if gradeable else None,
+            "ft_rate": (ftv[1] / ftv[0] * 100.0) if ftv and ftv[0] else None,
+        })
+    rows.sort(key=lambda r: (r["trim_rate"] is None, r["trim_rate"] if r["trim_rate"] is not None else 0.0))
+    return rows[:limit], len(rows)
