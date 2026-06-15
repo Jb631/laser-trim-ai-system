@@ -175,3 +175,32 @@ def test_yield_panel_empty_state(tk_root):
                  "gradeable": 0, "total": 0, "pass_rate": None, "trend": []},
                 total_label="0 matched")
     assert "—" in " ".join(_labels_text(p))   # no fabricated 0%
+
+
+def test_worst_models_list_rows_and_click(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
+    got = []
+    w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=got.append)
+    w.set_rows([{"model": "BAD", "units": 5, "trim_rate": 60.0, "ft_rate": 48.0},
+                {"model": "OK", "units": 9, "trim_rate": 95.0, "ft_rate": None}], total=2)
+    assert len(w._rows) == 2
+    w._rows[0]._on_click()
+    assert got == ["BAD"]
+
+
+def test_worst_models_list_discloses_cap(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
+    w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    w.set_rows([{"model": f"M{i}", "units": 5, "trim_rate": 50.0, "ft_rate": None}
+                for i in range(10)], total=25)
+    assert "10 of 25" in w._cap.cget("text")
+
+
+def test_worst_models_list_empty(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
+    w = WorstModelsList(tk_root, theme=ThemeManager(), on_row_click=lambda _: None)
+    w.set_rows([], total=0)
+    assert w._rows == []
