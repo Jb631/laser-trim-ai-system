@@ -37,7 +37,18 @@ class ModelPage(PageBase):
         self._current_metric: str = _DEFAULT_METRIC
         self._window_choice: str = "90d"
         self._reload_gen = 0
+        self._user_picked_metric = False
         super().__init__(master, theme=theme, app=app, page_title=page_title)
+
+    @staticmethod
+    def _resolve_focus_metric(status, user_picked, current):
+        """Pick the metric to focus: the user's explicit pick wins; otherwise the
+        model's worst flagged metric; otherwise the current fallback."""
+        if user_picked:
+            return current
+        if status is not None and status.worst_metric and status.worst_metric in WATCHED_METRICS:
+            return status.worst_metric
+        return current
 
     # ---- header (built INTO the actions parent — no reparenting) ----
     def header_actions(self, parent):
@@ -99,8 +110,10 @@ class ModelPage(PageBase):
         model, focus = self.app.consume_model_route_full()
         if model:
             self._current_model = model
+            self._user_picked_metric = False
         if focus and focus in WATCHED_METRICS:
             self._current_metric = focus
+            self._user_picked_metric = True
         # Refresh the selector's model list each show.
         threading.Thread(target=self._refresh_selector_values, daemon=True).start()
         if self._current_model:
@@ -132,18 +145,22 @@ class ModelPage(PageBase):
         def work():
             try:
                 status = get_model_drift_status(self.app.db, model)
-                dates, values, baseline = self._load_focus_series(model, metric)
+                chosen = self._resolve_focus_metric(status, self._user_picked_metric, metric)
+                dates, values, baseline = self._load_focus_series(model, chosen)
                 units = self._load_units(model)
                 smoothness = self._load_smoothness(model)
             except Exception:
-                status, dates, values, baseline, units, smoothness = None, [], [], (None, None), [], []
+                status, chosen = None, metric
+                dates, values, baseline, units, smoothness = [], [], (None, None), [], []
             def apply():
                 if gen != self._reload_gen:
                     return  # a newer reload superseded this one
+                self._current_metric = chosen
                 if status:
                     self._pill_row.set_status(status)
                     self._drift_tab.set_status(status)
-                self._focus_chart.set_series(metric=metric, dates=dates, values=values,
+                self._pill_row.set_selected(chosen)
+                self._focus_chart.set_series(metric=chosen, dates=dates, values=values,
                                              baseline_mean=baseline[0], baseline_std=baseline[1])
                 self._units_tab.set_units(units)
                 self._smoothness_tab.set_records(smoothness)
@@ -208,11 +225,13 @@ class ModelPage(PageBase):
     def _on_model_selected(self, model):
         if model and model != "Select model…":
             self._current_model = model
+            self._user_picked_metric = False   # new model → auto-focus its worst metric
             self._show_body()
             self._predictor.set_model(model)
             self._reload()
 
     def _on_pill_click(self, metric):
+        self._user_picked_metric = True        # explicit choice; don't auto-override it
         self._current_metric = metric
         self._pill_row.set_selected(metric)
         self._reload()

@@ -259,3 +259,20 @@ def test_model_page_focus_series_uses_shifted_linearity(make_app):
     page = app.page_container.get_page("model")
     dates, values, baseline = page._load_focus_series("QM", "linearity_error")
     assert values == [0.0042]
+
+
+# ---- Dashboard-round Model fixes ------------------------------------------
+
+def test_resolve_focus_metric_prefers_worst_when_not_user_picked():
+    from laser_trim_analyzer.gui.v6.pages.model_page import ModelPage
+    from laser_trim_analyzer.ml.drift_types import DriftTier, ModelDriftStatus
+    status = ModelDriftStatus(model="M", overall_tier=DriftTier.OUT_OF_CONTROL,
+                              worst_metric="trim_pass_count", worst_alert_type=None, per_metric={})
+    # not user-picked -> worst metric wins
+    assert ModelPage._resolve_focus_metric(status, False, "untrimmed_sigma_gradient") == "trim_pass_count"
+    # user picked -> keep their choice
+    assert ModelPage._resolve_focus_metric(status, True, "linearity_error") == "linearity_error"
+    # no worst (all stable) -> keep current fallback
+    stable = ModelDriftStatus(model="M", overall_tier=DriftTier.STABLE, worst_metric=None,
+                              worst_alert_type=None, per_metric={})
+    assert ModelPage._resolve_focus_metric(stable, False, "untrimmed_sigma_gradient") == "untrimmed_sigma_gradient"
