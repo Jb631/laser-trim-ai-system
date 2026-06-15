@@ -141,3 +141,37 @@ def test_mini_trend_chart_empty_no_crash(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.mini_trend_chart import MiniTrendChart
     MiniTrendChart(tk_root, theme=ThemeManager()).set_points([])
+
+
+def _labels_text(widget):
+    import customtkinter as ctk
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels_text(c))
+    return out
+
+
+def test_yield_panel_renders_rate_and_counts(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.yield_panel import YieldPanel
+    p = YieldPanel(tk_root, theme=ThemeManager(), title="Trim analysis yield")
+    p.set_yield({"passed": 3, "warnings": 1, "failed": 1, "errors": 0, "untrimmed": 1,
+                 "gradeable": 5, "total": 6, "pass_rate": 60.0, "trend": []},
+                total_label="6 units")
+    txt = " | ".join(_labels_text(p))
+    assert "Trim analysis yield" in txt
+    assert "60" in txt                # headline %
+    assert "3" in txt and "1" in txt  # pass / warn-fail counts
+    assert "6 units" in txt
+
+
+def test_yield_panel_empty_state(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.yield_panel import YieldPanel
+    p = YieldPanel(tk_root, theme=ThemeManager(), title="Final-test yield")
+    p.set_yield({"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0,
+                 "gradeable": 0, "total": 0, "pass_rate": None, "trend": []},
+                total_label="0 matched")
+    assert "—" in " ".join(_labels_text(p))   # no fabricated 0%
