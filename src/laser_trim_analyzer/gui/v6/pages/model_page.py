@@ -28,6 +28,9 @@ _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": None}
 # watched — see drift_types.WATCHED_METRICS / the D-SIGMA rationale).
 _DEFAULT_METRIC = "untrimmed_sigma_gradient"
 
+# "recent" window for the baseline-vs-recent comparison shown in the Drift table.
+_RECENT_DAYS = 30
+
 
 class ModelPage(PageBase):
     page_title = "Model"
@@ -149,16 +152,17 @@ class ModelPage(PageBase):
                 dates, values, baseline = self._load_focus_series(model, chosen)
                 units = self._load_units(model)
                 smoothness = self._load_smoothness(model)
+                recent = self._recent_means(model)
             except Exception:
                 status, chosen = None, metric
-                dates, values, baseline, units, smoothness = [], [], (None, None), [], []
+                dates, values, baseline, units, smoothness, recent = [], [], (None, None), [], [], {}
             def apply():
                 if gen != self._reload_gen:
                     return  # a newer reload superseded this one
                 self._current_metric = chosen
                 if status:
                     self._pill_row.set_status(status)
-                    self._drift_tab.set_status(status)
+                    self._drift_tab.set_status(status, recent_means=recent)
                 self._pill_row.set_selected(chosen)
                 self._focus_chart.set_series(metric=chosen, dates=dates, values=values,
                                              baseline_mean=baseline[0], baseline_std=baseline[1])
@@ -194,6 +198,28 @@ class ModelPage(PageBase):
             ms = s.query(ModelMetricState).filter_by(model=model, metric=metric).first()
             baseline = (ms.baseline_mean, ms.baseline_std) if ms else (None, None)
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline
+
+    def _recent_means(self, model) -> dict:
+        """Mean of each watched metric over the last _RECENT_DAYS, computed from the
+        actual data (the detector does not persist a recent mean). Metric -> float|None."""
+        from sqlalchemy import func
+        cutoff = datetime.now() - timedelta(days=_RECENT_DAYS)
+        out = {}
+        with self.app.db.session() as s:
+            for metric in WATCHED_METRICS:
+                if metric == "max_smoothness_value":
+                    val = (s.query(func.avg(DBSR.max_smoothness_value))
+                           .filter(DBSR.model == model, DBSR.max_smoothness_value.isnot(None),
+                                   DBSR.file_date >= cutoff).scalar())
+                elif metric in TRACK_METRIC_COLUMNS:
+                    col = TRACK_METRIC_COLUMNS[metric]
+                    val = (s.query(func.avg(col)).join(DBAR, DBTR.analysis_id == DBAR.id)
+                           .filter(DBAR.model == model, col.isnot(None),
+                                   DBAR.file_date >= cutoff).scalar())
+                else:
+                    val = None
+                out[metric] = float(val) if val is not None else None
+        return out
 
     def _load_units(self, model) -> List[dict]:
         cutoff = self._window_cutoff()

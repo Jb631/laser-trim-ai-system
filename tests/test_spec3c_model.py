@@ -1,4 +1,5 @@
 """Spec 3c — Model page. Foundations §3/§4.3. Fixtures in tests/conftest.py."""
+import pytest
 
 # ---- Task 1: routing + column map ----------------------------------------
 
@@ -276,3 +277,25 @@ def test_resolve_focus_metric_prefers_worst_when_not_user_picked():
     stable = ModelDriftStatus(model="M", overall_tier=DriftTier.STABLE, worst_metric=None,
                               worst_alert_type=None, per_metric={})
     assert ModelPage._resolve_focus_metric(stable, False, "untrimmed_sigma_gradient") == "untrimmed_sigma_gradient"
+
+
+def test_model_recent_means_computed_from_data(make_app):
+    """Recent column comes from the actual recent-window data, not the detector
+    (which never persists a recent mean)."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType)
+    app = make_app()
+    with app.db.session() as s:
+        for i, val in enumerate((0.0040, 0.0044)):
+            ar = DBAR(filename=f"r{i}.xls", file_path="/f/x.xls", file_hash=f"hr{i}",
+                      model="RM", serial=f"sn{i}", system=SystemType.A, file_date=datetime.now(),
+                      timestamp=datetime.now(), overall_status=StatusType.PASS,
+                      has_multi_tracks=False, processing_time=0.1)
+            s.add(ar); s.flush()
+            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                       final_linearity_error_shifted=val))
+        s.commit()
+    page = app.page_container.get_page("model")
+    means = page._recent_means("RM")
+    assert means["linearity_error"] == pytest.approx(0.0042)   # mean(0.0040, 0.0044)

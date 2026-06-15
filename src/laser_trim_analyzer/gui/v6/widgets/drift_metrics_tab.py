@@ -22,7 +22,8 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
                          text_color=theme.TEXT_SECONDARY)\
                 .pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
 
-    def set_status(self, status: ModelDriftStatus) -> None:
+    def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
+        recent_means = recent_means or {}
         for r in self._rows.values():
             r.destroy()
         self._rows.clear()
@@ -30,18 +31,20 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
             ms = status.per_metric.get(m)
             if ms is None:
                 continue
-            row = _MetricRow(self, ms=ms, theme=self.theme, on_click=self._cb)
+            row = _MetricRow(self, ms=ms, theme=self.theme, on_click=self._cb,
+                             recent_override=recent_means.get(m))
             row.pack(side="top", fill="x", pady=1)
             self._rows[m] = row
 
 
 class _MetricRow(ctk.CTkFrame):
-    def __init__(self, master, ms, theme: ThemeManager, on_click):
+    def __init__(self, master, ms, theme: ThemeManager, on_click, recent_override=None):
         bg, _ = theme.tier_color(ms.tier)
         super().__init__(master, fg_color=bg)
         self.metric = ms.metric
         self._cb = on_click
-        recent = f"{ms.recent_mean:.4g}" if ms.recent_mean is not None else "—"
+        recent_val = recent_override if recent_override is not None else ms.recent_mean
+        recent = f"{recent_val:.4g}" if recent_val is not None else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  ms.alert_type.value if ms.alert_type else "—",
                  f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, f"{ms.magnitude:+.2f}"]
