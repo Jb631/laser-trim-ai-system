@@ -446,31 +446,44 @@ class ChartWidget(ctk.CTkFrame):
                     alpha=0.6,
                 )
 
-            # Constrain the primary y-axis to the range of NON-excluded data
-            # (plus spec limits). Without this, an excluded outlier — e.g. a
-            # last point that drops to 0V — keeps the autoscale bounds wide
-            # and visually compresses the real data into a thin band.
-            # Only constrain when on a single axis; the dual-axis path has
-            # its own scaling for the untrimmed trace on ax2.
-            if not use_dual_axis:
-                excl_set = set(excluded_points)
-                y_candidates: List[float] = []
-                y_candidates.extend(
-                    e for i, e in enumerate(shifted_errors) if i not in excl_set
-                )
-                y_candidates.extend(
-                    e for i, e in enumerate(trimmed_errors) if i not in excl_set
-                )
-                if upper_limits:
-                    y_candidates.extend(u for u in upper_limits if u is not None)
-                if lower_limits:
-                    y_candidates.extend(l for l in lower_limits if l is not None)
-                if y_candidates:
-                    y_lo = min(y_candidates)
-                    y_hi = max(y_candidates)
-                    y_range = y_hi - y_lo
-                    pad = y_range * 0.1 if y_range > 0 else max(abs(y_hi), 1e-6) * 0.1
-                    ax.set_ylim(y_lo - pad, y_hi + pad)
+        # Robust primary-axis y-window (always, not just when points are excluded).
+        # The post-trim error trace can carry extreme end-of-travel spikes — the wiper
+        # leaving the resistive element — that aren't always in the model's
+        # excluded-points list. Left to autoscale, a single -2.5 V spike compresses the
+        # spec band and the real trace into an unreadable sliver (the "charts are
+        # scaled wrong" complaint). Anchor on the spec band, expand to the central bulk
+        # of the (non-excluded) trace, and CAP the window so a spike cluster can't
+        # dominate; spikes then clamp off-axis while fail markers still flag where they
+        # are. Skip on the dual-axis path — the untrimmed trace has its own axis there.
+        if not use_dual_axis:
+            excl_set = set(excluded_points or [])
+            trace = [e for i, e in enumerate(shifted_errors)
+                     if i not in excl_set and e is not None and np.isfinite(e)]
+            trace += [e for i, e in enumerate(trimmed_errors)
+                      if i not in excl_set and e is not None and np.isfinite(e)]
+            spec_hi_vals = [u for u in (upper_limits or []) if u is not None]
+            spec_lo_vals = [l for l in (lower_limits or []) if l is not None]
+            y_lo = y_hi = None
+            if trace:
+                arr = np.array(trace, dtype=float)
+                if arr.size >= 20:
+                    t_lo, t_hi = np.percentile(arr, [2, 98])
+                else:
+                    t_lo, t_hi = float(arr.min()), float(arr.max())
+                y_lo, y_hi = float(t_lo), float(t_hi)
+            if spec_hi_vals and spec_lo_vals:
+                s_lo, s_hi = min(spec_lo_vals), max(spec_hi_vals)
+                y_lo = s_lo if y_lo is None else min(y_lo, s_lo)
+                y_hi = s_hi if y_hi is None else max(y_hi, s_hi)
+                # Cap: never show more than ~2.5x the spec-band height beyond the band,
+                # so a spike cluster the percentile didn't reject can't blow out the view.
+                spec_h = (s_hi - s_lo) or (abs(s_hi) or 1.0)
+                center = (s_hi + s_lo) / 2.0
+                y_lo = max(y_lo, center - 2.5 * spec_h)
+                y_hi = min(y_hi, center + 2.5 * spec_h)
+            if y_lo is not None and y_hi is not None and y_hi > y_lo:
+                pad = (y_hi - y_lo) * 0.1
+                ax.set_ylim(y_lo - pad, y_hi + pad)
 
         # Station compensation annotation
         if station_compensation is not None:

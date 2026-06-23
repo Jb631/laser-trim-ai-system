@@ -71,10 +71,16 @@ class FocusChart(ctk.CTkFrame):
         # violation markers stay visible.
         lo_c, hi_c = [], []
         if finite.size:
-            if finite.size >= 10:
-                p_lo, p_hi = np.percentile(finite, [2, 98])
+            if baseline_mean is not None and baseline_std:
+                # Band-anchored: expand only to the central bulk (10-90 pct) so a CLUSTER
+                # of far-out points (sustained drift, not a lone outlier) can't pull the
+                # window up and crush the control band off the chart. Excursions clamp.
+                p_lo, p_hi = (np.percentile(finite, [10, 90]) if finite.size >= 10
+                              else (float(finite.min()), float(finite.max())))
             else:
-                p_lo, p_hi = float(finite.min()), float(finite.max())
+                # No control band to anchor on: show essentially all the data.
+                p_lo, p_hi = (np.percentile(finite, [2, 98]) if finite.size >= 10
+                              else (float(finite.min()), float(finite.max())))
             lo_c.append(p_lo); hi_c.append(p_hi)
         if baseline_mean is not None and baseline_std:
             lo_c.append(baseline_mean - 3.5 * baseline_std)
@@ -96,19 +102,23 @@ class FocusChart(ctk.CTkFrame):
         if baseline_mean is not None and baseline_std:
             ucl, lcl = baseline_mean + 3 * baseline_std, baseline_mean - 3 * baseline_std
             y0, y1 = ax.get_ylim()
-            ox, oy, off = [], [], 0
+            ox, oy, off_vals = [], [], []
             for d, v in zip(dates, values):
                 if v is None or not np.isfinite(v):
                     continue
                 if v > ucl or v < lcl:
                     cy = min(max(v, y0), y1)
-                    off += (cy != v)
+                    if cy != v:
+                        off_vals.append(v)
                     ox.append(d); oy.append(cy)
             if ox:
                 ax.scatter(ox, oy, color=t.TIER_OOC, s=30, zorder=5, clip_on=False)
-            if off:
-                ax.text(0.99, 0.97, f"▲ {off} point(s) off-scale", transform=ax.transAxes,
-                        ha="right", va="top", fontsize=8, color=t.TIER_OOC)
+            if off_vals:
+                # Name how far the worst excursion actually reaches — a clamped marker
+                # alone hides magnitude, which is exactly what a QA reviewer needs.
+                ext = max(off_vals, key=abs)
+                ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {ext:.3g})",
+                        transform=ax.transAxes, ha="right", va="top", fontsize=8, color=t.TIER_OOC)
         ax.legend(loc="best", fontsize=8, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
         self.canvas.draw_idle()

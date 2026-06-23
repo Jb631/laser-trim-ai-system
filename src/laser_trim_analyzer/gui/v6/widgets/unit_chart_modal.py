@@ -42,16 +42,26 @@ class UnitChartModal(ctk.CTkToplevel):
     def __init__(self, master, theme: ThemeManager, db, unit: dict):
         super().__init__(master)
         self.theme = theme
+        self._unit = unit
         self.title(f"Unit {unit.get('serial', '')} — {unit.get('file_date', '')}")
-        self.geometry("900x560")
+        self.geometry("900x600")
         self.configure(fg_color=theme.SURFACE)
         self.transient(master)
         from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
-        chart = ChartWidget(self, style=ChartStyle(figure_size=(9, 5)))
-        chart.pack(fill="both", expand=True, padx=theme.SPACE_MD, pady=theme.SPACE_MD)
+        self._chart = chart = ChartWidget(self, style=ChartStyle(figure_size=(9, 5)))
+        chart.pack(side="top", fill="both", expand=True, padx=theme.SPACE_MD, pady=theme.SPACE_MD)
+        # Action bar: restore the single-unit chart export that V5 had (ChartWidget
+        # still exposes save_figure; the V6 modal just never surfaced a button for it).
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(side="bottom", fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
+        self._save_btn = ctk.CTkButton(bar, text="Save chart…", command=self._save_chart,
+                                       fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
+                                       text_color=theme.TEXT_INVERSE, corner_radius=theme.RADIUS_SM)
+        self._save_btn.pack(side="right")
         data = load_unit_track(db, unit.get("analysis_id"))
         if not data or not data["position_data"]:
             chart.show_placeholder("No stored measurement arrays for this unit.")
+            self._save_btn.configure(state="disabled")
             return
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"])
         title = f"Unit {unit.get('serial', '')}"
@@ -63,3 +73,14 @@ class UnitChartModal(ctk.CTkToplevel):
             untrimmed_positions=data["untrimmed_positions"] or None,
             untrimmed_errors=data["untrimmed_errors"] or None,
             fail_points=fp, title=title, serial_number=str(unit.get("serial", "")))
+
+    def _save_chart(self) -> None:
+        from tkinter import filedialog
+        serial = str(self._unit.get("serial", "unit"))
+        date = str(self._unit.get("file_date", "")).split(" ")[0]
+        initial = f"unit_{serial}{('_' + date) if date else ''}.png"
+        path = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".png", initialfile=initial,
+            filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")])
+        if path:
+            self._chart.save_figure(path)
