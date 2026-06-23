@@ -28,8 +28,15 @@ class YieldPanel(ctk.CTkFrame):
     def set_yield(self, stats: dict, total_label: str) -> None:
         rate = stats.get("pass_rate")
         self._rate.configure(text=f"{rate:.1f}% pass" if rate is not None else "—")
-        self._counts.configure(
-            text=f"Pass {stats.get('passed', 0)} · Warn {stats.get('warnings', 0)} · "
-                 f"Fail {stats.get('failed', 0)}")
+        # Base breakdown is the gradeable buckets (what the pass-rate is computed on).
+        # Surface non-gradeable buckets when present so the breakdown reconciles with
+        # the headline total — a silent gap reads as a bug to a QA audience.
+        parts = [f"Pass {stats.get('passed', 0)}", f"Warn {stats.get('warnings', 0)}",
+                 f"Fail {stats.get('failed', 0)}"]
+        if stats.get("untrimmed", 0):
+            parts.append(f"Untrimmed {stats['untrimmed']}")
+        if stats.get("errors", 0):
+            parts.append(f"Err {stats['errors']}")
+        self._counts.configure(text=" · ".join(parts))
         self._total.configure(text=total_label)
         self._trend.set_points([(p["date"], p["pass_rate"]) for p in stats.get("trend", [])])
