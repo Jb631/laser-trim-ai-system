@@ -38,6 +38,29 @@ CUSUM_K_SIGMAS: float = 0.5
 # Step-change window size N (number of recent samples averaged).
 STEP_CHANGE_WINDOW: int = 5
 
+# A baseline whose standard deviation is effectively zero (every baseline sample
+# identical to float precision) cannot be monitored with a z-score / EWMA / CUSUM
+# control chart: the control limits (h ∝ σ, L·σ_ewma ∝ σ) collapse toward zero, so
+# any later value reads as astronomically many sigma — observed in production as
+# +1.99e11 σ on a constant electrical-angle baseline and +5.2e8 σ on a constant
+# trim-pass-count baseline. Such a metric is *non-monitorable*, not "wildly out of
+# control"; treating it as STABLE keeps degenerate metrics from dominating Triage
+# with garbage magnitudes (the #1 "it flags everything" complaint). Degeneracy is
+# judged scale-invariantly: σ must clear a tiny fraction of the baseline mean's
+# magnitude (coefficient of variation), with an absolute floor for near-zero means.
+# The smallest *legitimate* baseline σ observed across all watched metrics is
+# ~1.5e-4, far above what this guard rejects.
+BASELINE_DEGENERATE_CV: float = 1e-6
+BASELINE_DEGENERATE_MEAN_FLOOR: float = 1e-9
+
+
+def is_degenerate_baseline(mean: Optional[float], std: Optional[float]) -> bool:
+    """True when a baseline's spread is too small to support drift monitoring."""
+    if std is None or not math.isfinite(std) or std <= 0.0:
+        return True
+    ref = max(abs(mean) if mean is not None else 0.0, BASELINE_DEGENERATE_MEAN_FLOOR)
+    return std <= BASELINE_DEGENERATE_CV * ref
+
 
 def compute_thresholds(sigma: float, target_fp: float) -> tuple[float, float, float]:
     """Compute (h, L, z) thresholds for a target false-positive rate.
@@ -148,6 +171,23 @@ class MetricDetector:
             float(np.mean(list(self.recent_window))) if self.recent_window else None
         )
         recent_n = len(self.recent_window)
+
+        # Non-monitorable baseline guard: a near-constant baseline produces
+        # collapsing control limits and absurd sigma magnitudes. Report STABLE
+        # rather than letting it flag (and top-rank) on garbage. See
+        # is_degenerate_baseline for the rationale and threshold.
+        if is_degenerate_baseline(mu, sigma):
+            return MetricStatus(
+                metric=self.metric,
+                tier=DriftTier.STABLE,
+                alert_type=None,
+                magnitude=0.0,
+                baseline_mean=mu,
+                baseline_std=sigma,
+                recent_mean=recent_mean,
+                recent_count=recent_n,
+                is_trained=True,
+            )
 
         # Test each tier from strictest to loosest; pick the highest tier
         # that any check trips at.

@@ -263,6 +263,38 @@ def test_metric_detector_untrained_never_elevates():
         assert status.tier == DriftTier.STABLE
 
 
+def test_degenerate_baseline_never_flags_and_no_absurd_magnitude():
+    """A near-constant baseline (σ≈0) is non-monitorable: it must stay STABLE
+    with magnitude 0, not explode to billions of sigma. Regression for the
+    production bug where a constant electrical-angle baseline (std=4.5e-16)
+    reported +1.99e11 σ and topped Triage."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MetricDetector, is_degenerate_baseline,
+    )
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    # std collapsed to float epsilon relative to a ~2.0 mean (real case: 7764)
+    det = _build_trained_detector(baseline_mean=1.99, baseline_std=4.5e-16)
+    for _ in range(10):
+        status = det.update(2.5)          # a value far from the constant baseline
+    assert status.tier == DriftTier.STABLE
+    assert status.magnitude == 0.0
+
+    # constant integer baseline (real case: 1848803 trim_pass_count, std=1e-9)
+    det2 = _build_trained_detector(baseline_mean=1.0, baseline_std=1e-9)
+    for _ in range(10):
+        status2 = det2.update(2.0)
+    assert status2.tier == DriftTier.STABLE
+    assert status2.magnitude == 0.0
+
+    # the classifier itself: degenerate cases vs the smallest legitimate σ (~1.5e-4)
+    assert is_degenerate_baseline(1.99, 4.5e-16) is True
+    assert is_degenerate_baseline(1.0, 1e-9) is True
+    assert is_degenerate_baseline(0.0, 0.0) is True
+    assert is_degenerate_baseline(0.0015, 1.5e-4) is False   # real untrimmed_sigma_gradient
+    assert is_degenerate_baseline(0.0, 0.13) is False        # near-zero mean, real spread
+
+
 def _build_trained_detector(*, baseline_mean, baseline_std):
     """Helper: build a MetricDetector with standard-preset thresholds
     pre-computed.  Use this in every detector test below.
