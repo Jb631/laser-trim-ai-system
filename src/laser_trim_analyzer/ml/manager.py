@@ -1551,6 +1551,35 @@ def get_triage_alerts(db, min_sigma_shift: float = TRIAGE_MIN_SIGMA_SHIFT):
     return _order_triage_alerts(summaries, min_sigma_shift)
 
 
+def active_model_set(db, recent_days: int = 90, mps_models=None) -> set:
+    """The set of models considered ACTIVE (current production).
+
+    A model is active if it has data within `recent_days` of the dataset's most recent
+    date, OR it's user-pinned on the MPS list. Anchored to the dataset's latest date
+    (not wall-clock now) so a loaded historical batch still resolves sensibly — the same
+    reasoning as the 'recent' window elsewhere. Triage uses this to focus on models the
+    operator is actually running; legacy models (e.g. a unit last processed in 2016)
+    shouldn't dominate 'what to look at today'.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, SmoothnessResult as DBSR)
+    active = set(mps_models or [])
+    with db.session() as s:
+        latest = s.query(func.max(DBAR.file_date)).scalar()
+        if latest is None:
+            return active
+        cutoff = latest - timedelta(days=recent_days)
+        for (m,) in (s.query(DBAR.model)
+                     .filter(DBAR.file_date >= cutoff, DBAR.model.isnot(None)).distinct()):
+            active.add(m)
+        for (m,) in (s.query(DBSR.model)
+                     .filter(DBSR.file_date >= cutoff, DBSR.model.isnot(None)).distinct()):
+            active.add(m)
+    return active
+
+
 def _order_triage_alerts(summaries, min_sigma_shift: float = TRIAGE_MIN_SIGMA_SHIFT):
     """Gate + order enriched alert summaries. Pure (no DB) so it's directly testable.
 

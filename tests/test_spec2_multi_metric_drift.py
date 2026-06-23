@@ -585,6 +585,34 @@ def test_get_drifting_models_empty_when_nothing_flagged(tmp_path):
     assert result == []
 
 
+def test_active_model_set_recent_vs_legacy(tmp_path):
+    """Active = data within recent_days of the DATASET's latest date (not wall-clock),
+    plus MPS-pinned models. A unit last run years ago is inactive."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, SystemType as DBSystemType, StatusType as DBStatusType)
+    from laser_trim_analyzer.ml.manager import active_model_set
+
+    db = DatabaseManager(tmp_path / "active.db")
+    latest = datetime(2026, 5, 28)
+    legacy = latest - timedelta(days=2000)   # ~5.5 years before the latest data
+    with db.session() as s:
+        s.add(DBAR(filename="r.xls", file_path="/f", file_hash="h1", model="RECENT", serial="s1",
+                   system=DBSystemType.A, file_date=latest, timestamp=latest,
+                   overall_status=DBStatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.add(DBAR(filename="o.xls", file_path="/f", file_hash="h2", model="LEGACY", serial="s2",
+                   system=DBSystemType.A, file_date=legacy, timestamp=legacy,
+                   overall_status=DBStatusType.PASS, has_multi_tracks=False, processing_time=0.1))
+        s.commit()
+
+    active = active_model_set(db, recent_days=90)
+    assert "RECENT" in active
+    assert "LEGACY" not in active
+    # MPS pin keeps a legacy model active regardless of recency.
+    assert "LEGACY" in active_model_set(db, recent_days=90, mps_models=["LEGACY"])
+
+
 def test_get_drifting_models_returns_flagged_only(tmp_path):
     """Models with overall_tier > Stable appear in the result list."""
     from datetime import datetime
