@@ -781,6 +781,44 @@ class ExcelParser:
                         # so we get a clean list of real values only)
                         untrimmed_errors = self._get_column_data(df_untrim, columns["error"], untrim_start)
 
+                        # Some models (confirmed: 1844202, 1844205) record the
+                        # untrimmed MEASURED column at DOUBLE the resolution of the
+                        # position/theory/error grid — e.g. measured has 63 points
+                        # (step 0.025) while position/theory have 32 (step 0.05).
+                        # The equipment's stored error column subtracts row-by-row
+                        # (fine measured[i] - coarse theory[i]), comparing values at
+                        # DIFFERENT physical positions from the 2nd point on, which
+                        # produces a garbage error ramp (pre-trim sigma ~1.6 instead
+                        # of ~0.1). Detect the 2x case and recompute the error by
+                        # pairing each coarse point with its true measured sample:
+                        # coarse position[i] == fine measured[2i]. For the matched-
+                        # resolution models (the other 28) this branch never fires,
+                        # so their pre-trim values are untouched.
+                        measured_full = self._get_column_data(
+                            df_untrim, columns["measured_volts"], untrim_start
+                        )
+                        theory_coarse = self._get_column_data(
+                            df_untrim, columns["theory_volts"], untrim_start
+                        )
+                        n_pos = len(untrimmed_positions)
+                        if (n_pos > 1
+                                and len(theory_coarse) >= n_pos
+                                and len(measured_full) >= 2 * n_pos - 2):
+                            recomputed = []
+                            for i in range(n_pos):
+                                mi = 2 * i
+                                if mi >= len(measured_full):
+                                    break
+                                recomputed.append(measured_full[mi] - theory_coarse[i])
+                            if len(recomputed) == n_pos:
+                                untrimmed_errors = recomputed
+                                logger.info(
+                                    f"{file_path.name} [{untrimmed_sheet}]: untrimmed "
+                                    f"measured is 2x grid resolution "
+                                    f"({len(measured_full)} vs {n_pos} pts) — recomputed "
+                                    f"pre-trim error from position-matched measured-theory"
+                                )
+
                         # If the error column is empty or too short, compute
                         # errors as measured - theory.  Pre-trim sheets often
                         # have no pre-calculated error column at all.

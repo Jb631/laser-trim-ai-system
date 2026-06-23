@@ -20,6 +20,111 @@ logger = logging.getLogger(__name__)
 
 OS_EXTENSIONS = {'.xlsx', '.xls'}
 
+# --- Tap filtering -------------------------------------------------------
+# Tapped potentiometers show a characteristic "tap swing" on the smoothness
+# chart: a general swing UP at the start of the sweep and a swing DOWN at the
+# end (the wiper crossing the end taps). That end excursion inflates the
+# smoothness deviation and can fail an otherwise-smooth unit. The swings live
+# ONLY at the two ends; any deviation in the middle is a real defect and must
+# never be filtered.
+#
+# The export only gives us Time + Filtered Volts plus one precomputed Max
+# Deviation (no per-sample deviation, no raw signal), so we can't reproduce the
+# station's exact number. We compute an INDEPENDENT, comparable deviation
+# estimate (residual from a smooth baseline), then report the worst deviation
+# with the end zones excluded — alongside the file's authoritative value. The
+# UI shows both; we never override the file's verdict.
+TAP_MIN_SAMPLES = 50      # need at least this many points to bother
+# Fraction of the sweep at each end treated as the tap-swing zone. Data shows
+# the swings settle within ~5%; excluding more would start eating real signal.
+TAP_END_ZONE_FRAC = 0.05
+# A swing is present at an end only when that end's MEDIAN deviation runs well
+# above the middle texture floor. Median (not mean) is used so a broad swing
+# trips it (clear swings measure ~4-13x) but a single localized near-end defect
+# does not (it leaves the end-zone median near the floor, ~1-2x). We only
+# exclude an end when a swing is actually detected there — a quiet end is kept,
+# so a real near-end defect is never filtered away.
+TAP_SWING_RATIO = 3.0
+
+
+def analyze_taps(values: List[float], spec: Optional[float]) -> Dict[str, Any]:
+    """Estimate a tap-excluded smoothness deviation, excluding end swings only
+    when a swing is actually present.
+
+    Tapped units show a gradual swing up at the start and down at the end. We
+    detect a swing per end (mean deviation >> middle floor) and exclude ONLY the
+    ends that swing. If neither end swings, nothing is filtered. The middle
+    measurement region is never excluded.
+
+    Returns diagnostic fields (all derived from Filtered Volts, independent of
+    the file's precomputed Max Deviation):
+      - recomputed_max_deviation:   our deviation estimate over the whole sweep
+      - tap_excluded_max_deviation: worst deviation after excluding swinging ends
+      - end_zone_frac:              fraction examined at EACH end
+      - left_swing / right_swing:   whether a swing was detected at each end
+      - swing_detected:             left_swing or right_swing
+      - tap_excluded_pass:          tap-excluded estimate vs spec (None if no spec)
+
+    These are ESTIMATES for operator review, not an authoritative recompute.
+    """
+    empty = {
+        "recomputed_max_deviation": None,
+        "tap_excluded_max_deviation": None,
+        "end_zone_frac": TAP_END_ZONE_FRAC,
+        "left_swing": False,
+        "right_swing": False,
+        "swing_detected": False,
+        "tap_excluded_pass": None,
+    }
+    v = np.asarray([x for x in values if x is not None], dtype=float)
+    v = v[np.isfinite(v)]
+    n = v.size
+    if n < TAP_MIN_SAMPLES:
+        return empty
+
+    # Smooth baseline: centered moving average over ~2% of the sweep (odd
+    # window). The smoothness deviation is the residual from this baseline.
+    window = max(51, (n // 50) | 1)
+    base = pd.Series(v).rolling(window, center=True, min_periods=1).mean().to_numpy()
+    resid = np.abs(v - base)
+    recomputed_max = float(resid.max())
+
+    end_zone = max(1, int(round(n * TAP_END_ZONE_FRAC)))
+    left = resid[:end_zone]
+    right = resid[n - end_zone:]
+    middle = resid[end_zone:n - end_zone]
+    if middle.size == 0:
+        # Too short to have a distinct middle — don't filter anything.
+        return {
+            **empty,
+            "recomputed_max_deviation": round(recomputed_max, 6),
+            "tap_excluded_max_deviation": round(recomputed_max, 6),
+            "tap_excluded_pass": (recomputed_max <= spec) if (spec and spec > 0) else None,
+        }
+
+    # Middle texture floor (robust to a sparse mid-travel defect).
+    mid_floor = max(float(np.median(middle)), 1e-9)
+    left_swing = bool(left.size and float(np.median(left)) > TAP_SWING_RATIO * mid_floor)
+    right_swing = bool(right.size and float(np.median(right)) > TAP_SWING_RATIO * mid_floor)
+
+    # Keep the middle always; keep an end only if it is NOT swinging.
+    kept = [middle]
+    if not left_swing:
+        kept.append(left)
+    if not right_swing:
+        kept.append(right)
+    excluded_max = float(np.concatenate(kept).max())
+
+    return {
+        "recomputed_max_deviation": round(recomputed_max, 6),
+        "tap_excluded_max_deviation": round(excluded_max, 6),
+        "end_zone_frac": TAP_END_ZONE_FRAC,
+        "left_swing": left_swing,
+        "right_swing": right_swing,
+        "swing_detected": left_swing or right_swing,
+        "tap_excluded_pass": (excluded_max <= spec) if (spec and spec > 0) else None,
+    }
+
 # Filename pattern: model-snSerial[_element]_OS_date_time.ext
 OS_FILENAME_PATTERN = re.compile(
     r'^(.+?)-sn(.+?)(?:_(Primary|Redundant))?_OS_'
@@ -236,6 +341,10 @@ class SmoothnessParser:
 
             avg_smoothness = (sum(abs(v) for v in values) / len(values)) if values else 0.0
 
+            # Diagnostic tap analysis (estimate; does not override the file's
+            # authoritative max_smoothness / smoothness_pass above).
+            taps = analyze_taps(values, spec_value)
+
             return {
                 "track_id": "default",
                 "positions": positions,
@@ -244,6 +353,7 @@ class SmoothnessParser:
                 "max_smoothness": max_smoothness,
                 "avg_smoothness": avg_smoothness,
                 "smoothness_pass": passes,
+                **taps,
             }
         except Exception as e:
             logger.warning(f"Betatronix layout parse failed: {e}")
