@@ -357,6 +357,35 @@ def test_multi_metric_detector_worst_of_tier():
     assert status.worst_metric == "linearity_error"
 
 
+def test_composite_active_demotes_family_metrics_from_tier():
+    """When the composite is deployed (its metric is trained), the trim-effort family
+    features (sigma, resistance_change, trim_pass) are evidence-only and don't raise the
+    model tier. Without a deployed composite the same trip DOES flag (worst-of)."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MultiMetricDriftDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    fam = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    fam.metric = "untrimmed_sigma_gradient"
+    for _ in range(5):
+        fam.update(5.0)                                 # trip the family metric
+    assert fam.get_status().tier > DriftTier.STABLE
+
+    composite = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)  # trained, stable
+    composite.metric = "composite_trim_risk_score"
+
+    det = MultiMetricDriftDetector("M", {
+        "untrimmed_sigma_gradient": fam,
+        "composite_trim_risk_score": composite,
+    })
+    status = det.get_status()
+    assert status.overall_tier == DriftTier.STABLE                       # family demoted
+    assert status.per_metric["untrimmed_sigma_gradient"].tier > DriftTier.STABLE  # still evidence
+
+    # No deployed composite -> family metric drives the flag as before.
+    det_no_comp = MultiMetricDriftDetector("M2", {"untrimmed_sigma_gradient": fam})
+    assert det_no_comp.get_status().overall_tier > DriftTier.STABLE
+
+
 def test_multi_metric_detector_step_change_wins_tier_tie():
     """Within the worst metric, step-change wins alert_type when tied."""
     from laser_trim_analyzer.ml.multi_metric_drift_detector import (

@@ -62,6 +62,21 @@ def is_degenerate_baseline(mean: Optional[float], std: Optional[float]) -> bool:
     return std <= BASELINE_DEGENERATE_CV * ref
 
 
+# Composite-as-primary drift signal. The composite trim-risk score is a logistic blend
+# of the trim-effort family (untrimmed_error_max + these three watched features). Where
+# it's DEPLOYED for a model, it is the primary trim-effort/failure-risk drift signal
+# ("its per-group trend is the upstream-drift early warning", composite-risk design) and
+# its constituent family features are demoted to EVIDENCE — they don't independently
+# raise the model's tier. Reason: they're redundant with each other ("error_max + sigma
+# give no lift") and were the dominant source of single-metric false positives. The
+# orthogonal signals (untrimmed_resistance, measured_electrical_angle, linearity_error,
+# max_smoothness_value) are different phenomena and still trigger on their own.
+COMPOSITE_METRIC = "composite_trim_risk_score"
+COMPOSITE_FAMILY = frozenset({
+    "untrimmed_sigma_gradient", "resistance_change_percent", "trim_pass_count",
+})
+
+
 def compute_thresholds(sigma: float, target_fp: float) -> tuple[float, float, float]:
     """Compute (h, L, z) thresholds for a target false-positive rate.
 
@@ -322,8 +337,18 @@ class MultiMetricDriftDetector:
                 return 0.0
             return abs(ms.recent_mean - ms.baseline_mean) / ms.baseline_std
 
+        # Composite-as-primary: when the composite is deployed (its metric is trained),
+        # its family features are evidence-only and excluded from the tier decision.
+        # They remain in per_metric so the Model page still shows them. See COMPOSITE_*.
+        comp = per_metric.get(COMPOSITE_METRIC)
+        composite_active = comp is not None and comp.is_trained
+        rankable = {
+            name: ms for name, ms in per_metric.items()
+            if not (composite_active and name in COMPOSITE_FAMILY)
+        }
+
         ranked = sorted(
-            per_metric.items(),
+            rankable.items(),
             key=lambda kv: (int(kv[1].tier), _sigma_shift(kv[1])),
             reverse=True,
         )
