@@ -34,11 +34,19 @@ class ModelAlertCard(ctk.CTkFrame):
         ctk.CTkLabel(self, text=f"{badge} · {metric_label(s.worst_metric)}",
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w")\
             .pack(side="top", fill="x", padx=t.SPACE_MD)
-        ctk.CTkLabel(self, text=f"{s.magnitude:+.1f}σ", font=t.font(t.SIZE_DISPLAY, "bold"),
+        # Headline the HONEST shift: how far the recent data actually sits from
+        # baseline, in σ. (The old headline showed `magnitude` — CUSUM distance past
+        # the limit — which read in the hundreds for sub-1σ shifts and hid that many
+        # alerts had effectively recovered.) Tier still conveys the severity bucket.
+        shift = s.sigma_shift
+        big = f"{shift:+.1f}σ" if shift is not None else "—"
+        ctk.CTkLabel(self, text=big, font=t.font(t.SIZE_DISPLAY, "bold"),
                      text_color=self._fg, anchor="w")\
             .pack(side="top", fill="x", padx=t.SPACE_MD)
-        # Q6: say what the σ is measured against.
-        ctk.CTkLabel(self, text=f"beyond {s.tier.name.replace('_', ' ').title()} limit",
+        tier_txt = s.tier.name.replace('_', ' ').title()
+        sub = (f"from baseline · {tier_txt}" if shift is not None
+               else f"{tier_txt} · no recent data")
+        ctk.CTkLabel(self, text=sub,
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w")\
             .pack(side="top", fill="x", padx=t.SPACE_MD, pady=(0, t.SPACE_MD))
 

@@ -1514,6 +1514,63 @@ def get_drifting_models(db, sensitivity_preset: str = "standard"):
     return summaries
 
 
+# Triage gate: minimum |recent shift from baseline| (σ) for a flagged model to be
+# *hidden*. 0.0 = hide nothing (the cautious default). The V6 drift signal is weak
+# and we don't yet know what a "real" shift looks like, so we surface every flagged
+# model and let the honest shift number + sort do the prioritizing rather than
+# silently dropping anything. Raise this once the real-vs-noise boundary is known.
+TRIAGE_MIN_SIGMA_SHIFT: float = 0.0
+
+
+def get_triage_alerts(db, min_sigma_shift: float = TRIAGE_MIN_SIGMA_SHIFT):
+    """Triage feed: flagged models enriched with the honest recent sigma-shift, sorted
+    by how far they have ACTUALLY moved (|shift| desc) rather than by the abstract
+    CUSUM/EWMA magnitude.
+
+    Why this exists: the detector's `magnitude` is "distance past the control limit",
+    which can read in the hundreds for a sub-1σ shift (the CUSUM stays elevated after a
+    transient that has since recovered). Sorting/labelling by the real shift surfaces
+    the genuine drifts and makes the 0.01σ "still flagged but recovered" cases obvious
+    instead of letting them dominate. `min_sigma_shift` can hide confirmed-tiny shifts,
+    but defaults to 0.0 (hide nothing) — see TRIAGE_MIN_SIGMA_SHIFT.
+    """
+    from laser_trim_analyzer.database.models import ModelMetricState
+    from laser_trim_analyzer.export.evidence import compute_recent_means
+
+    summaries = get_drifting_models(db)
+    for a in summaries:
+        if not a.worst_metric:
+            continue
+        with db.session() as s:
+            row = (s.query(ModelMetricState.baseline_mean, ModelMetricState.baseline_std)
+                   .filter(ModelMetricState.model == a.model,
+                           ModelMetricState.metric == a.worst_metric).first())
+        recent = compute_recent_means(db, a.model).get(a.worst_metric)
+        if row and recent is not None and row[1]:
+            a.sigma_shift = (recent - row[0]) / row[1]
+    return _order_triage_alerts(summaries, min_sigma_shift)
+
+
+def _order_triage_alerts(summaries, min_sigma_shift: float = TRIAGE_MIN_SIGMA_SHIFT):
+    """Gate + order enriched alert summaries. Pure (no DB) so it's directly testable.
+
+    TIER FIRST, then |actual shift| within the tier. Worst-severity-on-top is a
+    deliberate, protected V6 decision ("nervous about losing the tiers"); a raw shift
+    must NOT reorder across tiers, or a Warning could jump above a Drift and slow-drift
+    (CUSUM) models — half the mission — would sink below noisier step-changes. Within a
+    tier, sort by the honest baseline shift (replacing `magnitude` as the tiebreaker) so
+    the biggest real movers lead and recovered/sub-noise alerts fall to the bottom of
+    their tier. `min_sigma_shift` can hide confirmed-tiny shifts (default 0.0 = hide
+    nothing; selectivity is owned by the per-model preset thresholds, not this gate).
+    """
+    kept = [a for a in summaries
+            if a.sigma_shift is None or abs(a.sigma_shift) >= min_sigma_shift]
+    kept.sort(key=lambda r: (int(r.tier),
+                             abs(r.sigma_shift) if r.sigma_shift is not None else -1.0),
+              reverse=True)
+    return kept
+
+
 def get_model_drift_status(db, model: str):
     """Return full per-metric breakdown for one model.
 

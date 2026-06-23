@@ -105,22 +105,55 @@ def _labels(widget):
     return out
 
 
-def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None):
+def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None, shift=4.2):
     from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier, ModelAlertSummary
     return ModelAlertSummary(model=model, tier=tier or DriftTier.DRIFT,
                              alert_type=alert or AlertType.STEP_CHANGE,
-                             worst_metric=metric, magnitude=mag)
+                             worst_metric=metric, magnitude=mag, sigma_shift=shift)
 
 
-def test_card_shows_model_readable_metric_and_magnitude(tk_root):
+def test_card_shows_model_readable_metric_and_shift(tk_root):
     from laser_trim_analyzer.gui.v6.theme import ThemeManager
     from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    card = ModelAlertCard(tk_root, summary=_summary(), theme=ThemeManager(), on_click=lambda *_: None)
+    # Headline is now the honest baseline shift (σ), not the CUSUM magnitude.
+    card = ModelAlertCard(tk_root, summary=_summary(shift=4.2), theme=ThemeManager(),
+                          on_click=lambda *_: None)
     texts = " | ".join(_labels(card))
     assert "8340-1" in texts
     assert "Untrimmed resistance" in texts      # readable, not the raw key
-    assert "4.2" in texts and "σ" in texts
+    assert "4.2" in texts and "σ" in texts      # the shift value
     assert "Step change" in texts
+    assert "baseline" in texts                  # says what the σ is measured against
+
+
+def test_card_shows_dash_when_shift_unknown(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
+    card = ModelAlertCard(tk_root, summary=_summary(shift=None), theme=ThemeManager(),
+                          on_click=lambda *_: None)
+    texts = " | ".join(_labels(card))
+    assert "—" in texts                         # no fabricated number when recent is unknown
+
+
+def test_order_triage_alerts_tier_first_then_shift():
+    """Tier stays the primary key (worst on top); |shift| only reorders WITHIN a tier."""
+    from laser_trim_analyzer.ml.manager import _order_triage_alerts
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    a = _summary(model="DRIFT_BIG", tier=DriftTier.DRIFT, shift=9.0)
+    b = _summary(model="OOC_SMALL", tier=DriftTier.OUT_OF_CONTROL, shift=0.2)
+    c = _summary(model="DRIFT_SMALL", tier=DriftTier.DRIFT, shift=1.0)
+    ordered = [x.model for x in _order_triage_alerts([a, b, c])]
+    # OOC outranks both DRIFTs despite a tiny shift; within DRIFT, bigger shift leads.
+    assert ordered == ["OOC_SMALL", "DRIFT_BIG", "DRIFT_SMALL"]
+
+
+def test_order_triage_alerts_gate_hides_below_threshold():
+    from laser_trim_analyzer.ml.manager import _order_triage_alerts
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    big = _summary(model="BIG", tier=DriftTier.DRIFT, shift=3.0)
+    tiny = _summary(model="TINY", tier=DriftTier.DRIFT, shift=0.1)
+    assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=0.0)] == ["BIG", "TINY"]
+    assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=1.0)] == ["BIG"]
 
 
 def test_card_click_emits_model_and_focus_metric(tk_root):

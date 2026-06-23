@@ -103,6 +103,12 @@ class ModelAlertSummary:
     alert_type: AlertType
     worst_metric: str
     magnitude: float
+    # Signed shift of the recent data from baseline, in std-dev units:
+    # (recent_mean - baseline_mean) / baseline_std on the worst metric. This is the
+    # honest, human-readable "how far has it actually moved" number — unlike
+    # `magnitude` (CUSUM/EWMA distance past the control limit), which can read in the
+    # hundreds for a sub-1σ shift. None when recent data isn't available to confirm.
+    sigma_shift: Optional[float] = None
 
 
 @dataclass

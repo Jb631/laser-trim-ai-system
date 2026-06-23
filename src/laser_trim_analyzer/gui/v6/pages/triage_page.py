@@ -10,7 +10,7 @@ import threading
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
 from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
-from laser_trim_analyzer.ml.manager import get_drifting_models, list_known_models
+from laser_trim_analyzer.ml.manager import get_triage_alerts, list_known_models
 
 
 class TriagePage(PageBase):
@@ -37,7 +37,7 @@ class TriagePage(PageBase):
 
     def _query(self):
         try:
-            flagged = get_drifting_models(self.app.db)
+            flagged = get_triage_alerts(self.app.db)
             models = list_known_models(self.app.db)
         except Exception:
             flagged, models = [], []

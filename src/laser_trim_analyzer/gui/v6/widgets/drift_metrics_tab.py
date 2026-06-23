@@ -6,7 +6,7 @@ import customtkinter as ctk
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import ModelDriftStatus, WATCHED_METRICS, metric_label
 
-_COLUMNS = ["Metric", "Tier", "Alert", "Baseline (mean±std)", "Recent", "Δσ"]
+_COLUMNS = ["Metric", "Tier", "Alert", "Baseline (mean±std)", "Recent", "Shift (σ)"]
 
 
 class DriftMetricsTab(ctk.CTkScrollableFrame):
@@ -47,9 +47,15 @@ class _MetricRow(ctk.CTkFrame):
         self._cb = on_click
         recent_val = recent_override if recent_override is not None else ms.recent_mean
         recent = f"{recent_val:.4g}" if recent_val is not None else "—"
+        # Honest shift, verifiable against the Baseline & Recent cells beside it:
+        # (recent - baseline) / baseline_std. Replaces the old `magnitude` (CUSUM
+        # distance past the limit), which couldn't be reconciled with the numbers shown.
+        shift = ((recent_val - ms.baseline_mean) / ms.baseline_std
+                 if (recent_val is not None and ms.baseline_std) else None)
+        shift_txt = f"{shift:+.2f}σ" if shift is not None else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  ms.alert_type.value if ms.alert_type else "—",
-                 f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, f"{ms.magnitude:+.2f}"]
+                 f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, shift_txt]
         for i in range(len(cells)):
             self.grid_columnconfigure(i, weight=1, uniform="dm")
         for i, txt in enumerate(cells):
