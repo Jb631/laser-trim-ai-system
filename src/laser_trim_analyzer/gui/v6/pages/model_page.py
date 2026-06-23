@@ -161,7 +161,7 @@ class ModelPage(PageBase):
                     return  # a newer reload superseded this one
                 self._current_metric = chosen
                 if status:
-                    self._pill_row.set_status(status)
+                    self._pill_row.set_status(status, recent_means=recent)
                     self._drift_tab.set_status(status, recent_means=recent)
                 self._pill_row.set_selected(chosen)
                 self._focus_chart.set_series(metric=chosen, dates=dates, values=values,

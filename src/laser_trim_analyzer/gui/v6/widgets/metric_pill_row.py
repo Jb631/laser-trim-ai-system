@@ -19,11 +19,12 @@ class MetricPillRow(ctk.CTkFrame):
             p.pack(side="left", padx=(0, theme.SPACE_SM), pady=theme.SPACE_XS)
             self._pills[m] = p
 
-    def set_status(self, status: ModelDriftStatus) -> None:
+    def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
+        recent_means = recent_means or {}
         for m, pill in self._pills.items():
             ms = status.per_metric.get(m)
             if ms is not None:
-                pill.set_metric_status(ms)
+                pill.set_metric_status(ms, recent_override=recent_means.get(m))
 
     def set_selected(self, metric: str) -> None:
         if self._selected_metric == metric:
@@ -53,17 +54,25 @@ class _Pill(ctk.CTkFrame):
         for w in (self, self._name_label, self._summary_label):
             w.bind("<Button-1>", lambda e: self._on_click())
 
-    def set_metric_status(self, ms) -> None:
+    def set_metric_status(self, ms, recent_override=None) -> None:
         bg, fg = self.theme.tier_color(ms.tier)
         self.configure(fg_color=bg)
         if not self._selected:
             self.configure(border_color=bg)
+        # Headline the honest baseline shift (σ), consistent with the card and the
+        # drift table — not the CUSUM magnitude. Falls back to magnitude only when no
+        # recent data is available to compute the shift.
+        recent_val = recent_override if recent_override is not None else ms.recent_mean
+        shift = ((recent_val - ms.baseline_mean) / ms.baseline_std
+                 if (recent_val is not None and ms.baseline_std) else None)
         if not ms.is_trained:
             text = "untrained"
         elif ms.tier == DriftTier.STABLE:
             text = "OK"
+        elif shift is not None:
+            text = f"{shift:+.1f}σ"
         else:
-            text = f"{ms.magnitude:+.1f}σ"      # Q6: σ beyond the tier threshold
+            text = f"{ms.magnitude:+.1f}σ"
         self._summary_label.configure(text=text, text_color=fg)
 
     def set_selected(self, selected: bool) -> None:
