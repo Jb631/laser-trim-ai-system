@@ -9,6 +9,22 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
 class MiniTrendChart(ctk.CTkFrame):
+    _MAX_POINTS = 48
+
+    @staticmethod
+    def _downsample(ys: List[float], max_points: int) -> List[float]:
+        """Average ys into at most max_points evenly spaced buckets (order-preserving)."""
+        n = len(ys)
+        if n <= max_points:
+            return ys
+        out = []
+        for i in range(max_points):
+            lo = i * n // max_points
+            hi = (i + 1) * n // max_points
+            chunk = ys[lo:hi] or ys[lo:lo + 1]
+            out.append(sum(chunk) / len(chunk))
+        return out
+
     def __init__(self, master, theme: ThemeManager, **kwargs):
         super().__init__(master, fg_color=theme.CARD, corner_radius=theme.RADIUS_SM, **kwargs)
         self.theme = theme
@@ -28,6 +44,11 @@ class MiniTrendChart(ctk.CTkFrame):
         ax.set_yticks([])
         if points:
             ys = [p[1] for p in points]
+            # Bound the point count: per-day pass-rate over a long window (e.g. the
+            # 'All' view spanning years) plots thousands of jagged points into a 3"
+            # sparkline — an unreadable solid block. Average into <=_MAX_POINTS evenly
+            # spaced buckets so the trend stays legible at any window length.
+            ys = self._downsample(ys, self._MAX_POINTS)
             ax.plot(range(len(ys)), ys, lw=1.5, color=t.ACCENT)
             ax.set_ylim(0, 100)
         else:

@@ -143,6 +143,18 @@ def test_mini_trend_chart_empty_no_crash(tk_root):
     MiniTrendChart(tk_root, theme=ThemeManager()).set_points([])
 
 
+def test_mini_trend_downsample_bounds_point_count():
+    """A long per-day trend (e.g. the 'All' window) must bin down to <=_MAX_POINTS so
+    the sparkline stays legible instead of rendering thousands of points as a smear."""
+    from laser_trim_analyzer.gui.v6.widgets.mini_trend_chart import MiniTrendChart
+    short = [float(i) for i in range(10)]
+    assert MiniTrendChart._downsample(short, 48) == short          # below cap: unchanged
+    long = [float(i % 100) for i in range(3397)]
+    out = MiniTrendChart._downsample(long, 48)
+    assert len(out) == 48                                          # bounded
+    assert min(out) >= 0 and max(out) <= 99                        # bucket means stay in range
+
+
 def _labels_text(widget):
     import customtkinter as ctk
     out = []

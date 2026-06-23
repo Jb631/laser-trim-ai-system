@@ -200,26 +200,15 @@ class ModelPage(PageBase):
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline
 
     def _recent_means(self, model) -> dict:
-        """Mean of each watched metric over the last _RECENT_DAYS, computed from the
-        actual data (the detector does not persist a recent mean). Metric -> float|None."""
-        from sqlalchemy import func
-        cutoff = datetime.now() - timedelta(days=_RECENT_DAYS)
-        out = {}
-        with self.app.db.session() as s:
-            for metric in WATCHED_METRICS:
-                if metric == "max_smoothness_value":
-                    val = (s.query(func.avg(DBSR.max_smoothness_value))
-                           .filter(DBSR.model == model, DBSR.max_smoothness_value.isnot(None),
-                                   DBSR.file_date >= cutoff).scalar())
-                elif metric in TRACK_METRIC_COLUMNS:
-                    col = TRACK_METRIC_COLUMNS[metric]
-                    val = (s.query(func.avg(col)).join(DBAR, DBTR.analysis_id == DBAR.id)
-                           .filter(DBAR.model == model, col.isnot(None),
-                                   DBAR.file_date >= cutoff).scalar())
-                else:
-                    val = None
-                out[metric] = float(val) if val is not None else None
-        return out
+        """Mean of each watched metric over the model's most recent window of DATA.
+
+        Delegates to the shared evidence helper so the UI table, copy-summary, and the
+        Excel evidence pack all derive 'recent' the same way (anchored to the model's
+        latest file_date, since this is batch-loaded data that can be weeks old).
+        Metric -> float|None.
+        """
+        from laser_trim_analyzer.export.evidence import compute_recent_means
+        return compute_recent_means(self.app.db, model, recent_days=_RECENT_DAYS)
 
     def _load_units(self, model) -> List[dict]:
         cutoff = self._window_cutoff()
@@ -275,7 +264,8 @@ class ModelPage(PageBase):
         from laser_trim_analyzer.export.evidence import build_summary_text
         try:
             status = get_model_drift_status(self.app.db, self._current_model)
-            text = build_summary_text(self._current_model, status)
+            text = build_summary_text(self._current_model, status,
+                                      recent_means=self._recent_means(self._current_model))
             self.clipboard_clear()
             self.clipboard_append(text)
         except Exception:
