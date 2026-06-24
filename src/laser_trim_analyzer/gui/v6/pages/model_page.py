@@ -11,6 +11,7 @@ from laser_trim_analyzer.database.models import (
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
 from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
 from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
 from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
@@ -98,6 +99,8 @@ class ModelPage(PageBase):
         self._units_tab.pack(fill="both", expand=True)
         self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
         self._trimft_tab.pack(fill="both", expand=True)
+        self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
+        self._history_tab.pack(fill="both", expand=True)
         self._predictor = PredictorPanel(self._body, theme=t, db=self.app.db)
         self._predictor.pack(side="top", fill="x", pady=(t.SPACE_MD, 0))
         self._show_empty()
@@ -158,10 +161,12 @@ class ModelPage(PageBase):
                 recent = self._recent_means(model)
                 trim_ft = self.app.db.get_model_trim_ft_agreement(
                     model, days_back=_WINDOW_DAYS.get(self._window_choice))
+                history = self.app.db.get_model_measurement_history(
+                    model, days_back=_WINDOW_DAYS.get(self._window_choice))
             except Exception:
                 status, chosen = None, metric
                 dates, values, baseline, units, smoothness, recent = [], [], (None, None), [], [], {}
-                trim_ft = {}
+                trim_ft, history = {}, {}
             def apply():
                 if gen != self._reload_gen:
                     return  # a newer reload superseded this one
@@ -175,6 +180,7 @@ class ModelPage(PageBase):
                 self._units_tab.set_units(units)
                 self._smoothness_tab.set_records(smoothness)
                 self._trimft_tab.set_data(trim_ft)
+                self._history_tab.set_data(history)
             self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 

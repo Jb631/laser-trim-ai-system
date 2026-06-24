@@ -2433,6 +2433,63 @@ class DatabaseManager:
                 out["trim_pass_count_avg"] = sum_c / tot_c
         return out
 
+    # Metrics surfaced by the Model-page History tab (Job 2b). Order = dropdown order.
+    MEASUREMENT_HISTORY_METRICS = (
+        "measured_electrical_angle", "untrimmed_resistance", "trimmed_resistance",
+        "resistance_change_percent", "unit_length",
+    )
+
+    def get_model_measurement_history(self, model: str,
+                                      days_back: Optional[int] = None) -> Dict[str, Any]:
+        """Per-model measured-value history (Job 2b — 'pull all model data, measured angle,
+        resistance values, historical linearity pass rates'). Returns each metric's
+        (date, value) series over the record, summary stats, and linearity pass-rate by
+        month. Trimmed tracks only (UNTRIMMED excluded so values reflect finished elements).
+        """
+        import statistics as _stats
+        from collections import OrderedDict
+
+        metrics = self.MEASUREMENT_HISTORY_METRICS
+        out: Dict[str, Any] = {
+            "model": model, "n": 0,
+            "series": {m: [] for m in metrics}, "stats": {}, "passrate_periods": [],
+        }
+        with self.session() as session:
+            cutoff = (datetime.now() - timedelta(days=days_back)) if days_back else None
+            cols = [getattr(DBTrackResult, m) for m in metrics]
+            q = (session.query(DBAnalysisResult.file_date, DBTrackResult.linearity_pass, *cols)
+                 .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                 .filter(DBAnalysisResult.model == model,
+                         DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+            if cutoff is not None:
+                q = q.filter(DBAnalysisResult.file_date >= cutoff)
+            rows = q.order_by(DBAnalysisResult.file_date).all()
+            out["n"] = len(rows)
+
+            per = OrderedDict()  # (year, month) -> [pass, total]
+            for r in rows:
+                fd, lp = r[0], r[1]
+                for i, m in enumerate(metrics):
+                    v = r[2 + i]
+                    if fd is not None and v is not None:
+                        out["series"][m].append((fd, float(v)))
+                if fd is not None and lp is not None:
+                    key = (fd.year, fd.month)
+                    p, t = per.get(key, (0, 0))
+                    per[key] = (p + (1 if lp else 0), t + 1)
+
+            for m in metrics:
+                vals = [v for _, v in out["series"][m]]
+                if vals:
+                    out["stats"][m] = {
+                        "n": len(vals), "mean": _stats.fmean(vals),
+                        "std": _stats.pstdev(vals) if len(vals) > 1 else 0.0,
+                        "min": min(vals), "max": max(vals), "last": vals[-1]}
+            out["passrate_periods"] = [
+                (f"{y:04d}-{mo:02d}", p, t, (p / t * 100.0) if t else None)
+                for (y, mo), (p, t) in per.items()]
+        return out
+
     def get_heatmap_data(
         self, days_back: int = 90, period: str = 'week', min_samples: int = 10
     ) -> Dict[str, Any]:
