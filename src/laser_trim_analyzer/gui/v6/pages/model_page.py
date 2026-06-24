@@ -95,7 +95,8 @@ class ModelPage(PageBase):
         self._smoothness_tab = SmoothnessTab(self._tabs.add("Smoothness"), theme=t)
         self._smoothness_tab.pack(fill="both", expand=True)
         self._units_tab = UnitsTab(self._tabs.add("Units"), theme=t,
-                                   on_unit_click=self._on_unit_click, on_export=self._on_export)
+                                   on_unit_click=self._on_unit_click, on_export=self._on_export,
+                                   on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
         self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
         self._trimft_tab.pack(fill="both", expand=True)
@@ -235,6 +236,45 @@ class ModelPage(PageBase):
             return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
                      "overall_status": getattr(r[3], "value", str(r[3])),
                      "sigma_gradient": r[4], "linearity_error": r[5]} for r in rows]
+
+    def _search_units(self, model, query: str) -> List[dict]:
+        """Serial lookup for the model — ignores the window and the recent cap so an old
+        unit can still be found. Case-insensitive substring match on serial."""
+        like = f"%{query}%"
+        with self.app.db.session() as s:
+            rows = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status,
+                            DBTR.sigma_gradient, DBTR.final_linearity_error_shifted)
+                    .join(DBTR, DBTR.analysis_id == DBAR.id)
+                    .filter(DBAR.model == model, DBAR.serial.ilike(like))
+                    .order_by(DBAR.file_date.desc()).limit(500).all())
+            return [{"analysis_id": r[0], "serial": r[1], "file_date": r[2],
+                     "overall_status": getattr(r[3], "value", str(r[3])),
+                     "sigma_gradient": r[4], "linearity_error": r[5]} for r in rows]
+
+    def _on_unit_search(self, query: str) -> None:
+        model = self._current_model
+        if not model:
+            return
+        query = (query or "").strip()
+        if not query:
+            # Cleared → restore the recent list for the current window.
+            def restore():
+                units = self._load_units(model)
+                self.safe_after(lambda: self._units_tab.set_units(units))
+            threading.Thread(target=restore, daemon=True).start()
+            return
+
+        def work():
+            try:
+                results = self._search_units(model, query)
+            except Exception:
+                results = []
+            cap = (f"{len(results)} match(es) for '{query}'"
+                   + (" (showing first 500)" if len(results) == 500 else "")
+                   + " — all dates"
+                   if results else f"No units matching '{query}' for {model}")
+            self.safe_after(lambda: self._units_tab.set_units(results, caption=cap))
+        threading.Thread(target=work, daemon=True).start()
 
     def _load_smoothness(self, model) -> List[dict]:
         cutoff = self._window_cutoff()
