@@ -25,6 +25,7 @@ from laser_trim_analyzer.ml.drift_types import (
     MetricStatus,
     ModelAlertSummary,
     ModelDriftStatus,
+    TRIGGER_METRICS,
     WATCHED_METRICS,
 )
 
@@ -72,8 +73,13 @@ def is_degenerate_baseline(mean: Optional[float], std: Optional[float]) -> bool:
 # orthogonal signals (untrimmed_resistance, measured_electrical_angle, linearity_error,
 # max_smoothness_value) are different phenomena and still trigger on their own.
 COMPOSITE_METRIC = "composite_trim_risk_score"
+# The composite's input features. Where the composite is deployed it represents them,
+# so they don't independently trigger (they would double-count and are redundant —
+# "error_max + sigma give no lift"). They still trigger individually on models WITHOUT
+# a deployed composite (e.g. error_max is the best standalone signal there).
 COMPOSITE_FAMILY = frozenset({
-    "untrimmed_sigma_gradient", "resistance_change_percent", "trim_pass_count",
+    "untrimmed_error_max", "untrimmed_sigma_gradient",
+    "resistance_change_percent", "trim_pass_count",
 })
 
 
@@ -337,14 +343,16 @@ class MultiMetricDriftDetector:
                 return 0.0
             return abs(ms.recent_mean - ms.baseline_mean) / ms.baseline_std
 
-        # Composite-as-primary: when the composite is deployed (its metric is trained),
-        # its family features are evidence-only and excluded from the tier decision.
-        # They remain in per_metric so the Model page still shows them. See COMPOSITE_*.
+        # Only TRIGGER_METRICS may raise the tier (validated to predict failures);
+        # everything else is evidence-only and stays in per_metric for the Model page.
+        # Additionally, when the composite is deployed it represents its input features,
+        # so those are demoted too (no double-count). See TRIGGER_METRICS / COMPOSITE_*.
         comp = per_metric.get(COMPOSITE_METRIC)
         composite_active = comp is not None and comp.is_trained
         rankable = {
             name: ms for name, ms in per_metric.items()
-            if not (composite_active and name in COMPOSITE_FAMILY)
+            if name in TRIGGER_METRICS
+            and not (composite_active and name in COMPOSITE_FAMILY)
         }
 
         ranked = sorted(

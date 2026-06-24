@@ -358,32 +358,52 @@ def test_multi_metric_detector_worst_of_tier():
 
 
 def test_composite_active_demotes_family_metrics_from_tier():
-    """When the composite is deployed (its metric is trained), the trim-effort family
-    features (sigma, resistance_change, trim_pass) are evidence-only and don't raise the
-    model tier. Without a deployed composite the same trip DOES flag (worst-of)."""
+    """When the composite is deployed (its metric is trained), its input features
+    (incl. untrimmed_error_max) are evidence-only and don't raise the model tier — the
+    composite represents them. Without a deployed composite, error_max (a TRIGGER metric)
+    flags on its own."""
     from laser_trim_analyzer.ml.multi_metric_drift_detector import MultiMetricDriftDetector
     from laser_trim_analyzer.ml.drift_types import DriftTier
 
     fam = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
-    fam.metric = "untrimmed_sigma_gradient"
+    fam.metric = "untrimmed_error_max"                  # trigger AND a composite feature
     for _ in range(5):
-        fam.update(5.0)                                 # trip the family metric
+        fam.update(5.0)
     assert fam.get_status().tier > DriftTier.STABLE
 
     composite = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)  # trained, stable
     composite.metric = "composite_trim_risk_score"
 
     det = MultiMetricDriftDetector("M", {
-        "untrimmed_sigma_gradient": fam,
+        "untrimmed_error_max": fam,
         "composite_trim_risk_score": composite,
     })
     status = det.get_status()
-    assert status.overall_tier == DriftTier.STABLE                       # family demoted
-    assert status.per_metric["untrimmed_sigma_gradient"].tier > DriftTier.STABLE  # still evidence
+    assert status.overall_tier == DriftTier.STABLE                       # feature demoted
+    assert status.per_metric["untrimmed_error_max"].tier > DriftTier.STABLE  # still evidence
 
-    # No deployed composite -> family metric drives the flag as before.
-    det_no_comp = MultiMetricDriftDetector("M2", {"untrimmed_sigma_gradient": fam})
+    # No deployed composite -> error_max (a trigger) drives the flag.
+    det_no_comp = MultiMetricDriftDetector("M2", {"untrimmed_error_max": fam})
     assert det_no_comp.get_status().overall_tier > DriftTier.STABLE
+
+
+def test_non_predictive_metric_is_evidence_only():
+    """A metric NOT in TRIGGER_METRICS (e.g. electrical angle — drift doesn't predict
+    failure) never raises the tier, even tripped and with no composite. It stays as
+    evidence in per_metric."""
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import MultiMetricDriftDetector
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    ea = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
+    ea.metric = "measured_electrical_angle"
+    for _ in range(5):
+        ea.update(5.0)
+    assert ea.get_status().tier > DriftTier.STABLE          # the detector itself trips
+    mmd = MultiMetricDriftDetector("M", {"measured_electrical_angle": ea})
+    status = mmd.get_status()
+    assert status.overall_tier == DriftTier.STABLE          # but it does NOT flag the model
+    assert status.worst_metric is None
+    assert status.per_metric["measured_electrical_angle"].tier > DriftTier.STABLE  # evidence
 
 
 def test_multi_metric_detector_step_change_wins_tier_tie():
@@ -393,14 +413,14 @@ def test_multi_metric_detector_step_change_wins_tier_tie():
     )
     from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier
 
-    # Single-metric detector hit with a sharp step
+    # Single-metric detector hit with a sharp step (use a TRIGGER metric so it flags).
     det = _build_trained_detector(baseline_mean=0.0, baseline_std=1.0)
-    det.metric = "sigma_gradient"
+    det.metric = "linearity_error"
 
-    mmd = MultiMetricDriftDetector("test-model", {"sigma_gradient": det})
+    mmd = MultiMetricDriftDetector("test-model", {"linearity_error": det})
 
     for _ in range(5):
-        mmd.update({"sigma_gradient": 4.0})
+        mmd.update({"linearity_error": 4.0})
 
     status = mmd.get_status()
     assert status.worst_alert_type == AlertType.STEP_CHANGE
@@ -658,9 +678,9 @@ def test_get_drifting_models_returns_flagged_only(tmp_path):
     with db.session() as s:
         row = ModelMetricState(
             model="8340-1",
-            # D-SIGMA: drift watches the untrimmed-sweep sigma (post-trim
-            # sigma_gradient is no longer a watched drift metric).
-            metric="untrimmed_sigma_gradient",
+            # Use a TRIGGER metric (untrimmed_resistance) — only those raise the tier;
+            # untrimmed_sigma_gradient is now evidence-only (drift didn't predict fails).
+            metric="untrimmed_resistance",
             baseline_mean=0.01,
             baseline_std=0.001,
             baseline_count=100,

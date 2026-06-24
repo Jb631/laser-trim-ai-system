@@ -38,6 +38,7 @@ MIN_BASELINE_SAMPLES: int = 30
 # Maps metric name -> SQLAlchemy column on TrackResult, except smoothness
 # which maps to SmoothnessResult.max_smoothness_value.
 _TRACK_METRIC_COLUMNS = {
+    "untrimmed_error_max": DBTR.untrimmed_error_max,
     "sigma_gradient": DBTR.sigma_gradient,
     "untrimmed_sigma_gradient": DBTR.untrimmed_sigma_gradient,
     "untrimmed_resistance": DBTR.untrimmed_resistance,

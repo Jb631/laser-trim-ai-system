@@ -19,8 +19,10 @@ def _seed(db, model, values, start=datetime(2026, 1, 1)):
                     timestamp=start + timedelta(days=i), overall_status=StatusType.PASS,
                     has_multi_tracks=False, processing_time=0.1)
             s.add(ar); s.flush()
+            # Seed a TRIGGER metric (untrimmed_resistance) so the drifted model flags;
+            # untrimmed_sigma_gradient is now evidence-only (drift didn't predict fails).
             s.add(TR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
-                     untrimmed_sigma_gradient=val))
+                     untrimmed_resistance=val))
         s.commit()
 
 

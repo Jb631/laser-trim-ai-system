@@ -57,6 +57,7 @@ def target_fp_for_tier(preset: str, tier: DriftTier) -> float:
 # finished-unit quality gate (the per-model threshold optimizer), not a drift
 # metric. (7 metrics -> 7 glance pills on the Model page.)
 WATCHED_METRICS: Tuple[str, ...] = (
+    "untrimmed_error_max",          # strongest validated early-warning signal
     "untrimmed_sigma_gradient",
     "untrimmed_resistance",
     "linearity_error",
@@ -66,6 +67,24 @@ WATCHED_METRICS: Tuple[str, ...] = (
     "max_smoothness_value",
     "composite_trim_risk_score",
 )
+
+# Metrics whose drift may RAISE a model's tier (generate a flag). Chosen from the
+# 2026-06 group-level validation of "does failure-ward drift actually predict a higher
+# failure rate?": untrimmed_error_max (+14% at 1-2σ, +24% at 2-3σ — the best signal),
+# untrimmed_resistance / resistance_change_percent (+18-19% at large drift), the
+# composite (where deployed), and linearity_error (the direct outcome). Metrics NOT in
+# this set are EVIDENCE-ONLY — still computed and shown on the Model page, but they no
+# longer flag, because their drift did NOT predict failures: measured_electrical_angle
+# (negative lift at every level — drift predicts FEWER linearity fails), and the noisy
+# untrimmed_sigma_gradient / trim_pass_count / max_smoothness_value. (Electrical angle
+# is its own customer spec; this only removes it as a LINEARITY-failure early-warning.)
+TRIGGER_METRICS: frozenset = frozenset({
+    "untrimmed_error_max",
+    "untrimmed_resistance",
+    "resistance_change_percent",
+    "linearity_error",
+    "composite_trim_risk_score",
+})
 
 
 @dataclass
@@ -134,6 +153,7 @@ class TrainingSummary:
 # post-trim ``sigma_gradient`` quality-gate metric, which is no longer drift-
 # watched but can still appear in per-model diagnostics.
 METRIC_LABELS = {
+    "untrimmed_error_max": "Untrimmed error (max)",
     "sigma_gradient": "Sigma gradient (post-trim)",
     "untrimmed_sigma_gradient": "Sigma gradient (untrimmed)",
     "untrimmed_resistance": "Untrimmed resistance",
