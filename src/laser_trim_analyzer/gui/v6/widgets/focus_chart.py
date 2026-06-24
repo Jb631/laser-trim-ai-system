@@ -61,7 +61,16 @@ class FocusChart(ctk.CTkFrame):
         if recent_batch_start is not None:
             ax.axvspan(recent_batch_start, dates[-1], color=t.ACCENT, alpha=0.10)
 
-        ax.plot(dates, values, marker="o", ms=3, lw=1, color=t.ACCENT, label=metric_label(metric))
+        if baseline_mean is None:
+            # Trend view (e.g. Smoothness): SCATTER only. Connecting clustered, gappy
+            # per-unit points with a line reads as jagged noise and implies a continuity
+            # that isn't there (the "charts are all over the place" complaint).
+            ax.scatter(dates, values, s=12, color=t.ACCENT, alpha=0.8, label=metric_label(metric))
+        else:
+            # Control chart: keep the line so the time sequence/drift is visible, but
+            # lighten it so the markers (and any Rule-1 violations) lead.
+            ax.plot(dates, values, marker="o", ms=3, lw=0.8, alpha=0.55,
+                    color=t.ACCENT, label=metric_label(metric))
 
         # ---- Robust y-window. A control chart must keep the control band and the
         # bulk of the data legible; a lone Rule-1 outlier (e.g. one 0.07 point on a

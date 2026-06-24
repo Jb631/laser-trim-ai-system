@@ -38,8 +38,10 @@ class SmoothnessTab(ctk.CTkFrame):
             row = ctk.CTkFrame(self._list, fg_color=t.CARD)
             row.pack(side="top", fill="x", pady=1)
             when = r["file_date"].strftime("%Y-%m-%d") if r.get("file_date") else "—"
+            def _fmt(v):
+                return f"{v:.4g}" if isinstance(v, (int, float)) else "—"
             txt = (f"{r.get('serial') or '—'} · {when} · "
-                   f"max={r.get('max_smoothness_value', '—')} · avg={r.get('avg_smoothness_value', '—')}")
+                   f"max={_fmt(r.get('max_smoothness_value'))} · avg={_fmt(r.get('avg_smoothness_value'))}")
             ctk.CTkLabel(row, text=txt, font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_PRIMARY)\
                 .pack(side="left", padx=t.SPACE_SM, pady=t.SPACE_XS)
             self._rows.append(row)

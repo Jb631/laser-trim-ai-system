@@ -15,6 +15,7 @@ from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
 from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
 from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
 from laser_trim_analyzer.gui.v6.widgets.tab_view import ThemedTabView
+from laser_trim_analyzer.gui.v6.widgets.trim_ft_tab import TrimFtTab
 from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
 from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
 from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
@@ -95,6 +96,8 @@ class ModelPage(PageBase):
         self._units_tab = UnitsTab(self._tabs.add("Units"), theme=t,
                                    on_unit_click=self._on_unit_click, on_export=self._on_export)
         self._units_tab.pack(fill="both", expand=True)
+        self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
+        self._trimft_tab.pack(fill="both", expand=True)
         self._predictor = PredictorPanel(self._body, theme=t, db=self.app.db)
         self._predictor.pack(side="top", fill="x", pady=(t.SPACE_MD, 0))
         self._show_empty()
@@ -153,9 +156,12 @@ class ModelPage(PageBase):
                 units = self._load_units(model)
                 smoothness = self._load_smoothness(model)
                 recent = self._recent_means(model)
+                trim_ft = self.app.db.get_model_trim_ft_agreement(
+                    model, days_back=_WINDOW_DAYS.get(self._window_choice))
             except Exception:
                 status, chosen = None, metric
                 dates, values, baseline, units, smoothness, recent = [], [], (None, None), [], [], {}
+                trim_ft = {}
             def apply():
                 if gen != self._reload_gen:
                     return  # a newer reload superseded this one
@@ -168,6 +174,7 @@ class ModelPage(PageBase):
                                              baseline_mean=baseline[0], baseline_std=baseline[1])
                 self._units_tab.set_units(units)
                 self._smoothness_tab.set_records(smoothness)
+                self._trimft_tab.set_data(trim_ft)
             self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 

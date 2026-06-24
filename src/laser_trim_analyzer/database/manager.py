@@ -2339,6 +2339,100 @@ class DatabaseManager:
                 "worst_escape_models": [{"model": m, "count": c} for m, c in worst_models],
             }
 
+    def get_model_trim_ft_agreement(self, model: str, days_back: Optional[int] = None,
+                                    min_confidence: float = 0.70) -> Dict[str, Any]:
+        """Per-model trim-vs-final-test view (Job 2 / 'test pass vs trim pass'): trim and FT
+        linearity pass rates, escapes (passed trim but failed FT — a bad unit shipped),
+        overkills (failed trim but passed FT — unnecessarily rejected), agreement, and the
+        trim-pass-count distribution ('how many trim passes'). Escape/overkill serials listed
+        for drill-down. Unlinked records are excluded from escape/overkill (need both stations).
+        """
+        from laser_trim_analyzer.database.models import FinalTestResult as DBFinalTestResult
+        out: Dict[str, Any] = {
+            "model": model, "trim_total": 0, "trim_pass": 0, "trim_pass_rate": None,
+            "ft_total": 0, "ft_pass": 0, "ft_pass_rate": None,
+            "linked": 0, "escapes": 0, "overkills": 0, "agreements": 0, "agreement_rate": None,
+            "escape_units": [], "overkill_units": [],
+            "trim_pass_count_avg": None, "trim_pass_count_dist": {},
+        }
+        with self.session() as session:
+            cutoff = (datetime.now() - timedelta(days=days_back)) if days_back else None
+
+            # Trim linearity pass rate (unit = analysis; pass = ALL tracks pass).
+            tq = (session.query(
+                    DBAnalysisResult.id,
+                    func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label("all_pass"))
+                  .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                  .filter(DBAnalysisResult.model == model,
+                          DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+            if cutoff is not None:
+                tq = tq.filter(DBAnalysisResult.file_date >= cutoff)
+            trim_rows = tq.group_by(DBAnalysisResult.id).all()
+            out["trim_total"] = len(trim_rows)
+            out["trim_pass"] = sum(1 for r in trim_rows if r.all_pass)
+            if out["trim_total"]:
+                out["trim_pass_rate"] = out["trim_pass"] / out["trim_total"] * 100.0
+
+            # Final-test linearity pass rate.
+            fq = session.query(DBFinalTestResult.linearity_pass).filter(
+                DBFinalTestResult.model == model, DBFinalTestResult.linearity_pass.isnot(None))
+            if cutoff is not None:
+                fq = fq.filter(DBFinalTestResult.file_date >= cutoff)
+            ft_rows = fq.all()
+            out["ft_total"] = len(ft_rows)
+            out["ft_pass"] = sum(1 for (p,) in ft_rows if p)
+            if out["ft_total"]:
+                out["ft_pass_rate"] = out["ft_pass"] / out["ft_total"] * 100.0
+
+            # Escapes / overkills on LINKED units (both stations present, confident match).
+            lq = (session.query(
+                    DBFinalTestResult.serial,
+                    DBFinalTestResult.linearity_pass.label("ft_pass"),
+                    func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label("trim_pass"))
+                  .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
+                  .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+                  .filter(DBFinalTestResult.model == model,
+                          DBFinalTestResult.linked_trim_id.isnot(None),
+                          DBFinalTestResult.linearity_pass.isnot(None),
+                          DBFinalTestResult.match_confidence >= min_confidence,
+                          DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+            if cutoff is not None:
+                lq = lq.filter(DBFinalTestResult.file_date >= cutoff)
+            linked = lq.group_by(DBFinalTestResult.id, DBFinalTestResult.serial,
+                                 DBFinalTestResult.linearity_pass).all()
+            out["linked"] = len(linked)
+            agree = 0
+            for r in linked:
+                tp, fp = bool(r.trim_pass), bool(r.ft_pass)
+                if tp and not fp:
+                    out["escapes"] += 1; out["escape_units"].append(r.serial)
+                elif not tp and fp:
+                    out["overkills"] += 1; out["overkill_units"].append(r.serial)
+                else:
+                    agree += 1
+            out["agreements"] = agree
+            if out["linked"]:
+                out["agreement_rate"] = agree / out["linked"] * 100.0
+
+            # Trim-pass-count distribution ("how many trim passes").
+            cq = (session.query(DBTrackResult.trim_pass_count, func.count())
+                  .join(DBAnalysisResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+                  .filter(DBAnalysisResult.model == model, DBTrackResult.trim_pass_count.isnot(None)))
+            if cutoff is not None:
+                cq = cq.filter(DBAnalysisResult.file_date >= cutoff)
+            dist: Dict[int, int] = {}
+            tot_c = 0
+            sum_c = 0
+            for cnt, n in cq.group_by(DBTrackResult.trim_pass_count).all():
+                k = int(cnt)
+                dist[k] = n
+                tot_c += n
+                sum_c += k * n
+            out["trim_pass_count_dist"] = dist
+            if tot_c:
+                out["trim_pass_count_avg"] = sum_c / tot_c
+        return out
+
     def get_heatmap_data(
         self, days_back: int = 90, period: str = 'week', min_samples: int = 10
     ) -> Dict[str, Any]:

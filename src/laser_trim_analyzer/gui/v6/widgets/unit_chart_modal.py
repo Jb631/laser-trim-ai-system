@@ -60,7 +60,12 @@ class UnitChartModal(ctk.CTkToplevel):
         self._save_btn.pack(side="right")
         data = load_unit_track(db, unit.get("analysis_id"))
         if not data or not data["position_data"]:
-            chart.show_placeholder("No stored measurement arrays for this unit.")
+            chart.show_placeholder(
+                "No linearity sweep stored for this unit.\n\n"
+                "It has other measurements (e.g. resistance) but no point-by-point error "
+                "trace — so it was never fully linearity-evaluated, which is why it reads "
+                "as Warning rather than Pass/Fail. Re-process the source file to capture "
+                "the sweep.")
             self._save_btn.configure(state="disabled")
             return
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"])

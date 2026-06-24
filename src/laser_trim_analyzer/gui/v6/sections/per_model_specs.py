@@ -79,6 +79,51 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
     model_box.set("")
     model_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
 
+    # --- Bulk import: load/refresh ALL model specs from the master reference sheet
+    # (Model Reference workbook). Reuses db.import_model_specs_from_excel, which merges
+    # (updates existing, adds new, never deletes) and auto-detects columns.
+    def _import_sheet():
+        from tkinter import filedialog
+        import threading
+        path = filedialog.askopenfilename(
+            title="Select model reference spec sheet",
+            filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls")])
+        if not path:
+            return
+        import_status.configure(text="Importing…")
+
+        def work():
+            try:
+                res = db.import_model_specs_from_excel(path)
+                msg = (f"Imported: {res.get('added', 0)} added, "
+                       f"{res.get('updated', 0)} updated, {res.get('skipped', 0)} skipped.")
+            except Exception as exc:
+                msg = f"Import failed: {exc}"
+
+            def done():
+                import_status.configure(text=msg)
+                try:
+                    model_box.configure(values=_model_values())
+                except Exception:
+                    pass
+            try:
+                import_status.after(0, done)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    imp_row = ctk.CTkFrame(parent, fg_color="transparent")
+    imp_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+    ctk.CTkButton(imp_row, text="Import spec sheet…", command=_import_sheet,
+                  fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
+                  corner_radius=t.RADIUS_SM).pack(side="left")
+    ctk.CTkLabel(imp_row, text="  Bulk load/refresh every model from your master sheet "
+                               "(merges — never deletes).",
+                 font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY).pack(side="left")
+    import_status = ctk.CTkLabel(parent, text="", font=t.font(t.SIZE_CAPTION),
+                                 text_color=t.TEXT_SECONDARY, anchor="w")
+    import_status.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+
     fields["linearity_spec_text"] = _row("Linearity spec (text)")
     fields["linearity_spec_pct"] = _row("Linearity spec (%)")
     fields["exclude_points"] = _row("Exclude points (Trim)")
