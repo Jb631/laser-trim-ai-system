@@ -2,6 +2,7 @@
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.sections.active_models import build_active_models_section
 from laser_trim_analyzer.gui.v6.sections.alert_thresholds import build_alert_thresholds_section
 from laser_trim_analyzer.gui.v6.sections.database_cleanup import build_database_cleanup_section
 from laser_trim_analyzer.gui.v6.sections.ml_training import build_ml_training_section
@@ -22,6 +23,7 @@ class SettingsPage(PageBase):
         scroll.pack(fill="both", expand=True)
         for title, expanded, build in (
             ("Alert Thresholds", True, build_alert_thresholds_section),
+            ("Active Models (MPS)", False, build_active_models_section),
             ("Per-model Specs", False, build_per_model_specs_section),
             ("ML Training", False, build_ml_training_section),
             ("Pricing", False, build_pricing_section),
