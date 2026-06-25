@@ -285,7 +285,8 @@ class ModelPage(PageBase):
             rows = q.order_by(DBSR.file_date.desc()).limit(200).all()
             return [{"serial": r.serial, "file_date": r.file_date,
                      "max_smoothness_value": r.max_smoothness_value,
-                     "avg_smoothness_value": r.avg_smoothness_value,
+                     "smoothness_spec": r.smoothness_spec,
+                     "smoothness_pass": r.smoothness_pass,
                      "overall_status": getattr(r.overall_status, "value", str(r.overall_status))}
                     for r in rows]
 

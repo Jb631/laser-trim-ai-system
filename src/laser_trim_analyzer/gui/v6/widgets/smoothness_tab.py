@@ -40,8 +40,14 @@ class SmoothnessTab(ctk.CTkFrame):
             when = r["file_date"].strftime("%Y-%m-%d") if r.get("file_date") else "—"
             def _fmt(v):
                 return f"{v:.4g}" if isinstance(v, (int, float)) else "—"
+            # Max deviation vs its spec is the smoothness quality measure. (The old "avg"
+            # column was mean output voltage, not an average deviation — it could exceed
+            # max — so it's dropped rather than shown as a misleading smoothness number.)
+            sp = r.get("smoothness_pass")
+            verdict = "PASS" if sp is True else "FAIL" if sp is False else "—"
             txt = (f"{r.get('serial') or '—'} · {when} · "
-                   f"max={_fmt(r.get('max_smoothness_value'))} · avg={_fmt(r.get('avg_smoothness_value'))}")
+                   f"max dev={_fmt(r.get('max_smoothness_value'))} / spec "
+                   f"{_fmt(r.get('smoothness_spec'))} · {verdict}")
             ctk.CTkLabel(row, text=txt, font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_PRIMARY)\
                 .pack(side="left", padx=t.SPACE_SM, pady=t.SPACE_XS)
             self._rows.append(row)
