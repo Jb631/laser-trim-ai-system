@@ -83,10 +83,12 @@ def main() -> int:
     for days in (90, 36500):
         cutoff = datetime.now() - timedelta(days=days)
         y = compute_yield(db, DBAR, cutoff)
+        horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         r = raw.execute(
             "SELECT COUNT(*), SUM(overall_status='PASS'), SUM(overall_status='WARNING'),"
-            " SUM(overall_status='FAIL') FROM analysis_results WHERE file_date >= ?",
-            (cutoff.strftime("%Y-%m-%d %H:%M:%S"),)).fetchone()
+            " SUM(overall_status='FAIL') FROM analysis_results "
+            "WHERE file_date >= ? AND file_date <= ?",
+            (cutoff.strftime("%Y-%m-%d %H:%M:%S"), horizon)).fetchone()
         check(f"dashboard yield counts vs SQL ({days}d)",
               y["total"] == (r[0] or 0) and y["passed"] == (r[1] or 0)
               and y["warnings"] == (r[2] or 0) and y["failed"] == (r[3] or 0),
@@ -296,6 +298,17 @@ def main() -> int:
     check("cleanup options builder honors date+category selection",
           opts is not None and opts["delete_suspect_quality"] is True
           and opts["delete_before_date"] is not None)
+
+    # ---- data quality surface: future-dated records (mislabeled files) ------
+    horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    for table in ("analysis_results", "final_test_results"):
+        n_future = raw.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE file_date > ?", (horizon,)).fetchone()[0]
+        if n_future:
+            warn(f"data quality: {n_future} future-dated record(s) in {table}",
+                 "excluded from trends; fix the source filename date")
+        else:
+            check(f"data quality: no future-dated records in {table}", True)
 
     raw.close()
     fails = sum(1 for s, *_ in RESULTS if s == "FAIL")

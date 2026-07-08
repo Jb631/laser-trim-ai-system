@@ -18,7 +18,7 @@ ML Integration:
 import gc
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Callable, Generator
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -342,6 +342,14 @@ class Processor:
 
             # Validate track data quality
             quality_issues = self._validate_track_data(analyzed_tracks)
+            # Future-dated file (mistyped date in the filename, or a wrong
+            # station clock): one such FT record dated 5 months ahead skewed
+            # the dashboard trend (2026-07-08). Flag it at the source.
+            if (metadata.file_date is not None
+                    and metadata.file_date > datetime.now() + timedelta(days=1)):
+                quality_issues.append(
+                    f"future-dated file ({metadata.file_date:%Y-%m-%d}) — "
+                    f"check the date in the filename")
             data_quality = "suspect" if quality_issues else "good"
             if quality_issues:
                 logger.warning(

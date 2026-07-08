@@ -4,7 +4,7 @@ Pure helpers: given a DatabaseManager and an ORM model class that has
 `overall_status` + `file_date` (analysis_results or final_test_results), return
 status-bucket counts, a pass-rate, and a per-day pass-rate trend. No Tk.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 # overall_status (StatusType) name -> yield bucket.
@@ -34,12 +34,21 @@ def compute_yield(db, model_cls, cutoff: Optional[datetime]) -> dict:
     """
     counts = {"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0}
     per_day: dict = {}
+    # Future-dated records are DATA ERRORS (a mistyped filename date put one
+    # FT record five months ahead, stretching the dashboard trend and setting
+    # its 'last day' value). Exclude beyond a 1-day clock-skew allowance and
+    # DISCLOSE the count so the bad file gets fixed, not hidden.
+    horizon = datetime.now() + timedelta(days=1)
+    future_dated = 0
     with db.session() as s:
         q = s.query(model_cls.file_date, model_cls.overall_status)
         if cutoff is not None:
             q = q.filter(model_cls.file_date >= cutoff)
         rows = q.all()
     for file_date, status in rows:
+        if file_date is not None and file_date > horizon:
+            future_dated += 1
+            continue
         b = _bucket(status)
         counts[b] += 1
         if b in ("passed", "warnings", "failed") and file_date is not None:
@@ -60,7 +69,7 @@ def compute_yield(db, model_cls, cutoff: Optional[datetime]) -> dict:
              for d, (t, p, a) in sorted(per_day.items())]
     return {**counts, "gradeable": gradeable, "total": sum(counts.values()),
             "pass_rate": pass_rate, "linearity_yield": linearity_yield,
-            "trend": trend}
+            "trend": trend, "future_dated": future_dated}
 
 
 def worst_models_by_yield(db, cutoff: Optional[datetime], min_units: int = 5, limit: int = 10):

@@ -57,7 +57,10 @@ class MiniTrendChart(ctk.CTkFrame):
             ax.set_ylim(-14, 112)   # headroom for the labels below/above
             # Latest value, marked and named — the number the eye wants.
             ax.plot([len(ys_ds) - 1], [ys_ds[-1]], marker="o", ms=4, color=t.ACCENT_HOVER)
-            ax.annotate(f"{ys[-1]:.0f}%", (len(ys_ds) - 1, ys_ds[-1]),
+            # "last day" prefix: this is the FINAL day's rate, not the window
+            # yield — an unlabeled "100%" beside a 90.3% headline reads as a
+            # contradiction (user finding, 2026-07-08).
+            ax.annotate(f"last day {ys[-1]:.0f}%", (len(ys_ds) - 1, ys_ds[-1]),
                         textcoords="offset points", xytext=(-2, 6), ha="right",
                         fontsize=7, color=t.TEXT_PRIMARY)
             # What it is + when it spans.

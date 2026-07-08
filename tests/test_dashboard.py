@@ -81,6 +81,28 @@ def test_compute_yield_on_final_test(tmp_path):
     assert y["passed"] == 1 and y["failed"] == 1 and y["pass_rate"] == pytest.approx(50.0)
 
 
+def test_compute_yield_excludes_future_dated(tmp_path):
+    """Regression (2026-07-08): one FT file named `..._12-18-2026_...` put a
+    future-dated record in the DB, stretching the dashboard sparkline to Dec
+    2026 and making its last-day value a fake 100%. Future rows (beyond a 1-day
+    clock-skew allowance) must be excluded from counts AND trend, and counted
+    in `future_dated` so the panel can disclose them."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.core.yield_stats import compute_yield
+    db = DatabaseManager(tmp_path / "fd.db")
+    now = datetime.now()
+    with db.session() as s:
+        _add_ft(s, "M", StatusType.PASS, now)
+        _add_ft(s, "M", StatusType.FAIL, now)
+        _add_ft(s, "M", StatusType.PASS, now + timedelta(days=163))  # mislabeled file
+        s.commit()
+    y = compute_yield(db, DBFT, None)
+    assert y["future_dated"] == 1
+    assert (y["passed"], y["failed"]) == (1, 1)          # future PASS not counted
+    assert y["pass_rate"] == pytest.approx(50.0)          # not inflated to 66.7
+    assert all(p["date"] <= now.strftime("%Y-%m-%d") for p in y["trend"])
+
+
 def test_worst_models_ranks_and_min_units(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.core.yield_stats import worst_models_by_yield

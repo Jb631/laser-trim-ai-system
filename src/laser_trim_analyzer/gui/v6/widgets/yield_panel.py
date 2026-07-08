@@ -45,6 +45,12 @@ class YieldPanel(ctk.CTkFrame):
         if stats.get("errors", 0):
             parts.append(f"Err {stats['errors']}")
         self._counts.configure(text=" · ".join(parts))
+        if stats.get("future_dated"):
+            # A record dated in the FUTURE is a mislabeled file, not production
+            # — name it so it gets fixed instead of silently skewing trends.
+            total_label += (f"   ⚠ {stats['future_dated']} future-dated record"
+                            f"{'s' if stats['future_dated'] != 1 else ''} excluded "
+                            f"(check filename dates)")
         self._total.configure(text=total_label)
         # Sparkline follows the headline basis ("rate" = linearity_yield; falls
         # back to pass_rate for callers that predate the field).

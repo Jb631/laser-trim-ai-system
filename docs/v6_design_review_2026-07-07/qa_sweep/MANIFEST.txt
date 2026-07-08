@@ -9,7 +9,7 @@ company_365d_month.png | CompanyTrend 365d/month — linearity basis, partial ma
 company_36500d_month.png | CompanyTrend 36500d/month — linearity basis, partial marker, vintage
 company_30d_week.png | CompanyTrend 30d/week — linearity basis, partial marker, vintage
 mini_trim.png | MiniTrend trim pts=3397 — sparkline follows linearity basis
-mini_ft.png | MiniTrend ft pts=2436 — sparkline follows linearity basis
+mini_ft.png | MiniTrend ft pts=2435 — sparkline follows linearity basis
 history_6607_measured_electrical_angle.png | HistoryTab 6607/measured_electrical_angle — panel titles clear of ticks
 history_6607_untrimmed_resistance.png | HistoryTab 6607/untrimmed_resistance — panel titles clear of ticks
 history_8150_untrimmed_resistance.png | HistoryTab 8150/untrimmed_resistance — panel titles clear of ticks
