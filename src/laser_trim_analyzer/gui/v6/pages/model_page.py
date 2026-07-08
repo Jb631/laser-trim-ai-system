@@ -66,6 +66,11 @@ class ModelPage(PageBase):
                                                 border_color=t.BORDER, button_color=t.ACCENT,
                                                 button_hover_color=t.ACCENT_HOVER, text_color=t.TEXT_PRIMARY)
         self._model_selector.set("Select model…")
+        # Typing a model number + Enter must load it — the combobox command
+        # only fires on dropdown picks, and scrolling 279 entries to reach a
+        # typed-out name is unusable (found live, 2026-07-08).
+        self._model_selector.bind(
+            "<Return>", lambda e: self._on_model_selected(self._model_selector.get().strip()))
         self._model_selector.pack(side="left", padx=(0, t.SPACE_SM))
         self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=80,
                                               command=self._on_window_change, fg_color=t.CARD,
