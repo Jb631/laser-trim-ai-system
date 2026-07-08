@@ -28,8 +28,13 @@ def compute_fail_points(errors, upper_limits, lower_limits,
     return out
 
 
-def load_unit_track(db, analysis_id: int) -> Optional[dict]:
-    """Materialize the first track's arrays for an analysis INSIDE the session (I8-safe)."""
+def load_unit_track(db, analysis_id: int,
+                    track_id: Optional[str] = None) -> Optional[dict]:
+    """Materialize ONE track's arrays for an analysis INSIDE the session
+    (I8-safe). track_id None = first track. Returns all track ids so the
+    modal can offer a selector on multi-track units (2026-07-07 — the modal
+    used to hard-lock to track 1, hiding the other elements of exactly the
+    units most worth investigating)."""
     from laser_trim_analyzer.database.models import (
         AnalysisResult as DBAR, TrackResult as DBTR)
     with db.session() as s:
@@ -39,10 +44,17 @@ def load_unit_track(db, analysis_id: int) -> Optional[dict]:
         ar = s.query(DBAR.model, DBAR.system).filter(DBAR.id == analysis_id).first()
         model = ar[0] if ar else ""
         system = getattr(ar[1], "value", str(ar[1])) if ar and ar[1] is not None else ""
+        track_ids = [t.track_id for t in tracks]
         tr = tracks[0]
+        if track_id is not None:
+            for t in tracks:
+                if t.track_id == track_id:
+                    tr = t
+                    break
         return {
             "model": model, "system": system,
             "track_id": tr.track_id, "n_tracks": len(tracks),
+            "track_ids": track_ids,
             "position_data": list(tr.position_data or []),
             "error_data": list(tr.error_data or []),
             "upper_limits": list(tr.upper_limits or []),
@@ -86,6 +98,12 @@ class UnitChartModal(ctk.CTkToplevel):
                                        fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
                                        text_color=theme.TEXT_INVERSE, corner_radius=theme.RADIUS_SM)
         self._save_btn.pack(side="right")
+        # Track selector (packed only when the unit has multiple tracks).
+        self._track_menu = ctk.CTkOptionMenu(
+            bar, values=["Track"], width=140, command=self._on_track_change,
+            fg_color=theme.CARD, button_color=theme.ACCENT,
+            button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+        self._db = db
 
         # Resolve the app's UiDispatcher now (main thread); master may be nested.
         from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
@@ -119,9 +137,32 @@ class UnitChartModal(ctk.CTkToplevel):
         else:
             guarded()  # tests: main-thread, no dispatcher
 
+    def _on_track_change(self, choice: str) -> None:
+        """Reload the modal for the selected track (worker, like initial load)."""
+        data = getattr(self, "_track_data", None)
+        if not data or choice == data.get("track_id"):
+            return
+        self._chart.show_placeholder(f"Loading {choice}…")
+
+        def work():
+            try:
+                new = load_unit_track(self._db, self._unit.get("analysis_id"),
+                                      track_id=choice)
+            except Exception:
+                new = None
+            self._post(lambda: self._render(new))
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
     def _render(self, data: Optional[dict]) -> None:
         self._track_data = data  # kept for the print-ready export
         unit = self._unit
+        # Multi-track: surface the selector with the real track ids.
+        if data and data.get("n_tracks", 1) > 1 and data.get("track_ids"):
+            self._track_menu.configure(values=data["track_ids"])
+            self._track_menu.set(data.get("track_id"))
+            self._track_menu.pack(side="left")
         if not data or not data["position_data"]:
             self._chart.show_placeholder(
                 "No linearity sweep stored for this unit.\n\n"
@@ -135,7 +176,7 @@ class UnitChartModal(ctk.CTkToplevel):
                                  offset=data.get("optimal_offset") or 0.0)
         title = f"Unit {unit.get('serial', '')}"
         if data["n_tracks"] > 1:
-            title += f" — track {data['track_id']} of {data['n_tracks']} (showing track 1)"
+            title += f" — {data['track_id']} of {data['n_tracks']} tracks"
         self._chart.plot_error_vs_position(
             positions=data["position_data"], trimmed_errors=data["error_data"],
             upper_limits=data["upper_limits"] or None, lower_limits=data["lower_limits"] or None,

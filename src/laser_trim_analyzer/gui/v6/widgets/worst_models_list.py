@@ -5,7 +5,12 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
-_COLS = [("model", "Model"), ("units", "Units"), ("trim_rate", "Trim %"), ("ft_rate", "FT %")]
+# Gap = Trim% − FT%. Strongly NEGATIVE = units failing trim but passing final
+# test — the overkill pattern (trim thresholds or specs rejecting good product).
+# Strongly POSITIVE = passing trim but failing FT — escapes (worse). Ported
+# from V5 Quality Health's ranked table (2026-07-07, feature restoration).
+_COLS = [("model", "Model"), ("units", "Units"), ("trim_rate", "Trim %"),
+         ("ft_rate", "FT %"), ("gap", "Gap")]
 
 
 def _fmt(key, value) -> str:
@@ -13,6 +18,8 @@ def _fmt(key, value) -> str:
         return "—"
     if key in ("trim_rate", "ft_rate"):
         return f"{value:.0f}%"
+    if key == "gap":
+        return f"{value:+.0f}"
     return str(value)
 
 
@@ -27,7 +34,7 @@ class WorstModelsList(ctk.CTkFrame):
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         header = ctk.CTkFrame(self, fg_color=t.CARD)
         header.pack(side="top", fill="x")
-        header.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="wm")
+        header.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="wm")
         for i, (_key, label) in enumerate(_COLS):
             ctk.CTkLabel(header, text=label, font=t.font(t.SIZE_CAPTION, "bold"),
                          text_color=t.TEXT_SECONDARY, anchor="w")\
@@ -64,10 +71,20 @@ class _WorstRow(ctk.CTkFrame):
         super().__init__(master, fg_color=theme.SURFACE, corner_radius=theme.RADIUS_SM)
         self.row = row
         self._cb = on_click
-        self.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="wm")
+        # Gap derived here so the query stays untouched: Trim% − FT%.
+        gap = None
+        if row.get("trim_rate") is not None and row.get("ft_rate") is not None:
+            gap = row["trim_rate"] - row["ft_rate"]
+        row = {**row, "gap": gap}
+        self.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="wm")
         for i, (key, _label) in enumerate(_COLS):
+            color = theme.TEXT_PRIMARY
+            if key == "gap" and gap is not None and abs(gap) >= 15:
+                # Big divergence between stations deserves the eye:
+                # negative = overkill (rejecting good product), positive = escapes.
+                color = theme.TIER_WARNING if gap < 0 else theme.TIER_OOC
             lbl = ctk.CTkLabel(self, text=_fmt(key, row.get(key)), font=theme.font(theme.SIZE_BODY),
-                               text_color=theme.TEXT_PRIMARY, anchor="w")
+                               text_color=color, anchor="w")
             lbl.grid(row=0, column=i, sticky="ew", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
             lbl.bind("<Button-1>", lambda e: self._on_click())
         self.bind("<Button-1>", lambda e: self._on_click())

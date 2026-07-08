@@ -1753,6 +1753,11 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
                     "cusum_pos": r.cusum_pos,
                     "cusum_neg": r.cusum_neg,
                     "ewma_state": r.ewma_state,
+                    # Preview must see the SAME runtime state as Triage —
+                    # omitting the persisted step window made it undercount
+                    # (app_qa_sweep caught 92 vs 97 after the first retrain
+                    # that persisted windows).
+                    "recent_window": r.recent_window,
                 })
 
         for row in row_data:
@@ -1767,6 +1772,8 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
             L_per_tier = {t.name: thresholds[t][1] for t in thresholds}
             z_per_tier = {t.name: thresholds[t][2] for t in thresholds}
 
+            from collections import deque
+            from laser_trim_analyzer.ml.multi_metric_drift_detector import STEP_CHANGE_WINDOW
             metrics[row["metric"]] = MetricDetector(
                 metric=row["metric"],
                 baseline_mean=row["baseline_mean"],
@@ -1779,6 +1786,9 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
                 cusum_pos=row["cusum_pos"] or 0.0,
                 cusum_neg=row["cusum_neg"] or 0.0,
                 ewma_state=row["ewma_state"],
+                recent_window=deque(
+                    [float(v) for v in (row["recent_window"] or [])],
+                    maxlen=STEP_CHANGE_WINDOW),
             )
 
         container = MultiMetricDriftDetector(model=model, metrics=metrics)
