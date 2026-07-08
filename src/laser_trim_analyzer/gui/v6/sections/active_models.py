@@ -10,6 +10,7 @@ import threading
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 from laser_trim_analyzer.ml.manager import active_model_set, list_known_models
 
 
@@ -56,17 +57,20 @@ def build_active_models_section(parent, theme: ThemeManager, app) -> None:
         return out
 
     def refresh_status():
+        # Read widget values HERE (main thread) — Tk reads from a worker
+        # thread are as unsafe as writes.
+        try:
+            days = max(1, int((days_entry.get() or "90").strip()))
+        except ValueError:
+            days = 90
+        pinned = set(_pinned_from_box())
+
         def work():
-            try:
-                days = max(1, int((days_entry.get() or "90").strip()))
-            except ValueError:
-                days = 90
             try:
                 auto = active_model_set(app.db, recent_days=days, mps_models=[])
                 known = {m.model for m in list_known_models(app.db)}
             except Exception:
                 auto, known = set(), set()
-            pinned = set(_pinned_from_box())
             total_active = auto | pinned
             extra = pinned - auto                  # pinned models recency wouldn't catch
             unknown = pinned - known if known else set()  # typos / not in DB yet
@@ -75,11 +79,7 @@ def build_active_models_section(parent, theme: ThemeManager, app) -> None:
             if unknown:
                 sample = ", ".join(sorted(unknown)[:5])
                 txt += f"  ⚠ {len(unknown)} pinned not found in data: {sample}"
-            try:
-                if status.winfo_exists():
-                    status.after(0, lambda: status.winfo_exists() and status.configure(text=txt))
-            except Exception:
-                pass
+            post_ui(app, lambda: status.winfo_exists() and status.configure(text=txt))
         threading.Thread(target=work, daemon=True).start()
 
     save_btn = ctk.CTkButton(parent, text="Save", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,

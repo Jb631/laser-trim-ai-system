@@ -73,20 +73,29 @@ class ExcelParser:
         with pd.ExcelFile(file_path) as xl:
             sheet_names = xl.sheet_names
 
-            # Detect system type from sheet names (no file read needed)
-            system_type = self._detect_system_from_sheets(sheet_names)
-            logger.debug(f"Detected system: {system_type.value}")
+            # FORMAT comes from the sheet structure and drives all extraction.
+            # SYSTEM identity can differ: the third trim system (LTS3, System C)
+            # produces files format-identical to an existing system — the only
+            # distinguishing feature is the LTS3 folder in the storage path.
+            format_type = self._detect_system_from_sheets(sheet_names)
+            system_type = self._resolve_system_identity(file_path, format_type)
+            if system_type != format_type:
+                logger.debug(f"System {system_type.value} file ({format_type.value}-format): "
+                             f"{file_path.name}")
+            else:
+                logger.debug(f"Detected system: {system_type.value}")
 
             # Check for multi-track from sheet names (no file read needed)
-            has_multi_tracks = self._has_multiple_tracks_from_sheets(sheet_names, system_type)
+            has_multi_tracks = self._has_multiple_tracks_from_sheets(sheet_names, format_type)
 
             # Extract test date (needs xl for fallback to cell reading)
-            test_date = self._extract_test_date(xl, file_path, system_type)
+            test_date = self._extract_test_date(xl, file_path, format_type)
 
             # Extract track data (needs xl)
-            tracks = self._extract_tracks(xl, file_path, system_type)
+            tracks = self._extract_tracks(xl, file_path, format_type)
 
-        # Build metadata after file is closed
+        # Build metadata after file is closed (metadata carries the IDENTITY,
+        # extraction above used the FORMAT).
         metadata = self._build_metadata(file_path, system_type, has_multi_tracks, test_date)
 
         return {
@@ -99,9 +108,27 @@ class ExcelParser:
         """Calculate SHA256 hash of file."""
         sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
+            # 1 MB chunks — 8 KB chunks meant thousands of round-trips per
+            # file on network shares (same fix as utils/hashing.py).
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()
+
+    @staticmethod
+    def _resolve_system_identity(file_path: Path, format_type: SystemType) -> SystemType:
+        """System identity = format system, unless the path marks LTS3 (System C).
+
+        The third trim system (LTS3, added 2026) writes files format-identical
+        to an existing system; they're distinguished only by living under a
+        folder named 'LTS3'. Matches any DIRECTORY segment starting with
+        'LTS3' (case-insensitive), on both / and \\ separated paths (work
+        machines are Windows). The filename itself is deliberately excluded.
+        """
+        segments = re.split(r"[\\/]+", str(file_path))
+        for seg in segments[:-1]:  # directories only, not the filename
+            if seg.strip().upper().startswith("LTS3"):
+                return SystemType.C
+        return format_type
 
     def _detect_system_from_sheets(self, sheet_names: List[str]) -> SystemType:
         """
@@ -120,8 +147,16 @@ class ExcelParser:
             if any(identifier.lower() in s.lower() for s in sheet_names):
                 return SystemType.B
 
-        logger.warning(f"Could not detect system type from sheets, defaulting to B")
-        return SystemType.B
+        # Do NOT default to B. Parsing an unknown layout with System B's
+        # column map produces wrong data silently — with a third trim system
+        # now in production, wrong data is worse than a loud per-file ERROR.
+        # The processor catches this and files it as an ERROR result.
+        raise ValueError(
+            "Unrecognized trim file layout: sheets match neither System A "
+            f"('{SYSTEM_A_IDENTIFIER}') nor System B {SYSTEM_B_IDENTIFIERS}. "
+            "If this file comes from the NEW (third) trim system, its format "
+            f"is not supported yet. Sheets: {sheet_names}"
+        )
 
     def _build_metadata(
         self, file_path: Path, system_type: SystemType,
@@ -1388,9 +1423,15 @@ def detect_file_type(file_path: Path) -> str:
                 for ident in SYSTEM_B_IDENTIFIERS
             )
             if not has_system_a and not has_system_b:
-                logger.info(
-                    f"Skipping non-trim file (no System A/B sheet structure): {filename} "
-                    f"sheets={sheet_names}"
+                # WARNING (not info): files from the new third trim system land
+                # here and get marked skipped-forever. Make that visible in the
+                # logs until System C support exists; Settings → "Reset skipped
+                # files" reprocesses them once it does.
+                logger.warning(
+                    f"Skipping file with unrecognized sheet structure (not System A/B): "
+                    f"{filename} sheets={sheet_names}. If this is from the NEW (third) "
+                    f"trim system, its format is not supported yet — the file is being "
+                    f"recorded as skipped, NOT parsed."
                 )
                 return "non_trim"
 

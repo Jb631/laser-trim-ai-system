@@ -1,9 +1,11 @@
 """Spec 3c — PredictorPanel: demoted per-unit predictor. Lazy, clearly diagnostic, graceful."""
+import threading
 from typing import Callable, Optional
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
 
 
 def _default_load(db):
@@ -42,6 +44,8 @@ class PredictorPanel(ctk.CTkFrame):
         self._body_label = ctk.CTkLabel(self._body, text="", font=theme.font(theme.SIZE_BODY),
                                         text_color=theme.TEXT_SECONDARY, wraplength=700, justify="left")
         self._body_label.pack(padx=theme.SPACE_SM, pady=theme.SPACE_SM)
+        self._ui = resolve_dispatcher(master)
+        self._load_gen = 0  # drop stale results when the model changes mid-load
 
     def set_model(self, model: str) -> None:
         self._model = model
@@ -62,8 +66,28 @@ class PredictorPanel(ctk.CTkFrame):
         if not self._model or self._load_fn is None:
             self._body_label.configure(text="No predictor available.")
             return
-        try:
-            self._body_label.configure(text=self._load_fn(self._model))
-        except Exception:
-            self._body_label.configure(
-                text=f"No predictor for {self._model}. Train it in Settings → ML Training.")
+        # load_fn reaches the shared MLManager, which may unpickle every
+        # trained predictor from disk — far too heavy for the UI thread
+        # (and it re-runs after the manager's cache expires).
+        model = self._model
+        self._load_gen += 1
+        gen = self._load_gen
+        self._body_label.configure(text="Loading predictor…")
+
+        def work():
+            try:
+                text = self._load_fn(model)
+            except Exception:
+                text = f"No predictor for {model}. Train it in Settings → ML Training."
+
+            def apply():
+                try:
+                    if gen == self._load_gen and self._body_label.winfo_exists():
+                        self._body_label.configure(text=text)
+                except Exception:
+                    pass
+            if self._ui is not None:
+                self._ui.post(apply)
+            else:
+                apply()  # tests: main thread, no dispatcher
+        threading.Thread(target=work, daemon=True).start()

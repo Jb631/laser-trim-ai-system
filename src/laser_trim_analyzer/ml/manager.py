@@ -1638,7 +1638,14 @@ def get_model_drift_status(db, model: str):
                 "cusum_pos": r.cusum_pos,
                 "cusum_neg": r.cusum_neg,
                 "ewma_state": r.ewma_state,
+                "recent_window": r.recent_window,
+                "last_updated": r.last_updated,
             }
+
+    from collections import deque
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        COMPOSITE_METRIC, STEP_CHANGE_WINDOW,
+    )
 
     for metric_name in WATCHED_METRICS:
         row = rows_by_metric.get(metric_name)
@@ -1676,8 +1683,31 @@ def get_model_drift_status(db, model: str):
                 cusum_pos=row["cusum_pos"] or 0.0,
                 cusum_neg=row["cusum_neg"] or 0.0,
                 ewma_state=row["ewma_state"],
+                # Persisted step-change window: without it, hydrated detectors
+                # woke with an empty window — STEP_CHANGE was unreachable at
+                # read time and the σ-shift tiebreaker was always 0.
+                recent_window=deque(
+                    [float(v) for v in (row["recent_window"] or [])],
+                    maxlen=STEP_CHANGE_WINDOW),
             )
             metrics[metric_name] = det
+
+    # Composite staleness: if the composite's sample marker lags the rest of
+    # this model's metrics by more than 30 days, scores have stopped being
+    # produced (e.g. un-deployed after a retrain). It must then stop demoting
+    # its input family, or the whole trim-effort family goes silent.
+    comp_row = rows_by_metric.get(COMPOSITE_METRIC)
+    if comp_row is not None and comp_row["is_trained"]:
+        sibling_dates = [
+            r["last_updated"] for m, r in rows_by_metric.items()
+            if m != COMPOSITE_METRIC and r["is_trained"] and r["last_updated"] is not None
+        ]
+        comp_date = comp_row["last_updated"]
+        if sibling_dates and (
+            comp_date is None
+            or (max(sibling_dates) - comp_date).days > 30
+        ):
+            metrics[COMPOSITE_METRIC].represents_family = False
 
     container = MultiMetricDriftDetector(model=model, metrics=metrics)
     return container.get_status()
@@ -1728,15 +1758,14 @@ def preview_alert_count(db, sensitivity_preset: str) -> dict:
         for row in row_data:
             if not row["is_trained"] or row["baseline_std"] is None:
                 continue
-            h_per_tier = {}
-            L_per_tier = {}
-            z_per_tier = {}
-            for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
-                p = target_fp_for_tier(sensitivity_preset, tier)
-                h, L, z = compute_thresholds(row["baseline_std"], p)
-                h_per_tier[tier.name] = h
-                L_per_tier[tier.name] = L
-                z_per_tier[tier.name] = z
+            # Shared helper applies the Bonferroni correction — preview must
+            # compute thresholds EXACTLY like training or the counts lie
+            # (pre-2026-07-06 this path skipped the /n_metrics correction).
+            from laser_trim_analyzer.ml.drift_training import corrected_tier_thresholds
+            thresholds = corrected_tier_thresholds(sensitivity_preset, row["baseline_std"])
+            h_per_tier = {t.name: thresholds[t][0] for t in thresholds}
+            L_per_tier = {t.name: thresholds[t][1] for t in thresholds}
+            z_per_tier = {t.name: thresholds[t][2] for t in thresholds}
 
             metrics[row["metric"]] = MetricDetector(
                 metric=row["metric"],
@@ -1805,10 +1834,9 @@ def apply_sensitivity_preset(db, preset: str) -> int:
     using `preset`'s target FP rates. Preserves baseline_* and runtime cusum/ewma state
     (no history re-scan). Returns rows updated. Lets Settings 'Save preset' change what
     Triage flags without a full retrain (get_drifting_models ignores its preset arg)."""
-    from datetime import datetime
     from laser_trim_analyzer.database.models import ModelMetricState
-    from laser_trim_analyzer.ml.drift_types import DriftTier, target_fp_for_tier
-    from laser_trim_analyzer.ml.multi_metric_drift_detector import compute_thresholds
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    from laser_trim_analyzer.ml.drift_training import corrected_tier_thresholds
 
     updated = 0
     with db.session() as s:
@@ -1816,17 +1844,23 @@ def apply_sensitivity_preset(db, preset: str) -> int:
             ModelMetricState.is_trained == True,                # noqa: E712
             ModelMetricState.baseline_std.isnot(None)).all()
         for row in rows:
-            sigma = row.baseline_std
+            # Shared helper = same Bonferroni-corrected math as training, so a
+            # saved preset produces the thresholds a retrain would (pre-2026-07-06
+            # this path skipped the correction: ~9x looser in FP target).
+            thresholds = corrected_tier_thresholds(preset, row.baseline_std)
             for tier, (hc, lc, zc) in (
                 (DriftTier.WARNING, ("h_warning", "L_warning", "z_warning")),
                 (DriftTier.DRIFT, ("h_drift", "L_drift", "z_drift")),
                 (DriftTier.OUT_OF_CONTROL, ("h_oc", "L_oc", "z_oc")),
             ):
-                h, L, z = compute_thresholds(sigma, target_fp_for_tier(preset, tier))
+                h, L, z = thresholds[tier]
                 setattr(row, hc, h)
                 setattr(row, lc, L)
                 setattr(row, zc, z)
-            row.last_updated = datetime.now()
+            # NOTE: deliberately NOT touching row.last_updated — it is the
+            # advance_drift_state sample marker, not a wall-clock audit field.
+            # Overwriting it with now() (the old behavior) told the legacy
+            # date-fallback that everything before this moment was consumed.
             updated += 1
         s.commit()
     return updated

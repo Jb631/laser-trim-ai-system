@@ -5,6 +5,7 @@ import threading
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 from laser_trim_analyzer.gui.v6.widgets.sensitivity_slider import SensitivitySlider
 from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS, metric_label
 from laser_trim_analyzer.ml.manager import apply_sensitivity_preset, preview_alert_count
@@ -34,11 +35,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
                 c = {"warning": 0, "drift": 0, "out_of_control": 0}
             txt = (f"Would flag at '{preset}': {c['warning']} Warning, "
                    f"{c['drift']} Drift, {c['out_of_control']} Out-of-Control")
-            try:
-                if preview.winfo_exists():
-                    preview.after(0, lambda: preview.winfo_exists() and preview.configure(text=txt))
-            except Exception:
-                pass
+            post_ui(app, lambda: preview.winfo_exists() and preview.configure(text=txt))
         threading.Thread(target=work, daemon=True).start()
 
     def on_change(preset):

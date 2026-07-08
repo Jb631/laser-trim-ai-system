@@ -283,7 +283,10 @@ class ChartWidget(ctk.CTkFrame):
                     )
                 ax.set_xlabel('Position', fontsize=self.style.font_size)
                 ax.set_ylabel('Error', fontsize=self.style.font_size)
-                ax.legend(loc='best', fontsize=self.style.font_size - 2)
+                # Deterministic placement + translucent frame: loc='best' kept
+                # parking the legend mid-chart on top of the traces.
+                ax.legend(loc='lower right', fontsize=self.style.font_size - 2,
+                          framealpha=0.6, fancybox=True)
             else:
                 ax.text(
                     0.5, 0.5, 'No measurement data',

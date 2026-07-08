@@ -50,8 +50,11 @@ def calculate_file_hash(file_path: Union[str, Path], use_cache: bool = True) -> 
     sha256 = hashlib.sha256()
     try:
         with open(path, 'rb') as f:
-            # Read in chunks for large files
-            for chunk in iter(lambda: f.read(8192), b''):
+            # 1 MB chunks: trim files are typically <1 MB, so this is one read
+            # per file. Small (8 KB) chunks turned every hash into thousands of
+            # network round-trips on SMB shares, which made the incremental
+            # "already processed?" scan crawl.
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
                 sha256.update(chunk)
     except FileNotFoundError:
         logger.error(f"File not found for hashing: {path}")

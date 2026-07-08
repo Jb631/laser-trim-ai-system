@@ -129,9 +129,15 @@ class Base(DeclarativeBase):
 
 
 class SystemType(PyEnum):
-    """System types for potentiometer testing."""
+    """System types for potentiometer testing.
+
+    C = third trim system (LTS3, 2026). B-format files distinguished by the
+    LTS3 folder in their path. Stored as VARCHAR(1), no CHECK constraint —
+    adding the value requires no migration.
+    """
     A = "A"
     B = "B"
+    C = "C"
 
 
 class StatusType(PyEnum):
@@ -1200,6 +1206,19 @@ class ModelMetricState(Base):
     cusum_pos = Column(Float, nullable=False, default=0.0)
     cusum_neg = Column(Float, nullable=False, default=0.0)
     last_updated = Column(DateTime)
+    # High-water mark of the source-row id (track_results.id, or
+    # smoothness_results.id for max_smoothness_value) consumed by training /
+    # advance_drift_state. file_date alone can't be the marker: it has day
+    # granularity, so same-day samples ingested after a run were skipped
+    # forever by the `file_date > last_updated` filter. Autoincrement ids
+    # always move forward on ingest. NULL = trained before this column
+    # existed; advance falls back to the date filter once, then sets it.
+    last_row_id = Column(Integer)
+    # Last STEP_CHANGE_WINDOW sample values (JSON list). Without persisting
+    # this, hydrated detectors woke with an empty window: the step-change
+    # check could never trip at read time and the σ-shift tiebreaker was
+    # always 0 (arbitrary worst-metric pick among same-tier metrics).
+    recent_window = Column(SafeJSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint('model', 'metric', name='uq_model_metric_state'),

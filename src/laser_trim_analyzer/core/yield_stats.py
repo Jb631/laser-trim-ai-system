@@ -22,10 +22,15 @@ def _bucket(status) -> str:
 def compute_yield(db, model_cls, cutoff: Optional[datetime]) -> dict:
     """Yield over `model_cls` rows with file_date >= cutoff (cutoff None = all time).
 
-    pass_rate = passed / (passed + warnings + failed) * 100, i.e. a WARNING counts
-    as not-a-clean-pass and ERROR/UNTRIMMED are excluded from the denominator.
-    Returns counts, gradeable, total, pass_rate (None if no gradeable rows), and
-    trend = [{"date": "YYYY-MM-DD", "pass_rate": float}] ascending by day.
+    TWO rates, two meanings (domain rule, 2026-07-07):
+      * linearity_yield — the CUSTOMER basis: (passed + warnings) / gradeable.
+        Linearity is the zero-tolerance customer requirement; WARNING units
+        passed linearity (sigma is only an internal drift-watch flag), so they
+        are accepted product. THIS is the headline yield.
+      * pass_rate — the clean-pass rate: passed / gradeable. Internal process-
+        health view (how many units also raised no sigma watch).
+    ERROR/UNTRIMMED are excluded from both denominators. trend carries both
+    rates per day; "rate" mirrors linearity_yield for the headline sparkline.
     """
     counts = {"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0}
     per_day: dict = {}
@@ -38,16 +43,24 @@ def compute_yield(db, model_cls, cutoff: Optional[datetime]) -> dict:
         b = _bucket(status)
         counts[b] += 1
         if b in ("passed", "warnings", "failed") and file_date is not None:
-            slot = per_day.setdefault(file_date.strftime("%Y-%m-%d"), [0, 0])
-            slot[0] += 1
+            slot = per_day.setdefault(file_date.strftime("%Y-%m-%d"), [0, 0, 0])
+            slot[0] += 1                      # gradeable
             if b == "passed":
-                slot[1] += 1
+                slot[1] += 1                  # clean pass
+            if b in ("passed", "warnings"):
+                slot[2] += 1                  # linearity-accepted
     gradeable = counts["passed"] + counts["warnings"] + counts["failed"]
     pass_rate = (counts["passed"] / gradeable * 100.0) if gradeable else None
-    trend = [{"date": d, "pass_rate": (p / t * 100.0 if t else 0.0)}
-             for d, (t, p) in sorted(per_day.items())]
+    accepted = counts["passed"] + counts["warnings"]
+    linearity_yield = (accepted / gradeable * 100.0) if gradeable else None
+    trend = [{"date": d,
+              "pass_rate": (p / t * 100.0 if t else 0.0),
+              "linearity_yield": (a / t * 100.0 if t else 0.0),
+              "rate": (a / t * 100.0 if t else 0.0)}
+             for d, (t, p, a) in sorted(per_day.items())]
     return {**counts, "gradeable": gradeable, "total": sum(counts.values()),
-            "pass_rate": pass_rate, "trend": trend}
+            "pass_rate": pass_rate, "linearity_yield": linearity_yield,
+            "trend": trend}
 
 
 def worst_models_by_yield(db, cutoff: Optional[datetime], min_units: int = 5, limit: int = 10):
@@ -74,9 +87,10 @@ def worst_models_by_yield(db, cutoff: Optional[datetime], min_units: int = 5, li
             b = _bucket(status)
             if b not in ("passed", "warnings", "failed"):
                 continue
-            slot = acc.setdefault(model, [0, 0])   # [gradeable, passed]
+            slot = acc.setdefault(model, [0, 0])   # [gradeable, accepted]
             slot[0] += 1
-            if b == "passed":
+            if b in ("passed", "warnings"):
+                # Customer basis: WARNING = linearity-accepted, sigma-watch only.
                 slot[1] += 1
         return acc
 
@@ -84,14 +98,14 @@ def worst_models_by_yield(db, cutoff: Optional[datetime], min_units: int = 5, li
     ft = _by_model(DBFT)
 
     rows = []
-    for model, (gradeable, passed) in trim.items():
+    for model, (gradeable, accepted) in trim.items():
         if gradeable < min_units:
             continue
         ftv = ft.get(model)
         rows.append({
             "model": model,
             "units": gradeable,
-            "trim_rate": (passed / gradeable * 100.0) if gradeable else None,
+            "trim_rate": (accepted / gradeable * 100.0) if gradeable else None,
             "ft_rate": (ftv[1] / ftv[0] * 100.0) if ftv and ftv[0] else None,
         })
     rows.sort(key=lambda r: (r["trim_rate"] is None, r["trim_rate"] if r["trim_rate"] is not None else 0.0))

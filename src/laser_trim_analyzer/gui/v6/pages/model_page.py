@@ -1,10 +1,13 @@
 """Spec 3c — ModelPage: per-model investigation (selector + window + Copy/Export header,
 8 pills, SPC focus chart, 3 tabs, demoted predictor). Foundations §3 + D4."""
+import logging
 import threading
 from datetime import datetime, timedelta
 from typing import List, Optional
 
 import customtkinter as ctk
+
+logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR)
@@ -84,7 +87,16 @@ class ModelPage(PageBase):
             font=t.font(t.SIZE_HEADING), text_color=t.TEXT_SECONDARY)
         self._body = ctk.CTkFrame(parent, fg_color="transparent")
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
-        self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # Plain-language key for the pill numbers: σ was shown with no
+        # explanation anywhere in the app (2026-07-07, user feedback).
+        ctk.CTkLabel(self._body,
+                     text=("σ = standard deviations from this model's trained baseline. "
+                           "+1.0σ means the recent average runs one standard deviation "
+                           "above normal for this model — the drift signal, not a spec."),
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                     anchor="w", justify="left", wraplength=980)\
+            .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._focus_chart = FocusChart(self._body, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._tabs = ThemedTabView(self._body, theme=t)
@@ -153,42 +165,100 @@ class ModelPage(PageBase):
         gen = self._reload_gen
         model, metric = self._current_model, self._current_metric
         def work():
+            # Each loader is independently guarded: one failure must not blank
+            # the whole page (the old single try/except silently zeroed every
+            # tab when any loader threw). Failures are logged, not swallowed.
+            status, chosen = None, metric
+            dates, values, baseline = [], [], (None, None)
+            units, smoothness, recent = [], [], {}
+            trim_ft, history = {}, {}
+            # One anchored cutoff for every tab (None = All): anchored to the
+            # model's latest data so stale-but-flagged models still show their
+            # record instead of empty windows.
+            cutoff = self._window_cutoff(model)
             try:
                 status = get_model_drift_status(self.app.db, model)
                 chosen = self._resolve_focus_metric(status, self._user_picked_metric, metric)
-                dates, values, baseline = self._load_focus_series(model, chosen)
-                units = self._load_units(model)
-                smoothness = self._load_smoothness(model)
-                recent = self._recent_means(model)
-                trim_ft = self.app.db.get_model_trim_ft_agreement(
-                    model, days_back=_WINDOW_DAYS.get(self._window_choice))
-                history = self.app.db.get_model_measurement_history(
-                    model, days_back=_WINDOW_DAYS.get(self._window_choice))
             except Exception:
-                status, chosen = None, metric
-                dates, values, baseline, units, smoothness, recent = [], [], (None, None), [], [], {}
-                trim_ft, history = {}, {}
+                logger.exception("Model %s: drift status failed", model)
+            try:
+                dates, values, baseline = self._load_focus_series(model, chosen)
+            except Exception:
+                logger.exception("Model %s: focus series failed", model)
+            try:
+                units = self._load_units(model)
+            except Exception:
+                logger.exception("Model %s: units failed", model)
+            try:
+                smoothness = self._load_smoothness(model)
+            except Exception:
+                logger.exception("Model %s: smoothness failed", model)
+            try:
+                recent = self._recent_means(model)
+            except Exception:
+                logger.exception("Model %s: recent means failed", model)
+            try:
+                trim_ft = self.app.db.get_model_trim_ft_agreement(model, cutoff_date=cutoff)
+            except Exception:
+                logger.exception("Model %s: trim-vs-FT failed", model)
+            try:
+                history = self.app.db.get_model_measurement_history(model, cutoff_date=cutoff)
+            except Exception:
+                logger.exception("Model %s: history failed", model)
+
             def apply():
                 if gen != self._reload_gen:
                     return  # a newer reload superseded this one
                 self._current_metric = chosen
+
+                def _try(what, fn):
+                    # Per-widget guard: a render bug in one tab must not stop
+                    # the tabs after it from updating.
+                    try:
+                        fn()
+                    except Exception:
+                        logger.exception("Model %s: %s render failed", model, what)
+
                 if status:
-                    self._pill_row.set_status(status, recent_means=recent)
-                    self._drift_tab.set_status(status, recent_means=recent)
-                self._pill_row.set_selected(chosen)
-                self._focus_chart.set_series(metric=chosen, dates=dates, values=values,
-                                             baseline_mean=baseline[0], baseline_std=baseline[1])
-                self._units_tab.set_units(units)
-                self._smoothness_tab.set_records(smoothness)
-                self._trimft_tab.set_data(trim_ft)
-                self._history_tab.set_data(history)
+                    _try("pills", lambda: self._pill_row.set_status(status, recent_means=recent))
+                    _try("drift tab", lambda: self._drift_tab.set_status(status, recent_means=recent))
+                _try("pill select", lambda: self._pill_row.set_selected(chosen))
+                _try("focus chart", lambda: self._focus_chart.set_series(
+                    metric=chosen, dates=dates, values=values,
+                    baseline_mean=baseline[0], baseline_std=baseline[1]))
+                _try("units tab", lambda: self._units_tab.set_units(units))
+                _try("smoothness tab", lambda: self._smoothness_tab.set_records(smoothness))
+                _try("trim-vs-FT tab", lambda: self._trimft_tab.set_data(trim_ft))
+                _try("history tab", lambda: self._history_tab.set_data(history))
             self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
-    def _window_cutoff(self) -> Optional[datetime]:
+    def _window_cutoff(self, model: Optional[str] = None) -> Optional[datetime]:
+        """Window cutoff anchored to the MODEL'S latest data, not wall-clock now.
+
+        This is batch-loaded historical data: a model's newest unit can be
+        months old (loaded lots lag production). Anchoring to now() made every
+        window empty for such models — Triage would flag a model, the click-
+        through landed on 'No measurements in the selected window'. Same
+        reasoning as compute_recent_means (evidence.py).
+        """
         days = _WINDOW_DAYS.get(self._window_choice)
-        return None if days is None else datetime.now() - timedelta(days=days)
+        if days is None:
+            return None
+        anchor = None
+        model = model or self._current_model
+        if model:
+            try:
+                from sqlalchemy import func
+                with self.app.db.session() as s:
+                    anchor = (s.query(func.max(DBAR.file_date))
+                              .filter(DBAR.model == model).scalar())
+            except Exception:
+                logger.exception("window anchor query failed for %s", model)
+        if anchor is None:
+            anchor = datetime.now()
+        return anchor - timedelta(days=days)
 
     def _load_focus_series(self, model, metric):
         cutoff = self._window_cutoff()
@@ -315,15 +385,28 @@ class ModelPage(PageBase):
     def _on_copy_summary(self):
         if not self._current_model:
             return
+        model = self._current_model
         from laser_trim_analyzer.export.evidence import build_summary_text
-        try:
-            status = get_model_drift_status(self.app.db, self._current_model)
-            text = build_summary_text(self._current_model, status,
-                                      recent_means=self._recent_means(self._current_model))
-            self.clipboard_clear()
-            self.clipboard_append(text)
-        except Exception:
-            pass
+
+        # The drift status + recent-means queries are heavy (~10 aggregate
+        # queries). Running them here blocked the UI behind the DB lock —
+        # do them on a worker; only the clipboard write returns to Tk.
+        def work():
+            try:
+                from laser_trim_analyzer.export.evidence import compute_recent_means
+                status = get_model_drift_status(self.app.db, model)
+                means, meta = compute_recent_means(self.app.db, model,
+                                                   recent_days=_RECENT_DAYS, with_meta=True)
+                text = build_summary_text(model, status, recent_means=means,
+                                          recent_meta=meta)
+            except Exception:
+                logger.exception("Copy summary failed for %s", model)
+                return
+            def to_clipboard():
+                self.clipboard_clear()
+                self.clipboard_append(text)
+            self.safe_after(to_clipboard)
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_export(self):
         if not self._current_model:
@@ -335,7 +418,10 @@ class ModelPage(PageBase):
                                             filetypes=[("Excel", "*.xlsx")])
         if not path:
             return
-        days = _WINDOW_DAYS.get(self._window_choice)
+        # Always export the FULL record: the Excel pack is the model's history
+        # of record for judging process direction (the on-screen window only
+        # controls the view). James' workflow: analyze units on screen, export
+        # the model to Excel for full history, unit charts for the team.
         threading.Thread(
-            target=lambda: export_evidence_pack(self.app.db, self._current_model, path, days),
+            target=lambda: export_evidence_pack(self.app.db, self._current_model, path),
             daemon=True).start()

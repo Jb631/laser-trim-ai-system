@@ -18,6 +18,10 @@ class TrainingModal(ctk.CTkToplevel):
             from laser_trim_analyzer.ml.drift_training import train_drift_detector
             train_fn = train_drift_detector
         self._train_fn = train_fn
+        # Resolve the app's UiDispatcher NOW (main thread) — master may be a
+        # nested frame, not V6App itself.
+        from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
+        self._ui = resolve_dispatcher(master)
         self.title("Training drift detector")
         self.geometry("420x190")
         self.configure(fg_color=theme.SURFACE)
@@ -53,8 +57,21 @@ class TrainingModal(ctk.CTkToplevel):
         self._safe(lambda: self._bar.set((done + 1) / max(total, 1)))
 
     def _safe(self, fn) -> None:
-        try:
-            if self.winfo_exists():
-                self.after(0, lambda: fn() if self.winfo_exists() else None)
-        except Exception:
-            pass
+        """Marshal fn to the UI thread; called from the training worker.
+
+        Routes through the app's UiDispatcher (master is V6App) so no Tk call
+        happens on the worker. Fallback runs inline for tests that drive the
+        modal from the main thread with no dispatcher attached.
+        """
+        def guarded():
+            try:
+                if self.winfo_exists():
+                    fn()
+            except Exception:
+                pass
+
+        if self._ui is not None:
+            self._ui.post(guarded)
+        else:
+            # No dispatcher (tests drive from the main thread): run inline.
+            guarded()

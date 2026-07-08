@@ -67,10 +67,39 @@ class FocusChart(ctk.CTkFrame):
             # that isn't there (the "charts are all over the place" complaint).
             ax.scatter(dates, values, s=12, color=t.ACCENT, alpha=0.8, label=metric_label(metric))
         else:
-            # Control chart: keep the line so the time sequence/drift is visible, but
-            # lighten it so the markers (and any Rule-1 violations) lead.
-            ax.plot(dates, values, marker="o", ms=3, lw=0.8, alpha=0.55,
-                    color=t.ACCENT, label=metric_label(metric))
+            # Control chart for BATCH data (2026-07-07 redesign). file_date is
+            # day-granularity: a batch lands as many units on ONE x position.
+            # Drawing one line through raw units produced vertical zigzags
+            # inside each batch-day and long horizontal jumps between batches —
+            # "vertical lines then horizontal connected lines" (James). SPC
+            # treatment for grouped data instead: individuals as dots, the
+            # trend as a line through DAILY MEANS, broken across gaps >14 days
+            # so idle periods don't render as fake continuity.
+            ax.scatter(dates, values, s=13, color=t.ACCENT, alpha=0.5,
+                       label=f"{metric_label(metric)} (units)")
+            by_day: dict = {}
+            for d, v in zip(dates, values):
+                if v is None or not np.isfinite(v):
+                    continue
+                by_day.setdefault(d, []).append(v)
+            if by_day:
+                mdates_ = sorted(by_day)
+                mvals: list = []
+                mx: list = []
+                prev = None
+                for d in mdates_:
+                    if prev is not None and (d - prev).days > 14:
+                        mx.append(prev)          # break the line across the gap
+                        mvals.append(np.nan)
+                    mx.append(d)
+                    # MEDIAN, not mean: one scale-corrupt unit in a batch
+                    # (e.g. 2.1e8 Ω) would drag the day's mean off-scale and
+                    # draw a full-height spike. The median tracks the batch;
+                    # the red Rule-1 markers still disclose the outliers.
+                    mvals.append(float(np.median(by_day[d])))
+                    prev = d
+                ax.plot(mx, mvals, lw=1.6, marker="o", ms=4, color=t.ACCENT_HOVER,
+                        alpha=0.95, label="Daily median", zorder=4)
 
         # ---- Robust y-window. A control chart must keep the control band and the
         # bulk of the data legible; a lone Rule-1 outlier (e.g. one 0.07 point on a

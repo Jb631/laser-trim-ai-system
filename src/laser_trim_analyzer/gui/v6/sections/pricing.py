@@ -4,6 +4,7 @@ import threading
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 
 _MODEL_COLS = ('model', 'item id', 'item_id', 'itemid', 'part', 'part number')
 _PRICE_COLS = ('price', 'unit price', 'unit_price', 'unitprice', 'cost', 'unit cost')
@@ -120,11 +121,7 @@ def build_pricing_section(parent, theme: ThemeManager, app) -> None:
                     status.configure(text=msg)
                 if count.winfo_exists():
                     count.configure(text=_summary())
-            try:
-                if status.winfo_exists():
-                    status.after(0, apply)
-            except Exception:
-                pass
+            post_ui(app, apply)
         threading.Thread(target=work, daemon=True).start()
 
     def _clear():

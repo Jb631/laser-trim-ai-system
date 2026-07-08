@@ -19,9 +19,15 @@ import numpy as np
 # ============================================================================
 
 class SystemType(str, Enum):
-    """Laser trim system types."""
+    """Laser trim system types.
+
+    C = the third trim system (LTS3, added 2026). Its files are FORMAT-
+    identical to System B — detection is by the 'LTS3' folder in the file
+    path, not by sheet structure. Parse logic treats C as B-format.
+    """
     A = "A"
     B = "B"
+    C = "C"
     UNKNOWN = "Unknown"
 
 

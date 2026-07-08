@@ -1,12 +1,15 @@
 """Spec 3e — ProcessPage: folder pick → batch process → land on Triage.
 Persists trim results (GUI owns trim save); progress from ProcessingStatus + a local
 done-counter; final tally from BatchSummary."""
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import List
 
 import customtkinter as ctk
+
+logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.core.models import AnalysisStatus, ProcessingStatus
 from laser_trim_analyzer.core.processor import Processor
@@ -89,6 +92,7 @@ class ProcessPage(PageBase):
                                       progress_callback=progress_callback,
                                       incremental=self._incremental.get())
         summary = None
+        models_in_batch = set()
         try:
             while True:
                 result = next(gen)
@@ -99,12 +103,28 @@ class ProcessPage(PageBase):
                     except Exception as exc:
                         self.safe_after(lambda e=exc, r=result: self._progress.increment(
                             "errors", reason=f"{r.metadata.filename}: save failed: {e}"))
+                model = getattr(result.metadata, "model", None)
+                if model and model != "Unknown":
+                    models_in_batch.add(model)
                 bucket = self._bucket_for_status(result.overall_status)
                 reason = (f"{result.metadata.filename}: {result.overall_status.value}"
                           if bucket in ("failed", "errors") else "")
                 self.safe_after(lambda b=bucket, rs=reason: self._progress.increment(b, reason=rs))
         except StopIteration as stop:
             summary = stop.value
+        # Advance drift detectors over the just-saved data so Triage reflects
+        # THIS batch (P0 fix: advance_drift_state previously had no callers —
+        # drift state stayed frozen at training time until a full retrain).
+        if models_in_batch:
+            try:
+                from laser_trim_analyzer.ml.drift_training import advance_drift_state
+                advanced = 0
+                for m in sorted(models_in_batch):
+                    advanced += advance_drift_state(self.app.db, model=m)
+                logger.info("Drift state advanced for %d (model, metric) rows "
+                            "across %d models", advanced, len(models_in_batch))
+            except Exception:
+                logger.exception("Drift advance after batch failed")
         # Authoritative final tally from BatchSummary (reconciles live counts incl. skips).
         if summary is not None:
             self.safe_after(lambda sm=summary: self._progress.set_final(sm))

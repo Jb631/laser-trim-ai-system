@@ -26,12 +26,19 @@ class YieldPanel(ctk.CTkFrame):
         self._trend.pack(side="top", fill="x", padx=t.SPACE_MD, pady=(t.SPACE_SM, t.SPACE_MD))
 
     def set_yield(self, stats: dict, total_label: str) -> None:
-        rate = stats.get("pass_rate")
-        self._rate.configure(text=f"{rate:.1f}% pass" if rate is not None else "—")
-        # Base breakdown is the gradeable buckets (what the pass-rate is computed on).
-        # Surface non-gradeable buckets when present so the breakdown reconciles with
-        # the headline total — a silent gap reads as a bug to a QA audience.
-        parts = [f"Pass {stats.get('passed', 0)}", f"Warn {stats.get('warnings', 0)}",
+        # HEADLINE = linearity yield (the CUSTOMER basis). Linearity is the
+        # zero-tolerance requirement; WARNING units passed linearity — sigma is
+        # an internal drift-watch flag, not a disposition. The old headline
+        # counted only clean passes, presenting 59.8% "pass" when customer-
+        # acceptable yield was 94% — a process-watch number dressed as yield.
+        rate = stats.get("linearity_yield")
+        if rate is None:
+            rate = stats.get("pass_rate")
+        self._rate.configure(text=f"{rate:.1f}% linearity yield" if rate is not None else "—")
+        # Breakdown reconciles with the headline: Pass and Watch are both
+        # accepted; Watch = sigma flagged (drift signal), Fail = linearity.
+        parts = [f"Pass {stats.get('passed', 0)}",
+                 f"Watch {stats.get('warnings', 0)}",
                  f"Fail {stats.get('failed', 0)}"]
         if stats.get("untrimmed", 0):
             parts.append(f"Untrimmed {stats['untrimmed']}")
@@ -39,4 +46,7 @@ class YieldPanel(ctk.CTkFrame):
             parts.append(f"Err {stats['errors']}")
         self._counts.configure(text=" · ".join(parts))
         self._total.configure(text=total_label)
-        self._trend.set_points([(p["date"], p["pass_rate"]) for p in stats.get("trend", [])])
+        # Sparkline follows the headline basis ("rate" = linearity_yield; falls
+        # back to pass_rate for callers that predate the field).
+        self._trend.set_points([(p["date"], p.get("rate", p.get("pass_rate")))
+                                for p in stats.get("trend", [])])

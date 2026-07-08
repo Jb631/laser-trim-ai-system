@@ -4,11 +4,14 @@ exclude_points feeds ML correctness (it can flip a unit's FAIL<->PASS labeling,
 per CLAUDE.md), so this is a correctness feature, not cosmetic. The human<->JSON
 conversion is factored into build_spec_save_data so it can be tested without Tk.
 """
+import threading
+
 import customtkinter as ctk
 
 from laser_trim_analyzer.core.analyzer import (
     format_exclude_points, human_to_exclude_json, parse_exclude_points)
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 
 
 def build_spec_save_data(model, linearity_spec_text, linearity_spec_pct,
@@ -55,10 +58,18 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
         .pack(side="top", fill="x", anchor="w", pady=(0, t.SPACE_MD))
 
     def _model_values():
+        """DB read — call from a worker thread only."""
         try:
             return [s["model"] for s in db.get_all_model_specs()]
         except Exception:
             return []
+
+    def _refresh_model_box():
+        """Reload combobox values off-thread; apply on the UI thread."""
+        def work():
+            values = _model_values()
+            post_ui(app, lambda: model_box.winfo_exists() and model_box.configure(values=values))
+        threading.Thread(target=work, daemon=True).start()
 
     fields = {}
 
@@ -72,19 +83,22 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
         entry.pack(side="left", fill="x", expand=True)
         return entry
 
-    model_box = ctk.CTkComboBox(parent, values=_model_values(), fg_color=t.SURFACE,
+    # Build empty and fill off-thread: querying specs here ran a DB call during
+    # app startup ON the main thread — blocked the whole UI whenever a worker
+    # (batch save, training) held the DB lock.
+    model_box = ctk.CTkComboBox(parent, values=[], fg_color=t.SURFACE,
                                 border_color=t.BORDER, button_color=t.ACCENT,
                                 button_hover_color=t.ACCENT_HOVER, text_color=t.TEXT_PRIMARY,
                                 command=lambda choice: _load(choice))
     model_box.set("")
     model_box.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+    _refresh_model_box()
 
     # --- Bulk import: load/refresh ALL model specs from the master reference sheet
     # (Model Reference workbook). Reuses db.import_model_specs_from_excel, which merges
     # (updates existing, adds new, never deletes) and auto-detects columns.
     def _import_sheet():
         from tkinter import filedialog
-        import threading
         path = filedialog.askopenfilename(
             title="Select model reference spec sheet",
             filetypes=[("Excel", "*.xlsx"), ("Excel 97-2003", "*.xls")])
@@ -99,17 +113,16 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
                        f"{res.get('updated', 0)} updated, {res.get('skipped', 0)} skipped.")
             except Exception as exc:
                 msg = f"Import failed: {exc}"
+            values = _model_values()  # still on the worker — DB read
 
             def done():
-                import_status.configure(text=msg)
+                if import_status.winfo_exists():
+                    import_status.configure(text=msg)
                 try:
-                    model_box.configure(values=_model_values())
+                    model_box.configure(values=values)
                 except Exception:
                     pass
-            try:
-                import_status.after(0, done)
-            except Exception:
-                pass
+            post_ui(app, done)
         threading.Thread(target=work, daemon=True).start()
 
     imp_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -138,22 +151,36 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
         if value is not None:
             entry.insert(0, str(value))
 
+    # All three actions: widget reads on the MAIN thread, DB work on a worker,
+    # UI updates back through post_ui. A DB call in a button/combobox callback
+    # blocks the entire UI whenever a worker (batch save, drift training)
+    # holds the process-wide DB lock — one of the intermittent-freeze paths.
+
     def _load(model):
-        spec = None
-        try:
-            spec = db.get_model_spec(model)
-        except Exception:
-            spec = None
-        if not spec:
-            status.configure(text=f"No saved spec for {model} — fill in to create one.")
-            for key in ("linearity_spec_text", "linearity_spec_pct", "exclude_points", "exclude_points_ft"):
-                _set(fields[key], "")
-            return
-        _set(fields["linearity_spec_text"], spec.get("linearity_spec_text"))
-        _set(fields["linearity_spec_pct"], spec.get("linearity_spec_pct"))
-        _set(fields["exclude_points"], _display_excludes(spec.get("exclude_points")))
-        _set(fields["exclude_points_ft"], _display_excludes(spec.get("exclude_points_ft")))
-        status.configure(text=f"Loaded {model}.")
+        status.configure(text=f"Loading {model}…")
+
+        def work():
+            try:
+                spec = db.get_model_spec(model)
+            except Exception:
+                spec = None
+
+            def apply():
+                if not status.winfo_exists():
+                    return
+                if not spec:
+                    status.configure(text=f"No saved spec for {model} — fill in to create one.")
+                    for key in ("linearity_spec_text", "linearity_spec_pct",
+                                "exclude_points", "exclude_points_ft"):
+                        _set(fields[key], "")
+                    return
+                _set(fields["linearity_spec_text"], spec.get("linearity_spec_text"))
+                _set(fields["linearity_spec_pct"], spec.get("linearity_spec_pct"))
+                _set(fields["exclude_points"], _display_excludes(spec.get("exclude_points")))
+                _set(fields["exclude_points_ft"], _display_excludes(spec.get("exclude_points_ft")))
+                status.configure(text=f"Loaded {model}.")
+            post_ui(app, apply)
+        threading.Thread(target=work, daemon=True).start()
 
     def _save():
         data = build_spec_save_data(
@@ -162,24 +189,50 @@ def build_per_model_specs_section(parent, theme: ThemeManager, app) -> None:
         if not data["model"]:
             status.configure(text="Enter a model name first.")
             return
-        try:
-            _id, updated = db.save_model_spec(data)
-            model_box.configure(values=_model_values())
-            status.configure(text=f"{'Updated' if updated else 'Created'} {data['model']}.")
-        except Exception as exc:
-            status.configure(text=f"Save failed: {exc}")
+        status.configure(text="Saving…")
+
+        def work():
+            try:
+                _id, updated = db.save_model_spec(data)
+                msg = f"{'Updated' if updated else 'Created'} {data['model']}."
+            except Exception as exc:
+                msg = f"Save failed: {exc}"
+            values = _model_values()
+
+            def apply():
+                if status.winfo_exists():
+                    status.configure(text=msg)
+                try:
+                    model_box.configure(values=values)
+                except Exception:
+                    pass
+            post_ui(app, apply)
+        threading.Thread(target=work, daemon=True).start()
 
     def _delete():
         model = model_box.get().strip()
         if not model:
             status.configure(text="Enter a model name first.")
             return
-        try:
-            ok = db.delete_model_spec(model)
-            model_box.configure(values=_model_values())
-            status.configure(text=f"Deleted {model}." if ok else f"No spec for {model}.")
-        except Exception as exc:
-            status.configure(text=f"Delete failed: {exc}")
+        status.configure(text="Deleting…")
+
+        def work():
+            try:
+                ok = db.delete_model_spec(model)
+                msg = f"Deleted {model}." if ok else f"No spec for {model}."
+            except Exception as exc:
+                msg = f"Delete failed: {exc}"
+            values = _model_values()
+
+            def apply():
+                if status.winfo_exists():
+                    status.configure(text=msg)
+                try:
+                    model_box.configure(values=values)
+                except Exception:
+                    pass
+            post_ui(app, apply)
+        threading.Thread(target=work, daemon=True).start()
 
     btns = ctk.CTkFrame(parent, fg_color="transparent")
     btns.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))

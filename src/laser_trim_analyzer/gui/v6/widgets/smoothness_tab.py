@@ -1,4 +1,5 @@
 """Spec 3c — SmoothnessTab: max_smoothness_value trend + recent test list (dict-driven)."""
+from datetime import datetime
 from typing import Dict, List
 
 import customtkinter as ctk
@@ -34,7 +35,10 @@ class SmoothnessTab(ctk.CTkFrame):
             lbl.pack(pady=t.SPACE_LG)
             self._rows.append(lbl)
             return
-        for r in sorted(records, key=lambda r: r.get("file_date") or 0, reverse=True):
+        # None file_dates are legitimate (rendered as "—" below), but `or 0`
+        # mixed datetime with int and sorted() raised TypeError — blanking this
+        # tab and, before per-tab isolation, every tab applied after it.
+        for r in sorted(records, key=lambda r: r.get("file_date") or datetime.min, reverse=True):
             row = ctk.CTkFrame(self._list, fg_color=t.CARD)
             row.pack(side="top", fill="x", pady=1)
             when = r["file_date"].strftime("%Y-%m-%d") if r.get("file_date") else "—"

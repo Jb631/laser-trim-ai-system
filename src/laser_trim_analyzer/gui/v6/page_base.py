@@ -40,11 +40,37 @@ class PageBase(ctk.CTkFrame):
     def on_show(self) -> None: pass
     def on_hide(self) -> None: pass
 
-    # ---- thread-safe UI update (foundations §2.4) ----
+    # ---- thread-safe UI update (foundations §2.4, reworked 2026-07-06) ----
     def safe_after(self, fn, delay: int = 0) -> None:
+        """Run fn on the UI thread, guarded against widget destruction.
+
+        Safe to call from ANY thread. The old implementation called
+        winfo_exists()/after() directly from worker threads — Tkinter is not
+        thread-safe, and with the main thread blocked (e.g. on the DB lock)
+        that could stall or deadlock the app. Now workers only enqueue onto a
+        plain queue (ui_dispatch.py); every Tk call happens on the main loop.
+        """
+        def guarded():
+            try:
+                if self.winfo_exists():
+                    fn()
+            except Exception:
+                pass
+
+        dispatcher = getattr(self.app, "ui", None)
+        if dispatcher is not None:
+            if delay <= 0:
+                dispatcher.post(guarded)
+            else:
+                # Register the delay on the main thread, then run guarded.
+                dispatcher.post(lambda: self.winfo_exists() and self.after(delay, guarded))
+            return
+
+        # No dispatcher (tests / standalone page): legacy path — only correct
+        # when called from the main thread, which is how tests drive pages.
         try:
             if self.winfo_exists():
-                self.after(delay, lambda: fn() if self.winfo_exists() else None)
+                self.after(delay, guarded)
         except Exception:
             pass
 

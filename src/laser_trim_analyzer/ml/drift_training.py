@@ -109,6 +109,29 @@ def train_drift_detector(
     )
 
 
+def corrected_tier_thresholds(
+    sensitivity_preset: str, baseline_std: float
+) -> dict:
+    """Per-tier (h, L, z) thresholds with the Bonferroni family-wise correction.
+
+    THE single source of threshold math. The worst-of-N aggregation across the
+    watched metrics inflates the family-wise false-alarm rate, so each tier's
+    target FP is divided by len(WATCHED_METRICS) before computing thresholds.
+
+    Training, preview_alert_count, and apply_sensitivity_preset must ALL go
+    through here — before 2026-07-06 the preview/apply paths skipped the
+    correction, so "Save preset" wrote thresholds ~9x looser (in FP target)
+    than retraining at the same preset, and the preview counts didn't match
+    what training would produce.
+    """
+    n_metrics = max(1, len(WATCHED_METRICS))
+    thresholds: dict[DriftTier, tuple[float, float, float]] = {}
+    for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
+        p = target_fp_for_tier(sensitivity_preset, tier) / n_metrics
+        thresholds[tier] = compute_thresholds(sigma=baseline_std, target_fp=p)
+    return thresholds
+
+
 def _train_one_metric(
     db,
     model: str,
@@ -124,7 +147,7 @@ def _train_one_metric(
     # is computed over all history (laundering any drift into it) and the runtime
     # state is reset, so the detector can never flag (the H8 "always Stable" bug).
     samples = [
-        (d, v) for (d, v) in _load_samples_with_dates(db, model, metric)
+        (d, v, rid) for (d, v, rid) in _load_samples_with_dates(db, model, metric)
         if v is not None and not (isinstance(v, float) and np.isnan(v))
     ]
 
@@ -141,25 +164,19 @@ def _train_one_metric(
     baseline_samples = samples[:split]
     replay_samples = samples[split:]
 
-    arr = np.asarray([v for (_d, v) in baseline_samples], dtype=float)
+    arr = np.asarray([v for (_d, v, _r) in baseline_samples], dtype=float)
     baseline_mean = float(np.mean(arr))
     baseline_std = float(np.std(arr, ddof=1))
     if baseline_std <= 0.0:
         baseline_std = 1e-9
 
-    # Bonferroni multiplicity correction across the watched metrics (worst-of-N
-    # aggregation would otherwise inflate the family-wise false-alarm rate).
-    n_metrics = max(1, len(WATCHED_METRICS))
-    thresholds: dict[DriftTier, tuple[float, float, float]] = {}
-    for tier in (DriftTier.WARNING, DriftTier.DRIFT, DriftTier.OUT_OF_CONTROL):
-        p = target_fp_for_tier(sensitivity_preset, tier) / n_metrics
-        thresholds[tier] = compute_thresholds(sigma=baseline_std, target_fp=p)
+    thresholds = corrected_tier_thresholds(sensitivity_preset, baseline_std)
 
     # Replay the recent window so persisted runtime state reflects drift already
     # present in history.
     det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_samples),
                           thresholds_dict=thresholds)
-    for (_d, v) in replay_samples:
+    for (_d, v, _r) in replay_samples:
         det.update(float(v))
 
     _upsert_metric_state(
@@ -168,6 +185,10 @@ def _train_one_metric(
         baseline_count=len(baseline_samples), is_trained=True, thresholds=thresholds,
         cusum_pos=det.cusum_pos, cusum_neg=det.cusum_neg, ewma_state=det.ewma_state,
         baseline_cutoff_date=baseline_samples[-1][0], last_sample_date=samples[-1][0],
+        # Watermark = highest source-row id consumed (samples are date-ordered,
+        # so the max is NOT necessarily the last element).
+        last_row_id=max(rid for (_d, _v, rid) in samples),
+        recent_window=list(det.recent_window),
     )
     return True
 
@@ -208,6 +229,8 @@ def _upsert_metric_state(
     ewma_state: Optional[float] = None,
     baseline_cutoff_date=None,
     last_sample_date=None,
+    last_row_id: Optional[int] = None,
+    recent_window: Optional[list] = None,
 ) -> None:
     """Insert or update a single model_metric_state row.
 
@@ -233,6 +256,10 @@ def _upsert_metric_state(
         row.baseline_cutoff_date = baseline_cutoff_date
         # last_updated = last processed SAMPLE date (advance starts after this).
         row.last_updated = last_sample_date or datetime.now()
+        # Advance watermark (source-row id). None on untrained rows.
+        row.last_row_id = last_row_id
+        # Persist the step-change window so it survives hydration.
+        row.recent_window = list(recent_window) if recent_window else None
         # Runtime state: replayed values if given, else reset to baseline.
         row.cusum_pos = cusum_pos if cusum_pos is not None else 0.0
         row.cusum_neg = cusum_neg if cusum_neg is not None else 0.0
@@ -251,45 +278,60 @@ def _upsert_metric_state(
         s.commit()
 
 
-def _load_samples_with_dates(db, model: str, metric: str, after=None):
-    """Return [(file_date, value)] for a model+metric, oldest first.
+def _load_samples_with_dates(db, model: str, metric: str, after=None,
+                             after_row_id=None):
+    """Return [(file_date, value, row_id)] for a model+metric, oldest first.
 
-    `after` (a datetime) restricts to samples strictly newer than it -- used by
-    advance_drift_state to process only data that arrived since last_updated.
+    row_id is the source row's autoincrement id (smoothness_results.id for
+    max_smoothness_value, track_results.id otherwise) — the advance watermark.
+
+    Filters (advance_drift_state passes exactly one):
+      * after_row_id — id strictly greater. Precise: ids always move forward
+        on ingest, so same-day samples added after a run are still consumed.
+      * after (datetime) — file_date strictly newer. Legacy fallback for state
+        rows trained before last_row_id existed; day-granularity file_dates
+        make it skip same-day arrivals, so it's used at most once per row.
     """
     out = []
     if metric == "max_smoothness_value":
         with db.session() as s:
-            q = s.query(DBSR.file_date, DBSR.max_smoothness_value).filter(
+            q = s.query(DBSR.file_date, DBSR.max_smoothness_value, DBSR.id).filter(
                 DBSR.model == model, DBSR.max_smoothness_value.isnot(None))
-            if after is not None:
+            if after_row_id is not None:
+                q = q.filter(DBSR.id > after_row_id)
+            elif after is not None:
                 q = q.filter(DBSR.file_date > after)
-            for d, v in q.order_by(DBSR.file_date).all():
+            for d, v, rid in q.order_by(DBSR.file_date).all():
                 if d is not None and v is not None:
-                    out.append((d, v))
+                    out.append((d, v, rid))
         return out
 
     col = _TRACK_METRIC_COLUMNS.get(metric)
     if col is None:
         return out
     with db.session() as s:
-        q = (s.query(DBAR.file_date, col)
+        q = (s.query(DBAR.file_date, col, DBTR.id)
              .join(DBTR, DBTR.analysis_id == DBAR.id)
              .filter(DBAR.model == model, col.isnot(None)))
-        if after is not None:
+        if after_row_id is not None:
+            q = q.filter(DBTR.id > after_row_id)
+        elif after is not None:
             q = q.filter(DBAR.file_date > after)
-        for d, v in q.order_by(DBAR.file_date).all():
+        for d, v, rid in q.order_by(DBAR.file_date).all():
             if d is not None and v is not None:
-                out.append((d, v))
+                out.append((d, v, rid))
     return out
 
 
 def _build_detector(metric, baseline_mean, baseline_std, baseline_count, *,
                     thresholds_dict=None, hLz=None,
-                    cusum_pos=0.0, cusum_neg=0.0, ewma_state=None):
+                    cusum_pos=0.0, cusum_neg=0.0, ewma_state=None,
+                    recent_window=None):
     """Construct a MetricDetector from either a {DriftTier:(h,L,z)} dict
     (training) or a triple of per-tier h/L/z dicts (advance, from a DB row)."""
-    from laser_trim_analyzer.ml.multi_metric_drift_detector import MetricDetector
+    from collections import deque
+    from laser_trim_analyzer.ml.multi_metric_drift_detector import (
+        MetricDetector, STEP_CHANGE_WINDOW)
 
     if thresholds_dict is not None:
         h = {"WARNING": thresholds_dict[DriftTier.WARNING][0],
@@ -313,6 +355,8 @@ def _build_detector(metric, baseline_mean, baseline_std, baseline_count, *,
         h_per_tier=h, L_per_tier=L, z_per_tier=z,
         cusum_pos=cusum_pos or 0.0, cusum_neg=cusum_neg or 0.0,
         ewma_state=ewma_state if ewma_state is not None else (baseline_mean or 0.0),
+        recent_window=deque(
+            [float(v) for v in (recent_window or [])], maxlen=STEP_CHANGE_WINDOW),
     )
 
 
@@ -340,7 +384,15 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
             ).first()
             if row is None or not row.is_trained or row.baseline_std is None:
                 continue
-            new_samples = _load_samples_with_dates(db, mdl, metric, after=row.last_updated)
+            # Prefer the row-id watermark (exact). Date fallback only for rows
+            # trained before last_row_id existed — it skips same-day arrivals
+            # once, then the watermark takes over below.
+            if row.last_row_id is not None:
+                new_samples = _load_samples_with_dates(
+                    db, mdl, metric, after_row_id=row.last_row_id)
+            else:
+                new_samples = _load_samples_with_dates(
+                    db, mdl, metric, after=row.last_updated)
             if not new_samples:
                 continue
             det = _build_detector(
@@ -354,13 +406,19 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
                      "OUT_OF_CONTROL": row.z_oc or 0.0},
                 ),
                 cusum_pos=row.cusum_pos, cusum_neg=row.cusum_neg, ewma_state=row.ewma_state,
+                recent_window=row.recent_window,
             )
-            for _d, v in new_samples:
+            for _d, v, _r in new_samples:
                 det.update(float(v))
             row.cusum_pos = det.cusum_pos
             row.cusum_neg = det.cusum_neg
             row.ewma_state = det.ewma_state
-            row.last_updated = new_samples[-1][0]
+            row.recent_window = list(det.recent_window) or None
+            # Samples are date-ordered; take explicit maxes (a backfill of
+            # old-dated files can put the newest id mid-list and vice versa).
+            row.last_updated = max(d for (d, _v, _r) in new_samples)
+            row.last_row_id = max(
+                [rid for (_d, _v, rid) in new_samples] + [row.last_row_id or 0])
             s.commit()
             advanced += 1
     return advanced

@@ -8,6 +8,7 @@ from laser_trim_analyzer.database import get_database
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import UiDispatcher
 
 
 class V6App(ctk.CTk):
@@ -26,6 +27,11 @@ class V6App(ctk.CTk):
         self._model_route: Optional[Tuple[str, Optional[str]]] = None
         self._auto_train_on_first_run = auto_train_on_first_run
 
+        # Main-thread UI dispatcher: workers post callbacks here instead of
+        # touching Tk from their own threads (see ui_dispatch.py).
+        self.ui = UiDispatcher()
+        self.ui.attach(self)
+
         self._setup_window()
         self._build_layout()
         self._build_pages()
@@ -35,6 +41,10 @@ class V6App(ctk.CTk):
         # the flag; the method itself re-checks the flag and the data gate.
         if self._auto_train_on_first_run:
             self.after(500, self._maybe_run_first_startup_train)
+            # Catch-up advance: consume any data ingested since the last session
+            # (e.g. batches processed in V5 or by scripts) so Triage isn't stale.
+            # Delayed so it doesn't compete with the first page load for the DB.
+            self.after(5000, self._advance_drift_catchup)
 
     # ---- navigation ----
     def show_page(self, name: str) -> None:
@@ -78,11 +88,37 @@ class V6App(ctk.CTk):
     def _maybe_run_first_startup_train(self) -> None:
         if not self._auto_train_on_first_run:
             return
-        if not self._should_offer_first_startup_train():
-            return
-        from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
-        preset = getattr(self.config.ml, "drift_sensitivity", "standard")
-        TrainingModal(self, theme=self.theme, db=self.db, preset=preset).start()
+
+        # The data-gate check is a DB query — run it on a worker so startup
+        # never blocks the UI behind the DB lock (e.g. during a batch save).
+        def gate_check():
+            if not self._should_offer_first_startup_train():
+                return
+            def open_modal():
+                from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
+                preset = getattr(self.config.ml, "drift_sensitivity", "standard")
+                TrainingModal(self, theme=self.theme, db=self.db, preset=preset).start()
+            self.ui.post(open_modal)
+
+        import threading
+        threading.Thread(target=gate_check, daemon=True).start()
+
+    def _advance_drift_catchup(self) -> None:
+        """Advance all trained drift detectors over data that arrived since the
+        last run. Worker thread; a no-op when nothing is new."""
+        def work():
+            try:
+                from laser_trim_analyzer.ml.drift_training import advance_drift_state
+                import logging
+                n = advance_drift_state(self.db)
+                if n:
+                    logging.getLogger(__name__).info(
+                        "Startup drift catch-up: advanced %d (model, metric) rows", n)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Startup drift catch-up failed")
+        import threading
+        threading.Thread(target=work, daemon=True).start()
 
     # ---- setup ----
     def _setup_window(self) -> None:

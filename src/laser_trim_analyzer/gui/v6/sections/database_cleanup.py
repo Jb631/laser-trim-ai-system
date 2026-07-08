@@ -10,6 +10,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 
 # (UI key, checkbox label, execute_cleanup kwarg)
 _CATEGORIES = [
@@ -73,11 +74,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                 msg = work_fn()
             except Exception as exc:
                 msg = f"Error: {exc}"
-            try:
-                if status.winfo_exists():
-                    status.after(0, lambda: status.winfo_exists() and status.configure(text=msg))
-            except Exception:
-                pass
+            post_ui(app, lambda: status.winfo_exists() and status.configure(text=msg))
         threading.Thread(target=runner, daemon=True).start()
 
     def _scan():
@@ -161,7 +158,7 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
             try:
                 count = db.count_skipped_files()
             except Exception as exc:
-                status.after(0, lambda: status.winfo_exists() and status.configure(text=f"Error: {exc}"))
+                post_ui(app, lambda: status.winfo_exists() and status.configure(text=f"Error: {exc}"))
                 return
             def confirm_and_run():
                 if not status.winfo_exists():
@@ -173,9 +170,61 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                                            f"Reset {count} skipped files so they get reprocessed next run?"):
                     return
                 _async(lambda: f"Reset {db.reset_skipped_files()} skipped files.")
-            status.after(0, confirm_and_run)
+            post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
     ctk.CTkButton(parent, text="Reset skipped files", command=_reset_skipped, fg_color=t.CARD,
                   hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
                   corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_MD, 0))
+
+    def _recompute_statuses():
+        """Re-grade Pass/Warning/Fail from stored track flags (M4, 2026-07-07).
+
+        Preview (dry-run) off-thread → confirm with transition counts on the
+        Tk thread → execute off-thread. Rows with NULL pass flags are never
+        touched (they need Fix Missing Tracks first).
+        """
+        from tkinter import messagebox
+        status.configure(text="Previewing status recompute…")
+
+        def runner():
+            try:
+                preview = db.recompute_overall_statuses(dry_run=True)
+            except Exception as exc:
+                post_ui(app, lambda: status.winfo_exists() and status.configure(
+                    text=f"Error: {exc}"))
+                return
+
+            def confirm_and_run():
+                if not status.winfo_exists():
+                    return
+                if not preview["changed"]:
+                    status.configure(text=(
+                        f"Statuses already consistent — {preview['examined']} checked, "
+                        f"{preview['skipped_null_flags']} skipped (missing pass flags)."))
+                    return
+                trans = ", ".join(f"{k}: {v}" for k, v in
+                                  sorted(preview["transitions"].items()))
+                if not messagebox.askyesno(
+                        "Recompute unit statuses",
+                        f"Re-grade {preview['changed']} of {preview['examined']} units "
+                        f"from their stored linearity/sigma results?\n\n"
+                        f"Transitions — {trans}\n\n"
+                        f"{preview['skipped_null_flags']} units skipped (missing pass "
+                        f"flags — run Fix Missing Tracks first).\n\n"
+                        f"Linearity is zero-tolerance: linearity-FAIL units currently "
+                        f"labeled Warning become FAIL. This rewrites overall_status "
+                        f"only; measurements are untouched."):
+                    return
+                def do_execute():
+                    res = db.recompute_overall_statuses(dry_run=False)
+                    return (f"Re-graded {res['changed']} units "
+                            f"({', '.join(f'{k}: {v}' for k, v in sorted(res['transitions'].items()))}). "
+                            f"Refresh Dashboard/Triage to see updated yields.")
+                _async(do_execute)
+            post_ui(app, confirm_and_run)
+        threading.Thread(target=runner, daemon=True).start()
+
+    ctk.CTkButton(parent, text="Recompute unit statuses", command=_recompute_statuses,
+                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))

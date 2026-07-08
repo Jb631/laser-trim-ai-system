@@ -143,7 +143,9 @@ class HistoryTab(ctk.CTkFrame):
             self._ax_pr.text(0.5, 0.5, "No linearity pass/fail history.",
                              transform=self._ax_pr.transAxes, ha="center", va="center",
                              color=t.TEXT_SECONDARY)
-        self._fig.tight_layout()
+        # h_pad keeps the bottom panel's title clear of the top panel's
+        # rotated tick labels (they collided at default padding).
+        self._fig.tight_layout(h_pad=2.4)
         self.canvas.draw_idle()
 
     def _on_destroy(self, _evt=None):

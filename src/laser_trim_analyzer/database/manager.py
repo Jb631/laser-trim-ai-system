@@ -672,6 +672,50 @@ class DatabaseManager:
                     f"Migration warning for model_metric_state (may already exist): {e}"
                 )
 
+            # Migration: Retag LTS3 (System C) rows (2026-07-06). The third
+            # trim system writes files format-identical to an existing system,
+            # so anything processed before path-based detection landed was
+            # stored as A or B. Identity marker = an 'LTS3*' DIRECTORY in the
+            # path (a separator must follow, so filenames starting with LTS3
+            # don't match). Idempotent: already-C rows aren't selected.
+            try:
+                total_retagged = 0
+                for table in ("analysis_results", "final_test_results"):
+                    res = session.execute(text(
+                        f"UPDATE {table} SET system = 'C' "
+                        f"WHERE system != 'C' AND ("
+                        f"file_path LIKE '%/LTS3%/%' OR file_path LIKE '%\\LTS3%\\%'"
+                        f")"
+                    ))
+                    total_retagged += res.rowcount or 0
+                session.commit()
+                if total_retagged:
+                    logger.info(f"Migration: retagged {total_retagged} LTS3 rows as System C")
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"LTS3 retag migration warning: {e}")
+
+            # Migration: Add last_row_id watermark + recent_window to
+            # model_metric_state (2026-07-06). last_row_id lets
+            # advance_drift_state consume same-day samples the date-only
+            # filter skipped forever; recent_window makes the step-change
+            # check live across restarts.
+            for col, ddl in (("last_row_id", "INTEGER"), ("recent_window", "TEXT")):
+                try:
+                    session.execute(text(
+                        f"SELECT {col} FROM model_metric_state LIMIT 1"))
+                except OperationalError:
+                    session.rollback()
+                    logger.info(f"Running migration: Adding model_metric_state.{col}")
+                    try:
+                        session.execute(text(
+                            f"ALTER TABLE model_metric_state ADD COLUMN {col} {ddl}"
+                        ))
+                        session.commit()
+                        logger.info(f"Migration completed: Added {col}")
+                    except Exception as e:
+                        logger.warning(f"{col} migration warning (may already exist): {e}")
+
             # Migration: Add data_quality columns to analysis_results
             try:
                 session.execute(text("SELECT data_quality FROM analysis_results LIMIT 1"))
@@ -2175,7 +2219,7 @@ class DatabaseManager:
                 .all()
             )
 
-            result = {"system_a": None, "system_b": None}
+            result = {"system_a": None, "system_b": None, "system_c": None}
             for row in system_data:
                 # Direct comparison — _status_matches is for DBStatusType only
                 sys_val = row.system.value if isinstance(row.system, DBSystemType) else str(row.system)
@@ -2183,6 +2227,8 @@ class DatabaseManager:
                     key = "system_a"
                 elif sys_val == DBSystemType.B.value:
                     key = "system_b"
+                elif sys_val == DBSystemType.C.value:
+                    key = "system_c"
                 else:
                     continue
                 total_tracks = row.total_tracks or 0
@@ -2340,7 +2386,8 @@ class DatabaseManager:
             }
 
     def get_model_trim_ft_agreement(self, model: str, days_back: Optional[int] = None,
-                                    min_confidence: float = 0.70) -> Dict[str, Any]:
+                                    min_confidence: float = 0.70,
+                                    cutoff_date: Optional[datetime] = None) -> Dict[str, Any]:
         """Per-model trim-vs-final-test view (Job 2 / 'test pass vs trim pass'): trim and FT
         linearity pass rates, escapes (passed trim but failed FT — a bad unit shipped),
         overkills (failed trim but passed FT — unnecessarily rejected), agreement, and the
@@ -2356,7 +2403,10 @@ class DatabaseManager:
             "trim_pass_count_avg": None, "trim_pass_count_dist": {},
         }
         with self.session() as session:
-            cutoff = (datetime.now() - timedelta(days=days_back)) if days_back else None
+            # cutoff_date (data-anchored, from the caller) wins over the
+            # wall-clock days_back — batch-loaded data can lag production.
+            cutoff = cutoff_date if cutoff_date is not None else (
+                (datetime.now() - timedelta(days=days_back)) if days_back else None)
 
             # Trim linearity pass rate (unit = analysis; pass = ALL tracks pass).
             tq = (session.query(
@@ -2440,7 +2490,8 @@ class DatabaseManager:
     )
 
     def get_model_measurement_history(self, model: str,
-                                      days_back: Optional[int] = None) -> Dict[str, Any]:
+                                      days_back: Optional[int] = None,
+                                      cutoff_date: Optional[datetime] = None) -> Dict[str, Any]:
         """Per-model measured-value history (Job 2b — 'pull all model data, measured angle,
         resistance values, historical linearity pass rates'). Returns each metric's
         (date, value) series over the record, summary stats, and linearity pass-rate by
@@ -2455,7 +2506,10 @@ class DatabaseManager:
             "series": {m: [] for m in metrics}, "stats": {}, "passrate_periods": [],
         }
         with self.session() as session:
-            cutoff = (datetime.now() - timedelta(days=days_back)) if days_back else None
+            # cutoff_date (data-anchored, from the caller) wins over the
+            # wall-clock days_back — batch-loaded data can lag production.
+            cutoff = cutoff_date if cutoff_date is not None else (
+                (datetime.now() - timedelta(days=days_back)) if days_back else None)
             cols = [getattr(DBTrackResult, m) for m in metrics]
             q = (session.query(DBAnalysisResult.file_date, DBTrackResult.linearity_pass, *cols)
                  .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
@@ -2866,14 +2920,16 @@ class DatabaseManager:
 
     def _map_analysis_to_db(self, analysis: AnalysisResult) -> DBAnalysisResult:
         """Map Pydantic AnalysisResult to SQLAlchemy model."""
-        # Map system type. DBSystemType only defines A and B; SystemType.UNKNOWN
-        # only reaches this trim-record path on parser-error rows (FT files take
-        # save_final_test). Fall back to B with a warning so misclassified
-        # records are visible in logs rather than silently labeled.
+        # Map system type. SystemType.UNKNOWN only reaches this trim-record
+        # path on parser-error rows (FT files take save_final_test). Fall back
+        # to B with a warning so misclassified records are visible in logs
+        # rather than silently labeled.
         if analysis.metadata.system == SystemType.A:
             system_type = DBSystemType.A
         elif analysis.metadata.system == SystemType.B:
             system_type = DBSystemType.B
+        elif analysis.metadata.system == SystemType.C:
+            system_type = DBSystemType.C
         else:
             logger.warning(
                 f"SystemType.UNKNOWN on trim record {analysis.metadata.filename} "
@@ -3032,10 +3088,14 @@ class DatabaseManager:
         """
         from laser_trim_analyzer.core.models import FileMetadata
 
-        # Map system type. The DB enum only stores A or B (UNKNOWN parse-error
+        # Map system type. The DB enum stores A, B, or C (UNKNOWN parse-error
         # rows are written as B with a warning at save time — see
         # _map_analysis_to_db). The reverse mapping is therefore lossy by design.
-        system_type = SystemType.A if db_analysis.system == DBSystemType.A else SystemType.B
+        system_type = {
+            DBSystemType.A: SystemType.A,
+            DBSystemType.B: SystemType.B,
+            DBSystemType.C: SystemType.C,
+        }.get(db_analysis.system, SystemType.B)
 
         # Map status - handle both enum and string values from DB
         overall_status = self._map_status_enum(db_analysis.overall_status)
@@ -3229,6 +3289,8 @@ class DatabaseManager:
                 existing.system = DBSystemType.A
             elif analysis.metadata.system == SystemType.B:
                 existing.system = DBSystemType.B
+            elif analysis.metadata.system == SystemType.C:
+                existing.system = DBSystemType.C
             else:
                 logger.warning(
                     f"SystemType.UNKNOWN on update of {analysis.metadata.filename}; "
@@ -6526,6 +6588,126 @@ class DatabaseManager:
                     success=True,
                 ))
 
+    def update_processed_file_stats(self, entries) -> int:
+        """Repair size/mtime on ProcessedFile rows after a hash-confirm.
+
+        entries: iterable of (file_hash, file_size, file_modified_date).
+        Lets the incremental scan's stat fast-path work on the next run for
+        rows whose recorded stat was missing or stale. Content identity is
+        unchanged — only rows matched by their content hash are updated.
+        """
+        updated = 0
+        with self._write_lock:
+            with self.session() as session:
+                for file_hash, file_size, file_modified_date in entries:
+                    updated += session.query(DBProcessedFile).filter(
+                        DBProcessedFile.file_hash == file_hash
+                    ).update({
+                        DBProcessedFile.file_size: file_size,
+                        DBProcessedFile.file_modified_date: file_modified_date,
+                    })
+        return updated
+
+    def recompute_overall_statuses(self, dry_run: bool = True,
+                                   batch_size: int = 1000) -> Dict[str, Any]:
+        """Re-grade every analysis' overall_status from its tracks' STORED
+        pass flags, using the current (correct) rule. (2026-07-07, M4.)
+
+        Why: ~42%% of historical rows are WARNING with three different
+        historical meanings (old rule labeled linearity-FAILs as Warning;
+        later gate changes were never backfilled). Linearity is a zero-
+        tolerance customer requirement — a linearity-FAIL presenting as
+        "Warning" is a misclassification, not a cosmetic quirk.
+
+        Rule (mirrors analyzer._determine + processor rollup):
+          track: FAIL if linearity_pass is False; else PASS if sigma_pass is
+                 True; else WARNING. UNTRIMMED tracks excluded from judging.
+          analysis: all-PASS -> PASS; any FAIL -> FAIL; else WARNING.
+
+        Safety: analyses where any judged track has linearity_pass = NULL are
+        SKIPPED (never regraded) — those are the un-evaluated/empty-array rows
+        that Fix Missing Tracks must repair first. ERROR and UNTRIMMED
+        analyses are untouched. dry_run=True only counts.
+
+        Returns {"examined", "changed", "skipped_null_flags", "transitions":
+        {"OLD->NEW": n}, "sample_changed_ids": [...]}.
+        """
+        from collections import defaultdict
+
+        out: Dict[str, Any] = {"examined": 0, "changed": 0,
+                               "skipped_null_flags": 0,
+                               "transitions": defaultdict(int),
+                               "sample_changed_ids": []}
+        updates: List[tuple] = []  # (analysis_id, new_status)
+
+        with self.session() as session:
+            rows = (session.query(
+                        DBAnalysisResult.id, DBAnalysisResult.overall_status,
+                        DBTrackResult.status, DBTrackResult.linearity_pass,
+                        DBTrackResult.sigma_pass)
+                    .join(DBTrackResult,
+                          DBTrackResult.analysis_id == DBAnalysisResult.id)
+                    .filter(DBAnalysisResult.overall_status.notin_(
+                        [DBStatusType.UNTRIMMED, DBStatusType.ERROR]))
+                    .order_by(DBAnalysisResult.id)
+                    .yield_per(5000))
+
+            current: Dict[int, Any] = {}
+            tracks_by_analysis: Dict[int, list] = {}
+            for aid, overall, tstatus, lin, sig in rows:
+                current[aid] = overall
+                tracks_by_analysis.setdefault(aid, []).append((tstatus, lin, sig))
+
+            for aid, tracks in tracks_by_analysis.items():
+                out["examined"] += 1
+                judged = [(lin, sig) for (tstatus, lin, sig) in tracks
+                          if getattr(tstatus, "name", str(tstatus)) != "UNTRIMMED"]
+                if not judged:
+                    continue
+                if any(lin is None for (lin, _sig) in judged):
+                    out["skipped_null_flags"] += 1
+                    continue
+                track_statuses = [
+                    DBStatusType.FAIL if lin is False
+                    else (DBStatusType.PASS if sig is True else DBStatusType.WARNING)
+                    for (lin, sig) in judged
+                ]
+                if all(s == DBStatusType.PASS for s in track_statuses):
+                    new = DBStatusType.PASS
+                elif any(s == DBStatusType.FAIL for s in track_statuses):
+                    new = DBStatusType.FAIL
+                else:
+                    new = DBStatusType.WARNING
+
+                old = current[aid]
+                old_name = getattr(old, "name", str(old))
+                if old_name != new.name:
+                    out["changed"] += 1
+                    out["transitions"][f"{old_name}->{new.name}"] += 1
+                    if len(out["sample_changed_ids"]) < 10:
+                        out["sample_changed_ids"].append(aid)
+                    updates.append((aid, new))
+
+        out["transitions"] = dict(out["transitions"])
+        if dry_run or not updates:
+            return out
+
+        # Execute in batches; partial progress is preserved on error (same
+        # philosophy as backfill_max_deviation).
+        with self._write_lock:
+            with self.session() as session:
+                for i in range(0, len(updates), batch_size):
+                    for aid, new in updates[i:i + batch_size]:
+                        session.query(DBAnalysisResult).filter(
+                            DBAnalysisResult.id == aid
+                        ).update({DBAnalysisResult.overall_status: new},
+                                 synchronize_session=False)
+                    session.commit()
+        logger.info(f"Status recompute: {out['changed']} of {out['examined']} "
+                    f"regraded; {out['skipped_null_flags']} skipped (NULL flags); "
+                    f"transitions={out['transitions']}")
+        return out
+
     def backfill_max_deviation(self, batch_size: int = 1000) -> int:
         """
         Backfill max_deviation, max_deviation_position, and deviation_uniformity
@@ -7721,6 +7903,96 @@ class DatabaseManager:
             "drift_status": drift_status,
             "spec": spec_data,
         }
+
+    def get_company_yield_trend(
+        self, days_back: int = 365, period: str = "week"
+    ) -> Dict[str, Any]:
+        """Company-wide yield trend, overall and split by trim system (A/B/C).
+
+        The v6 Dashboard's company-trend section (2026-07-06). Differs from
+        get_yield_trend in two ways: UNTRIMMED test-sweeps are excluded from
+        BOTH numerator and denominator (they have no trim verdict — dashboard
+        convention), and results are additionally grouped by system so the
+        LTS3 (C) ramp can be compared against A/B.
+
+        Returns {"periods": [...ordered period keys...],
+                 "company":  [{"period","total","passed","pass_rate"}...],
+                 "by_system": {"A": [rows...], "B": [...], "C": [...]}}.
+        Systems with no data in the window are omitted from by_system.
+        """
+        with self.session() as session:
+            cutoff = datetime.now() - timedelta(days=days_back)
+            if period == "week":
+                period_expr = func.strftime('%Y-W%W', DBAnalysisResult.file_date)
+            else:
+                period_expr = func.strftime('%Y-%m', DBAnalysisResult.file_date)
+
+            # Numerator = LINEARITY-ACCEPTED (PASS + WARNING): linearity is the
+            # zero-tolerance customer requirement; WARNING units passed it
+            # (sigma is an internal drift-watch flag, not a disposition). The
+            # company trend answers "is our yield moving" on the customer basis.
+            rows = session.query(
+                period_expr.label("period"),
+                DBAnalysisResult.system,
+                func.count(DBAnalysisResult.id).label("total"),
+                func.sum(
+                    case((DBAnalysisResult.overall_status.in_(
+                        [DBStatusType.PASS, DBStatusType.WARNING]), 1), else_=0)
+                ).label("accepted"),
+            ).filter(
+                DBAnalysisResult.file_date >= cutoff,
+                DBAnalysisResult.overall_status != DBStatusType.UNTRIMMED.name,
+            ).group_by(period_expr, DBAnalysisResult.system) \
+             .order_by(period_expr).all()
+
+            periods: List[str] = []
+            company: Dict[str, Dict[str, int]] = {}
+            by_system: Dict[str, Dict[str, Dict[str, int]]] = {}
+            for r in rows:
+                if r.period not in company:
+                    periods.append(r.period)
+                    company[r.period] = {"total": 0, "accepted": 0}
+                company[r.period]["total"] += r.total or 0
+                company[r.period]["accepted"] += r.accepted or 0
+                sys_val = r.system.value if isinstance(r.system, DBSystemType) else str(r.system)
+                by_system.setdefault(sys_val, {})[r.period] = {
+                    "total": r.total or 0, "accepted": r.accepted or 0}
+
+            def _series(bucket: Dict[str, Dict[str, int]]) -> List[Dict[str, Any]]:
+                out = []
+                for p in periods:
+                    d = bucket.get(p)
+                    total = d["total"] if d else 0
+                    accepted = d["accepted"] if d else 0
+                    out.append({"period": p, "total": total, "accepted": accepted,
+                                "linearity_yield": (accepted / total * 100) if total else None})
+                return out
+
+            # Honesty metadata for the chart: the newest period is usually
+            # PARTIAL (the week/month is still filling), and the whole dataset
+            # has a vintage (batch-loaded data can lag production by weeks).
+            data_through = session.query(func.max(DBAnalysisResult.file_date)).scalar()
+            partial_last = False
+            if periods and data_through is not None:
+                fmt = '%Y-W%W' if period == "week" else '%Y-%m'
+                if periods[-1] == data_through.strftime(fmt):
+                    # Last bucket = the bucket the data ends in. It's PARTIAL
+                    # unless the data runs to the bucket's calendar end.
+                    if period == "week":
+                        partial_last = data_through.weekday() != 6  # %W: Mon–Sun
+                    else:
+                        import calendar
+                        last_day = calendar.monthrange(data_through.year,
+                                                       data_through.month)[1]
+                        partial_last = data_through.day != last_day
+
+            return {
+                "periods": periods,
+                "company": _series(company),
+                "by_system": {s: _series(b) for s, b in sorted(by_system.items())},
+                "partial_last": partial_last,
+                "data_through": data_through,
+            }
 
     def get_yield_trend(
         self, days_back: int = 180, period: str = "week"

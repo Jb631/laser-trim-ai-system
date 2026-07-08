@@ -59,6 +59,14 @@ def is_degenerate_baseline(mean: Optional[float], std: Optional[float]) -> bool:
     """True when a baseline's spread is too small to support drift monitoring."""
     if std is None or not math.isfinite(std) or std <= 0.0:
         return True
+    # Absolute floor: training substitutes std=1e-9 for a zero-variance
+    # baseline. For a zero-MEAN constant (e.g. all-zero resistance_change),
+    # the CV test alone let that sentinel through (cutoff 1e-6 * 1e-9 =
+    # 1e-15 < 1e-9) and the collapsing limits came back. The smallest
+    # legitimate baseline σ observed is ~1.5e-4 — an absolute cutoff at the
+    # sentinel value is far below anything real.
+    if std <= BASELINE_DEGENERATE_MEAN_FLOOR:
+        return True
     ref = max(abs(mean) if mean is not None else 0.0, BASELINE_DEGENERATE_MEAN_FLOOR)
     return std <= BASELINE_DEGENERATE_CV * ref
 
@@ -124,6 +132,11 @@ class MetricDetector:
     cusum_neg: float = 0.0
     ewma_state: Optional[float] = None
     recent_window: Deque[float] = field(default_factory=lambda: deque(maxlen=STEP_CHANGE_WINDOW))
+
+    # Composite only: False when this composite's state is stale (scores are
+    # no longer being produced, e.g. un-deployed after a retrain) so it must
+    # NOT silence its input family. Set at hydrate time; harmless elsewhere.
+    represents_family: bool = True
 
     # Last computed status (for get_status without re-processing)
     _last_status: Optional[MetricStatus] = None
@@ -347,8 +360,18 @@ class MultiMetricDriftDetector:
         # everything else is evidence-only and stays in per_metric for the Model page.
         # Additionally, when the composite is deployed it represents its input features,
         # so those are demoted too (no double-count). See TRIGGER_METRICS / COMPOSITE_*.
+        # The composite may demote its family only while it can actually still
+        # trigger in its place: trained AND a monitorable (non-degenerate)
+        # baseline AND not stale (represents_family, set at hydrate). Keying
+        # on is_trained alone silenced the whole trim-effort family whenever
+        # the composite went degenerate or stopped being scored.
         comp = per_metric.get(COMPOSITE_METRIC)
-        composite_active = comp is not None and comp.is_trained
+        comp_det = self.metrics.get(COMPOSITE_METRIC)
+        composite_active = (
+            comp is not None and comp.is_trained
+            and not is_degenerate_baseline(comp.baseline_mean, comp.baseline_std)
+            and (comp_det is None or comp_det.represents_family)
+        )
         rankable = {
             name: ms for name, ms in per_metric.items()
             if name in TRIGGER_METRICS

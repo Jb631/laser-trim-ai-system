@@ -100,7 +100,7 @@ src/laser_trim_analyzer/
 ### V5 — Released (tag `v5.0.0`, 2026-04-16)
 `pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
 
-**Current focus:** `docs/BUGFIX_PLAN_V5.md` — 5-phase bugfix plan from a 6-agent code review swarm (20 issues: 5 critical, 7 high, 8 medium).
+**Current focus:** `docs/V6_FINISH_PLAN_2026-07-06.md` — V6 (branch `V6`, launch with `--v6`) finish-line plan from a full-code review. P0/P1 fixes landed 2026-07-06 (see `docs/SESSION_2026-07-06.md`); remaining: WARNING-status recompute, Fix Missing Tracks for NULL-array rows, 3rd-laser (System C) support (blocked on sample file), consistency polish. Older: `docs/BUGFIX_PLAN_V5.md`.
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
 **Plan:** `docs/UPGRADE_PLAN_V4.md`

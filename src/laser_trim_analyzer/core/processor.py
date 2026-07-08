@@ -85,6 +85,14 @@ class Processor:
         self.smoothness_parser = SmoothnessParser()  # For Output Smoothness files
         self._processed_hashes: set = set()
         self._processed_filenames: Optional[set] = None  # None = not loaded yet
+        # path -> (file_size, mtime_epoch) for ProcessedFile rows. Lets
+        # _is_processed skip re-hashing (full file read) when the on-disk
+        # stat still matches what we recorded at processing time.
+        self._processed_stat: Dict[str, tuple] = {}
+        # (file_hash, size, mtime datetime) tuples queued when a hash-confirm
+        # succeeded but the recorded stat was missing/stale — flushed once per
+        # batch so the NEXT scan takes the fast stat path.
+        self._stat_heal: List[tuple] = []
 
         # Load per-model thresholds and predictors from database
         self._model_thresholds: Dict[str, float] = {}
@@ -633,6 +641,19 @@ class Processor:
                 file_paths, progress_callback, incremental, summary
             )
 
+        # Persist any stat repairs collected during the incremental scan (rows
+        # whose content matched by hash but whose recorded size/mtime was
+        # missing or stale). One write, non-fatal — next scan gets the fast path.
+        if self._stat_heal:
+            try:
+                from laser_trim_analyzer.database import get_database
+                get_database().update_processed_file_stats(self._stat_heal)
+                logger.info(f"Repaired stat records for {len(self._stat_heal)} processed files")
+            except Exception as e:
+                logger.debug(f"Could not persist stat repairs: {e}")
+            finally:
+                self._stat_heal = []
+
         # Finalize summary. Yield is over the GRADEABLE population (files that
         # actually have a trim result); UNTRIMMED test-sweeps are excluded from
         # the denominator so the rate isn't diluted.
@@ -927,6 +948,21 @@ class Processor:
                         f"(position={len(track.position_data)}, error={len(track.error_data)})"
                     )
 
+            # Check 5: Scale-anomalous linearity error. The file carries its
+            # own spec band; a linearity error 10x beyond that band is a unit/
+            # scale corruption, not a real measurement (observed in production:
+            # error=10.007 against a ±0.05 band — ~380σ — which alone set a
+            # +16σ drift headline on a stable model). Flag, don't reject.
+            band_vals = [abs(v) for v in ((track.upper_limits or []) +
+                                          (track.lower_limits or [])) if v is not None]
+            band = max(band_vals) if band_vals else None
+            if band and band > 0 and track.linearity_error is not None:
+                if track.linearity_error > 10.0 * band:
+                    issues.append(
+                        f"{tid}: scale-anomalous linearity error "
+                        f"({track.linearity_error:.4g} vs spec band ±{band:.4g})"
+                    )
+
         return issues
 
     def _process_smoothness_file(self, file_path: Path, start_time: float) -> AnalysisResult:
@@ -1179,17 +1215,50 @@ class Processor:
         try:
             # If cache was loaded (even if empty), use it.
             if self._processed_filenames is not None:
+                path_str = str(file_path)
                 # A path we've never seen -> definitely new (cheap, no hash read).
-                if str(file_path) not in self._processed_filenames:
+                if path_str not in self._processed_filenames:
                     return False
-                # Path seen before -> CONFIRM the content still matches before
+
+                # Stat fast-path: if the recorded size AND mtime still match the
+                # file on disk, the content can't have changed — skip without
+                # reading the file at all. This is what makes re-scanning a
+                # mostly-processed network folder fast; hashing every path-hit
+                # meant reading every byte of every known file over the share.
+                # mtime tolerance 2s covers FAT/SMB timestamp granularity.
+                recorded = self._processed_stat.get(path_str)
+                current_stat = None
+                if recorded is not None:
+                    try:
+                        current_stat = file_path.stat()
+                    except OSError:
+                        return False  # can't stat -> don't skip; let it process
+                    rec_size, rec_mtime = recorded
+                    if (current_stat.st_size == rec_size
+                            and abs(current_stat.st_mtime - rec_mtime) <= 2.0):
+                        return True
+
+                # Stat missing or stale -> CONFIRM content by hash before
                 # skipping. The file_hash is the identity, not the path, so a
                 # re-export of new content to a fixed filename is NOT dropped.
                 try:
                     file_hash = calculate_file_hash(file_path)
                 except Exception:
                     return False  # can't hash -> don't skip; let it process
-                return file_hash in self._processed_hashes
+                if file_hash in self._processed_hashes:
+                    # Same content, stale/missing stat record — queue a repair
+                    # so the NEXT scan takes the fast stat path for this file.
+                    try:
+                        st = current_stat or file_path.stat()
+                        self._stat_heal.append((
+                            file_hash, st.st_size,
+                            datetime.fromtimestamp(st.st_mtime),
+                        ))
+                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                    except OSError:
+                        pass
+                    return True
+                return False
 
             # Cache not loaded - query database directly (already hash-based).
             from laser_trim_analyzer.database import get_database
@@ -1254,10 +1323,19 @@ class Processor:
                 # path is a cheap early-out. Errors (success=False) are excluded
                 # so they're retried.
                 rows = session.query(
-                    DBProcessedFile.file_path, DBProcessedFile.file_hash
+                    DBProcessedFile.file_path, DBProcessedFile.file_hash,
+                    DBProcessedFile.file_size, DBProcessedFile.file_modified_date
                 ).filter(DBProcessedFile.success == True).all()
                 self._processed_filenames = set(r.file_path for r in rows if r.file_path)
                 self._processed_hashes = set(r.file_hash for r in rows if r.file_hash)
+                # Stat fast-path (ProcessedFile rows only — FT/smoothness tables
+                # don't carry size/mtime, so those fall back to hash-confirm).
+                self._processed_stat = {
+                    r.file_path: (r.file_size, r.file_modified_date.timestamp())
+                    for r in rows
+                    if r.file_path and r.file_size is not None
+                    and r.file_modified_date is not None
+                }
 
                 # Also load Final Test file paths + hashes (always "successful" if in DB)
                 ft_rows = session.query(
@@ -1293,6 +1371,7 @@ class Processor:
         except Exception as e:
             logger.warning(f"Could not load processed files from database: {e}")
             self._processed_filenames = set()
+            self._processed_stat = {}
 
     def _create_error_result(
         self, metadata: FileMetadata, error_msg: str, start_time: float

@@ -4,6 +4,7 @@ import threading
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
+from laser_trim_analyzer.gui.v6.ui_dispatch import post_ui
 from laser_trim_analyzer.gui.v6.widgets.training_modal import TrainingModal
 
 
@@ -36,11 +37,7 @@ def build_ml_training_section(parent, theme: ThemeManager, app) -> None:
                 msg = f"Per-model ML retrained: {len(results)} models."
             except Exception as exc:
                 msg = f"Per-model ML retrain failed: {exc}"
-            try:
-                if status.winfo_exists():
-                    status.after(0, lambda: status.winfo_exists() and status.configure(text=msg))
-            except Exception:
-                pass
+            post_ui(app, lambda: status.winfo_exists() and status.configure(text=msg))
         status.configure(text="Retraining per-model ML…")
         threading.Thread(target=work, daemon=True).start()
 

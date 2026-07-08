@@ -162,7 +162,9 @@ METRIC_LABELS = {
     "trim_pass_count": "Trim pass count",
     "resistance_change_percent": "Resistance change %",
     "max_smoothness_value": "Smoothness (max)",
-    "composite_trim_risk_score": "Composite trim-risk",
+    # Short enough for the Model page's 9-pill row without truncation
+    # (the old "Composite trim-risk" clipped to "omposite trim-ris").
+    "composite_trim_risk_score": "Composite risk",
 }
 
 
