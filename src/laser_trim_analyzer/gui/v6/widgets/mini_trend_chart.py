@@ -53,7 +53,15 @@ class MiniTrendChart(ctk.CTkFrame):
             # sparkline — an unreadable solid block. Average into <=_MAX_POINTS evenly
             # spaced buckets so the trend stays legible at any window length.
             ys_ds = self._downsample(ys, self._MAX_POINTS)
-            ax.plot(range(len(ys_ds)), ys_ds, lw=1.5, color=t.ACCENT)
+            # Readable y-scale (user finding, 2026-07-08): the "(0–100%)" range
+            # note wasn't enough to READ a value off the line — a dip needs a
+            # number. Real ticks at 0/50/100 with faint gridlines.
+            ax.set_yticks([0, 50, 100])
+            ax.set_yticklabels(["0", "50", "100%"], fontsize=6, color=t.TEXT_DISABLED)
+            ax.tick_params(axis="y", length=0, pad=1)
+            for gy in (0, 50, 100):
+                ax.axhline(gy, color=t.TEXT_DISABLED, lw=0.5, alpha=0.22, zorder=1)
+            ax.plot(range(len(ys_ds)), ys_ds, lw=1.5, color=t.ACCENT, zorder=3)
             ax.set_ylim(-14, 112)   # headroom for the labels below/above
             # Latest value, marked and named — the number the eye wants.
             ax.plot([len(ys_ds) - 1], [ys_ds[-1]], marker="o", ms=4, color=t.ACCENT_HOVER)
@@ -69,7 +77,7 @@ class MiniTrendChart(ctk.CTkFrame):
                     va="top", fontsize=6.5, color=t.TEXT_DISABLED)
             ax.text(1.0, -0.02, f"{last_d}", transform=ax.transAxes, ha="right",
                     va="top", fontsize=6.5, color=t.TEXT_DISABLED)
-            ax.text(0.0, 1.02, f"{label} (0–100%)", transform=ax.transAxes,
+            ax.text(0.0, 1.02, label, transform=ax.transAxes,
                     ha="left", va="bottom", fontsize=6.5, color=t.TEXT_DISABLED)
         else:
             ax.text(0.5, 0.5, "no trend", transform=ax.transAxes, ha="center", va="center",

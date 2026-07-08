@@ -4,6 +4,7 @@ focus_5409B_untrimmed_resistance.png | FocusChart 5409B/untrimmed_resistance n=1
 focus_8150_untrimmed_resistance.png | FocusChart 8150/untrimmed_resistance n=1 — single unit: no crash, sensible axes
 focus_8887_linearity_error.png | FocusChart 8887/linearity_error n=44 — stale flagged model, full record
 focus_7458-1_max_smoothness_value.png | FocusChart 7458-1/max_smoothness_value n=112 — smoothness trend (scatter mode)
+focus_8340-1_window_switch.png | FocusChart window-switch: All(xlim 4188d) -> 90d(xlim 72d) — axis tracks the window
 company_90d_week.png | CompanyTrend 90d/week — linearity basis, partial marker, vintage
 company_365d_month.png | CompanyTrend 365d/month — linearity basis, partial marker, vintage
 company_36500d_month.png | CompanyTrend 36500d/month — linearity basis, partial marker, vintage

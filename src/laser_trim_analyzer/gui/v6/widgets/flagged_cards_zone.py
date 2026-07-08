@@ -23,7 +23,17 @@ class FlaggedCardsZone(ctk.CTkFrame):
         self._heading = ctk.CTkLabel(self, text="Needs attention (0)",
                                      font=theme.font(theme.SIZE_HEADING, "bold"),
                                      text_color=theme.TEXT_PRIMARY, anchor="w")
-        self._heading.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
+        self._heading.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
+        # Plain-language key for the card numbers. The Model page had this
+        # gloss but the cards themselves didn't — σ appeared here unexplained
+        # (user finding, 2026-07-08).
+        ctk.CTkLabel(self,
+                     text=("σ = standard deviations from the model's trained baseline — how far "
+                           "the recent average has moved. 'Out Of Control' = past the alert "
+                           "limit for your sensitivity preset. A drift watch signal, not a spec."),
+                     font=theme.font(theme.SIZE_CAPTION), text_color=theme.TEXT_SECONDARY,
+                     anchor="w", justify="left", wraplength=1200)\
+            .pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         # Scrollable, height-bounded card area. Before this the cards rendered into a
         # plain frame with no scroll, so 30-50 flagged cards overflowed the page and
         # pushed the browse list off-screen with no way to reach them.

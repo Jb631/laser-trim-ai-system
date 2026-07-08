@@ -182,6 +182,31 @@ def main(out_dir: str) -> int:
         _save(fc, out / f"focus_{model}_{metric}.png", manifest,
               f"FocusChart {model}/{metric} n={len(v)} — {note}")
 
+    # ---- 1b. Window-switch regression (2026-07-08). One REUSED FocusChart,
+    # All -> narrow window: the x-axis must track the new data, not hold the
+    # widest range ever rendered (matplotlib's lazy autoscale never shrank it,
+    # so after 'All' every window showed a decade with data bunched right).
+    import matplotlib.dates as _mdt
+    from datetime import timedelta as _td
+    d_all, v_all, (bm_, bs_) = series("8340-1", "untrimmed_error_max")
+    fc = _focus()
+    fc.set_series("untrimmed_error_max", d_all, v_all, baseline_mean=bm_, baseline_std=bs_)
+    wide = fc._ax.get_xlim()
+    cut = max(d_all) - _td(days=90)
+    d_n, v_n = zip(*[(d, v) for d, v in zip(d_all, v_all) if d >= cut])
+    fc.set_series("untrimmed_error_max", list(d_n), list(v_n),
+                  baseline_mean=bm_, baseline_std=bs_)
+    narrow = fc._ax.get_xlim()
+    wide_span, narrow_span = wide[1] - wide[0], narrow[1] - narrow[0]
+    data_span = _mdt.date2num(max(d_n)) - _mdt.date2num(min(d_n))
+    if narrow_span > max(data_span * 1.5, 30.0):
+        raise AssertionError(
+            f"WINDOW-SWITCH REGRESSION: 90d xlim spans {narrow_span:.0f} days "
+            f"(data {data_span:.0f}d; previous All render {wide_span:.0f}d) — "
+            "x-axis is holding the old window")
+    _save(fc, out / "focus_8340-1_window_switch.png", manifest,
+          f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window")
+
     # ---- 2. Company trend ----
     for days, period in [(90, "week"), (365, "month"), (36500, "month"), (30, "week")]:
         cc = _company()

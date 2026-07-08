@@ -197,6 +197,17 @@ class FocusChart(ctk.CTkFrame):
             ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {ext:.3g})",
                     transform=ax.transAxes, ha="right", va="top", fontsize=8,
                     color=mark_color)
+        # ---- Explicit x-window (2026-07-08). Autoscale is LAZY and, on this
+        # reused axes, held the widest range ever rendered: after viewing
+        # 'All' (stretched to 2015 by one stray file), switching back to
+        # 365d/90d kept the decade-wide axis and bunched all data at the
+        # right. The window the user picked IS the x-range — set it from the
+        # data every render instead of trusting autoscale to shrink.
+        d0, d1 = min(dates), max(dates)
+        span = (d1 - d0)
+        from datetime import timedelta as _td
+        xpad = max(span * 0.02, _td(days=1))
+        ax.set_xlim(d0 - xpad, d1 + xpad)
         ax.legend(loc="best", fontsize=8, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
         self.canvas.draw_idle()
