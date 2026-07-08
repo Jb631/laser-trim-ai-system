@@ -54,7 +54,8 @@ def test_export_full_history_and_monthly(tmp_path):
     assert len(units) == 8
     for col in ("Serial", "Date", "Status", "System", "Track", "Sigma gradient",
                 "Untrimmed sigma", "Untrimmed resistance", "Resistance change %",
-                "Trim passes", "Sigma pass", "Linearity pass"):
+                "Trim passes", "Sigma pass", "Linearity pass",
+                "FT result", "FT date", "FT match %"):
         assert col in units.columns, f"missing column {col}"
 
     monthly = sheets["Monthly summary"]

@@ -119,9 +119,23 @@ class FocusChart(ctk.CTkFrame):
                 fam = [float(v) for v in finite if abs(v - med_v) <= 3 * sd]
                 p_lo, p_hi = (min(fam), max(fam)) if fam else (med_v - 1.0, med_v + 1.0)
             lo_c.append(p_lo); hi_c.append(p_hi)
+        limits_off_scale = None
         if baseline_mean is not None and baseline_std:
-            lo_c.append(baseline_mean - 3.5 * baseline_std)
-            hi_c.append(baseline_mean + 3.5 * baseline_std)
+            # Include the ±3.5σ control band in the window ONLY when it is
+            # commensurate with the visible data. A baseline trained across
+            # mixed historical regimes can carry a σ that dwarfs the current
+            # window (8340-1: σ=1.26 vs recent spread ~0.1) — always forcing
+            # the band into view locked the y-axis at ±4.8 for EVERY time
+            # window, so zooming 'didn't zoom'. When the band is >6x the data
+            # bulk, fit to the data and annotate the off-scale limits instead.
+            band_lo = baseline_mean - 3.5 * baseline_std
+            band_hi = baseline_mean + 3.5 * baseline_std
+            data_span = max((hi_c[0] - lo_c[0]) if lo_c else 0.0, 1e-12)
+            if (band_hi - band_lo) <= 6.0 * data_span:
+                lo_c.append(band_lo); hi_c.append(band_hi)
+            else:
+                limits_off_scale = (baseline_mean - 3 * baseline_std,
+                                    baseline_mean + 3 * baseline_std)
         elif baseline_mean is not None:
             lo_c.append(baseline_mean); hi_c.append(baseline_mean)
         if lo_c and hi_c:
@@ -133,6 +147,12 @@ class FocusChart(ctk.CTkFrame):
                     lo, hi = lo - 1.0, hi + 1.0
             pad = (hi - lo) * 0.08 or abs(hi) * 0.1 or 1.0
             ax.set_ylim(lo - pad, hi + pad)
+        if limits_off_scale is not None:
+            ax.text(0.01, 0.97,
+                    f"±3σ control limits off-scale ({limits_off_scale[0]:.3g} … "
+                    f"{limits_off_scale[1]:.3g}) — baseline spans mixed history",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=7.5,
+                    color=t.TIER_WARNING)
 
         # Daily median trend line. A batch-day where MOST units are corrupt has
         # an off-scale median — drawing it (even clamped) reads as a spike. The

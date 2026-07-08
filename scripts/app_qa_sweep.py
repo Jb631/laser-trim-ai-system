@@ -219,7 +219,8 @@ def main() -> int:
     check("evidence pack: 3 sheets with expected columns",
           set(sheets) == {"Drift evidence", "Unit history", "Monthly summary"}
           and "Suspect excluded" in sheets["Drift evidence"].columns
-          and "Linearity yield %" in sheets["Monthly summary"].columns)
+          and "Linearity yield %" in sheets["Monthly summary"].columns
+          and "FT result" in sheets["Unit history"].columns)
     n_hist = len(sheets["Unit history"])
     n_sql = raw.execute(
         "SELECT COUNT(*) FROM analysis_results ar JOIN track_results tr "

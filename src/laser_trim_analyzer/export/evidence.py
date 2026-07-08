@@ -160,7 +160,19 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
 
     cutoff = datetime.now() - timedelta(days=window_days) if window_days else None
     with db.session() as s:
-        q = (s.query(DBAR.serial, DBAR.file_date, DBAR.overall_status, DBAR.system,
+        # Final-test outcome per trim unit (the other half of the trim-vs-FT
+        # workflow — "did this unit pass at final test"; user request 2026-07-08).
+        from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+        ft_by_trim: dict = {}
+        for ft in (s.query(DBFT.linked_trim_id, DBFT.overall_status,
+                           DBFT.file_date, DBFT.match_confidence)
+                   .filter(DBFT.model == model, DBFT.linked_trim_id.isnot(None)).all()):
+            # Keep the newest FT per trim record.
+            prev = ft_by_trim.get(ft[0])
+            if prev is None or (ft[2] and prev[1] and ft[2] > prev[1]):
+                ft_by_trim[ft[0]] = (getattr(ft[1], "value", str(ft[1])), ft[2], ft[3])
+
+        q = (s.query(DBAR.id, DBAR.serial, DBAR.file_date, DBAR.overall_status, DBAR.system,
                      DBTR.track_id, DBTR.sigma_gradient, DBTR.untrimmed_sigma_gradient,
                      DBTR.final_linearity_error_shifted, DBTR.untrimmed_error_max,
                      DBTR.untrimmed_resistance, DBTR.resistance_change_percent,
@@ -169,17 +181,24 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
              .join(DBTR, DBTR.analysis_id == DBAR.id).filter(DBAR.model == model))
         if cutoff is not None:
             q = q.filter(DBAR.file_date >= cutoff)
-        unit_rows = [{"Serial": r[0], "Date": r[1],
-                      "Status": getattr(r[2], "value", str(r[2])),
-                      "System": getattr(r[3], "value", str(r[3])),
-                      "Track": r[4],
-                      "Sigma gradient": r[5], "Untrimmed sigma": r[6],
-                      "Linearity error": r[7], "Untrimmed error max": r[8],
-                      "Untrimmed resistance": r[9], "Resistance change %": r[10],
-                      "Electrical angle": r[11], "Trim passes": r[12],
-                      "Composite risk": r[13],
-                      "Sigma pass": r[14], "Linearity pass": r[15]}
-                     for r in q.order_by(DBAR.file_date.desc()).all()]
+        unit_rows = []
+        for r in q.order_by(DBAR.file_date.desc()).all():
+            ft = ft_by_trim.get(r[0])
+            unit_rows.append({
+                "Serial": r[1], "Date": r[2],
+                "Status": getattr(r[3], "value", str(r[3])),
+                "System": getattr(r[4], "value", str(r[4])),
+                "Track": r[5],
+                "Sigma gradient": r[6], "Untrimmed sigma": r[7],
+                "Linearity error": r[8], "Untrimmed error max": r[9],
+                "Untrimmed resistance": r[10], "Resistance change %": r[11],
+                "Electrical angle": r[12], "Trim passes": r[13],
+                "Composite risk": r[14],
+                "Sigma pass": r[15], "Linearity pass": r[16],
+                "FT result": ft[0] if ft else None,
+                "FT date": ft[1] if ft else None,
+                "FT match %": (round(ft[2] * 100) if ft and ft[2] is not None
+                               else None)})
 
         # Monthly rollup: UNIT-level counts/pass rate (overall_status is the
         # per-unit verdict; UNTRIMMED test-sweeps excluded from the rate), plus

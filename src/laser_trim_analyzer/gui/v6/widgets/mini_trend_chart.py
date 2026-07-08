@@ -34,7 +34,11 @@ class MiniTrendChart(ctk.CTkFrame):
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         self.bind("<Destroy>", self._on_destroy)
 
-    def set_points(self, points: List[Tuple[str, float]]) -> None:
+    def set_points(self, points: List[Tuple[str, float]],
+                   label: str = "daily linearity yield") -> None:
+        """A sparkline with no dates, scale, or label means nothing (user
+        finding, 2026-07-08). Minimum context now drawn: what the line IS,
+        first/last date, and the latest value."""
         ax, t = self._ax, self.theme
         ax.clear()
         ax.set_facecolor(t.CARD)
@@ -48,13 +52,26 @@ class MiniTrendChart(ctk.CTkFrame):
             # 'All' view spanning years) plots thousands of jagged points into a 3"
             # sparkline — an unreadable solid block. Average into <=_MAX_POINTS evenly
             # spaced buckets so the trend stays legible at any window length.
-            ys = self._downsample(ys, self._MAX_POINTS)
-            ax.plot(range(len(ys)), ys, lw=1.5, color=t.ACCENT)
-            ax.set_ylim(0, 100)
+            ys_ds = self._downsample(ys, self._MAX_POINTS)
+            ax.plot(range(len(ys_ds)), ys_ds, lw=1.5, color=t.ACCENT)
+            ax.set_ylim(-14, 112)   # headroom for the labels below/above
+            # Latest value, marked and named — the number the eye wants.
+            ax.plot([len(ys_ds) - 1], [ys_ds[-1]], marker="o", ms=4, color=t.ACCENT_HOVER)
+            ax.annotate(f"{ys[-1]:.0f}%", (len(ys_ds) - 1, ys_ds[-1]),
+                        textcoords="offset points", xytext=(-2, 6), ha="right",
+                        fontsize=7, color=t.TEXT_PRIMARY)
+            # What it is + when it spans.
+            first_d, last_d = str(points[0][0]), str(points[-1][0])
+            ax.text(0.0, -0.02, f"{first_d}", transform=ax.transAxes, ha="left",
+                    va="top", fontsize=6.5, color=t.TEXT_DISABLED)
+            ax.text(1.0, -0.02, f"{last_d}", transform=ax.transAxes, ha="right",
+                    va="top", fontsize=6.5, color=t.TEXT_DISABLED)
+            ax.text(0.0, 1.02, f"{label} (0–100%)", transform=ax.transAxes,
+                    ha="left", va="bottom", fontsize=6.5, color=t.TEXT_DISABLED)
         else:
             ax.text(0.5, 0.5, "no trend", transform=ax.transAxes, ha="center", va="center",
                     color=t.TEXT_DISABLED, fontsize=8)
-        self._fig.tight_layout(pad=0.2)
+        self._fig.tight_layout(pad=0.35)
         self.canvas.draw_idle()
 
     def _on_destroy(self, _evt=None):
