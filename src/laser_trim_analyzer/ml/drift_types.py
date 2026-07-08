@@ -152,6 +152,13 @@ class TrainingSummary:
 # key like ``untrimmed_resistance``.  Covers all WATCHED_METRICS plus the
 # post-trim ``sigma_gradient`` quality-gate metric, which is no longer drift-
 # watched but can still appear in per-model diagnostics.
+# Robustness gate shared by the drift engine and evidence surfaces: values
+# beyond this many baseline-σ are treated as suspect DATA, not process signal
+# (observed: linearity errors of 10.0 against 0.03±0.026 — ~380σ). The
+# detector WINSORIZES (clips) such samples so one corrupt point can't own
+# CUSUM; evidence displays EXCLUDE and disclose them.
+SUSPECT_SIGMA_GATE = 8.0
+
 METRIC_LABELS = {
     "untrimmed_error_max": "Untrimmed error (max)",
     "sigma_gradient": "Sigma gradient (post-trim)",

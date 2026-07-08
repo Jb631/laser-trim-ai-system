@@ -95,6 +95,7 @@ class CompanyTrendChart(ctk.CTkFrame):
         vol.bar(x, [r["total"] for r in company], color=t.ELEVATED, alpha=0.9,
                 width=0.8, zorder=1)
         vol.set_ylabel("units", color=t.TEXT_DISABLED, fontsize=8)
+        vol.yaxis.set_label_position("right")  # twin label was ghosting at left
 
         # Per-system overlays first (thin), company line on top (bold).
         # Rates are LINEARITY yield (customer basis) — see get_company_yield_trend.

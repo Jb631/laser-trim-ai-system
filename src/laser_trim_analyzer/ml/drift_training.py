@@ -173,11 +173,17 @@ def _train_one_metric(
     thresholds = corrected_tier_thresholds(sensitivity_preset, baseline_std)
 
     # Replay the recent window so persisted runtime state reflects drift already
-    # present in history.
+    # present in history. Samples are WINSORIZED (clipped to baseline ± the
+    # suspect gate): an isolated scale-corrupt value (e.g. 380σ) contributes
+    # at most one bounded push and then decays, while a real sustained shift
+    # still accumulates past threshold within a couple of samples.
+    from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE
+    clip_lo = baseline_mean - SUSPECT_SIGMA_GATE * baseline_std
+    clip_hi = baseline_mean + SUSPECT_SIGMA_GATE * baseline_std
     det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_samples),
                           thresholds_dict=thresholds)
     for (_d, v, _r) in replay_samples:
-        det.update(float(v))
+        det.update(min(max(float(v), clip_lo), clip_hi))
 
     _upsert_metric_state(
         db, model, metric,
@@ -408,8 +414,13 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
                 cusum_pos=row.cusum_pos, cusum_neg=row.cusum_neg, ewma_state=row.ewma_state,
                 recent_window=row.recent_window,
             )
+            # Winsorize like training replay: suspect-scale values get one
+            # bounded push, never ownership of CUSUM (see SUSPECT_SIGMA_GATE).
+            from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE
+            c_lo = row.baseline_mean - SUSPECT_SIGMA_GATE * row.baseline_std
+            c_hi = row.baseline_mean + SUSPECT_SIGMA_GATE * row.baseline_std
             for _d, v, _r in new_samples:
-                det.update(float(v))
+                det.update(min(max(float(v), c_lo), c_hi))
             row.cusum_pos = det.cusum_pos
             row.cusum_neg = det.cusum_neg
             row.ewma_state = det.ewma_state

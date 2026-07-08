@@ -48,6 +48,7 @@ class FocusChart(ctk.CTkFrame):
 
         arr = np.array([v if v is not None else np.nan for v in values], dtype=float)
         finite = arr[np.isfinite(arr)]
+        self._median_line = None  # set by the baseline branch, drawn post-y-window
 
         # SPC overlays (Rule 1 only).
         if baseline_mean is not None:
@@ -76,7 +77,7 @@ class FocusChart(ctk.CTkFrame):
             # trend as a line through DAILY MEANS, broken across gaps >14 days
             # so idle periods don't render as fake continuity.
             ax.scatter(dates, values, s=13, color=t.ACCENT, alpha=0.5,
-                       label=f"{metric_label(metric)} (units)")
+                       label=f"{metric_label(metric)} — units")
             by_day: dict = {}
             for d, v in zip(dates, values):
                 if v is None or not np.isfinite(v):
@@ -98,27 +99,25 @@ class FocusChart(ctk.CTkFrame):
                     # the red Rule-1 markers still disclose the outliers.
                     mvals.append(float(np.median(by_day[d])))
                     prev = d
-                ax.plot(mx, mvals, lw=1.6, marker="o", ms=4, color=t.ACCENT_HOVER,
-                        alpha=0.95, label="Daily median", zorder=4)
+                self._median_line = (mx, mvals)  # drawn after the y-window is known
 
         # ---- Robust y-window. A control chart must keep the control band and the
-        # bulk of the data legible; a lone Rule-1 outlier (e.g. one 0.07 point on a
-        # 0.0015±0.0008 baseline) must NOT autoscale the axis and flatten everything.
-        # Build the window from the control limits ∪ robust data percentiles, never
-        # raw min/max. Out-of-window points are clamped to the edge below so the
-        # violation markers stay visible.
+        # bulk of the data legible; outliers (lone OR clustered — e.g. a 929 Ω
+        # scale error among 4,700s) must NOT stretch the axis and flatten
+        # everything. Both modes anchor on the central bulk (10-90 pct);
+        # out-of-window points are clamped to the edge and DISCLOSED below —
+        # in no-baseline mode they previously vanished silently.
         lo_c, hi_c = [], []
         if finite.size:
-            if baseline_mean is not None and baseline_std:
-                # Band-anchored: expand only to the central bulk (10-90 pct) so a CLUSTER
-                # of far-out points (sustained drift, not a lone outlier) can't pull the
-                # window up and crush the control band off the chart. Excursions clamp.
-                p_lo, p_hi = (np.percentile(finite, [10, 90]) if finite.size >= 10
-                              else (float(finite.min()), float(finite.max())))
+            if finite.size >= 10:
+                p_lo, p_hi = np.percentile(finite, [10, 90])
             else:
-                # No control band to anchor on: show essentially all the data.
-                p_lo, p_hi = (np.percentile(finite, [2, 98]) if finite.size >= 10
-                              else (float(finite.min()), float(finite.max())))
+                # Tiny n: window on the in-family points (within 3 sample-σ of
+                # the median) so one scale error can't stretch the axis.
+                med_v = float(np.median(finite))
+                sd = float(np.std(finite)) or abs(med_v) * 0.05 or 1.0
+                fam = [float(v) for v in finite if abs(v - med_v) <= 3 * sd]
+                p_lo, p_hi = (min(fam), max(fam)) if fam else (med_v - 1.0, med_v + 1.0)
             lo_c.append(p_lo); hi_c.append(p_hi)
         if baseline_mean is not None and baseline_std:
             lo_c.append(baseline_mean - 3.5 * baseline_std)
@@ -135,28 +134,49 @@ class FocusChart(ctk.CTkFrame):
             pad = (hi - lo) * 0.08 or abs(hi) * 0.1 or 1.0
             ax.set_ylim(lo - pad, hi + pad)
 
-        # Mark out-of-3σ points (Rule 1 violations), clamping any that fall outside
-        # the y-window to the visible edge so the violation isn't hidden off-screen.
-        if baseline_mean is not None and baseline_std:
-            ucl, lcl = baseline_mean + 3 * baseline_std, baseline_mean - 3 * baseline_std
+        # Daily median trend line. A batch-day where MOST units are corrupt has
+        # an off-scale median — drawing it (even clamped) reads as a spike. The
+        # line covers only in-window days; off-window days become a GAP, and
+        # their story is told by the clamped markers + disclosure below.
+        med = self._median_line
+        if med is not None:
             y0, y1 = ax.get_ylim()
-            ox, oy, off_vals = [], [], []
-            for d, v in zip(dates, values):
-                if v is None or not np.isfinite(v):
-                    continue
-                if v > ucl or v < lcl:
-                    cy = min(max(v, y0), y1)
-                    if cy != v:
-                        off_vals.append(v)
-                    ox.append(d); oy.append(cy)
-            if ox:
-                ax.scatter(ox, oy, color=t.TIER_OOC, s=30, zorder=5, clip_on=False)
-            if off_vals:
-                # Name how far the worst excursion actually reaches — a clamped marker
-                # alone hides magnitude, which is exactly what a QA reviewer needs.
-                ext = max(off_vals, key=abs)
-                ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {ext:.3g})",
-                        transform=ax.transAxes, ha="right", va="top", fontsize=8, color=t.TIER_OOC)
+            mx, mvals = med
+            mgapped = [v if (np.isfinite(v) and y0 <= v <= y1) else np.nan
+                       for v in mvals]
+            ax.plot(mx, mgapped, lw=1.6, marker="o", ms=4, color=t.ACCENT_HOVER,
+                    alpha=0.95, label="Daily median", zorder=4)
+            self._median_line = None
+
+        # Clamp + disclose EVERY out-of-window point (both modes). With a
+        # trained baseline, out-of-limit points are Rule-1 violations (red);
+        # without one they're still shown/counted, in warning amber (no SPC
+        # meaning, just "far outside the bulk — check the data").
+        y0, y1 = ax.get_ylim()
+        has_limits = baseline_mean is not None and bool(baseline_std)
+        ucl = (baseline_mean + 3 * baseline_std) if has_limits else None
+        lcl = (baseline_mean - 3 * baseline_std) if has_limits else None
+        ox, oy, off_vals = [], [], []
+        for d, v in zip(dates, values):
+            if v is None or not np.isfinite(v):
+                continue
+            beyond_limits = has_limits and (v > ucl or v < lcl)
+            beyond_window = v > y1 or v < y0
+            if beyond_limits or beyond_window:
+                cy = min(max(v, y0), y1)
+                if cy != v:
+                    off_vals.append(v)
+                ox.append(d); oy.append(cy)
+        mark_color = t.TIER_OOC if has_limits else t.TIER_WARNING
+        if ox:
+            ax.scatter(ox, oy, color=mark_color, s=30, zorder=5, clip_on=False)
+        if off_vals:
+            # Name how far the worst excursion actually reaches — a clamped marker
+            # alone hides magnitude, which is exactly what a QA reviewer needs.
+            ext = max(off_vals, key=abs)
+            ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {ext:.3g})",
+                    transform=ax.transAxes, ha="right", va="top", fontsize=8,
+                    color=mark_color)
         ax.legend(loc="best", fontsize=8, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
         self.canvas.draw_idle()

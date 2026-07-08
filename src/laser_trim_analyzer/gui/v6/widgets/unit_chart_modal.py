@@ -6,12 +6,21 @@ import customtkinter as ctk
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
-def compute_fail_points(errors, upper_limits, lower_limits) -> List[int]:
-    """Indices where the post-trim error violates the per-point spec band (zero-tolerance, Q1)."""
+def compute_fail_points(errors, upper_limits, lower_limits,
+                        offset: float = 0.0) -> List[int]:
+    """Indices where the CORRECTED post-trim error violates the per-point spec
+    band (zero-tolerance, Q1).
+
+    `offset` is the stored optimal_offset — grading of record is done on the
+    corrected trace. Checking raw errors marked 'fail points' on units whose
+    corrected trace is in spec (X markers contradicting 'Linearity Pass: YES',
+    found by the 2026-07-07 QA sweep on unit 8074-1/30)."""
     out = []
+    off = offset or 0.0
     for i, e in enumerate(errors or []):
         if e is None:
             continue
+        e = e + off
         up = upper_limits[i] if upper_limits and i < len(upper_limits) else None
         lo = lower_limits[i] if lower_limits and i < len(lower_limits) else None
         if (up is not None and e > up) or (lo is not None and e < lo):
@@ -122,7 +131,8 @@ class UnitChartModal(ctk.CTkToplevel):
                 "the sweep.")
             self._save_btn.configure(state="disabled")
             return
-        fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"])
+        fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"],
+                                 offset=data.get("optimal_offset") or 0.0)
         title = f"Unit {unit.get('serial', '')}"
         if data["n_tracks"] > 1:
             title += f" — track {data['track_id']} of {data['n_tracks']} (showing track 1)"
@@ -161,7 +171,8 @@ class UnitChartModal(ctk.CTkToplevel):
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
             from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
             fp = compute_fail_points(data.get("error_data"), data.get("upper_limits"),
-                                     data.get("lower_limits"))
+                                     data.get("lower_limits"),
+                                     offset=data.get("optimal_offset") or 0.0)
             meta = {"model": data.get("model") or self._unit.get("model", ""),
                     "serial": self._unit.get("serial", ""),
                     "system": data.get("system") or self._unit.get("system", ""),

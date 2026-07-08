@@ -9,13 +9,10 @@ from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS, metric_label
 RECENT_DAYS = 30
 
 
-# A recent value farther than this many baseline-σ from the baseline mean is
-# treated as suspect data, not process signal. Genuine drift shifts run 1-5σ;
-# the failure mode this guards is scale corruption (e.g. a linearity error of
-# 10.0 against a 0.03 baseline — ~380σ — which single-handedly set a +16σ
-# headline on a stable model). Suspect values are EXCLUDED from the recent
-# mean and DISCLOSED via with_meta.
-SUSPECT_SIGMA_GATE = 8.0
+# Shared with the drift engine (single source): values beyond this many
+# baseline-σ are suspect data, not process signal. Evidence displays EXCLUDE
+# and disclose them; the detector winsorizes them (drift_training).
+from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE  # noqa: E402,F401
 
 
 def compute_recent_means(db, model: str, recent_days: int = RECENT_DAYS,

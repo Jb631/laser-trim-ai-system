@@ -1,0 +1,21 @@
+focus_6607_untrimmed_resistance.png | FocusChart 6607/untrimmed_resistance n=5412 — dense batches: dots + daily median, no zigzag
+focus_6607_linearity_error.png | FocusChart 6607/linearity_error n=5402 — dense linearity: median hugs band, off-scale honest
+focus_5409B_untrimmed_resistance.png | FocusChart 5409B/untrimmed_resistance n=12 — sparse model: readable with 12 units
+focus_8150_untrimmed_resistance.png | FocusChart 8150/untrimmed_resistance n=1 — single unit: no crash, sensible axes
+focus_8887_linearity_error.png | FocusChart 8887/linearity_error n=44 — stale flagged model, full record
+focus_7458-1_max_smoothness_value.png | FocusChart 7458-1/max_smoothness_value n=112 — smoothness trend (scatter mode)
+company_90d_week.png | CompanyTrend 90d/week — linearity basis, partial marker, vintage
+company_365d_month.png | CompanyTrend 365d/month — linearity basis, partial marker, vintage
+company_36500d_month.png | CompanyTrend 36500d/month — linearity basis, partial marker, vintage
+company_30d_week.png | CompanyTrend 30d/week — linearity basis, partial marker, vintage
+mini_trim.png | MiniTrend trim pts=3397 — sparkline follows linearity basis
+mini_ft.png | MiniTrend ft pts=2436 — sparkline follows linearity basis
+history_6607_measured_electrical_angle.png | HistoryTab 6607/measured_electrical_angle — panel titles clear of ticks
+history_6607_untrimmed_resistance.png | HistoryTab 6607/untrimmed_resistance — panel titles clear of ticks
+history_8150_untrimmed_resistance.png | HistoryTab 8150/untrimmed_resistance — panel titles clear of ticks
+unit_screen_90636.png | Unit modal screen chart aid=90636 fails=22 — fail-heavy unit (James's SN153)
+unit_export_90636.png | print export aid=90636 — fail-heavy unit (James's SN153)
+unit_screen_88725.png | Unit modal screen chart aid=88725 fails=0 — multi-track unit (track selector target)
+unit_export_88725.png | print export aid=88725 — multi-track unit (track selector target)
+evidence_6607.xlsx | 3 sheets, full history
+copy_summary_8887.txt | suspect-exclusion disclosure expected
