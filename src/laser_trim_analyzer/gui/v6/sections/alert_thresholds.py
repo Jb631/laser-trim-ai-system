@@ -50,11 +50,26 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
     SensitivitySlider(parent, theme=t, initial=current, on_change=on_change)\
         .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
 
-    # Educational: what each watched metric means.
+    # Educational: what each watched metric means — plain language, since this
+    # list is the only place a user meets the full metric set (jargon sweep).
+    _GLOSS = {
+        "untrimmed_error_max": "worst pre-trim linearity error — incoming element quality",
+        "untrimmed_sigma_gradient": "pre-trim noise level of the element",
+        "sigma_gradient": "post-trim noise level",
+        "untrimmed_resistance": "element resistance before trim",
+        "linearity_error": "worst post-trim error vs spec (the customer requirement)",
+        "measured_electrical_angle": "measured electrical angle of the element",
+        "trim_pass_count": "how many trim passes units needed",
+        "resistance_change_percent": "how much trimming moved resistance",
+        "max_smoothness_value": "worst output-smoothness deviation",
+        "composite_trim_risk_score": "ML score combining the trim-effort signals above",
+    }
     desc = ctk.CTkFrame(parent, fg_color="transparent")
     desc.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
     for m in WATCHED_METRICS:
-        ctk.CTkLabel(desc, text=f"• {metric_label(m)}", font=t.font(t.SIZE_CAPTION),
+        gloss = _GLOSS.get(m)
+        text = f"• {metric_label(m)}" + (f" — {gloss}" if gloss else "")
+        ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
                      text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
 
     save_btn = ctk.CTkButton(parent, text="Save preset", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,

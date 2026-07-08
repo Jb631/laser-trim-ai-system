@@ -4,7 +4,8 @@ from typing import Callable, Dict
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.ml.drift_types import ModelDriftStatus, WATCHED_METRICS, metric_label
+from laser_trim_analyzer.ml.drift_types import (
+    AlertType, ModelDriftStatus, WATCHED_METRICS, metric_label)
 
 _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (mean±std)", "Recent", "Shift (σ)"]
 
@@ -53,8 +54,12 @@ class _MetricRow(ctk.CTkFrame):
         shift = ((recent_val - ms.baseline_mean) / ms.baseline_std
                  if (recent_val is not None and ms.baseline_std) else None)
         shift_txt = f"{shift:+.2f}σ" if shift is not None else "—"
+        # Humanized alert type — the raw enum value ("slow_drift") leaked into
+        # this table while the Triage cards humanized it (2026-07-07 sweep).
+        alert_txt = ("Step change" if ms.alert_type == AlertType.STEP_CHANGE
+                     else "Slow drift") if ms.alert_type else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
-                 ms.alert_type.value if ms.alert_type else "—",
+                 alert_txt,
                  f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, shift_txt]
         for i in range(len(cells)):
             self.grid_columnconfigure(i, weight=1, uniform="dm")

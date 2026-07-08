@@ -84,6 +84,23 @@ src/laser_trim_analyzer/
 3. **Self-contained deployment** - No external config files
 4. **Keep it simple** - Avoid over-engineering
 
+### QA Sweeps (mandatory before calling any change done)
+Two standing harnesses exercise the whole app against the real DB — run BOTH
+after any change to charts, queries, exports, or page data-loaders:
+1. `python scripts/chart_qa_render_all.py` — renders every v6 chart across a
+   real-data variant matrix (dense/sparse/single/stale models, fail-heavy and
+   multi-track units). INSPECT the output PNGs; don't just check it ran.
+2. `python scripts/app_qa_sweep.py` — 35+ feature/invariant checks (dashboard
+   vs raw SQL, triage==preview, preset monotonicity, verdict-vs-failpoint
+   consistency, export schemas/row counts, pipeline on test_files, ingest
+   guard). Exit code = FAIL count.
+Weak assertions are forbidden in the sweeps: a check that can pass on an
+ERROR result is a bug (that exact pattern let a missing dependency read as
+green once). New features get a sweep entry in the same commit.
+5. **UI thread discipline** - workers NEVER call Tk; post via gui/v6/ui_dispatch
+6. **Domain rule** - linearity is the zero-tolerance customer disposition;
+   sigma is an internal drift-watch signal, never a rejection
+
 ### Code Style
 - Type hints where practical
 - Logging with `logging` module
