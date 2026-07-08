@@ -72,7 +72,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
         ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
                      text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
 
-    save_btn = ctk.CTkButton(parent, text="Save preset", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
+    save_btn = ctk.CTkButton(parent, text="Apply preset", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                              text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)
 
     def save():
@@ -84,8 +84,8 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
             pass
         # Recompute thresholds so Triage reflects the new preset (get_drifting_models ignores its arg).
         threading.Thread(target=lambda: apply_sensitivity_preset(app.db, preset), daemon=True).start()
-        save_btn.configure(text="Saved ✓")
-        save_btn.after(1500, lambda: save_btn.winfo_exists() and save_btn.configure(text="Save preset"))
+        save_btn.configure(text="Applied ✓ (recomputing thresholds…)")
+        save_btn.after(2500, lambda: save_btn.winfo_exists() and save_btn.configure(text="Apply preset"))
 
     save_btn.configure(command=save)
     save_btn.pack(side="top", anchor="w")

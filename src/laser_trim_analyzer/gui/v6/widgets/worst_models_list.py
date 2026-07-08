@@ -10,7 +10,7 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 # Strongly POSITIVE = passing trim but failing FT — escapes (worse). Ported
 # from V5 Quality Health's ranked table (2026-07-07, feature restoration).
 _COLS = [("model", "Model"), ("units", "Units"), ("trim_rate", "Trim %"),
-         ("ft_rate", "FT %"), ("gap", "Gap")]
+         ("ft_rate", "FT %"), ("gap", "Gap (pts)")]
 
 
 def _fmt(key, value) -> str:
@@ -31,7 +31,15 @@ class WorstModelsList(ctk.CTkFrame):
         self._rows: List["_WorstRow"] = []
         t = theme
         ctk.CTkLabel(self, text="Lowest-yield models", font=t.font(t.SIZE_HEADING, "bold"),
-                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # Column key (live-walk finding, 2026-07-08: 'Gap -62' meant nothing
+        # cold). Same treatment as the sigma gloss: one plain-language line.
+        ctk.CTkLabel(self, text=("Trim % / FT % = linearity yield in the window. "
+                                 "Gap = Trim − FT in points; negative = grading worse at trim "
+                                 "than at final test (overkill pattern). Models with ≥5 units."),
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                     anchor="w", justify="left", wraplength=1200)\
+            .pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         header = ctk.CTkFrame(self, fg_color=t.CARD)
         header.pack(side="top", fill="x")
         header.grid_columnconfigure(tuple(range(len(_COLS))), weight=1, uniform="wm")

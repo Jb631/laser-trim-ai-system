@@ -69,6 +69,24 @@ class ThemeManager:
             DriftTier.OUT_OF_CONTROL: (self.TIER_OOC_BG, self.TIER_OOC),
         }.get(tier, (self.SURFACE, self.TEXT_PRIMARY))
 
+    @staticmethod
+    def fmt_measure(v, sig: int = 4) -> str:
+        """Human-readable measurement: thousands separators instead of e+04.
+        A QA reader sees 21,270 Ω on the chart axis but '2.127e+04' in the
+        table read as noise (live-walk finding, 2026-07-08). Scientific
+        notation only survives for genuinely extreme magnitudes."""
+        if v is None:
+            return "—"
+        try:
+            av = abs(float(v))
+        except (TypeError, ValueError):
+            return str(v)
+        if av >= 1e7 or (av != 0 and av < 1e-4):
+            return f"{v:.{sig}g}"
+        if av >= 1000:
+            return f"{v:,.0f}"
+        return f"{v:.{sig}g}"
+
     def tier_dot_color(self, tier: DriftTier) -> str:
         """Visible dot color. STABLE → muted gray (NOT SURFACE, else invisible)."""
         if tier == DriftTier.STABLE:

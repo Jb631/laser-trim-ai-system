@@ -46,12 +46,13 @@ class CompanyTrendChart(ctk.CTkFrame):
         self._vol_ax.tick_params(colors=t.TEXT_DISABLED, labelsize=8)
         self._ax.title.set_color(t.TEXT_PRIMARY)
 
-    def set_data(self, trend: Optional[Dict[str, Any]], period_label: str = "week") -> None:
+    def set_data(self, trend: Optional[Dict[str, Any]], period_label: str = "week",
+                 note: Optional[str] = None) -> None:
         """Render the trend. NEVER fails blank: any internal error draws a
         visible message in the axes (a swallowed exception once left bare
         0-1 axes with no explanation — worse than an error)."""
         try:
-            self._set_data(trend, period_label)
+            self._set_data(trend, period_label, note=note)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("Company trend render failed")
@@ -67,7 +68,8 @@ class CompanyTrendChart(ctk.CTkFrame):
             except Exception:
                 pass
 
-    def _set_data(self, trend: Optional[Dict[str, Any]], period_label: str = "week") -> None:
+    def _set_data(self, trend: Optional[Dict[str, Any]], period_label: str = "week",
+                  note: Optional[str] = None) -> None:
         t = self.theme
         ax, vol = self._ax, self._vol_ax
         ax.clear()
@@ -134,6 +136,12 @@ class CompanyTrendChart(ctk.CTkFrame):
             ax.text(0.995, 1.02, f"Data through {data_through:%Y-%m-%d}",
                     transform=ax.transAxes, ha="right", va="bottom",
                     fontsize=7.5, color=t.TEXT_SECONDARY)
+        # Aggregation override disclosure (e.g. weekly coarsened to monthly for
+        # an all-time window) — the toggle no longer matches what's drawn, so
+        # the chart must say why.
+        if note:
+            ax.text(0.01, 0.03, note, transform=ax.transAxes, ha="left",
+                    va="bottom", fontsize=7.5, color=t.TIER_WARNING)
 
         # Y window: show the informative band, not always 0-100.
         rates = [r["linearity_yield"] for r in company if r["linearity_yield"] is not None]

@@ -18,12 +18,24 @@ class BrowseZone(ctk.CTkFrame):
         self._rows: List["_BrowseRow"] = []
         t = theme
         ctk.CTkLabel(self, text="All models", font=t.font(t.SIZE_HEADING, "bold"),
-                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_SM))
-        self._search_var = ctk.StringVar()
-        self._search_var.trace_add("write", lambda *_: self._render())
-        ctk.CTkEntry(self, textvariable=self._search_var, placeholder_text="Search models…",
+                     text_color=t.TEXT_PRIMARY, anchor="w").pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # Row anatomy, spelled out (live-walk finding, 2026-07-08: unexplained
+        # colored dots + an unlabeled date column read as decoration).
+        ctk.CTkLabel(self, text=("Dot = drift status: red out-of-control · orange drift · "
+                                 "yellow warning · gray stable/untrained. Date = last processed. "
+                                 "'Active' scope = models with recent data or pinned in "
+                                 "Settings → Active Models."),
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                     anchor="w", justify="left", wraplength=1200)\
+            .pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # NOTE: no textvariable — CTkEntry silently drops placeholder_text when
+        # a textvariable is attached (the 'mystery empty box' finding). Filter
+        # reacts on KeyRelease instead.
+        self._search_entry = ctk.CTkEntry(self, placeholder_text="Type to filter models…",
                      font=t.font(t.SIZE_BODY), fg_color=t.CARD, border_color=t.BORDER,
-                     text_color=t.TEXT_PRIMARY).pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+                     text_color=t.TEXT_PRIMARY)
+        self._search_entry.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        self._search_entry.bind("<KeyRelease>", lambda e: self._render())
         self._cap_label = ctk.CTkLabel(self, text="", font=t.font(t.SIZE_CAPTION),
                                        text_color=t.TEXT_SECONDARY, anchor="w")
         self._cap_label.pack(side="top", fill="x")
@@ -35,13 +47,16 @@ class BrowseZone(ctk.CTkFrame):
         self._render()
 
     def set_filter(self, text: str) -> None:
-        self._search_var.set(text)
+        self._search_entry.delete(0, "end")
+        if text:
+            self._search_entry.insert(0, text)
+        self._render()
 
     def _render(self) -> None:
         for r in self._rows:
             r.destroy()
         self._rows.clear()
-        flt = self._search_var.get().lower()
+        flt = self._search_entry.get().strip().lower()
         matches = [m for m in self._models if not flt or flt in m.model.lower()]
         for m in matches[:ROW_CAP]:
             row = _BrowseRow(self._list, summary=m, theme=self.theme, on_click=self._cb)

@@ -50,14 +50,22 @@ class TrimFtTab(ctk.CTkScrollableFrame):
             self._kv("Overkills — failed trim but passed final test", str(d["overkills"]),
                      color=t.TIER_WARNING if d["overkills"] else None)
             self._kv("Agreement", f"{pct(d['agreement_rate'])}   ({d['agreements']}/{d['linked']})")
+            def _serials(units, cap=25):
+                # Numeric-aware sort (string sort gave '1, 10, 102, 13, 130' —
+                # live-walk finding, 2026-07-08) and an EXPLICIT '+N more'
+                # instead of a truncated list trailing off mid-comma.
+                uniq = sorted(set(str(u) for u in units),
+                              key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 0, x))
+                shown = ", ".join(uniq[:cap])
+                if len(uniq) > cap:
+                    shown += f"  (+{len(uniq) - cap} more — see the evidence pack export)"
+                return shown
             if d["escape_units"]:
-                uniq = sorted(set(str(s) for s in d["escape_units"]))
-                shown = ", ".join(uniq[:30]) + (" …" if len(uniq) > 30 else "")
-                self._line(f"Escaped serials (passed trim, failed FT): {shown}", t.TIER_OOC)
+                self._line("Escaped serials (passed trim, failed FT): "
+                           f"{_serials(d['escape_units'])}", t.TIER_OOC)
             if d["overkill_units"]:
-                uniq = sorted(set(str(s) for s in d["overkill_units"]))
-                shown = ", ".join(uniq[:30]) + (" …" if len(uniq) > 30 else "")
-                self._line(f"Overkill serials (failed trim, passed FT): {shown}", t.TIER_WARNING)
+                self._line("Overkill serials (failed trim, passed FT): "
+                           f"{_serials(d['overkill_units'])}", t.TIER_WARNING)
 
         # --- Trim attempts (how many trim passes) ---
         self._header("Trim attempts (how many trim passes per unit)")

@@ -299,6 +299,33 @@ def main() -> int:
           opts is not None and opts["delete_suspect_quality"] is True
           and opts["delete_before_date"] is not None)
 
+    # ---- usability glosses: every symbol/number the live walk (2026-07-08)
+    # found unexplained must keep its on-screen decoder line -----------------
+    _GLOSSES = [
+        ("src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py",
+         "σ = standard deviations", "triage cards explain σ"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "σ = standard deviations", "model page explains σ"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
+         "Gap = Trim − FT", "lowest-yield list explains Gap"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",
+         "Dot = drift status", "browse list explains dots/date/Active"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
+         '"Sigma gradient"', "units table headers are full words"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/units_tab.py",
+         '"Linearity error"', "units table headers are full words (2)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/focus_chart.py",
+         "Beyond ±3σ / off-scale", "focus chart names its red markers"),
+        ("src/laser_trim_analyzer/gui/v6/pages/dashboard_page.py",
+         "matched to trims", "FT panel count says what 'matched' means"),
+    ]
+    for path, needle, what in _GLOSSES:
+        try:
+            ok = needle in open(REPO / path, encoding="utf-8").read()
+        except OSError:
+            ok = False
+        check(f"usability gloss: {what}", ok)
+
     # ---- data quality surface: future-dated records (mislabeled files) ------
     horizon = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     for table in ("analysis_results", "final_test_results"):

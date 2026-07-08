@@ -23,7 +23,7 @@ class SettingsPage(PageBase):
         scroll.pack(fill="both", expand=True)
         for title, expanded, build in (
             ("Alert Thresholds", True, build_alert_thresholds_section),
-            ("Active Models (MPS)", False, build_active_models_section),
+            ("Active Models (MPS — your production schedule)", False, build_active_models_section),
             ("Per-model Specs", False, build_per_model_specs_section),
             ("ML Training", False, build_ml_training_section),
             ("Pricing", False, build_pricing_section),

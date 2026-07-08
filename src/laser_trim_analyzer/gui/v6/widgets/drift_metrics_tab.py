@@ -47,7 +47,7 @@ class _MetricRow(ctk.CTkFrame):
         self.metric = ms.metric
         self._cb = on_click
         recent_val = recent_override if recent_override is not None else ms.recent_mean
-        recent = f"{recent_val:.4g}" if recent_val is not None else "—"
+        recent = self.theme.fmt_measure(recent_val)
         # Honest shift, verifiable against the Baseline & Recent cells beside it:
         # (recent - baseline) / baseline_std. Replaces the old `magnitude` (CUSUM
         # distance past the limit), which couldn't be reconciled with the numbers shown.
@@ -60,7 +60,7 @@ class _MetricRow(ctk.CTkFrame):
                      else "Slow drift") if ms.alert_type else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  alert_txt,
-                 f"{ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}", recent, shift_txt]
+                 f"{self.theme.fmt_measure(ms.baseline_mean)} ± {self.theme.fmt_measure(ms.baseline_std)}", recent, shift_txt]
         for i in range(len(cells)):
             self.grid_columnconfigure(i, weight=1, uniform="dm")
         for i, txt in enumerate(cells):

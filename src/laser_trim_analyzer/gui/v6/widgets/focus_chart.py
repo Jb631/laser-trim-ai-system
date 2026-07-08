@@ -149,8 +149,8 @@ class FocusChart(ctk.CTkFrame):
             ax.set_ylim(lo - pad, hi + pad)
         if limits_off_scale is not None:
             ax.text(0.01, 0.97,
-                    f"±3σ control limits off-scale ({limits_off_scale[0]:.3g} … "
-                    f"{limits_off_scale[1]:.3g}) — baseline spans mixed history",
+                    f"±3σ control limits off-scale ({t.fmt_measure(limits_off_scale[0], 3)} … "
+                    f"{t.fmt_measure(limits_off_scale[1], 3)}) — baseline spans mixed history",
                     transform=ax.transAxes, ha="left", va="top", fontsize=7.5,
                     color=t.TIER_WARNING)
 
@@ -189,12 +189,17 @@ class FocusChart(ctk.CTkFrame):
                 ox.append(d); oy.append(cy)
         mark_color = t.TIER_OOC if has_limits else t.TIER_WARNING
         if ox:
-            ax.scatter(ox, oy, color=mark_color, s=30, zorder=5, clip_on=False)
+            # Named in the legend — unexplained red dots were the most alarming
+            # thing on the page (live-walk finding, 2026-07-08).
+            mark_label = ("Beyond ±3σ / off-scale" if has_limits
+                          else "Far outside displayed range")
+            ax.scatter(ox, oy, color=mark_color, s=30, zorder=5, clip_on=False,
+                       label=mark_label)
         if off_vals:
             # Name how far the worst excursion actually reaches — a clamped marker
             # alone hides magnitude, which is exactly what a QA reviewer needs.
             ext = max(off_vals, key=abs)
-            ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {ext:.3g})",
+            ax.text(0.99, 0.97, f"▲ {len(off_vals)} off-scale (max {t.fmt_measure(ext, 3)})",
                     transform=ax.transAxes, ha="right", va="top", fontsize=8,
                     color=mark_color)
         # ---- Explicit x-window (2026-07-08). Autoscale is LAZY and, on this

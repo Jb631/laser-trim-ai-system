@@ -93,20 +93,30 @@ class DashboardPage(PageBase):
             empty = {"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0,
                      "gradeable": 0, "total": 0, "pass_rate": None, "trend": []}
             trim, ft, worst, total = dict(empty), dict(empty), [], 0
+        # Weekly buckets over the 'All' window = 600+ points smeared into an
+        # unreadable block (live-walk finding, 2026-07-08). Coarsen to monthly
+        # when the window is too long for weeks, and SAY so on the chart.
+        days_back = _WINDOW_DAYS.get(self._window_choice, 90)
+        period = _TREND_PERIODS.get(self._trend_period_choice, "week")
+        trend_note = None
+        if period == "week" and days_back > 730:
+            period = "month"
+            trend_note = "shown monthly — weekly is too dense for this window"
         try:
             company_trend = self.app.db.get_company_yield_trend(
-                days_back=_WINDOW_DAYS.get(self._window_choice, 90),
-                period=_TREND_PERIODS.get(self._trend_period_choice, "week"))
+                days_back=days_back, period=period)
         except Exception:
             company_trend = None
-        return trim, ft, worst, total, company_trend
+        return trim, ft, worst, total, company_trend, period, trend_note
 
-    def _apply(self, trim, ft, worst, total, company_trend=None):
+    def _apply(self, trim, ft, worst, total, company_trend=None,
+               period="week", trend_note=None):
         self._trim_panel.set_yield(trim, total_label=f"{trim['total']} units")
-        self._ft_panel.set_yield(ft, total_label=f"{ft['total']} matched")
+        self._ft_panel.set_yield(
+            ft, total_label=f"{ft['total']} final-test records (matched to trims)")
         try:
             self._company_trend.set_data(
-                company_trend, period_label=_TREND_PERIODS.get(self._trend_period_choice, "week"))
+                company_trend, period_label=period, note=trend_note)
         except Exception:
             # Isolate the trend from the rest of the dashboard, but NEVER
             # silently (a swallowed error rendered as a blank chart).

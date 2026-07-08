@@ -11,7 +11,7 @@ import customtkinter as ctk
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Status"),
-            ("sigma_gradient", "Sigma"), ("linearity_error", "Lin Err")]
+            ("sigma_gradient", "Sigma gradient"), ("linearity_error", "Linearity error")]
 
 
 class UnitsTab(ctk.CTkFrame):
@@ -98,12 +98,18 @@ class _UnitRow(ctk.CTkFrame):
         super().__init__(master, fg_color=theme.SURFACE)
         self.unit = unit
         self._cb = on_click
+        # Status gets tier color so a fail-heavy list reads at a glance
+        # (live-walk finding, 2026-07-08: a column of plain-white 'Fail').
+        _status_color = {"Fail": theme.TIER_OOC, "FAIL": theme.TIER_OOC,
+                         "Warning": theme.TIER_WARNING, "WARNING": theme.TIER_WARNING}
         for key, _ in _COLUMNS:
             v = unit.get(key)
             txt = (v.strftime("%Y-%m-%d") if hasattr(v, "strftime")
                    else f"{v:.4g}" if isinstance(v, float) else str(v) if v is not None else "—")
+            color = _status_color.get(txt, theme.TEXT_PRIMARY) if key == "overall_status" \
+                else theme.TEXT_PRIMARY
             lbl = ctk.CTkLabel(self, text=txt, font=theme.font(theme.SIZE_BODY),
-                               text_color=theme.TEXT_PRIMARY)
+                               text_color=color)
             lbl.pack(side="left", expand=True, fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
             lbl.bind("<Button-1>", lambda e: self._on_click())
         self.bind("<Button-1>", lambda e: self._on_click())

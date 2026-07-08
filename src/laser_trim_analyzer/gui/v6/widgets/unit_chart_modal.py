@@ -83,7 +83,12 @@ class UnitChartModal(ctk.CTkToplevel):
         super().__init__(master)
         self.theme = theme
         self._unit = unit
-        self.title(f"Unit {unit.get('serial', '')} — {unit.get('file_date', '')}")
+        status = str(unit.get("overall_status", "") or "").strip()
+        date_only = str(unit.get("file_date", "")).split(" ")[0]
+        # Day-granularity data: '2026-05-27 00:00:00' is noise; status in the
+        # title answers 'is this unit good?' without reading the chart.
+        self.title(f"Unit {unit.get('serial', '')} — {date_only}"
+                   + (f" — {status.upper()}" if status else ""))
         self.geometry("900x600")
         self.configure(fg_color=theme.SURFACE)
         self.transient(master)

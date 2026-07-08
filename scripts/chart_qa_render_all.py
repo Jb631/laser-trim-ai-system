@@ -70,6 +70,13 @@ class _Theme:
     RADIUS_SM=6; RADIUS_MD=10; SIZE_CAPTION=11; SIZE_BODY=13
     SIZE_HEADING=15; SIZE_TITLE=18
     def font(self, *a, **k): return None
+    @staticmethod
+    def fmt_measure(v, sig: int = 4) -> str:
+        if v is None: return "—"
+        av = abs(float(v))
+        if av >= 1e7 or (av != 0 and av < 1e-4): return f"{v:.{sig}g}"
+        if av >= 1000: return f"{v:,.0f}"
+        return f"{v:.{sig}g}"
 
 
 def _focus():
@@ -204,15 +211,27 @@ def main(out_dir: str) -> int:
             f"WINDOW-SWITCH REGRESSION: 90d xlim spans {narrow_span:.0f} days "
             f"(data {data_span:.0f}d; previous All render {wide_span:.0f}d) — "
             "x-axis is holding the old window")
+    # Red out-of-limit markers must be NAMED in the legend (unexplained red
+    # dots finding, 2026-07-08). 8340-1/untrimmed_error_max has off-scale
+    # points, so the entry must be present.
+    leg = fc._ax.get_legend()
+    leg_texts = [t_.get_text() for t_ in (leg.get_texts() if leg else [])]
+    if not any("Beyond ±3σ" in t_ for t_ in leg_texts):
+        raise AssertionError(f"legend misses the red-marker entry: {leg_texts}")
     _save(fc, out / "focus_8340-1_window_switch.png", manifest,
-          f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window")
+          f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; red markers in legend")
 
     # ---- 2. Company trend ----
     for days, period in [(90, "week"), (365, "month"), (36500, "month"), (30, "week")]:
         cc = _company()
-        cc.set_data(db.get_company_yield_trend(days_back=days, period=period), period)
+        # All-time + weekly is auto-coarsened by the Dashboard; render the
+        # coarsened form WITH its disclosure note (2026-07-08).
+        note = ("shown monthly — weekly is too dense for this window"
+                if days > 730 else None)
+        cc.set_data(db.get_company_yield_trend(days_back=days, period=period), period, note=note)
         _save(cc, out / f"company_{days}d_{period}.png", manifest,
-              f"CompanyTrend {days}d/{period} — linearity basis, partial marker, vintage")
+              f"CompanyTrend {days}d/{period} — linearity basis, partial marker, vintage"
+              + (", coarsen note" if note else ""))
 
     # ---- 3. Mini trends ----
     from laser_trim_analyzer.core.yield_stats import compute_yield
