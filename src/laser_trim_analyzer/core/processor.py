@@ -29,7 +29,8 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from laser_trim_analyzer.core.parser import ExcelParser, detect_file_type
+from laser_trim_analyzer.core.parser import (
+    ExcelParser, NonTrimWorkbookError, detect_file_type)
 from laser_trim_analyzer.core.analyzer import Analyzer
 from laser_trim_analyzer.core.models import (
     FileMetadata,
@@ -180,7 +181,14 @@ class Processor:
         # Process as trim file (existing logic)
         try:
             # Parse file
-            parsed = self.parser.parse_file(file_path)
+            try:
+                parsed = self.parser.parse_file(file_path)
+            except NonTrimWorkbookError as e:
+                # Parameter/report workbook named like test data — a known
+                # non-data layout. Skip like non_trim; never an ERROR row.
+                logger.info(f"Skipping parameter/report workbook {file_path.name}: {e}")
+                self._mark_file_skipped(file_path)
+                return None
             metadata = parsed["metadata"]
             tracks_data = parsed["tracks"]
             file_hash = parsed["file_hash"]
