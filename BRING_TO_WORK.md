@@ -5,9 +5,17 @@ your WORK database is a separate copy, three one-time steps run there on day
 one. Everything is a button — no terminal needed.
 
 ## 1. Get the code onto the work machine
-Copy the whole project folder (or `git pull` if the work machine tracks the
-repo). Launch as usual — Windows: `deploy.bat` / `run_analyzer.bat`; the V6
-UI starts with the `--v6` flag (same as you've been using).
+Copy the whole project folder EXCEPT `data/` (or `git pull` if the work
+machine tracks the repo). Two rules:
+- **Never bring the home `data/analysis.db` to work** — the work database is
+  the live one; keep it. Put it at `data\analysis.db` inside the new folder
+  (create the `data` folder and copy the DB file over from the old install).
+- Don't copy `.venv` — it gets rebuilt on the work machine.
+
+Launch with **`run_v6.bat`** (new, replaces `run_analyzer.bat`): it has no
+hardcoded paths, builds `.venv` and installs dependencies on first run, and
+starts the V6 UI. The old `run_analyzer.bat` pointed at the 3.0.2 folder and
+launched V5 — don't use it.
 
 ## 2. First launch (automatic)
 The app upgrades the work database by itself the first time it opens:
