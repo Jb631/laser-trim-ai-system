@@ -245,7 +245,9 @@ def main() -> int:
     from laser_trim_analyzer.core.processor import Processor
     from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
     from laser_trim_analyzer.core.parser import detect_file_type
-    tf_dir = REPO / "test_files"
+    # Pipeline input: the tracked 645-model regression corpus (test_files/
+    # bulk samples were deleted 2026-07-08 to reclaim 2.3GB — user request).
+    tf_dir = REPO / "Work Files" / "Sample_Base_2026-04-10"
     excel = sorted([p for p in tf_dir.rglob("*.xls*") if p.is_file()])[:3]
     if excel:
         proc = Processor(use_ml=False)
@@ -266,7 +268,7 @@ def main() -> int:
             except Exception as exc:
                 check(f"pipeline: {f.name[:40]}", False, f"{type(exc).__name__}: {exc}")
     else:
-        warn("pipeline: no test files found under test_files/")
+        warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
         track_id="T1", status=AnalysisStatus.PASS, linearity_spec=0.05,
