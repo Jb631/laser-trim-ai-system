@@ -27,6 +27,16 @@ Nothing to click; it logs what it did.
 
 Done. Process files as normal — Triage now updates itself after every batch.
 
+## 4. Two things to watch the first week
+1. **First LTS3 batch.** LTS3 support is tested against synthetic files but no
+   real third-laser file has been through it yet (no sample existed). Process
+   the first LTS3 folder, then check the unit shows System C on the Model
+   page. If a file errors, it will say so loudly — send it to Claude.
+2. **Fix the mislabeled FT file.** `8074-sn4 blue-1_12-18-2026_9-55 AM.xls`
+   (model 8074, SN 4) carries a future date from a typo in the filename. The
+   dashboard excludes and flags it; correct the filename to the real test
+   date and reprocess (or delete the record). The ⚠ note clears itself.
+
 ## What changed since the version you had at work
 - **Processing is fast again.** The "checking against database" hang is fixed
   (the scan no longer re-reads every known file over the network).
