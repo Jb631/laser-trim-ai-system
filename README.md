@@ -70,7 +70,7 @@ python src/__main__.py
 ### Deployed Executable (Windows)
 
 ```bash
-deploy.bat
+run_v6.bat
 ```
 
 This creates a versioned folder (e.g., `LaserTrimAnalyzer-v5.0.0-YYYYMMDD/`) ready for distribution.

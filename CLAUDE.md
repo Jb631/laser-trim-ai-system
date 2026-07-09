@@ -4,10 +4,9 @@
 
 **Before starting work:**
 1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
-2. Read `docs/UPGRADE_TRACKER.md` - Check current phase and next pending task
-3. Read the corresponding section in `docs/UPGRADE_PLAN_V4.md` for full details on the task
-4. Continue from where we left off - don't start new work without checking progress
-5. Explain code changes so James can learn and modify things himself
+2. Read `docs/V6_FINISH_PLAN_2026-07-06.md` and the newest `docs/SESSION_*.md` for current state and next tasks
+3. Continue from where we left off - don't start new work without checking progress
+4. Explain code changes so James can learn and modify things himself
 
 ---
 
@@ -33,14 +32,14 @@
 ## Commands
 
 ```bash
-# Run application
-python src/__main__.py
+# Run V6 UI (daily driver)      Windows: run_v6.bat   Mac: launch_v6.command
+python -m src --v6
+
+# Run V5 classic UI (fallback)  Windows: run_v5.bat   Mac: launch_app.command
+python -m src
 
 # Install dependencies
 pip install -e .
-
-# Build deployment (Windows)
-deploy.bat
 ```
 
 ---
@@ -117,11 +116,11 @@ green once). New features get a sweep entry in the same commit.
 ### V5 — Released (tag `v5.0.0`, 2026-04-16)
 `pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
 
-**Current focus:** `docs/V6_FINISH_PLAN_2026-07-06.md` — V6 (branch `V6`, launch with `--v6`) finish-line plan from a full-code review. P0/P1 fixes landed 2026-07-06 (see `docs/SESSION_2026-07-06.md`); remaining: WARNING-status recompute, Fix Missing Tracks for NULL-array rows, 3rd-laser (System C) support (blocked on sample file), consistency polish. Older: `docs/BUGFIX_PLAN_V5.md`.
+**Current focus:** V6 shipped to `main` + `V6` (merge `fffe2d7`, 2026-07-08) — see `docs/SESSION_2026-07-08.md` and `BRING_TO_WORK.md`. Both UIs stay for now (V5 = fallback, has the trim-vs-FT overlay). Remaining: Fix Missing Tracks for NULL-array rows, trim-vs-FT overlay in V6, first real LTS3 file validation, eventual V5 page retirement. Older plans live in `archive/completed_docs/`.
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
-**Plan:** `docs/UPGRADE_PLAN_V4.md`
-**Tracker:** `docs/UPGRADE_TRACKER.md`
+**Plan:** `archive/completed_docs/UPGRADE_PLAN_V4.md`
+**Tracker:** `archive/completed_docs/UPGRADE_TRACKER.md`
 
 V4 transformed the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
 - **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation)

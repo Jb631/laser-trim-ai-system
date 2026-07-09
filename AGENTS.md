@@ -4,10 +4,9 @@
 
 **Before starting work:**
 1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
-2. Read `docs/UPGRADE_TRACKER.md` - Check current phase and next pending task
-3. Read the corresponding section in `docs/UPGRADE_PLAN_V4.md` for full details on the task
-4. Continue from where we left off - don't start new work without checking progress
-5. Explain code changes so James can learn and modify things himself
+2. Read `docs/V6_FINISH_PLAN_2026-07-06.md` and the newest `docs/SESSION_*.md` for current state and next tasks
+3. Continue from where we left off - don't start new work without checking progress
+4. Explain code changes so James can learn and modify things himself
 
 ---
 
@@ -31,14 +30,14 @@
 ## Commands
 
 ```bash
-# Run application
-python src/__main__.py
+# Run V6 UI (daily driver)      Windows: run_v6.bat   Mac: launch_v6.command
+python -m src --v6
+
+# Run V5 classic UI (fallback)  Windows: run_v5.bat   Mac: launch_app.command
+python -m src
 
 # Install dependencies
 pip install -e .
-
-# Build deployment (Windows)
-deploy.bat
 ```
 
 ---
@@ -96,8 +95,8 @@ src/laser_trim_analyzer/
 ## Active Development
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
-**Plan:** `docs/UPGRADE_PLAN_V4.md`
-**Tracker:** `docs/UPGRADE_TRACKER.md`
+**Plan:** `archive/completed_docs/UPGRADE_PLAN_V4.md`
+**Tracker:** `archive/completed_docs/UPGRADE_TRACKER.md`
 
 V4 transforms the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
 - **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation) — COMPLETE
