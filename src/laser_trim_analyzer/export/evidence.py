@@ -181,11 +181,16 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
              .join(DBTR, DBTR.analysis_id == DBAR.id).filter(DBAR.model == model))
         if cutoff is not None:
             q = q.filter(DBAR.file_date >= cutoff)
+        def _d(v):
+            # Day-granularity data: '2026-05-27 00:00:00' in a cell is noise
+            # (work finding #6, 2026-07-10).
+            return v.strftime("%Y-%m-%d") if v is not None else None
+
         unit_rows = []
         for r in q.order_by(DBAR.file_date.desc()).all():
             ft = ft_by_trim.get(r[0])
             unit_rows.append({
-                "Serial": r[1], "Date": r[2],
+                "Serial": r[1], "Date": _d(r[2]),
                 "Status": getattr(r[3], "value", str(r[3])),
                 "System": getattr(r[4], "value", str(r[4])),
                 "Track": r[5],
@@ -196,9 +201,42 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                 "Composite risk": r[14],
                 "Sigma pass": r[15], "Linearity pass": r[16],
                 "FT result": ft[0] if ft else None,
-                "FT date": ft[1] if ft else None,
+                "FT date": _d(ft[1]) if ft else None,
                 "FT match %": (round(ft[2] * 100) if ft and ft[2] is not None
                                else None)})
+
+        # Final-test units sheet (work findings #3/#8, 2026-07-10): every FT
+        # record for the model — the "did it pass at the last station" list.
+        ft_rows_sheet = []
+        ftq = s.query(DBFT.serial, DBFT.file_date, DBFT.overall_status,
+                      DBFT.linked_trim_id, DBFT.match_confidence)\
+               .filter(DBFT.model == model)
+        if cutoff is not None:
+            ftq = ftq.filter(DBFT.file_date >= cutoff)
+        for r in ftq.order_by(DBFT.file_date.desc()).all():
+            ft_rows_sheet.append({
+                "Serial": r[0], "Test date": _d(r[1]),
+                "Result": getattr(r[2], "value", str(r[2])),
+                "Linked to trim record": "yes" if r[3] is not None else "no",
+                "Match %": (round(r[4] * 100) if r[4] is not None else None)})
+
+        # Output smoothness sheet (work finding #16): the model's smoothness
+        # records with spec and verdict.
+        smooth_rows = []
+        try:
+            from laser_trim_analyzer.database.models import SmoothnessResult as DBSR
+            sq = s.query(DBSR.serial, DBSR.file_date, DBSR.max_smoothness_value,
+                         DBSR.smoothness_spec, DBSR.smoothness_pass)\
+                  .filter(DBSR.model == model)
+            if cutoff is not None:
+                sq = sq.filter(DBSR.file_date >= cutoff)
+            for r in sq.order_by(DBSR.file_date.desc()).all():
+                smooth_rows.append({
+                    "Serial": r[0], "Date": _d(r[1]),
+                    "Max smoothness": r[2], "Spec": r[3],
+                    "Pass": r[4]})
+        except Exception:
+            pass
 
         # Monthly rollup: UNIT-level counts/pass rate (overall_status is the
         # per-unit verdict; UNTRIMMED test-sweeps excluded from the rate), plus
@@ -245,6 +283,43 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
     out_path = Path(out_path)
     with pd.ExcelWriter(out_path, engine="openpyxl") as xl:
         pd.DataFrame(metric_rows).to_excel(xl, sheet_name="Drift evidence", index=False)
-        pd.DataFrame(unit_rows).to_excel(xl, sheet_name="Unit history", index=False)
+        udf = pd.DataFrame(unit_rows)
+        udf.to_excel(xl, sheet_name="Unit history", index=False)
+        if ft_rows_sheet:
+            pd.DataFrame(ft_rows_sheet).to_excel(xl, sheet_name="Final test units", index=False)
+        if smooth_rows:
+            pd.DataFrame(smooth_rows).to_excel(xl, sheet_name="Smoothness", index=False)
         pd.DataFrame(monthly_rows).to_excel(xl, sheet_name="Monthly summary", index=False)
+
+        # Color the disposition columns (work finding #7): linearity is the
+        # zero-tolerance customer rule — red/green beats True/False on a page
+        # of 2,000 rows. Status + FT result get the same treatment.
+        try:
+            from openpyxl.styles import PatternFill
+            red = PatternFill("solid", start_color="FFC7CE")
+            green = PatternFill("solid", start_color="C6EFCE")
+            amber = PatternFill("solid", start_color="FFEB9C")
+            ws = xl.book["Unit history"]
+            cols = {c: i + 1 for i, c in enumerate(udf.columns)}
+            for row in range(2, ws.max_row + 1):
+                lp = ws.cell(row=row, column=cols["Linearity pass"])
+                if lp.value is True or lp.value == 1:
+                    lp.fill = green
+                elif lp.value is False or lp.value == 0:
+                    lp.fill = red
+                st = ws.cell(row=row, column=cols["Status"])
+                if st.value == "FAIL":
+                    st.fill = red
+                elif st.value == "WARNING":
+                    st.fill = amber
+                elif st.value == "PASS":
+                    st.fill = green
+                if "FT result" in cols:
+                    ftc = ws.cell(row=row, column=cols["FT result"])
+                    if ftc.value == "FAIL":
+                        ftc.fill = red
+                    elif ftc.value == "PASS":
+                        ftc.fill = green
+        except Exception:
+            pass   # styling is best-effort; the data itself is already written
     return out_path

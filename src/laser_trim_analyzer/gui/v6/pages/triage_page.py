@@ -74,6 +74,19 @@ class TriagePage(PageBase):
         if not self._show_all and active:
             flagged = [a for a in flagged if a.model in active]
             models = [m for m in models if m.model in active]
+        # Focus order (work finding #5, 2026-07-10: "44 models out of control,
+        # hard to know where to focus"): models still in production first
+        # (recent data), then by how far they have actually moved. A legacy
+        # model can wait; a drifting model you're building TODAY cannot.
+        last_by_model = {m.model: m.last_processed for m in models if m.last_processed}
+        if last_by_model:
+            newest = max(last_by_model.values())
+            def _key(a):
+                seen = last_by_model.get(a.model)
+                days_stale = (newest - seen).days if seen else 9999
+                recent = 0 if days_stale <= 90 else 1
+                return (recent, -(abs(a.sigma_shift) if a.sigma_shift is not None else 0.0))
+            flagged = sorted(flagged, key=_key)
         self._cards.set_summaries(flagged, last_processed=last)
         self._browse.set_models(models)
 

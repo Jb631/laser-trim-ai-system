@@ -218,11 +218,22 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
     sheets = pd.read_excel(pack, sheet_name=None)
-    check("evidence pack: 3 sheets with expected columns",
-          set(sheets) == {"Drift evidence", "Unit history", "Monthly summary"}
+    _required = {"Drift evidence", "Unit history", "Monthly summary"}
+    _optional = {"Final test units", "Smoothness"}   # present when the model has data
+    check("evidence pack: sheets + expected columns",
+          _required <= set(sheets) and set(sheets) <= _required | _optional
           and "Suspect excluded" in sheets["Drift evidence"].columns
           and "Linearity yield %" in sheets["Monthly summary"].columns
-          and "FT result" in sheets["Unit history"].columns)
+          and "FT result" in sheets["Unit history"].columns,
+          f"sheets={sorted(sheets)}")
+    if "Final test units" in sheets:
+        check("evidence pack: FT sheet columns",
+              {"Serial", "Test date", "Result"} <= set(sheets["Final test units"].columns))
+    # Dates are day-granularity strings, not '… 00:00:00' (work finding #6).
+    _dates = sheets["Unit history"]["Date"].dropna().astype(str)
+    check("evidence pack: dates are clean day strings",
+          bool(len(_dates)) and not _dates.str.contains("00:00:00").any(),
+          _dates.iloc[0] if len(_dates) else "no rows")
     n_hist = len(sheets["Unit history"])
     n_sql = raw.execute(
         "SELECT COUNT(*) FROM analysis_results ar JOIN track_results tr "

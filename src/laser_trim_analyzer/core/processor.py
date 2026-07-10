@@ -796,9 +796,17 @@ class Processor:
             # block. The parallel workers below only READ them via _is_processed — no
             # mutation during the parallel section, so no lock is required. If you
             # ever add mutation here, switch to a lock-protected set or freeze first.
-            files_to_process = [
-                f for f in file_paths if not self._is_processed(Path(f))
-            ]
+            files_to_process = []
+            for _i, _f in enumerate(file_paths):
+                if not self._is_processed(Path(_f)):
+                    files_to_process.append(_f)
+                # Heartbeat: statting 170k files on a share takes minutes —
+                # silence reads as a lockup (work finding, 2026-07-10).
+                if progress_callback and _i % 2000 == 1999:
+                    progress_callback(ProcessingStatus(
+                        filename="", status="scanning",
+                        message=f"Checking against database… {_i + 1:,}/{len(file_paths):,}",
+                        progress_percent=0))
             summary.skipped = len(file_paths) - len(files_to_process)
 
             # Sanity guard, v2 (2026-07-10). v1 aborted on "matched 0 of N"
@@ -822,7 +830,10 @@ class Processor:
                         "the app is pointed at the wrong database. Refusing to reprocess "
                         "everything. (To force a full reprocess, uncheck incremental mode.)")
 
-            if progress_callback and len(file_paths) > 100:
+            if progress_callback:
+                # Always announced (work finding #11: "processing page doesn't
+                # tell me how many new files") — this is the number the user
+                # is waiting for before anything starts parsing.
                 progress_callback(ProcessingStatus(
                     filename="",
                     status="scanning",

@@ -17,7 +17,8 @@ _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Sta
 class UnitsTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager, on_unit_click: Callable[[dict], None],
                  on_export: Callable[[], None],
-                 on_search: Optional[Callable[[str], None]] = None, **kwargs):
+                 on_search: Optional[Callable[[str], None]] = None,
+                 on_export_charts: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._on_unit_click = on_unit_click
@@ -32,6 +33,14 @@ class UnitsTab(ctk.CTkFrame):
         ctk.CTkButton(bar, text="Export to Excel", fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
                       text_color=theme.TEXT_INVERSE, command=self._on_export,
                       corner_radius=theme.RADIUS_SM).pack(side="right")
+        if on_export_charts is not None:
+            # Mass chart export (work finding #4): every unit in the window
+            # as a print-ready PNG, one folder pick.
+            ctk.CTkButton(bar, text="Export all charts", fg_color=theme.CARD,
+                          hover_color=theme.ELEVATED, text_color=theme.TEXT_PRIMARY,
+                          border_width=1, border_color=theme.BORDER,
+                          command=on_export_charts, corner_radius=theme.RADIUS_SM)\
+                .pack(side="right", padx=(0, theme.SPACE_SM))
         # Serial lookup (bypasses the recent-cap and window — see module docstring).
         self._search = ctk.CTkEntry(bar, placeholder_text="Find serial…", width=180,
                                     font=theme.font(theme.SIZE_BODY))
@@ -57,6 +66,10 @@ class UnitsTab(ctk.CTkFrame):
         self._cap = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
                                  text_color=theme.TEXT_SECONDARY)
         self._cap.pack(side="top", fill="x")
+
+    def set_caption(self, text: str) -> None:
+        """Live status line (mass chart export progress etc.)."""
+        self._cap.configure(text=text)
 
     def set_units(self, units: List[dict], caption: Optional[str] = None) -> None:
         self._units = list(units)

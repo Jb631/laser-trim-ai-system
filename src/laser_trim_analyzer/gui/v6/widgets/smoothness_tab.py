@@ -13,10 +13,25 @@ class SmoothnessTab(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._chart = FocusChart(self, theme=theme)
-        self._chart.pack(side="top", fill="x", pady=(0, theme.SPACE_MD))
+        self._chart.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
+        # Which models HAVE smoothness data (work finding #14: with no
+        # overview page, you had to guess which model to select).
+        self._models_hint = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
+                                         text_color=theme.TEXT_SECONDARY, anchor="w",
+                                         justify="left", wraplength=1200)
+        self._models_hint.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
         self._rows: List[ctk.CTkFrame] = []
+
+    def set_models_hint(self, items) -> None:
+        """items: [(model, count), ...] — models with smoothness records."""
+        if items:
+            listing = " · ".join(f"{m} ({n})" for m, n in items)
+            self._models_hint.configure(
+                text=f"Models with smoothness data: {listing}")
+        else:
+            self._models_hint.configure(text="")
 
     def set_records(self, records: List[Dict]) -> None:
         for r in self._rows:

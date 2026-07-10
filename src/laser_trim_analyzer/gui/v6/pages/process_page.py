@@ -92,6 +92,11 @@ class ProcessPage(PageBase):
 
     # ---- progress (runs on Tk thread; called via safe_after, or directly in tests) ----
     def _apply_progress(self, status: ProcessingStatus, total: int) -> None:
+        if status.status == "scanning":
+            # "Found N new files (M already in database)" — the headline the
+            # user waits for (work finding #11).
+            self._progress.set_idle(status.message or "Scanning…")
+            return
         if status.status in ("completed", "skipped", "failed"):
             self._done += 1
         self._progress.set_progress(self._done, total, status.filename or "")
@@ -99,6 +104,8 @@ class ProcessPage(PageBase):
             self._progress.increment("skipped")
 
     def _run(self, folder: str) -> None:
+        self.safe_after(lambda: self._progress.set_idle(
+            "Scanning folder for Excel files… (network folders can take a minute)"))
         files = self._discover(folder)
         if not files:
             self.safe_after(lambda: self._progress.set_idle("No .xls/.xlsx files found."))
@@ -106,6 +113,8 @@ class ProcessPage(PageBase):
             return
         processor = Processor(config=self.app.config)        # I7: no db= param
         total = len(files)
+        self.safe_after(lambda t_=total: self._progress.set_idle(
+            f"Checking {t_:,} files against the database…"))
 
         def progress_callback(status: ProcessingStatus) -> None:
             self.safe_after(lambda s=status: self._apply_progress(s, total))

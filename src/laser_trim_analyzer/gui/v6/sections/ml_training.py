@@ -27,14 +27,22 @@ def build_ml_training_section(parent, theme: ThemeManager, app) -> None:
 
     def retrain_per_model():
         # Verified V5 entrypoint: fresh MLManager(db).train_all_models(...) + save_all(). Off-thread.
+        # Live per-model progress (work finding #10, 2026-07-10: the button
+        # gave no sign of life for a multi-minute retrain).
         def work():
+            def on_progress(prog):
+                txt = (f"Retraining per-model ML… {getattr(prog, 'models_complete', '?')}"
+                       f"/{getattr(prog, 'models_total', '?')} — "
+                       f"{getattr(prog, 'current_model', '')} ({getattr(prog, 'phase', '')})")
+                post_ui(app, lambda t_=txt: status.winfo_exists() and status.configure(text=t_))
             try:
                 from laser_trim_analyzer.ml import MLManager
                 mgr = MLManager(app.db)
                 results = mgr.train_all_models(
-                    min_samples=getattr(app.config.ml, "min_samples_for_training", 20))
+                    min_samples=getattr(app.config.ml, "min_samples_for_training", 20),
+                    progress_callback=on_progress)
                 mgr.save_all()
-                msg = f"Per-model ML retrained: {len(results)} models."
+                msg = f"Per-model ML retrained: {len(results)} models. Done."
             except Exception as exc:
                 msg = f"Per-model ML retrain failed: {exc}"
             post_ui(app, lambda: status.winfo_exists() and status.configure(text=msg))

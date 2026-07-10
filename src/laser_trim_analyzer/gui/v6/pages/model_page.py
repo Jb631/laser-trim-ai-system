@@ -20,6 +20,7 @@ from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
 from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
 from laser_trim_analyzer.gui.v6.widgets.tab_view import ThemedTabView
 from laser_trim_analyzer.gui.v6.widgets.trim_ft_tab import TrimFtTab
+from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
 from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
 from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
 from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
@@ -71,6 +72,11 @@ class ModelPage(PageBase):
         # typed-out name is unusable (found live, 2026-07-08).
         self._model_selector.bind(
             "<Return>", lambda e: self._on_model_selected(self._model_selector.get().strip()))
+        # Thumbwheel (work finding #2): the wheel steps prev/next model while
+        # hovering the selector — the dropdown itself can't wheel-scroll in CTk.
+        self._model_selector.bind("<MouseWheel>", self._on_selector_wheel)
+        self._model_selector.bind("<Button-4>", lambda e: self._on_selector_wheel(e, step=-1))
+        self._model_selector.bind("<Button-5>", lambda e: self._on_selector_wheel(e, step=1))
         self._model_selector.pack(side="left", padx=(0, t.SPACE_SM))
         self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=80,
                                               command=self._on_window_change, fg_color=t.CARD,
@@ -81,7 +87,7 @@ class ModelPage(PageBase):
         ctk.CTkButton(parent, text="Copy summary", command=self._on_copy_summary, fg_color=t.CARD,
                       hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
             .pack(side="left", padx=(0, t.SPACE_SM))
-        ctk.CTkButton(parent, text="Export evidence pack", command=self._on_export, fg_color=t.ACCENT,
+        ctk.CTkButton(parent, text="Export model to Excel", command=self._on_export, fg_color=t.ACCENT,
                       hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)\
             .pack(side="left")
 
@@ -113,8 +119,10 @@ class ModelPage(PageBase):
         self._smoothness_tab.pack(fill="both", expand=True)
         self._units_tab = UnitsTab(self._tabs.add("Units"), theme=t,
                                    on_unit_click=self._on_unit_click, on_export=self._on_export,
+                                   on_export_charts=self._on_export_charts,
                                    on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
+        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t)
         self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
         self._trimft_tab.pack(fill="both", expand=True)
         self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
@@ -210,6 +218,20 @@ class ModelPage(PageBase):
                 history = self.app.db.get_model_measurement_history(model, cutoff_date=cutoff)
             except Exception:
                 logger.exception("Model %s: history failed", model)
+            ft_units = []
+            try:
+                ft_units = self._load_ft_units(model, cutoff)
+            except Exception:
+                logger.exception("Model %s: final-test units failed", model)
+            smooth_models = []
+            try:
+                from sqlalchemy import func as _f
+                with self.app.db.session() as s_:
+                    smooth_models = (s_.query(DBSR.model, _f.count(DBSR.id))
+                                     .group_by(DBSR.model)
+                                     .order_by(_f.count(DBSR.id).desc()).limit(12).all())
+            except Exception:
+                logger.exception("smoothness model list failed")
 
             def apply():
                 if gen != self._reload_gen:
@@ -233,7 +255,9 @@ class ModelPage(PageBase):
                     baseline_mean=baseline[0], baseline_std=baseline[1]))
                 _try("units tab", lambda: self._units_tab.set_units(units))
                 _try("smoothness tab", lambda: self._smoothness_tab.set_records(smoothness))
+                _try("smoothness hint", lambda: self._smoothness_tab.set_models_hint(smooth_models))
                 _try("trim-vs-FT tab", lambda: self._trimft_tab.set_data(trim_ft))
+                _try("FT units tab", lambda: self._ft_units_tab.set_units(ft_units))
                 _try("history tab", lambda: self._history_tab.set_data(history))
             self.safe_after(apply)
         threading.Thread(target=work, daemon=True).start()
@@ -287,6 +311,23 @@ class ModelPage(PageBase):
             ms = s.query(ModelMetricState).filter_by(model=model, metric=metric).first()
             baseline = (ms.baseline_mean, ms.baseline_std) if ms else (None, None)
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline
+
+    def _load_ft_units(self, model, cutoff) -> list:
+        """Final-test records for the model (work finding #3, 2026-07-10:
+        'no way to view final test units'). Newest first, capped at 500."""
+        from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+        with self.app.db.session() as s:
+            q = s.query(DBFT.serial, DBFT.file_date, DBFT.overall_status,
+                        DBFT.linked_trim_id, DBFT.match_confidence)\
+                 .filter(DBFT.model == model)
+            if cutoff is not None:
+                q = q.filter(DBFT.file_date >= cutoff)
+            rows = q.order_by(DBFT.file_date.desc()).limit(500).all()
+        return [{"serial": r[0], "file_date": r[1],
+                 "result": getattr(r[2], "value", str(r[2])),
+                 "linked": r[3] is not None,
+                 "match": (round(r[4] * 100) if r[4] is not None else None)}
+                for r in rows]
 
     def _recent_means(self, model) -> dict:
         """Mean of each watched metric over the model's most recent window of DATA.
@@ -374,6 +415,22 @@ class ModelPage(PageBase):
             self._predictor.set_model(model)
             self._reload()
 
+    def _on_selector_wheel(self, event, step=None):
+        values = list(self._model_selector.cget("values") or [])
+        if not values:
+            return
+        if step is None:  # Windows/mac <MouseWheel>: delta sign gives direction
+            step = -1 if getattr(event, "delta", 0) > 0 else 1
+        cur = self._model_selector.get()
+        try:
+            idx = values.index(cur)
+        except ValueError:
+            idx = -1 if step > 0 else 0
+        new_val = values[max(0, min(len(values) - 1, idx + step))]
+        if new_val != cur:
+            self._model_selector.set(new_val)
+            self._on_model_selected(new_val)
+
     def _on_pill_click(self, metric):
         self._user_picked_metric = True        # explicit choice; don't auto-override it
         self._current_metric = metric
@@ -411,6 +468,60 @@ class ModelPage(PageBase):
                 self.clipboard_clear()
                 self.clipboard_append(text)
             self.safe_after(to_clipboard)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_export_charts(self):
+        """Export EVERY unit chart in the window as print-ready PNGs (work
+        finding #4: 'no way to mass export charts'). One folder pick, then a
+        worker renders build_unit_export_figure per unit."""
+        if not self._current_model:
+            return
+        from tkinter import filedialog
+        out_dir = filedialog.askdirectory(title="Folder for unit charts")
+        if not out_dir:
+            return
+        model = self._current_model
+
+        def work():
+            import matplotlib
+            matplotlib.use("Agg", force=False)
+            from pathlib import Path as _P
+            from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+                load_unit_track, compute_fail_points)
+            from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
+            units = self._load_units(model)
+            done = err = 0
+            for i, u in enumerate(units):
+                try:
+                    data = load_unit_track(self.app.db, u["analysis_id"])
+                    fp = compute_fail_points(
+                        data["error_data"], data["upper_limits"], data["lower_limits"],
+                        offset=data.get("optimal_offset") or 0.0)
+                    date_s = (u["file_date"].strftime("%Y-%m-%d")
+                              if u.get("file_date") else "nodate")
+                    fig = build_unit_export_figure(
+                        meta={"model": data.get("model") or model,
+                              "serial": u.get("serial"),
+                              "system": data.get("system"),
+                              "trim_date": date_s,
+                              "track_id": data.get("track_id"),
+                              "n_tracks": data.get("n_tracks")},
+                        data=data, fail_points=fp)
+                    safe_serial = str(u.get("serial") or "unknown").replace("/", "-")
+                    fig.savefig(_P(out_dir) / f"{model}_{safe_serial}_{date_s}.png",
+                                dpi=150, facecolor=fig.get_facecolor())
+                    import matplotlib.pyplot as plt
+                    plt.close(fig)
+                    done += 1
+                except Exception:
+                    logger.exception("chart export failed for %s", u.get("serial"))
+                    err += 1
+                if i % 10 == 0:
+                    self.safe_after(lambda d=done, n=len(units): self._units_tab.set_caption(
+                        f"Exporting charts… {d}/{n}"))
+            self.safe_after(lambda: self._units_tab.set_caption(
+                f"Exported {done} chart(s) to {out_dir}"
+                + (f" · {err} failed (see log)" if err else "")))
         threading.Thread(target=work, daemon=True).start()
 
     def _on_export(self):
