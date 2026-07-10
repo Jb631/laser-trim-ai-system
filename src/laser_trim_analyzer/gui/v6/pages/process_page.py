@@ -54,6 +54,28 @@ class ProcessPage(PageBase):
                                           hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
                                           command=lambda: self.app.show_page("triage"),
                                           corner_radius=t.RADIUS_SM)  # packed on completion
+        # Which database + how much it knows — BEFORE processing starts. The
+        # work incident (2026-07-09) would have been obvious in one glance if
+        # this had said "0 units": wrong/empty database, don't hit Start.
+        self._db_info = ctk.CTkLabel(parent, text="", font=t.font(t.SIZE_CAPTION),
+                                     text_color=t.TEXT_SECONDARY, anchor="w",
+                                     justify="left", wraplength=1200)
+        self._db_info.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
+
+    def on_show(self):
+        def work():
+            try:
+                from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+                with self.app.db.session() as s:
+                    n = s.query(DBAR.id).count()
+                path = getattr(getattr(self.app.config, "database", None), "path", "?")
+                txt = (f"Database: {path} — {n:,} trim units on record"
+                       + ("   ⚠ EMPTY database — a first run processes everything as new"
+                          if n == 0 else ""))
+            except Exception as e:
+                txt = f"Database check failed: {e}"
+            self.safe_after(lambda: self._db_info.configure(text=txt))
+        threading.Thread(target=work, daemon=True).start()
 
     def _update_start(self):
         self._start_button.configure(state="normal" if self._folder_picker.value() else "disabled")
@@ -101,8 +123,15 @@ class ProcessPage(PageBase):
                     try:
                         self.app.db.save_analysis(result)
                     except Exception as exc:
-                        self.safe_after(lambda e=exc, r=result: self._progress.increment(
-                            "errors", reason=f"{r.metadata.filename}: save failed: {e}"))
+                        # A duplicate hitting the unique constraint means the
+                        # unit is ALREADY in the database (e.g. same file under
+                        # a second path form) — that's a skip, not an error.
+                        if "UNIQUE constraint" in str(exc) or "IntegrityError" in type(exc).__name__:
+                            self.safe_after(lambda r=result: self._progress.increment(
+                                "skipped", reason=f"{r.metadata.filename}: already in database"))
+                        else:
+                            self.safe_after(lambda e=exc, r=result: self._progress.increment(
+                                "errors", reason=f"{r.metadata.filename}: save failed: {e}"))
                 model = getattr(result.metadata, "model", None)
                 if model and model != "Unknown":
                     models_in_batch.add(model)
@@ -112,6 +141,15 @@ class ProcessPage(PageBase):
                 self.safe_after(lambda b=bucket, rs=reason: self._progress.increment(b, reason=rs))
         except StopIteration as stop:
             summary = stop.value
+        except Exception as exc:
+            # Work incident 2026-07-09: an exception here previously KILLED the
+            # worker thread silently — Start stayed disabled, the app looked
+            # locked, and the reason never reached the screen. Surface it.
+            logger.exception("Batch processing aborted")
+            msg = str(exc)
+            self.safe_after(lambda m=msg: self._progress.set_idle(f"Stopped: {m}"))
+            self.safe_after(self._on_done)
+            return
         # Advance drift detectors over the just-saved data so Triage reflects
         # THIS batch (P0 fix: advance_drift_state previously had no callers —
         # drift state stayed frozen at training time until a full retrain).

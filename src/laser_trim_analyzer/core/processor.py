@@ -90,6 +90,12 @@ class Processor:
         # _is_processed skip re-hashing (full file read) when the on-disk
         # stat still matches what we recorded at processing time.
         self._processed_stat: Dict[str, tuple] = {}
+        # basename -> [(stored_path, size|None, mtime_ts|None)]: rescue index
+        # for path-form changes (see _is_processed). Filled by
+        # _load_processed_hashes; counters log what the rescue did per batch.
+        self._processed_basename: Dict[str, list] = {}
+        self._scan_adopted = 0
+        self._scan_rebound = 0
         # (file_hash, size, mtime datetime) tuples queued when a hash-confirm
         # succeeded but the recorded stat was missing/stale — flushed once per
         # batch so the NEXT scan takes the fast stat path.
@@ -660,6 +666,12 @@ class Processor:
         # Persist any stat repairs collected during the incremental scan (rows
         # whose content matched by hash but whose recorded size/mtime was
         # missing or stale). One write, non-fatal — next scan gets the fast path.
+        if self._scan_adopted or self._scan_rebound:
+            logger.info(
+                f"Incremental scan: {self._scan_rebound} known files re-matched under a new "
+                f"path form, {self._scan_adopted} legacy records adopted by unique filename "
+                "(database predates the stat fast-path)")
+            self._scan_adopted = self._scan_rebound = 0
         if self._stat_heal:
             try:
                 from laser_trim_analyzer.database import get_database
@@ -788,6 +800,23 @@ class Processor:
                 f for f in file_paths if not self._is_processed(Path(f))
             ]
             summary.skipped = len(file_paths) - len(files_to_process)
+
+            # Sanity guard (work incident 2026-07-09): a NON-EMPTY database
+            # that recognizes NOTHING in a large batch means the folder is
+            # being browsed under a different path than before, or the app is
+            # pointed at the wrong database. Reprocessing everything would
+            # hammer the share for hours and then bounce off the duplicate
+            # constraints — refuse loudly instead. An EMPTY database is a
+            # legitimate first run and passes through. Unchecking incremental
+            # mode is the explicit "yes, reprocess everything" override.
+            if (summary.skipped == 0 and len(files_to_process) >= 50
+                    and len(self._processed_filenames) >= 1000):
+                raise RuntimeError(
+                    f"Incremental scan matched 0 of {len(files_to_process)} files, but the "
+                    f"database already knows {len(self._processed_filenames)} files. The folder "
+                    "is probably being browsed under a different path than when it was processed, "
+                    "or the app is pointed at the wrong database. Refusing to reprocess "
+                    "everything. (To force a full reprocess, uncheck incremental mode.)")
 
             if progress_callback and len(file_paths) > 100:
                 progress_callback(ProcessingStatus(
@@ -1232,8 +1261,58 @@ class Processor:
             # If cache was loaded (even if empty), use it.
             if self._processed_filenames is not None:
                 path_str = str(file_path)
-                # A path we've never seen -> definitely new (cheap, no hash read).
+                # Full-path miss is NOT "definitely new" anymore. The work
+                # incident (2026-07-09): the same share browsed under a
+                # different path form (mapped drive vs UNC vs new root) missed
+                # on every file and the app set out to reprocess the entire
+                # history. Rescue by BASENAME (filenames carry model_serial_
+                # datetime, so they identify the export): confirm cheaply by
+                # recorded (size, mtime); legacy rows with no recorded stat
+                # (pre-fast-path databases) are ADOPTED on a unique basename
+                # match — hashing tens of thousands of files over the share
+                # is the lockup we're preventing. Ambiguity falls back to the
+                # hash identity check.
                 if path_str not in self._processed_filenames:
+                    entries = self._processed_basename.get(file_path.name)
+                    if not entries:
+                        return False        # truly new filename
+                    try:
+                        st = file_path.stat()
+                    except OSError:
+                        return False        # can't stat -> let it process
+                    for _stored, size, mtime in entries:
+                        if (size is not None and mtime is not None
+                                and st.st_size == size
+                                and abs(st.st_mtime - mtime) <= 2.0):
+                            # Same name, same size, same mtime: the file we
+                            # already processed, reached via a new path form.
+                            self._processed_filenames.add(path_str)
+                            self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                            self._scan_rebound += 1
+                            return True
+                    if len(entries) == 1 and entries[0][1] is None:
+                        # Single legacy record without stats (database predates
+                        # the stat fast-path). Trust the unique name; record
+                        # the observed stat so future scans are exact.
+                        self._processed_filenames.add(path_str)
+                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                        self._scan_adopted += 1
+                        return True
+                    # Ambiguous (same name in several folders / stat mismatch):
+                    # fall through to the hash identity check below.
+                    try:
+                        file_hash = calculate_file_hash(file_path)
+                    except Exception:
+                        return False
+                    if file_hash in self._processed_hashes:
+                        self._processed_filenames.add(path_str)
+                        self._stat_heal.append((
+                            file_hash, st.st_size,
+                            datetime.fromtimestamp(st.st_mtime),
+                        ))
+                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                        self._scan_rebound += 1
+                        return True
                     return False
 
                 # Stat fast-path: if the recorded size AND mtime still match the
@@ -1327,6 +1406,14 @@ class Processor:
         """
         self._processed_filenames = set()  # Full paths, not just filenames
         self._processed_hashes = set()
+        # basename -> [(stored_path, size|None, mtime_ts|None)] — the rescue
+        # index for path-form changes (drive letter vs UNC, new mount root).
+        # Work incident 2026-07-09: the SAME share browsed under a different
+        # path form made every full-path lookup miss, so the app tried to
+        # reprocess tens of thousands of known files.
+        self._processed_basename = {}
+        self._scan_adopted = 0
+        self._scan_rebound = 0
         try:
             from laser_trim_analyzer.database import get_database
             from laser_trim_analyzer.database.models import ProcessedFile as DBProcessedFile
@@ -1344,6 +1431,14 @@ class Processor:
                 ).filter(DBProcessedFile.success == True).all()
                 self._processed_filenames = set(r.file_path for r in rows if r.file_path)
                 self._processed_hashes = set(r.file_hash for r in rows if r.file_hash)
+                from pathlib import PurePath
+                for r in rows:
+                    if r.file_path:
+                        mt = (r.file_modified_date.timestamp()
+                              if r.file_modified_date is not None else None)
+                        self._processed_basename.setdefault(
+                            PurePath(r.file_path).name, []
+                        ).append((r.file_path, r.file_size, mt))
                 # Stat fast-path (ProcessedFile rows only — FT/smoothness tables
                 # don't carry size/mtime, so those fall back to hash-confirm).
                 self._processed_stat = {
@@ -1361,6 +1456,9 @@ class Processor:
                 for row in ft_rows:
                     if row.file_path:
                         self._processed_filenames.add(row.file_path)
+                        self._processed_basename.setdefault(
+                            PurePath(row.file_path).name, []
+                        ).append((row.file_path, None, None))
                         ft_count += 1
                     if row.file_hash:
                         self._processed_hashes.add(row.file_hash)
@@ -1375,6 +1473,9 @@ class Processor:
                     for row in smoothness_rows:
                         if row.file_path:
                             self._processed_filenames.add(row.file_path)
+                            self._processed_basename.setdefault(
+                                PurePath(row.file_path).name, []
+                            ).append((row.file_path, None, None))
                             smoothness_count += 1
                         if row.file_hash:
                             self._processed_hashes.add(row.file_hash)
@@ -1388,6 +1489,7 @@ class Processor:
             logger.warning(f"Could not load processed files from database: {e}")
             self._processed_filenames = set()
             self._processed_stat = {}
+            self._processed_basename = {}
 
     def _create_error_result(
         self, metadata: FileMetadata, error_msg: str, start_time: float
