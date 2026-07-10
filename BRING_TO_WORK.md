@@ -35,6 +35,14 @@ Nothing to click; it logs what it did.
 
 Done. Process files as normal — Triage now updates itself after every batch.
 
+## 3½. After pulling the 2026-07-10 fixes: rebuild the venv ONCE
+Delete the `.venv` folder in the project directory, then launch `run_v6.bat`.
+It rebuilds with PINNED library versions — the exact set proven at home.
+(Friday's processing failure was an unpinned install resolving a newer
+pydantic with different behavior. Pinning ends that class of surprise.)
+The app also self-checks its environment at every launch and writes
+"Environment OK — …" (or a plain-language failure) at the top of the log.
+
 ## 4. Two things to watch the first week
 1. **First LTS3 batch.** LTS3 support is tested against synthetic files but no
    real third-laser file has been through it yet (no sample existed). Process

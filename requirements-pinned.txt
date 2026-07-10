@@ -1,0 +1,20 @@
+# EXACT versions proven on the home machine (live GUI walkthrough + full QA
+# sweeps). Work incident 2026-07-10: an unpinned install resolved pydantic
+# 2.12 with changed NaN behavior — 2,106 files failed in one day. Work and
+# home must run the SAME libraries. Regenerate deliberately after testing:
+#   ls .venv/lib/python*/site-packages | grep dist-info
+pydantic==2.12.5
+pandas==2.3.3
+numpy==2.4.0
+openpyxl==3.1.5
+xlrd==2.0.2
+matplotlib==3.10.8
+Pillow==11.3.0
+sqlalchemy==2.0.45
+customtkinter==5.2.2
+darkdetect==0.8.0
+scipy==1.16.3
+scikit-learn==1.8.0
+joblib==1.5.3
+psutil==7.2.0
+PyYAML==6.0.3

@@ -10,7 +10,10 @@ if not exist ".venv\Scripts\python.exe" (
     python -m venv .venv || goto :err
     echo Installing dependencies ^(one time, a few minutes^)...
     .venv\Scripts\python -m pip install --upgrade pip
-    .venv\Scripts\python -m pip install -e . || goto :err
+    REM Pinned = the exact library versions proven on the home machine.
+    REM (Unpinned resolution broke work on 2026-07-10: newer pydantic.)
+    .venv\Scripts\python -m pip install -r requirements-pinned.txt || goto :err
+    .venv\Scripts\python -m pip install -e . --no-deps || goto :err
 )
 
 echo Starting Laser Trim Analyzer V6...

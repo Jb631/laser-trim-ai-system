@@ -50,6 +50,29 @@ logger = logging.getLogger(__name__)
 def main():
     """Entry point. Default = V5 LaserTrimApp; --v6 = V6App (Spec 3a+)."""
     use_v6 = "--v6" in sys.argv
+
+    # Environment self-check (work incident 2026-07-10: a different pydantic
+    # at work silently changed validation behavior and killed a full day of
+    # processing). Two seconds at launch; failures land in the log in plain
+    # language BEFORE any file is touched.
+    try:
+        import pydantic, numpy, pandas, sqlalchemy, matplotlib, customtkinter
+        from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
+        _t = TrackData(track_id="_env", travel_length=1.0, linearity_spec=0.01,
+                       status=AnalysisStatus.PASS, linearity_error=float("nan"))
+        assert _t.linearity_error is None, "NaN coercion inactive"
+        logging.getLogger(__name__).info(
+            "Environment OK — pydantic %s, numpy %s, pandas %s, sqlalchemy %s, "
+            "matplotlib %s, customtkinter %s",
+            pydantic.VERSION, numpy.__version__, pandas.__version__,
+            sqlalchemy.__version__, matplotlib.__version__,
+            getattr(customtkinter, "__version__", "?"))
+    except Exception:
+        logging.getLogger(__name__).critical(
+            "ENVIRONMENT SELF-CHECK FAILED — library versions on this machine "
+            "differ from the tested set. Reinstall with: pip install -r "
+            "requirements-pinned.txt  (delete .venv and relaunch run_v6.bat "
+            "to rebuild it pinned).", exc_info=True)
     logger.info(f"Starting Laser Trim Analyzer (UI: {'V6' if use_v6 else 'V5'})...")
     try:
         from laser_trim_analyzer.config import get_config
