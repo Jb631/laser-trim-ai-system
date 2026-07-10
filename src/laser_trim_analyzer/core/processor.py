@@ -96,6 +96,12 @@ class Processor:
         self._processed_basename: Dict[str, list] = {}
         self._scan_adopted = 0
         self._scan_rebound = 0
+        # (size, mtime) per path captured DURING folder discovery (scandir
+        # returns them with the directory listing — same network round trip).
+        # With this filled, the incremental check needs ZERO per-file I/O:
+        # V4-era speed (seconds for 170k files) with content-change safety.
+        # Friday 2026-07-10: the per-file stat() fallback cost 73 minutes.
+        self._disk_stats: Dict[str, tuple] = {}
         # (file_hash, size, mtime datetime) tuples queued when a hash-confirm
         # succeeded but the recorded stat was missing/stale — flushed once per
         # batch so the NEXT scan takes the fast stat path.
@@ -635,6 +641,7 @@ class Processor:
         file_paths: List[Path],
         progress_callback: Optional[Callable[[ProcessingStatus], None]] = None,
         incremental: bool = True,
+        disk_stats: Optional[Dict[str, tuple]] = None,
     ) -> Generator[AnalysisResult, None, BatchSummary]:
         """
         Process multiple files with progress reporting.
@@ -651,6 +658,7 @@ class Processor:
             BatchSummary after processing completes
         """
         total_files = len(file_paths)
+        self._disk_stats = disk_stats or {}
         summary = BatchSummary(total_files=total_files, start_time=datetime.now())
 
         logger.info(f"Starting batch processing: {total_files} files, "
@@ -1303,18 +1311,21 @@ class Processor:
                     entries = self._processed_basename.get(file_path.name)
                     if not entries:
                         return False        # truly new filename
-                    try:
-                        st = file_path.stat()
-                    except OSError:
-                        return False        # can't stat -> let it process
+                    st = self._disk_stats.get(path_str)
+                    if st is None:
+                        try:
+                            st_ = file_path.stat()
+                            st = (st_.st_size, st_.st_mtime)
+                        except OSError:
+                            return False    # can't stat -> let it process
                     for _stored, size, mtime in entries:
                         if (size is not None and mtime is not None
-                                and st.st_size == size
-                                and abs(st.st_mtime - mtime) <= 2.0):
+                                and st[0] == size
+                                and abs(st[1] - mtime) <= 2.0):
                             # Same name, same size, same mtime: the file we
                             # already processed, reached via a new path form.
                             self._processed_filenames.add(path_str)
-                            self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                            self._processed_stat[path_str] = st
                             self._scan_rebound += 1
                             return True
                     if len(entries) == 1 and entries[0][1] is None:
@@ -1322,7 +1333,7 @@ class Processor:
                         # the stat fast-path). Trust the unique name; record
                         # the observed stat so future scans are exact.
                         self._processed_filenames.add(path_str)
-                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                        self._processed_stat[path_str] = st
                         self._scan_adopted += 1
                         return True
                     # Ambiguous (same name in several folders / stat mismatch):
@@ -1334,10 +1345,10 @@ class Processor:
                     if file_hash in self._processed_hashes:
                         self._processed_filenames.add(path_str)
                         self._stat_heal.append((
-                            file_hash, st.st_size,
-                            datetime.fromtimestamp(st.st_mtime),
+                            file_hash, st[0],
+                            datetime.fromtimestamp(st[1]),
                         ))
-                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                        self._processed_stat[path_str] = st
                         self._scan_rebound += 1
                         return True
                     return False
@@ -1351,13 +1362,16 @@ class Processor:
                 recorded = self._processed_stat.get(path_str)
                 current_stat = None
                 if recorded is not None:
-                    try:
-                        current_stat = file_path.stat()
-                    except OSError:
-                        return False  # can't stat -> don't skip; let it process
+                    cur = self._disk_stats.get(path_str)
+                    if cur is None:
+                        try:
+                            st_ = file_path.stat()
+                            cur = (st_.st_size, st_.st_mtime)
+                        except OSError:
+                            return False  # can't stat -> don't skip; let it process
+                    current_stat = cur
                     rec_size, rec_mtime = recorded
-                    if (current_stat.st_size == rec_size
-                            and abs(current_stat.st_mtime - rec_mtime) <= 2.0):
+                    if cur[0] == rec_size and abs(cur[1] - rec_mtime) <= 2.0:
                         return True
 
                 # Stat missing or stale -> CONFIRM content by hash before
@@ -1371,12 +1385,15 @@ class Processor:
                     # Same content, stale/missing stat record — queue a repair
                     # so the NEXT scan takes the fast stat path for this file.
                     try:
-                        st = current_stat or file_path.stat()
+                        cur = current_stat or self._disk_stats.get(path_str)
+                        if cur is None:
+                            st_ = file_path.stat()
+                            cur = (st_.st_size, st_.st_mtime)
                         self._stat_heal.append((
-                            file_hash, st.st_size,
-                            datetime.fromtimestamp(st.st_mtime),
+                            file_hash, cur[0],
+                            datetime.fromtimestamp(cur[1]),
                         ))
-                        self._processed_stat[path_str] = (st.st_size, st.st_mtime)
+                        self._processed_stat[path_str] = cur
                     except OSError:
                         pass
                     return True

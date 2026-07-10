@@ -106,7 +106,7 @@ class ProcessPage(PageBase):
     def _run(self, folder: str) -> None:
         self.safe_after(lambda: self._progress.set_idle(
             "Scanning folder for Excel files… (network folders can take a minute)"))
-        files = self._discover(folder)
+        files, disk_stats = self._discover(folder)
         if not files:
             self.safe_after(lambda: self._progress.set_idle("No .xls/.xlsx files found."))
             self.safe_after(lambda: self._start_button.configure(state="normal"))
@@ -121,7 +121,8 @@ class ProcessPage(PageBase):
 
         gen = processor.process_batch([Path(p) for p in files],
                                       progress_callback=progress_callback,
-                                      incremental=self._incremental.get())
+                                      incremental=self._incremental.get(),
+                                      disk_stats=disk_stats)
         summary = None
         models_in_batch = set()
         try:
@@ -177,13 +178,35 @@ class ProcessPage(PageBase):
             self.safe_after(lambda sm=summary: self._progress.set_final(sm))
         self.safe_after(self._on_done)
 
-    def _discover(self, folder: str) -> List[str]:
-        out = []
-        for root, _dirs, names in os.walk(folder):
-            for name in names:
-                if name.lower().endswith((".xls", ".xlsx")):
-                    out.append(os.path.join(root, name))
-        return out
+    def _discover(self, folder: str):
+        """Walk the tree AND capture (size, mtime) from the directory listings.
+
+        On Windows/SMB, scandir returns each entry's stat data with the
+        listing itself — the same network round trip. Passing it to the
+        processor makes the incremental check pure in-memory comparison
+        (V4-era seconds) instead of one stat() round trip per file
+        (Friday 2026-07-10: 73 minutes for 170k files).
+        """
+        out: List[str] = []
+        stats: dict = {}
+        stack = [folder]
+        while stack:
+            d = stack.pop()
+            try:
+                with os.scandir(d) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                            elif entry.name.lower().endswith((".xls", ".xlsx")):
+                                out.append(entry.path)
+                                st = entry.stat()
+                                stats[entry.path] = (st.st_size, st.st_mtime)
+                        except OSError:
+                            continue   # unreadable entry: skip, don't die
+            except OSError:
+                logger.warning("Could not list folder: %s", d)
+        return out, stats
 
     def _on_done(self):
         self._start_button.configure(state="normal")

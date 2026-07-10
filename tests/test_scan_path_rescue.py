@@ -197,3 +197,23 @@ def test_permanent_failures_are_not_retried_forever(tmp_path, monkeypatch):
         "(sqlite3.IntegrityError) UNIQUE constraint failed: final_test_results.filename"))
     assert not proc._is_permanent_failure(OSError("network path unavailable"))
     assert not proc._is_permanent_failure(MemoryError("out of memory"))
+
+
+def test_disk_stats_map_eliminates_per_file_io(sample, monkeypatch):
+    """V4-speed regression guard (2026-07-10): with discovery-captured stats,
+    the incremental check must touch NEITHER stat() NOR the file content."""
+    proc = _make_processor()
+    st = sample.stat()
+    stored = "Z:\\\\Production\\\\" + sample.name
+    proc._processed_filenames = {stored}
+    proc._processed_hashes = set()
+    proc._processed_stat = {}
+    proc._processed_basename = {sample.name: [(stored, st.st_size, st.st_mtime)]}
+    proc._disk_stats = {str(sample): (st.st_size, st.st_mtime)}
+    _no_read(monkeypatch)
+
+    def no_stat(self_):
+        raise AssertionError("stat() called despite discovery-captured stats")
+    monkeypatch.setattr(Path, "stat", no_stat)
+    assert proc._is_processed(sample) is True
+    assert proc._scan_rebound == 1
