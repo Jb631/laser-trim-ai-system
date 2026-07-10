@@ -301,6 +301,34 @@ def main() -> int:
           opts is not None and opts["delete_suspect_quality"] is True
           and opts["delete_before_date"] is not None)
 
+    # ---- drift tab constructs against real drift state (2026-07-10) --------
+    # The tab render at work failed with AttributeError inside _MetricRow and
+    # the per-widget guard swallowed it -> blank tab on every model. Construct
+    # it headless with a REAL ModelDriftStatus; any exception = FAIL.
+    try:
+        from laser_trim_analyzer.ml.manager import get_model_drift_status
+        from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
+        from laser_trim_analyzer.export.evidence import compute_recent_means
+        class _ThemeStub:
+            def __getattr__(self, n):
+                if n.startswith("SIZE") or n.startswith("SPACE") or n.startswith("RADIUS"):
+                    return 8
+                return "#333333"
+            def font(self, *a, **k): return None
+            def tier_color(self, tier): return ("#222222", "#eeeeee")
+            @staticmethod
+            def fmt_measure(v, sig=4):
+                from laser_trim_analyzer.gui.v6.theme import ThemeManager
+                return ThemeManager.fmt_measure(v, sig)
+        status = get_model_drift_status(db, "6607")
+        tab = DriftMetricsTab.__new__(DriftMetricsTab)
+        tab.theme = _ThemeStub(); tab._cb = lambda *a: None; tab._rows = {}
+        tab.set_status(status, recent_means=compute_recent_means(db, "6607"))
+        check("drift tab: constructs with real state (no swallowed AttributeError)",
+              len(tab._rows) > 0, f"{len(tab._rows)} metric rows built")
+    except Exception as e:
+        check("drift tab: constructs with real state", False, f"{type(e).__name__}: {e}")
+
     # ---- usability glosses: every symbol/number the live walk (2026-07-08)
     # found unexplained must keep its on-screen decoder line -----------------
     _GLOSSES = [

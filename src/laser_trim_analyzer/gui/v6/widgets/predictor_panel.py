@@ -10,14 +10,41 @@ from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
 
 def _default_load(db):
     def _load(model: str) -> str:
-        # Best-effort read of whatever the existing predictor exposes for the model.
+        # Show the predictor's actual content — "Predictor loaded" told the
+        # user nothing (work finding #13, 2026-07-10).
         try:
             from laser_trim_analyzer.ml import get_shared_ml_manager
             mgr = get_shared_ml_manager(db)
             pred = getattr(mgr, "predictors", {}).get(model)
-            if pred is None:
+            if pred is None or not getattr(pred, "is_trained", False):
                 raise LookupError("no trained predictor for this model")
-            return f"Predictor loaded for {model} (diagnostic — not part of daily flow)."
+            m = getattr(pred, "metrics", None)   # PredictorMetrics dataclass (or dict)
+            def _g(obj, key):
+                if obj is None:
+                    return None
+                if isinstance(obj, dict):
+                    return obj.get(key)
+                return getattr(obj, key, None)
+            lines = [f"Failure predictor for {model} — trained on final-test outcomes."]
+            perf = []
+            for key, label, fmt in (("accuracy", "accuracy", "{:.0%}"),
+                                    ("f1", "F1", "{:.2f}"),
+                                    ("auc_roc", "AUC", "{:.2f}")):
+                v = _g(m, key)
+                if v:
+                    perf.append(f"{label} " + fmt.format(v))
+            n = getattr(pred, "training_samples", None)
+            if n:
+                perf.append(f"{n} training units")
+            if perf:
+                lines.append("Performance: " + ", ".join(perf) + ".")
+            fi = getattr(pred, "feature_importance", None) or {}
+            if fi:
+                top = sorted(fi.items(), key=lambda kv: -abs(kv[1]))[:3]
+                lines.append("Strongest signals: "
+                             + ", ".join(f"{k} ({v:.0%})" for k, v in top) + ".")
+            lines.append("Diagnostic only — linearity remains the disposition rule.")
+            return "\n".join(lines)
         except Exception as exc:
             raise exc
     return _load

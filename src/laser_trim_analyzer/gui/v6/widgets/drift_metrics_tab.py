@@ -47,7 +47,11 @@ class _MetricRow(ctk.CTkFrame):
         self.metric = ms.metric
         self._cb = on_click
         recent_val = recent_override if recent_override is not None else ms.recent_mean
-        recent = self.theme.fmt_measure(recent_val)
+        # NOTE: `theme` the parameter, NOT self.theme — self.theme is never
+        # assigned on _MetricRow. Referencing it blanked the ENTIRE drift tab
+        # for every model at work (2026-07-10) because the per-widget guard
+        # swallowed the AttributeError. Now covered by the app sweep.
+        recent = theme.fmt_measure(recent_val)
         # Honest shift, verifiable against the Baseline & Recent cells beside it:
         # (recent - baseline) / baseline_std. Replaces the old `magnitude` (CUSUM
         # distance past the limit), which couldn't be reconciled with the numbers shown.
@@ -60,7 +64,7 @@ class _MetricRow(ctk.CTkFrame):
                      else "Slow drift") if ms.alert_type else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  alert_txt,
-                 f"{self.theme.fmt_measure(ms.baseline_mean)} ± {self.theme.fmt_measure(ms.baseline_std)}", recent, shift_txt]
+                 f"{theme.fmt_measure(ms.baseline_mean)} ± {theme.fmt_measure(ms.baseline_std)}", recent, shift_txt]
         for i in range(len(cells)):
             self.grid_columnconfigure(i, weight=1, uniform="dm")
         for i, txt in enumerate(cells):

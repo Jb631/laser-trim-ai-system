@@ -801,22 +801,26 @@ class Processor:
             ]
             summary.skipped = len(file_paths) - len(files_to_process)
 
-            # Sanity guard (work incident 2026-07-09): a NON-EMPTY database
-            # that recognizes NOTHING in a large batch means the folder is
-            # being browsed under a different path than before, or the app is
-            # pointed at the wrong database. Reprocessing everything would
-            # hammer the share for hours and then bounce off the duplicate
-            # constraints — refuse loudly instead. An EMPTY database is a
-            # legitimate first run and passes through. Unchecking incremental
-            # mode is the explicit "yes, reprocess everything" override.
-            if (summary.skipped == 0 and len(files_to_process) >= 50
-                    and len(self._processed_filenames) >= 1000):
-                raise RuntimeError(
-                    f"Incremental scan matched 0 of {len(files_to_process)} files, but the "
-                    f"database already knows {len(self._processed_filenames)} files. The folder "
-                    "is probably being browsed under a different path than when it was processed, "
-                    "or the app is pointed at the wrong database. Refusing to reprocess "
-                    "everything. (To force a full reprocess, uncheck incremental mode.)")
+            # Sanity guard, v2 (2026-07-10). v1 aborted on "matched 0 of N"
+            # — which also described a folder of 349 GENUINELY NEW files and
+            # blocked James's normal daily batch at work. The reliable wrong-
+            # path/wrong-database signal is different: many files whose
+            # FILENAMES the database already knows failing recognition anyway.
+            # A folder of truly new files has zero known names and sails
+            # through; an empty database has no known names either (first
+            # run). Unchecking incremental stays the explicit full-reprocess
+            # override.
+            if summary.skipped == 0 and len(self._processed_filenames) >= 1000:
+                known_name_misses = sum(
+                    1 for f in files_to_process
+                    if Path(f).name in self._processed_basename)
+                if known_name_misses >= 50:
+                    raise RuntimeError(
+                        f"{known_name_misses} of {len(files_to_process)} files have filenames "
+                        "the database already knows, yet NONE were recognized as processed. "
+                        "The folder is probably browsed under a different path than before, or "
+                        "the app is pointed at the wrong database. Refusing to reprocess "
+                        "everything. (To force a full reprocess, uncheck incremental mode.)")
 
             if progress_callback and len(file_paths) > 100:
                 progress_callback(ProcessingStatus(

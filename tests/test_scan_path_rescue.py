@@ -103,25 +103,46 @@ def test_unknown_basename_is_new(sample):
     assert proc._is_processed(sample) is False
 
 
-def test_zero_match_guard_aborts_instead_of_reprocessing(tmp_path):
-    """Non-empty DB + zero recognition on a big batch = wrong path/database.
+def test_guard_fires_when_known_filenames_fail_recognition(tmp_path):
+    """Many KNOWN filenames failing recognition = wrong path/database.
     The batch must abort with a clear message, not reprocess the world."""
-    from laser_trim_analyzer.core.models import BatchSummary
     proc = _make_processor()
-    proc._processed_filenames = {f"Z:\\\\known\\\\k{i}.xls" for i in range(1500)}
+    # DB knows these very filenames — but with unmatchable stats and no
+    # hashes, recognition fails for all of them (the wrong-DB signature).
+    files = []
+    basemap = {}
+    for i in range(120):                                # >= turbo threshold
+        f = tmp_path / f"k{i}.xls"
+        f.write_bytes(b"x")
+        basemap[f.name] = [(f"Z:\\\\old\\\\k{i}.xls", 999999, 1.0)]  # never matches
+        files.append(f)
+    proc._processed_filenames = ({e[0][0] for e in basemap.values()}
+                                 | {f"pad{i}" for i in range(1000)})
     proc._processed_hashes = set()
     proc._processed_stat = {}
-    proc._processed_basename = {}
-    files = []
-    for i in range(120):                                # >= turbo threshold
-        f = tmp_path / f"new_{i}.xls"
-        f.write_bytes(b"x")
-        files.append(f)
-    # Batch start re-loads the cache from the DB; pin the primed state.
+    proc._processed_basename = basemap
     proc._load_processed_hashes = lambda: None
     gen = proc.process_batch(files, incremental=True)
     with pytest.raises(RuntimeError, match="different path|wrong database"):
         list(gen)
+
+
+def test_all_new_folder_passes_the_guard(tmp_path):
+    """Work regression 2026-07-10: a folder of 349 genuinely NEW files was
+    blocked by guard v1 ('matched 0 of N'). Unknown filenames must process."""
+    proc = _make_processor()
+    proc._processed_filenames = {f"Z:\\\\known\\\\k{i}.xls" for i in range(1500)}
+    proc._processed_hashes = set()
+    proc._processed_stat = {}
+    proc._processed_basename = {}                       # none of the new names known
+    files = []
+    for i in range(120):
+        f = tmp_path / f"new_{i}.xls"
+        f.write_bytes(b"x")
+        files.append(f)
+    proc._load_processed_hashes = lambda: None
+    # Must NOT raise; the junk files just flow through as non-trim skips.
+    list(proc.process_batch(files, incremental=True))
 
 
 def test_guard_silent_when_files_are_recognized(tmp_path, monkeypatch):
@@ -144,3 +165,19 @@ def test_guard_silent_when_files_are_recognized(tmp_path, monkeypatch):
     results = list(proc.process_batch(files, incremental=True))
     assert results == []                                # nothing reprocessed
     assert proc._scan_rebound == 0                      # counters reset after batch log
+
+
+def test_nan_measurements_become_none_not_validation_errors():
+    """Work incident 2026-07-10: pydantic >=2.12 rejects NaN on ge=0 fields —
+    2,106 files errored in one day. NaN means 'not measured' -> None."""
+    from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
+    t = TrackData(track_id="T1", travel_length=1.0, linearity_spec=0.01,
+                  status=AnalysisStatus.PASS,
+                  linearity_error=float("nan"), raw_linearity_error=float("nan"),
+                  optimized_linearity_error=float("nan"), max_deviation=float("nan"))
+    assert t.linearity_error is None
+    assert t.max_deviation is None
+    # Real values pass through untouched.
+    ok = TrackData(track_id="T1", travel_length=1.0, linearity_spec=0.01,
+                   status=AnalysisStatus.PASS, linearity_error=0.005)
+    assert ok.linearity_error == 0.005

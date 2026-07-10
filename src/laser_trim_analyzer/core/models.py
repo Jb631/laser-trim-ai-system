@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 from enum import Enum
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 import numpy as np
 
 
@@ -66,6 +66,23 @@ class BaseAnalysisModel(BaseModel):
             np.ndarray: lambda v: v.tolist(),
         }
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _nan_means_missing(cls, data):
+        """NaN in a measurement column means 'not measured' — treat as None.
+
+        Work incident 2026-07-10: pydantic ≥2.12 started rejecting NaN on
+        ge=0-constrained floats, so every file with an unmeasured field (2,106
+        that day) ERRORED at TrackData construction. Older pydantic let NaN
+        through, which is how home kept working while the fresh work venv
+        broke. Coercing NaN→None is version-proof AND more honest: NaN was
+        never a real measurement, and downstream code already handles None.
+        """
+        if isinstance(data, dict):
+            return {k: (None if isinstance(v, float) and v != v else v)
+                    for k, v in data.items()}
+        return data
 
 
 # ============================================================================
