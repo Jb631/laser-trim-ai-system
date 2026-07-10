@@ -195,6 +195,9 @@ NON_TRIM_FILENAME_PATTERNS: Final[list] = [
     "smoothness",         # Output smoothness test files
     "output smooth",      # Alternate smoothness naming
     "voltage output",     # Voltage Output test files (Shop##__Voltage Output_*)
+    "resistance output",  # Resistance Output shop logs (no unit serial; user
+                          # confirmed not needed, 2026-07-10 — 2,016 of these
+                          # were erroring 'Serial cannot be empty' every scan)
 ]
 
 # Non-trim filename regex patterns (matched on lowercased filename).
