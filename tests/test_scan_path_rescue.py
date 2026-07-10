@@ -181,3 +181,19 @@ def test_nan_measurements_become_none_not_validation_errors():
     ok = TrackData(track_id="T1", travel_length=1.0, linearity_spec=0.01,
                    status=AnalysisStatus.PASS, linearity_error=0.005)
     assert ok.linearity_error == 0.005
+
+
+def test_permanent_failures_are_not_retried_forever(tmp_path, monkeypatch):
+    """Full-log taxonomy 2026-07-10: ~4,000 files fail for reasons that can
+    never succeed on retry (no serial, pre-2003 Excel, duplicates). They must
+    be recorded as skipped after the first attempt; transient errors must NOT."""
+    proc = _make_processor()
+    marked = []
+    monkeypatch.setattr(proc, "_mark_file_skipped", lambda p: marked.append(p.name))
+    assert proc._is_permanent_failure(ValueError("Serial cannot be empty"))
+    assert proc._is_permanent_failure(ValueError(
+        "Excel file format cannot be determined, you must specify an engine manually."))
+    assert proc._is_permanent_failure(Exception(
+        "(sqlite3.IntegrityError) UNIQUE constraint failed: final_test_results.filename"))
+    assert not proc._is_permanent_failure(OSError("network path unavailable"))
+    assert not proc._is_permanent_failure(MemoryError("out of memory"))

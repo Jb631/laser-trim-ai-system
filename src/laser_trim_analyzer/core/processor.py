@@ -394,7 +394,12 @@ class Processor:
                 start_time
             )
         except Exception as e:
-            logger.exception(f"Error processing {file_path.name}: {e}")
+            if self._is_permanent_failure(e):
+                logger.warning(f"{file_path.name} permanently unprocessable — "
+                               f"recorded as skipped: {e}")
+                self._mark_file_skipped(file_path)
+            else:
+                logger.exception(f"Error processing {file_path.name}: {e}")
             return self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 str(e),
@@ -609,7 +614,14 @@ class Processor:
             return result
 
         except Exception as e:
-            logger.exception(f"Error processing Final Test {file_path.name}: {e}")
+            if self._is_permanent_failure(e):
+                # Permanently unprocessable (or already saved): record as
+                # skipped so the next scan doesn't re-attempt it forever.
+                logger.warning(f"Final Test {file_path.name} permanently "
+                               f"unprocessable — recorded as skipped: {e}")
+                self._mark_file_skipped(file_path)
+            else:
+                logger.exception(f"Error processing Final Test {file_path.name}: {e}")
             error_result = self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 f"Final Test error: {e}",
@@ -1378,6 +1390,28 @@ class Processor:
         except Exception as e:
             logger.warning(f"Could not check if file is processed: {e}")
             return False
+
+    # Known-PERMANENT failure signatures (full-log taxonomy, 2026-07-10).
+    # ~4,000 files on the work share fail for reasons that can never succeed
+    # on retry — decade-old naming with no serial, pre-2003 Excel formats,
+    # oscilloscope captures, duplicates. Re-attempting them on EVERY scan
+    # spams thousands of errors and wastes share bandwidth. Files matching
+    # these are recorded as skipped (with their stat), so they only ever
+    # re-parse if their CONTENT changes — or on an explicit full reprocess
+    # (incremental unchecked) after a parser upgrade.
+    _PERMANENT_FAILURES = (
+        "Serial cannot be empty",              # no serial in file/filename
+        "Model cannot be empty",               # no model resolvable
+        "Excel file format cannot be determined",  # pre-2003/corrupt workbook
+        "directory corruption",                # corrupt OLE container (xlrd)
+        "Not an Excel file",                   # e.g. a file literally named '.xls'
+        "UNIQUE constraint failed",            # duplicate of a record already saved
+    )
+
+    @classmethod
+    def _is_permanent_failure(cls, exc: Exception) -> bool:
+        msg = str(exc)
+        return any(sig in msg for sig in cls._PERMANENT_FAILURES)
 
     def _mark_file_skipped(self, file_path: Path) -> None:
         """Record a non-trim file as processed so it's skipped on future runs.
