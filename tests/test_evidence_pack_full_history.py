@@ -47,12 +47,17 @@ def test_export_full_history_and_monthly(tmp_path):
     out = export_evidence_pack(db, "EXP-1", tmp_path / "pack.xlsx")
     sheets = pd.read_excel(out, sheet_name=None)
 
-    assert set(sheets) == {"Drift evidence", "Unit history", "Monthly summary"}
+    # Stable workbook shape: all five sheets ALWAYS exist (empty = headers
+    # only) so "no records" can't be mistaken for a broken export.
+    assert set(sheets) == {"Drift evidence", "Unit history", "Monthly summary",
+                           "Final test units", "Smoothness"}
 
     units = sheets["Unit history"]
     # FULL record: oldest row is from 2024 — the old 365-day window would drop it.
     assert len(units) == 8
     for col in ("Serial", "Date", "Status", "System", "Track", "Sigma gradient",
+                "Trimmed resistance", "Sigma threshold", "Linearity spec",
+                "Fail points", "Optimal offset", "Trim improvement %", "Filename",
                 "Untrimmed sigma", "Untrimmed resistance", "Resistance change %",
                 "Trim passes", "Sigma pass", "Linearity pass",
                 "FT result", "FT date", "FT match %"):

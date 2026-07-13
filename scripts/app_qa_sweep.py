@@ -218,13 +218,15 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
     sheets = pd.read_excel(pack, sheet_name=None)
-    _required = {"Drift evidence", "Unit history", "Monthly summary"}
-    _optional = {"Final test units", "Smoothness"}   # present when the model has data
-    check("evidence pack: sheets + expected columns",
-          _required <= set(sheets) and set(sheets) <= _required | _optional
+    _all5 = {"Drift evidence", "Unit history", "Monthly summary",
+             "Final test units", "Smoothness"}
+    check("evidence pack: all 5 sheets, stable shape + expected columns",
+          set(sheets) == _all5
           and "Suspect excluded" in sheets["Drift evidence"].columns
           and "Linearity yield %" in sheets["Monthly summary"].columns
-          and "FT result" in sheets["Unit history"].columns,
+          and "FT result" in sheets["Unit history"].columns
+          and "Trimmed resistance" in sheets["Unit history"].columns
+          and "Mean max smoothness" in sheets["Monthly summary"].columns,
           f"sheets={sorted(sheets)}")
     if "Final test units" in sheets:
         check("evidence pack: FT sheet columns",
@@ -235,8 +237,10 @@ def main() -> int:
           bool(len(_dates)) and not _dates.str.contains("00:00:00").any(),
           _dates.iloc[0] if len(_dates) else "no rows")
     n_hist = len(sheets["Unit history"])
+    # OUTER join now: analyses with zero track rows (ERROR files) still get
+    # one history row each (work convo 2026-07-10).
     n_sql = raw.execute(
-        "SELECT COUNT(*) FROM analysis_results ar JOIN track_results tr "
+        "SELECT COUNT(*) FROM analysis_results ar LEFT JOIN track_results tr "
         "ON tr.analysis_id = ar.id WHERE ar.model='6607'").fetchone()[0]
     check("evidence pack: unit history is the FULL record", n_hist == n_sql,
           f"sheet={n_hist} sql={n_sql}")
