@@ -94,6 +94,7 @@ class Processor:
         # for path-form changes (see _is_processed). Filled by
         # _load_processed_hashes; counters log what the rescue did per batch.
         self._processed_basename: Dict[str, list] = {}
+        self._error_basenames: set = set()
         self._scan_adopted = 0
         self._scan_rebound = 0
         # (size, mtime) per path captured DURING folder discovery (scandir
@@ -850,15 +851,19 @@ class Processor:
                         "the app is pointed at the wrong database. Refusing to reprocess "
                         "everything. (To force a full reprocess, uncheck incremental mode.)")
 
+            n_retry = sum(1 for f in files_to_process
+                          if Path(f).name in self._error_basenames)
+            n_new = len(files_to_process) - n_retry
+            scan_msg = (f"Found {len(files_to_process)} files to process: "
+                        f"{n_new} new, {n_retry} retrying earlier errors "
+                        f"({summary.skipped} already in database)")
+            # LOGGED as well as shown — the old UI-only message left every
+            # log forensics pass guessing what the scan concluded.
+            logger.info(scan_msg)
             if progress_callback:
-                # Always announced (work finding #11: "processing page doesn't
-                # tell me how many new files") — this is the number the user
-                # is waiting for before anything starts parsing.
                 progress_callback(ProcessingStatus(
-                    filename="",
-                    status="scanning",
-                    message=f"Found {len(files_to_process)} new files to process ({summary.skipped} already in database)",
-                    progress_percent=0,
+                    filename="", status="scanning",
+                    message=scan_msg, progress_percent=0,
                 ))
         else:
             files_to_process = list(file_paths)
@@ -1480,6 +1485,12 @@ class Processor:
         self._processed_basename = {}
         self._scan_adopted = 0
         self._scan_rebound = 0
+        # Files whose LAST attempt errored (success=0) are retried by design.
+        # Knowing which ones lets the scan message say "retrying earlier
+        # errors" instead of looking like a runaway reprocess (2026-07-13:
+        # James reset the whole work DB because the designed retry of
+        # Friday's 3,908 casualties was indistinguishable from one).
+        self._error_basenames = set()
         try:
             from laser_trim_analyzer.database import get_database
             from laser_trim_analyzer.database.models import ProcessedFile as DBProcessedFile
@@ -1495,6 +1506,10 @@ class Processor:
                     DBProcessedFile.file_path, DBProcessedFile.file_hash,
                     DBProcessedFile.file_size, DBProcessedFile.file_modified_date
                 ).filter(DBProcessedFile.success == True).all()
+                from pathlib import PurePath as _PP
+                self._error_basenames = {
+                    _PP(r[0]).name for r in session.query(DBProcessedFile.file_path)
+                    .filter(DBProcessedFile.success == False).all() if r[0]}
                 self._processed_filenames = set(r.file_path for r in rows if r.file_path)
                 self._processed_hashes = set(r.file_hash for r in rows if r.file_hash)
                 from pathlib import PurePath
@@ -1556,6 +1571,7 @@ class Processor:
             self._processed_filenames = set()
             self._processed_stat = {}
             self._processed_basename = {}
+            self._error_basenames = set()
 
     def _create_error_result(
         self, metadata: FileMetadata, error_msg: str, start_time: float
