@@ -10,7 +10,7 @@ import customtkinter as ctk
 logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.database.models import (
-    AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR)
+    AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
@@ -107,7 +107,15 @@ class ModelPage(PageBase):
                            "above normal for this model — the drift signal, not a spec."),
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                      anchor="w", justify="left", wraplength=980)\
-            .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+            .pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        # THE daily question in one line (user #17, 2026-07-13: "not getting
+        # the most out of the available data"): holding or drifting, which
+        # way the window is moving vs the model's lifetime, and whether this
+        # model has historically been difficult.
+        self._verdict = ctk.CTkLabel(self._body, text="", font=t.font(t.SIZE_BODY, "bold"),
+                                     text_color=t.TEXT_PRIMARY, anchor="w",
+                                     justify="left", wraplength=1200)
+        self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._focus_chart = FocusChart(self._body, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._tabs = ThemedTabView(self._body, theme=t)
@@ -223,6 +231,11 @@ class ModelPage(PageBase):
                 ft_units = self._load_ft_units(model, cutoff)
             except Exception:
                 logger.exception("Model %s: final-test units failed", model)
+            verdict = None
+            try:
+                verdict = self._compute_verdict(model, cutoff, status, recent)
+            except Exception:
+                logger.exception("Model %s: verdict failed", model)
             smooth_models = []
             try:
                 from sqlalchemy import func as _f
@@ -250,6 +263,9 @@ class ModelPage(PageBase):
                     _try("pills", lambda: self._pill_row.set_status(status, recent_means=recent))
                     _try("drift tab", lambda: self._drift_tab.set_status(status, recent_means=recent))
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
+                if verdict:
+                    _try("verdict", lambda: self._verdict.configure(
+                        text=verdict[0], text_color=verdict[1]))
                 _try("focus chart", lambda: self._focus_chart.set_series(
                     metric=chosen, dates=dates, values=values,
                     baseline_mean=baseline[0], baseline_std=baseline[1]))
@@ -311,6 +327,71 @@ class ModelPage(PageBase):
             ms = s.query(ModelMetricState).filter_by(model=model, metric=metric).first()
             baseline = (ms.baseline_mean, ms.baseline_std) if ms else (None, None)
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline
+
+    def _compute_verdict(self, model, cutoff, status, recent_means) -> tuple:
+        """One-line answer to the daily question: (text, color).
+
+        Drift state from the trained detectors; direction = window linearity
+        yield vs the model's lifetime; difficulty = lifetime yield in plain
+        words. Everything shown is verifiable on the tabs below it.
+        """
+        from sqlalchemy import case as _case, func as _f
+        t = self.theme
+
+        def _yield(cut):
+            with self.app.db.session() as s_:
+                q = (s_.query(
+                        _f.sum(_case((DBAR.overall_status.in_(
+                            [StatusType.PASS, StatusType.WARNING]), 1), else_=0)),
+                        _f.sum(_case((DBAR.overall_status.in_(
+                            [StatusType.PASS, StatusType.WARNING, StatusType.FAIL]), 1), else_=0)))
+                     .filter(DBAR.model == model))
+                if cut is not None:
+                    q = q.filter(DBAR.file_date >= cut)
+                acc, grad = q.first()
+            return (acc / grad * 100.0) if grad else None, (grad or 0)
+
+        win_y, win_n = _yield(cutoff)
+        life_y, life_n = _yield(None)
+
+        # Drift state: worst non-stable watched metric by honest shift.
+        worst = None
+        trained = 0
+        for m, ms in (getattr(status, "per_metric", {}) or {}).items():
+            trained += 1
+            tier = getattr(ms.tier, "name", str(ms.tier))
+            if tier in ("STABLE",):
+                continue
+            rv = recent_means.get(m) if recent_means.get(m) is not None else ms.recent_mean
+            shift = ((rv - ms.baseline_mean) / ms.baseline_std
+                     if (rv is not None and ms.baseline_std) else None)
+            key = abs(shift) if shift is not None else 0.0
+            if worst is None or key > worst[2]:
+                worst = (m, shift, key, tier)
+
+        if trained == 0:
+            state_txt, color = "NOT TRAINED — run drift training in Settings", t.TEXT_DISABLED
+        elif worst is None:
+            state_txt, color = "HOLDING — all watched metrics stable", t.TEXT_PRIMARY
+        else:
+            from laser_trim_analyzer.ml.drift_types import metric_label as _ml
+            shift_txt = f"{worst[1]:+.1f}σ" if worst[1] is not None else "flagged"
+            state_txt = f"DRIFTING — {_ml(worst[0])} {shift_txt} from baseline"
+            color = t.TIER_OOC if worst[3] == "OUT_OF_CONTROL" else t.TIER_DRIFT
+
+        parts = [state_txt]
+        if win_y is not None and life_y is not None and cutoff is not None:
+            d = win_y - life_y
+            trend = "better than" if d > 2 else ("worse than" if d < -2 else "in line with")
+            parts.append(f"window yield {win_y:.0f}% ({win_n} units) {trend} "
+                         f"lifetime {life_y:.0f}%")
+        if life_y is not None:
+            difficulty = ("historically difficult" if life_y < 75
+                          else "historically mixed" if life_y < 90
+                          else "historically strong")
+            parts.append(f"{difficulty} ({life_y:.0f}% lifetime linearity yield, "
+                         f"{life_n:,} unit{'s' if life_n != 1 else ''})")
+        return "  ·  ".join(parts), color
 
     def _load_ft_units(self, model, cutoff) -> list:
         """Final-test records for the model (work finding #3, 2026-07-10:

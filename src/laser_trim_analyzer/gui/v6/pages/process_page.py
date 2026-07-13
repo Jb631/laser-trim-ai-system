@@ -90,7 +90,7 @@ class ProcessPage(PageBase):
         self._done = 0
         threading.Thread(target=self._run, args=(folder,), daemon=True).start()
 
-    # ---- progress (runs on Tk thread; called via safe_after, or directly in tests) ----
+    # ---- progress (kept for tests: single-event path on the Tk thread) ----
     def _apply_progress(self, status: ProcessingStatus, total: int) -> None:
         if status.status == "scanning":
             # "Found N new files (M already in database)" — the headline the
@@ -102,6 +102,39 @@ class ProcessPage(PageBase):
         self._progress.set_progress(self._done, total, status.filename or "")
         if status.status == "skipped":
             self._progress.increment("skipped")
+
+    # ---- coalesced progress (2026-07-13: one safe_after per FILE made the
+    # whole app sluggish for the length of a 170k-file batch — the Tk thread
+    # was permanently busy repainting counters). Workers only bump in-memory
+    # counters; a 4 Hz ticker paints ONE snapshot. ----
+    def _pending_note(self, status: ProcessingStatus, lock, pend) -> None:
+        with lock:
+            if status.status == "scanning":
+                pend["scan_msg"] = status.message or "Scanning…"
+                return
+            if status.status in ("completed", "skipped", "failed"):
+                pend["done"] += 1
+                pend["file"] = status.filename or pend["file"]
+            if status.status == "skipped":
+                pend["counts"]["skipped"] += 1
+
+    def _pending_flush(self, lock, pend, total) -> None:
+        with lock:
+            scan_msg = pend.pop("scan_msg", None)
+            done, fname = pend["done"], pend["file"]
+            counts = {k: v for k, v in pend["counts"].items() if v}
+            reasons = list(pend["reasons"][-10:])
+            moved = pend["moved"] or bool(counts) or bool(reasons)
+            pend["counts"] = {k: 0 for k in pend["counts"]}
+            pend["reasons"] = []
+            pend["moved"] = False
+        if scan_msg and not moved:
+            self._progress.set_idle(scan_msg)
+            return
+        if moved or done:
+            self._progress.set_progress(done, total, fname)
+            if counts or reasons:
+                self._progress.add_counts(counts, reasons)
 
     def _run(self, folder: str) -> None:
         self.safe_after(lambda: self._progress.set_idle(
@@ -116,8 +149,28 @@ class ProcessPage(PageBase):
         self.safe_after(lambda t_=total: self._progress.set_idle(
             f"Checking {t_:,} files against the database…"))
 
+        import time as _time
+        lock = threading.Lock()
+        pend = {"done": 0, "file": "", "scan_msg": None, "moved": False,
+                "counts": {"passed": 0, "warnings": 0, "failed": 0,
+                           "skipped": 0, "errors": 0},
+                "reasons": []}
+        ticker_stop = threading.Event()
+
         def progress_callback(status: ProcessingStatus) -> None:
-            self.safe_after(lambda s=status: self._apply_progress(s, total))
+            self._pending_note(status, lock, pend)   # worker-side, no Tk
+
+        def _tick():
+            while not ticker_stop.wait(0.25):
+                self.safe_after(lambda: self._pending_flush(lock, pend, total))
+        threading.Thread(target=_tick, daemon=True).start()
+
+        def _note_bucket(bucket, reason=""):
+            with lock:
+                pend["counts"][bucket] = pend["counts"].get(bucket, 0) + 1
+                pend["moved"] = True
+                if reason and bucket in ("failed", "errors"):
+                    pend["reasons"].append(reason)
 
         gen = processor.process_batch([Path(p) for p in files],
                                       progress_callback=progress_callback,
@@ -137,21 +190,23 @@ class ProcessPage(PageBase):
                         # unit is ALREADY in the database (e.g. same file under
                         # a second path form) — that's a skip, not an error.
                         if "UNIQUE constraint" in str(exc) or "IntegrityError" in type(exc).__name__:
-                            self.safe_after(lambda r=result: self._progress.increment(
-                                "skipped", reason=f"{r.metadata.filename}: already in database"))
+                            _note_bucket("skipped")
                         else:
-                            self.safe_after(lambda e=exc, r=result: self._progress.increment(
-                                "errors", reason=f"{r.metadata.filename}: save failed: {e}"))
+                            _note_bucket("errors",
+                                         f"{result.metadata.filename}: save failed: {exc}")
                 model = getattr(result.metadata, "model", None)
                 if model and model != "Unknown":
                     models_in_batch.add(model)
                 bucket = self._bucket_for_status(result.overall_status)
                 reason = (f"{result.metadata.filename}: {result.overall_status.value}"
                           if bucket in ("failed", "errors") else "")
-                self.safe_after(lambda b=bucket, rs=reason: self._progress.increment(b, reason=rs))
+                _note_bucket(bucket, reason)
         except StopIteration as stop:
             summary = stop.value
+            ticker_stop.set()
+            self.safe_after(lambda: self._pending_flush(lock, pend, total))
         except Exception as exc:
+            ticker_stop.set()
             # Work incident 2026-07-09: an exception here previously KILLED the
             # worker thread silently — Start stayed disabled, the app looked
             # locked, and the reason never reached the screen. Surface it.

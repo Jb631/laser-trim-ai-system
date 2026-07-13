@@ -363,6 +363,8 @@ def main() -> int:
          "Beyond ±3σ / off-scale", "focus chart names its red markers"),
         ("src/laser_trim_analyzer/gui/v6/pages/dashboard_page.py",
          "matched to trims", "FT panel count says what 'matched' means"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "lifetime linearity yield", "model verdict line (holding/drifting/difficulty)"),
     ]
     for path, needle, what in _GLOSSES:
         try:

@@ -52,6 +52,18 @@ class ProcessProgressSection(ctk.CTkFrame):
             self._failures.append(reason)
             self._render_failures()
 
+    def add_counts(self, counts: Dict[str, int], reasons: List[str] = ()) -> None:
+        """Bulk update — ONE repaint for hundreds of files (2026-07-13:
+        per-file increment() calls made the whole app sluggish during a
+        170k-file reprocess; the Tk thread never got a break)."""
+        for key, n in counts.items():
+            if key in self._counters and n:
+                self._counters[key] += n
+                self._labels[key].configure(text=f"{dict(_BUCKETS)[key]}: {self._counters[key]}")
+        if reasons:
+            self._failures.extend(reasons)
+            self._render_failures()
+
     def set_final(self, summary) -> None:
         """Authoritative counts from BatchSummary (reconciles the live tally)."""
         self._counters = {"passed": summary.passed, "warnings": summary.warnings,
