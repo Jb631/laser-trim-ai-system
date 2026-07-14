@@ -157,64 +157,74 @@ def _train_one_metric(
 ) -> bool:
     """Compute baseline + thresholds for one (model, metric) and upsert.
 
+    LOT MODE (2026-07-13, James's redesign): the observation is a production
+    LOT (day-cluster, gap > LOT_GAP_DAYS), value = lot MEDIAN. Baseline
+    mean/σ come from historical lot medians, so ordinary lot-to-lot wander is
+    the calibrated noise floor and an alarm means "this lot sits outside the
+    model's own lot history" — one verdict per lot instead of one per unit
+    (a 50-unit shifted lot used to push CUSUM 50 times: the 44-flagged pile).
+    Requalification floors the LOT history at the effective date. An OPEN lot
+    (still inside the changeover gap) is never fed to detector state.
+
     Returns True if the row was written with is_trained=True.
     """
-    # Load dated samples so we can fix the baseline to an EARLY window and then
-    # REPLAY the recent window through the detector. Without this, the baseline
-    # is computed over all history (laundering any drift into it) and the runtime
-    # state is reset, so the detector can never flag (the H8 "always Stable" bug).
-    # A requalified baseline (design change) floors the sample window: data
-    # from the old design must not launder the new design's baseline.
-    samples = [
-        (d, v, rid) for (d, v, rid) in _load_samples_with_dates(
-            db, model, metric,
-            after=(baseline_start - timedelta(seconds=1)) if baseline_start else None)
-        if v is not None and not (isinstance(v, float) and np.isnan(v))
-    ]
+    from laser_trim_analyzer.ml.lots import (
+        LOT_GAP_DAYS, MIN_LOT_BASELINE_N, MIN_LOTS_TRAIN, REPLAY_LOTS,
+        get_model_lots)
 
-    if len(samples) < MIN_BASELINE_SAMPLES:
+    lots = get_model_lots(db, model, metric, after=baseline_start)
+    closed = [l for l in lots if not l.is_open()]
+
+    if len(closed) < MIN_LOTS_TRAIN:
         _upsert_metric_state(
             db, model, metric,
             baseline_mean=None, baseline_std=None,
-            baseline_count=len(samples), is_trained=False, thresholds=None,
+            baseline_count=len(closed), is_trained=False, thresholds=None,
         )
         return False
 
-    # Baseline = oldest ~70% (>= MIN_BASELINE_SAMPLES); replay = the remainder.
-    split = min(len(samples), max(MIN_BASELINE_SAMPLES, int(len(samples) * 0.7)))
-    baseline_samples = samples[:split]
-    replay_samples = samples[split:]
+    # Baseline = all but the newest REPLAY_LOTS closed lots; tiny lots
+    # (n < MIN_LOT_BASELINE_N) are excluded from the baseline statistics but
+    # still replayed/scored — their medians are too noisy to calibrate σ.
+    split = max(MIN_LOTS_TRAIN - REPLAY_LOTS, len(closed) - REPLAY_LOTS)
+    baseline_lots = [l for l in closed[:split] if l.n >= MIN_LOT_BASELINE_N]
+    if len(baseline_lots) < 5:
+        baseline_lots = closed[:split]        # tiny-lot model: use what exists
+    replay_lots = closed[split:]
 
-    arr = np.asarray([v for (_d, v, _r) in baseline_samples], dtype=float)
+    arr = np.asarray([l.median for l in baseline_lots], dtype=float)
     baseline_mean = float(np.mean(arr))
     baseline_std = float(np.std(arr, ddof=1))
-    if baseline_std <= 0.0:
-        baseline_std = 1e-9
+    # σ floor: a model whose historical lot medians are nearly identical
+    # (quantized values, short history) yields σ≈0, and the first ordinary
+    # change reads as +250σ — absurd numbers that erode trust. Floor lot-σ
+    # at 1% of |mean| (plus a tiny absolute), standard guard against an
+    # underestimated σ. Tiers stay correct; displayed shifts stay sane.
+    baseline_std = max(baseline_std, 0.01 * abs(baseline_mean), 1e-9)
 
     thresholds = corrected_tier_thresholds(sensitivity_preset, baseline_std)
 
-    # Replay the recent window so persisted runtime state reflects drift already
-    # present in history. Samples are WINSORIZED (clipped to baseline ± the
-    # suspect gate): an isolated scale-corrupt value (e.g. 380σ) contributes
-    # at most one bounded push and then decays, while a real sustained shift
-    # still accumulates past threshold within a couple of samples.
+    # Replay newest closed lots so persisted runtime state reflects drift
+    # already in history. Lot medians are robust to corrupt units, but clip
+    # to the suspect gate anyway: a wholly-corrupt lot contributes one
+    # bounded push, a real sustained shift still accumulates.
     from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE
     clip_lo = baseline_mean - SUSPECT_SIGMA_GATE * baseline_std
     clip_hi = baseline_mean + SUSPECT_SIGMA_GATE * baseline_std
-    det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_samples),
+    det = _build_detector(metric, baseline_mean, baseline_std, len(baseline_lots),
                           thresholds_dict=thresholds)
-    for (_d, v, _r) in replay_samples:
-        det.update(min(max(float(v), clip_lo), clip_hi))
+    for l in replay_lots:
+        det.update(min(max(float(l.median), clip_lo), clip_hi))
 
     _upsert_metric_state(
         db, model, metric,
         baseline_mean=baseline_mean, baseline_std=baseline_std,
-        baseline_count=len(baseline_samples), is_trained=True, thresholds=thresholds,
+        baseline_count=len(baseline_lots), is_trained=True, thresholds=thresholds,
         cusum_pos=det.cusum_pos, cusum_neg=det.cusum_neg, ewma_state=det.ewma_state,
-        baseline_cutoff_date=baseline_samples[-1][0], last_sample_date=samples[-1][0],
-        # Watermark = highest source-row id consumed (samples are date-ordered,
-        # so the max is NOT necessarily the last element).
-        last_row_id=max(rid for (_d, _v, rid) in samples),
+        baseline_cutoff_date=baseline_lots[-1].end if baseline_lots else None,
+        # The lot watermark: advance feeds only CLOSED lots ending after this.
+        last_sample_date=closed[-1].end,
+        last_row_id=None,
         recent_window=list(det.recent_window),
     )
     return True
@@ -411,17 +421,36 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
             ).first()
             if row is None or not row.is_trained or row.baseline_std is None:
                 continue
-            # Prefer the row-id watermark (exact). Date fallback only for rows
-            # trained before last_row_id existed — it skips same-day arrivals
-            # once, then the watermark takes over below.
-            if row.last_row_id is not None:
-                new_samples = _load_samples_with_dates(
-                    db, mdl, metric, after_row_id=row.last_row_id)
+            # LOT MODE (last_row_id is None on lot-trained rows): recompute
+            # lots and feed only CLOSED lots ending after the lot watermark
+            # (row.last_updated). Legacy unit-mode rows (last_row_id set)
+            # keep the old per-sample path until their next retrain.
+            lot_mode = row.last_row_id is None
+            if lot_mode:
+                from laser_trim_analyzer.ml.lots import get_model_lots
+                floor = None
+                try:
+                    req = db.get_baseline_requalification(mdl)
+                    if req:
+                        floor = datetime.fromisoformat(str(req[0])[:19])
+                except Exception:
+                    pass
+                lots = get_model_lots(db, mdl, metric, after=floor)
+                new_lots = [l for l in lots
+                            if not l.is_open()
+                            and (row.last_updated is None or l.end > row.last_updated)]
+                if not new_lots:
+                    continue
+                new_samples = [(l.end, l.median, None) for l in new_lots]
             else:
-                new_samples = _load_samples_with_dates(
-                    db, mdl, metric, after=row.last_updated)
-            if not new_samples:
-                continue
+                if row.last_row_id is not None:
+                    new_samples = _load_samples_with_dates(
+                        db, mdl, metric, after_row_id=row.last_row_id)
+                else:
+                    new_samples = _load_samples_with_dates(
+                        db, mdl, metric, after=row.last_updated)
+                if not new_samples:
+                    continue
             det = _build_detector(
                 metric, row.baseline_mean, row.baseline_std, row.baseline_count,
                 hLz=(
@@ -449,8 +478,9 @@ def advance_drift_state(db, model: Optional[str] = None) -> int:
             # Samples are date-ordered; take explicit maxes (a backfill of
             # old-dated files can put the newest id mid-list and vice versa).
             row.last_updated = max(d for (d, _v, _r) in new_samples)
-            row.last_row_id = max(
-                [rid for (_d, _v, rid) in new_samples] + [row.last_row_id or 0])
+            if not lot_mode:
+                row.last_row_id = max(
+                    [rid for (_d, _v, rid) in new_samples] + [row.last_row_id or 0])
             s.commit()
             advanced += 1
     return advanced

@@ -8,15 +8,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-def _seed(db, model, values, start=datetime(2026, 1, 1)):
+def _seed(db, model, values, start=datetime(2025, 1, 6)):
     from laser_trim_analyzer.database.models import (
         AnalysisResult as AR, TrackResult as TR, SystemType, StatusType)
     with db.session() as s:
         for i, val in enumerate(values):
             ar = AR(filename=f"{model}-{i}.xls", file_path=f"/f/{model}/{i}",
                     file_hash=f"{model}-h{i}", model=model, serial=f"sn{i}",
-                    system=SystemType.A, file_date=start + timedelta(days=i),
-                    timestamp=start + timedelta(days=i), overall_status=StatusType.PASS,
+                    # Weekly spacing: each value is its own LOT under lot-mode
+                    # clustering (gap > 3 days), preserving per-sample semantics.
+                    system=SystemType.A, file_date=start + timedelta(days=7 * i),
+                    timestamp=start + timedelta(days=7 * i), overall_status=StatusType.PASS,
                     has_multi_tracks=False, processing_time=0.1)
             s.add(ar); s.flush()
             # Seed a TRIGGER metric (untrimmed_resistance) so the drifted model flags;

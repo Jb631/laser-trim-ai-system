@@ -1,12 +1,12 @@
 Drift summary — model 8887
-Overall: Drift (worst: Linearity error)
+Overall: Stable
 
-- Untrimmed error (max): baseline 0.09551 ± 0.103, recent 0.1309, shift +0.34σ [Stable]
-- Sigma gradient (untrimmed): baseline 0.2281 ± 0.2514, recent 0.2807, shift +0.21σ [Stable]
-- Untrimmed resistance: baseline 890 ± 84.9, recent 910.5, shift +0.24σ [Stable]
-- Linearity error: baseline 0.02983 ± 0.02616, recent 0.02538 (2 suspect values excluded), shift -0.17σ [Drift]
-- Electrical angle: baseline 0.8206 ± 0.001868, recent 0.8203, shift -0.19σ [Stable]
-- Trim pass count: baseline 1.033 ± 0.1826, recent 1.043 (1 suspect value excluded), shift +0.06σ [Out Of Control]
-- Resistance change %: baseline 14.27 ± 10, recent 12.21, shift -0.21σ [Stable]
-- Smoothness (max): baseline 0 ± 0, recent n/a, shift n/a [Stable]
-- Composite risk: baseline 0 ± 0, recent n/a, shift n/a [Stable]
+- Untrimmed error (max): baseline lots 0 ± 0, last lot 0.04533 (lot of 2), shift n/a [Stable]
+- Sigma gradient (untrimmed): baseline lots 0 ± 0, last lot 0.1292 (lot of 2), shift n/a [Stable]
+- Untrimmed resistance: baseline lots 0 ± 0, last lot 828.5 (lot of 2), shift n/a [Stable]
+- Linearity error: baseline lots 0 ± 0, last lot 0.0173 (lot of 2), shift n/a [Stable]
+- Electrical angle: baseline lots 0 ± 0, last lot 0.8215 (lot of 2), shift n/a [Stable]
+- Trim pass count: baseline lots 0 ± 0, last lot 1 (lot of 2), shift n/a [Stable]
+- Resistance change %: baseline lots 0 ± 0, last lot 23.54 (lot of 2), shift n/a [Stable]
+- Smoothness (max): baseline lots 0 ± 0, last lot n/a, shift n/a [Stable]
+- Composite risk: baseline lots 0 ± 0, last lot n/a, shift n/a [Stable]

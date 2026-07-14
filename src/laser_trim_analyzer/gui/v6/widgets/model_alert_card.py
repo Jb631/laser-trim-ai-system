@@ -44,7 +44,7 @@ class ModelAlertCard(ctk.CTkFrame):
                      text_color=self._fg, anchor="w")\
             .pack(side="top", fill="x", padx=t.SPACE_MD)
         tier_txt = s.tier.name.replace('_', ' ').title()
-        sub = (f"from baseline · {tier_txt}" if shift is not None
+        sub = (f"last lot vs baseline · {tier_txt}" if shift is not None
                else f"{tier_txt} · no recent data")
         ctk.CTkLabel(self, text=sub,
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY, anchor="w")\

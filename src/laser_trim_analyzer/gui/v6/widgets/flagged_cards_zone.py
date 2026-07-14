@@ -28,9 +28,10 @@ class FlaggedCardsZone(ctk.CTkFrame):
         # gloss but the cards themselves didn't — σ appeared here unexplained
         # (user finding, 2026-07-08).
         ctk.CTkLabel(self,
-                     text=("σ = standard deviations from the model's trained baseline — how far "
-                           "the recent average has moved. 'Out Of Control' = past the alert "
-                           "limit for your sensitivity preset. A drift watch signal, not a spec."),
+                     text=("σ = how far the LAST LOT's median sits from the model's baseline "
+                           "of historical lot medians. One verdict per lot — a big lot can't "
+                           "ring the alarm harder than a small one. 'Out Of Control' = past "
+                           "the alert limit for your sensitivity preset. Drift watch, not a spec."),
                      font=theme.font(theme.SIZE_CAPTION), text_color=theme.TEXT_SECONDARY,
                      anchor="w", justify="left", wraplength=1200)\
             .pack(side="top", fill="x", pady=(0, theme.SPACE_SM))

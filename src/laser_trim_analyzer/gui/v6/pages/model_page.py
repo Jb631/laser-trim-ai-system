@@ -102,9 +102,10 @@ class ModelPage(PageBase):
         # Plain-language key for the pill numbers: σ was shown with no
         # explanation anywhere in the app (2026-07-07, user feedback).
         ctk.CTkLabel(self._body,
-                     text=("σ = standard deviations from this model's trained baseline. "
-                           "+1.0σ means the recent average runs one standard deviation "
-                           "above normal for this model — the drift signal, not a spec."),
+                     text=("σ = how far the last LOT's median sits from this model's baseline "
+                           "of historical lot medians (lot = production run; new lot after "
+                           ">3 idle days). +1.0σ = the last lot ran one lot-σ above normal. "
+                           "Drift signal, not a spec."),
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                      anchor="w", justify="left", wraplength=980)\
             .pack(side="top", fill="x", pady=(0, t.SPACE_XS))
@@ -380,7 +381,7 @@ class ModelPage(PageBase):
         else:
             from laser_trim_analyzer.ml.drift_types import metric_label as _ml
             shift_txt = f"{worst[1]:+.1f}σ" if worst[1] is not None else "flagged"
-            state_txt = f"DRIFTING — {_ml(worst[0])} {shift_txt} from baseline"
+            state_txt = f"DRIFTING — {_ml(worst[0])}: last lot {shift_txt} vs baseline lots"
             color = t.TIER_OOC if worst[3] == "OUT_OF_CONTROL" else t.TIER_DRIFT
 
         parts = [state_txt]

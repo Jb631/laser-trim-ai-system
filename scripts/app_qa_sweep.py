@@ -255,8 +255,8 @@ def main() -> int:
     m8887, meta8887 = compute_recent_means(db, "8887", with_meta=True)
     txt = build_summary_text("8887", get_model_drift_status(db, "8887"),
                              recent_means=m8887, recent_meta=meta8887)
-    check("copy summary: names model, tiers, and suspect disclosure",
-          "8887" in txt and "shift" in txt and "suspect" in txt)
+    check("copy summary: names model, shift, and lot language",
+          "8887" in txt and "shift" in txt and "last lot" in txt)
 
     # ============ 7. PROCESSING PIPELINE on real files ========================
     from laser_trim_analyzer.core.processor import Processor
@@ -363,9 +363,9 @@ def main() -> int:
     # found unexplained must keep its on-screen decoder line -----------------
     _GLOSSES = [
         ("src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py",
-         "σ = standard deviations", "triage cards explain σ"),
+         "LAST LOT", "triage cards explain σ in lot language"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
-         "σ = standard deviations", "model page explains σ"),
+         "historical lot medians", "model page explains σ in lot language"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
          "Gap = Trim − FT", "lowest-yield list explains Gap"),
         ("src/laser_trim_analyzer/gui/v6/widgets/browse_zone.py",

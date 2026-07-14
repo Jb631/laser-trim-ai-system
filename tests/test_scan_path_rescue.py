@@ -220,10 +220,9 @@ def test_disk_stats_map_eliminates_per_file_io(sample, monkeypatch):
 
 
 def test_baseline_requalification_floors_training(tmp_path):
-    """Design-change policy (2026-07-13): after requalifying a model's
-    baseline at date D, training must use ONLY data from D forward — the old
-    design's distribution must not launder the new baseline."""
-    import sys
+    """Design-change policy + LOT MODE (2026-07-13): after requalifying at
+    date D, training uses only LOTS from D forward. Lots are weekly clusters
+    of 5 units; old design ~10, new design ~20."""
     from datetime import datetime, timedelta
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.database.models import (
@@ -232,37 +231,101 @@ def test_baseline_requalification_floors_training(tmp_path):
     from laser_trim_analyzer.ml.drift_training import train_drift_detector
 
     db = DatabaseManager(tmp_path / "rq.db")
-    old_day = datetime(2026, 1, 10)
-    new_day = datetime(2026, 6, 10)
+    t0 = datetime(2025, 1, 6)
     with db.session() as s:
-        for i in range(80):
-            when = (old_day if i < 40 else new_day) + timedelta(hours=i)
-            ar = DBAR(filename=f"RQ-{i}.xls", file_path=f"/f/{i}",
-                      file_hash=f"rq{i}".ljust(64, "0"), model="RQ", serial=f"s{i}",
-                      system=SystemType.A, file_date=when, timestamp=when,
-                      overall_status=StatusType.PASS, has_multi_tracks=False,
-                      processing_time=0.1)
-            s.add(ar); s.flush()
-            # old design ~ 10.0, new design ~ 20.0 (watched metric)
-            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
-                       untrimmed_sigma_gradient=(10.0 if i < 40 else 20.0) + (i % 3) * 0.01,
-                       travel_length=1.0, sigma_pass=True, linearity_pass=True))
+        i = 0
+        for lot in range(24):                       # 12 old-design + 12 new
+            lot_day = t0 + timedelta(weeks=lot)
+            level = 10.0 if lot < 12 else 20.0
+            for u in range(5):
+                when = lot_day + timedelta(hours=u)
+                ar = DBAR(filename=f"RQ-{i}.xls", file_path=f"/f/{i}",
+                          file_hash=f"rq{i}".ljust(64, "0"), model="RQ",
+                          serial=f"s{i}", system=SystemType.A, file_date=when,
+                          timestamp=when, overall_status=StatusType.PASS,
+                          has_multi_tracks=False, processing_time=0.1)
+                s.add(ar); s.flush()
+                s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                           untrimmed_sigma_gradient=level + (u % 3) * 0.01,
+                           travel_length=1.0, sigma_pass=True, linearity_pass=True))
+                i += 1
         s.commit()
 
-    # No requalification: baseline spans both designs (~15).
+    # No requalification: baseline lots span both designs -> mean far from 20.
     train_drift_detector(db, model="RQ")
     with db.session() as s:
-        ms = s.query(ModelMetricState).filter_by(model="RQ", metric="untrimmed_sigma_gradient").first()
+        ms = s.query(ModelMetricState).filter_by(
+            model="RQ", metric="untrimmed_sigma_gradient").first()
         assert ms is not None and ms.is_trained
-        assert 12.0 < ms.baseline_mean < 18.0
+        assert ms.baseline_mean < 19.0
 
-    # Requalified at the design change: baseline is the NEW design only (~20).
-    db.set_baseline_requalification("RQ", "2026-06-01", "design change")
+    # Requalified at the design change: baseline = new-design LOTS only (~20).
+    db.set_baseline_requalification("RQ", (t0 + timedelta(weeks=12)).date().isoformat(),
+                                    "design change")
     train_drift_detector(db, model="RQ")
     with db.session() as s:
-        ms = s.query(ModelMetricState).filter_by(model="RQ", metric="untrimmed_sigma_gradient").first()
+        ms = s.query(ModelMetricState).filter_by(
+            model="RQ", metric="untrimmed_sigma_gradient").first()
+        assert ms.is_trained, "12 post-change lots must be enough to train"
         assert ms.baseline_mean > 19.5, f"baseline still polluted: {ms.baseline_mean}"
-        # Trainer fixes the baseline to an early window of the (post-requalify)
-        # samples and replays the rest through the detector — so the count is
-        # the baseline window, not all 40 post-change rows.
-        assert 30 <= ms.baseline_count <= 40
+        # baseline_count is LOTS now (12 closed - 3 replay = 9 baseline lots)
+        assert ms.baseline_count == 9
+
+
+def test_lot_mode_one_alarm_per_lot_not_per_unit(tmp_path):
+    """The core reason for lot mode: a single shifted 60-unit lot must push
+    the detector ONCE (one lot median), not 60 times. Stable lots stay
+    Stable; a sustained multi-lot step accumulates."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType,
+        ModelMetricState)
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector, advance_drift_state
+
+    db = DatabaseManager(tmp_path / "lots.db")
+    t0 = datetime(2025, 1, 6)
+
+    def add_lot(s, lot_idx, level, n, start_i):
+        lot_day = t0 + timedelta(weeks=lot_idx)
+        for u in range(n):
+            when = lot_day + timedelta(hours=u % 48)
+            i = start_i + u
+            ar = DBAR(filename=f"L-{i}.xls", file_path=f"/l/{i}",
+                      file_hash=f"lt{i}".ljust(64, "0"), model="LM",
+                      serial=f"s{i}", system=SystemType.A, file_date=when,
+                      timestamp=when, overall_status=StatusType.PASS,
+                      has_multi_tracks=False, processing_time=0.1)
+            s.add(ar); s.flush()
+            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                       untrimmed_sigma_gradient=level + (u % 5) * 0.02,
+                       travel_length=1.0, sigma_pass=True, linearity_pass=True))
+        return start_i + n
+
+    with db.session() as s:
+        i = 0
+        for lot in range(12):                 # stable history, medians ~10.04
+            i = add_lot(s, lot, 10.0 + (lot % 3) * 0.02, 8, i)
+        s.commit()
+    train_drift_detector(db, model="LM")
+    with db.session() as s:
+        ms = s.query(ModelMetricState).filter_by(
+            model="LM", metric="untrimmed_sigma_gradient").first()
+        assert ms.is_trained
+        base_cpos = ms.cusum_pos or 0.0
+
+    # ONE big shifted lot (60 units at +2 lot-σ-ish): exactly one detector
+    # step — cusum_pos rises by AT MOST (median - mean - k)/σ once, NOT 60x.
+    with db.session() as s:
+        i = add_lot(s, 13, 10.5, 60, 1000)    # clearly above the ~10.02 band
+        s.commit()
+    advanced = advance_drift_state(db, model="LM")
+    assert advanced == 1
+    with db.session() as s:
+        ms = s.query(ModelMetricState).filter_by(
+            model="LM", metric="untrimmed_sigma_gradient").first()
+        one_lot_cpos = (ms.cusum_pos or 0.0) - base_cpos
+        # A unit-mode detector would have accumulated ~60 pushes; lot mode
+        # accumulates one bounded push (< suspect gate = 8σ).
+        assert 0.0 < one_lot_cpos <= 8.0, f"one lot pushed {one_lot_cpos}σ"
+        assert ms.last_row_id is None          # lot-mode watermark stays date-based

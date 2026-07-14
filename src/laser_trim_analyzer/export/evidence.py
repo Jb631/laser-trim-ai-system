@@ -17,68 +17,44 @@ from laser_trim_analyzer.ml.drift_types import SUSPECT_SIGMA_GATE  # noqa: E402,
 
 def compute_recent_means(db, model: str, recent_days: int = RECENT_DAYS,
                          with_meta: bool = False):
-    """Outlier-gated mean of each watched metric over the model's most recent
-    `recent_days` of DATA.
+    """LAST CLOSED LOT median per watched metric (lot mode, 2026-07-13).
 
-    Anchored to the model's latest file_date, NOT wall-clock now: this is batch-loaded
-    historical data (a loaded lot can be weeks old), so a now-anchored window leaves
-    'recent' empty for nearly every model. The drift detector never persists a recent
-    mean, so every evidence surface (UI table, copy-summary, Excel pack) must derive it
-    here to populate the baseline-vs-recent comparison.
-
-    Values beyond SUSPECT_SIGMA_GATE baseline-σ are excluded (only when a trained,
-    non-degenerate baseline exists to judge against). Returns metric -> float|None;
-    with_meta=True returns (means, meta) where meta[metric] =
-    {"n": kept, "excluded": dropped} so every surface can disclose the gating.
+    'Recent' used to be an outlier-gated mean over the newest days of units;
+    with the detector observing LOTS, every surface (pills, drift table,
+    triage shift, verdict, Excel pack) must compare baseline vs the SAME
+    observation the detector saw — the last closed lot's median. Returns
+    metric -> float|None; with_meta=True returns (means, meta) where
+    meta[metric] = {"n": lot size, "excluded": None, "lot_end": date} —
+    'excluded' is retained for column compatibility (medians need no gate).
+    `recent_days` is accepted for API compatibility and unused.
     """
-    from sqlalchemy import func
-    from laser_trim_analyzer.database.models import (
-        AnalysisResult as DBAR, TrackResult as DBTR, SmoothnessResult as DBSR,
-        ModelMetricState)
-    from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
-    from laser_trim_analyzer.ml.multi_metric_drift_detector import is_degenerate_baseline
+    from laser_trim_analyzer.ml.lots import get_model_lots
+    from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
 
     out: dict = {}
     meta: dict = {}
-    with db.session() as s:
-        anchor = (s.query(func.max(DBAR.file_date))
-                  .filter(DBAR.model == model).scalar())
-        cutoff = (anchor - timedelta(days=recent_days)) if anchor is not None else None
-        baselines = {
-            r.metric: (r.baseline_mean, r.baseline_std)
-            for r in s.query(ModelMetricState).filter(
-                ModelMetricState.model == model,
-                ModelMetricState.is_trained == True).all()  # noqa: E712
-        }
-        for metric in WATCHED_METRICS:
-            meta[metric] = {"n": 0, "excluded": 0}
-            if cutoff is None:
-                out[metric] = None
-                continue
-            if metric == "max_smoothness_value":
-                rows = (s.query(DBSR.max_smoothness_value)
-                        .filter(DBSR.model == model, DBSR.max_smoothness_value.isnot(None),
-                                DBSR.file_date >= cutoff).all())
-            elif metric in TRACK_METRIC_COLUMNS:
-                col = TRACK_METRIC_COLUMNS[metric]
-                rows = (s.query(col).join(DBAR, DBTR.analysis_id == DBAR.id)
-                        .filter(DBAR.model == model, col.isnot(None),
-                                DBAR.file_date >= cutoff).all())
-            else:
-                out[metric] = None
-                continue
-            values = [float(r[0]) for r in rows if r[0] is not None]
-            bm, bs = baselines.get(metric, (None, None))
-            if (bm is not None and bs is not None
-                    and not is_degenerate_baseline(bm, bs)):
-                kept = [v for v in values if abs(v - bm) <= SUSPECT_SIGMA_GATE * bs]
-                meta[metric]["excluded"] = len(values) - len(kept)
-            else:
-                kept = values  # no trustworthy yardstick — no gating
-            meta[metric]["n"] = len(kept)
-            out[metric] = (sum(kept) / len(kept)) if kept else None
+    floor = None
+    try:
+        req = db.get_baseline_requalification(model)
+        if req:
+            floor = datetime.fromisoformat(str(req[0])[:19])
+    except Exception:
+        pass
+    for metric in WATCHED_METRICS:
+        try:
+            lots = [l for l in get_model_lots(db, model, metric, after=floor)
+                    if not l.is_open()]
+        except Exception:
+            lots = []
+        if lots:
+            last = lots[-1]
+            out[metric] = last.median
+            meta[metric] = {"n": last.n, "excluded": None,
+                            "lot_end": last.end}
+        else:
+            out[metric] = None
+            meta[metric] = {"n": 0, "excluded": None, "lot_end": None}
     return (out, meta) if with_meta else out
-
 
 def _sigma_shift(ms, recent_val) -> Optional[float]:
     """Honest (recent − baseline) / baseline_std — the SAME number the Triage
@@ -111,10 +87,10 @@ def build_summary_text(model: str, status, recent_means: Optional[dict] = None,
         tier = ms.tier.name.replace("_", " ").title()
         shift = _sigma_shift(ms, recent_val)
         shift_txt = f"shift {shift:+.2f}σ" if shift is not None else "shift n/a"
-        excl = (recent_meta or {}).get(m, {}).get("excluded") if recent_meta else None
-        excl_txt = f" ({excl} suspect value{'s' if excl != 1 else ''} excluded)" if excl else ""
-        lines.append(f"- {metric_label(m)}: baseline {ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}, "
-                     f"recent {recent}{excl_txt}, {shift_txt} [{tier}]")
+        lot_n = (recent_meta or {}).get(m, {}).get("n") if recent_meta else None
+        lot_txt = f" (lot of {lot_n})" if lot_n else ""
+        lines.append(f"- {metric_label(m)}: baseline lots {ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}, "
+                     f"last lot {recent}{lot_txt}, {shift_txt} [{tier}]")
     return "\n".join(lines)
 
 
@@ -153,8 +129,8 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                                 "Baseline since": baseline_since,
                                 "Alert": "", "Baseline mean": None,
                                 "Baseline std": None,
-                                "Recent mean": recent_means.get(m),
-                                "Recent n": recent_meta.get(m, {}).get("n"),
+                                "Last lot median": recent_means.get(m),
+                                "Lot size": recent_meta.get(m, {}).get("n"),
                                 "Suspect excluded": None, "Shift (σ)": None,
                                 "Alert magnitude (scaled)": None})
             continue
@@ -164,8 +140,8 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                             "Baseline since": baseline_since,
                             "Alert": ms.alert_type.value if ms.alert_type else "",
                             "Baseline mean": ms.baseline_mean, "Baseline std": ms.baseline_std,
-                            "Recent mean": recent_val,
-                            "Recent n": mm.get("n"),
+                            "Last lot median": recent_val,
+                            "Lot size": mm.get("n"),
                             # Traceability: how many recent values were gated
                             # out as suspect (scale anomalies) before the mean.
                             "Suspect excluded": mm.get("excluded"),

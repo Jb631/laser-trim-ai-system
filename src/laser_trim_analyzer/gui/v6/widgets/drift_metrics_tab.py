@@ -7,7 +7,7 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import (
     AlertType, ModelDriftStatus, WATCHED_METRICS, metric_label)
 
-_COLUMNS = ["Metric", "Tier", "Alert", "Baseline (mean±std)", "Recent", "Shift (σ)"]
+_COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "Shift (σ)"]
 
 
 class DriftMetricsTab(ctk.CTkScrollableFrame):

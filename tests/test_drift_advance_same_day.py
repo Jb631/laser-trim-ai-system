@@ -1,12 +1,10 @@
-"""Watermark fix (2026-07-06): advance_drift_state must consume samples whose
-file_date equals the last processed date.
+"""Lot-mode advance semantics (2026-07-13, replaces the unit-mode watermark
+tests): the detector ingests CLOSED lots newer than the date watermark.
 
-file_date has day granularity. The old `file_date > last_updated` filter
-permanently skipped any sample ingested after a training/advance run but
-dated the same day — up to a day of data lost at every boundary. The fix
-tracks the source row id (autoincrement) as the watermark; the date filter
-survives only as a one-shot fallback for rows trained before the column
-existed.
+* Training writes last_updated = end of the newest closed lot and clears
+  last_row_id (None marks a lot-mode row).
+* An OPEN lot (last unit within LOT_GAP_DAYS of now) is never ingested.
+* Once the lot closes, advance ingests it exactly ONCE.
 """
 import sys
 from datetime import datetime, timedelta
@@ -24,57 +22,40 @@ def _state(db, model, metric="untrimmed_resistance"):
         return (row.last_row_id, row.last_updated, row.cusum_pos) if row else None
 
 
-def test_training_sets_row_id_watermark(tmp_path):
+def test_training_sets_lot_watermark(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.ml.drift_training import train_drift_detector
 
     db = DatabaseManager(tmp_path / "wm.db")
     _seed(db, "WM", [0.010 + (i % 3) * 0.0002 for i in range(50)])
     train_drift_detector(db, sensitivity_preset="standard")
-    last_row_id, _, _ = _state(db, "WM")
-    assert last_row_id is not None and last_row_id > 0
+    last_row_id, last_updated, _ = _state(db, "WM")
+    assert last_row_id is None            # lot-mode marker
+    assert last_updated is not None       # = newest closed lot end
 
 
-def test_same_day_samples_are_consumed(tmp_path):
+def test_open_lot_not_ingested_then_ingested_once_closed(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
-    from laser_trim_analyzer.ml.drift_training import train_drift_detector, advance_drift_state
+    from laser_trim_analyzer.ml.drift_training import (
+        train_drift_detector, advance_drift_state)
 
-    db = DatabaseManager(tmp_path / "sd.db")
-    start = datetime(2026, 1, 1)
-    _seed(db, "SAME", [0.010 + (i % 3) * 0.0002 for i in range(50)], start=start)
+    db = DatabaseManager(tmp_path / "open.db")
+    _seed(db, "OP", [0.010 + (i % 3) * 0.0002 for i in range(50)])
     train_drift_detector(db, sensitivity_preset="standard")
-    wm_before, last_dt, _ = _state(db, "SAME")
-    last_day = start + timedelta(days=49)
-    assert last_dt == last_day  # training consumed through the newest sample
+    _, wm0, cpos0 = _state(db, "OP")
 
-    # A later ingest dated the SAME day as the last trained sample (the exact
-    # case the date-only filter dropped forever).
-    _seed(db, "SAME", [0.05, 0.05, 0.05], start=last_day)
-    n = advance_drift_state(db, model="SAME")
-    assert n >= 1, "same-day samples must be consumed, not skipped"
-    wm_after, _, _ = _state(db, "SAME")
-    assert wm_after > wm_before
+    # A lot dated RIGHT NOW is still open -> advance must not touch it.
+    _seed(db, "OP", [0.05] * 5, start=datetime.now())
+    assert advance_drift_state(db, model="OP") == 0
+    _, wm1, cpos1 = _state(db, "OP")
+    assert wm1 == wm0 and cpos1 == cpos0
 
-    # Idempotent: nothing new -> nothing advanced.
-    assert advance_drift_state(db, model="SAME") == 0
-
-
-def test_legacy_row_without_watermark_falls_back_then_heals(tmp_path):
-    from laser_trim_analyzer.database.manager import DatabaseManager
-    from laser_trim_analyzer.database.models import ModelMetricState
-    from laser_trim_analyzer.ml.drift_training import train_drift_detector, advance_drift_state
-
-    db = DatabaseManager(tmp_path / "legacy.db")
-    _seed(db, "LEG", [0.010 + (i % 3) * 0.0002 for i in range(50)])
-    train_drift_detector(db, sensitivity_preset="standard")
-    # Simulate a row trained before last_row_id existed.
-    with db.session() as s:
-        s.query(ModelMetricState).filter_by(model="LEG").update(
-            {ModelMetricState.last_row_id: None})
-        s.commit()
-
-    # Next-day data: date fallback consumes it AND sets the watermark.
-    _seed(db, "LEG", [0.011, 0.011], start=datetime(2026, 3, 1))
-    assert advance_drift_state(db, model="LEG") >= 1
-    wm, _, _ = _state(db, "LEG")
-    assert wm is not None and wm > 0
+    # A lot that ended past the changeover gap is closed -> ingested once.
+    _seed(db, "OP", [0.05] * 5, start=datetime.now() - timedelta(days=30))
+    assert advance_drift_state(db, model="OP") >= 1
+    _, wm2, cpos2 = _state(db, "OP")
+    assert wm2 > wm0
+    # Re-advance: nothing new -> no change.
+    assert advance_drift_state(db, model="OP") == 0
+    _, wm3, cpos3 = _state(db, "OP")
+    assert wm3 == wm2 and cpos3 == cpos2
