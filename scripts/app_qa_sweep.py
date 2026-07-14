@@ -504,6 +504,9 @@ def main() -> int:
          "on_unit_click", "FT unit rows are clickable"),
         ("src/laser_trim_analyzer/gui/widgets/chart.py",
          "Include the PRE-TRIM trace", "unit chart y-window fits the pre-trim line"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "_open_dropdown_menu = self._open_model_picker",
+         "model dropdown opens the wheel-scrollable picker"),
     ]
     for path, needle, what in _GLOSSES:
         try:

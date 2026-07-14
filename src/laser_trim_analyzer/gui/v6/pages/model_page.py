@@ -73,10 +73,17 @@ class ModelPage(PageBase):
         self._model_selector.bind(
             "<Return>", lambda e: self._on_model_selected(self._model_selector.get().strip()))
         # Thumbwheel (work finding #2): the wheel steps prev/next model while
-        # hovering the selector — the dropdown itself can't wheel-scroll in CTk.
+        # hovering the CLOSED selector.
         self._model_selector.bind("<MouseWheel>", self._on_selector_wheel)
         self._model_selector.bind("<Button-4>", lambda e: self._on_selector_wheel(e, step=-1))
         self._model_selector.bind("<Button-5>", lambda e: self._on_selector_wheel(e, step=1))
+        # The OPEN dropdown is a tkinter.Menu underneath — it cannot wheel-
+        # scroll on Windows and is a wall at 451 models (James, 2026-07-14:
+        # "the mouse thumbwheel still doesnt work ... when i hit the model
+        # dropdown"). Replace what the arrow OPENS: a searchable, wheel-
+        # scrollable picker. Private-API override is safe under the pinned
+        # customtkinter 5.2.2 (see requirements-pinned.txt).
+        self._model_selector._open_dropdown_menu = self._open_model_picker
         self._model_selector.pack(side="left", padx=(0, t.SPACE_SM))
         self._window_menu = ctk.CTkOptionMenu(parent, values=list(_WINDOW_DAYS), width=80,
                                               command=self._on_window_change, fg_color=t.CARD,
@@ -635,6 +642,88 @@ class ModelPage(PageBase):
         if new_val != cur:
             self._model_selector.set(new_val)
             self._on_model_selected(new_val)
+
+    def _open_model_picker(self):
+        """Searchable, WHEEL-SCROLLABLE replacement for the combobox dropdown
+        (James, 2026-07-14). The native dropdown is a tkinter.Menu — no wheel
+        support on Windows and unusable at 451 models. This popup: type to
+        filter, wheel or drag to scroll, click (or Enter) to load."""
+        # One at a time — clicking the arrow again closes the open picker.
+        existing = getattr(self, "_picker", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+            self._picker = None
+            return
+        t = self.theme
+        values = list(self._model_selector.cget("values") or [])
+        pop = ctk.CTkToplevel(self)
+        self._picker = pop
+        pop.overrideredirect(True)          # borderless, menu-like
+        pop.configure(fg_color=t.CARD)
+        x = self._model_selector.winfo_rootx()
+        y = self._model_selector.winfo_rooty() + self._model_selector.winfo_height() + 2
+        pop.geometry(f"300x420+{x}+{y}")
+        pop.attributes("-topmost", True)
+        search = ctk.CTkEntry(pop, placeholder_text="Type to filter…",
+                              font=t.font(t.SIZE_BODY), fg_color=t.SURFACE,
+                              border_color=t.BORDER, text_color=t.TEXT_PRIMARY)
+        search.pack(side="top", fill="x", padx=t.SPACE_XS, pady=t.SPACE_XS)
+        lst = ctk.CTkScrollableFrame(pop, fg_color="transparent")
+        lst.pack(side="top", fill="both", expand=True, padx=t.SPACE_XS,
+                 pady=(0, t.SPACE_XS))
+        rows: list = []
+        state = {"matches": values}
+
+        def pick(name):
+            try:
+                pop.destroy()
+            except Exception:
+                pass
+            self._picker = None
+            self._model_selector.set(name)
+            self._on_model_selected(name)
+
+        def render():
+            for r in rows:
+                try:
+                    r.destroy()
+                except Exception:
+                    pass
+            rows.clear()
+            flt = search.get().strip().lower()
+            matches = [m for m in values if not flt or flt in m.lower()]
+            state["matches"] = matches
+            shown = matches[:200]
+            for name in shown:
+                is_cur = (name == self._current_model)
+                lbl = ctk.CTkLabel(lst, text=name, anchor="w",
+                                   font=t.font(t.SIZE_BODY, "bold" if is_cur else None),
+                                   text_color=t.ACCENT if is_cur else t.TEXT_PRIMARY)
+                lbl.pack(side="top", fill="x", padx=t.SPACE_XS)
+                lbl.bind("<Button-1>", lambda e, n=name: pick(n))
+                rows.append(lbl)
+            if len(matches) > len(shown):
+                cap = ctk.CTkLabel(lst, text=f"…{len(matches) - len(shown)} more — keep typing",
+                                   font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                                   anchor="w")
+                cap.pack(side="top", fill="x", padx=t.SPACE_XS)
+                rows.append(cap)
+            if not matches:
+                empty = ctk.CTkLabel(lst, text="No models match.",
+                                     font=t.font(t.SIZE_CAPTION),
+                                     text_color=t.TEXT_SECONDARY, anchor="w")
+                empty.pack(side="top", fill="x", padx=t.SPACE_XS)
+                rows.append(empty)
+
+        search.bind("<KeyRelease>", lambda e: render())
+        # Enter = load the first match; Escape or the arrow button closes.
+        # (No FocusOut auto-close: on a borderless Toplevel it can fire when
+        # the search entry itself takes focus — instant self-close.)
+        search.bind("<Return>", lambda e: state["matches"] and pick(state["matches"][0]))
+        search.bind("<Escape>", lambda e: (pop.destroy(), setattr(self, "_picker", None)))
+        pop.bind("<Escape>", lambda e: (pop.destroy(), setattr(self, "_picker", None)))
+        render()
+        pop.after(50, search.focus_set)
 
     def _on_pill_click(self, metric):
         self._user_picked_metric = True        # explicit choice; don't auto-override it
