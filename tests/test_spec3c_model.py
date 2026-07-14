@@ -280,17 +280,19 @@ def test_resolve_focus_metric_prefers_worst_when_not_user_picked():
 
 
 def test_model_recent_means_computed_from_data(make_app):
-    """Recent column comes from the actual recent-window data, not the detector
-    (which never persists a recent mean)."""
-    from datetime import datetime
+    """Recent column = the last CLOSED lot's median (lot mode, 2026-07-13).
+    Units dated today form an OPEN lot and must NOT be the recent value —
+    so the fixture backdates them past the changeover gap."""
+    from datetime import datetime, timedelta
     from laser_trim_analyzer.database.models import (
         AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType)
     app = make_app()
+    when = datetime.now() - timedelta(days=10)   # closed lot (gap > 3 days)
     with app.db.session() as s:
         for i, val in enumerate((0.0040, 0.0044)):
             ar = DBAR(filename=f"r{i}.xls", file_path="/f/x.xls", file_hash=f"hr{i}",
-                      model="RM", serial=f"sn{i}", system=SystemType.A, file_date=datetime.now(),
-                      timestamp=datetime.now(), overall_status=StatusType.PASS,
+                      model="RM", serial=f"sn{i}", system=SystemType.A, file_date=when,
+                      timestamp=when, overall_status=StatusType.PASS,
                       has_multi_tracks=False, processing_time=0.1)
             s.add(ar); s.flush()
             s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
@@ -298,7 +300,7 @@ def test_model_recent_means_computed_from_data(make_app):
         s.commit()
     page = app.page_container.get_page("model")
     means = page._recent_means("RM")
-    assert means["linearity_error"] == pytest.approx(0.0042)   # mean(0.0040, 0.0044)
+    assert means["linearity_error"] == pytest.approx(0.0042)   # lot median
 
 
 def test_drift_tab_uses_grid_columns(tk_root):

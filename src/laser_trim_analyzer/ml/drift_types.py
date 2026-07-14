@@ -72,6 +72,18 @@ WATCHED_METRICS: Tuple[str, ...] = (
     # the lot's gradeable units that failed linearity, vs the model's
     # historical lot fail rates.
     "linearity_fail_fraction",
+    # FINAL-TEST side (2026-07-13, James): the trim-side watch is blind to the
+    # most expensive station. These two cluster lots on final_test_results
+    # test_date, not trim file_date.
+    #   ft_fail_fraction — fraction of the FT lot's records that FAILED final
+    #   test, vs the model's historical FT lot fail rates. Catches "the latest
+    #   lot is failing final test out of family" after all labor is invested.
+    "ft_fail_fraction",
+    #   escape_fraction — of FT records CONFIDENTLY linked (≥0.5) to a trim
+    #   the app graded PASS, the fraction that then FAILED final test. Catches
+    #   the trim verdict losing its predictive power (assembly damage,
+    #   station-to-station offset) — a signal neither station sees alone.
+    "escape_fraction",
 )
 
 # Metrics whose drift may RAISE a model's tier (generate a flag). Chosen from the
@@ -91,7 +103,49 @@ TRIGGER_METRICS: frozenset = frozenset({
     "linearity_error",
     "composite_trim_risk_score",
     "linearity_fail_fraction",     # the outcome itself — always a trigger
+    "ft_fail_fraction",            # the FINAL outcome — always a trigger
+    "escape_fraction",             # trim verdict losing predictive power
 })
+
+# Fraction-valued metrics (0..1). Their lot observation is the MEAN (a rate,
+# not a median — the median of 0/1 flags is uselessly 0 or 1) and every
+# display renders them as PERCENT. Single source: lots.py aliases this as
+# MEAN_AGGREGATED_METRICS.
+FRACTION_METRICS: frozenset = frozenset({
+    "linearity_fail_fraction",
+    "ft_fail_fraction",
+    "escape_fraction",
+})
+
+# Display grouping (2026-07-13, James: "the design needs clear sections for
+# what im looking at"). Three groups: early-warning process signals at the
+# trim station, the trim outcome, and the final-test outcome after assembly.
+# Drift tab, pill row, and Settings all render in this order with these
+# headings — the 12-metric wall reads as three questions instead.
+METRIC_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("Process signals — element & trim",
+     "Early warning: what the elements and the trim process look like",
+     ("untrimmed_error_max", "untrimmed_sigma_gradient", "untrimmed_resistance",
+      "linearity_error", "measured_electrical_angle", "trim_pass_count",
+      "resistance_change_percent", "max_smoothness_value",
+      "composite_trim_risk_score")),
+    ("Outcome — linearity at trim",
+     "Share of each lot's units failing the customer linearity spec",
+     ("linearity_fail_fraction",)),
+    ("Outcome — final test (after assembly)",
+     "The last, most expensive station: lot fail rate and escapes",
+     ("ft_fail_fraction", "escape_fraction")),
+)
+
+
+def format_metric_value(metric: str, value, fmt_measure=None) -> str:
+    """Render a metric value for display: percent for fraction metrics,
+    otherwise the caller's numeric formatter (or a plain %g fallback)."""
+    if value is None:
+        return "—"
+    if metric in FRACTION_METRICS:
+        return f"{value * 100:.1f}%"
+    return fmt_measure(value) if fmt_measure else f"{value:g}"
 
 
 @dataclass
@@ -168,6 +222,8 @@ SUSPECT_SIGMA_GATE = 8.0
 
 METRIC_LABELS = {
     "linearity_fail_fraction": "Lot fail rate (linearity)",
+    "ft_fail_fraction": "Final-test lot fail rate",
+    "escape_fraction": "Escape rate (trim PASS → FT FAIL)",
     "untrimmed_error_max": "Untrimmed error (max)",
     "sigma_gradient": "Sigma gradient (post-trim)",
     "untrimmed_sigma_gradient": "Sigma gradient (untrimmed)",

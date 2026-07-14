@@ -27,7 +27,12 @@ def test_apply_sensitivity_preset_recomputes_to_known_values(tmp_path):
     _seed_metric_state(db, baseline_std=0.001)
     n = apply_sensitivity_preset(db, "tight")
     assert n == 1
-    exp_h, exp_L, exp_z = compute_thresholds(0.001, target_fp_for_tier("tight", DriftTier.WARNING))
+    # Apply goes through the SAME Bonferroni-corrected math as training
+    # (corrected_tier_thresholds divides target FP by len(WATCHED_METRICS)) —
+    # asserting raw compute_thresholds broke every time the watched-metric
+    # count changed (10 → 12 with the FT watch, 2026-07-13).
+    from laser_trim_analyzer.ml.drift_training import corrected_tier_thresholds
+    exp_h, exp_L, exp_z = corrected_tier_thresholds("tight", 0.001)[DriftTier.WARNING]
     with db.session() as s:
         row = s.query(ModelMetricState).filter_by(model="T", metric="sigma_gradient").first()
         assert row.baseline_mean == pytest.approx(0.01)     # baseline untouched
@@ -189,10 +194,12 @@ def test_build_cleanup_options():
 
 # ---- Task 10: SettingsPage + auto-train ------------------------------------
 
-def test_settings_page_has_five_cards(make_app):
+def test_settings_page_has_six_cards(make_app):
+    """Thresholds, Active Models, Per-model Specs, ML Training, Pricing,
+    Database Cleanup (stale '5' predated the Per-model Specs card)."""
     app = make_app()
     page = app.page_container.get_page("settings")
-    assert len(page._cards) == 5
+    assert len(page._cards) == 6
 
 
 def test_should_offer_first_startup_train_is_data_gated(make_app):

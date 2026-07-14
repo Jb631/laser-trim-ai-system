@@ -38,8 +38,14 @@ class TriagePage(PageBase):
         self._scope.pack(side="left")
 
     def build_content(self, parent):
+        # Same two-zone framing as the Model page (2026-07-13 design pass):
+        # the app's read first, the raw model list below it.
+        self._zone_header(parent, "WHAT THE APP IS TELLING YOU",
+                          "models whose last lot moved out of family — worst first")
         self._cards = FlaggedCardsZone(parent, theme=self.theme, on_card_click=self._on_card_click)
         self._cards.pack(side="top", fill="x", pady=(0, self.theme.SPACE_LG))
+        self._zone_header(parent, "WHAT YOU'RE LOOKING AT",
+                          "every model on record — click one to see its data")
         self._browse = BrowseZone(parent, theme=self.theme, on_row_click=self._on_row_click)
         self._browse.pack(side="top", fill="both", expand=True)
 

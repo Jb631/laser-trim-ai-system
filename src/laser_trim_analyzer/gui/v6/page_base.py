@@ -40,6 +40,18 @@ class PageBase(ctk.CTkFrame):
     def on_show(self) -> None: pass
     def on_hide(self) -> None: pass
 
+    # ---- shared section chrome (2026-07-13 design pass: James asked for
+    # "clear sections for what im looking at and what the app is telling
+    # me" — pages mark INTERPRETATION zones vs DATA zones with this). ----
+    def _zone_header(self, parent, title: str, caption: str) -> None:
+        t = self.theme
+        wrap = ctk.CTkFrame(parent, fg_color="transparent")
+        wrap.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        ctk.CTkLabel(wrap, text=title, font=t.font(t.SIZE_CAPTION, "bold"),
+                     text_color=t.ACCENT, anchor="w").pack(side="left")
+        ctk.CTkLabel(wrap, text="   " + caption, font=t.font(t.SIZE_CAPTION),
+                     text_color=t.TEXT_SECONDARY, anchor="w").pack(side="left")
+
     # ---- thread-safe UI update (foundations §2.4, reworked 2026-07-06) ----
     def safe_after(self, fn, delay: int = 0) -> None:
         """Run fn on the UI thread, guarded against widget destruction.

@@ -232,5 +232,9 @@ NON_TRIM_FILENAME_REGEXES: Final[list] = [
     r"shop#",
 ]
 
-# Matching parameters for Final Test to Trim linking
-FINAL_TEST_MAX_DAYS_FROM_TRIM: Final[int] = 60  # Maximum days between trim and final test
+# Matching parameters for Final Test to Trim linking.
+# 180 (was 60): measured on the home DB 2026-07-13 — recent unmatched FT
+# records with a same-model+serial trim on file cluster at 63–176 days
+# (trim → assembly → final test WIP dwell). Confidence decays with the gap,
+# so distant links carry ~0.40 and stay out of the ≥0.70 agreement queries.
+FINAL_TEST_MAX_DAYS_FROM_TRIM: Final[int] = 180  # Maximum days between trim and final test

@@ -5011,6 +5011,10 @@ class DatabaseManager:
         s = re.sub(r'^(\d+)[A-Za-z]$', r'\1', s)
         # Strip trailing hyphen + letter(s) variant: "8508-A" → "8508", "7280-1-CT" → "7280-1"
         s = re.sub(r'^(\d+(?:-\d+)*)-[A-Za-z]+$', r'\1', s)
+        # Strip trailing letters glued to a hyphenated numeric suffix:
+        # "7953-1A" → "7953-1" (2026-07-13: FT files say "7953-1", trim files
+        # say "7953-1A"/"7953-1B" — 197 recent FT records unlinkable without this)
+        s = re.sub(r'^(\d+(?:-\d+)+)[A-Za-z]+$', r'\1', s)
         return s
 
     def _find_matching_trim(
@@ -5170,13 +5174,16 @@ class DatabaseManager:
         - Model variant + fuzzy serial, same week: 0.71-0.77
         - Any match beyond 30 days: drops significantly
         """
-        # Time-based confidence
+        # Time-based confidence. Decay beyond 30 days is 0.002/day so the
+        # scale spans the full 180-day match window (0.40 ≈ 180d); the old
+        # 0.007/day rate hit the 0.40 floor by day ~73 and couldn't tell a
+        # 75-day link from a 175-day one.
         if days_diff <= 7:
             time_conf = 1.0 - (days_diff * 0.01)
         elif days_diff <= 30:
             time_conf = 0.9 - ((days_diff - 7) * 0.01)
         else:
-            time_conf = 0.7 - ((days_diff - 30) * 0.007)
+            time_conf = 0.7 - ((days_diff - 30) * 0.002)
 
         # Match quality penalties (applied multiplicatively)
         if not exact_serial:
@@ -5363,6 +5370,133 @@ class DatabaseManager:
                     f"{stats['updated_matches']} updated, {stats['unchanged']} unchanged"
                 )
 
+        return stats
+
+    def rematch_unlinked_final_tests(self) -> Dict[str, int]:
+        """Link-only rematch pass over FT records that have NO trim link yet.
+
+        Why this exists (2026-07-13): matching runs at FT save time, so an FT
+        file processed in the same batch as — or any batch before — its trim
+        file finds nothing and stays NULL forever. Nothing ever retried. This
+        runs automatically after every processing batch.
+
+        Bulk strategy: instead of the per-record query cascade (minutes for
+        30k+ records), load every candidate trim ONCE, build serial-form
+        indexes in memory, and answer each FT record with bisect lookups.
+        Match semantics mirror _find_matching_trim exactly: newest trim at or
+        before the FT date within FINAL_TEST_MAX_DAYS_FROM_TRIM, staged
+        exact serial → fuzzy → aggressive → model-variant.
+
+        Existing links are never touched — rematch_final_tests() re-evaluates
+        everything if that is ever needed.
+        """
+        import bisect
+        import time as _time
+        from collections import defaultdict
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
+
+        t0 = _time.time()
+        stats = {"unlinked": 0, "new_matches": 0, "still_unmatched": 0, "seconds": 0.0}
+        window = timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+
+        with self._write_lock:
+            with self.session() as session:
+                pending = (
+                    session.query(DBFinalTestResult)
+                    .filter(DBFinalTestResult.linked_trim_id.is_(None))
+                    .all()
+                )
+                stats["unlinked"] = len(pending)
+                if not pending:
+                    return stats
+
+                # One pass over all trims → per-serial-form indexes of
+                # (file_date, trim_id) sorted ascending, plus a per-family
+                # index for variant matches ("8275" FT ↔ "8275A" trim).
+                exact_ix: dict = defaultdict(list)    # (model, serial_lower) → [(date, id)]
+                fuzzy_ix: dict = defaultdict(list)    # (model, norm_serial)  → [(date, id)]
+                aggr_ix: dict = defaultdict(list)     # (model, aggr_serial)  → [(date, id)]
+                variant_ix: dict = defaultdict(list)  # (norm_model, norm_serial) → [(date, id, model)]
+                rows = session.query(
+                    DBAnalysisResult.id, DBAnalysisResult.model,
+                    DBAnalysisResult.serial, DBAnalysisResult.file_date,
+                ).filter(
+                    DBAnalysisResult.file_date.isnot(None),
+                    DBAnalysisResult.serial.isnot(None),
+                ).order_by(DBAnalysisResult.file_date).all()
+                for tid, tmodel, tserial, tdate in rows:
+                    s_low = tserial.lower().strip()
+                    s_norm = self._normalize_serial(tserial)
+                    exact_ix[(tmodel, s_low)].append((tdate, tid))
+                    fuzzy_ix[(tmodel, s_norm)].append((tdate, tid))
+                    aggr_ix[(tmodel, self._normalize_serial_aggressive(tserial))].append((tdate, tid))
+                    variant_ix[(self._normalize_model(tmodel), s_norm)].append((tdate, tid, tmodel))
+
+                def newest_in_window(entries, test_date, cutoff, skip_model=None):
+                    """Rightmost entry with cutoff <= date <= test_date."""
+                    i = bisect.bisect_right(entries, (test_date, float("inf"))) - 1
+                    while i >= 0:
+                        e = entries[i]
+                        if e[0] < cutoff:
+                            return None
+                        if skip_model is None or e[2] != skip_model:
+                            return e
+                        i -= 1
+                    return None
+
+                for ft in pending:
+                    test_date = ft.file_date or ft.test_date
+                    if not ft.model or not ft.serial or not test_date:
+                        stats["still_unmatched"] += 1
+                        continue
+                    cutoff = test_date - window
+                    s_low = ft.serial.lower().strip()
+                    s_norm = self._normalize_serial(ft.serial)
+                    hit = method = None
+                    exact_serial = True
+                    variant = False
+                    penalty = 1.0
+                    e = newest_in_window(exact_ix.get((ft.model, s_low), ()), test_date, cutoff)
+                    if e:
+                        hit, method = e, "exact"
+                    if hit is None:
+                        e = newest_in_window(fuzzy_ix.get((ft.model, s_norm), ()), test_date, cutoff)
+                        if e:
+                            hit, method, exact_serial = e, "fuzzy_serial", False
+                    if hit is None:
+                        e = newest_in_window(
+                            aggr_ix.get((ft.model, self._normalize_serial_aggressive(ft.serial)), ()),
+                            test_date, cutoff)
+                        if e:
+                            hit, method, exact_serial, penalty = e, "fuzzy_serial_aggressive", False, 0.90
+                    if hit is None:
+                        e = newest_in_window(
+                            variant_ix.get((self._normalize_model(ft.model), s_norm), ()),
+                            test_date, cutoff, skip_model=ft.model)
+                        if e:
+                            hit, method, exact_serial, variant = e, "model_variant", False, True
+                    if hit is None:
+                        stats["still_unmatched"] += 1
+                        continue
+                    days_diff = (test_date - hit[0]).days
+                    ft.linked_trim_id = hit[1]
+                    ft.match_confidence = self._calculate_match_confidence(
+                        days_diff, exact_serial=exact_serial, model_variant=variant) * penalty
+                    ft.days_since_trim = days_diff
+                    ft.match_method = method
+                    stats["new_matches"] += 1
+
+                session.commit()
+
+        stats["seconds"] = round(_time.time() - t0, 1)
+        logger.info(
+            "Unlinked-FT rematch: %d of %d linked in %.1fs (%d still unmatched)",
+            stats["new_matches"], stats["unlinked"], stats["seconds"],
+            stats["still_unmatched"],
+        )
         return stats
 
     def get_final_test(self, final_test_id: int) -> Optional[Dict[str, Any]]:

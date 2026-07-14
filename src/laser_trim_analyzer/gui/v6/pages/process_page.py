@@ -219,6 +219,18 @@ class ProcessPage(PageBase):
         # THIS batch (P0 fix: advance_drift_state previously had no callers —
         # drift state stayed frozen at training time until a full retrain).
         if models_in_batch:
+            # Re-link final tests FIRST: FT files that arrived before their
+            # trim files matched nothing at save time (2026-07-13 finding —
+            # a third of recent unmatched FT records had an in-window trim
+            # that simply wasn't in the DB yet). Must run before the drift
+            # advance so escape/FT metrics see the fresh links.
+            try:
+                rl = self.app.db.rematch_unlinked_final_tests()
+                if rl.get("new_matches"):
+                    self.safe_after(lambda n=rl["new_matches"]: self._progress.set_idle(
+                        f"Re-linked {n:,} final-test records to their trim data…"))
+            except Exception:
+                logger.exception("Post-batch FT rematch failed")
             try:
                 from laser_trim_analyzer.ml.drift_training import advance_drift_state
                 advanced = 0

@@ -10,3 +10,6 @@ Overall: Stable
 - Resistance change %: baseline lots 0 ± 0, last lot 23.54 (lot of 2), shift n/a [Stable]
 - Smoothness (max): baseline lots 0 ± 0, last lot n/a, shift n/a [Stable]
 - Composite risk: baseline lots 0 ± 0, last lot n/a, shift n/a [Stable]
+- Lot fail rate (linearity): baseline lots 0.0% ± 0.0%, last lot 0.0% (lot of 2), shift n/a [Stable]
+- Final-test lot fail rate: baseline lots 0.0% ± 0.0%, last lot 6.7% (lot of 15), shift n/a [Stable]
+- Escape rate (trim PASS → FT FAIL): baseline lots 0.0% ± 0.0%, last lot 0.0% (lot of 10), shift n/a [Stable]

@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 # detector reports tier=Stable forever for that metric.
 MIN_BASELINE_SAMPLES: int = 30
 
+# Minimum FT→trim match confidence for a linked pair to count in the ESCAPE
+# watch. 0.5 ≈ exact-serial links within ~4 months (decay reaches 0.40 at the
+# 180-day window edge). The agreement/overkill queries stay at their stricter
+# 0.70; escapes tolerate more distance because assembly dwell is months and
+# a wrong-unit link at the same model still measures the model's escape rate.
+ESCAPE_MIN_CONFIDENCE: float = 0.5
+
 
 # Maps metric name -> SQLAlchemy column on TrackResult, except smoothness
 # which maps to SmoothnessResult.max_smoothness_value.
@@ -73,7 +80,11 @@ def train_drift_detector(
     """
     start = time.time()
 
-    # Discover models that have data
+    # Discover models that have data. FINAL-TEST models are included since
+    # the FT watch (2026-07-13): a model tested-but-never-trimmed in this DB
+    # (e.g. 8864 — 213 recent FT records, zero trim rows) still deserves
+    # ft_fail_fraction monitoring; its trim metrics train NOT TRAINED.
+    from laser_trim_analyzer.database.models import FinalTestResult as DBFT
     with db.session() as s:
         models = [
             r[0] for r in s.query(DBAR.model).distinct().all()
@@ -81,7 +92,11 @@ def train_drift_detector(
         smoothness_models = [
             r[0] for r in s.query(DBSR.model).distinct().all()
         ]
-        all_models = sorted(set(models) | set(smoothness_models))
+        ft_models = [
+            r[0] for r in s.query(DBFT.model).distinct().all()
+        ]
+        all_models = sorted((set(models) | set(smoothness_models) | set(ft_models))
+                            - {None, ""})
     if model is not None:
         # Single-model retrain (baseline requalification path).
         all_models = [m for m in all_models if m == model]
@@ -201,10 +216,12 @@ def _train_one_metric(
     # at 1% of |mean| (plus a tiny absolute), standard guard against an
     # underestimated σ. Tiers stay correct; displayed shifts stay sane.
     baseline_std = max(baseline_std, 0.01 * abs(baseline_mean), 1e-9)
-    if metric == "linearity_fail_fraction":
+    from laser_trim_analyzer.ml.lots import MEAN_AGGREGATED_METRICS
+    if metric in MEAN_AGGREGATED_METRICS:
         # Fractions live in [0,1]; a historically-clean model has mean≈0 and
         # σ≈0, so floor at 2 percentage points: a 20%-fail lot on a clean
-        # model reads +9σ (alarms, sanely) instead of +∞.
+        # model reads +9σ (alarms, sanely) instead of +∞. Applies to all
+        # fail/escape-fraction metrics (trim linearity, final test, escapes).
         baseline_std = max(baseline_std, 0.02)
 
     thresholds = corrected_tier_thresholds(sensitivity_preset, baseline_std)
@@ -349,6 +366,56 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
             elif after is not None:
                 q = q.filter(DBAR.file_date > after)
             rows = q.order_by(DBAR.file_date).all()
+        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
+                for (d, st_, rid) in rows if d is not None]
+
+    if metric == "ft_fail_fraction":
+        # Per-FT-RECORD fail flag on final_test_results, clustered on the
+        # FINAL TEST date (the lot at the last station, not the trim lot).
+        # Blind spot closed 2026-07-13: the watch previously had no eyes on
+        # the most expensive failure point. Dates before 2000 are file
+        # artifacts (1899-12-30 epoch defaults) and are excluded.
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFT, StatusType)
+        floor_2000 = datetime(2000, 1, 1)
+        with db.session() as s:
+            q = (s.query(DBFT.test_date, DBFT.overall_status, DBFT.id)
+                 .filter(DBFT.model == model,
+                         DBFT.test_date.isnot(None),
+                         DBFT.test_date > floor_2000,
+                         DBFT.overall_status.in_([StatusType.PASS, StatusType.WARNING,
+                                                  StatusType.FAIL])))
+            if after_row_id is not None:
+                q = q.filter(DBFT.id > after_row_id)
+            elif after is not None:
+                q = q.filter(DBFT.test_date > after)
+            rows = q.order_by(DBFT.test_date).all()
+        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
+                for (d, st_, rid) in rows if d is not None]
+
+    if metric == "escape_fraction":
+        # Of FT records confidently linked to a trim the app ACCEPTED
+        # (PASS or WARNING), the flag is 1 when final test then FAILED —
+        # an escape. Lot mean = the lot's escape rate. Requires link
+        # confidence ≥ ESCAPE_MIN_CONFIDENCE so recycled-serial guesses
+        # don't fabricate escapes.
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFT, StatusType)
+        floor_2000 = datetime(2000, 1, 1)
+        with db.session() as s:
+            q = (s.query(DBFT.test_date, DBFT.overall_status, DBFT.id)
+                 .join(DBAR, DBFT.linked_trim_id == DBAR.id)
+                 .filter(DBFT.model == model,
+                         DBFT.test_date.isnot(None),
+                         DBFT.test_date > floor_2000,
+                         DBFT.match_confidence >= ESCAPE_MIN_CONFIDENCE,
+                         DBFT.overall_status.in_([StatusType.PASS, StatusType.FAIL]),
+                         DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING])))
+            if after_row_id is not None:
+                q = q.filter(DBFT.id > after_row_id)
+            elif after is not None:
+                q = q.filter(DBFT.test_date > after)
+            rows = q.order_by(DBFT.test_date).all()
         return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
                 for (d, st_, rid) in rows if d is not None]
 

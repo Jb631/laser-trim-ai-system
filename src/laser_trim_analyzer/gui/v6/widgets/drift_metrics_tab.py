@@ -1,11 +1,16 @@
-"""Spec 3c — DriftMetricsTab: table of all 8 metrics for the model."""
-from typing import Callable, Dict
+"""Spec 3c — DriftMetricsTab: grouped table of every watched metric.
+
+Rows render in METRIC_GROUPS order under three plain-language group headers
+(process signals / trim outcome / final-test outcome) so the 12-metric list
+reads as three questions, not a wall (James, 2026-07-13)."""
+from typing import Callable, Dict, List
 
 import customtkinter as ctk
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import (
-    AlertType, ModelDriftStatus, WATCHED_METRICS, metric_label)
+    AlertType, METRIC_GROUPS, ModelDriftStatus, format_metric_value,
+    metric_label)
 
 _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (lot mean±σ)", "Last lot", "Shift (σ)"]
 
@@ -17,6 +22,7 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         self.theme = theme
         self._cb = on_metric_select
         self._rows: Dict[str, _MetricRow] = {}
+        self._group_headers: List = []
         self._on_requalify = on_requalify
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
@@ -61,15 +67,29 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
         recent_means = recent_means or {}
         for r in self._rows.values():
             r.destroy()
+        # __dict__.get, not getattr: the QA sweep's headless widget stub
+        # answers ANY attribute with a callable, which is not iterable.
+        for h in (self.__dict__.get("_group_headers") or []):
+            h.destroy()
         self._rows.clear()
-        for m in WATCHED_METRICS:
-            ms = status.per_metric.get(m)
-            if ms is None:
+        self._group_headers = []
+        t = self.theme
+        for group_title, group_gloss, metrics in METRIC_GROUPS:
+            present = [m for m in metrics if status.per_metric.get(m) is not None]
+            if not present:
                 continue
-            row = _MetricRow(self, ms=ms, theme=self.theme, on_click=self._cb,
-                             recent_override=recent_means.get(m))
-            row.pack(side="top", fill="x", pady=1)
-            self._rows[m] = row
+            hdr = ctk.CTkLabel(
+                self, text=f"{group_title}   ·   {group_gloss}",
+                font=t.font(t.SIZE_CAPTION, "bold"), text_color=t.TEXT_SECONDARY,
+                anchor="w")
+            hdr.pack(side="top", fill="x", pady=(t.SPACE_SM, 2))
+            self._group_headers.append(hdr)
+            for m in present:
+                ms = status.per_metric[m]
+                row = _MetricRow(self, ms=ms, theme=t, on_click=self._cb,
+                                 recent_override=recent_means.get(m))
+                row.pack(side="top", fill="x", pady=1)
+                self._rows[m] = row
 
 
 class _MetricRow(ctk.CTkFrame):
@@ -83,7 +103,10 @@ class _MetricRow(ctk.CTkFrame):
         # assigned on _MetricRow. Referencing it blanked the ENTIRE drift tab
         # for every model at work (2026-07-10) because the per-widget guard
         # swallowed the AttributeError. Now covered by the app sweep.
-        recent = theme.fmt_measure(recent_val)
+        # Fraction metrics (fail/escape rates) read as percent everywhere —
+        # "5.2% ± 2.0%" not "0.052 ± 0.02" (2026-07-13).
+        _fmt = lambda v: format_metric_value(ms.metric, v, theme.fmt_measure)  # noqa: E731
+        recent = _fmt(recent_val)
         # Honest shift, verifiable against the Baseline & Recent cells beside it:
         # (recent - baseline) / baseline_std. Replaces the old `magnitude` (CUSUM
         # distance past the limit), which couldn't be reconciled with the numbers shown.
@@ -96,7 +119,7 @@ class _MetricRow(ctk.CTkFrame):
                      else "Slow drift") if ms.alert_type else "—"
         cells = [metric_label(ms.metric), ms.tier.name.replace("_", " ").title(),
                  alert_txt,
-                 f"{theme.fmt_measure(ms.baseline_mean)} ± {theme.fmt_measure(ms.baseline_std)}", recent, shift_txt]
+                 f"{_fmt(ms.baseline_mean)} ± {_fmt(ms.baseline_std)}", recent, shift_txt]
         for i in range(len(cells)):
             self.grid_columnconfigure(i, weight=1, uniform="dm")
         for i, txt in enumerate(cells):

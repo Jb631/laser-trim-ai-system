@@ -83,13 +83,16 @@ def build_summary_text(model: str, status, recent_means: Optional[dict] = None,
         if ms is None:
             continue
         recent_val = recent_means.get(m) if recent_means.get(m) is not None else ms.recent_mean
-        recent = f"{recent_val:.4g}" if recent_val is not None else "n/a"
+        # Fraction metrics (fail/escape rates) read as percent, matching the UI.
+        from laser_trim_analyzer.ml.drift_types import format_metric_value
+        _f = lambda v, _m=m: format_metric_value(_m, v, lambda x: f"{x:.4g}")  # noqa: E731
+        recent = _f(recent_val) if recent_val is not None else "n/a"
         tier = ms.tier.name.replace("_", " ").title()
         shift = _sigma_shift(ms, recent_val)
         shift_txt = f"shift {shift:+.2f}σ" if shift is not None else "shift n/a"
         lot_n = (recent_meta or {}).get(m, {}).get("n") if recent_meta else None
         lot_txt = f" (lot of {lot_n})" if lot_n else ""
-        lines.append(f"- {metric_label(m)}: baseline lots {ms.baseline_mean:.4g} ± {ms.baseline_std:.4g}, "
+        lines.append(f"- {metric_label(m)}: baseline lots {_f(ms.baseline_mean)} ± {_f(ms.baseline_std)}, "
                      f"last lot {recent}{lot_txt}, {shift_txt} [{tier}]")
     return "\n".join(lines)
 
@@ -118,14 +121,19 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
     except Exception:
         _req = None
     baseline_since = str(_req[0])[:10] if _req else "full history"
+    # Same three-section order the UI shows (process / trim outcome / FT
+    # outcome), with the group name as a column for filtering in Excel.
+    from laser_trim_analyzer.ml.drift_types import METRIC_GROUPS
+    _group_of = {m: title for title, _gl, ms_ in METRIC_GROUPS for m in ms_}
     metric_rows = []
-    for m in WATCHED_METRICS:
+    for m in [m for _t, _g, ms_ in METRIC_GROUPS for m in ms_ if m in WATCHED_METRICS]:
         ms = status.per_metric.get(m)
         if ms is None:
             # An absent row was ambiguous between "fine" and "never checked"
             # (work convo 2026-07-10) — say NOT TRAINED and still show the
             # recent mean, which needs no baseline.
-            metric_rows.append({"Metric": metric_label(m), "Tier": "NOT TRAINED",
+            metric_rows.append({"Group": _group_of.get(m, ""),
+                                "Metric": metric_label(m), "Tier": "NOT TRAINED",
                                 "Baseline since": baseline_since,
                                 "Alert": "", "Baseline mean": None,
                                 "Baseline std": None,
@@ -136,7 +144,8 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
             continue
         recent_val = recent_means.get(m) if recent_means.get(m) is not None else ms.recent_mean
         mm = recent_meta.get(m, {})
-        metric_rows.append({"Metric": metric_label(m), "Tier": ms.tier.name,
+        metric_rows.append({"Group": _group_of.get(m, ""),
+                            "Metric": metric_label(m), "Tier": ms.tier.name,
                             "Baseline since": baseline_since,
                             "Alert": ms.alert_type.value if ms.alert_type else "",
                             "Baseline mean": ms.baseline_mean, "Baseline std": ms.baseline_std,

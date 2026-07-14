@@ -116,5 +116,11 @@ class PredictorPanel(ctk.CTkFrame):
             if self._ui is not None:
                 self._ui.post(apply)
             else:
-                apply()  # tests: main thread, no dispatcher
-        threading.Thread(target=work, daemon=True).start()
+                apply()
+        if self._ui is None:
+            # No dispatcher (tests / standalone page): run synchronously —
+            # we're already on the main thread, and a worker thread would
+            # both race the assertion and touch Tk off-thread.
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()

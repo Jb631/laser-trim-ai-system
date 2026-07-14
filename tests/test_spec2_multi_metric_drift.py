@@ -472,7 +472,9 @@ def test_training_writes_one_row_per_model_per_metric(tmp_path):
     db = DatabaseManager(tmp_path / "train.db")
     today = datetime.now()
 
-    # Build 50 TrackResults for one model so baseline_count >= 30
+    # Build 50 TrackResults for one model. WEEKLY spacing (lot mode,
+    # 2026-07-13): consecutive days would cluster into ONE lot and train
+    # nothing — each unit a week apart gives 50 closed lots.
     with db.session() as s:
         for i in range(50):
             ar = DBAR(
@@ -482,7 +484,7 @@ def test_training_writes_one_row_per_model_per_metric(tmp_path):
                 model="TEST-MODEL",
                 serial=f"sn{i}",
                 system=DBSystemType.A,
-                file_date=today - timedelta(days=60 - i),
+                file_date=today - timedelta(days=7 * (50 - i)),
                 timestamp=today,
                 overall_status=DBStatusType.PASS,
                 has_multi_tracks=False,

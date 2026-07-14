@@ -54,6 +54,8 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
     # list is the only place a user meets the full metric set (jargon sweep).
     _GLOSS = {
     "linearity_fail_fraction": "share of a lot's units failing linearity — catches lots that fail MORE units even when averages look normal",
+        "ft_fail_fraction": "share of a FINAL-TEST lot failing — watches the last, most expensive station",
+        "escape_fraction": "share of trim-PASSED units that then failed final test — the trim verdict losing its predictive power",
         "untrimmed_error_max": "worst pre-trim linearity error — incoming element quality",
         "untrimmed_sigma_gradient": "pre-trim noise level of the element",
         "sigma_gradient": "post-trim noise level",
@@ -67,11 +69,19 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
     }
     desc = ctk.CTkFrame(parent, fg_color="transparent")
     desc.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
-    for m in WATCHED_METRICS:
-        gloss = _GLOSS.get(m)
-        text = f"• {metric_label(m)}" + (f" — {gloss}" if gloss else "")
-        ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
-                     text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
+    # Same three-section order as the Model page (2026-07-13 design pass).
+    from laser_trim_analyzer.ml.drift_types import METRIC_GROUPS
+    for group_title, _group_gloss, metrics in METRIC_GROUPS:
+        ctk.CTkLabel(desc, text=group_title, font=t.font(t.SIZE_CAPTION, "bold"),
+                     text_color=t.TEXT_PRIMARY, anchor="w")\
+            .pack(side="top", fill="x", pady=(t.SPACE_XS, 0))
+        for m in metrics:
+            if m not in WATCHED_METRICS:
+                continue
+            gloss = _GLOSS.get(m)
+            text = f"• {metric_label(m)}" + (f" — {gloss}" if gloss else "")
+            ctk.CTkLabel(desc, text=text, font=t.font(t.SIZE_CAPTION),
+                         text_color=t.TEXT_SECONDARY, anchor="w").pack(side="top", fill="x")
 
     save_btn = ctk.CTkButton(parent, text="Apply preset", fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER,
                              text_color=t.TEXT_INVERSE, corner_radius=t.RADIUS_SM)

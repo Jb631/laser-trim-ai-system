@@ -97,6 +97,20 @@ class ModelPage(PageBase):
             parent, text="Pick a model above, or click one from Triage, to see its drift profile.",
             font=t.font(t.SIZE_HEADING), text_color=t.TEXT_SECONDARY)
         self._body = ctk.CTkFrame(parent, fg_color="transparent")
+        # ---- ZONE 1: the app's read (2026-07-13, James: "clear sections for
+        # what im looking at and what the app is telling me"). Verdict FIRST
+        # (the answer), then the per-metric pills (the evidence), then the σ
+        # key. Everything in this zone is an interpretation.
+        self._zone_header(self._body, "WHAT THE APP IS TELLING YOU",
+                          "drift-watch verdict — one verdict per lot, never a spec disposition")
+        # THE daily question in one line (user #17, 2026-07-13: "not getting
+        # the most out of the available data"): holding or drifting, which
+        # way the window is moving vs the model's lifetime, and whether this
+        # model has historically been difficult.
+        self._verdict = ctk.CTkLabel(self._body, text="", font=t.font(t.SIZE_BODY, "bold"),
+                                     text_color=t.TEXT_PRIMARY, anchor="w",
+                                     justify="left", wraplength=1200)
+        self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
         self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         # Plain-language key for the pill numbers: σ was shown with no
@@ -108,15 +122,10 @@ class ModelPage(PageBase):
                            "Drift signal, not a spec."),
                      font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
                      anchor="w", justify="left", wraplength=980)\
-            .pack(side="top", fill="x", pady=(0, t.SPACE_XS))
-        # THE daily question in one line (user #17, 2026-07-13: "not getting
-        # the most out of the available data"): holding or drifting, which
-        # way the window is moving vs the model's lifetime, and whether this
-        # model has historically been difficult.
-        self._verdict = ctk.CTkLabel(self._body, text="", font=t.font(t.SIZE_BODY, "bold"),
-                                     text_color=t.TEXT_PRIMARY, anchor="w",
-                                     justify="left", wraplength=1200)
-        self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+            .pack(side="top", fill="x", pady=(0, t.SPACE_MD))
+        # ---- ZONE 2: the data itself — where the read above is verified.
+        self._zone_header(self._body, "WHAT YOU'RE LOOKING AT",
+                          "the measurements — chart the pill you clicked; units & final tests in the tabs")
         self._focus_chart = FocusChart(self._body, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._tabs = ThemedTabView(self._body, theme=t)
@@ -330,6 +339,41 @@ class ModelPage(PageBase):
                 if cutoff:
                     q = q.filter(DBAR.file_date >= cutoff)
                 rows = q.group_by(_fn.date(DBAR.file_date)).order_by(DBAR.file_date).all()
+            elif metric == "ft_fail_fraction":
+                # Daily FINAL-TEST fail rate — same shape as the detector's
+                # lot observations, on the FT test_date axis.
+                from sqlalchemy import func as _fn, case as _case
+                from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+                q = (s.query(DBFT.test_date,
+                             _fn.avg(_case((DBFT.overall_status == StatusType.FAIL, 1.0),
+                                           else_=0.0)))
+                     .filter(DBFT.model == model,
+                             DBFT.test_date.isnot(None),
+                             DBFT.test_date > datetime(2000, 1, 1),
+                             DBFT.overall_status.in_([StatusType.PASS, StatusType.WARNING,
+                                                      StatusType.FAIL])))
+                if cutoff:
+                    q = q.filter(DBFT.test_date >= cutoff)
+                rows = q.group_by(_fn.date(DBFT.test_date)).order_by(DBFT.test_date).all()
+            elif metric == "escape_fraction":
+                # Daily escape rate: of confidently-linked FT records whose
+                # trim was ACCEPTED, the share that failed final test.
+                from sqlalchemy import func as _fn, case as _case
+                from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+                from laser_trim_analyzer.ml.drift_training import ESCAPE_MIN_CONFIDENCE
+                q = (s.query(DBFT.test_date,
+                             _fn.avg(_case((DBFT.overall_status == StatusType.FAIL, 1.0),
+                                           else_=0.0)))
+                     .join(DBAR, DBFT.linked_trim_id == DBAR.id)
+                     .filter(DBFT.model == model,
+                             DBFT.test_date.isnot(None),
+                             DBFT.test_date > datetime(2000, 1, 1),
+                             DBFT.match_confidence >= ESCAPE_MIN_CONFIDENCE,
+                             DBFT.overall_status.in_([StatusType.PASS, StatusType.FAIL]),
+                             DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING])))
+                if cutoff:
+                    q = q.filter(DBFT.test_date >= cutoff)
+                rows = q.group_by(_fn.date(DBFT.test_date)).order_by(DBFT.test_date).all()
             elif metric in TRACK_METRIC_COLUMNS:
                 col = TRACK_METRIC_COLUMNS[metric]      # Q4: SAME column the detector trained on
                 q = (s.query(DBAR.file_date, col).join(DBTR, DBTR.analysis_id == DBAR.id)

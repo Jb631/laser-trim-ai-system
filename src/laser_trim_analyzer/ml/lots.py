@@ -73,8 +73,9 @@ def cluster_lots(dated_values: List[Tuple[datetime, float]],
 
 # Metrics whose per-lot value is the MEAN, not the median: a fail flag is
 # 0/1, and the median of a lot of flags is uselessly 0 or 1 — the fraction
-# is the observation.
-MEAN_AGGREGATED_METRICS = frozenset({"linearity_fail_fraction"})
+# is the observation. Single source of truth lives in drift_types
+# (FRACTION_METRICS) so displays and aggregation can never disagree.
+from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS as MEAN_AGGREGATED_METRICS  # noqa: E402
 
 
 def _finish(days: List[datetime], vals: List[float], use_mean: bool = False) -> Lot:

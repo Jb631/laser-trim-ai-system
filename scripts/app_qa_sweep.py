@@ -343,8 +343,59 @@ def main() -> int:
         tab.set_status(status, recent_means=compute_recent_means(db, "6607"))
         check("drift tab: constructs with real state (no swallowed AttributeError)",
               len(tab._rows) > 0, f"{len(tab._rows)} metric rows built")
+        check("drift tab: renders metric-group section headers",
+              len(getattr(tab, "_group_headers", [])) >= 2,
+              f"{len(getattr(tab, '_group_headers', []))} groups")
     except Exception as e:
         check("drift tab: constructs with real state", False, f"{type(e).__name__}: {e}")
+
+    # ---- FT watch + matcher (2026-07-13): the detector's eyes on the last
+    # station, and the link machinery the escape metric depends on -----------
+    try:
+        from laser_trim_analyzer.ml.drift_types import (
+            FRACTION_METRICS, METRIC_GROUPS, METRIC_LABELS, TRIGGER_METRICS,
+            WATCHED_METRICS)
+        from laser_trim_analyzer.ml.lots import MEAN_AGGREGATED_METRICS
+        grouped = [m for _t, _g, ms_ in METRIC_GROUPS for m in ms_]
+        check("ft watch: metrics registered (watched/trigger/labels/groups agree)",
+              {"ft_fail_fraction", "escape_fraction"} <= set(WATCHED_METRICS)
+              and {"ft_fail_fraction", "escape_fraction"} <= TRIGGER_METRICS
+              and all(m in METRIC_LABELS for m in WATCHED_METRICS)
+              and sorted(grouped) == sorted(WATCHED_METRICS)
+              and FRACTION_METRICS == MEAN_AGGREGATED_METRICS)
+        from laser_trim_analyzer.ml.drift_training import _load_samples_with_dates
+        ft_model = raw.execute(
+            "SELECT model FROM final_test_results WHERE test_date > '2000' "
+            "GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1").fetchone()[0]
+        fts = _load_samples_with_dates(db, ft_model, "ft_fail_fraction")
+        check("ft watch: fail-fraction loader returns 0/1 flags on real DB",
+              len(fts) > 0 and set(v for _d, v, _r in fts) <= {0.0, 1.0},
+              f"{ft_model}: {len(fts)} FT records")
+        esc = _load_samples_with_dates(db, ft_model, "escape_fraction")
+        check("ft watch: escape loader flags are 0/1 (confident links only)",
+              set(v for _d, v, _r in esc) <= {0.0, 1.0},
+              f"{ft_model}: {len(esc)} linked accepted-trim records")
+    except Exception as e:
+        check("ft watch: registration/loaders", False, f"{type(e).__name__}: {e}")
+    try:
+        from laser_trim_analyzer.database.manager import DatabaseManager as _DM
+        from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
+        c = _DM._calculate_match_confidence
+        check("matcher: confidence decays across the full 180d window",
+              FINAL_TEST_MAX_DAYS_FROM_TRIM == 180
+              and c(7) > c(30) > c(100) > c(175) >= 0.40)
+        check("matcher: glued-letter variant normalizes (7953-1A → 7953-1)",
+              _DM._normalize_model("7953-1A") == "7953-1"
+              and _DM._normalize_model("8340-1") == "8340-1")
+        src = open(REPO / "src/laser_trim_analyzer/gui/v6/pages/process_page.py",
+                   encoding="utf-8").read()
+        # Compare against the advance CALL SITE, not the first mention — an
+        # older comment names advance_drift_state above the rematch block.
+        check("matcher: post-batch rematch wired BEFORE drift advance",
+              0 < src.find("rematch_unlinked_final_tests")
+              < src.find("advance_drift_state(self.app.db"))
+    except Exception as e:
+        check("matcher: window/decay/wiring", False, f"{type(e).__name__}: {e}")
 
     # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
     from laser_trim_analyzer.core.yield_stats import compute_unit_yield
@@ -384,6 +435,19 @@ def main() -> int:
          "Baseline period", "drift tab discloses baseline provenance"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "This action is recorded", "requalify dialog states auditability"),
+        # 2026-07-13 design pass: interpretation vs data zones.
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "WHAT THE APP IS TELLING YOU", "model page marks the app's-read zone"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "WHAT YOU'RE LOOKING AT", "model page marks the data zone"),
+        ("src/laser_trim_analyzer/gui/v6/pages/triage_page.py",
+         "WHAT THE APP IS TELLING YOU", "triage marks the app's-read zone"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/metric_pill_row.py",
+         "Outcomes — trim linearity · final test", "pills grouped process vs outcomes"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "format_metric_value", "drift tab renders fail rates as percent"),
+        ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
+         "most expensive station", "settings glosses the FT watch metrics"),
     ]
     for path, needle, what in _GLOSSES:
         try:
