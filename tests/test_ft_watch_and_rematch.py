@@ -142,6 +142,28 @@ def test_rematch_links_ft_saved_before_trim(tmp_path):
         assert ft.match_confidence > 0.9
 
 
+def test_rematch_never_links_trim_after_ft(tmp_path):
+    """Domain rule (James, 2026-07-13): trim ALWAYS precedes final test.
+    An FT record whose only same-serial trim is dated AFTER it must stay
+    unmatched — a later trim is a different build or a bad date, never
+    this unit's trim."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "order.db")
+    ftd = datetime(2025, 5, 10)
+    with db.session() as s:
+        _add_ft(s, "8340", "17", ftd, StatusType.PASS, 0, DBFT)
+        _add_trim(s, "8340", "17", ftd + timedelta(days=2), StatusType.PASS,
+                  0, DBAR, SystemType)
+        s.commit()
+    stats = db.rematch_unlinked_final_tests()
+    assert stats["new_matches"] == 0 and stats["still_unmatched"] == 1
+    with db.session() as s:
+        assert s.query(DBFT).first().linked_trim_id is None
+
+
 def test_rematch_respects_180_day_window(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.database.models import (
@@ -156,6 +178,55 @@ def test_rematch_respects_180_day_window(tmp_path):
         s.commit()
     stats = db.rematch_unlinked_final_tests()
     assert stats["new_matches"] == 0 and stats["still_unmatched"] == 1
+
+
+def test_rematch_never_links_sibling_variants(tmp_path):
+    """Code-review BLOCKER (2026-07-13): FT '7953-1A' must NOT link to a
+    '7953-1B' trim — sibling variants share a base but are different
+    products. Variant matching requires one side to BE the base form,
+    exactly like _find_matching_trim."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "sib.db")
+    ftd = datetime(2025, 6, 1)
+    with db.session() as s:
+        _add_ft(s, "7953-1A", "42", ftd, StatusType.FAIL, 0, DBFT)
+        _add_trim(s, "7953-1B", "42", ftd - timedelta(days=10), StatusType.PASS,
+                  0, DBAR, SystemType)
+        s.commit()
+    stats = db.rematch_unlinked_final_tests()
+    assert stats["new_matches"] == 0
+    with db.session() as s:
+        assert s.query(DBFT).first().linked_trim_id is None
+
+
+def test_rematch_aggressive_gate_matches_save_time_semantics(tmp_path):
+    """Code-review finding #2: the aggressive serial stage only runs when the
+    FT serial itself changes under aggressive normalization — FT serial '123'
+    must not link to trim serial '123X' (the save-time matcher never does)."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "aggr.db")
+    ftd = datetime(2025, 6, 1)
+    with db.session() as s:
+        _add_ft(s, "8340", "123", ftd, StatusType.PASS, 0, DBFT)
+        _add_trim(s, "8340", "123X", ftd - timedelta(days=5), StatusType.PASS,
+                  0, DBAR, SystemType)
+        s.commit()
+    stats = db.rematch_unlinked_final_tests()
+    assert stats["new_matches"] == 0
+    # And the direction that SHOULD work still does: FT '123X' → trim '123'.
+    with db.session() as s:
+        _add_ft(s, "8340", "123X", ftd, StatusType.PASS, 1, DBFT)
+        _add_trim(s, "8340", "123", ftd - timedelta(days=5), StatusType.PASS,
+                  1, DBAR, SystemType)
+        s.commit()
+    stats = db.rematch_unlinked_final_tests()
+    assert stats["new_matches"] >= 1
 
 
 def test_rematch_glued_letter_model_variant(tmp_path):

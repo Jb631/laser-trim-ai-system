@@ -42,6 +42,14 @@ MIN_BASELINE_SAMPLES: int = 30
 ESCAPE_MIN_CONFIDENCE: float = 0.5
 
 
+def _coerce_dt(d):
+    """SQLite returns COALESCE(datetime, datetime) as a raw string — the
+    expression loses the column's DateTime result processor."""
+    if isinstance(d, str):
+        return datetime.fromisoformat(d[:19])
+    return d
+
+
 # Maps metric name -> SQLAlchemy column on TrackResult, except smoothness
 # which maps to SmoothnessResult.max_smoothness_value.
 _TRACK_METRIC_COLUMNS = {
@@ -373,24 +381,28 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         # Per-FT-RECORD fail flag on final_test_results, clustered on the
         # FINAL TEST date (the lot at the last station, not the trim lot).
         # Blind spot closed 2026-07-13: the watch previously had no eyes on
-        # the most expensive failure point. Dates before 2000 are file
-        # artifacts (1899-12-30 epoch defaults) and are excluded.
+        # the most expensive failure point. COALESCE(test_date, file_date):
+        # some FT files never parse a test_date cell — file_date covers them
+        # (code-review finding #4). Dates before 2000 are file artifacts
+        # (1899-12-30 epoch defaults) and are excluded.
+        from sqlalchemy import func as _fn
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFT, StatusType)
         floor_2000 = datetime(2000, 1, 1)
+        ft_date = _fn.coalesce(DBFT.test_date, DBFT.file_date)
         with db.session() as s:
-            q = (s.query(DBFT.test_date, DBFT.overall_status, DBFT.id)
+            q = (s.query(ft_date, DBFT.overall_status, DBFT.id)
                  .filter(DBFT.model == model,
-                         DBFT.test_date.isnot(None),
-                         DBFT.test_date > floor_2000,
+                         ft_date.isnot(None),
+                         ft_date > floor_2000,
                          DBFT.overall_status.in_([StatusType.PASS, StatusType.WARNING,
                                                   StatusType.FAIL])))
             if after_row_id is not None:
                 q = q.filter(DBFT.id > after_row_id)
             elif after is not None:
-                q = q.filter(DBFT.test_date > after)
-            rows = q.order_by(DBFT.test_date).all()
-        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
+                q = q.filter(ft_date > after)
+            rows = q.order_by(ft_date).all()
+        return [(_coerce_dt(d), 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
                 for (d, st_, rid) in rows if d is not None]
 
     if metric == "escape_fraction":
@@ -399,24 +411,26 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         # an escape. Lot mean = the lot's escape rate. Requires link
         # confidence ≥ ESCAPE_MIN_CONFIDENCE so recycled-serial guesses
         # don't fabricate escapes.
+        from sqlalchemy import func as _fn
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFT, StatusType)
         floor_2000 = datetime(2000, 1, 1)
+        ft_date = _fn.coalesce(DBFT.test_date, DBFT.file_date)
         with db.session() as s:
-            q = (s.query(DBFT.test_date, DBFT.overall_status, DBFT.id)
+            q = (s.query(ft_date, DBFT.overall_status, DBFT.id)
                  .join(DBAR, DBFT.linked_trim_id == DBAR.id)
                  .filter(DBFT.model == model,
-                         DBFT.test_date.isnot(None),
-                         DBFT.test_date > floor_2000,
+                         ft_date.isnot(None),
+                         ft_date > floor_2000,
                          DBFT.match_confidence >= ESCAPE_MIN_CONFIDENCE,
                          DBFT.overall_status.in_([StatusType.PASS, StatusType.FAIL]),
                          DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING])))
             if after_row_id is not None:
                 q = q.filter(DBFT.id > after_row_id)
             elif after is not None:
-                q = q.filter(DBFT.test_date > after)
-            rows = q.order_by(DBFT.test_date).all()
-        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
+                q = q.filter(ft_date > after)
+            rows = q.order_by(ft_date).all()
+        return [(_coerce_dt(d), 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
                 for (d, st_, rid) in rows if d is not None]
 
     out = []

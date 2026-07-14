@@ -88,7 +88,12 @@ class ProcessPage(PageBase):
         self._goto_triage.pack_forget()
         self._progress.reset()
         self._done = 0
-        threading.Thread(target=self._run, args=(folder,), daemon=True).start()
+        # Read the Tk variable HERE, on the UI thread — the worker previously
+        # called self._incremental.get() (a Tcl call) off-thread, violating
+        # the "workers never call Tk" rule (code-review finding #8).
+        incremental = bool(self._incremental.get())
+        threading.Thread(target=self._run, args=(folder, incremental),
+                         daemon=True).start()
 
     # ---- progress (kept for tests: single-event path on the Tk thread) ----
     def _apply_progress(self, status: ProcessingStatus, total: int) -> None:
@@ -136,7 +141,7 @@ class ProcessPage(PageBase):
             if counts or reasons:
                 self._progress.add_counts(counts, reasons)
 
-    def _run(self, folder: str) -> None:
+    def _run(self, folder: str, incremental: bool = True) -> None:
         self.safe_after(lambda: self._progress.set_idle(
             "Scanning folder for Excel files… (network folders can take a minute)"))
         files, disk_stats = self._discover(folder)
@@ -174,7 +179,7 @@ class ProcessPage(PageBase):
 
         gen = processor.process_batch([Path(p) for p in files],
                                       progress_callback=progress_callback,
-                                      incremental=self._incremental.get(),
+                                      incremental=incremental,
                                       disk_stats=disk_stats)
         summary = None
         models_in_batch = set()
@@ -229,6 +234,18 @@ class ProcessPage(PageBase):
                 if rl.get("new_matches"):
                     self.safe_after(lambda n=rl["new_matches"]: self._progress.set_idle(
                         f"Re-linked {n:,} final-test records to their trim data…"))
+                    # Late links carry OLD test dates — often behind the
+                    # escape/FT watermark, so advance would never feed them
+                    # (code-review finding #3). Retrain the affected models so
+                    # their baselines rebuild WITH the new links.
+                    try:
+                        from laser_trim_analyzer.ml.drift_training import train_drift_detector
+                        for m in rl.get("models", []):
+                            train_drift_detector(self.app.db, model=m)
+                        logger.info("Retrained %d models after FT relink",
+                                    len(rl.get("models", [])))
+                    except Exception:
+                        logger.exception("Post-relink retrain failed")
             except Exception:
                 logger.exception("Post-batch FT rematch failed")
             try:

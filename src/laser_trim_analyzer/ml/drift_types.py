@@ -137,6 +137,13 @@ METRIC_GROUPS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
      ("ft_fail_fraction", "escape_fraction")),
 )
 
+# Grouped surfaces (drift tab, pills, evidence sheet) derive their metric set
+# from METRIC_GROUPS — a watched metric missing from every group would train
+# and flag yet silently vanish from all of them (code-review finding #10).
+# Fail at import, not at a customer meeting.
+assert {m for _t, _g, _ms in METRIC_GROUPS for m in _ms} == set(WATCHED_METRICS), \
+    "METRIC_GROUPS must cover exactly WATCHED_METRICS"
+
 
 def format_metric_value(metric: str, value, fmt_measure=None) -> str:
     """Render a metric value for display: percent for fraction metrics,

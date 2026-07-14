@@ -11,7 +11,11 @@ from laser_trim_analyzer.ml.drift_types import ModelAlertSummary
 MAX_PER_ROW = 4
 
 
-CARDS_HEIGHT = 470   # bounded, scrollable region so many cards don't overflow the page
+# Bounded, scrollable region so many cards don't overflow the page.
+# 290 (was 470; 2026-07-13 live report "cant scroll down"): the zone headers
+# added above both regions squeezed the browse list to a ~2-row sliver on a
+# laptop display. Two card rows stay visible; the rest scroll inside.
+CARDS_HEIGHT = 290
 
 
 class FlaggedCardsZone(ctk.CTkFrame):

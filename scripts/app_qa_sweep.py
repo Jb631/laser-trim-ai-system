@@ -340,6 +340,7 @@ def main() -> int:
         status = get_model_drift_status(db, "6607")
         tab = DriftMetricsTab.__new__(DriftMetricsTab)
         tab.theme = _ThemeStub(); tab._cb = lambda *a: None; tab._rows = {}
+        tab._group_headers = []   # every attr __init__ would set (review #12)
         tab.set_status(status, recent_means=compute_recent_means(db, "6607"))
         check("drift tab: constructs with real state (no swallowed AttributeError)",
               len(tab._rows) > 0, f"{len(tab._rows)} metric rows built")
@@ -394,6 +395,16 @@ def main() -> int:
         check("matcher: post-batch rematch wired BEFORE drift advance",
               0 < src.find("rematch_unlinked_final_tests")
               < src.find("advance_drift_state(self.app.db"))
+        # Domain invariant (James, 2026-07-13): trim ALWAYS precedes final
+        # test. No linked pair anywhere in the real DB may have the trim
+        # dated after the FT record (matcher date preference: file_date,
+        # else test_date).
+        n_rev = raw.execute(
+            "SELECT COUNT(*) FROM final_test_results f "
+            "JOIN analysis_results a ON a.id = f.linked_trim_id "
+            "WHERE a.file_date > COALESCE(f.file_date, f.test_date)").fetchone()[0]
+        check("matcher: zero links with trim dated AFTER final test",
+              n_rev == 0, f"{n_rev} reversed-order links")
     except Exception as e:
         check("matcher: window/decay/wiring", False, f"{type(e).__name__}: {e}")
 

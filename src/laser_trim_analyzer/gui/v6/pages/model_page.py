@@ -96,7 +96,12 @@ class ModelPage(PageBase):
         self._empty_label = ctk.CTkLabel(
             parent, text="Pick a model above, or click one from Triage, to see its drift profile.",
             font=t.font(t.SIZE_HEADING), text_color=t.TEXT_SECONDARY)
-        self._body = ctk.CTkFrame(parent, fg_color="transparent")
+        # SCROLLABLE body (James live report 2026-07-13: "cant scroll down on
+        # some of the pages" — the zone headers + grouped pill bands made the
+        # page taller than the window, and a plain frame just clips). Wheel
+        # over the matplotlib chart won't page-scroll (the chart canvas owns
+        # its events); wheel anywhere else, or the scrollbar, works.
+        self._body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         # ---- ZONE 1: the app's read (2026-07-13, James: "clear sections for
         # what im looking at and what the app is telling me"). Verdict FIRST
         # (the answer), then the per-metric pills (the evidence), then the σ
@@ -142,6 +147,9 @@ class ModelPage(PageBase):
                                    on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
         self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t)
+        # pack was missing — the tab constructed but never mapped, so it
+        # rendered permanently EMPTY (code-review finding #5, 2026-07-13).
+        self._ft_units_tab.pack(fill="both", expand=True)
         self._trimft_tab = TrimFtTab(self._tabs.add("Trim vs Final Test"), theme=t)
         self._trimft_tab.pack(fill="both", expand=True)
         self._history_tab = HistoryTab(self._tabs.add("History"), theme=t)
@@ -293,7 +301,8 @@ class ModelPage(PageBase):
         threading.Thread(target=work, daemon=True).start()
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
-    def _window_cutoff(self, model: Optional[str] = None) -> Optional[datetime]:
+    def _window_cutoff(self, model: Optional[str] = None,
+                       metric: Optional[str] = None) -> Optional[datetime]:
         """Window cutoff anchored to the MODEL'S latest data, not wall-clock now.
 
         This is batch-loaded historical data: a model's newest unit can be
@@ -301,6 +310,12 @@ class ModelPage(PageBase):
         window empty for such models — Triage would flag a model, the click-
         through landed on 'No measurements in the selected window'. Same
         reasoning as compute_recent_means (evidence.py).
+
+        FT-axis metrics anchor to the FINAL-TEST table's newest date instead
+        (code-review finding #6, 2026-07-13): FT ingest lags trim ingest, so a
+        trim-anchored 90-day window could exclude every FT row — clicking a
+        flagged FT pill landed on an empty chart. FT-only models (no trim
+        rows) get a working anchor for the same reason.
         """
         days = _WINDOW_DAYS.get(self._window_choice)
         if days is None:
@@ -311,16 +326,25 @@ class ModelPage(PageBase):
             try:
                 from sqlalchemy import func
                 with self.app.db.session() as s:
-                    anchor = (s.query(func.max(DBAR.file_date))
-                              .filter(DBAR.model == model).scalar())
+                    if metric in ("ft_fail_fraction", "escape_fraction"):
+                        from laser_trim_analyzer.database.models import (
+                            FinalTestResult as DBFT)
+                        anchor = (s.query(func.max(func.coalesce(
+                                      DBFT.test_date, DBFT.file_date)))
+                                  .filter(DBFT.model == model).scalar())
+                    if anchor is None:
+                        anchor = (s.query(func.max(DBAR.file_date))
+                                  .filter(DBAR.model == model).scalar())
             except Exception:
                 logger.exception("window anchor query failed for %s", model)
         if anchor is None:
             anchor = datetime.now()
+        if isinstance(anchor, str):        # raw SQLite string from coalesce
+            anchor = datetime.fromisoformat(anchor[:19])
         return anchor - timedelta(days=days)
 
     def _load_focus_series(self, model, metric):
-        cutoff = self._window_cutoff()
+        cutoff = self._window_cutoff(metric=metric)
         with self.app.db.session() as s:
             if metric == "max_smoothness_value":
                 q = s.query(DBSR.file_date, DBSR.max_smoothness_value).filter(
@@ -341,39 +365,43 @@ class ModelPage(PageBase):
                 rows = q.group_by(_fn.date(DBAR.file_date)).order_by(DBAR.file_date).all()
             elif metric == "ft_fail_fraction":
                 # Daily FINAL-TEST fail rate — same shape as the detector's
-                # lot observations, on the FT test_date axis.
+                # lot observations, on the FT date axis. COALESCE: some FT
+                # files never parse a test_date cell; file_date covers them
+                # (code-review finding #4).
                 from sqlalchemy import func as _fn, case as _case
                 from laser_trim_analyzer.database.models import FinalTestResult as DBFT
-                q = (s.query(DBFT.test_date,
+                ft_date = _fn.coalesce(DBFT.test_date, DBFT.file_date)
+                q = (s.query(ft_date,
                              _fn.avg(_case((DBFT.overall_status == StatusType.FAIL, 1.0),
                                            else_=0.0)))
                      .filter(DBFT.model == model,
-                             DBFT.test_date.isnot(None),
-                             DBFT.test_date > datetime(2000, 1, 1),
+                             ft_date.isnot(None),
+                             ft_date > datetime(2000, 1, 1),
                              DBFT.overall_status.in_([StatusType.PASS, StatusType.WARNING,
                                                       StatusType.FAIL])))
                 if cutoff:
-                    q = q.filter(DBFT.test_date >= cutoff)
-                rows = q.group_by(_fn.date(DBFT.test_date)).order_by(DBFT.test_date).all()
+                    q = q.filter(ft_date >= cutoff)
+                rows = q.group_by(_fn.date(ft_date)).order_by(ft_date).all()
             elif metric == "escape_fraction":
                 # Daily escape rate: of confidently-linked FT records whose
                 # trim was ACCEPTED, the share that failed final test.
                 from sqlalchemy import func as _fn, case as _case
                 from laser_trim_analyzer.database.models import FinalTestResult as DBFT
                 from laser_trim_analyzer.ml.drift_training import ESCAPE_MIN_CONFIDENCE
-                q = (s.query(DBFT.test_date,
+                ft_date = _fn.coalesce(DBFT.test_date, DBFT.file_date)
+                q = (s.query(ft_date,
                              _fn.avg(_case((DBFT.overall_status == StatusType.FAIL, 1.0),
                                            else_=0.0)))
                      .join(DBAR, DBFT.linked_trim_id == DBAR.id)
                      .filter(DBFT.model == model,
-                             DBFT.test_date.isnot(None),
-                             DBFT.test_date > datetime(2000, 1, 1),
+                             ft_date.isnot(None),
+                             ft_date > datetime(2000, 1, 1),
                              DBFT.match_confidence >= ESCAPE_MIN_CONFIDENCE,
                              DBFT.overall_status.in_([StatusType.PASS, StatusType.FAIL]),
                              DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING])))
                 if cutoff:
-                    q = q.filter(DBFT.test_date >= cutoff)
-                rows = q.group_by(_fn.date(DBFT.test_date)).order_by(DBFT.test_date).all()
+                    q = q.filter(ft_date >= cutoff)
+                rows = q.group_by(_fn.date(ft_date)).order_by(ft_date).all()
             elif metric in TRACK_METRIC_COLUMNS:
                 col = TRACK_METRIC_COLUMNS[metric]      # Q4: SAME column the detector trained on
                 q = (s.query(DBAR.file_date, col).join(DBTR, DBTR.analysis_id == DBAR.id)
@@ -383,7 +411,10 @@ class ModelPage(PageBase):
                 rows = q.order_by(DBAR.file_date).all()
             else:
                 rows = []
-            pairs = [(r[0], r[1]) for r in rows if r[0] is not None and r[1] is not None]  # Q5
+            # Q5; _coerce_dt: SQLite hands COALESCE dates back as strings.
+            from laser_trim_analyzer.ml.drift_training import _coerce_dt
+            pairs = [(_coerce_dt(r[0]), r[1]) for r in rows
+                     if r[0] is not None and r[1] is not None]
             ms = s.query(ModelMetricState).filter_by(model=model, metric=metric).first()
             baseline = (ms.baseline_mean, ms.baseline_std) if ms else (None, None)
         return [p[0] for p in pairs], [p[1] for p in pairs], baseline

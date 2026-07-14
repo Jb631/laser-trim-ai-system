@@ -5399,7 +5399,8 @@ class DatabaseManager:
         from laser_trim_analyzer.utils.constants import FINAL_TEST_MAX_DAYS_FROM_TRIM
 
         t0 = _time.time()
-        stats = {"unlinked": 0, "new_matches": 0, "still_unmatched": 0, "seconds": 0.0}
+        stats = {"unlinked": 0, "new_matches": 0, "still_unmatched": 0,
+                 "seconds": 0.0, "models": []}
         window = timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
 
         with self._write_lock:
@@ -5435,18 +5436,20 @@ class DatabaseManager:
                     aggr_ix[(tmodel, self._normalize_serial_aggressive(tserial))].append((tdate, tid))
                     variant_ix[(self._normalize_model(tmodel), s_norm)].append((tdate, tid, tmodel))
 
-                def newest_in_window(entries, test_date, cutoff, skip_model=None):
-                    """Rightmost entry with cutoff <= date <= test_date."""
+                def newest_in_window(entries, test_date, cutoff, model_ok=None):
+                    """Rightmost entry with cutoff <= date <= test_date whose
+                    model passes model_ok (None = any)."""
                     i = bisect.bisect_right(entries, (test_date, float("inf"))) - 1
                     while i >= 0:
                         e = entries[i]
                         if e[0] < cutoff:
                             return None
-                        if skip_model is None or e[2] != skip_model:
+                        if model_ok is None or model_ok(e[2]):
                             return e
                         i -= 1
                     return None
 
+                affected_models = set()
                 for ft in pending:
                     test_date = ft.file_date or ft.test_date
                     if not ft.model or not ft.serial or not test_date:
@@ -5467,15 +5470,34 @@ class DatabaseManager:
                         if e:
                             hit, method, exact_serial = e, "fuzzy_serial", False
                     if hit is None:
-                        e = newest_in_window(
-                            aggr_ix.get((ft.model, self._normalize_serial_aggressive(ft.serial)), ()),
-                            test_date, cutoff)
-                        if e:
-                            hit, method, exact_serial, penalty = e, "fuzzy_serial_aggressive", False, 0.90
+                        # Parity with _find_matching_trim attempt 2b: the
+                        # aggressive stage only runs when the FT serial itself
+                        # changes under aggressive normalization (code-review
+                        # finding #2, 2026-07-13 — the bulk path previously
+                        # probed unconditionally and could link serial "123"
+                        # to trim "123X", which save-time matching never does).
+                        s_aggr = self._normalize_serial_aggressive(ft.serial)
+                        if s_aggr != s_norm:
+                            e = newest_in_window(
+                                aggr_ix.get((ft.model, s_aggr), ()), test_date, cutoff)
+                            if e:
+                                hit, method, exact_serial, penalty = (
+                                    e, "fuzzy_serial_aggressive", False, 0.90)
                     if hit is None:
+                        # Variant stage — one side MUST be the base form
+                        # (code-review finding #1, 2026-07-13 BLOCKER: keying
+                        # only on the normalized family let FT "7953-1A" link
+                        # to a "7953-1B" trim — SIBLING variants, a match class
+                        # _find_matching_trim never makes. Attempt 3a matches
+                        # trims whose model IS the base; attempt 3b matches
+                        # variant trims only when the FT model is the base).
+                        ft_norm = self._normalize_model(ft.model)
+                        ft_is_base = (ft.model == ft_norm)
                         e = newest_in_window(
-                            variant_ix.get((self._normalize_model(ft.model), s_norm), ()),
-                            test_date, cutoff, skip_model=ft.model)
+                            variant_ix.get((ft_norm, s_norm), ()),
+                            test_date, cutoff,
+                            model_ok=lambda m, _fn=ft_norm, _fm=ft.model, _fb=ft_is_base:
+                                m != _fm and (_fb or m == _fn))
                         if e:
                             hit, method, exact_serial, variant = e, "model_variant", False, True
                     if hit is None:
@@ -5487,7 +5509,9 @@ class DatabaseManager:
                         days_diff, exact_serial=exact_serial, model_variant=variant) * penalty
                     ft.days_since_trim = days_diff
                     ft.match_method = method
+                    affected_models.add(ft.model)
                     stats["new_matches"] += 1
+                stats["models"] = sorted(affected_models)
 
                 session.commit()
 
