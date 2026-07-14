@@ -121,6 +121,7 @@ class ModelPage(PageBase):
         self._tabs = ThemedTabView(self._body, theme=t)
         self._tabs.pack(side="top", fill="both", expand=True)
         self._drift_tab = DriftMetricsTab(self._tabs.add("Drift Metrics"), theme=t,
+                                          on_requalify=self._on_requalify,
                                           on_metric_select=self._on_pill_click)
         self._drift_tab.pack(fill="both", expand=True)
         self._smoothness_tab = SmoothnessTab(self._tabs.add("Smoothness"), theme=t)
@@ -197,9 +198,11 @@ class ModelPage(PageBase):
             # model's latest data so stale-but-flagged models still show their
             # record instead of empty windows.
             cutoff = self._window_cutoff(model)
+            requal = None
             try:
                 status = get_model_drift_status(self.app.db, model)
                 chosen = self._resolve_focus_metric(status, self._user_picked_metric, metric)
+                requal = self.app.db.get_baseline_requalification(model)
             except Exception:
                 logger.exception("Model %s: drift status failed", model)
             try:
@@ -262,6 +265,7 @@ class ModelPage(PageBase):
                 if status:
                     _try("pills", lambda: self._pill_row.set_status(status, recent_means=recent))
                     _try("drift tab", lambda: self._drift_tab.set_status(status, recent_means=recent))
+                _try("baseline info", lambda: self._drift_tab.set_baseline_info(requal))
                 _try("pill select", lambda: self._pill_row.set_selected(chosen))
                 if verdict:
                     _try("verdict", lambda: self._verdict.configure(
@@ -559,6 +563,79 @@ class ModelPage(PageBase):
                 self.clipboard_append(text)
             self.safe_after(to_clipboard)
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_requalify(self):
+        """Per-model baseline requalification (design change). Confirm with
+        effective date + reason, record the audit row, retrain THIS model
+        from the effective date forward, reload."""
+        model = self._current_model
+        if not model:
+            return
+        from datetime import date as _date
+        import tkinter as tk
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f"Requalify baseline — {model}")
+        dlg.geometry("520x260")
+        dlg.transient(self.winfo_toplevel())
+        t = self.theme
+        ctk.CTkLabel(dlg, text=(f"Reset {model}'s drift baselines because the design/"
+                                "process changed. Data BEFORE the effective date is "
+                                "excluded from the new baselines. If too little data "
+                                "exists after the date, metrics read NOT TRAINED until "
+                                "enough new lots accumulate. This action is recorded."),
+                     font=t.font(t.SIZE_BODY), wraplength=480, justify="left",
+                     text_color=t.TEXT_PRIMARY).pack(padx=16, pady=(16, 8), anchor="w")
+        row1 = ctk.CTkFrame(dlg, fg_color="transparent"); row1.pack(fill="x", padx=16)
+        ctk.CTkLabel(row1, text="Effective date (YYYY-MM-DD):", font=t.font(t.SIZE_BODY),
+                     text_color=t.TEXT_SECONDARY).pack(side="left")
+        date_e = ctk.CTkEntry(row1, width=130); date_e.pack(side="left", padx=8)
+        date_e.insert(0, _date.today().isoformat())
+        row2 = ctk.CTkFrame(dlg, fg_color="transparent"); row2.pack(fill="x", padx=16, pady=8)
+        ctk.CTkLabel(row2, text="Reason (audit note):", font=t.font(t.SIZE_BODY),
+                     text_color=t.TEXT_SECONDARY).pack(side="left")
+        note_e = ctk.CTkEntry(row2, width=280); note_e.pack(side="left", padx=8)
+        status_lbl = ctk.CTkLabel(dlg, text="", font=t.font(t.SIZE_CAPTION),
+                                  text_color=t.TIER_WARNING)
+        status_lbl.pack(padx=16, anchor="w")
+
+        def go():
+            from datetime import datetime as _dt
+            raw = date_e.get().strip()
+            try:
+                eff = _dt.fromisoformat(raw)
+            except ValueError:
+                status_lbl.configure(text="Date must be YYYY-MM-DD.")
+                return
+            note = note_e.get().strip()
+            status_lbl.configure(text="Requalifying + retraining this model…")
+            def work():
+                try:
+                    self.app.db.set_baseline_requalification(model, eff.date().isoformat(), note)
+                    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+                    preset = getattr(self.app.config.ml, "drift_sensitivity", "standard")
+                    train_drift_detector(self.app.db, sensitivity_preset=preset, model=model)
+                except Exception:
+                    logger.exception("requalification failed for %s", model)
+                    self.safe_after(lambda: status_lbl.winfo_exists() and status_lbl.configure(
+                        text="Failed — see the log."))
+                    return
+                def done():
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+                    self._reload()
+                self.safe_after(done)
+            threading.Thread(target=work, daemon=True).start()
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent"); btns.pack(fill="x", padx=16, pady=12)
+        ctk.CTkButton(btns, text="Requalify + retrain", fg_color=t.ACCENT,
+                      hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
+                      command=go, corner_radius=t.RADIUS_SM).pack(side="right")
+        ctk.CTkButton(btns, text="Cancel", fg_color=t.CARD, hover_color=t.ELEVATED,
+                      text_color=t.TEXT_PRIMARY, border_width=1, border_color=t.BORDER,
+                      command=dlg.destroy, corner_radius=t.RADIUS_SM).pack(side="right", padx=8)
 
     def _on_export_charts(self):
         """Export EVERY unit chart in the window as print-ready PNGs (work

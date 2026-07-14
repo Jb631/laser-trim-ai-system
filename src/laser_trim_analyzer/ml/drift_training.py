@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -61,6 +61,7 @@ def train_drift_detector(
     db,
     sensitivity_preset: str = "standard",
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    model: Optional[str] = None,
 ) -> TrainingSummary:
     """Train (or retrain) drift detection per model.
 
@@ -81,6 +82,9 @@ def train_drift_detector(
             r[0] for r in s.query(DBSR.model).distinct().all()
         ]
         all_models = sorted(set(models) | set(smoothness_models))
+    if model is not None:
+        # Single-model retrain (baseline requalification path).
+        all_models = [m for m in all_models if m == model]
 
     models_trained = 0
     skipped: list[Tuple[str, str]] = []
@@ -89,10 +93,22 @@ def train_drift_detector(
         if progress_callback:
             progress_callback(model, i, len(all_models))
 
+        # Baseline floor: a manual requalification (design change) makes
+        # history before its effective date OFF-LIMITS for this model's
+        # baselines (2026-07-13, James's policy: per-model manual reset).
+        baseline_start = None
+        try:
+            req = db.get_baseline_requalification(model)
+            if req:
+                baseline_start = datetime.fromisoformat(str(req[0])[:19])
+        except Exception:
+            logger.exception("baseline requalification lookup failed for %s", model)
+
         # Train each metric for this model
         model_had_any_training = False
         for metric in WATCHED_METRICS:
-            ok = _train_one_metric(db, model, metric, sensitivity_preset)
+            ok = _train_one_metric(db, model, metric, sensitivity_preset,
+                                   baseline_start=baseline_start)
             if ok:
                 model_had_any_training = True
             else:
@@ -137,6 +153,7 @@ def _train_one_metric(
     model: str,
     metric: str,
     sensitivity_preset: str,
+    baseline_start=None,
 ) -> bool:
     """Compute baseline + thresholds for one (model, metric) and upsert.
 
@@ -146,8 +163,12 @@ def _train_one_metric(
     # REPLAY the recent window through the detector. Without this, the baseline
     # is computed over all history (laundering any drift into it) and the runtime
     # state is reset, so the detector can never flag (the H8 "always Stable" bug).
+    # A requalified baseline (design change) floors the sample window: data
+    # from the old design must not launder the new design's baseline.
     samples = [
-        (d, v, rid) for (d, v, rid) in _load_samples_with_dates(db, model, metric)
+        (d, v, rid) for (d, v, rid) in _load_samples_with_dates(
+            db, model, metric,
+            after=(baseline_start - timedelta(seconds=1)) if baseline_start else None)
         if v is not None and not (isinstance(v, float) and np.isnan(v))
     ]
 

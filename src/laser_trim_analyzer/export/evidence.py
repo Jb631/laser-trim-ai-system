@@ -137,6 +137,11 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
 
     status = get_model_drift_status(db, model)
     recent_means, recent_meta = compute_recent_means(db, model, with_meta=True)
+    try:
+        _req = db.get_baseline_requalification(model)
+    except Exception:
+        _req = None
+    baseline_since = str(_req[0])[:10] if _req else "full history"
     metric_rows = []
     for m in WATCHED_METRICS:
         ms = status.per_metric.get(m)
@@ -145,6 +150,7 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
             # (work convo 2026-07-10) — say NOT TRAINED and still show the
             # recent mean, which needs no baseline.
             metric_rows.append({"Metric": metric_label(m), "Tier": "NOT TRAINED",
+                                "Baseline since": baseline_since,
                                 "Alert": "", "Baseline mean": None,
                                 "Baseline std": None,
                                 "Recent mean": recent_means.get(m),
@@ -155,6 +161,7 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
         recent_val = recent_means.get(m) if recent_means.get(m) is not None else ms.recent_mean
         mm = recent_meta.get(m, {})
         metric_rows.append({"Metric": metric_label(m), "Tier": ms.tier.name,
+                            "Baseline since": baseline_since,
                             "Alert": ms.alert_type.value if ms.alert_type else "",
                             "Baseline mean": ms.baseline_mean, "Baseline std": ms.baseline_std,
                             "Recent mean": recent_val,

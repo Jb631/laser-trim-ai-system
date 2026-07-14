@@ -217,3 +217,52 @@ def test_disk_stats_map_eliminates_per_file_io(sample, monkeypatch):
     monkeypatch.setattr(Path, "stat", no_stat)
     assert proc._is_processed(sample) is True
     assert proc._scan_rebound == 1
+
+
+def test_baseline_requalification_floors_training(tmp_path):
+    """Design-change policy (2026-07-13): after requalifying a model's
+    baseline at date D, training must use ONLY data from D forward — the old
+    design's distribution must not launder the new baseline."""
+    import sys
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, SystemType, StatusType,
+        ModelMetricState)
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+
+    db = DatabaseManager(tmp_path / "rq.db")
+    old_day = datetime(2026, 1, 10)
+    new_day = datetime(2026, 6, 10)
+    with db.session() as s:
+        for i in range(80):
+            when = (old_day if i < 40 else new_day) + timedelta(hours=i)
+            ar = DBAR(filename=f"RQ-{i}.xls", file_path=f"/f/{i}",
+                      file_hash=f"rq{i}".ljust(64, "0"), model="RQ", serial=f"s{i}",
+                      system=SystemType.A, file_date=when, timestamp=when,
+                      overall_status=StatusType.PASS, has_multi_tracks=False,
+                      processing_time=0.1)
+            s.add(ar); s.flush()
+            # old design ~ 10.0, new design ~ 20.0 (watched metric)
+            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                       untrimmed_sigma_gradient=(10.0 if i < 40 else 20.0) + (i % 3) * 0.01,
+                       travel_length=1.0, sigma_pass=True, linearity_pass=True))
+        s.commit()
+
+    # No requalification: baseline spans both designs (~15).
+    train_drift_detector(db, model="RQ")
+    with db.session() as s:
+        ms = s.query(ModelMetricState).filter_by(model="RQ", metric="untrimmed_sigma_gradient").first()
+        assert ms is not None and ms.is_trained
+        assert 12.0 < ms.baseline_mean < 18.0
+
+    # Requalified at the design change: baseline is the NEW design only (~20).
+    db.set_baseline_requalification("RQ", "2026-06-01", "design change")
+    train_drift_detector(db, model="RQ")
+    with db.session() as s:
+        ms = s.query(ModelMetricState).filter_by(model="RQ", metric="untrimmed_sigma_gradient").first()
+        assert ms.baseline_mean > 19.5, f"baseline still polluted: {ms.baseline_mean}"
+        # Trainer fixes the baseline to an early window of the (post-requalify)
+        # samples and replays the rest through the detector — so the count is
+        # the baseline window, not all 40 post-change rows.
+        assert 30 <= ms.baseline_count <= 40

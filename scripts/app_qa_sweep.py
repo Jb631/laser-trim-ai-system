@@ -380,6 +380,10 @@ def main() -> int:
          "matched to trims", "FT panel count says what 'matched' means"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "lifetime linearity yield", "model verdict line (holding/drifting/difficulty)"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/drift_metrics_tab.py",
+         "Baseline period", "drift tab discloses baseline provenance"),
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "This action is recorded", "requalify dialog states auditability"),
     ]
     for path, needle, what in _GLOSSES:
         try:

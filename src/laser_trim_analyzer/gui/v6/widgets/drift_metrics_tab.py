@@ -11,11 +11,13 @@ _COLUMNS = ["Metric", "Tier", "Alert", "Baseline (mean±std)", "Recent", "Shift 
 
 
 class DriftMetricsTab(ctk.CTkScrollableFrame):
-    def __init__(self, master, theme: ThemeManager, on_metric_select: Callable[[str], None], **kwargs):
+    def __init__(self, master, theme: ThemeManager, on_metric_select: Callable[[str], None],
+                 on_requalify: Callable[[], None] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._cb = on_metric_select
         self._rows: Dict[str, _MetricRow] = {}
+        self._on_requalify = on_requalify
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
         for i in range(len(_COLUMNS)):
@@ -24,6 +26,36 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
             ctk.CTkLabel(header, text=col, font=theme.font(theme.SIZE_CAPTION, "bold"),
                          text_color=theme.TEXT_SECONDARY, anchor="w")\
                 .grid(row=0, column=i, sticky="ew", padx=theme.SPACE_SM, pady=theme.SPACE_XS)
+        # Baseline provenance + the per-model requalification control
+        # (James's policy 2026-07-13: manual reset on design change, with an
+        # AS9100-auditable record of when and why).
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", pady=(theme.SPACE_SM, 0))
+        self._baseline_lbl = ctk.CTkLabel(
+            footer, text="Baseline period: full history",
+            font=theme.font(theme.SIZE_CAPTION), text_color=theme.TEXT_SECONDARY,
+            anchor="w", justify="left", wraplength=900)
+        self._baseline_lbl.pack(side="left", fill="x", expand=True)
+        if on_requalify is not None:
+            ctk.CTkButton(footer, text="Requalify baseline…", width=150,
+                          fg_color=theme.CARD, hover_color=theme.ELEVATED,
+                          text_color=theme.TEXT_PRIMARY, border_width=1,
+                          border_color=theme.BORDER, corner_radius=theme.RADIUS_SM,
+                          command=on_requalify).pack(side="right")
+
+    def set_baseline_info(self, req) -> None:
+        """Baseline-period disclosure. req = (effective_date, note, set_at)
+        from the requalification audit table, or None (= full history)."""
+        if not hasattr(self, "_baseline_lbl"):
+            return
+        if req:
+            eff, note, at = req
+            txt = (f"Baseline period: data since {str(eff)[:10]} "
+                   f"(requalified {str(at)[:10]}"
+                   + (f" — {note}" if note else "") + ")")
+        else:
+            txt = "Baseline period: full history (no requalification on record)"
+        self._baseline_lbl.configure(text=txt)
 
     def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
         recent_means = recent_means or {}

@@ -328,8 +328,46 @@ class DatabaseManager:
             return name, "Unknown"
         return "Unknown", "Unknown"
 
+    def set_baseline_requalification(self, model: str, effective_date, note: str = "") -> None:
+        """Record a per-model baseline requalification (AS9100 audit trail:
+        who decided is the operator of this single-user tool; when and why
+        are stored). The LATEST effective_date wins for training."""
+        from sqlalchemy import text as _text
+        with self.session() as s:
+            s.execute(_text(
+                "INSERT INTO baseline_requalifications (model, effective_date, note, set_at) "
+                "VALUES (:m, :d, :n, :t)"),
+                {"m": model, "d": str(effective_date), "n": note or "",
+                 "t": datetime.now().isoformat(sep=" ", timespec="seconds")})
+            s.commit()
+
+    def get_baseline_requalification(self, model: str):
+        """Latest requalification for the model -> (effective_date str, note,
+        set_at str) or None. Training uses effective_date as the sample floor."""
+        from sqlalchemy import text as _text
+        with self.session() as s:
+            row = s.execute(_text(
+                "SELECT effective_date, note, set_at FROM baseline_requalifications "
+                "WHERE model = :m ORDER BY set_at DESC, id DESC LIMIT 1"),
+                {"m": model}).fetchone()
+        return (row[0], row[1], row[2]) if row else None
+
     def _run_migrations(self) -> None:
         """Run database migrations for schema updates."""
+        # Baseline requalification audit table (2026-07-13: per-model manual
+        # baseline reset on design change — AS9100 traceability).
+        try:
+            with self.session() as _s:
+                _s.execute(text(
+                    "CREATE TABLE IF NOT EXISTS baseline_requalifications ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, "
+                    "effective_date TEXT NOT NULL, note TEXT, set_at TEXT NOT NULL)"))
+                _s.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_baseline_requal_model "
+                    "ON baseline_requalifications(model)"))
+                _s.commit()
+        except Exception:
+            logger.exception("baseline_requalifications migration failed")
         needs_rematch = False
 
         with self.session() as session:
