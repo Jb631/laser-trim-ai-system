@@ -40,7 +40,13 @@ class DashboardPage(PageBase):
 
     def build_content(self, parent):
         t = self.theme
-        panels = ctk.CTkFrame(parent, fg_color="transparent")
+        # Full-page scroll (James, 2026-07-13: "i need full page scroll on
+        # the dashboard") — same treatment as the Model page. Wheel over the
+        # trend chart won't page-scroll (the chart canvas owns its events);
+        # wheel anywhere else, or the scrollbar, works.
+        body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        panels = ctk.CTkFrame(body, fg_color="transparent")
         panels.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         panels.grid_columnconfigure((0, 1), weight=1, uniform="yp")
         self._trim_panel = YieldPanel(panels, theme=t, title="Trim analysis yield")
@@ -50,7 +56,7 @@ class DashboardPage(PageBase):
 
         # Company-as-a-whole trend (V5 Trends' surviving job): pass-rate over
         # time, per-system overlay, volume backdrop. Honors the page window.
-        trend_hdr = ctk.CTkFrame(parent, fg_color="transparent")
+        trend_hdr = ctk.CTkFrame(body, fg_color="transparent")
         trend_hdr.pack(side="top", fill="x")
         ctk.CTkLabel(trend_hdr, text="Company trend", font=t.font(t.SIZE_BODY, "bold"),
                      text_color=t.TEXT_PRIMARY, anchor="w").pack(side="left")
@@ -61,10 +67,10 @@ class DashboardPage(PageBase):
             text_color=t.TEXT_PRIMARY)
         self._trend_period_menu.set(self._trend_period_choice)
         self._trend_period_menu.pack(side="right")
-        self._company_trend = CompanyTrendChart(parent, theme=t)
+        self._company_trend = CompanyTrendChart(body, theme=t)
         self._company_trend.pack(side="top", fill="x", pady=(t.SPACE_XS, t.SPACE_MD))
 
-        self._worst = WorstModelsList(parent, theme=t, on_row_click=self._on_model_click)
+        self._worst = WorstModelsList(body, theme=t, on_row_click=self._on_model_click)
         self._worst.pack(side="top", fill="both", expand=True)
 
     # ---- lifecycle ----
