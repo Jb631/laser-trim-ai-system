@@ -6,6 +6,73 @@ import customtkinter as ctk
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
+def compute_offset_feasibility(errors, upper_limits, lower_limits):
+    """Could ANY offset make every point pass? (James, 2026-07-14: a 7845
+    unit showed one fail point that 'looked adjustable' — the app said FAIL
+    but never showed WHY the offset couldn't fix it, which reads as a quirk
+    and erodes trust.)
+
+    For each valid point i, a clearing offset o must satisfy
+    lower[i] <= error[i] + o <= upper[i], i.e. o >= lower[i]-error[i] and
+    o <= upper[i]-error[i]. Intersecting all points gives a window
+    [need_at_least, need_at_most]; the unit is offset-fixable iff the window
+    is non-empty. Returns (need_at_least, need_at_most, idx_low, idx_high)
+    where idx_low is the point forcing the lower bound and idx_high the
+    point forcing the upper bound — the two BINDING points. None when no
+    valid points.
+    """
+    lo_b, hi_b = float("-inf"), float("inf")
+    idx_lo = idx_hi = None
+    n = min(len(errors or []),
+            len(upper_limits or []), len(lower_limits or []))
+    for i in range(n):
+        e, up, lo = errors[i], upper_limits[i], lower_limits[i]
+        if e is None or up is None or lo is None:
+            continue
+        if lo - e > lo_b:
+            lo_b, idx_lo = lo - e, i
+        if up - e < hi_b:
+            hi_b, idx_hi = up - e, i
+    if idx_lo is None or idx_hi is None:
+        return None
+    return lo_b, hi_b, idx_lo, idx_hi
+
+
+# A "clearing" offset window narrower than this is boundary-riding — the
+# offset would park points exactly ON the spec limit with zero margin.
+# Found live on the first invariant run (7965 SN 367, 2016: window width
+# exactly 0.0): mathematically feasible, practically meaningless, and the
+# analyzer rightly grades it FAIL.
+_FEAS_EPS = 1e-9
+
+
+def _offset_verdict_note(fail_points, errors, upper_limits, lower_limits):
+    """Plain-language WHY for a failing sweep: name the opposing constraints
+    that make the fail unfixable by offset, call out zero-margin boundary
+    riding, or flag loudly that a WORKABLE clearing offset exists (verdict
+    inconsistent with data — reprocess). Returns (note, binding_point_
+    indices) — (None, None) when not failing or when limits are absent."""
+    if not fail_points:
+        return None, None
+    fz = compute_offset_feasibility(errors, upper_limits, lower_limits)
+    if fz is None:
+        return None, None
+    lo_b, hi_b, i_lo, i_hi = fz
+    if lo_b > hi_b:
+        return (f"Why offset can't fix this: clearing point #{i_lo} needs an offset "
+                f"≥ {lo_b:+.4f}, but point #{i_hi} only allows ≤ {hi_b:+.4f}. "
+                "Opposing constraints — no single offset passes every point "
+                "(zero-tolerance).", [i_lo, i_hi])
+    if hi_b - lo_b <= _FEAS_EPS:
+        return (f"Why offset can't fix this: only ONE exact offset ({lo_b:+.4f}) "
+                f"could pass — and it parks points #{i_lo} and #{i_hi} exactly ON "
+                "their limits with zero margin. Boundary-riding is graded FAIL "
+                "(zero-tolerance).", [i_lo, i_hi])
+    return (f"⚠ Data inconsistency: an offset of {((lo_b + hi_b) / 2):+.4f} WOULD "
+            "clear every point, yet fail points are recorded. Reprocess this "
+            "file and report it.", [i_lo, i_hi])
+
+
 def compute_fail_points(errors, upper_limits, lower_limits,
                         offset: float = 0.0) -> List[int]:
     """Indices where the CORRECTED post-trim error violates the per-point spec
@@ -179,6 +246,8 @@ class UnitChartModal(ctk.CTkToplevel):
             return
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"],
                                  offset=data.get("optimal_offset") or 0.0)
+        note, binding = _offset_verdict_note(
+            fp, data["error_data"], data["upper_limits"], data["lower_limits"])
         title = f"Unit {unit.get('serial', '')}"
         if data["n_tracks"] > 1:
             title += f" — {data['track_id']} of {data['n_tracks']} tracks"
@@ -190,7 +259,8 @@ class UnitChartModal(ctk.CTkToplevel):
             offset=data.get("optimal_offset") or 0.0,
             trim_improvement_percent=data.get("trim_improvement_percent"),
             trim_date=str(unit.get("file_date", "")).split(" ")[0] or None,
-            fail_points=fp, title=title, serial_number=str(unit.get("serial", "")))
+            fail_points=fp, title=title, serial_number=str(unit.get("serial", "")),
+            verdict_note=note, binding_points=binding)
         self._save_btn.configure(state="normal")
 
     def _save_chart(self) -> None:
@@ -364,6 +434,8 @@ class FtUnitChartModal(ctk.CTkToplevel):
         fp = compute_fail_points(data["error_data"], data["upper_limits"],
                                  data["lower_limits"],
                                  offset=data.get("optimal_offset") or 0.0)
+        note, binding = _offset_verdict_note(
+            fp, data["error_data"], data["upper_limits"], data["lower_limits"])
         title = f"Final test — {data.get('serial', '')}"
         if data["n_tracks"] > 1:
             title += f" — {data['track_id']} of {data['n_tracks']} tracks"
@@ -375,7 +447,8 @@ class FtUnitChartModal(ctk.CTkToplevel):
             trim_date=data.get("date") or None,
             fail_points=fp, title=title,
             serial_number=str(data.get("serial", "")),
-            measured_label="Final test (as measured)")
+            measured_label="Final test (as measured)",
+            verdict_note=note, binding_points=binding)
         self._save_btn.configure(state="normal")
 
     def _save(self) -> None:

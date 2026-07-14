@@ -228,6 +228,8 @@ class ChartWidget(ctk.CTkFrame):
         linearity_type: Optional[str] = None,
         excluded_points: Optional[List[int]] = None,
         measured_label: str = "Trimmed (as measured)",
+        verdict_note: Optional[str] = None,
+        binding_points: Optional[List[int]] = None,
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -433,6 +435,26 @@ class ChartWidget(ctk.CTkFrame):
                 label='Fail Points',
                 zorder=5
             )
+
+        # BINDING points: the measurements that constrain the offset window —
+        # why the "one little fail point" can't just be shifted into spec
+        # (James, 2026-07-14, unit 7845). Marked so the verdict argues its
+        # case on the chart instead of asking to be trusted.
+        if binding_points:
+            bx = [positions[i] for i in binding_points if i < len(positions)]
+            by = [shifted_errors[i] for i in binding_points if i < len(shifted_errors)]
+            if bx:
+                ax.scatter(bx, by, facecolors='none', edgecolors='orange',
+                           marker='o', s=110, linewidths=2,
+                           label='Binding points (limit the offset)', zorder=6)
+
+        # Verdict explanation — plain-language reason for the disposition.
+        if verdict_note:
+            ax.annotate(verdict_note, xy=(0.02, 0.97), xycoords='axes fraction',
+                        va='top', ha='left', fontsize=self.style.font_size - 2,
+                        color=COLORS.get('text', '#dddddd'),
+                        bbox=dict(boxstyle='round,pad=0.4', alpha=0.35,
+                                  facecolor='black', edgecolor='orange'))
 
         if excluded_points:
             excl_x = [positions[i] for i in excluded_points if i < len(positions)]

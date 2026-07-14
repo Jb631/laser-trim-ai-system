@@ -446,6 +446,46 @@ def main() -> int:
     except Exception as e:
         check("ft sweep viewer: loader", False, f"{type(e).__name__}: {e}")
 
+    # ---- verdict-vs-offset-feasibility invariant (7845 trust case,
+    # 2026-07-14): every stored FAIL with sweep arrays must be offset-
+    # INFEASIBLE. A feasible one means the verdict and the data disagree. ----
+    try:
+        import json as _json
+        from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+            compute_offset_feasibility)
+        sample = raw.execute("""
+            SELECT t.error_data, t.upper_limits, t.lower_limits
+            FROM track_results t JOIN analysis_results a ON a.id=t.analysis_id
+            WHERE a.overall_status='FAIL' AND t.linearity_pass=0
+              AND t.error_data IS NOT NULL AND t.upper_limits IS NOT NULL
+              AND t.lower_limits IS NOT NULL
+              -- Absolute-type specs allow NO offset: a feasible-but-failed
+              -- absolute track is legitimate, not an inconsistency.
+              AND (t.linearity_type IS NULL
+                   OR LOWER(t.linearity_type) NOT IN ('absolute','term base','term_base'))
+            ORDER BY a.id DESC LIMIT 150""").fetchall()
+        feasible_fails = 0
+        checked = 0
+        for e, u, l in sample:
+            try:
+                err, up, lo = _json.loads(e), _json.loads(u), _json.loads(l)
+                fz = compute_offset_feasibility(err, up, lo)
+                if fz is None:
+                    continue
+                checked += 1
+                # WORKABLE window only: a zero-width window is boundary-
+                # riding (points exactly ON the limit) and legitimately FAIL
+                # (7965 SN 367, found on this check's first run).
+                if fz[1] - fz[0] > 1e-9:
+                    feasible_fails += 1
+            except Exception:
+                continue
+        check("verdicts: no stored FAIL is offset-fixable (data agrees with verdict)",
+              checked > 0 and feasible_fails == 0,
+              f"{feasible_fails} workable-feasible of {checked} checked")
+    except Exception as e:
+        check("verdicts: offset-feasibility invariant", False, f"{type(e).__name__}: {e}")
+
     # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
     from laser_trim_analyzer.core.yield_stats import compute_unit_yield
     uy = compute_unit_yield(db, None, model="6607")
@@ -507,6 +547,8 @@ def main() -> int:
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "_open_dropdown_menu = self._open_model_picker",
          "model dropdown opens the wheel-scrollable picker"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/unit_chart_modal.py",
+         "Why offset can't fix this", "failing units explain the offset constraint"),
     ]
     for path, needle, what in _GLOSSES:
         try:

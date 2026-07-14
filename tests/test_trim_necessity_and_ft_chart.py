@@ -85,6 +85,67 @@ def test_trim_necessity_respects_cutoff_and_empty(tmp_path):
     assert compute_trim_necessity(db, "NOPE") is None or True
 
 
+def test_offset_feasibility_opposing_points():
+    """The 7845 case (James, 2026-07-14): one visible fail point that 'looks
+    adjustable', but an opposing point already near the OTHER limit makes any
+    clearing offset impossible. The note must name both binding points."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        _offset_verdict_note, compute_fail_points, compute_offset_feasibility)
+
+    #                 pt0    pt1(fail low)  pt2(near upper)
+    errors = [0.000, -0.070,        0.040]
+    upper  = [0.050,  0.050,        0.050]
+    lower  = [-0.050, -0.050,      -0.050]
+    # pt1 needs o >= 0.02; pt2 allows o <= 0.01 -> infeasible.
+    lo_b, hi_b, i_lo, i_hi = compute_offset_feasibility(errors, upper, lower)
+    assert round(lo_b, 6) == 0.02 and round(hi_b, 6) == 0.01
+    assert (i_lo, i_hi) == (1, 2)
+    fp = compute_fail_points(errors, upper, lower, offset=0.0)
+    note, binding = _offset_verdict_note(fp, errors, upper, lower)
+    assert "can't fix" in note and "#1" in note and "#2" in note
+    assert binding == [1, 2]
+
+
+def test_offset_feasibility_fixable_flags_inconsistency():
+    """If a clearing offset EXISTS while fail points are recorded, that is a
+    data/verdict inconsistency and must be said loudly, never hidden."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        _offset_verdict_note, compute_fail_points)
+
+    errors = [0.000, -0.070, 0.010]        # o = +0.03 clears everything
+    upper  = [0.050,  0.050, 0.050]
+    lower  = [-0.050, -0.050, -0.050]
+    fp = compute_fail_points(errors, upper, lower, offset=0.0)
+    assert fp == [1]
+    note, binding = _offset_verdict_note(fp, errors, upper, lower)
+    assert "inconsistency" in note.lower()
+
+
+def test_offset_note_absent_on_passing_unit():
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import _offset_verdict_note
+    note, binding = _offset_verdict_note([], [0.0], [0.05], [-0.05])
+    assert note is None and binding is None
+
+
+def test_offset_zero_width_window_is_boundary_riding_not_inconsistency():
+    """The 7965 SN 367 case: the ONLY clearing offset parks two points
+    exactly ON their limits (window width 0). That is a legitimate FAIL and
+    must read as boundary-riding — never as 'data inconsistency'."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        _offset_verdict_note, compute_fail_points)
+
+    # pt1 needs o >= 0.02 exactly; pt2 allows o <= 0.02 exactly.
+    errors = [0.000, -0.070, 0.030]
+    upper  = [0.050,  0.050, 0.050]
+    lower  = [-0.050, -0.050, -0.050]
+    fp = compute_fail_points(errors, upper, lower, offset=0.0)
+    assert fp == [1]
+    note, binding = _offset_verdict_note(fp, errors, upper, lower)
+    assert "boundary" in note.lower() or "zero margin" in note.lower()
+    assert "inconsistency" not in note.lower()
+    assert binding == [1, 2]
+
+
 def test_load_ft_track_returns_sweep(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.database.models import (
