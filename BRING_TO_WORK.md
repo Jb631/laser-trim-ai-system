@@ -1,5 +1,22 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-07-14 morning (after tonight's push, commit 3d894fa)
+1. `git pull` on main.
+2. Settings → ML Training → **Retrain drift detector** once (~1 min). The
+   watch now covers 12 metrics including two FINAL-TEST ones: FT lot fail
+   rate and escape rate (trim PASS → FT FAIL). Models that only ever appear
+   in final-test data train too.
+3. Process any folder as normal. The first batch auto-relinks final-test
+   records to their trims (the log prints "Unlinked-FT rematch: N of M
+   linked" — expect a large N once, since the 7-13 rebuild processed
+   everything in one batch and FT files that arrived before their trims
+   stayed unlinked). The match window is now 180 days (real trim→assembly→
+   test dwell), so link rates jump.
+4. What you'll see: Model + Triage pages now separate "WHAT THE APP IS
+   TELLING YOU" (verdict, pills) from "WHAT YOU'RE LOOKING AT" (chart,
+   units); the drift table groups metrics into process signals / trim
+   outcome / final-test outcome; fail rates read as percentages.
+
 The app is finished and verified on the home copy of the database. Because
 your WORK database is a separate copy, three one-time steps run there on day
 one. Everything is a button — no terminal needed.
