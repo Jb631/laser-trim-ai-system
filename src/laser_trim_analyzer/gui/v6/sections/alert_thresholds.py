@@ -53,6 +53,7 @@ def build_alert_thresholds_section(parent, theme: ThemeManager, app) -> None:
     # Educational: what each watched metric means — plain language, since this
     # list is the only place a user meets the full metric set (jargon sweep).
     _GLOSS = {
+    "linearity_fail_fraction": "share of a lot's units failing linearity — catches lots that fail MORE units even when averages look normal",
         "untrimmed_error_max": "worst pre-trim linearity error — incoming element quality",
         "untrimmed_sigma_gradient": "pre-trim noise level of the element",
         "sigma_gradient": "post-trim noise level",

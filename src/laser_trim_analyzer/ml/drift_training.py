@@ -201,6 +201,11 @@ def _train_one_metric(
     # at 1% of |mean| (plus a tiny absolute), standard guard against an
     # underestimated σ. Tiers stay correct; displayed shifts stay sane.
     baseline_std = max(baseline_std, 0.01 * abs(baseline_mean), 1e-9)
+    if metric == "linearity_fail_fraction":
+        # Fractions live in [0,1]; a historically-clean model has mean≈0 and
+        # σ≈0, so floor at 2 percentage points: a 20%-fail lot on a clean
+        # model reads +9σ (alarms, sanely) instead of +∞.
+        baseline_std = max(baseline_std, 0.02)
 
     thresholds = corrected_tier_thresholds(sensitivity_preset, baseline_std)
 
@@ -329,6 +334,24 @@ def _load_samples_with_dates(db, model: str, metric: str, after=None,
         rows trained before last_row_id existed; day-granularity file_dates
         make it skip same-day arrivals, so it's used at most once per row.
     """
+    if metric == "linearity_fail_fraction":
+        # Per-UNIT linearity fail flag (1=FAIL, 0=accepted); the lot pipeline
+        # aggregates these by MEAN into the lot's fail fraction. ERROR and
+        # UNTRIMMED records are not gradeable and are excluded.
+        from laser_trim_analyzer.database.models import StatusType
+        with db.session() as s:
+            q = (s.query(DBAR.file_date, DBAR.overall_status, DBAR.id)
+                 .filter(DBAR.model == model,
+                         DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING,
+                                                  StatusType.FAIL])))
+            if after_row_id is not None:
+                q = q.filter(DBAR.id > after_row_id)
+            elif after is not None:
+                q = q.filter(DBAR.file_date > after)
+            rows = q.order_by(DBAR.file_date).all()
+        return [(d, 1.0 if getattr(st_, "name", str(st_)) == "FAIL" else 0.0, rid)
+                for (d, st_, rid) in rows if d is not None]
+
     out = []
     if metric == "max_smoothness_value":
         with db.session() as s:

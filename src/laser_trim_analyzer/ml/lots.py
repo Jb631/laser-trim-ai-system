@@ -41,7 +41,7 @@ class Lot:
 
 
 def cluster_lots(dated_values: List[Tuple[datetime, float]],
-                 gap_days: int = LOT_GAP_DAYS) -> List[Lot]:
+                 gap_days: int = LOT_GAP_DAYS, use_mean: bool = False) -> List[Lot]:
     """Group (date, value) samples into production lots.
 
     Day-granularity clustering: consecutive production DAYS no more than
@@ -61,18 +61,25 @@ def cluster_lots(dated_values: List[Tuple[datetime, float]],
     last = None
     for day in days:
         if last is not None and (day - last).days > gap_days:
-            lots.append(_finish(cur_days, cur_vals))
+            lots.append(_finish(cur_days, cur_vals, use_mean))
             cur_days, cur_vals = [], []
         cur_days.append(day)
         cur_vals.extend(by_day[day])
         last = day
     if cur_vals:
-        lots.append(_finish(cur_days, cur_vals))
+        lots.append(_finish(cur_days, cur_vals, use_mean))
     return lots
 
 
-def _finish(days: List[datetime], vals: List[float]) -> Lot:
-    return Lot(start=days[0], end=days[-1], median=float(median(vals)),
+# Metrics whose per-lot value is the MEAN, not the median: a fail flag is
+# 0/1, and the median of a lot of flags is uselessly 0 or 1 — the fraction
+# is the observation.
+MEAN_AGGREGATED_METRICS = frozenset({"linearity_fail_fraction"})
+
+
+def _finish(days: List[datetime], vals: List[float], use_mean: bool = False) -> Lot:
+    center = (sum(vals) / len(vals)) if use_mean else float(median(vals))
+    return Lot(start=days[0], end=days[-1], median=center,
                n=len(vals), unit_std=float(pstdev(vals)) if len(vals) > 1 else 0.0)
 
 
@@ -91,4 +98,5 @@ def get_model_lots(db, model: str, metric: str, after: Optional[datetime] = None
         and not (isinstance(v, float) and math.isnan(v))
     ]
     samples.sort(key=lambda t: t[0])
-    return cluster_lots(samples, gap_days=gap_days)
+    return cluster_lots(samples, gap_days=gap_days,
+                        use_mean=(metric in MEAN_AGGREGATED_METRICS))

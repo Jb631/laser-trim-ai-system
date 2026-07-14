@@ -66,6 +66,12 @@ WATCHED_METRICS: Tuple[str, ...] = (
     "resistance_change_percent",
     "max_smoothness_value",
     "composite_trim_risk_score",
+    # Per-lot LINEARITY FAIL FRACTION (2026-07-13, James): a lot can degrade
+    # by failing MORE UNITS while its metric medians barely move (medians are
+    # deliberately robust). This watches the outcome itself: the fraction of
+    # the lot's gradeable units that failed linearity, vs the model's
+    # historical lot fail rates.
+    "linearity_fail_fraction",
 )
 
 # Metrics whose drift may RAISE a model's tier (generate a flag). Chosen from the
@@ -84,6 +90,7 @@ TRIGGER_METRICS: frozenset = frozenset({
     "resistance_change_percent",
     "linearity_error",
     "composite_trim_risk_score",
+    "linearity_fail_fraction",     # the outcome itself — always a trigger
 })
 
 
@@ -160,6 +167,7 @@ class TrainingSummary:
 SUSPECT_SIGMA_GATE = 8.0
 
 METRIC_LABELS = {
+    "linearity_fail_fraction": "Lot fail rate (linearity)",
     "untrimmed_error_max": "Untrimmed error (max)",
     "sigma_gradient": "Sigma gradient (post-trim)",
     "untrimmed_sigma_gradient": "Sigma gradient (untrimmed)",

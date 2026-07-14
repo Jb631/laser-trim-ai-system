@@ -319,6 +319,17 @@ class ModelPage(PageBase):
                 if cutoff:
                     q = q.filter(DBSR.file_date >= cutoff)
                 rows = q.order_by(DBSR.file_date).all()
+            elif metric == "linearity_fail_fraction":
+                from sqlalchemy import func as _fn, case as _case
+                q = (s.query(DBAR.file_date,
+                             _fn.avg(_case((DBAR.overall_status == StatusType.FAIL, 1.0),
+                                           else_=0.0)))
+                     .filter(DBAR.model == model,
+                             DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING,
+                                                      StatusType.FAIL])))
+                if cutoff:
+                    q = q.filter(DBAR.file_date >= cutoff)
+                rows = q.group_by(_fn.date(DBAR.file_date)).order_by(DBAR.file_date).all()
             elif metric in TRACK_METRIC_COLUMNS:
                 col = TRACK_METRIC_COLUMNS[metric]      # Q4: SAME column the detector trained on
                 q = (s.query(DBAR.file_date, col).join(DBTR, DBTR.analysis_id == DBAR.id)

@@ -59,3 +59,41 @@ def test_open_lot_not_ingested_then_ingested_once_closed(tmp_path):
     assert advance_drift_state(db, model="OP") == 0
     _, wm3, cpos3 = _state(db, "OP")
     assert wm3 == wm2 and cpos3 == cpos2
+
+
+def test_lot_fail_fraction_flags_degraded_lot(tmp_path):
+    """James 2026-07-13: 'linearity degraded on the most recent lot' must
+    also mean MORE UNITS FAILING, not just a worse median. A model with
+    historically ~0% lot fail rates whose newest closed lot fails 40% of
+    units must flag on linearity_fail_fraction."""
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, SystemType, StatusType, ModelMetricState)
+    from laser_trim_analyzer.ml.drift_training import train_drift_detector
+
+    db = DatabaseManager(tmp_path / "ff.db")
+    t0 = datetime(2025, 1, 6)
+    with db.session() as s:
+        i = 0
+        for lot in range(14):
+            lot_day = t0 + timedelta(weeks=lot)
+            fails = 4 if lot == 13 else 0          # newest lot: 4/10 fail
+            for u in range(10):
+                st_ = StatusType.FAIL if u < fails else StatusType.PASS
+                when = lot_day + timedelta(hours=u)
+                s.add(DBAR(filename=f"FF-{i}.xls", file_path=f"/ff/{i}",
+                           file_hash=f"ff{i}".ljust(64, "0"), model="FF",
+                           serial=f"s{i}", system=SystemType.A, file_date=when,
+                           timestamp=when, overall_status=st_,
+                           has_multi_tracks=False, processing_time=0.1))
+                i += 1
+        s.commit()
+    train_drift_detector(db, model="FF")
+    with db.session() as s:
+        ms = s.query(ModelMetricState).filter_by(
+            model="FF", metric="linearity_fail_fraction").first()
+        assert ms is not None and ms.is_trained
+        assert ms.baseline_mean < 0.01              # clean history
+        # The 40%-fail lot was replayed into state: (0.40-0)/0.02 = +20σ-class
+        assert (ms.cusum_pos or 0) > 0 or (ms.ewma_state or 0) > 0.05

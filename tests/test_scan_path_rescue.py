@@ -320,7 +320,8 @@ def test_lot_mode_one_alarm_per_lot_not_per_unit(tmp_path):
         i = add_lot(s, 13, 10.5, 60, 1000)    # clearly above the ~10.02 band
         s.commit()
     advanced = advance_drift_state(db, model="LM")
-    assert advanced == 1
+    # >=1: linearity_fail_fraction (all-PASS seeds) trains and advances too.
+    assert advanced >= 1
     with db.session() as s:
         ms = s.query(ModelMetricState).filter_by(
             model="LM", metric="untrimmed_sigma_gradient").first()
