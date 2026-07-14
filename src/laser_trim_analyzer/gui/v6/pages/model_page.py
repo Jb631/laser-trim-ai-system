@@ -380,6 +380,15 @@ class ModelPage(PageBase):
             color = t.TIER_OOC if worst[3] == "OUT_OF_CONTROL" else t.TIER_DRIFT
 
         parts = [state_txt]
+        try:
+            from laser_trim_analyzer.core.yield_stats import compute_unit_yield
+            u = compute_unit_yield(self.app.db, cutoff, model=model)
+            if u.get("gradeable_units"):
+                parts.append(
+                    f"first-pass {u['first_pass_yield']:.0f}% → final "
+                    f"{u['final_yield']:.0f}% ({u['attempts_per_section']:.2f} trims/section)")
+        except Exception:
+            logger.exception("verdict unit yield failed")
         if win_y is not None and life_y is not None and cutoff is not None:
             d = win_y - life_y
             trend = "better than" if d > 2 else ("worse than" if d < -2 else "in line with")

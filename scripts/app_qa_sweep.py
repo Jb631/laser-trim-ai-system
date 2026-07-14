@@ -226,7 +226,9 @@ def main() -> int:
           and "Linearity yield %" in sheets["Monthly summary"].columns
           and "FT result" in sheets["Unit history"].columns
           and "Trimmed resistance" in sheets["Unit history"].columns
-          and "Mean max smoothness" in sheets["Monthly summary"].columns,
+          and "Mean max smoothness" in sheets["Monthly summary"].columns
+          and "First-pass yield %" in sheets["Monthly summary"].columns
+          and "Final yield %" in sheets["Monthly summary"].columns,
           f"sheets={sorted(sheets)}")
     if "Final test units" in sheets:
         check("evidence pack: FT sheet columns",
@@ -343,6 +345,19 @@ def main() -> int:
               len(tab._rows) > 0, f"{len(tab._rows)} metric rows built")
     except Exception as e:
         check("drift tab: constructs with real state", False, f"{type(e).__name__}: {e}")
+
+    # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
+    from laser_trim_analyzer.core.yield_stats import compute_unit_yield
+    uy = compute_unit_yield(db, None, model="6607")
+    n_sql_units = raw.execute(
+        "SELECT COUNT(DISTINCT unit_id) FROM analysis_results WHERE model='6607' "
+        "AND unit_id IS NOT NULL AND overall_status IN ('PASS','WARNING','FAIL')").fetchone()[0]
+    check("unit yield: gradeable units match SQL distinct unit_ids",
+          uy["gradeable_units"] == n_sql_units,
+          f"py={uy['gradeable_units']} sql={n_sql_units}")
+    check("unit yield: rates in range and coherent",
+          uy["first_pass_yield"] is not None and 0 <= uy["first_pass_yield"] <= 100
+          and 0 <= uy["final_yield"] <= 100 and uy["attempts_per_section"] >= 1.0)
 
     # ---- usability glosses: every symbol/number the live walk (2026-07-08)
     # found unexplained must keep its on-screen decoder line -----------------

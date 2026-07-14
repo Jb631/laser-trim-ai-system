@@ -308,16 +308,25 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
         except Exception:
             pass
 
+        # UNIT-cohort stats per month (QA audit 2026-07-13: first-pass vs
+        # final vs rework — the attempt-basis sheet alone hid rework cost).
+        try:
+            from laser_trim_analyzer.core.yield_stats import compute_unit_yield_monthly
+            unit_cohorts = compute_unit_yield_monthly(db, model)
+        except Exception:
+            unit_cohorts = {}
+
         # Iterate the UNION of months — a month of pure test sweeps or
         # smoothness-only tests used to vanish from the sheet entirely.
         units_by_month = {r.month: r for r in unit_q if r.month}
         all_months = sorted(set(units_by_month) | set(means_by_month)
-                            | set(smooth_by_month))
+                            | set(smooth_by_month) | set(unit_cohorts))
         monthly_rows = []
         for mo in all_months:
             r = units_by_month.get(mo)
             mm = means_by_month.get(mo, (None,) * 8)
             sm = smooth_by_month.get(mo, (None, None, None))
+            uc = unit_cohorts.get(mo, {})
             units = (r.units or 0) if r else 0
             passed = (r.passed or 0) if r else 0
             warned = (r.warned or 0) if r else 0
@@ -337,6 +346,13 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                 "Mean untrimmed resistance": mm[6], "Mean trimmed resistance": mm[7],
                 "Smoothness tests": sm[0], "Mean max smoothness": sm[1],
                 "Smoothness pass %": sm[2],
+                # Unit cohort (units whose FIRST attempt fell in this month;
+                # unit = shop # + day, sections rolled up zero-tolerance).
+                "Units started (distinct)": uc.get("units"),
+                "First-pass yield %": uc.get("first_pass_yield"),
+                "Final yield %": uc.get("final_yield"),
+                "Trims per section": uc.get("attempts_per_section"),
+                "Units reworked": uc.get("rework_units"),
             })
 
     out_path = Path(out_path)

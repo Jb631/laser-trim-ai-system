@@ -269,3 +269,46 @@ def test_dashboard_row_click_routes_to_model(make_app):
     # The real Model page consumes the route on show and lands on the model.
     assert app.page_container.get_page("model")._current_model == "ROUTED"
     assert app._model_route is None
+
+
+def test_unit_yield_first_pass_final_and_sections(tmp_path):
+    """QA audit 2026-07-13: unit basis must separate first-pass from final
+    yield, treat 1P/1R + _TA_/_TB_ as parallel SECTIONS (not retrims), count
+    true retrims within a section, and order same-day attempts by the
+    filename timestamp."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.core.yield_stats import compute_unit_yield
+
+    db = DatabaseManager(tmp_path / "u.db")
+    now = datetime(2026, 5, 5)
+
+    def add(uid, serial, fname, status, i):
+        with db.session() as s:
+            s.add(DBAR(filename=fname, file_path=f"/f/{i}", file_hash=f"h{i}".ljust(64, "0"),
+                       model="M", serial=serial, system=SystemType.A, file_date=now,
+                       timestamp=now, overall_status=status, has_multi_tracks=False,
+                       processing_time=0.1, unit_id=uid))
+            s.commit()
+
+    # Unit A: dual-section 1P/1R, both pass first time -> first-pass unit.
+    add("M/1/2026-05-05", "1P", "M_1P_TEST DATA_5-5-2026_8-00 AM.xls", StatusType.PASS, 1)
+    add("M/1/2026-05-05", "1R", "M_1R_TEST DATA_5-5-2026_8-10 AM.xls", StatusType.WARNING, 2)
+    # Unit B: TA fails at 9:00, retrimmed to PASS at 9:30 (file order reversed
+    # on purpose: the timestamp in the NAME must win) -> final-only unit.
+    add("M/2/2026-05-05", "2", "M_2_TA_Test Data_5-5-2026_9-30 AM.xls", StatusType.PASS, 3)
+    add("M/2/2026-05-05", "2", "M_2_TA_Test Data_5-5-2026_9-00 AM.xls", StatusType.FAIL, 4)
+    add("M/2/2026-05-05", "2", "M_2_TB_Test Data_5-5-2026_9-05 AM.xls", StatusType.PASS, 5)
+    # Unit C: single section, fails and stays failed.
+    add("M/3/2026-05-05", "3", "M_3_TEST DATA_5-5-2026_10-00 AM.xls", StatusType.FAIL, 6)
+
+    u = compute_unit_yield(db, None, model="M")
+    assert u["gradeable_units"] == 3
+    assert u["first_pass_yield"] == pytest.approx(100 / 3)   # only unit A
+    assert u["final_yield"] == pytest.approx(200 / 3)        # A and B
+    assert u["rework_units"] == 1                            # unit B's TA
+    # 5 sections, 6 attempts -> 1.2 trims/section
+    assert u["attempts_per_section"] == pytest.approx(6 / 5)
+
+    # Cohort: cutoff after the day excludes all three units.
+    u2 = compute_unit_yield(db, datetime(2026, 6, 1), model="M")
+    assert u2["gradeable_units"] == 0 and u2["first_pass_yield"] is None

@@ -8,7 +8,8 @@ logger = logging.getLogger(__name__)
 
 import customtkinter as ctk
 
-from laser_trim_analyzer.core.yield_stats import compute_yield, worst_models_by_yield
+from laser_trim_analyzer.core.yield_stats import (
+    compute_unit_yield, compute_yield, worst_models_by_yield)
 from laser_trim_analyzer.database.models import AnalysisResult as DBAR, FinalTestResult as DBFT
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
@@ -89,6 +90,11 @@ class DashboardPage(PageBase):
             trim = compute_yield(self.app.db, DBAR, cutoff)
             ft = compute_yield(self.app.db, DBFT, cutoff)
             worst, total = worst_models_by_yield(self.app.db, cutoff)
+            try:
+                trim["unit_yield"] = compute_unit_yield(self.app.db, cutoff)
+            except Exception:
+                logger.exception("unit yield failed")
+                trim["unit_yield"] = None
         except Exception:
             empty = {"passed": 0, "warnings": 0, "failed": 0, "errors": 0, "untrimmed": 0,
                      "gradeable": 0, "total": 0, "pass_rate": None, "trend": []}
@@ -111,7 +117,11 @@ class DashboardPage(PageBase):
 
     def _apply(self, trim, ft, worst, total, company_trend=None,
                period="week", trend_note=None):
-        self._trim_panel.set_yield(trim, total_label=f"{trim['total']} units")
+        self._trim_panel.set_yield(trim, total_label=f"{trim['total']} trim records")
+        try:
+            self._trim_panel.set_unit_yield(trim.get("unit_yield"))
+        except Exception:
+            logger.exception("unit yield render failed")
         self._ft_panel.set_yield(
             ft, total_label=f"{ft['total']} final-test records (matched to trims)")
         try:
