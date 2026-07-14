@@ -16,6 +16,13 @@
    TELLING YOU" (verdict, pills) from "WHAT YOU'RE LOOKING AT" (chart,
    units); the drift table groups metrics into process signals / trim
    outcome / final-test outcome; fail rates read as percentages.
+5. NEW (7-14 evening): the Model page verdict now answers the wasted-laser
+   question — "⚠ N% of trimmed units already met linearity BEFORE trim."
+   Work-DB standouts to check first: 8877-4 (84%), 8167 (84%), 8436 (65%),
+   8755 (59%), 8863 (50%). Those are candidates for raising the as-fired
+   resistance target so the trim disappears. Also: unit charts now show the
+   pre-trim dotted line, clicking a Final Test unit opens its sweep, and
+   the Dashboard scrolls.
 
 The app is finished and verified on the home copy of the database. Because
 your WORK database is a separate copy, three one-time steps run there on day

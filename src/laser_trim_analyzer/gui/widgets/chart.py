@@ -227,6 +227,7 @@ class ChartWidget(ctk.CTkFrame):
         station_compensation: Optional[float] = None,
         linearity_type: Optional[str] = None,
         excluded_points: Optional[List[int]] = None,
+        measured_label: str = "Trimmed (as measured)",
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -382,7 +383,7 @@ class ChartWidget(ctk.CTkFrame):
             linestyle='--',
             linewidth=self.style.line_width * 0.8,
             alpha=0.25 if is_no_op or is_absolute else 0.35,
-            label='Trimmed (as measured)',
+            label=measured_label,   # "Final test (as measured)" on FT sweeps
             zorder=2,
         )
 
@@ -484,6 +485,22 @@ class ChartWidget(ctk.CTkFrame):
                 center = (s_hi + s_lo) / 2.0
                 y_lo = max(y_lo, center - 2.5 * spec_h)
                 y_hi = min(y_hi, center + 2.5 * spec_h)
+            # Include the PRE-TRIM trace when it shares this axis — it is the
+            # point of the overlay (James, 2026-07-14: "most times you cant
+            # see the pre trim dotted line"; the spec-anchored cap above was
+            # clipping it out of view). Applied AFTER the cap so the cap keeps
+            # rejecting post-trim spikes, and bounded anyway: the dual-axis
+            # path takes over once the untrimmed range exceeds 3x the band.
+            if untrimmed_errors:
+                uarr = np.array([e for e in untrimmed_errors
+                                 if e is not None and np.isfinite(e)], dtype=float)
+                if uarr.size:
+                    if uarr.size >= 20:
+                        u_lo, u_hi = np.percentile(uarr, [2, 98])
+                    else:
+                        u_lo, u_hi = float(uarr.min()), float(uarr.max())
+                    y_lo = float(u_lo) if y_lo is None else min(y_lo, float(u_lo))
+                    y_hi = float(u_hi) if y_hi is None else max(y_hi, float(u_hi))
             if y_lo is not None and y_hi is not None and y_hi > y_lo:
                 pad = (y_hi - y_lo) * 0.1
                 ax.set_ylim(y_lo - pad, y_hi + pad)

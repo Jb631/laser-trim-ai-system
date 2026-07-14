@@ -408,6 +408,44 @@ def main() -> int:
     except Exception as e:
         check("matcher: window/decay/wiring", False, f"{type(e).__name__}: {e}")
 
+    # ---- trim necessity + FT sweep viewer (James 2026-07-14) ---------------
+    try:
+        from laser_trim_analyzer.core.yield_stats import compute_trim_necessity
+        tn = compute_trim_necessity(db, "6607")
+        n_sql, pre_sql = raw.execute("""
+            WITH unit AS (
+              SELECT a.id,
+                     MIN(CASE WHEN t.untrimmed_error_max <= t.linearity_spec
+                              THEN 1 ELSE 0 END) pp,
+                     MAX(t.trim_pass_count) passes
+              FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id
+              WHERE a.model='6607' AND a.overall_status IN ('PASS','WARNING','FAIL')
+                AND t.untrimmed_error_max IS NOT NULL AND t.linearity_spec IS NOT NULL
+              GROUP BY a.id)
+            SELECT COUNT(*), COALESCE(SUM(pp),0) FROM unit WHERE passes >= 1""").fetchone()
+        check("trim necessity: helper reconciles with raw SQL (6607)",
+              tn is not None and tn["trimmed_units"] == n_sql
+              and tn["prepass_units"] == pre_sql
+              and 0 <= tn["prepass_share"] <= 100,
+              f"py={tn['prepass_units']}/{tn['trimmed_units']} sql={pre_sql}/{n_sql}")
+    except Exception as e:
+        check("trim necessity: helper reconciles with raw SQL", False,
+              f"{type(e).__name__}: {e}")
+    try:
+        from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import load_ft_track
+        ft_id = raw.execute("""SELECT final_test_id FROM final_test_tracks
+                               WHERE position_data IS NOT NULL LIMIT 1""").fetchone()
+        if ft_id:
+            d = load_ft_track(db, ft_id[0])
+            check("ft sweep viewer: loader returns arrays for a real FT record",
+                  d is not None and len(d.get("position_data") or []) > 0
+                  and len(d.get("error_data") or []) > 0,
+                  f"{len((d or {}).get('position_data') or [])} points")
+        else:
+            warn("ft sweep viewer: no FT tracks with arrays in this DB")
+    except Exception as e:
+        check("ft sweep viewer: loader", False, f"{type(e).__name__}: {e}")
+
     # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
     from laser_trim_analyzer.core.yield_stats import compute_unit_yield
     uy = compute_unit_yield(db, None, model="6607")
@@ -459,6 +497,13 @@ def main() -> int:
          "format_metric_value", "drift tab renders fail rates as percent"),
         ("src/laser_trim_analyzer/gui/v6/sections/alert_thresholds.py",
          "most expensive station", "settings glosses the FT watch metrics"),
+        # 2026-07-14 live findings.
+        ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
+         "already met linearity BEFORE trim", "verdict surfaces trim necessity"),
+        ("src/laser_trim_analyzer/gui/v6/widgets/ft_units_tab.py",
+         "on_unit_click", "FT unit rows are clickable"),
+        ("src/laser_trim_analyzer/gui/widgets/chart.py",
+         "Include the PRE-TRIM trace", "unit chart y-window fits the pre-trim line"),
     ]
     for path, needle, what in _GLOSSES:
         try:

@@ -287,3 +287,61 @@ def compute_unit_yield_monthly(db, model: str) -> dict:
                  "rework_units": b["rework"]}
             for mo, b in out.items()}
 
+
+def compute_trim_necessity(db, model: str,
+                           cutoff: Optional[datetime] = None) -> Optional[dict]:
+    """Did these units NEED the laser for linearity at all?
+
+    James's question (2026-07-14): "can i tell if a model is passing
+    linearity on its test run and we are only trimming the unit to bring
+    the resistance into specification?" — wasted laser time when the
+    as-fired resistance target is set too low.
+
+    A unit counts as already-passing when EVERY track's raw pre-trim sweep
+    worst point is inside the linearity spec (untrimmed_error_max <=
+    linearity_spec — conservative: no offset correction even applied, so
+    these are definite cases). Only units that were actually TRIMMED
+    (any track with trim_pass_count >= 1) enter the denominator.
+
+    Work-DB baseline (2yr, measured 2026-07-14): 12.6% overall; standouts
+    8877-4 84%, 8167 84%, 8436 65%, 8755 59%, 8863 50%. Pre-passing units
+    still moved resistance +11% on average — they were trimmed UP to a
+    resistance target, confirming the hypothesis.
+
+    Returns {trimmed_units, prepass_units, prepass_share (%),
+             avg_resistance_change_prepass (%|None)} or None on no data.
+    """
+    from sqlalchemy import text
+
+    where_date = "AND a.file_date >= :cutoff" if cutoff is not None else ""
+    sql = text(f"""
+        WITH unit AS (
+          SELECT a.id,
+                 MIN(CASE WHEN t.untrimmed_error_max <= t.linearity_spec
+                          THEN 1 ELSE 0 END) AS prepass,
+                 MAX(t.trim_pass_count) AS passes,
+                 AVG(t.resistance_change_percent) AS rchg
+          FROM analysis_results a
+          JOIN track_results t ON t.analysis_id = a.id
+          WHERE a.model = :model
+            AND a.overall_status IN ('PASS','WARNING','FAIL')
+            AND t.untrimmed_error_max IS NOT NULL
+            AND t.linearity_spec IS NOT NULL
+            {where_date}
+          GROUP BY a.id)
+        SELECT COUNT(*),
+               COALESCE(SUM(prepass), 0),
+               AVG(CASE WHEN prepass = 1 THEN rchg END)
+        FROM unit WHERE passes >= 1""")
+    params = {"model": model}
+    if cutoff is not None:
+        params["cutoff"] = cutoff
+    with db.session() as s:
+        n, pre, rchg = s.execute(sql, params).fetchone()
+    if not n:
+        return None
+    return {"trimmed_units": int(n),
+            "prepass_units": int(pre),
+            "prepass_share": 100.0 * pre / n,
+            "avg_resistance_change_prepass": (float(rchg) if rchg is not None else None)}
+

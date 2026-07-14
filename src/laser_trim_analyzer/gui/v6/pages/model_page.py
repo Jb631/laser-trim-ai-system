@@ -146,7 +146,8 @@ class ModelPage(PageBase):
                                    on_export_charts=self._on_export_charts,
                                    on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
-        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t)
+        self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t,
+                                        on_unit_click=self._on_ft_unit_click)
         # pack was missing — the tab constructed but never mapped, so it
         # rendered permanently EMPTY (code-review finding #5, 2026-07-13).
         self._ft_units_tab.pack(fill="both", expand=True)
@@ -491,6 +492,25 @@ class ModelPage(PageBase):
                           else "historically strong")
             parts.append(f"{difficulty} ({life_y:.0f}% lifetime linearity yield, "
                          f"{life_n:,} unit{'s' if life_n != 1 else ''})")
+        # Trim necessity (James's question, 2026-07-14): were these units
+        # already meeting linearity BEFORE the laser? A high share means the
+        # trim only served the resistance target — a candidate for raising
+        # the as-fired resistance so the trim (and its laser time) goes away.
+        try:
+            from laser_trim_analyzer.core.yield_stats import compute_trim_necessity
+            tn = compute_trim_necessity(self.app.db, model, cutoff)
+            if tn and tn["trimmed_units"] >= 20:
+                share = tn["prepass_share"]
+                if share >= 20:
+                    parts.append(
+                        f"⚠ {share:.0f}% of trimmed units ({tn['prepass_units']} of "
+                        f"{tn['trimmed_units']}) already met linearity BEFORE trim — "
+                        "laser time spent only on resistance targeting; candidate "
+                        "for raising the as-fired resistance target")
+                elif share >= 5:
+                    parts.append(f"{share:.0f}% already met linearity before trim")
+        except Exception:
+            logger.exception("trim necessity failed for %s", model)
         return "  ·  ".join(parts), color
 
     def _load_ft_units(self, model, cutoff) -> list:
@@ -499,15 +519,19 @@ class ModelPage(PageBase):
         from laser_trim_analyzer.database.models import FinalTestResult as DBFT
         with self.app.db.session() as s:
             q = s.query(DBFT.serial, DBFT.file_date, DBFT.overall_status,
-                        DBFT.linked_trim_id, DBFT.match_confidence)\
+                        DBFT.linked_trim_id, DBFT.match_confidence, DBFT.id)\
                  .filter(DBFT.model == model)
             if cutoff is not None:
                 q = q.filter(DBFT.file_date >= cutoff)
             rows = q.order_by(DBFT.file_date.desc()).limit(500).all()
+        # .name ("FAIL"), not .value ("Fail") — the tab's color map and
+        # fail-count compare against upper-case names; the title-case value
+        # silently missed both (found by the FT-modal test, 2026-07-14).
         return [{"serial": r[0], "file_date": r[1],
-                 "result": getattr(r[2], "value", str(r[2])),
+                 "result": getattr(r[2], "name", str(r[2])),
                  "linked": r[3] is not None,
-                 "match": (round(r[4] * 100) if r[4] is not None else None)}
+                 "match": (round(r[4] * 100) if r[4] is not None else None),
+                 "id": r[5]}
                 for r in rows]
 
     def _recent_means(self, model) -> dict:
@@ -624,6 +648,11 @@ class ModelPage(PageBase):
 
     def _on_unit_click(self, unit):
         UnitChartModal(self, theme=self.theme, db=self.app.db, unit=unit)
+
+    def _on_ft_unit_click(self, ft_unit):
+        """James 2026-07-14: clicking a final-test unit now shows its sweep."""
+        from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import FtUnitChartModal
+        FtUnitChartModal(self, theme=self.theme, db=self.app.db, ft_unit=ft_unit)
 
     def _on_copy_summary(self):
         if not self._current_model:

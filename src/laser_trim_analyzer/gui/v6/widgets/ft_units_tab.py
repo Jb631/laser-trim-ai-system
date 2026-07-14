@@ -2,9 +2,11 @@
 
 Work finding #3 (2026-07-10): "no way to view final test units." The Units
 tab shows trim records; this one lists what happened at the LAST station —
-result, date, and whether the record linked back to a trim unit.
+result, date, and whether the record linked back to a trim unit. Rows are
+clickable (James 2026-07-14: "if you click on a final test unit it does not
+show a chart?") — the callback opens the FT sweep modal.
 """
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
@@ -15,9 +17,11 @@ _COLUMNS = [("serial", "Serial"), ("file_date", "Test date"), ("result", "Result
 
 
 class FtUnitsTab(ctk.CTkFrame):
-    def __init__(self, master, theme: ThemeManager, **kwargs):
+    def __init__(self, master, theme: ThemeManager,
+                 on_unit_click: Optional[Callable[[Dict], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
+        self._cb = on_unit_click
         self._rows: List[ctk.CTkFrame] = []
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
@@ -56,11 +60,16 @@ class FtUnitsTab(ctk.CTkFrame):
                     str(u.get("result") or "—"),
                     "yes" if u.get("linked") else "no",
                     (f"{u['match']}%" if u.get("match") is not None else "—")]
+            widgets = [row]
             for (key, _), v in zip(_COLUMNS, vals):
                 c = color.get(v, t.TEXT_PRIMARY) if key == "result" else t.TEXT_PRIMARY
-                ctk.CTkLabel(row, text=v, font=t.font(t.SIZE_BODY), text_color=c)\
-                    .pack(side="left", expand=True, fill="x",
-                          padx=t.SPACE_SM, pady=t.SPACE_XS)
+                lbl = ctk.CTkLabel(row, text=v, font=t.font(t.SIZE_BODY), text_color=c)
+                lbl.pack(side="left", expand=True, fill="x",
+                         padx=t.SPACE_SM, pady=t.SPACE_XS)
+                widgets.append(lbl)
+            if self._cb is not None:
+                for w in widgets:
+                    w.bind("<Button-1>", lambda e, u_=u: self._cb(u_))
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
         n_fail = sum(1 for u in units if u.get("result") == "FAIL")

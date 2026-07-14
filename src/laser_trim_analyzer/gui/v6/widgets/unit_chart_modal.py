@@ -232,3 +232,158 @@ class UnitChartModal(ctk.CTkToplevel):
             logging.getLogger(__name__).exception("Print-ready export failed; "
                                                   "saving on-screen figure instead")
             self._chart.save_figure(path)
+
+
+def load_ft_track(db, final_test_id: int,
+                  track_id: Optional[str] = None) -> Optional[dict]:
+    """Materialize ONE final-test track's arrays (James 2026-07-14: 'if you
+    click on a final test unit it does not show a chart'). final_test_tracks
+    stores the full sweep: position/error arrays, per-point limits, offset."""
+    from laser_trim_analyzer.database.models import (
+        FinalTestResult as DBFT, FinalTestTrack as DBFTT)
+    with db.session() as s:
+        tracks = (s.query(DBFTT).filter(DBFTT.final_test_id == final_test_id)
+                  .order_by(DBFTT.track_id).all())
+        if not tracks:
+            return None
+        ft = s.query(DBFT.model, DBFT.serial, DBFT.overall_status,
+                     DBFT.test_date, DBFT.file_date)\
+              .filter(DBFT.id == final_test_id).first()
+        tr = tracks[0]
+        if track_id is not None:
+            for t in tracks:
+                if t.track_id == track_id:
+                    tr = t
+                    break
+        when = (ft[3] or ft[4]) if ft else None
+        return {
+            "model": ft[0] if ft else "",
+            "serial": ft[1] if ft else "",
+            "result": getattr(ft[2], "name", str(ft[2])) if ft else "",
+            "date": str(when).split(" ")[0] if when else "",
+            "track_id": tr.track_id, "n_tracks": len(tracks),
+            "track_ids": [t.track_id for t in tracks],
+            "position_data": list(tr.position_data or []),
+            "error_data": list(tr.error_data or []),
+            "upper_limits": list(tr.upper_limits or []),
+            "lower_limits": list(tr.lower_limits or []),
+            "optimal_offset": tr.optimal_offset,
+            "linearity_error": tr.linearity_error,
+            "linearity_spec": tr.linearity_spec,
+            "linearity_pass": tr.linearity_pass,
+        }
+
+
+class FtUnitChartModal(ctk.CTkToplevel):
+    """Final-test sweep viewer — the FT counterpart of UnitChartModal."""
+
+    def __init__(self, master, theme: ThemeManager, db, ft_unit: dict):
+        super().__init__(master)
+        self.theme = theme
+        self._db = db
+        self._ft = ft_unit
+        result = str(ft_unit.get("result", "") or "").strip()
+        date_only = (ft_unit["file_date"].strftime("%Y-%m-%d")
+                     if ft_unit.get("file_date") else "")
+        self.title(f"Final test — {ft_unit.get('serial', '')} — {date_only}"
+                   + (f" — {result.upper()}" if result else ""))
+        self.geometry("900x600")
+        self.configure(fg_color=theme.SURFACE)
+        self.transient(master)
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget, ChartStyle
+        self._chart = ChartWidget(self, style=ChartStyle(figure_size=(9, 5)))
+        self._chart.pack(side="top", fill="both", expand=True,
+                         padx=theme.SPACE_MD, pady=theme.SPACE_MD)
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(side="bottom", fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
+        self._save_btn = ctk.CTkButton(bar, text="Save chart…", command=self._save,
+                                       fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
+                                       text_color=theme.TEXT_INVERSE,
+                                       corner_radius=theme.RADIUS_SM, state="disabled")
+        self._save_btn.pack(side="right")
+        self._track_menu = ctk.CTkOptionMenu(
+            bar, values=["Track"], width=140, command=self._on_track_change,
+            fg_color=theme.CARD, button_color=theme.ACCENT,
+            button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+
+        from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
+        self._ui = resolve_dispatcher(master)
+        self._chart.show_placeholder("Loading final-test data…")
+
+        def work():
+            try:
+                data = load_ft_track(db, ft_unit.get("id"))
+            except Exception:
+                data = None
+            self._post(lambda: self._render(data))
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _post(self, fn) -> None:
+        def guarded():
+            try:
+                if self.winfo_exists():
+                    fn()
+            except Exception:
+                pass
+        if self._ui is not None:
+            self._ui.post(guarded)
+        else:
+            guarded()
+
+    def _on_track_change(self, choice: str) -> None:
+        data = getattr(self, "_track_data", None)
+        if not data or choice == data.get("track_id"):
+            return
+        self._chart.show_placeholder(f"Loading {choice}…")
+
+        def work():
+            try:
+                new = load_ft_track(self._db, self._ft.get("id"), track_id=choice)
+            except Exception:
+                new = None
+            self._post(lambda: self._render(new))
+
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render(self, data: Optional[dict]) -> None:
+        self._track_data = data
+        if data and data.get("n_tracks", 1) > 1 and data.get("track_ids"):
+            self._track_menu.configure(values=data["track_ids"])
+            self._track_menu.set(data.get("track_id"))
+            self._track_menu.pack(side="left")
+        if not data or not data["position_data"]:
+            self._chart.show_placeholder(
+                "No sweep stored for this final-test record.\n\n"
+                "The file carried pass/fail results but no point-by-point "
+                "error trace.")
+            self._save_btn.configure(state="disabled")
+            return
+        fp = compute_fail_points(data["error_data"], data["upper_limits"],
+                                 data["lower_limits"],
+                                 offset=data.get("optimal_offset") or 0.0)
+        title = f"Final test — {data.get('serial', '')}"
+        if data["n_tracks"] > 1:
+            title += f" — {data['track_id']} of {data['n_tracks']} tracks"
+        self._chart.plot_error_vs_position(
+            positions=data["position_data"], trimmed_errors=data["error_data"],
+            upper_limits=data["upper_limits"] or None,
+            lower_limits=data["lower_limits"] or None,
+            offset=data.get("optimal_offset") or 0.0,
+            trim_date=data.get("date") or None,
+            fail_points=fp, title=title,
+            serial_number=str(data.get("serial", "")),
+            measured_label="Final test (as measured)")
+        self._save_btn.configure(state="normal")
+
+    def _save(self) -> None:
+        from tkinter import filedialog
+        serial = str(self._ft.get("serial", "ft_unit"))
+        path = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".png",
+            initialfile=f"final_test_{serial}.png",
+            filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")])
+        if path:
+            self._chart.save_figure(path)
