@@ -309,29 +309,16 @@ class ChartWidget(ctk.CTkFrame):
         else:
             shifted_errors = [e + offset for e in trimmed_errors]
 
-        # Determine if we need dual Y-axes for untrimmed data
+        # Single Y-axis only — the dual-scale (twin-axis) path was removed at
+        # James's request (2026-07-14). Putting the pre-trim trace on its own
+        # right-hand scale made pre- and post-trim look similar in amplitude even
+        # though the pre-trim error is many times larger, which hid the very
+        # improvement the overlay exists to show. Everything now shares the Error
+        # axis; the y-window logic below still expands to keep the pre-trim line
+        # visible while the spec-anchored cap stops end-of-travel spikes from
+        # dominating the view.
         use_dual_axis = False
         ax2 = None
-
-        if untrimmed_positions and untrimmed_errors:
-            trimmed_range = max(shifted_errors) - min(shifted_errors) if shifted_errors else 0
-            untrimmed_range = max(untrimmed_errors) - min(untrimmed_errors) if untrimmed_errors else 0
-            # Include spec limits in range calculation
-            spec_max = trimmed_range
-            if upper_limits and lower_limits:
-                valid_upper = [u for u in upper_limits if u is not None]
-                valid_lower = [l for l in lower_limits if l is not None]
-                if valid_upper and valid_lower:
-                    spec_range = max(valid_upper) - min(valid_lower)
-                    spec_max = max(trimmed_range, spec_range)
-            # Use dual axes when untrimmed range is > 3x the trimmed+spec range
-            if spec_max > 0 and untrimmed_range > 3.0 * spec_max:
-                use_dual_axis = True
-                ax2 = ax.twinx()
-                self._style_axis(ax2)
-                ax2.set_ylabel('Pre-Trim Error', fontsize=self.style.font_size,
-                              color=COLORS['untrimmed'])
-                ax2.tick_params(axis='y', colors=COLORS['untrimmed'])
 
         # Plot untrimmed data if available
         if untrimmed_positions and untrimmed_errors:
@@ -448,13 +435,15 @@ class ChartWidget(ctk.CTkFrame):
                            marker='o', s=110, linewidths=2,
                            label='Binding points (limit the offset)', zorder=6)
 
-        # Verdict explanation — plain-language reason for the disposition.
-        if verdict_note:
-            ax.annotate(verdict_note, xy=(0.02, 0.97), xycoords='axes fraction',
-                        va='top', ha='left', fontsize=self.style.font_size - 2,
-                        color=COLORS.get('text', '#dddddd'),
-                        bbox=dict(boxstyle='round,pad=0.4', alpha=0.35,
-                                  facecolor='black', edgecolor='orange'))
+        # Verdict explanation banner intentionally NOT drawn on-screen (James,
+        # 2026-07-14). As an unwrapped top-left annotation it ran the full plot
+        # width, clipped off the right edge, and collided with the legend and the
+        # SN/date box (the "charts don't look right" regression). The orange
+        # binding-point circles already show WHY the offset can't clear the fail —
+        # the two opposing points — without a wall of text. `verdict_note` stays in
+        # the signature so the reason can be surfaced elsewhere (tooltip/caption)
+        # later if wanted, but it is deliberately not rendered here.
+        _ = verdict_note
 
         if excluded_points:
             excl_x = [positions[i] for i in excluded_points if i < len(positions)]

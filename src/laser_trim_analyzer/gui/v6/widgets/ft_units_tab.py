@@ -18,13 +18,27 @@ _COLUMNS = [("serial", "Serial"), ("file_date", "Test date"), ("result", "Result
 
 class FtUnitsTab(ctk.CTkFrame):
     def __init__(self, master, theme: ThemeManager,
-                 on_unit_click: Optional[Callable[[Dict], None]] = None, **kwargs):
+                 on_unit_click: Optional[Callable[[Dict], None]] = None,
+                 on_export_charts: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.theme = theme
         self._cb = on_unit_click
         self._rows: List[ctk.CTkFrame] = []
+        self._units: List[Dict] = []
+        self._selected: set = set()   # FT record id of checked rows
+        if on_export_charts is not None:
+            bar = ctk.CTkFrame(self, fg_color="transparent")
+            bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
+            # Checked rows (or all shown if none checked) as one multi-page PDF.
+            ctk.CTkButton(bar, text="Export charts (PDF)", fg_color=theme.CARD,
+                          hover_color=theme.ELEVATED, text_color=theme.TEXT_PRIMARY,
+                          border_width=1, border_color=theme.BORDER,
+                          command=on_export_charts, corner_radius=theme.RADIUS_SM)\
+                .pack(side="right")
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
+        # Spacer keeps the column headers aligned with the per-row checkbox.
+        ctk.CTkLabel(header, text="", width=26).pack(side="left", padx=(theme.SPACE_SM, 0))
         for _key, lbl in _COLUMNS:
             ctk.CTkLabel(header, text=lbl, font=theme.font(theme.SIZE_CAPTION, "bold"),
                          text_color=theme.TEXT_SECONDARY)\
@@ -36,6 +50,23 @@ class FtUnitsTab(ctk.CTkFrame):
                                  text_color=theme.TEXT_SECONDARY, anchor="w")
         self._cap.pack(side="top", fill="x")
 
+    def set_caption(self, text: str) -> None:
+        """Live status line (chart-export progress etc.)."""
+        self._cap.configure(text=text)
+
+    def get_selected_units(self) -> List[Dict]:
+        """Checked FT rows; if none are checked, every record currently shown."""
+        if not self._selected:
+            return list(self._units)
+        return [u for u in self._units if u.get("id") in self._selected]
+
+    def _toggle_select(self, unit: Dict, checked: bool) -> None:
+        rid = unit.get("id")
+        if checked:
+            self._selected.add(rid)
+        else:
+            self._selected.discard(rid)
+
     def set_units(self, units: List[Dict]) -> None:
         for r in self._rows:
             try:
@@ -43,6 +74,8 @@ class FtUnitsTab(ctk.CTkFrame):
             except Exception:
                 pass
         self._rows = []
+        self._units = list(units)
+        self._selected = set()
         t = self.theme
         if not units:
             lbl = ctk.CTkLabel(self._list, text="No final-test records for this model "
@@ -55,6 +88,11 @@ class FtUnitsTab(ctk.CTkFrame):
         color = {"FAIL": t.TIER_OOC, "PASS": t.TEXT_PRIMARY, "WARNING": t.TIER_WARNING}
         for u in units:
             row = ctk.CTkFrame(self._list, fg_color=t.SURFACE)
+            chk = ctk.CTkCheckBox(row, text="", width=26, checkbox_width=16,
+                                  checkbox_height=16, fg_color=t.ACCENT,
+                                  hover_color=t.ACCENT_HOVER)
+            chk.configure(command=lambda u_=u, c_=chk: self._toggle_select(u_, bool(c_.get())))
+            chk.pack(side="left", padx=(t.SPACE_SM, 0))
             vals = [str(u.get("serial") or "—"),
                     (u["file_date"].strftime("%Y-%m-%d") if u.get("file_date") else "—"),
                     str(u.get("result") or "—"),

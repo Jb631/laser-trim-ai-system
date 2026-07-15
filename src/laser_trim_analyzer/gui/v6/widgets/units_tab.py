@@ -28,15 +28,16 @@ class UnitsTab(ctk.CTkFrame):
         self._rows: List[_UnitRow] = []
         self._sort_key = "file_date"
         self._sort_rev = True
+        self._selected: set = set()   # analysis_id of checked rows (subset export)
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
         ctk.CTkButton(bar, text="Export to Excel", fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
                       text_color=theme.TEXT_INVERSE, command=self._on_export,
                       corner_radius=theme.RADIUS_SM).pack(side="right")
         if on_export_charts is not None:
-            # Mass chart export (work finding #4): every unit in the window
-            # as a print-ready PNG, one folder pick.
-            ctk.CTkButton(bar, text="Export all charts", fg_color=theme.CARD,
+            # Chart export: the checked rows (or all shown if none are checked)
+            # as a single multi-page print-ready PDF.
+            ctk.CTkButton(bar, text="Export charts (PDF)", fg_color=theme.CARD,
                           hover_color=theme.ELEVATED, text_color=theme.TEXT_PRIMARY,
                           border_width=1, border_color=theme.BORDER,
                           command=on_export_charts, corner_radius=theme.RADIUS_SM)\
@@ -56,6 +57,8 @@ class UnitsTab(ctk.CTkFrame):
                       ).pack(side="left", padx=(theme.SPACE_XS, 0))
         header = ctk.CTkFrame(self, fg_color=theme.CARD)
         header.pack(side="top", fill="x", pady=(0, theme.SPACE_XS))
+        # Spacer keeps the column headers aligned with the per-row checkbox.
+        ctk.CTkLabel(header, text="", width=26).pack(side="left", padx=(theme.SPACE_SM, 0))
         for key, lbl in _COLUMNS:
             h = ctk.CTkLabel(header, text=lbl, font=theme.font(theme.SIZE_CAPTION, "bold"),
                              text_color=theme.TEXT_SECONDARY)
@@ -74,7 +77,24 @@ class UnitsTab(ctk.CTkFrame):
     def set_units(self, units: List[dict], caption: Optional[str] = None) -> None:
         self._units = list(units)
         self._caption = caption
+        self._selected = set()       # new model/window → clear checkboxes
         self._render()
+
+    def get_selected_units(self) -> List[dict]:
+        """The checked rows; if none are checked, every unit currently shown."""
+        if not self._selected:
+            return list(self._units)
+        return [u for u in self._units if u.get("analysis_id") in self._selected]
+
+    def _toggle_select(self, unit: dict, checked: bool) -> None:
+        uid = unit.get("analysis_id")
+        if checked:
+            self._selected.add(uid)
+        else:
+            self._selected.discard(uid)
+        base = getattr(self, "_caption", None) or f"{len(self._units)} unit(s)"
+        n = len(self._selected)
+        self._cap.configure(text=base + (f" · {n} selected" if n else ""))
 
     def _do_search(self):
         q = self._search.get().strip()
@@ -99,18 +119,33 @@ class UnitsTab(ctk.CTkFrame):
                          key=lambda u: (u.get(self._sort_key) is None, u.get(self._sort_key)),
                          reverse=self._sort_rev)
         for u in ordered:
-            row = _UnitRow(self._list, unit=u, theme=self.theme, on_click=self._on_unit_click)
+            uid = u.get("analysis_id")
+            row = _UnitRow(self._list, unit=u, theme=self.theme, on_click=self._on_unit_click,
+                           on_toggle=self._toggle_select, selected=(uid in self._selected))
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
         cap = getattr(self, "_caption", None)
-        self._cap.configure(text=cap if cap else f"{len(ordered)} unit(s)")
+        n = len(self._selected)
+        base = cap if cap else f"{len(ordered)} unit(s)"
+        self._cap.configure(text=base + (f" · {n} selected" if n else ""))
 
 
 class _UnitRow(ctk.CTkFrame):
-    def __init__(self, master, unit: dict, theme: ThemeManager, on_click):
+    def __init__(self, master, unit: dict, theme: ThemeManager, on_click,
+                 on_toggle=None, selected: bool = False):
         super().__init__(master, fg_color=theme.SURFACE)
         self.unit = unit
         self._cb = on_click
+        self._on_toggle = on_toggle
+        # Per-row select checkbox for subset chart export. It's a real widget so
+        # it consumes its own click and toggling never opens the chart modal.
+        if on_toggle is not None:
+            self._chk = ctk.CTkCheckBox(self, text="", width=26, checkbox_width=16,
+                                        checkbox_height=16, fg_color=theme.ACCENT,
+                                        hover_color=theme.ACCENT_HOVER, command=self._toggled)
+            if selected:
+                self._chk.select()
+            self._chk.pack(side="left", padx=(theme.SPACE_SM, 0))
         # Status gets tier color so a fail-heavy list reads at a glance
         # (live-walk finding, 2026-07-08: a column of plain-white 'Fail').
         _status_color = {"Fail": theme.TIER_OOC, "FAIL": theme.TIER_OOC,
@@ -129,3 +164,7 @@ class _UnitRow(ctk.CTkFrame):
 
     def _on_click(self):
         self._cb(self.unit)
+
+    def _toggled(self):
+        if self._on_toggle is not None:
+            self._on_toggle(self.unit, bool(self._chk.get()))

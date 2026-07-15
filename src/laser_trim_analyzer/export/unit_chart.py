@@ -28,13 +28,17 @@ def _fmt(v, spec=".6f", na="N/A"):
 
 
 def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
-                             fail_points: Optional[List[int]] = None) -> Figure:
+                             fail_points: Optional[List[int]] = None,
+                             kind: str = "trim") -> Figure:
     """Light-mode 4-panel unit document.
 
     meta: model, serial, system, trim_date (str), track_id, n_tracks.
-    data: load_unit_track dict (arrays + stored metrics).
+    data: load_unit_track (trim) or load_ft_track (FT) dict.
+    kind: "trim" (default) or "ft". FT drops the sigma metrics (there is no
+    sigma at final test) and takes its PASS/FAIL from the final-test result.
     """
     fail_points = fail_points or []
+    is_ft = kind == "ft"
     fig = Figure(figsize=(11, 8.5), dpi=120, facecolor="white")  # landscape letter
     gs = fig.add_gridspec(2, 3, height_ratios=[2.1, 1.0],
                           hspace=0.28, wspace=0.18,
@@ -44,7 +48,8 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     ax_metrics = fig.add_subplot(gs[1, 1])
     ax_status = fig.add_subplot(gs[1, 2])
 
-    title = f"{meta.get('model', '')} — Unit {meta.get('serial', '')}"
+    title = f"{meta.get('model', '')} — " + ("Final Test — " if is_ft else "") \
+            + f"Unit {meta.get('serial', '')}"
     if meta.get("n_tracks", 1) and meta["n_tracks"] > 1:
         title += f" (track {meta.get('track_id', '?')} of {meta['n_tracks']})"
     fig.suptitle(title, fontsize=14, fontweight="bold", color="black")
@@ -74,11 +79,12 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                                  if isinstance(imp, (int, float)) else "")
             ax.plot(up, ue, "--", lw=1.4, color=_C["untrimmed"], alpha=0.6, label=lbl)
 
-        corr_lbl = ("Trimmed corrected (no-op)" if abs(offset) < 1e-9
-                    else f"Trimmed corrected (offset: {offset:+.6f})")
+        _base = "Final test" if is_ft else "Trimmed"
+        corr_lbl = (f"{_base} (no-op)" if abs(offset) < 1e-9
+                    else f"{_base} corrected (offset: {offset:+.6f})")
         ax.plot(positions, corrected, lw=2, color=_C["trimmed"], zorder=3, label=corr_lbl)
         ax.plot(positions, errors, "--", lw=1.1, color=_C["trimmed"], alpha=0.35,
-                zorder=2, label="Trimmed (as measured)")
+                zorder=2, label=f"{_base} (as measured)")
 
         upper = data.get("upper_limits") or []
         lower = data.get("lower_limits") or []
@@ -108,11 +114,12 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
 
     # ---- unit information panel ----
     ax_info.axis("off")
+    _date_label = "Test Date" if is_ft else "Trim Date"
     lines = [f"Model: {meta.get('model', 'N/A')}",
              f"Serial: {meta.get('serial', 'N/A')}",
              f"System: {meta.get('system', 'N/A')}",
              f"Track: {meta.get('track_id', 'N/A')}",
-             f"Trim Date: {meta.get('trim_date', 'N/A')}", ""]
+             f"{_date_label}: {meta.get('trim_date', 'N/A')}", ""]
     if data.get("untrimmed_resistance") is not None:
         lines.append(f"Untrimmed R: {_fmt(data['untrimmed_resistance'], '.1f')}")
     if data.get("trimmed_resistance") is not None:
@@ -133,17 +140,29 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     ax_metrics.axis("off")
     sig_pass = data.get("sigma_pass")
     lin_pass = data.get("linearity_pass")
-    rows = [
-        f"Sigma Gradient: {_fmt(data.get('sigma_gradient'))}",
-        f"Sigma Threshold: {_fmt(data.get('sigma_threshold'))}",
-        f"Sigma Watch: {'no' if sig_pass else ('YES' if sig_pass is not None else 'N/A')}",
-        "",
-        f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
-        f"Linearity Error: {_fmt(data.get('linearity_error'))}",
-        f"Fail Points: {len(fail_points)}",
-        f"Linearity Pass: {'YES' if lin_pass else ('NO' if lin_pass is not None else 'N/A')}",
-    ]
-    ax_metrics.text(0.02, 0.98, "Analysis Metrics", fontsize=11, fontweight="bold",
+    if is_ft:
+        # No sigma at final test — show the linearity numbers + spec instead.
+        rows = [
+            f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
+            f"Linearity Error: {_fmt(data.get('linearity_error'))}",
+            f"Linearity Spec: {_fmt(data.get('linearity_spec'))}",
+            "",
+            f"Fail Points: {len(fail_points)}",
+            f"Linearity Pass: {'YES' if lin_pass else ('NO' if lin_pass is not None else 'N/A')}",
+        ]
+    else:
+        rows = [
+            f"Sigma Gradient: {_fmt(data.get('sigma_gradient'))}",
+            f"Sigma Threshold: {_fmt(data.get('sigma_threshold'))}",
+            f"Sigma Watch: {'no' if sig_pass else ('YES' if sig_pass is not None else 'N/A')}",
+            "",
+            f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
+            f"Linearity Error: {_fmt(data.get('linearity_error'))}",
+            f"Fail Points: {len(fail_points)}",
+            f"Linearity Pass: {'YES' if lin_pass else ('NO' if lin_pass is not None else 'N/A')}",
+        ]
+    ax_metrics.text(0.02, 0.98, "Final Test Metrics" if is_ft else "Analysis Metrics",
+                    fontsize=11, fontweight="bold",
                     va="top", transform=ax_metrics.transAxes, color="black")
     for i, ln in enumerate(rows):
         col = "black"
@@ -156,7 +175,16 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
 
     # ---- status panel (domain rule: linearity decides; sigma = watch flag) ----
     ax_status.axis("off")
-    if lin_pass is False:
+    if is_ft:
+        # Final-test disposition is the customer result; no sigma-watch tier.
+        _result = str(data.get("result") or "").upper()
+        if _result == "FAIL" or lin_pass is False:
+            status, color, note = "FAIL", _C["fail"], "Final test — out of spec"
+        elif _result == "PASS" or lin_pass:
+            status, color, note = "PASS", _C["pass"], "Final test — accepted"
+        else:
+            status, color, note = "NOT EVALUATED", "#7f8c8d", "No final-test grading stored"
+    elif lin_pass is False:
         status, color, note = "FAIL", _C["fail"], "Linearity out of spec (zero-tolerance)"
     elif lin_pass and sig_pass:
         status, color, note = "PASS", _C["pass"], "Linearity in spec · no sigma watch"

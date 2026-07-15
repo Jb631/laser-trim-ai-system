@@ -154,7 +154,8 @@ class ModelPage(PageBase):
                                    on_search=self._on_unit_search)
         self._units_tab.pack(fill="both", expand=True)
         self._ft_units_tab = FtUnitsTab(self._tabs.add("Final Test Units"), theme=t,
-                                        on_unit_click=self._on_ft_unit_click)
+                                        on_unit_click=self._on_ft_unit_click,
+                                        on_export_charts=self._on_export_ft_charts)
         # pack was missing — the tab constructed but never mapped, so it
         # rendered permanently EMPTY (code-review finding #5, 2026-07-13).
         self._ft_units_tab.pack(fill="both", expand=True)
@@ -509,11 +510,18 @@ class ModelPage(PageBase):
             if tn and tn["trimmed_units"] >= 20:
                 share = tn["prepass_share"]
                 if share >= 20:
-                    parts.append(
-                        f"⚠ {share:.0f}% of trimmed units ({tn['prepass_units']} of "
-                        f"{tn['trimmed_units']}) already met linearity BEFORE trim — "
-                        "laser time spent only on resistance targeting; candidate "
-                        "for raising the as-fired resistance target")
+                    msg = (f"⚠ {share:.0f}% of trimmed units ({tn['prepass_units']} of "
+                           f"{tn['trimmed_units']}) already met linearity BEFORE trim — "
+                           "avoidable laser time")
+                    rec = tn.get("recommendation")
+                    if rec and rec.get("recommended_target"):
+                        msg += (f". Raise {model}'s as-fired resistance target to "
+                                f"~{rec['recommended_target']:,.0f} Ω (spec centre; now "
+                                f"~{rec['asfired_median']:,.0f} Ω) and {rec['res_driven_units']} "
+                                "of these trims disappear")
+                    else:
+                        msg += "; candidate for raising the as-fired resistance target"
+                    parts.append(msg)
                 elif share >= 5:
                     parts.append(f"{share:.0f}% already met linearity before trim")
         except Exception:
@@ -843,56 +851,84 @@ class ModelPage(PageBase):
                       command=dlg.destroy, corner_radius=t.RADIUS_SM).pack(side="right", padx=8)
 
     def _on_export_charts(self):
-        """Export EVERY unit chart in the window as print-ready PNGs (work
-        finding #4: 'no way to mass export charts'). One folder pick, then a
-        worker renders build_unit_export_figure per unit."""
+        """Trim tab: export the checked unit charts (or all shown if none are
+        checked) as one multi-page print-ready PDF (work finding #4, + James
+        2026-07-14: pick a subset, and PDF not image)."""
+        self._export_charts_pdf(kind="trim")
+
+    def _on_export_ft_charts(self):
+        """Final Test tab: same subset → multi-page PDF export, FT layout."""
+        self._export_charts_pdf(kind="ft")
+
+    def _export_charts_pdf(self, kind: str):
         if not self._current_model:
             return
         from tkinter import filedialog
-        out_dir = filedialog.askdirectory(title="Folder for unit charts")
-        if not out_dir:
+        is_ft = kind == "ft"
+        tab = self._ft_units_tab if is_ft else self._units_tab
+        units = tab.get_selected_units()
+        if not units:
+            tab.set_caption("No units to export.")
             return
         model = self._current_model
+        label = "final_test" if is_ft else "unit"
+        path = filedialog.asksaveasfilename(
+            title="Save charts (PDF)", defaultextension=".pdf",
+            initialfile=f"{model}_{label}_charts_{len(units)}.pdf",
+            filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return
 
         def work():
             import matplotlib
             matplotlib.use("Agg", force=False)
-            from pathlib import Path as _P
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_pdf import PdfPages
             from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
-                load_unit_track, compute_fail_points)
+                load_unit_track, load_ft_track, compute_fail_points)
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
-            units = self._load_units(model)
             done = err = 0
-            for i, u in enumerate(units):
-                try:
-                    data = load_unit_track(self.app.db, u["analysis_id"])
-                    fp = compute_fail_points(
-                        data["error_data"], data["upper_limits"], data["lower_limits"],
-                        offset=data.get("optimal_offset") or 0.0)
-                    date_s = (u["file_date"].strftime("%Y-%m-%d")
-                              if u.get("file_date") else "nodate")
-                    fig = build_unit_export_figure(
-                        meta={"model": data.get("model") or model,
-                              "serial": u.get("serial"),
-                              "system": data.get("system"),
-                              "trim_date": date_s,
-                              "track_id": data.get("track_id"),
-                              "n_tracks": data.get("n_tracks")},
-                        data=data, fail_points=fp)
-                    safe_serial = str(u.get("serial") or "unknown").replace("/", "-")
-                    fig.savefig(_P(out_dir) / f"{model}_{safe_serial}_{date_s}.png",
-                                dpi=150, facecolor=fig.get_facecolor())
-                    import matplotlib.pyplot as plt
-                    plt.close(fig)
-                    done += 1
-                except Exception:
-                    logger.exception("chart export failed for %s", u.get("serial"))
-                    err += 1
-                if i % 10 == 0:
-                    self.safe_after(lambda d=done, n=len(units): self._units_tab.set_caption(
-                        f"Exporting charts… {d}/{n}"))
-            self.safe_after(lambda: self._units_tab.set_caption(
-                f"Exported {done} chart(s) to {out_dir}"
+            try:
+                with PdfPages(path) as pdf:
+                    for i, u in enumerate(units):
+                        try:
+                            data = (load_ft_track(self.app.db, u.get("id")) if is_ft
+                                    else load_unit_track(self.app.db, u.get("analysis_id")))
+                            if not data:
+                                err += 1
+                                continue
+                            fp = compute_fail_points(
+                                data.get("error_data"), data.get("upper_limits"),
+                                data.get("lower_limits"),
+                                offset=data.get("optimal_offset") or 0.0)
+                            date_s = data.get("date") if is_ft else None
+                            if not date_s:
+                                fd = u.get("file_date")
+                                date_s = (fd.strftime("%Y-%m-%d")
+                                          if hasattr(fd, "strftime") else "nodate")
+                            meta = {"model": data.get("model") or model,
+                                    "serial": data.get("serial") or u.get("serial"),
+                                    "system": data.get("system", ""),
+                                    "trim_date": date_s,
+                                    "track_id": data.get("track_id"),
+                                    "n_tracks": data.get("n_tracks", 1)}
+                            fig = build_unit_export_figure(
+                                meta, data, fp, kind="ft" if is_ft else "trim")
+                            pdf.savefig(fig, facecolor="white", bbox_inches="tight")
+                            plt.close(fig)
+                            done += 1
+                        except Exception:
+                            logger.exception("chart export failed for %s", u.get("serial"))
+                            err += 1
+                        if i % 5 == 0:
+                            self.safe_after(lambda d=done, n=len(units):
+                                            tab.set_caption(f"Exporting… {d}/{n}"))
+            except Exception:
+                logger.exception("PDF chart export failed")
+                self.safe_after(lambda: tab.set_caption("Export failed — see the log."))
+                return
+            self.safe_after(lambda: tab.set_caption(
+                f"Exported {done} chart(s) → {path}"
                 + (f" · {err} failed (see log)" if err else "")))
         threading.Thread(target=work, daemon=True).start()
 

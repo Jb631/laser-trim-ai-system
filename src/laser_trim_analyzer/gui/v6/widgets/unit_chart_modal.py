@@ -95,6 +95,28 @@ def compute_fail_points(errors, upper_limits, lower_limits,
     return out
 
 
+def ft_best_fit_offset(errors, upper_limits, lower_limits) -> float:
+    """Best-fit DC offset for a final-test sweep.
+
+    James (2026-07-14): the offset dialed in at the FT station is a real
+    equipment-variance adjustment, so FT is graded on the corrected error like
+    trim — absolute units included. FT records arrive with no offset stored, so
+    we compute the minimax offset here: the shift that best centers the
+    corrected error in the spec band (midpoint of the intersected per-point
+    clearing window). Guarded — a physically implausible result (rows where the
+    error/limit columns aren't linearity at all, e.g. resistance mixed in,
+    produced offsets in the tens of volts) drops to 0 rather than shoving the
+    whole trace off-screen."""
+    fz = compute_offset_feasibility(errors, upper_limits, lower_limits)
+    if fz is None:
+        return 0.0
+    lo_b, hi_b, _, _ = fz
+    off = (lo_b + hi_b) / 2.0
+    # Real linearity offsets are small (well under a volt). Anything larger is a
+    # non-linearity column, not a genuine adjustment — ignore it.
+    return off if abs(off) <= 1.0 else 0.0
+
+
 def load_unit_track(db, analysis_id: int,
                     track_id: Optional[str] = None) -> Optional[dict]:
     """Materialize ONE track's arrays for an analysis INSIDE the session
@@ -326,6 +348,13 @@ def load_ft_track(db, final_test_id: int,
                     tr = t
                     break
         when = (ft[3] or ft[4]) if ft else None
+        errs = list(tr.error_data or [])
+        uls = list(tr.upper_limits or [])
+        lls = list(tr.lower_limits or [])
+        # FT records store no offset (no trim ran). The FT-station operator makes
+        # a real manual offset adjustment, so compute the best-fit and grade the
+        # corrected error on it, same as trim (James 2026-07-14).
+        off = tr.optimal_offset or ft_best_fit_offset(errs, uls, lls)
         return {
             "model": ft[0] if ft else "",
             "serial": ft[1] if ft else "",
@@ -334,10 +363,10 @@ def load_ft_track(db, final_test_id: int,
             "track_id": tr.track_id, "n_tracks": len(tracks),
             "track_ids": [t.track_id for t in tracks],
             "position_data": list(tr.position_data or []),
-            "error_data": list(tr.error_data or []),
-            "upper_limits": list(tr.upper_limits or []),
-            "lower_limits": list(tr.lower_limits or []),
-            "optimal_offset": tr.optimal_offset,
+            "error_data": errs,
+            "upper_limits": uls,
+            "lower_limits": lls,
+            "optimal_offset": off,
             "linearity_error": tr.linearity_error,
             "linearity_spec": tr.linearity_spec,
             "linearity_pass": tr.linearity_pass,
@@ -452,11 +481,36 @@ class FtUnitChartModal(ctk.CTkToplevel):
         self._save_btn.configure(state="normal")
 
     def _save(self) -> None:
+        """Export the print-ready final-test document as a PDF — same 4-panel
+        layout as the trim unit export (James 2026-07-14: FT had no print
+        export, and exports should be PDF not image)."""
         from tkinter import filedialog
         serial = str(self._ft.get("serial", "ft_unit"))
         path = filedialog.asksaveasfilename(
-            parent=self, defaultextension=".png",
-            initialfile=f"final_test_{serial}.png",
-            filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")])
-        if path:
+            parent=self, defaultextension=".pdf",
+            initialfile=f"final_test_{serial}.pdf",
+            filetypes=[("PDF", "*.pdf"), ("PNG image", "*.png"), ("SVG", "*.svg")])
+        if not path:
+            return
+        data = getattr(self, "_track_data", None)
+        if not data:
+            self._chart.save_figure(path)  # nothing loaded — fall back
+            return
+        try:
+            from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
+            fp = compute_fail_points(data.get("error_data"), data.get("upper_limits"),
+                                     data.get("lower_limits"),
+                                     offset=data.get("optimal_offset") or 0.0)
+            meta = {"model": data.get("model") or self._ft.get("model", ""),
+                    "serial": data.get("serial") or serial,
+                    "system": self._ft.get("system", ""),
+                    "trim_date": data.get("date") or "",
+                    "track_id": data.get("track_id"),
+                    "n_tracks": data.get("n_tracks", 1)}
+            fig = build_unit_export_figure(meta, data, fp, kind="ft")
+            fig.savefig(path, facecolor="white", bbox_inches="tight")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("FT print export failed; "
+                                                  "saving on-screen figure instead")
             self._chart.save_figure(path)

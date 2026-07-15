@@ -303,45 +303,91 @@ def compute_trim_necessity(db, model: str,
     these are definite cases). Only units that were actually TRIMMED
     (any track with trim_pass_count >= 1) enter the denominator.
 
-    Work-DB baseline (2yr, measured 2026-07-14): 12.6% overall; standouts
-    8877-4 84%, 8167 84%, 8436 65%, 8755 59%, 8863 50%. Pre-passing units
-    still moved resistance +11% on average — they were trimmed UP to a
-    resistance target, confirming the hypothesis.
+    Every pre-linearity-pass trim is avoidable (James, 2026-07-14): the fix is
+    to adjust the model's as-fired resistance target, not to keep trimming. We
+    split them by WHICH fix applies, using the model's resistance spec:
+      * resistance-driven — as-fired resistance sits below R-min, so the trim
+        exists only to raise it; recommend an as-fired target at the spec
+        centre so the unit lands in [R-min, R-max] without the laser.
+      * both-in-spec — linearity AND resistance already met before trim; these
+        should not be trimmed at all (no target to change).
+      * unknown — the model has no resistance spec loaded.
 
     Returns {trimmed_units, prepass_units, prepass_share (%),
-             avg_resistance_change_prepass (%|None)} or None on no data.
+             avg_resistance_change_prepass, res_driven_units, wasted_both_units,
+             unknown_res_units, recommendation} or None on no data.
+    `recommendation` is None unless resistance-driven units exist with a spec:
+             {res_driven_units, asfired_median, res_min, res_max,
+              recommended_target}.
     """
     from sqlalchemy import text
+    import statistics
 
     where_date = "AND a.file_date >= :cutoff" if cutoff is not None else ""
+    # One row per unit: pre-trim linearity pass, whether it was trimmed, its
+    # resistance change, its as-fired resistance, and the model's R spec.
     sql = text(f"""
-        WITH unit AS (
-          SELECT a.id,
-                 MIN(CASE WHEN t.untrimmed_error_max <= t.linearity_spec
-                          THEN 1 ELSE 0 END) AS prepass,
-                 MAX(t.trim_pass_count) AS passes,
-                 AVG(t.resistance_change_percent) AS rchg
-          FROM analysis_results a
-          JOIN track_results t ON t.analysis_id = a.id
-          WHERE a.model = :model
-            AND a.overall_status IN ('PASS','WARNING','FAIL')
-            AND t.untrimmed_error_max IS NOT NULL
-            AND t.linearity_spec IS NOT NULL
-            {where_date}
-          GROUP BY a.id)
-        SELECT COUNT(*),
-               COALESCE(SUM(prepass), 0),
-               AVG(CASE WHEN prepass = 1 THEN rchg END)
-        FROM unit WHERE passes >= 1""")
+        SELECT MIN(CASE WHEN t.untrimmed_error_max <= t.linearity_spec
+                        THEN 1 ELSE 0 END)          AS prepass,
+               MAX(t.trim_pass_count)               AS passes,
+               AVG(t.resistance_change_percent)     AS rchg,
+               AVG(t.untrimmed_resistance)          AS ur,
+               ms.total_resistance_min              AS rmin,
+               ms.total_resistance_max              AS rmax
+        FROM analysis_results a
+        JOIN track_results t ON t.analysis_id = a.id
+        LEFT JOIN model_specs ms ON ms.model = a.model
+        WHERE a.model = :model
+          AND a.overall_status IN ('PASS','WARNING','FAIL')
+          AND t.untrimmed_error_max IS NOT NULL
+          AND t.linearity_spec IS NOT NULL
+          {where_date}
+        GROUP BY a.id""")
     params = {"model": model}
     if cutoff is not None:
         params["cutoff"] = cutoff
     with db.session() as s:
-        n, pre, rchg = s.execute(sql, params).fetchone()
+        rows = s.execute(sql, params).fetchall()
+
+    trimmed = [r for r in rows if (r[1] or 0) >= 1]      # passes >= 1
+    n = len(trimmed)
     if not n:
         return None
+    prepass = [r for r in trimmed if r[0] == 1]          # met linearity pre-trim
+    pre = len(prepass)
+
+    rchgs = [r[2] for r in prepass if r[2] is not None]
+    avg_rchg = (sum(rchgs) / len(rchgs)) if rchgs else None
+
+    # Split the avoidable trims by which fix applies.
+    res_driven = []
+    wasted_both = unknown = 0
+    for r in prepass:
+        ur, rmin = r[3], r[4]
+        if rmin is None or ur is None:
+            unknown += 1
+        elif ur < rmin:
+            res_driven.append(r)     # trim exists only to raise resistance
+        else:
+            wasted_both += 1         # both specs already met — pure over-trim
+
+    rec = None
+    if res_driven:
+        rmin, rmax = res_driven[0][4], res_driven[0][5]
+        asfired_med = statistics.median(sorted(r[3] for r in res_driven))
+        rec = {"res_driven_units": len(res_driven),
+               "asfired_median": float(asfired_med),
+               "res_min": float(rmin) if rmin is not None else None,
+               "res_max": float(rmax) if rmax is not None else None,
+               "recommended_target": (float(rmin + rmax) / 2.0
+                                      if (rmin is not None and rmax is not None) else None)}
+
     return {"trimmed_units": int(n),
             "prepass_units": int(pre),
             "prepass_share": 100.0 * pre / n,
-            "avg_resistance_change_prepass": (float(rchg) if rchg is not None else None)}
+            "avg_resistance_change_prepass": (float(avg_rchg) if avg_rchg is not None else None),
+            "res_driven_units": len(res_driven),
+            "wasted_both_units": int(wasted_both),
+            "unknown_res_units": int(unknown),
+            "recommendation": rec}
 

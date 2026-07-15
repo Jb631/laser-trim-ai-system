@@ -8,11 +8,13 @@ logger = logging.getLogger(__name__)
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.core.cost_priorities import compute_cost_priorities
 from laser_trim_analyzer.core.yield_stats import (
     compute_unit_yield, compute_yield, worst_models_by_yield)
 from laser_trim_analyzer.database.models import AnalysisResult as DBAR, FinalTestResult as DBFT
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
+from laser_trim_analyzer.gui.v6.widgets.priorities_panel import PrioritiesPanel
 from laser_trim_analyzer.gui.v6.widgets.worst_models_list import WorstModelsList
 from laser_trim_analyzer.gui.v6.widgets.yield_panel import YieldPanel
 
@@ -46,6 +48,9 @@ class DashboardPage(PageBase):
         # wheel anywhere else, or the scrollbar, works.
         body = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         body.pack(fill="both", expand=True)
+        # This week's priorities — money leaking at final test — front and centre.
+        self._priorities = PrioritiesPanel(body, theme=t, on_row_click=self._on_model_click)
+        self._priorities.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         panels = ctk.CTkFrame(body, fg_color="transparent")
         panels.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         panels.grid_columnconfigure((0, 1), weight=1, uniform="yp")
@@ -119,10 +124,17 @@ class DashboardPage(PageBase):
                 days_back=days_back, period=period)
         except Exception:
             company_trend = None
-        return trim, ft, worst, total, company_trend, period, trend_note
+        try:
+            am = self.app.config.active_models
+            priorities = compute_cost_priorities(
+                self.app.db, am.model_prices, am.cost_ratio, recent_days=days_back)
+        except Exception:
+            logger.exception("cost priorities failed")
+            priorities = []
+        return trim, ft, worst, total, company_trend, period, trend_note, priorities
 
     def _apply(self, trim, ft, worst, total, company_trend=None,
-               period="week", trend_note=None):
+               period="week", trend_note=None, priorities=None):
         self._trim_panel.set_yield(trim, total_label=f"{trim['total']} trim records")
         try:
             self._trim_panel.set_unit_yield(trim.get("unit_yield"))
@@ -138,6 +150,10 @@ class DashboardPage(PageBase):
             # silently (a swallowed error rendered as a blank chart).
             logger.exception("Company trend render failed")
         self._worst.set_rows(worst, total)
+        try:
+            self._priorities.set_rows(priorities or [])
+        except Exception:
+            logger.exception("priorities render failed")
 
     # ---- events ----
     def _on_window_change(self, choice):
