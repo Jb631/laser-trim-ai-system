@@ -73,6 +73,51 @@ def _offset_verdict_note(fail_points, errors, upper_limits, lower_limits):
             "file and report it.", [i_lo, i_hi])
 
 
+def ft_reconciled_verdict(data):
+    """Reconcile the final-test CHART grade with the STORED station disposition
+    (James, 2026-07-14: "best-fit, but reconciled").
+
+    FT sweeps are drawn on an applied offset (a genuine stored one, or the
+    best-fit fabricated by ft_best_fit_offset when the station stored none). The
+    chart's fail markers, fail-count, Linearity-Pass line and PASS/FAIL stamp all
+    derive from THIS single re-grade so they can never contradict each other.
+
+    But the station's own PASS/FAIL (data['result'] / data['linearity_pass'],
+    graded at offset 0) is the customer disposition and must not be silently
+    laundered away. When the applied offset clears a sweep the station recorded
+    as FAIL, we return an explicit reconciliation note instead of showing a
+    clean chart with no explanation — so the FAIL stays visible and traceable.
+
+    Returns (fail_points, recomputed_pass, note, binding_points):
+      * fail_points     — indices failing at the applied offset (drives markers)
+      * recomputed_pass — True iff no fail points at the applied offset
+      * note/binding    — the offset-can't-fix explanation (when failing), OR the
+        station-disagreement reconciliation note (when the offset clears a stored
+        FAIL), else (None, None).
+    """
+    errs = data.get("error_data")
+    uls = data.get("upper_limits")
+    lls = data.get("lower_limits")
+    off = data.get("optimal_offset") or 0.0
+    fp = compute_fail_points(errs, uls, lls, offset=off)
+    recomputed_pass = not fp
+    station_fail = (str(data.get("result") or "").upper() == "FAIL"
+                    or data.get("linearity_pass") is False)
+    if fp:
+        note, binding = _offset_verdict_note(fp, errs, uls, lls)
+        return fp, recomputed_pass, note, binding
+    if station_fail:
+        if data.get("offset_source") == "best_fit" and abs(off) > _FEAS_EPS:
+            note = (f"Shown at a best-fit offset ({off:+.4f}) the final-test station "
+                    "did not apply; under it every point is in spec. As-tested "
+                    "station result: FAIL — reprocess and confirm the disposition.")
+        else:
+            note = ("Corrected trace is in spec, yet the final-test station recorded "
+                    "FAIL — reprocess and confirm the disposition.")
+        return fp, recomputed_pass, note, None
+    return fp, recomputed_pass, None, None
+
+
 def compute_fail_points(errors, upper_limits, lower_limits,
                         offset: float = 0.0) -> List[int]:
     """Indices where the CORRECTED post-trim error violates the per-point spec
@@ -353,11 +398,19 @@ def load_ft_track(db, final_test_id: int,
         lls = list(tr.lower_limits or [])
         # FT records store no offset (no trim ran). The FT-station operator makes
         # a real manual offset adjustment, so compute the best-fit and grade the
-        # corrected error on it, same as trim (James 2026-07-14).
-        off = tr.optimal_offset or ft_best_fit_offset(errs, uls, lls)
+        # corrected error on it, same as trim (James 2026-07-14). Use `is not
+        # None` — a genuine STORED offset of exactly 0.0 must be respected, not
+        # treated as "absent" and overwritten by the fabricated best-fit.
+        if tr.optimal_offset is not None:
+            off, offset_source = tr.optimal_offset, "stored"
+        else:
+            off, offset_source = ft_best_fit_offset(errs, uls, lls), "best_fit"
         return {
             "model": ft[0] if ft else "",
             "serial": ft[1] if ft else "",
+            # `result` / `linearity_pass` are the FT STATION's stored disposition
+            # (graded at offset 0 by the parser). The chart/export re-grade on the
+            # applied offset and reconcile against these — see ft_reconciled_verdict.
             "result": getattr(ft[2], "name", str(ft[2])) if ft else "",
             "date": str(when).split(" ")[0] if when else "",
             "track_id": tr.track_id, "n_tracks": len(tracks),
@@ -367,6 +420,7 @@ def load_ft_track(db, final_test_id: int,
             "upper_limits": uls,
             "lower_limits": lls,
             "optimal_offset": off,
+            "offset_source": offset_source,
             "linearity_error": tr.linearity_error,
             "linearity_spec": tr.linearity_spec,
             "linearity_pass": tr.linearity_pass,
@@ -404,6 +458,14 @@ class FtUnitChartModal(ctk.CTkToplevel):
             bar, values=["Track"], width=140, command=self._on_track_change,
             fg_color=theme.CARD, button_color=theme.ACCENT,
             button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+        # Reconciliation banner: when the applied offset clears a sweep the FT
+        # station recorded as FAIL, the note keeps that stored disposition visible
+        # instead of the chart reading as a silent clean PASS (packs above the bar).
+        self._note_lbl = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
+                                      text_color=theme.TIER_WARNING, anchor="w",
+                                      justify="left", wraplength=840)
+        self._note_lbl.pack(side="bottom", fill="x",
+                            padx=theme.SPACE_MD, pady=(0, theme.SPACE_XS))
 
         from laser_trim_analyzer.gui.v6.ui_dispatch import resolve_dispatcher
         self._ui = resolve_dispatcher(master)
@@ -460,11 +522,10 @@ class FtUnitChartModal(ctk.CTkToplevel):
                 "error trace.")
             self._save_btn.configure(state="disabled")
             return
-        fp = compute_fail_points(data["error_data"], data["upper_limits"],
-                                 data["lower_limits"],
-                                 offset=data.get("optimal_offset") or 0.0)
-        note, binding = _offset_verdict_note(
-            fp, data["error_data"], data["upper_limits"], data["lower_limits"])
+        fp, _pass, note, binding = ft_reconciled_verdict(data)
+        # Surface the station-disagreement / offset-can't-fix note on screen (the
+        # chart itself deliberately doesn't draw verdict_note — it would clip).
+        self._note_lbl.configure(text=note or "")
         title = f"Final test — {data.get('serial', '')}"
         if data["n_tracks"] > 1:
             title += f" — {data['track_id']} of {data['n_tracks']} tracks"
@@ -473,7 +534,7 @@ class FtUnitChartModal(ctk.CTkToplevel):
             upper_limits=data["upper_limits"] or None,
             lower_limits=data["lower_limits"] or None,
             offset=data.get("optimal_offset") or 0.0,
-            trim_date=data.get("date") or None,
+            trim_date=data.get("date") or None, date_label="Test Date",
             fail_points=fp, title=title,
             serial_number=str(data.get("serial", "")),
             measured_label="Final test (as measured)",
@@ -498,9 +559,7 @@ class FtUnitChartModal(ctk.CTkToplevel):
             return
         try:
             from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
-            fp = compute_fail_points(data.get("error_data"), data.get("upper_limits"),
-                                     data.get("lower_limits"),
-                                     offset=data.get("optimal_offset") or 0.0)
+            fp, _pass, _note, _binding = ft_reconciled_verdict(data)
             meta = {"model": data.get("model") or self._ft.get("model", ""),
                     "serial": data.get("serial") or serial,
                     "system": self._ft.get("system", ""),

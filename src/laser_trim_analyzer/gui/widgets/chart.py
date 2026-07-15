@@ -230,6 +230,7 @@ class ChartWidget(ctk.CTkFrame):
         measured_label: str = "Trimmed (as measured)",
         verdict_note: Optional[str] = None,
         binding_points: Optional[List[int]] = None,
+        date_label: str = "Trim Date",
     ) -> None:
         """
         Plot error vs position - the main analysis chart.
@@ -469,7 +470,8 @@ class ChartWidget(ctk.CTkFrame):
         # scaled wrong" complaint). Anchor on the spec band, expand to the central bulk
         # of the (non-excluded) trace, and CAP the window so a spike cluster can't
         # dominate; spikes then clamp off-axis while fail markers still flag where they
-        # are. Skip on the dual-axis path — the untrimmed trace has its own axis there.
+        # are. (use_dual_axis is now always False — the twin-axis path was removed
+        # this session; this guard is kept as the single-axis branch marker.)
         if not use_dual_axis:
             excl_set = set(excluded_points or [])
             trace = [e for i, e in enumerate(shifted_errors)
@@ -496,12 +498,15 @@ class ChartWidget(ctk.CTkFrame):
                 center = (s_hi + s_lo) / 2.0
                 y_lo = max(y_lo, center - 2.5 * spec_h)
                 y_hi = min(y_hi, center + 2.5 * spec_h)
-            # Include the PRE-TRIM trace when it shares this axis — it is the
-            # point of the overlay (James, 2026-07-14: "most times you cant
-            # see the pre trim dotted line"; the spec-anchored cap above was
-            # clipping it out of view). Applied AFTER the cap so the cap keeps
-            # rejecting post-trim spikes, and bounded anyway: the dual-axis
-            # path takes over once the untrimmed range exceeds 3x the band.
+            # Include the PRE-TRIM trace on the shared axis — it is the point of
+            # the overlay (James, 2026-07-14: "most times you cant see the pre
+            # trim dotted line"; the spec-anchored cap above was clipping it out
+            # of view). Deliberately applied AFTER, and OUTSIDE, the cap so the
+            # full pre-trim body shows even when it dwarfs the post-trim trace —
+            # that size contrast is what the overlay exists to reveal. Bounded
+            # only by the 2/98 percentile below (spike rejection), and only when
+            # there are >=20 untrimmed points. (The old >3x-band dual-axis
+            # fallback was removed this same session — see the header comment.)
             if untrimmed_errors:
                 uarr = np.array([e for e in untrimmed_errors
                                  if e is not None and np.isfinite(e)], dtype=float)
@@ -540,13 +545,14 @@ class ChartWidget(ctk.CTkFrame):
             ax.legend(loc='best', fontsize=self.style.font_size - 2)
             ax.set_title(title, fontsize=self.style.title_size)
 
-        # Add SN and Trim Date info box in upper right corner
+        # Add SN and date info box in upper right corner (date_label is
+        # "Test Date" on FT sweeps, which have no trim date — default "Trim Date")
         if serial_number or trim_date:
             info_lines = []
             if serial_number:
                 info_lines.append(f"SN: {serial_number}")
             if trim_date:
-                info_lines.append(f"Trim Date: {trim_date}")
+                info_lines.append(f"{date_label}: {trim_date}")
             info_text = "\n".join(info_lines)
 
             # Position in upper right, below title

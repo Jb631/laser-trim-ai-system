@@ -81,8 +81,8 @@ def test_trim_necessity_respects_cutoff_and_empty(tmp_path):
     # Cutoff after the only unit -> nothing in window.
     tn = compute_trim_necessity(db, "TNC", cutoff=datetime(2024, 1, 1))
     assert tn is None or tn["trimmed_units"] == 0
-    # No such model -> None/zero, never an exception.
-    assert compute_trim_necessity(db, "NOPE") is None or True
+    # No such model -> None (never a bogus dict, never an exception).
+    assert compute_trim_necessity(db, "NOPE") is None
 
 
 def test_offset_feasibility_opposing_points():
@@ -180,3 +180,66 @@ def test_load_ft_track_returns_sweep(tmp_path):
                              offset=data.get("optimal_offset") or 0.0)
     assert fp == [1]                     # the 0.07 point breaches +0.05
     assert load_ft_track(db, 999999) is None
+
+
+def test_ft_reconciled_verdict_keeps_station_fail_visible(tmp_path):
+    """Production FT path (James 2026-07-14, 'best-fit but reconciled'): real FT
+    records store NO offset, so the chart applies a best-fit. When that best-fit
+    clears a sweep the station recorded as FAIL, the verdict must NOT read as a
+    silent clean pass — 0 fail points, but a reconciliation note that keeps the
+    station FAIL visible and says to reprocess."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        FinalTestResult as DBFT, FinalTestTrack as DBFTT, StatusType)
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        ft_reconciled_verdict, load_ft_track)
+
+    db = DatabaseManager(tmp_path / "ftr.db")
+    when = datetime(2025, 6, 2)
+    with db.session() as s:
+        ft = DBFT(filename="FTR-1.xls", model="8340", serial="9",
+                  test_date=when, file_date=when, timestamp=when,
+                  overall_status=StatusType.FAIL)
+        s.add(ft)
+        s.flush()
+        # As measured, the 0.07 point breaches +0.05 -> station FAIL. A DC offset
+        # of ~-0.03 centers every point in spec. optimal_offset is NULL (as real
+        # FT records are), so load_ft_track fabricates the best-fit.
+        s.add(DBFTT(final_test_id=ft.id, track_id="T1", status=StatusType.FAIL,
+                    linearity_spec=0.05, linearity_error=0.07,
+                    position_data=[0.0, 1.0, 2.0],
+                    error_data=[0.0, 0.07, -0.01],
+                    upper_limits=[0.05, 0.05, 0.05],
+                    lower_limits=[-0.05, -0.05, -0.05],
+                    optimal_offset=None))
+        s.commit()
+        ft_id = ft.id
+
+    data = load_ft_track(db, ft_id)
+    assert data["offset_source"] == "best_fit"        # NULL stored -> fabricated
+    assert abs(data["optimal_offset"] - (-0.03)) < 1e-9
+    fp, recomputed_pass, note, binding = ft_reconciled_verdict(data)
+    assert fp == [] and recomputed_pass is True        # best-fit clears every point
+    assert note is not None and "reprocess" in note.lower()  # station FAIL stays visible
+    assert binding is None
+
+    # A genuinely stored 0.0 offset must be RESPECTED, not overwritten by best-fit
+    # (the falsy-0.0 bug): grading then happens at offset 0 and the breach shows.
+    with db.session() as s:
+        ft2 = DBFT(filename="FTR-2.xls", model="8340", serial="10",
+                   test_date=when, file_date=when, timestamp=when,
+                   overall_status=StatusType.FAIL)
+        s.add(ft2)
+        s.flush()
+        s.add(DBFTT(final_test_id=ft2.id, track_id="T1", status=StatusType.FAIL,
+                    linearity_spec=0.05, position_data=[0.0, 1.0, 2.0],
+                    error_data=[0.0, 0.07, -0.01],
+                    upper_limits=[0.05, 0.05, 0.05],
+                    lower_limits=[-0.05, -0.05, -0.05],
+                    optimal_offset=0.0))
+        s.commit()
+        ft2_id = ft2.id
+    d2 = load_ft_track(db, ft2_id)
+    assert d2["offset_source"] == "stored" and d2["optimal_offset"] == 0.0
+    fp2, pass2, _n2, _b2 = ft_reconciled_verdict(d2)
+    assert fp2 == [1] and pass2 is False

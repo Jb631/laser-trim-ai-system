@@ -54,7 +54,9 @@ def compute_cost_priorities(db, model_prices: Optional[Dict[str, float]],
         if ft_fails <= 0:
             continue
         price = prices.get(str(model))
-        dollar = (ft_fails * price * ratio) if price else None
+        # `is not None`, not truthiness: a loaded price of $0.00 is a real price
+        # (dollar_impact 0), not "unpriced" — don't silently drop it to counts-only.
+        dollar = (ft_fails * price * ratio) if price is not None else None
         out.append({
             "model": model,
             "ft_total": ft_total,

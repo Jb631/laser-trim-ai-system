@@ -486,6 +486,43 @@ def main() -> int:
     except Exception as e:
         check("verdicts: offset-feasibility invariant", False, f"{type(e).__name__}: {e}")
 
+    # ---- cost priorities: dashboard $-impact ranking (James 2026-07-14) ------
+    # New money-board feature must be exercised, not just shipped: reconcile the
+    # $ math against the helper's own FT-fail count, and lock the ranking rule
+    # (priced models by dollars first, counts-only after).
+    try:
+        from laser_trim_analyzer.core.cost_priorities import compute_cost_priorities
+        rows = raw.execute("""
+            SELECT model, SUM(CASE WHEN overall_status='FAIL' THEN 1 ELSE 0 END) f
+            FROM final_test_results
+            WHERE file_date IS NOT NULL
+            GROUP BY model HAVING f >= 2 ORDER BY f DESC LIMIT 2""").fetchall()
+        if len(rows) >= 2:
+            m_priced, f_priced = rows[0][0], int(rows[0][1])
+            m_unpriced = rows[1][0]
+            # recent_days huge so the all-time historical FT data is in-window.
+            pr = compute_cost_priorities(db, {m_priced: 10.0}, 0.5,
+                                         recent_days=100000, limit=1000)
+            by = {d["model"]: d for d in pr}
+            dollars = [d["dollar_impact"] for d in pr if d["dollar_impact"] is not None]
+            idx_p = next((i for i, d in enumerate(pr) if d["model"] == m_priced), -1)
+            idx_u = next((i for i, d in enumerate(pr) if d["model"] == m_unpriced), -1)
+            ok = (m_priced in by and m_unpriced in by
+                  and by[m_priced]["ft_fails"] == f_priced
+                  and abs((by[m_priced]["dollar_impact"] or -1)
+                          - f_priced * 10.0 * 0.5) < 1e-6
+                  and by[m_unpriced]["dollar_impact"] is None
+                  and 0 <= by[m_priced]["ft_fail_rate"] <= 100
+                  and idx_p >= 0 and idx_u >= 0 and idx_p < idx_u          # priced first
+                  and dollars == sorted(dollars, reverse=True))            # dollars desc
+            check("cost priorities: $-impact math + priced-before-unpriced sort", ok,
+                  f"{m_priced} ${by.get(m_priced, {}).get('dollar_impact')} "
+                  f"(f={f_priced}) before unpriced {m_unpriced}")
+        else:
+            warn("cost priorities: <2 FT-fail models in DB to exercise ranking")
+    except Exception as e:
+        check("cost priorities: helper", False, f"{type(e).__name__}: {e}")
+
     # ---- unit-basis yield reconciles with raw SQL (QA audit 2026-07-13) ----
     from laser_trim_analyzer.core.yield_stats import compute_unit_yield
     uy = compute_unit_yield(db, None, model="6607")

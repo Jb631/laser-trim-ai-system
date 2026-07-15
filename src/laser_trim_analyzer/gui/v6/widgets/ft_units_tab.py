@@ -66,6 +66,11 @@ class FtUnitsTab(ctk.CTkFrame):
             self._selected.add(rid)
         else:
             self._selected.discard(rid)
+        # Mirror UnitsTab: show a running selected-count so the subset export
+        # scope is visible before the user clicks Export charts (PDF).
+        base = getattr(self, "_base_cap", None) or f"{len(self._units)} final-test record(s)"
+        n = len(self._selected)
+        self._cap.configure(text=base + (f" · {n} selected" if n else ""))
 
     def set_units(self, units: List[Dict]) -> None:
         for r in self._rows:
@@ -111,6 +116,6 @@ class FtUnitsTab(ctk.CTkFrame):
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
         n_fail = sum(1 for u in units if u.get("result") == "FAIL")
-        self._cap.configure(
-            text=f"{len(units)} final-test record(s) · {n_fail} failed"
-                 + ("   (showing newest 500)" if len(units) == 500 else ""))
+        self._base_cap = (f"{len(units)} final-test record(s) · {n_fail} failed"
+                          + ("   (showing newest 500)" if len(units) == 500 else ""))
+        self._cap.configure(text=self._base_cap)

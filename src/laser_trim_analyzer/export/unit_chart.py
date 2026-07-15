@@ -142,13 +142,20 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     lin_pass = data.get("linearity_pass")
     if is_ft:
         # No sigma at final test — show the linearity numbers + spec instead.
+        # Linearity Pass is RE-GRADED on the applied offset so it agrees with the
+        # Fail Points count above it; the station's own disposition is kept on a
+        # separate 'Station Result' line so the two frames never contradict.
+        ft_pass = (len(fail_points) == 0)
+        _station = str(data.get("result") or "").upper() or (
+            "PASS" if lin_pass else ("FAIL" if lin_pass is False else "N/A"))
         rows = [
             f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
             f"Linearity Error: {_fmt(data.get('linearity_error'))}",
             f"Linearity Spec: {_fmt(data.get('linearity_spec'))}",
             "",
             f"Fail Points: {len(fail_points)}",
-            f"Linearity Pass: {'YES' if lin_pass else ('NO' if lin_pass is not None else 'N/A')}",
+            f"Linearity Pass: {'YES' if ft_pass else 'NO'}",
+            f"Station Result: {_station}",
         ]
     else:
         rows = [
@@ -166,8 +173,8 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                     va="top", transform=ax_metrics.transAxes, color="black")
     for i, ln in enumerate(rows):
         col = "black"
-        if ln.endswith(": NO") or ln.endswith("Watch: YES"):
-            col = _C["fail"] if "Linearity" in ln else _C["warning"]
+        if ln.endswith(": NO") or ln.endswith("Watch: YES") or ln.endswith("Result: FAIL"):
+            col = _C["fail"] if ("Linearity" in ln or "Result" in ln) else _C["warning"]
         elif ln.endswith(": YES"):
             col = _C["pass"]
         ax_metrics.text(0.02, 0.88 - i * 0.085, ln, fontsize=9.5, va="top",
@@ -176,10 +183,18 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     # ---- status panel (domain rule: linearity decides; sigma = watch flag) ----
     ax_status.axis("off")
     if is_ft:
-        # Final-test disposition is the customer result; no sigma-watch tier.
+        # Stamp is RE-GRADED on the applied offset so it agrees with the chart's
+        # fail markers; when that clears a sweep the station recorded as FAIL we
+        # flag it (PASS*, amber) and keep the station disposition in the note
+        # rather than silently laundering a customer reject into a clean PASS.
+        ft_pass = (len(fail_points) == 0)
         _result = str(data.get("result") or "").upper()
-        if _result == "FAIL" or lin_pass is False:
+        station_fail = (_result == "FAIL") or (lin_pass is False)
+        if not ft_pass:
             status, color, note = "FAIL", _C["fail"], "Final test — out of spec"
+        elif station_fail:
+            status, color, note = ("PASS*", _C["warning"],
+                                   "In spec under best-fit offset · station: FAIL — reprocess")
         elif _result == "PASS" or lin_pass:
             status, color, note = "PASS", _C["pass"], "Final test — accepted"
         else:
