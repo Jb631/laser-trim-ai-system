@@ -131,21 +131,68 @@ def main() -> int:
     classes.append((f"FT: stored verdict vs sweep recompute disagree (sample {checked_ft})",
                     dis_ft, checked_ft))
 
-    # 9. Trim spec vs FT spec disagreement per model (their open thread)
-    rows = q("""SELECT x.model, x.tspec, y.fspec FROM
-                (SELECT a.model model, ROUND(AVG(t.linearity_spec),4) tspec
-                 FROM track_results t JOIN analysis_results a ON a.id=t.analysis_id
-                 WHERE t.linearity_spec IS NOT NULL GROUP BY a.model) x
-                JOIN
-                (SELECT f.model model, ROUND(AVG(t.linearity_spec),4) fspec
-                 FROM final_test_tracks t JOIN final_test_results f ON f.id=t.final_test_id
-                 WHERE t.linearity_spec IS NOT NULL GROUP BY f.model) y
-                ON x.model = y.model
-                WHERE ABS(x.tspec - y.fspec) > 0.0005""")
-    spec_dis = Counter({m: 1 for m, _t, _f in rows})
-    classes.append((f"model spec: trim vs FT linearity spec differ ({len(rows)} models)",
+    # 9. Trim vs FT spec disagreement — POSITION-MATCHED envelope comparison
+    #    on linked pairs. James (2026-07-16): bowtie specs are graded point by
+    #    point and the two stations sample different position tables, so
+    #    comparing scalar spec summaries flags phantom disagreements (the
+    #    first cut said 81 models; the honest method says 18). Only compare
+    #    limits at NEAR-COINCIDENT positions (tolerance = half the finer
+    #    station's spacing) — never interpolate across a bowtie knee.
+    pair_rows = q("""
+        SELECT f.model, t.position_data, t.upper_limits, t.lower_limits,
+               ft.position_data, ft.upper_limits, ft.lower_limits
+        FROM final_test_results f
+        JOIN analysis_results a ON a.id = f.linked_trim_id
+        JOIN track_results t ON t.analysis_id = a.id
+        JOIN final_test_tracks ft ON ft.final_test_id = f.id
+        WHERE t.position_data IS NOT NULL AND ft.position_data IS NOT NULL
+          AND t.upper_limits IS NOT NULL AND ft.upper_limits IS NOT NULL
+          AND t.lower_limits IS NOT NULL AND ft.lower_limits IS NOT NULL
+        ORDER BY f.id DESC""")
+    per_model_pairs: dict = defaultdict(list)
+    for r in pair_rows:
+        if len(per_model_pairs[r[0]]) < 3:
+            per_model_pairs[r[0]].append(r[1:])
+
+    def _pts(p, u, l):
+        out = [(x, a, b) for x, a, b in zip(json.loads(p), json.loads(u), json.loads(l))
+               if x is not None and a is not None and b is not None]
+        out.sort()
+        return out
+
+    def _spacing(P):
+        gaps = sorted(P[i + 1][0] - P[i][0] for i in range(len(P) - 1)
+                      if P[i + 1][0] > P[i][0])
+        return gaps[len(gaps) // 2] if gaps else 1.0
+
+    spec_dis = Counter()
+    spec_examples = []
+    for model, pairs in per_model_pairs.items():
+        matched = differing = 0
+        for tp, tu, tl, fp, fu, fl in pairs:
+            try:
+                T, F = _pts(tp, tu, tl), _pts(fp, fu, fl)
+            except Exception:
+                continue
+            if len(T) < 3 or len(F) < 3:
+                continue
+            tol = min(_spacing(T), _spacing(F)) / 2.0
+            j = 0
+            for x, u, l in T:
+                while j < len(F) - 1 and F[j][0] < x - tol:
+                    j += 1
+                if abs(F[j][0] - x) <= tol:
+                    width = max(u - l, 1e-9)
+                    matched += 1
+                    if max(abs(u - F[j][1]), abs(l - F[j][2])) > 0.2 * width:
+                        differing += 1
+        if matched >= 10 and 100.0 * differing / matched > 10:
+            spec_dis[model] = differing
+            spec_examples.append((model, differing, matched))
+    spec_examples.sort(key=lambda r: -r[1] / r[2])
+    classes.append((f"model spec: trim vs FT bands TRULY differ at matched positions "
+                    f"({len(spec_dis)} of {len(per_model_pairs)} models with linked pairs)",
                     spec_dis, None))
-    spec_examples = rows[:8]
 
     # 10. Serial hygiene
     rows = q("""SELECT model, COUNT(*) FROM analysis_results
@@ -161,9 +208,9 @@ def main() -> int:
         for m, k in per_model.most_common(5):
             print(f"    {m}: {k:,}")
     if spec_examples:
-        print("\nspec disagreements (model, trim spec, FT spec):")
-        for m, t, f in spec_examples:
-            print(f"    {m}: trim {t} vs FT {f}")
+        print("\ntrue spec disagreements (model: differing/matched positions):")
+        for m, d, n in spec_examples[:15]:
+            print(f"    {m}: {d}/{n} ({100.0 * d / n:.0f}%)")
     return 0
 
 
