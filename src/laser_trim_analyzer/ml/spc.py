@@ -409,7 +409,7 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     floors = _requal_floors(db)
     active_floor = anchor - timedelta(days=ACTIVE_DAYS)
     volume_floor = anchor - timedelta(days=UNITS_WEEK_DAYS)
-    volume_horizon = anchor + timedelta(days=1)         # same cut `_clean` uses
+    horizon = anchor + timedelta(days=1)                # same cut `_clean` uses
     weeks = UNITS_WEEK_DAYS / 7.0
 
     focus: List[FocusEntry] = []
@@ -417,8 +417,14 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     # ORDER BY model keeps each model's rows contiguous, so one pass groups them.
     for model, group in groupby(rows, key=lambda r: r.model):
         samples = [(r.file_date, _fail_flag(r.overall_status)) for r in group]
-        dates = [d for d, _v in samples]
-        if max(dates) < active_floor:
+        # Staleness is decided on the dates the builder will actually KEEP.
+        # A mis-set machine clock writes rows dated months or years ahead (the
+        # work data has a file dated 12-18-2026); judged on raw dates, one such
+        # row makes a dormant model look like it ran today, `_clean` then drops
+        # it inside the builder, and the model lands on the focus list with a
+        # verdict computed entirely from history that ended last spring.
+        dates = [d for d, _v in samples if d <= horizon]
+        if not dates or max(dates) < active_floor:
             continue        # not running lately — nothing to act on today
         series = build_fraction_series(model, "linearity_fail_fraction", samples,
                                        anchor=anchor,
@@ -429,7 +435,7 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
         # Volume drives the cost side of the ranking. Counting units (not lots)
         # over a fixed window keeps a model that runs one huge lot a month
         # comparable to one that runs a little every day.
-        units_recent = sum(1 for d in dates if volume_floor <= d <= volume_horizon)
+        units_recent = sum(1 for d in dates if d >= volume_floor)
         units_per_week = units_recent / weeks
 
         flagged = [pt for pt in series.points[-RECENT_K:] if pt.ooc]

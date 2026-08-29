@@ -85,3 +85,13 @@ def test_requalification_floor_respected(db):
 def test_empty_db(db):
     res = compute_focus_list(db)
     assert res.anchor is None and res.focus == [] and res.chronic == []
+
+
+def test_future_dated_junk_does_not_revive_dormant_model(db):
+    """A mis-set machine clock must not make a dormant model look alive."""
+    _seed(db, "DORMANT", fails_last=12)                      # real run ended long ago
+    _seed(db, "LIVE", start=D0 + timedelta(days=200))        # owns the anchor
+    _add_lot(db, "DORMANT", D0 + timedelta(days=3650), 1, 1)  # one junk-dated FAIL
+    res = compute_focus_list(db)
+    assert all(e.model != "DORMANT" for e in res.focus)
+    assert all(e.model != "DORMANT" for e in res.chronic)
