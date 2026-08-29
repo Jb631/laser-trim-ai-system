@@ -84,7 +84,8 @@
       "Bash(rsync -a --ignore-existing __TRACKED_VAR__/laser_trim_v4_issue_log.docx __TRACKED_VAR__/)",
       "Bash(rsync -av --ignore-existing '__TRACKED_VAR__/work files/' '__TRACKED_VAR__/Work Files/')",
       "Bash(time rsync *)",
-      "Bash(git reset *)"
+      "Bash(git reset *)",
+      "Bash(git reflog *)"
     ],
     "deny": [],
     "ask": []

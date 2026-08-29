@@ -4,7 +4,9 @@
 
 **Before starting work:**
 1. **Set up Git credentials** - Run: `source .env 2>/dev/null && git remote set-url origin https://${GITHUB_TOKEN}@github.com/Jb631/laser-trim-ai-system.git 2>/dev/null` (silent if no token)
-2. Read `docs/V6_FINISH_PLAN_2026-07-06.md` and the newest `docs/SESSION_*.md` for current state and next tasks
+2. Read `BRING_TO_WORK.md` for current state and next tasks. Session notes,
+   plans, and specs were purged from the tree on 2026-08-28; they remain in git
+   history — recover any with `git show 4c6ebd8:docs/SESSION_2026-07-13B.md`
 3. Continue from where we left off - don't start new work without checking progress
 4. Explain code changes so James can learn and modify things himself
 
@@ -82,6 +84,9 @@ src/laser_trim_analyzer/
 2. **All features must work** - No partial implementations
 3. **Self-contained deployment** - No external config files
 4. **Keep it simple** - Avoid over-engineering
+5. **No packaged EXE** (James, 2026-07-16): deployment stays git pull +
+   pinned venv (run_v6.bat). Single user; an EXE would need IT whitelisting.
+   Do not re-suggest PyInstaller packaging.
 
 ### QA Sweeps (mandatory before calling any change done)
 Two standing harnesses exercise the whole app against the real DB — run BOTH
@@ -116,11 +121,10 @@ green once). New features get a sweep entry in the same commit.
 ### V5 — Released (tag `v5.0.0`, 2026-04-16)
 `pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
 
-**Current focus:** V6 shipped to `main` + `V6` (merge `fffe2d7`, 2026-07-08) — see `docs/SESSION_2026-07-08.md` and `BRING_TO_WORK.md`. Both UIs stay for now (V5 = fallback, has the trim-vs-FT overlay). Remaining: Fix Missing Tracks for NULL-array rows, trim-vs-FT overlay in V6, first real LTS3 file validation, eventual V5 page retirement. Older plans live in `archive/completed_docs/`.
+**Current focus:** V6 shipped to `main` + `V6` (merge `fffe2d7`, 2026-07-08) — see `BRING_TO_WORK.md`. Both UIs stay for now (V5 = fallback, has the trim-vs-FT overlay). Remaining: Fix Missing Tracks for NULL-array rows, trim-vs-FT overlay in V6, first real LTS3 file validation, eventual V5 page retirement. Older plans live in git history at `4c6ebd8` under `archive/completed_docs/`.
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
-**Plan:** `archive/completed_docs/UPGRADE_PLAN_V4.md`
-**Tracker:** `archive/completed_docs/UPGRADE_TRACKER.md`
+**Plan/Tracker:** `git show 4c6ebd8:archive/completed_docs/UPGRADE_PLAN_V4.md` (and `UPGRADE_TRACKER.md`)
 
 V4 transformed the app from a measurement recording tool into an operational root cause identification and cost impact analysis platform. All four phases complete:
 - **Phase 1:** Data Foundation (parser filtering, cleanup, indexing, validation)
@@ -132,7 +136,7 @@ V4 transformed the app from a measurement recording tool into an operational roo
 ### Per-Model ML System — **COMPLETE**
 Per-model ML is fully implemented: threshold optimization, drift detection, statistical profiling, and failure prediction using Final Test data as ground truth. Train models in Settings page.
 
-Design docs archived in `archive/completed_docs/`.
+Design docs live in git history at `4c6ebd8` under `archive/completed_docs/`.
 
 ---
 
@@ -149,4 +153,5 @@ Design docs archived in `archive/completed_docs/`.
 
 ## Session Notes
 
-Session logs are in `docs/SESSION_YYYY-MM-DD.md`
+Session logs through 2026-07-13 are in git history at `4c6ebd8` under
+`docs/SESSION_YYYY-MM-DD.md`. The tree no longer carries them.
