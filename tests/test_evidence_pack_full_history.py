@@ -47,10 +47,18 @@ def test_export_full_history_and_monthly(tmp_path):
     out = export_evidence_pack(db, "EXP-1", tmp_path / "pack.xlsx")
     sheets = pd.read_excel(out, sheet_name=None)
 
-    # Stable workbook shape: all five sheets ALWAYS exist (empty = headers
+    # Stable workbook shape: all six sheets ALWAYS exist (empty = headers
     # only) so "no records" can't be mistaken for a broken export.
-    assert set(sheets) == {"Drift evidence", "Unit history", "Monthly summary",
-                           "Final test units", "Smoothness"}
+    assert set(sheets) == {"Drift evidence", "Lots (SPC)", "Unit history",
+                           "Monthly summary", "Final test units", "Smoothness"}
+
+    # Lots (SPC) is the paper trail behind a FOCUS-list verdict: one row per
+    # production lot, the limit for a lot THAT SIZE, and whether it broke it.
+    lots = sheets["Lots (SPC)"]
+    for col in ("Lot start", "Lot end", "Units", "Fail rate",
+                "Expected max (UCL)", "Out of control", "Open lot", "Note"):
+        assert col in lots.columns, f"missing column {col}"
+    assert int(lots["Units"].sum()) == 8      # every seeded unit lands in a lot
 
     units = sheets["Unit history"]
     # FULL record: oldest row is from 2024 — the old 365-day window would drop it.

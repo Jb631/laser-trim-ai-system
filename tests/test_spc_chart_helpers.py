@@ -81,6 +81,21 @@ def test_recent_flag_vs_older_excursion_split():
     assert p["old_ooc_count"] == 1
 
 
+def test_x_dates_carry_the_year_once_the_lots_cross_one():
+    """A month/day axis reads BACKWARDS when the window spans calendar years.
+
+    Render check on the work data (8887): the labels ran 07/23, 08/08, 08/20,
+    07/23 — the last lot is ELEVEN MONTHS after the one before it, and the
+    axis said it went back in time.
+    """
+    hist = _make_history(n_lots=6, start=datetime(2025, 10, 6))
+    hist += _make_history(n_lots=6, start=datetime(2026, 6, 1))
+    s = _series(hist, hist[-1][0])
+    p = spc_draw_params(s)
+    assert p["x_dates"] == [pt.end.strftime("%m/%d/%y") for pt in s.points]
+    assert p["x_dates"][0].endswith("/25") and p["x_dates"][-1].endswith("/26")
+
+
 def test_labels_only_for_recent_flags():
     hist, last = _split_history()
     p = spc_draw_params(_series(hist, last))

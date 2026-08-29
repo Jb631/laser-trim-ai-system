@@ -45,6 +45,10 @@ def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
             if pt.ooc:
                 (flag_idx if i >= cut else old_idx).append(i)
     fraction = series.metric in FRACTION_METRICS
+    # A month/day tick reads BACKWARDS when the lots span calendar years — the
+    # work data's 8887 drew "08/20" and then "07/23" for a lot ELEVEN MONTHS
+    # later (render check). The year earns its space only when there is one.
+    date_fmt = "%m/%d" if len({pt.end.year for pt in points}) <= 1 else "%m/%d/%y"
     return {
         # Lots are POSITIONS, not dates. A real date axis squashes a week of
         # daily lots into one tick and stretches a quiet month across the page;
@@ -63,7 +67,7 @@ def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
         "open_idx": next((i for i, pt in enumerate(points) if pt.is_open), None),
         "labels": {i: points[i].note for i in flag_idx if points[i].note},
         "n_labels": [f"n={pt.n}" for pt in points],
-        "x_dates": [pt.end.strftime("%m/%d") for pt in points],
+        "x_dates": [pt.end.strftime(date_fmt) for pt in points],
         "judged": series.judged,
         "fraction": fraction,
     }
@@ -400,24 +404,37 @@ class FocusChart(ctk.CTkFrame):
         ax.set_xlim(-0.6, len(xs) - 0.4)
 
         y0, y1 = ax.get_ylim()
-        for i, note in p["labels"].items():
-            # Alternate ABOVE/BELOW by lot parity so two flagged lots side by
-            # side don't print their sentences on top of each other. The side is
-            # chosen by room, not parity: a flagged lot is recent by definition,
-            # so it sits at the right edge, and a right-hand sentence there is
-            # simply cut off (seen in the render check) — the one thing this
-            # annotation exists to say.
+        n_above = n_below = 0
+        for slot, i in enumerate(sorted(p["labels"])):
+            note = p["labels"][i]
+            # The horizontal side is chosen by room: a flagged lot is recent by
+            # definition, so it sits at the right edge, and a right-hand
+            # sentence there is simply cut off (seen in the render check) — the
+            # one thing this annotation exists to say.
             room_right = xs[i] < len(xs) * 0.35
             dx, ha = (12, "left") if room_right else (-12, "right")
             frac_y = (values[i] - y0) / (y1 - y0) if y1 > y0 else 0.5
-            dy = 26 if i % 2 == 0 else -42
+            # ABOVE/BELOW alternates in LABEL order. Lot-index parity looked
+            # like it did this, but two flagged lots an EVEN number of lots
+            # apart drew the same offset and printed one sentence on top of the
+            # other — 6607's last two excursions, both unreadable (render
+            # check). Label order can't collide however the lots fall.
+            above = slot % 2 == 0
             # 26pt up / 42pt down is roughly 18% / 29% of this axes' height, so
             # a point higher than ~0.70 (or lower than ~0.32) has to take the
             # other side or the sentence lands on the title / off the bottom.
-            if dy > 0 and frac_y > 0.70:
-                dy = -42
-            elif dy < 0 and frac_y < 0.32:
-                dy = 26
+            if above and frac_y > 0.70:
+                above = False
+            elif not above and frac_y < 0.32:
+                above = True
+            # A forced flip can put two sentences back on the same side; each
+            # one after the first steps further out rather than overlapping.
+            if above:
+                dy = 26 + 20 * n_above
+                n_above += 1
+            else:
+                dy = -42 - 20 * n_below
+                n_below += 1
             ax.annotate(note, xy=(xs[i], values[i]), xytext=(dx, dy),
                         textcoords="offset points", fontsize=8, ha=ha,
                         color=t.TIER_OOC, zorder=7, annotation_clip=False,

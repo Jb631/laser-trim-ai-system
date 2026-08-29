@@ -95,3 +95,23 @@ def test_future_dated_junk_does_not_revive_dormant_model(db):
     res = compute_focus_list(db)
     assert all(e.model != "DORMANT" for e in res.focus)
     assert all(e.model != "DORMANT" for e in res.chronic)
+
+
+def test_evidence_pack_carries_the_lot_series(db, tmp_path):
+    """The export must quote the SAME lots the chart draws, not its own math.
+
+    An evidence pack that recomputed the lot rates would put a third story in
+    front of the engineer — the exact failure the SPC redesign exists to end.
+    """
+    import pandas as pd
+    from laser_trim_analyzer.export.evidence import export_evidence_pack
+
+    _seed(db, "HOT", fails_last=12)                 # drifting: last lot alarms
+    series = compute_spc_series(db, "HOT")
+    out = export_evidence_pack(db, "HOT", tmp_path / "e.xlsx")
+
+    sheet = pd.read_excel(out, sheet_name="Lots (SPC)")
+    assert any(p.ooc for p in series.points)        # the fixture really drifted
+    assert sheet["Out of control"].tolist() == [p.ooc for p in series.points]
+    assert sheet["Fail rate"].tolist() == pytest.approx([p.value for p in series.points])
+    assert sheet["Units"].tolist() == [p.n for p in series.points]

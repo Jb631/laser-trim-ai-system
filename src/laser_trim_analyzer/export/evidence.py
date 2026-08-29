@@ -102,6 +102,9 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
 
     Sheets:
       * Drift evidence — per-metric baseline vs recent, honest σ-shift, tier
+      * Lots (SPC)    — the model's production lots with the control limits
+        the Model page draws: rate, the limit for a lot THAT SIZE, and which
+        lots broke it. The paper trail behind a FOCUS-list verdict.
       * Unit history  — one row per unit/track over the FULL record (default;
         pass window_days to restrict), every watched metric + pass flags.
         This is the 'export the model to Excel and read its whole history'
@@ -109,10 +112,13 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
       * Monthly summary — units, pass rate, and metric means per month
     """
     import pandas as pd
+    from math import isfinite
     from sqlalchemy import func, case
     from laser_trim_analyzer.database.models import (
         AnalysisResult as DBAR, TrackResult as DBTR, StatusType)
     from laser_trim_analyzer.ml.manager import get_model_drift_status
+    from laser_trim_analyzer.ml.lots import MIN_LOTS_TRAIN
+    from laser_trim_analyzer.ml.spc import compute_spc_series
 
     status = get_model_drift_status(db, model)
     recent_means, recent_meta = compute_recent_means(db, model, with_meta=True)
@@ -347,9 +353,36 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
                 "Units reworked": uc.get("rework_units"),
             })
 
+    # ---- Lot control chart (SPC) -------------------------------------------
+    # THE SAME SpcSeries the Model page draws and the FOCUS list ranks from —
+    # computed once in ml/spc.py and merely transcribed here. An export that
+    # did its own lot arithmetic would put a third story in front of the
+    # engineer, which is the exact failure the 2026-08-29 redesign ended.
+    spc = compute_spc_series(db, model)
+    # Unjudged means NO limits exist, so no lot can be flagged. Said on every
+    # row: a reader who sorts or filters this sheet must not be able to lose
+    # the disclosure and read a column of FALSE as an all-clear.
+    unjudged_note = (f"not judged — needs {MIN_LOTS_TRAIN} production lots of "
+                     "history, so no lot can be flagged")
+    lot_rows = [{
+        "Lot start": _d(pt.start), "Lot end": _d(pt.end), "Units": pt.n,
+        "Fail rate": pt.value,
+        # The limit is recomputed from each lot's OWN size — 2 fails out of 5
+        # units is noise, 2 out of 200 is a signal (ml/spc.py).
+        "Expected max (UCL)": pt.ucl if isfinite(pt.ucl) else None,
+        "Out of control": pt.ooc,
+        # An open lot may still be receiving units: a preview, not a verdict.
+        "Open lot": pt.is_open,
+        "Note": pt.note if spc.judged else unjudged_note,
+    } for pt in spc.points]
+
     out_path = Path(out_path)
     with pd.ExcelWriter(out_path, engine="openpyxl") as xl:
         pd.DataFrame(metric_rows).to_excel(xl, sheet_name="Drift evidence", index=False)
+        _lot_cols = ["Lot start", "Lot end", "Units", "Fail rate",
+                     "Expected max (UCL)", "Out of control", "Open lot", "Note"]
+        pd.DataFrame(lot_rows, columns=(None if lot_rows else _lot_cols))\
+            .to_excel(xl, sheet_name="Lots (SPC)", index=False)
         udf = pd.DataFrame(unit_rows)
         udf.to_excel(xl, sheet_name="Unit history", index=False)
         _ft_cols = ["Serial", "Test date", "Result", "Linked to trim record", "Match %"]

@@ -7,7 +7,10 @@ actions, exports, and the processing pipeline — each check is PASS/FAIL/WARN
 with the number that failed, so regressions surface without a human clicking
 through the app.
 
-    python scripts/app_qa_sweep.py
+    python scripts/app_qa_sweep.py [path/to/analysis.db]
+
+The optional path is for machines where the work database is not at
+data/analysis.db — pass a COPY, never the original (this opens it read-write).
 
 Exit code = number of FAILs. WARNs are judgment items for review.
 """
@@ -174,11 +177,32 @@ def check_ft_incremental_fastpath() -> None:
         warn("FT fast-path: no Test Station sample files to scan")
 
 def main() -> int:
+    # Optional DB-path argv (2026-08-29): the work database does not live at
+    # data/analysis.db on every machine, and the sweep is worthless run against
+    # anything else. Point it at a COPY — DatabaseManager opens read-write.
+    #     python scripts/app_qa_sweep.py /path/to/copy_of_analysis.db
+    db_path = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "data" / "analysis.db"
+    if not db_path.exists():
+        # Checked BEFORE DatabaseManager on purpose: constructing it CREATES an
+        # empty database, and a sweep against an empty DB reports a wall of
+        # green that means nothing. Refuse instead.
+        print(f"FATAL | no database at {db_path}\n"
+              f"      | pass a copy of the work database:\n"
+              f"      |     python scripts/app_qa_sweep.py /path/to/analysis.db")
+        return 1
     from laser_trim_analyzer.database.manager import DatabaseManager
     from laser_trim_analyzer.database.models import (
         AnalysisResult as DBAR, TrackResult as DBTR, FinalTestResult as DBFT)
-    db = DatabaseManager(REPO / "data" / "analysis.db")
-    raw = sqlite3.connect(f"file:{REPO/'data'/'analysis.db'}?mode=ro", uri=True)
+    db = DatabaseManager(db_path)
+    # Anything that reaches for "the app's database" on its own — Processor's
+    # per-model spec lookups in section 7 go through `get_db_manager()` — must
+    # get the SAME database. Left alone it builds one at the config default,
+    # which on a machine that has no work DB silently CREATES an empty
+    # data/analysis.db: a phantom the pipeline reads from and every test whose
+    # skip depends on that file's absence then runs against.
+    from laser_trim_analyzer.database import manager as _dbmod
+    _dbmod._db_manager = db
+    raw = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 
     VARIANTS = ["6607", "5409B", "8150", "8887", "7458-1"]
 
@@ -226,21 +250,77 @@ def main() -> int:
     check("company trend: rates within [0,100]",
           all(0 <= r_ <= 100 for r_ in rates), f"n={len(rates)}")
 
-    # ============ 3. TRIAGE: alerts consistent with settings preview =========
+    # ============ 3. FOCUS LIST: the SPC invariants the page now rests on ====
+    # Replaces the get_triage_alerts checks (2026-08-29): the Triage page ranks
+    # models from `compute_focus_list` now, so THESE are the invariants a
+    # regression would break. The promise being guarded is that every row can
+    # point at the lot in its own series that put it there.
     from laser_trim_analyzer.ml.manager import (
-        get_triage_alerts, list_known_models, active_model_set,
+        list_known_models, active_model_set,
         preview_alert_count, get_model_drift_status)
-    alerts = get_triage_alerts(db)
+    from laser_trim_analyzer.ml.spc import RECENT_K, compute_focus_list
     known = {m.model for m in list_known_models(db)}
-    check("triage: every alert is a known model",
-          all(a.model in known for a in alerts), f"alerts={len(alerts)} known={len(known)}")
-    tiers = [int(a.tier) for a in alerts]
-    check("triage: ordering is tier-descending",
-          all(tiers[i] >= tiers[i+1] for i in range(len(tiers) - 1)))
-    prev = preview_alert_count(db, "standard")
-    total_prev = prev["warning"] + prev["drift"] + prev["out_of_control"]
-    check("triage count == settings preview (standard, all models)",
-          len(alerts) == total_prev, f"triage={len(alerts)} preview={total_prev}")
+    try:
+        res_a = compute_focus_list(db)
+        res_b = compute_focus_list(db)          # (a) same input -> same list
+    except Exception as exc:
+        check("focus: list computes against the real database", False,
+              f"{type(exc).__name__}: {exc}")
+        res_a = res_b = None
+    if res_a is not None and res_b is not None:
+        check("focus: list computes against the real database", True,
+              f"focus={len(res_a.focus)} chronic={len(res_a.chronic)} "
+              f"anchor={res_a.anchor}")
+        if not res_a.focus and not res_a.chronic:
+            # Not a failure, but the invariants below would be vacuous — say so
+            # rather than letting empty lists print five reassuring PASSes.
+            warn("focus: real database produced no focus/chronic entries",
+                 "membership/ranking/arithmetic checks ran on empty lists")
+        check("focus: two runs give identical orderings (deterministic)",
+              [e.model for e in res_a.focus] == [e.model for e in res_b.focus]
+              and [e.model for e in res_a.chronic] == [e.model for e in res_b.chronic],
+              f"focus={[e.model for e in res_a.focus][:5]}")
+        # (b) Membership: a fire has an alarming lot inside the recent window;
+        # chronic is bad-but-STEADY and must have none, or the strip is just a
+        # second alarm list under a calmer heading.
+        no_recent_ooc = [e.model for e in res_a.focus
+                         if not any(pt.ooc for pt in e.series.points[-RECENT_K:])]
+        chronic_alarming = [e.model for e in res_a.chronic
+                            if any(pt.ooc for pt in e.series.points[-RECENT_K:])]
+        check("focus: every entry has an out-of-control lot in the recent window",
+              not no_recent_ooc, f"offenders={no_recent_ooc[:5]}")
+        check("chronic: no entry has a recent out-of-control lot",
+              not chronic_alarming, f"offenders={chronic_alarming[:5]}")
+        # (c) The order IS the page's promise: biggest cost first.
+        ex = [e.excess_per_week for e in res_a.focus]
+        check("focus: ranked by excess units/week, descending",
+              all(ex[i] >= ex[i + 1] for i in range(len(ex) - 1)),
+              f"top={[round(x, 2) for x in ex[:5]]}")
+        # (d) The one-computation guarantee: every number in a row falls out of
+        # the series that row carries (same math as test_verdict_numbers_match_series).
+        mismatched = []
+        for e in res_a.focus + res_a.chronic:
+            flagged = [pt for pt in e.series.points[-RECENT_K:] if pt.ooc]
+            if flagged:
+                p_recent = (sum(pt.value * pt.n for pt in flagged)
+                            / sum(pt.n for pt in flagged))
+                excess = max(p_recent - e.p_base, 0.0) * e.units_per_week
+            else:                        # chronic: steady, so it claims no excess
+                p_recent, excess = e.p_base, 0.0
+            if (abs(e.p_base - e.series.p_base) > 1e-9
+                    or abs(e.p_recent - p_recent) > 1e-9
+                    or abs(e.excess_per_week - excess) > 1e-9):
+                mismatched.append(e.model)
+        check("focus: row numbers recompute from the row's own series (1e-9)",
+              not mismatched, f"offenders={mismatched[:5]}")
+        # (e) A verdict about a model that isn't in the data is a phantom. This
+        # is the invariant whose get_triage_alerts version failed on this DB.
+        db_models = {r[0] for r in raw.execute(
+            "SELECT DISTINCT model FROM analysis_results WHERE model IS NOT NULL")}
+        listed = {e.model for e in res_a.focus} | {e.model for e in res_a.chronic}
+        check("focus: every listed model exists in analysis_results",
+              listed <= db_models,
+              f"listed={len(listed)} missing={sorted(listed - db_models)[:5]}")
     counts = {}
     for preset in ("loose", "standard", "tight", "strict"):
         p = preview_alert_count(db, preset)
@@ -322,10 +402,11 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
     sheets = pd.read_excel(pack, sheet_name=None)
-    _all5 = {"Drift evidence", "Unit history", "Monthly summary",
+    _all6 = {"Drift evidence", "Lots (SPC)", "Unit history", "Monthly summary",
              "Final test units", "Smoothness"}
-    check("evidence pack: all 5 sheets, stable shape + expected columns",
-          set(sheets) == _all5
+    check("evidence pack: all 6 sheets, stable shape + expected columns",
+          set(sheets) == _all6
+          and "Expected max (UCL)" in sheets["Lots (SPC)"].columns
           and "Suspect excluded" in sheets["Drift evidence"].columns
           and "Linearity yield %" in sheets["Monthly summary"].columns
           and "FT result" in sheets["Unit history"].columns
@@ -337,6 +418,18 @@ def main() -> int:
     if "Final test units" in sheets:
         check("evidence pack: FT sheet columns",
               {"Serial", "Test date", "Result"} <= set(sheets["Final test units"].columns))
+    # The pack must quote the SAME lots the Model page draws — a sheet that did
+    # its own arithmetic is the "third story" the SPC redesign exists to end.
+    from laser_trim_analyzer.ml.spc import compute_spc_series
+    _screen = compute_spc_series(db, "6607")
+    _lots = sheets["Lots (SPC)"]
+    check("evidence pack: Lots sheet IS the on-screen SPC series",
+          len(_lots) == len(_screen.points)
+          and _lots["Out of control"].tolist() == [pt.ooc for pt in _screen.points]
+          and all(abs(a - b) < 1e-9 for a, b in
+                  zip(_lots["Fail rate"].tolist(), [pt.value for pt in _screen.points])),
+          f"rows={len(_lots)} lots={len(_screen.points)} "
+          f"ooc={sum(pt.ooc for pt in _screen.points)}")
     # Dates are day-granularity strings, not '… 00:00:00' (work finding #6).
     _dates = sheets["Unit history"]["Date"].dropna().astype(str)
     check("evidence pack: dates are clean day strings",

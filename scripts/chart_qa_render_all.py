@@ -5,7 +5,10 @@ blank error states) shipped because charts were only eyeballed with one lucky
 data shape. This harness renders the full chart surface against the variant
 matrix below so every change gets the same sweep — run it headless anywhere:
 
-    python scripts/chart_qa_render_all.py [output_dir]
+    python scripts/chart_qa_render_all.py [output_dir] [path/to/analysis.db]
+
+The optional DB path is for machines where the work database is not at
+data/analysis.db — pass a COPY, never the original (it is opened read-write).
 
 Variants: dense-batch model, sparse model, single-unit model, stale flagged
 model, smoothness-rich model, fail-heavy unit, multi-track unit, no-sweep
@@ -87,6 +90,13 @@ def _focus():
     o._style(); return o
 
 
+def _spc():
+    """The SPC lot view is the SAME widget in its other mode (`set_spc_series`),
+    so it gets the same headless figure — a separate factory only so the
+    p-chart block below reads for itself."""
+    return _focus()
+
+
 def _company():
     from laser_trim_analyzer.gui.v6.widgets.company_trend_chart import CompanyTrendChart
     o = CompanyTrendChart.__new__(CompanyTrendChart); o.theme = _Theme()
@@ -141,11 +151,21 @@ def _save(obj, path, manifest, note):
 # Variant matrix (real models spanning the data shapes charts must survive).
 DENSE, SPARSE, SINGLE, STALE = "6607", "5409B", "8150", "8887"
 SMOOTH_RICH = "7458-1"
+# Same five models app_qa_sweep.py exercises, so a shape that breaks a loader
+# and a shape that breaks a chart are found on the same data.
+VARIANTS = [DENSE, SPARSE, SINGLE, STALE, SMOOTH_RICH]
 FAIL_HEAVY_AID = 90636        # 8340-1 / SN 153
 MULTITRACK_AID = 88725        # 8074-1, 2 tracks
 
 
-def main(out_dir: str) -> int:
+def main(out_dir: str, db_path: Path) -> int:
+    if not db_path.exists():
+        # BEFORE DatabaseManager, which CREATES the file it is handed: charts
+        # rendered from an empty database look fine and prove nothing.
+        print(f"FATAL | no database at {db_path}\n"
+              f"      | pass a copy of the work database:\n"
+              f"      |     python scripts/chart_qa_render_all.py OUTDIR /path/to/analysis.db")
+        return 1
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     manifest: list = []
 
@@ -154,7 +174,7 @@ def main(out_dir: str) -> int:
         AnalysisResult as DBAR, TrackResult as DBTR, SmoothnessResult as DBSR,
         ModelMetricState)
     from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
-    db = DatabaseManager(REPO / "data" / "analysis.db")
+    db = DatabaseManager(db_path)
 
     def series(model, metric):
         with db.session() as s:
@@ -220,6 +240,29 @@ def main(out_dir: str) -> int:
         raise AssertionError(f"legend misses the red-marker entry: {leg_texts}")
     _save(fc, out / "focus_8340-1_window_switch.png", manifest,
           f"FocusChart window-switch: All(xlim {wide_span:.0f}d) -> 90d(xlim {narrow_span:.0f}d) — axis tracks the window; red markers in legend")
+
+    # ---- 1c. SPC lot p-chart (2026-08-29 FOCUS redesign) ----
+    # The view the Model page opens on and the FOCUS list links to. Rendered
+    # per variant because the shapes that break it are data shapes: a model
+    # with too few lots (no band at all), a one-lot model, a stale model whose
+    # newest lot is months old, and a dense model with real excursions.
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
+    from laser_trim_analyzer.ml.spc import compute_spc_series
+    for model in VARIANTS:
+        spc = compute_spc_series(db, model)
+        sc = _spc()
+        sc.set_spc_series(spc)
+        # What to LOOK for differs by variant — telling a reader to check for
+        # annotations on a chart that has no limits is how a sweep gets skimmed.
+        dp = spc_draw_params(spc)
+        recent, older = len(dp["flag_idx"]), dp["old_ooc_count"]
+        expect = ("no band at all, with the reason said out loud" if not spc.judged
+                  else f"band + {recent} red annotated excursion(s) whose sentences "
+                       f"do not overlap, {older} amber counted" if recent or older
+                       else "band, no excursions flagged")
+        _save(sc, out / f"spc_pchart_{model}.png", manifest,
+              f"SPC p-chart {model} lots={len(spc.points)} judged={spc.judged} "
+              f"— expect {expect}; n= under every lot, dates in order")
 
     # ---- 2. Company trend ----
     for days, period in [(90, "week"), (365, "month"), (36500, "month"), (30, "week")]:
@@ -314,4 +357,5 @@ def main(out_dir: str) -> int:
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else str(
         REPO / "docs" / "v6_design_review_2026-07-07" / "qa_sweep")
-    raise SystemExit(main(target))
+    db_arg = Path(sys.argv[2]) if len(sys.argv) > 2 else REPO / "data" / "analysis.db"
+    raise SystemExit(main(target, db_arg))
