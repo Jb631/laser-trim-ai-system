@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 import math
 
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import spc_draw_params
-from laser_trim_analyzer.ml.spc import RECENT_K, build_fraction_series
+from laser_trim_analyzer.ml.spc import (
+    RECENT_K, build_continuous_series, build_fraction_series)
 
 D0 = datetime(2026, 1, 5)
 
@@ -130,3 +131,41 @@ def test_recent_window_default_is_the_shared_constant():
     s = _series(hist, last)
     default = spc_draw_params(s)
     assert default == spc_draw_params(s, focus_recent=RECENT_K)
+
+
+def _continuous_history():
+    """14 in-family resistance lots, then a HIGH lot and a LOW lot.
+
+    Lot medians wobble 4700/4704/4708 so the baseline has a real spread (a flat
+    baseline is degenerate and the builder refuses to judge it). The last two
+    lots sit far outside on OPPOSITE sides — the thing a fraction series can
+    never exercise, because a fail rate only alarms upward.
+    """
+    out = []
+    for k in range(14):
+        day = D0 + timedelta(days=7 * k)
+        out += [(day, 4700.0 + (k % 3) * 4 + j) for j in (-1, 0, 1, 2, -2)]
+    low_day = D0 + timedelta(days=7 * 14)
+    out += [(low_day, 4400.0 + j) for j in (-1, 0, 1, 2, -2)]      # below LCL
+    high_day = D0 + timedelta(days=7 * 15)
+    out += [(high_day, 4980.0 + j) for j in (-1, 0, 1, 2, -2)]     # above UCL
+    return out, high_day
+
+
+def test_continuous_series_band_is_two_sided_and_flags_both_ways():
+    hist, last = _continuous_history()
+    s = build_continuous_series("8555", "untrimmed_resistance", hist, anchor=last)
+    assert s.judged
+    p = spc_draw_params(s)
+    assert p["fraction"] is False
+    # A continuous band is the REAL lower limit, not zero: filling 0->UCL for a
+    # 4,700 ohm metric would shade the entire chart.
+    assert p["band_lo"] == [pt.lcl for pt in s.points]
+    assert p["band_lo"][0] > 4000                      # emphatically not 0.0
+    assert math.isfinite(p["center"]) and all(math.isfinite(u) for u in p["ucls"])
+    low_i, high_i = len(s.points) - 2, len(s.points) - 1
+    assert p["flag_idx"] == [low_i, high_i]            # both sides alarm
+    assert p["old_idx"] == [] and p["old_ooc_count"] == 0
+    assert set(p["labels"]) == {low_i, high_i}
+    assert p["labels"][high_i].startswith("lot median 4980 — outside this model's")
+    assert p["labels"][low_i].startswith("lot median 4400 — outside this model's")
