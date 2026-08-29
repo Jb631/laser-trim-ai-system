@@ -31,15 +31,20 @@ Wording note: in this domain FAIL means the unit missed the customer LINEARITY
 spec and is rejected. A WARNING unit is ACCEPTED (an internal sigma watch), so
 nothing in here counts a warning as a failure.
 
-Pure module by design — no DB, no Tk, no matplotlib. It takes (date, value)
-samples and returns numbers, which is what makes it cheap to test and safe to
-call from a worker thread.
+Two layers, in this order:
+  * The BUILDERS (`build_fraction_series` / `build_continuous_series`) are pure
+    — no DB, no Tk, no matplotlib. They take (date, value) samples and return
+    numbers, which is what makes them cheap to test and safe on a worker thread.
+  * The LOADERS at the bottom (`compute_spc_series`, `compute_focus_list`) are
+    the only part that reads the database. They still never touch Tk, so the
+    UI calls them from a worker and posts the result back through ui_dispatch.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from itertools import groupby
 from math import isfinite, sqrt
 from statistics import fmean, pstdev
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from laser_trim_analyzer.ml.lots import (
     LOT_GAP_DAYS, MIN_LOT_BASELINE_N, MIN_LOTS_TRAIN, Lot, cluster_lots)
@@ -236,3 +241,229 @@ def build_continuous_series(model: str, metric: str,
     return SpcSeries(model=model, metric=metric, points=points, judged=True,
                      p_base=center, baseline_n_lots=len(baseline),
                      baseline_units=sum(lot.n for lot in baseline), chronic=False)
+
+
+# ===========================================================================
+# DB layer — everything above is pure; everything below reads the database.
+# ===========================================================================
+
+CHRONIC_MAX = 5         # chronic strip is context, not a queue: show the worst few
+
+
+@dataclass
+class FocusEntry:
+    """One row of the FOCUS list — and the series those numbers came from.
+
+    The series is carried, not re-derived: the chart the user opens next is
+    literally this object, so the headline can never disagree with the picture.
+    """
+    model: str
+    series: SpcSeries
+    excess_per_week: float          # units/week above this model's own baseline
+    units_per_week: float           # recent production rate (volume context)
+    p_base: float                   # the model's own normal fail rate
+    p_recent: float                 # pooled fail rate over the flagged lots
+    n_flagged_recent: int           # how many of the last RECENT_K lots alarmed
+    last_lot_end: datetime
+    verdict: str                    # headline: what it is costing right now
+    sub_line: str                   # the evidence behind the headline
+
+
+@dataclass
+class FocusResult:
+    """What the FOCUS page shows: today's fires, the known-bad, and the clock."""
+    focus: List[FocusEntry]         # ranked by excess_per_week desc
+    chronic: List[FocusEntry]       # ranked by p_base * units_per_week desc
+    anchor: Optional[datetime]      # newest usable file date; None = empty DB
+
+
+def _parse_floor(raw) -> Optional[datetime]:
+    """Read a stored requalification date back into a datetime.
+
+    `set_baseline_requalification` stores `str(effective_date)`, so the column
+    holds whatever the caller passed — "2026-02-02T00:00:00" from an ISO
+    string, "2026-02-02 00:00:00" from a datetime, or a bare "2026-02-02" from
+    a date picker. Try the whole thing, then the date-and-time head, then just
+    the date; a value we cannot read means NO floor, never a crash.
+    """
+    if raw is None:
+        return None
+    text_ = str(raw).strip()
+    for candidate in (text_, text_[:19], text_[:10]):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _requal_floor(db, model: str) -> Optional[datetime]:
+    """Baseline requalification date for one model (None when never set)."""
+    try:
+        row = db.get_baseline_requalification(model)
+    except Exception:
+        return None                          # missing table on an old DB, etc.
+    return _parse_floor(row[0]) if row else None
+
+
+def _requal_floors(db) -> Dict[str, datetime]:
+    """Every model's requalification floor in ONE query.
+
+    The bulk path must not open a session per model — with a few hundred
+    models that is a few hundred round trips for a table with a handful of
+    rows. Reading ascending and overwriting leaves the LATEST (set_at, id) per
+    model, which is the same winner `get_baseline_requalification` picks.
+    """
+    floors: Dict[str, datetime] = {}
+    try:
+        from sqlalchemy import text as _text
+        with db.session() as s:
+            rows = s.execute(_text(
+                "SELECT model, effective_date FROM baseline_requalifications "
+                "ORDER BY set_at, id")).fetchall()
+    except Exception:
+        return floors
+    for model, raw in rows:
+        floor = _parse_floor(raw)
+        if model and floor is not None:
+            floors[str(model)] = floor
+    return floors
+
+
+def _newest_usable(dates) -> Optional[datetime]:
+    """The anchor: the newest file date the data is allowed to be judged from.
+
+    "Now" is the wrong clock — the app is often opened days after the last
+    production run, and the wall clock would age every real lot out of the
+    recent window. The newest REAL date is the right clock. The +1 day cut
+    throws out file-date junk (a mis-set machine clock, a template date) that
+    would otherwise drag the anchor months into the future and make every
+    active model look stale.
+    """
+    horizon = datetime.now() + timedelta(days=1)
+    usable = [d for d in dates if d is not None and d <= horizon]
+    return max(usable) if usable else None
+
+
+def _fail_flag(status) -> float:
+    """1.0 when the unit missed the customer linearity spec, else 0.0.
+
+    A WARNING unit shipped — it is an internal sigma watch, not a rejection —
+    so it counts as a 0 here, exactly like `drift_training` does it.
+    """
+    return 1.0 if getattr(status, "name", str(status)) == "FAIL" else 0.0
+
+
+def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
+                       *, anchor: Optional[datetime] = None) -> SpcSeries:
+    """The series for ONE (model, metric) — what the chart and the export draw.
+
+    Reuses the trainer's sample loader so the chart cannot be looking at a
+    different population than the detector that alarmed on it.
+    """
+    from laser_trim_analyzer.ml.drift_training import _load_samples_with_dates
+    from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS
+
+    samples = [(d, float(v))
+               for (d, v, _rid) in _load_samples_with_dates(db, model, metric)
+               if d is not None and v is not None]
+    if anchor is None:
+        # No usable dates at all: fall back to the wall clock so the builder
+        # still returns an honest empty/unjudged series instead of raising.
+        anchor = _newest_usable(d for d, _v in samples) or datetime.now()
+    build = (build_fraction_series if metric in FRACTION_METRICS
+             else build_continuous_series)
+    return build(model, metric, samples, anchor=anchor,
+                 requal_floor=_requal_floor(db, model))
+
+
+def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
+    """Rank every active model by what its drift is costing THIS week.
+
+    One query for the whole database, grouped in memory. The per-model
+    alternative (one query each, several hundred models) is what made the old
+    focus page slow enough that people stopped opening it.
+
+    The ranking is deliberately in UNITS, not in percent: a model that went
+    from 5% to 15% on a 10-unit-a-week trickle is a smaller fire than one that
+    went from 8% to 12% on 400 units a week, and the person choosing what to
+    work on this morning needs the list to say so.
+    """
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+    from laser_trim_analyzer.database.models import StatusType
+
+    with db.session() as s:
+        # Mirrors _load_samples_with_dates' linearity branch, minus the model
+        # filter: ERROR/UNTRIMMED rows are not gradeable and stay out.
+        rows = (s.query(DBAR.model, DBAR.file_date, DBAR.overall_status)
+                .filter(DBAR.overall_status.in_([StatusType.PASS, StatusType.WARNING,
+                                                 StatusType.FAIL]),
+                        DBAR.file_date.isnot(None), DBAR.model.isnot(None))
+                .order_by(DBAR.model, DBAR.file_date).all())
+
+    if anchor is None:
+        anchor = _newest_usable(r.file_date for r in rows)
+    if anchor is None:
+        return FocusResult(focus=[], chronic=[], anchor=None)
+
+    floors = _requal_floors(db)
+    active_floor = anchor - timedelta(days=ACTIVE_DAYS)
+    volume_floor = anchor - timedelta(days=UNITS_WEEK_DAYS)
+    volume_horizon = anchor + timedelta(days=1)         # same cut `_clean` uses
+    weeks = UNITS_WEEK_DAYS / 7.0
+
+    focus: List[FocusEntry] = []
+    chronic: List[FocusEntry] = []
+    # ORDER BY model keeps each model's rows contiguous, so one pass groups them.
+    for model, group in groupby(rows, key=lambda r: r.model):
+        samples = [(r.file_date, _fail_flag(r.overall_status)) for r in group]
+        dates = [d for d, _v in samples]
+        if max(dates) < active_floor:
+            continue        # not running lately — nothing to act on today
+        series = build_fraction_series(model, "linearity_fail_fraction", samples,
+                                       anchor=anchor,
+                                       requal_floor=floors.get(model))
+        if not series.judged or not series.points:
+            continue        # too little history to have an opinion (see builders)
+
+        # Volume drives the cost side of the ranking. Counting units (not lots)
+        # over a fixed window keeps a model that runs one huge lot a month
+        # comparable to one that runs a little every day.
+        units_recent = sum(1 for d in dates if volume_floor <= d <= volume_horizon)
+        units_per_week = units_recent / weeks
+
+        flagged = [pt for pt in series.points[-RECENT_K:] if pt.ooc]
+        if flagged:
+            # Pooled over the flagged lots — a 200-unit excursion should weigh
+            # more than a 6-unit one when we quote "the rate right now".
+            flagged_units = sum(pt.n for pt in flagged)
+            p_recent = sum(pt.value * pt.n for pt in flagged) / flagged_units
+            excess_per_week = max(p_recent - series.p_base, 0.0) * units_per_week
+            focus.append(FocusEntry(
+                model=model, series=series, excess_per_week=excess_per_week,
+                units_per_week=units_per_week, p_base=series.p_base,
+                p_recent=p_recent, n_flagged_recent=len(flagged),
+                last_lot_end=series.points[-1].end,
+                verdict=(f"failing ~{excess_per_week:.0f} more units/week "
+                         "than its own baseline"),
+                sub_line=(f"{len(flagged)} of last {RECENT_K} lots out of control"
+                          f" · fail rate {series.p_base * 100:.0f}%"
+                          f" → {p_recent * 100:.0f}%"
+                          f" · ~{units_per_week:.0f} units/wk")))
+        elif series.chronic:
+            # Bad but steady. Nothing changed today, so it is not a fire — and
+            # re-alarming on it every morning is how a list loses its audience.
+            chronic.append(FocusEntry(
+                model=model, series=series, excess_per_week=0.0,
+                units_per_week=units_per_week, p_base=series.p_base,
+                p_recent=series.p_base, n_flagged_recent=0,
+                last_lot_end=series.points[-1].end,
+                verdict=(f"runs ~{series.p_base * 100:.0f}% fail, stable "
+                         "— capability problem, not drift"),
+                sub_line=f"~{units_per_week:.0f} units/wk"))
+
+    focus.sort(key=lambda e: e.excess_per_week, reverse=True)
+    # Chronic ranks by steady bleed (rate x volume): the biggest standing loss
+    # is the one worth an engineering project.
+    chronic.sort(key=lambda e: e.p_base * e.units_per_week, reverse=True)
+    return FocusResult(focus=focus, chronic=chronic[:CHRONIC_MAX], anchor=anchor)
