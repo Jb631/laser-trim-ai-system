@@ -439,12 +439,18 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
             flagged_units = sum(pt.n for pt in flagged)
             p_recent = sum(pt.value * pt.n for pt in flagged) / flagged_units
             excess_per_week = max(p_recent - series.p_base, 0.0) * units_per_week
+            # Whole units read better at scale, but rounding to whole units
+            # prints a real 0.4-units/week fire as "~0 more units/week" — the
+            # headline would be telling the reader the cost is nothing. Below
+            # 10, show the tenth; above it, the tenth is noise.
+            shown_excess = (f"{excess_per_week:.1f}" if excess_per_week < 10
+                            else f"{excess_per_week:.0f}")
             focus.append(FocusEntry(
                 model=model, series=series, excess_per_week=excess_per_week,
                 units_per_week=units_per_week, p_base=series.p_base,
                 p_recent=p_recent, n_flagged_recent=len(flagged),
                 last_lot_end=series.points[-1].end,
-                verdict=(f"failing ~{excess_per_week:.0f} more units/week "
+                verdict=(f"failing ~{shown_excess} more units/week "
                          "than its own baseline"),
                 sub_line=(f"{len(flagged)} of last {RECENT_K} lots out of control"
                           f" · fail rate {series.p_base * 100:.0f}%"
