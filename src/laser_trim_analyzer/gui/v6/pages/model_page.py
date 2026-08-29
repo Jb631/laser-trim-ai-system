@@ -26,8 +26,16 @@ from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
 from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
 from laser_trim_analyzer.ml.drift_types import WATCHED_METRICS
 from laser_trim_analyzer.ml.manager import get_model_drift_status, list_known_models
+from laser_trim_analyzer.ml.spc import compute_spc_series
 
 _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": None}
+
+# Headline-chart views (2026-08-29 FOCUS/SPC redesign). Production runs in
+# LOTS, so a lot — not a unit — is what goes in or out of control, and the lot
+# chart is what the FOCUS list sends people here to look at. Lots is therefore
+# the default for EVERY metric; the per-unit scatter that used to be the only
+# view stays one click away for "what did each unit measure".
+_VIEW_LOTS, _VIEW_UNITS = "Lots · SPC", "Units"
 
 # Default focus metric when no alert-triggered focus is supplied. The headline
 # element-production drift signal (post-trim sigma_gradient is no longer
@@ -47,6 +55,11 @@ class ModelPage(PageBase):
         self._window_choice: str = "90d"
         self._reload_gen = 0
         self._user_picked_metric = False
+        self._chart_view = "lots"            # "lots" | "units" — see _VIEW_LOTS
+        # Both chart views are loaded by the SAME _reload pass and cached here,
+        # so flipping the toggle is a re-render, never a second DB round trip.
+        self._spc_series = None
+        self._unit_series = (_DEFAULT_METRIC, [], [], (None, None))
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     @staticmethod
@@ -138,6 +151,23 @@ class ModelPage(PageBase):
         # ---- ZONE 2: the data itself — where the read above is verified.
         self._zone_header(self._body, "WHAT YOU'RE LOOKING AT",
                           "the measurements — chart the pill you clicked; units & final tests in the tabs")
+        # Chart card header: the view toggle sits with the chart it controls.
+        # Same segmented-button styling as the Triage scope toggle so the two
+        # "this switches what you're looking at" controls read as one thing.
+        chart_head = ctk.CTkFrame(self._body, fg_color="transparent")
+        chart_head.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
+        self._chart_toggle = ctk.CTkSegmentedButton(
+            chart_head, values=[_VIEW_LOTS, _VIEW_UNITS], width=200,
+            command=self._on_chart_view_change,
+            fg_color=t.CARD, selected_color=t.ACCENT, selected_hover_color=t.ACCENT_HOVER,
+            unselected_color=t.CARD, text_color=t.TEXT_PRIMARY)
+        self._chart_toggle.set(_VIEW_LOTS if self._chart_view == "lots" else _VIEW_UNITS)
+        self._chart_toggle.pack(side="right")
+        ctk.CTkLabel(chart_head,
+                     text=("Lots = one point per production run, judged against this "
+                           "model's own history. Units = every measurement."),
+                     font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY,
+                     anchor="w").pack(side="left")
         self._focus_chart = FocusChart(self._body, theme=t)
         self._focus_chart.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._tabs = ThemedTabView(self._body, theme=t)
@@ -207,7 +237,11 @@ class ModelPage(PageBase):
         self.safe_after(apply)
 
     # ---- reload with generation token (I3) ----
-    def _reload(self):
+    def reload_now(self):
+        """Synchronous reload + apply (the test path; also the main-thread apply)."""
+        self._reload(sync=True)
+
+    def _reload(self, *, sync=False):
         if not self._current_model:
             return
         self._reload_gen += 1
@@ -219,6 +253,7 @@ class ModelPage(PageBase):
             # tab when any loader threw). Failures are logged, not swallowed.
             status, chosen = None, metric
             dates, values, baseline = [], [], (None, None)
+            spc = None
             units, smoothness, recent = [], [], {}
             trim_ft, history = {}, {}
             # One anchored cutoff for every tab (None = All): anchored to the
@@ -236,6 +271,17 @@ class ModelPage(PageBase):
                 dates, values, baseline = self._load_focus_series(model, chosen)
             except Exception:
                 logger.exception("Model %s: focus series failed", model)
+            try:
+                # The headline LOT chart. Built here, off the Tk thread, and
+                # cached by the apply below so the Lots/Units toggle never
+                # re-queries. It carries its OWN window (the last SERIES_WINDOW
+                # lots) on purpose — a control chart needs enough history to
+                # have limits, so the header's 30d/90d choice filters the unit
+                # view and the tabs, not this. `compute_spc_series` picks the
+                # fraction vs continuous builder from the metric itself.
+                spc = compute_spc_series(self.app.db, model, chosen)
+            except Exception:
+                logger.exception("Model %s: SPC lot series failed", model)
             try:
                 units = self._load_units(model)
             except Exception:
@@ -297,17 +343,42 @@ class ModelPage(PageBase):
                 if verdict:
                     _try("verdict", lambda: self._verdict.configure(
                         text=verdict[0], text_color=verdict[1]))
-                _try("focus chart", lambda: self._focus_chart.set_series(
-                    metric=chosen, dates=dates, values=values,
-                    baseline_mean=baseline[0], baseline_std=baseline[1]))
+                _try("focus chart", lambda: self._set_chart_data(
+                    chosen, spc, dates, values, baseline))
                 _try("units tab", lambda: self._units_tab.set_units(units))
                 _try("smoothness tab", lambda: self._smoothness_tab.set_records(smoothness))
                 _try("smoothness hint", lambda: self._smoothness_tab.set_models_hint(smooth_models))
                 _try("trim-vs-FT tab", lambda: self._trimft_tab.set_data(trim_ft))
                 _try("FT units tab", lambda: self._ft_units_tab.set_units(ft_units))
                 _try("history tab", lambda: self._history_tab.set_data(history))
-            self.safe_after(apply)
-        threading.Thread(target=work, daemon=True).start()
+            if sync:
+                apply()                 # already on the Tk thread — post nothing
+            else:
+                self.safe_after(apply)
+        if sync:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
+
+    # ---- headline chart: two views over ONE load ----
+    def _set_chart_data(self, metric, spc, dates, values, baseline):
+        """Cache both views of the focus metric, then draw the selected one."""
+        self._spc_series = spc
+        self._unit_series = (metric, dates, values, baseline)
+        self._render_focus_chart()
+
+    def _render_focus_chart(self):
+        """Draw whichever view is selected — from cached data, never the DB.
+
+        Falls back to the unit view when the lot series is missing (its build
+        failed): an empty card would say nothing about why.
+        """
+        if self._chart_view == "lots" and self._spc_series is not None:
+            self._focus_chart.set_spc_series(self._spc_series)
+            return
+        metric, dates, values, baseline = self._unit_series
+        self._focus_chart.set_series(metric=metric, dates=dates, values=values,
+                                     baseline_mean=baseline[0], baseline_std=baseline[1])
 
     # ---- loaders (all materialize to plain values inside the session — I8) ----
     def _window_cutoff(self, model: Optional[str] = None,
@@ -742,6 +813,14 @@ class ModelPage(PageBase):
     def _on_window_change(self, choice):
         self._window_choice = choice
         self._reload()
+
+    def _on_chart_view_change(self, value):
+        # Pure VIEW switch: both series came from the same _reload pass, so
+        # re-render what is already in memory. Re-querying here would make the
+        # toggle stutter and — worse — could redraw a DIFFERENT dataset than the
+        # one the rest of the page is describing.
+        self._chart_view = "units" if value == _VIEW_UNITS else "lots"
+        self._render_focus_chart()
 
     def _on_unit_click(self, unit):
         UnitChartModal(self, theme=self.theme, db=self.app.db, unit=unit)

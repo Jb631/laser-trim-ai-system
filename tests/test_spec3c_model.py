@@ -1,4 +1,6 @@
 """Spec 3c — Model page. Foundations §3/§4.3. Fixtures in tests/conftest.py."""
+from datetime import datetime, timedelta
+
 import pytest
 
 # ---- Task 1: routing + column map ----------------------------------------
@@ -313,3 +315,130 @@ def test_drift_tab_uses_grid_columns(tk_root):
     slaves = row.grid_slaves()
     assert len(slaves) == len(_COLUMNS)                                  # cells gridded, not packed
     assert sorted(int(w.grid_info()["column"]) for w in slaves) == list(range(len(_COLUMNS)))
+
+
+# ---- FOCUS/SPC redesign (2026-08-29): the lot chart is the headline view ---
+# Production runs in LOTS, so a lot — not a unit — is what goes in or out of
+# control. The Model page opens on the SPC lot chart for every metric; the
+# per-unit scatter that used to be the only view is one click away.
+# Seeding mirrors tests/test_spc_db.py (real DatabaseManager, real compute).
+
+D0 = datetime(2026, 1, 5)      # SPC anchors on the DATA's newest date, not "now"
+
+
+def _add_lot(db, model, day, n, fails):
+    """One production lot: n gradeable units on one file_date, `fails` of them FAIL."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, StatusType, SystemType)
+    with db.session() as s:
+        for i in range(n):
+            # `system` is NOT NULL in the schema; the SPC query never reads it.
+            s.add(DBAR(model=model, serial=f"{model}-{day:%m%d}-{i}", system=SystemType.A,
+                       filename=f"{model}_{i}_{day:%m-%d-%Y}.xls", file_date=day,
+                       overall_status=StatusType.FAIL if i < fails else StatusType.PASS))
+
+
+def _seed(db, model, n_lots=12, fails_last=0, start=D0, n_per=20, base_fails=2):
+    """Weekly lots at a steady baseline rate, then one lot at `fails_last`."""
+    for k in range(n_lots - 1):
+        _add_lot(db, model, start + timedelta(days=7 * k), n_per, base_fails)
+    last_day = start + timedelta(days=7 * (n_lots - 1))
+    _add_lot(db, model, last_day, n_per, fails_last if fails_last else base_fails)
+    return last_day
+
+
+def _seed_tracks(db, model, metric, n_lots=12, n_per=3, start=D0):
+    """Weekly lots carrying a CONTINUOUS metric, drifting lot-to-lot so the
+    baseline has a real spread (a flat baseline is degenerate -> unjudged)."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    from laser_trim_analyzer.ml.drift_training import TRACK_METRIC_COLUMNS
+    col = TRACK_METRIC_COLUMNS[metric].key
+    with db.session() as s:
+        for k in range(n_lots):
+            day = start + timedelta(days=7 * k)
+            for i in range(n_per):
+                ar = DBAR(model=model, serial=f"{model}-{k}-{i}", system=SystemType.A,
+                          filename=f"{model}_{k}_{i}.xls", file_date=day,
+                          overall_status=StatusType.PASS)
+                s.add(ar); s.flush()
+                # TrackResult.status is NOT NULL — set it on any committed row.
+                s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                           **{col: 0.010 + 0.0004 * k + 0.0001 * i}))
+        s.commit()
+
+
+def _spc_app(make_app, monkeypatch, metric="linearity_fail_fraction", seed=None):
+    """App routed to a drifting model, with the HEADLINE chart's draws recorded.
+
+    The spies go on the page's own FocusChart INSTANCE, not the class: the
+    Smoothness tab embeds a second FocusChart and draws into it on the same
+    reload, so a class-level patch would mix the two charts' calls together.
+    """
+    calls = []
+    app = make_app()
+    (seed or (lambda db: _seed(db, "HOT", fails_last=12)))(app.db)
+    app.set_model_route("HOT", metric)
+    page = app.page_container.get_page("model")
+    # on_show kicks off a BACKGROUND reload. Letting it race the synchronous
+    # one below adds no coverage and makes the two threads fight over the DB's
+    # single StaticPool connection (one RLock held for a whole session) — worth
+    # ~2.5 min per run of this file. Suppress it; load once, synchronously.
+    page._reload = lambda **kw: None
+    app.show_page("model")                 # the real deep-link path
+    del page._reload                       # back to the real bound method
+    monkeypatch.setattr(page._focus_chart, "set_spc_series",
+                        lambda series, **kw: calls.append(("spc", series)))
+    monkeypatch.setattr(page._focus_chart, "set_series",
+                        lambda **kw: calls.append(("units", kw)))
+    page.reload_now()                      # synchronous path for tests
+    return app, page, calls
+
+
+def test_model_page_opens_on_the_spc_lot_chart(make_app, monkeypatch):
+    """The headline chart is the LOT p-chart for the metric that routed here."""
+    app, page, calls = _spc_app(make_app, monkeypatch)
+    assert page._chart_view == "lots"
+    assert [kind for kind, _ in calls] == ["spc"]      # units view NOT drawn
+    series = calls[0][1]
+    assert series.model == "HOT" and series.metric == "linearity_fail_fraction"
+    assert series.judged and series.points             # real limits, real lots
+    assert series.points[-1].ooc                       # the blown-out last lot
+
+
+def test_model_page_units_toggle_draws_the_unit_view(make_app, monkeypatch):
+    app, page, calls = _spc_app(make_app, monkeypatch)
+    calls.clear()
+    page._on_chart_view_change("Units")
+    assert page._chart_view == "units"
+    assert [kind for kind, _ in calls] == ["units"]
+    assert calls[0][1]["metric"] == "linearity_fail_fraction"
+    calls.clear()
+    page._on_chart_view_change("Lots · SPC")           # and back
+    assert page._chart_view == "lots"
+    assert [kind for kind, _ in calls] == ["spc"]
+
+
+def test_chart_toggle_re_renders_loaded_data_without_touching_the_db(make_app, monkeypatch):
+    """Both series load in ONE _reload pass; the toggle is a view switch."""
+    import laser_trim_analyzer.gui.v6.pages.model_page as mp
+    app, page, calls = _spc_app(make_app, monkeypatch)
+
+    def boom(*a, **k):
+        raise AssertionError("toggle must re-render loaded data, not re-query")
+    monkeypatch.setattr(mp, "compute_spc_series", boom)
+    monkeypatch.setattr(page, "_load_focus_series", boom)
+    page._on_chart_view_change("Units")
+    page._on_chart_view_change("Lots · SPC")
+
+
+def test_continuous_metric_also_opens_on_the_lot_chart(make_app, monkeypatch):
+    """Default is Lots for EVERY metric — compute_spc_series routes a
+    continuous metric through build_continuous_series on its own."""
+    app, page, calls = _spc_app(
+        make_app, monkeypatch, metric="untrimmed_sigma_gradient",
+        seed=lambda db: _seed_tracks(db, "HOT", "untrimmed_sigma_gradient"))
+    assert [kind for kind, _ in calls] == ["spc"]
+    series = calls[0][1]
+    assert series.metric == "untrimmed_sigma_gradient"
+    assert series.judged and len(series.points) == 12   # lot medians, not units
