@@ -164,10 +164,16 @@ class FocusListZone(ctk.CTkFrame):
                                        fg_color="transparent", hover_color=t.CARD,
                                        text_color=t.ACCENT, anchor="w", height=26,
                                        font=t.font(t.SIZE_BODY))
-        self._chronic_heading = ctk.CTkLabel(self, text="", anchor="w",
+        # Chronic strip lives INSIDE the height-capped body (2026-08-29, Task 5
+        # geometry pass). Packed on `self` it escaped the cap: five chronic rows
+        # plus their heading grew the zone by ~214 px, which at the app's
+        # 1400x900 default left the browse list below it 11 px tall. BODY_HEIGHT
+        # is the zone's contract with the rest of the page, so everything the
+        # zone renders has to be inside it.
+        self._chronic_heading = ctk.CTkLabel(self._body, text="", anchor="w",
                                              font=t.font(t.SIZE_BODY, "bold"),
                                              text_color=t.TEXT_SECONDARY)
-        self._chronic_body = ctk.CTkFrame(self, fg_color="transparent")
+        self._chronic_body = ctk.CTkFrame(self._body, fg_color="transparent")
         self._render()
 
     # ---- public API -------------------------------------------------------

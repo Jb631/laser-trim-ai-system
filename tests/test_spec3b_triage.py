@@ -1,4 +1,5 @@
 """Spec 3b — Triage. Foundations §4.1/§4.3. Fixtures in tests/conftest.py."""
+from datetime import datetime, timedelta
 
 # ---- Task 1: helpers ------------------------------------------------------
 
@@ -93,16 +94,10 @@ def test_list_known_models_single_query_no_per_model_status(tmp_path, monkeypatc
     assert calls["n"] == 0  # tiers come from get_drifting_models, not per-model status
 
 
-# ---- Task 2: ModelAlertCard ----------------------------------------------
-
-def _labels(widget):
-    import customtkinter as ctk
-    out = []
-    for c in widget.winfo_children():
-        if isinstance(c, ctk.CTkLabel):
-            out.append(c.cget("text"))
-        out.extend(_labels(c))
-    return out
+# ---- Task 2: triage alert ordering ---------------------------------------
+# The v6 Triage page no longer renders these summaries — the FOCUS list took
+# that surface on 2026-08-29 — but `get_triage_alerts` still feeds the drift
+# table and the v5 pages, so its ordering rules stay under test here.
 
 
 def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None, shift=4.2):
@@ -110,29 +105,6 @@ def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, 
     return ModelAlertSummary(model=model, tier=tier or DriftTier.DRIFT,
                              alert_type=alert or AlertType.STEP_CHANGE,
                              worst_metric=metric, magnitude=mag, sigma_shift=shift)
-
-
-def test_card_shows_model_readable_metric_and_shift(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    # Headline is now the honest baseline shift (σ), not the CUSUM magnitude.
-    card = ModelAlertCard(tk_root, summary=_summary(shift=4.2), theme=ThemeManager(),
-                          on_click=lambda *_: None)
-    texts = " | ".join(_labels(card))
-    assert "8340-1" in texts
-    assert "Untrimmed resistance" in texts      # readable, not the raw key
-    assert "4.2" in texts and "σ" in texts      # the shift value
-    assert "Step change" in texts
-    assert "baseline" in texts                  # says what the σ is measured against
-
-
-def test_card_shows_dash_when_shift_unknown(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    card = ModelAlertCard(tk_root, summary=_summary(shift=None), theme=ThemeManager(),
-                          on_click=lambda *_: None)
-    texts = " | ".join(_labels(card))
-    assert "—" in texts                         # no fabricated number when recent is unknown
 
 
 def test_order_triage_alerts_tier_first_then_shift():
@@ -154,65 +126,6 @@ def test_order_triage_alerts_gate_hides_below_threshold():
     tiny = _summary(model="TINY", tier=DriftTier.DRIFT, shift=0.1)
     assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=0.0)] == ["BIG", "TINY"]
     assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=1.0)] == ["BIG"]
-
-
-def test_card_click_emits_model_and_focus_metric(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    got = []
-    card = ModelAlertCard(tk_root, summary=_summary(model="CLICK", metric="linearity_error"),
-                          theme=ThemeManager(), on_click=lambda m, f: got.append((m, f)))
-    card._on_click()
-    assert got == [("CLICK", "linearity_error")]   # focus = the triggering metric
-
-
-def test_card_uses_tier_background(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    from laser_trim_analyzer.ml.drift_types import DriftTier
-    t = ThemeManager()
-    card = ModelAlertCard(tk_root, summary=_summary(tier=DriftTier.OUT_OF_CONTROL),
-                          theme=t, on_click=lambda *_: None)
-    assert card.cget("fg_color") == t.tier_color(DriftTier.OUT_OF_CONTROL)[0]
-
-
-# ---- Task 3: FlaggedCardsZone --------------------------------------------
-
-def _walk(w):
-    yield w
-    for c in w.winfo_children():
-        yield from _walk(c)
-
-
-def test_zone_empty_state_names_last_processed(tk_root):
-    from datetime import datetime
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
-    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
-    z.set_summaries([], last_processed=datetime(2026, 5, 30))
-    txt = " ".join(_labels(z))
-    assert "within tolerance" in txt
-    assert "2026-05-30" in txt
-
-
-def test_zone_one_card_per_summary(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda *_: None)
-    z.set_summaries([_summary(model=f"M{i}") for i in range(6)])
-    assert sum(isinstance(w, ModelAlertCard) for w in _walk(z)) == 6
-
-
-def test_zone_routes_click(tk_root):
-    from laser_trim_analyzer.gui.v6.theme import ThemeManager
-    from laser_trim_analyzer.gui.v6.widgets.flagged_cards_zone import FlaggedCardsZone
-    from laser_trim_analyzer.gui.v6.widgets.model_alert_card import ModelAlertCard
-    got = []
-    z = FlaggedCardsZone(tk_root, theme=ThemeManager(), on_card_click=lambda m, f: got.append((m, f)))
-    z.set_summaries([_summary(model="ROUTED", metric="sigma_gradient")])
-    next(w for w in _walk(z) if isinstance(w, ModelAlertCard))._on_click()
-    assert got == [("ROUTED", "sigma_gradient")]
 
 
 # ---- Task 4: BrowseZone ---------------------------------------------------
@@ -264,6 +177,60 @@ def test_browse_discloses_cap(tk_root):
 
 
 # ---- Task 5: TriagePage + routing ----------------------------------------
+# Fixtures build the FOCUS list through the REAL DatabaseManager and the real
+# compute path (no monkeypatched summaries): the point of the 2026-08-29
+# rewire is that the page renders exactly what `compute_focus_list` decided,
+# so a mocked feed would test nothing that ships.
+
+D0 = datetime(2026, 1, 5)      # SPC anchors on the DATA's newest date, not "now"
+
+
+def _labels(widget):
+    """Every CTkLabel text under `widget` — what the page actually SAYS."""
+    import customtkinter as ctk
+    out = []
+    for c in widget.winfo_children():
+        if isinstance(c, ctk.CTkLabel):
+            out.append(c.cget("text"))
+        out.extend(_labels(c))
+    return out
+
+
+def _add_lot(db, model, day, n, fails):
+    """One production lot: n gradeable units on one file_date, `fails` of them FAIL."""
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, StatusType, SystemType)
+    with db.session() as s:
+        for i in range(n):
+            # `system` is NOT NULL in the schema; the SPC query never reads it.
+            s.add(DBAR(model=model, serial=f"{model}-{day:%m%d}-{i}", system=SystemType.A,
+                       filename=f"{model}_{i}_{day:%m-%d-%Y}.xls", file_date=day,
+                       overall_status=StatusType.FAIL if i < fails else StatusType.PASS))
+
+
+def _seed(db, model, n_lots=12, fails_last=0, start=D0, n_per=20, base_fails=2):
+    """Weekly lots at a steady baseline rate, then one lot at `fails_last`."""
+    for k in range(n_lots - 1):
+        _add_lot(db, model, start + timedelta(days=7 * k), n_per, base_fails)
+    last_day = start + timedelta(days=7 * (n_lots - 1))
+    _add_lot(db, model, last_day, n_per, fails_last if fails_last else base_fails)
+    return last_day
+
+
+def _drifting_app(make_app):
+    """App whose DB holds one drifting CURRENT model and one long-dormant one.
+
+    HOT owns the anchor and blew out on its last lot (10% -> 60%); OLD stopped
+    running ~300 days earlier, so it is neither on the FOCUS list (compute's
+    own ACTIVE_DAYS rule) nor in the Active browse scope.
+    """
+    app = make_app()
+    _seed(app.db, "HOT", fails_last=12)
+    _seed(app.db, "OLD", start=D0 - timedelta(days=300))
+    triage = app.page_container.get_page("triage")
+    triage.reload_now()       # synchronous path for tests
+    return app, triage
+
 
 def test_v6app_consume_model_route(make_app):
     app = make_app()
@@ -273,21 +240,40 @@ def test_v6app_consume_model_route(make_app):
     assert app.consume_model_route() is None       # one-shot
 
 
-def test_triage_card_click_routes_to_model(make_app):
-    app = make_app()
-    triage = app.page_container.get_page("triage")
-    triage._on_card_click("FROM-CARD", "untrimmed_resistance")
+def test_triage_focus_zone_shows_the_drifting_model(make_app):
+    app, triage = _drifting_app(make_app)
+    # The heading's count is the zone's, not the page's — one computation.
+    assert "(1)" in triage._focus._heading.cget("text")
+    assert [r.entry.model for r in triage._focus._rows] == ["HOT"]
+
+
+def test_triage_focus_click_routes_to_model_with_spc_metric(make_app):
+    app, triage = _drifting_app(make_app)
+    triage._focus._rows[0]._on_click()
     assert app.page_container.current_page == "model"
-    # The real Model page (3c) consumes the route on show and applies it — the
-    # deep-link lands on FROM-CARD with the triggering metric preselected.
+    # The real Model page consumes the route on show — the deep-link lands on
+    # HOT with the metric that put it on the list preselected.
     model_page = app.page_container.get_page("model")
-    assert model_page._current_model == "FROM-CARD"
-    assert model_page._current_metric == "untrimmed_resistance"
+    assert model_page._current_model == "HOT"
+    assert model_page._current_metric == "linearity_fail_fraction"
     assert app._model_route is None
 
 
+def test_scope_toggle_filters_browse_only(make_app):
+    """FOCUS membership belongs to compute_focus_list; the toggle is a browse filter."""
+    app, triage = _drifting_app(make_app)
+    n_focus = len(triage._focus._rows)
+    assert {r.summary.model for r in triage._browse._rows} == {"HOT"}   # Active scope
+    triage._on_scope_change("All models")
+    assert {r.summary.model for r in triage._browse._rows} == {"HOT", "OLD"}
+    assert len(triage._focus._rows) == n_focus == 1
+    assert [r.entry.model for r in triage._focus._rows] == ["HOT"]
+    triage._on_scope_change("Active")
+    assert {r.summary.model for r in triage._browse._rows} == {"HOT"}
+    assert len(triage._focus._rows) == n_focus
+
+
 def test_triage_reload_now_populates(make_app):
-    from datetime import datetime
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR, SystemType, StatusType
     app = make_app()
     with app.db.session() as s:
@@ -298,3 +284,12 @@ def test_triage_reload_now_populates(make_app):
     triage = app.page_container.get_page("triage")
     triage.reload_now()       # synchronous path for tests
     assert "LOAD-TEST" in _labels(triage)
+
+
+def test_triage_empty_db_shows_within_tolerance(make_app):
+    """No data at all must read as 'nothing to look at', never as a blank zone."""
+    app = make_app()
+    triage = app.page_container.get_page("triage")
+    triage.reload_now()
+    assert "(0)" in triage._focus._heading.cget("text")
+    assert any("within tolerance" in t for t in _labels(triage._focus))

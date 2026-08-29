@@ -1533,6 +1533,11 @@ def get_triage_alerts(db, min_sigma_shift: float = TRIAGE_MIN_SIGMA_SHIFT):
     the genuine drifts and makes the 0.01σ "still flagged but recovered" cases obvious
     instead of letting them dominate. `min_sigma_shift` can hide confirmed-tiny shifts,
     but defaults to 0.0 (hide nothing) — see TRIAGE_MIN_SIGMA_SHIFT.
+
+    NOT the v6 Triage page's feed any more (2026-08-29): that page now renders
+    `ml.spc.compute_focus_list`, which ranks by cost and self-clears. This stays
+    for the drift table, the evidence/export paths and the v5 pages, which still
+    ask the per-metric detector "which models are flagged, worst first?".
     """
     from laser_trim_analyzer.database.models import ModelMetricState
     from laser_trim_analyzer.export.evidence import compute_recent_means

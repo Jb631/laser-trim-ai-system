@@ -646,8 +646,10 @@ def main() -> int:
     # ---- usability glosses: every symbol/number the live walk (2026-07-08)
     # found unexplained must keep its on-screen decoder line -----------------
     _GLOSSES = [
-        ("src/laser_trim_analyzer/gui/v6/widgets/flagged_cards_zone.py",
-         "LAST LOT", "triage cards explain σ in lot language"),
+        # 2026-08-29: the σ card wall became the FOCUS list. Same obligation,
+        # new zone — say WHY a model is on the list and when it leaves.
+        ("src/laser_trim_analyzer/gui/v6/widgets/focus_list_zone.py",
+         "outside its own control limits", "FOCUS list states its membership rule"),
         ("src/laser_trim_analyzer/gui/v6/pages/model_page.py",
          "historical lot medians", "model page explains σ in lot language"),
         ("src/laser_trim_analyzer/gui/v6/widgets/worst_models_list.py",
