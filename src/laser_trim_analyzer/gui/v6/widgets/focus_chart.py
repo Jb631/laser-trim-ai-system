@@ -1,4 +1,10 @@
-"""Spec 3c — FocusChart: one metric's time series with Rule-1 SPC overlays (Q7)."""
+"""Spec 3c — FocusChart: one metric per chart, in the two views that matter.
+
+`set_series` is the UNIT view (every measurement, Rule-1 overlays, Q7).
+`set_spc_series` is the LOT view added by the 2026-08-29 FOCUS/SPC redesign:
+production runs in lots, so a lot — not a unit — is what goes in or out of
+control. Both live here so the Model page can toggle between them on one widget.
+"""
 from datetime import datetime
 from typing import List, Optional
 
@@ -7,7 +13,60 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-from laser_trim_analyzer.ml.drift_types import metric_label
+from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS, metric_label
+from laser_trim_analyzer.ml.lots import MIN_LOTS_TRAIN
+from laser_trim_analyzer.ml.spc import RECENT_K, SpcSeries
+
+
+def spc_draw_params(series: SpcSeries, focus_recent: int = RECENT_K) -> dict:
+    """Everything needed to DRAW an SpcSeries — pure, so every surface agrees.
+
+    The Model page's full p-chart and the FOCUS list's 260x64 sparklines both
+    render from this dict. That is deliberate: the little picture in the list
+    can never flag a different lot than the big chart behind it (the "three
+    surfaces, three stories" failure the redesign exists to end).
+
+    It also owns the one judgement a chart adds on top of `ml/spc.py`: WHICH
+    excursions are today's news. An ooc lot inside the last `focus_recent` lots
+    is what is happening now — red, and annotated with its sentence. Older ooc
+    lots are context: amber dots and ONE counted line. Re-annotating months of
+    history is exactly how the old page taught people to ignore red.
+
+    Not judged (too little lot history) means no limits exist at all: no flags,
+    no labels, NaN center. The caller draws bare dots and says so.
+    """
+    points = series.points
+    n = len(points)
+    cut = n - max(int(focus_recent), 0)          # first index still "recent"
+    flag_idx: List[int] = []
+    old_idx: List[int] = []
+    if series.judged:                            # unjudged points carry no ooc
+        for i, pt in enumerate(points):
+            if pt.ooc:
+                (flag_idx if i >= cut else old_idx).append(i)
+    fraction = series.metric in FRACTION_METRICS
+    return {
+        # Lots are POSITIONS, not dates. A real date axis squashes a week of
+        # daily lots into one tick and stretches a quiet month across the page;
+        # the question here is "which lot", and the date rides along as a label.
+        "xs": list(range(n)),
+        "values": [pt.value for pt in points],
+        "ucls": [pt.ucl for pt in points],
+        # A fail RATE below baseline is good news, never an alarm, so the shaded
+        # region starts at zero. A continuous metric drifts either way, so its
+        # band is the real two-sided limit.
+        "band_lo": ([0.0] * n if fraction else [pt.lcl for pt in points]),
+        "center": series.p_base,
+        "flag_idx": flag_idx,
+        "old_idx": old_idx,
+        "old_ooc_count": len(old_idx),
+        "open_idx": next((i for i, pt in enumerate(points) if pt.is_open), None),
+        "labels": {i: points[i].note for i in flag_idx if points[i].note},
+        "n_labels": [f"n={pt.n}" for pt in points],
+        "x_dates": [pt.end.strftime("%m/%d") for pt in points],
+        "judged": series.judged,
+        "fraction": fraction,
+    }
 
 
 class FocusChart(ctk.CTkFrame):
@@ -215,6 +274,175 @@ class FocusChart(ctk.CTkFrame):
         ax.set_xlim(d0 - xpad, d1 + xpad)
         ax.legend(loc="best", fontsize=8, facecolor=t.CARD, edgecolor=t.BORDER, labelcolor=t.TEXT_SECONDARY)
         self._fig.tight_layout()
+        self.canvas.draw_idle()
+
+    def set_spc_series(self, series: SpcSeries, *,
+                       focus_recent: int = RECENT_K) -> None:
+        """Draw one (model, metric) as a LOT control chart — the p-chart view.
+
+        Kept beside `set_series` rather than replacing it: this answers "is this
+        LOT out of family for this model", while `set_series` still answers "what
+        did each unit measure". The Model page toggles between them.
+
+        Everything drawn here comes from `spc_draw_params`, so the chart cannot
+        show a different set of flagged lots than the FOCUS list that sent the
+        user here. The title carries the reading key on purpose — a shaded band
+        with no explanation is the thing supervisors said they could not read.
+        """
+        import numpy as np
+        from matplotlib.ticker import FuncFormatter
+
+        p = spc_draw_params(series, focus_recent=focus_recent)
+        ax, t = self._ax, self.theme
+        ax.clear()
+        self._style()
+        fraction = p["fraction"]
+        # The reading key, in the title, because a shaded band nobody can read
+        # is the thing supervisors said defeated the old chart. "of that size"
+        # is claimed ONLY for the p-chart, where the limit really does move with
+        # the lot's n; a continuous band is ±3σ of lot medians and does not.
+        key = ("shaded = what this model's history says a lot of that size can "
+               "do by chance" if fraction else
+               "shaded = what this model's history says a lot can do by chance")
+        # wrap=True is load-bearing: the key line is ~110 characters and this
+        # widget resizes with the window. Unwrapped it ran off BOTH edges of the
+        # figure (render check) — the reading key clipped is the same as absent.
+        ax.set_title(
+            f"{series.model} — {metric_label(series.metric)} by production lot\n"
+            f"{key} · red = beyond it: something changed",
+            fontsize=9, wrap=True)
+
+        xs, values = p["xs"], p["values"]
+        if not xs:
+            ax.set_xticks([]); ax.set_yticks([])   # a 0.0-1.0 grid means nothing
+            ax.text(0.5, 0.5, "No production lots for this model yet.",
+                    transform=ax.transAxes, ha="center", va="center",
+                    color=t.TEXT_SECONDARY)
+            self._fig.tight_layout()
+            self.canvas.draw_idle()
+            return
+
+        judged, center = p["judged"], p["center"]
+        if judged:
+            # Step, not a smooth band: the limit is recomputed from each lot's
+            # OWN size, which is the whole point — 2 fails out of 5 is noise,
+            # 2 out of 200 is a signal, and one flat threshold can't say both.
+            ax.fill_between(xs, p["band_lo"], p["ucls"], step="mid",
+                            color=t.ELEVATED, alpha=0.9, lw=0, zorder=0)
+            if np.isfinite(center):
+                ax.axhline(center, color=t.TEXT_SECONDARY, ls="--", lw=1, zorder=1)
+                ax.annotate(f"baseline {center * 100:.0f}%" if fraction
+                            else f"baseline {center:.4g}",
+                            xy=(0.0, center), xycoords=("axes fraction", "data"),
+                            xytext=(3, 3), textcoords="offset points",
+                            fontsize=8, ha="left", va="bottom", zorder=2,
+                            color=t.TEXT_SECONDARY,
+                            bbox=dict(facecolor=t.CARD, edgecolor="none",
+                                      alpha=0.75, pad=1.0))
+
+        ax.plot(xs, values, "o", ms=5, ls="none", color=t.TEXT_SECONDARY, zorder=3)
+        if p["old_idx"]:
+            # Amber, not red: these lots ARE out of control, but they are older
+            # than the window the verdict is about. Counted below, not narrated.
+            ax.plot([xs[i] for i in p["old_idx"]], [values[i] for i in p["old_idx"]],
+                    "o", ms=5.5, ls="none", color=t.TIER_WARNING, zorder=4)
+        if p["flag_idx"]:
+            ax.plot([xs[i] for i in p["flag_idx"]], [values[i] for i in p["flag_idx"]],
+                    "o", ms=7, ls="none", color=t.TIER_OOC, zorder=5)
+        open_idx = p["open_idx"]
+        if open_idx is not None:
+            # Hollow = still receiving units: a preview, not a verdict. Filled
+            # with the card colour so the solid dot underneath doesn't show.
+            edge = (t.TIER_OOC if open_idx in p["flag_idx"] else
+                    t.TIER_WARNING if open_idx in p["old_idx"] else t.TEXT_SECONDARY)
+            ax.plot([xs[open_idx]], [values[open_idx]], "o", ms=7.5, ls="none",
+                    mfc=t.CARD, mec=edge, mew=1.8, zorder=6)
+
+        # ---- y-window: the band must stay visible even when every lot is clean
+        # (an all-zero fail rate would otherwise autoscale to a meaningless
+        # sliver), and a 100% lot must not be clipped off the top.
+        span_vals = [v for v in values if np.isfinite(v)]
+        hi_c = list(span_vals)
+        lo_c = list(span_vals)
+        if judged:
+            hi_c += [u for u in p["ucls"] if np.isfinite(u)]
+            lo_c += [b for b in p["band_lo"] if np.isfinite(b)]
+            if np.isfinite(center):
+                hi_c.append(center); lo_c.append(center)
+        hi = max(hi_c) if hi_c else 1.0
+        lo = 0.0 if fraction else (min(lo_c) if lo_c else 0.0)
+        if fraction:
+            hi = min(max(hi, 0.05), 1.0)
+        span = (hi - lo) or (abs(hi) * 0.1) or 1.0
+        # Extra headroom when a sentence is annotated above a flagged lot.
+        top_pad = 0.30 if p["labels"] else 0.15
+        ax.set_ylim(lo - span * 0.06, hi + span * top_pad)
+        ax.yaxis.set_major_formatter(FuncFormatter(
+            (lambda v, _pos: f"{v * 100:.0f}%") if fraction
+            else (lambda v, _pos: t.fmt_measure(v, 4))))
+
+        # ---- x labels: lot end date, with the lot SIZE under it. n is not
+        # decoration — it is why the band above that lot is the width it is.
+        # Thinned from the RIGHT so the newest lot always keeps its label.
+        stride = max(1, -(-len(xs) // 12))
+        ticks = list(range(len(xs) - 1, -1, -stride))[::-1]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([p["x_dates"][i] for i in ticks], fontsize=8)
+        for i in ticks:
+            # "open" rides on the lot's own label: a free-floating legend line
+            # for the hollow marker collided with the amber note (render check),
+            # and the fact belongs on the lot it describes anyway.
+            ax.annotate(p["n_labels"][i] + (" · open" if i == open_idx else ""),
+                        xy=(xs[i], 0),
+                        xycoords=("data", "axes fraction"), xytext=(0, -18),
+                        textcoords="offset points", ha="center", va="top",
+                        fontsize=7, color=t.TEXT_SECONDARY, annotation_clip=False)
+        ax.set_xlim(-0.6, len(xs) - 0.4)
+
+        y0, y1 = ax.get_ylim()
+        for i, note in p["labels"].items():
+            # Alternate ABOVE/BELOW by lot parity so two flagged lots side by
+            # side don't print their sentences on top of each other. The side is
+            # chosen by room, not parity: a flagged lot is recent by definition,
+            # so it sits at the right edge, and a right-hand sentence there is
+            # simply cut off (seen in the render check) — the one thing this
+            # annotation exists to say.
+            room_right = xs[i] < len(xs) * 0.35
+            dx, ha = (12, "left") if room_right else (-12, "right")
+            frac_y = (values[i] - y0) / (y1 - y0) if y1 > y0 else 0.5
+            dy = 26 if i % 2 == 0 else -42
+            # 26pt up / 42pt down is roughly 18% / 29% of this axes' height, so
+            # a point higher than ~0.70 (or lower than ~0.32) has to take the
+            # other side or the sentence lands on the title / off the bottom.
+            if dy > 0 and frac_y > 0.70:
+                dy = -42
+            elif dy < 0 and frac_y < 0.32:
+                dy = 26
+            ax.annotate(note, xy=(xs[i], values[i]), xytext=(dx, dy),
+                        textcoords="offset points", fontsize=8, ha=ha,
+                        color=t.TIER_OOC, zorder=7, annotation_clip=False,
+                        bbox=dict(facecolor=t.CARD, edgecolor="none",
+                                  alpha=0.8, pad=1.5),
+                        arrowprops=dict(arrowstyle="-", lw=0.8, alpha=0.6,
+                                        color=t.TIER_OOC, shrinkA=0, shrinkB=5))
+        if p["old_ooc_count"]:
+            ax.text(0.01, 0.97,
+                    f"{p['old_ooc_count']} earlier out-of-control lots in this "
+                    "window (unlabeled)", transform=ax.transAxes, ha="left",
+                    va="top", fontsize=7.5, color=t.TIER_WARNING)
+        if not judged:
+            # Silence beats an invented limit: no band, no flags, and the reason
+            # said out loud instead of an empty-looking chart.
+            ax.text(0.5, 0.5,
+                    f"not enough lot history to judge (needs {MIN_LOTS_TRAIN} lots)",
+                    transform=ax.transAxes, ha="center", va="center", fontsize=9,
+                    color=t.TEXT_SECONDARY, zorder=8,
+                    bbox=dict(facecolor=t.CARD, edgecolor="none", alpha=0.85))
+
+        self._fig.tight_layout()
+        # tight_layout can't see the offset n= row; reserve the space itself.
+        if self._ax.get_position().y0 < 0.24:
+            self._fig.subplots_adjust(bottom=0.24)
         self.canvas.draw_idle()
 
     def _on_destroy(self, _evt=None):
