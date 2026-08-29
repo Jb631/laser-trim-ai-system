@@ -107,6 +107,14 @@ class Processor:
         # succeeded but the recorded stat was missing/stale — flushed once per
         # batch so the NEXT scan takes the fast stat path.
         self._stat_heal: List[tuple] = []
+        # Per-batch phase timings + counts (see process_batch). Initialized
+        # here so _is_processed can count outside a batch too.
+        self.last_scan_stats: Dict[str, float] = {
+            "total_files": 0, "load_seconds": 0.0, "check_seconds": 0.0,
+            "verify_seconds": 0.0, "needs_hash": 0, "memory_hits": 0,
+            "new_files": 0, "verified_processed": 0, "heal_queued": 0,
+            "heal_updated": 0, "process_seconds": 0.0, "total_seconds": 0.0,
+        }
 
         # Load per-model thresholds and predictors from database
         self._model_thresholds: Dict[str, float] = {}
@@ -175,13 +183,13 @@ class Processor:
         start_time = time.time()
         file_path = Path(file_path)
 
-        logger.info(f"Processing: {file_path.name}")
+        logger.debug(f"Processing: {file_path.name}")
 
         # Detect file type
         file_type = detect_file_type(file_path)
 
         if file_type == "non_trim":
-            logger.info(f"Skipping non-trim file: {file_path.name}")
+            logger.debug(f"Skipping non-trim file: {file_path.name}")
             self._mark_file_skipped(file_path)
             return None
 
@@ -199,7 +207,7 @@ class Processor:
             except NonTrimWorkbookError as e:
                 # Parameter/report workbook named like test data — a known
                 # non-data layout. Skip like non_trim; never an ERROR row.
-                logger.info(f"Skipping parameter/report workbook {file_path.name}: {e}")
+                logger.debug(f"Skipping parameter/report workbook {file_path.name}: {e}")
                 self._mark_file_skipped(file_path)
                 return None
             metadata = parsed["metadata"]
@@ -295,7 +303,7 @@ class Processor:
                         station_compensation=track_data.get("station_compensation"),
                     )
                     if wide_result.linearity_pass:
-                        logger.info(
+                        logger.debug(
                             f"{file_path.name}: reclassified 8340 -> 8340-3 "
                             f"(passed wider ±{track_data['linearity_spec_wide']:.3f} spec)"
                         )
@@ -388,7 +396,7 @@ class Processor:
                 data_quality_issues=quality_issues,
             )
 
-            logger.info(f"Completed: {file_path.name} - {overall_status.value} "
+            logger.debug(f"Completed: {file_path.name} - {overall_status.value} "
                        f"({processing_time:.2f}s)")
 
             return result
@@ -412,6 +420,26 @@ class Processor:
                 str(e),
                 start_time
             )
+
+    def _disk_stat_for_save(self, file_path: Path) -> tuple:
+        """(size, mtime datetime) for a file, or (None, None) if unavailable.
+
+        Prefers the stat captured during folder discovery (scandir hands it
+        over with the listing — no extra network round trip). Recorded on the
+        FT/smoothness row so the NEXT scan recognises the file from memory
+        instead of reading every byte of it to hash.
+        """
+        st = self._disk_stats.get(str(file_path))
+        if st is None:
+            try:
+                _st = file_path.stat()
+                st = (_st.st_size, _st.st_mtime)
+            except OSError:
+                return (None, None)
+        try:
+            return (st[0], datetime.fromtimestamp(st[1]))
+        except (OSError, OverflowError, ValueError):
+            return (None, None)
 
     def _process_final_test_file(self, file_path: Path, start_time: float) -> AnalysisResult:
         """
@@ -440,6 +468,7 @@ class Processor:
 
             # Add file path to metadata
             metadata["file_path"] = str(file_path)
+            ft_size, ft_mtime = self._disk_stat_for_save(file_path)
 
             processing_time = time.time() - start_time
 
@@ -464,6 +493,8 @@ class Processor:
                     tracks=tracks,
                     test_results=test_results,
                     file_hash=file_hash,
+                    file_size=ft_size,
+                    file_modified_date=ft_mtime,
                 )
                 error_result = self._create_error_result(
                     minimal_metadata,
@@ -601,7 +632,9 @@ class Processor:
                 metadata=metadata,
                 tracks=tracks,
                 test_results=test_results,
-                file_hash=file_hash
+                file_hash=file_hash,
+                file_size=ft_size,
+                file_modified_date=ft_mtime,
             )
 
             result = AnalysisResult(
@@ -615,7 +648,7 @@ class Processor:
             result.file_type = "final_test"
             result.final_test_id = final_test_id
 
-            logger.info(f"Processed Final Test: {file_path.name} - {overall_status.value} "
+            logger.debug(f"Processed Final Test: {file_path.name} - {overall_status.value} "
                        f"(ID: {final_test_id}, {processing_time:.2f}s)")
 
             return result
@@ -661,13 +694,26 @@ class Processor:
         total_files = len(file_paths)
         self._disk_stats = disk_stats or {}
         summary = BatchSummary(total_files=total_files, start_time=datetime.now())
+        # Phase timings + counts for this batch. Read by the Process page for
+        # its one-line phase breakdown and by the QA sweep (needs_hash must be
+        # 0 on a second pass over the same folder) — never parsed from logs.
+        t_batch = time.monotonic()
+        self.last_scan_stats: Dict[str, float] = {
+            "total_files": total_files, "load_seconds": 0.0,
+            "check_seconds": 0.0, "verify_seconds": 0.0, "needs_hash": 0,
+            "memory_hits": 0, "new_files": 0, "verified_processed": 0,
+            "heal_queued": 0, "heal_updated": 0, "process_seconds": 0.0,
+            "total_seconds": 0.0,
+        }
 
         logger.info(f"Starting batch processing: {total_files} files, "
                    f"incremental={incremental}")
 
         # Load processed hashes if incremental
         if incremental:
+            t_load = time.monotonic()
             self._load_processed_hashes()
+            self.last_scan_stats["load_seconds"] = time.monotonic() - t_load
 
         # Choose strategy based on file count
         turbo_threshold = self.config.processing.turbo_mode_threshold
@@ -694,10 +740,24 @@ class Processor:
                 "(database predates the stat fast-path)")
             self._scan_adopted = self._scan_rebound = 0
         if self._stat_heal:
+            queued = len(self._stat_heal)
+            self.last_scan_stats["heal_queued"] = queued
             try:
                 from laser_trim_analyzer.database import get_database
-                get_database().update_processed_file_stats(self._stat_heal)
-                logger.info(f"Repaired stat records for {len(self._stat_heal)} processed files")
+                n = get_database().update_processed_file_stats(self._stat_heal)
+                self.last_scan_stats["heal_updated"] = n.get("total", 0)
+                # Queued vs ACTUALLY UPDATED, per table. The old line reported
+                # the queue length only, so "Repaired stat records for 150,938
+                # processed files" was printed on every scan while the UPDATE
+                # matched nothing (FT files have no processed_files row) —
+                # six weeks of a silent no-op re-hashing the whole share.
+                logger.info(
+                    "Repaired stat records: %d queued -> %d final_test, "
+                    "%d processed_files, %d smoothness%s",
+                    queued, n.get("final_test_results", 0),
+                    n.get("processed_files", 0), n.get("smoothness_results", 0),
+                    "" if n.get("total", 0) >= queued else
+                    f"  ⚠ {queued - n.get('total', 0)} matched NO row")
             except Exception as e:
                 logger.debug(f"Could not persist stat repairs: {e}")
             finally:
@@ -711,6 +771,18 @@ class Processor:
         if gradeable > 0:
             summary.pass_rate = (summary.passed / gradeable) * 100
 
+        s = self.last_scan_stats
+        s["total_seconds"] = time.monotonic() - t_batch
+        s["process_seconds"] = max(0.0, s["total_seconds"] - s["load_seconds"]
+                                   - s["check_seconds"] - s["verify_seconds"])
+        # One line, every phase. When a batch is slow again this says which
+        # phase ate the time instead of leaving a log forensics pass guessing.
+        logger.info(
+            "Batch phases: load %.1fs | check %.1fs (%s in memory, %s new) | "
+            "verify %s files %.1fs | process %s files %.1fs",
+            s["load_seconds"], s["check_seconds"], f"{s['memory_hits']:,}",
+            f"{s['new_files']:,}", f"{s['needs_hash']:,}", s["verify_seconds"],
+            f"{summary.processed:,}", s["process_seconds"])
         logger.info(f"Batch complete: {summary.processed}/{total_files} processed, "
                    f"{summary.passed} passed, {summary.failed} failed")
 
@@ -813,14 +885,26 @@ class Processor:
                     progress_percent=0,
                 ))
 
-            # _processed_filenames / _processed_hashes were loaded once before this
-            # block. The parallel workers below only READ them via _is_processed — no
-            # mutation during the parallel section, so no lock is required. If you
-            # ever add mutation here, switch to a lock-protected set or freeze first.
-            files_to_process = []
+            # Two-phase filter (2026-08-29). Phase 1 answers the whole folder
+            # from memory; phase 2 does the file I/O for the leftovers IN
+            # PARALLEL. Before this, one serial pass mixed both: on the FT
+            # share every known file needed a hash (its table stored no stat),
+            # so a scan read 170k files end to end over SMB — 70 minutes.
+            # Phase 1 is single-threaded because _classify_scan mutates the
+            # caches on a rescue hit; phase 2's workers touch nothing shared
+            # (repairs come back as values and are applied here).
+            if self._processed_filenames is None:   # called outside process_batch
+                self._load_processed_hashes()
+            stats = self.last_scan_stats
+            t_check = time.monotonic()
+            new_idx: set = set()
+            needs_io: List[tuple] = []      # (index, path)
             for _i, _f in enumerate(file_paths):
-                if not self._is_processed(Path(_f)):
-                    files_to_process.append(_f)
+                decision = self._classify_scan(Path(_f))
+                if decision == "new":
+                    new_idx.add(_i)
+                elif decision == "needs_hash":
+                    needs_io.append((_i, _f))
                 # Heartbeat: statting 170k files on a share takes minutes —
                 # silence reads as a lockup (work finding, 2026-07-10).
                 if progress_callback and _i % 2000 == 1999:
@@ -828,6 +912,51 @@ class Processor:
                         filename="", status="scanning",
                         message=f"Checking against database… {_i + 1:,}/{len(file_paths):,}",
                         progress_percent=0))
+            stats["check_seconds"] = time.monotonic() - t_check
+            stats["new_files"] = len(new_idx)
+            stats["needs_hash"] = len(needs_io)
+            stats["memory_hits"] = len(file_paths) - len(new_idx) - len(needs_io)
+
+            # Phase 2: stat/hash the files memory couldn't settle. Network
+            # round trips overlap, so 8 workers ≈ 8x. This is the one-time
+            # pass that stamps legacy rows; afterwards it's near-empty.
+            if needs_io:
+                t_verify = time.monotonic()
+                if progress_callback:
+                    progress_callback(ProcessingStatus(
+                        filename="", status="scanning",
+                        message=f"Verifying changed/legacy files… 0/{len(needs_io):,}",
+                        progress_percent=0))
+                resolved = 0
+                with ThreadPoolExecutor(max_workers=8) as verifier:
+                    futures = {
+                        verifier.submit(self._resolve_scan_io, Path(_f)): _i
+                        for _i, _f in needs_io
+                    }
+                    for future in as_completed(futures):
+                        idx = futures[future]
+                        try:
+                            processed, repair = future.result()
+                        except Exception as e:
+                            logger.debug(f"Scan verify failed for {file_paths[idx]}: {e}")
+                            processed, repair = False, None
+                        if repair is not None:
+                            self._apply_scan_repair(repair)   # this thread only
+                        if processed:
+                            stats["verified_processed"] += 1
+                        else:
+                            new_idx.add(idx)
+                        resolved += 1
+                        if progress_callback and resolved % 500 == 0:
+                            progress_callback(ProcessingStatus(
+                                filename="", status="scanning",
+                                message=(f"Verifying changed/legacy files… "
+                                         f"{resolved:,}/{len(needs_io):,}"),
+                                progress_percent=0))
+                stats["verify_seconds"] = time.monotonic() - t_verify
+
+            # Keep discovery order (the batches below process in sequence).
+            files_to_process = [f for i, f in enumerate(file_paths) if i in new_idx]
             summary.skipped = len(file_paths) - len(files_to_process)
 
             # Sanity guard, v2 (2026-07-10). v1 aborted on "matched 0 of N"
@@ -1073,8 +1202,10 @@ class Processor:
                 )
 
             db = get_database()
+            os_size, os_mtime = self._disk_stat_for_save(file_path)
             result_id = db.save_smoothness_result(
-                metadata=metadata, tracks=tracks, file_hash=file_hash
+                metadata=metadata, tracks=tracks, file_hash=file_hash,
+                file_size=os_size, file_modified_date=os_mtime,
             )
 
             processing_time = time.time() - start_time
@@ -1113,7 +1244,7 @@ class Processor:
             result.file_type = "smoothness"
             result.smoothness_id = result_id
 
-            logger.info(
+            logger.debug(
                 f"Processed Smoothness: {file_path.name} - {overall_status.value} "
                 f"(ID: {result_id}, {processing_time:.2f}s)"
             )
@@ -1287,6 +1418,142 @@ class Processor:
 
         return unprocessed, already_processed
 
+    def _classify_scan(self, file_path: Path) -> str:
+        """Decide from MEMORY ALONE whether a file is already processed.
+
+        Returns "processed", "new", or "needs_hash" (the caller must do file
+        I/O — a stat() and possibly a full-content hash — to decide). Performs
+        no file I/O itself; the only stat data it consults is `_disk_stats`,
+        captured during folder discovery. Splitting this out is what lets the
+        parallel path answer the whole known-folder in memory and confine the
+        I/O to the handful of files that genuinely need it.
+
+        May mutate the in-memory caches on a rescue hit — call it from ONE
+        thread only (the sequential path and the parallel filter's phase 1).
+
+        Full-path miss is NOT "definitely new". The work incident
+        (2026-07-09): the same share browsed under a different path form
+        (mapped drive vs UNC vs new root) missed on every file and the app set
+        out to reprocess the entire history. Rescue by BASENAME (filenames
+        carry model_serial_datetime, so they identify the export): confirm
+        cheaply by recorded (size, mtime); legacy rows with no recorded stat
+        (pre-fast-path databases) are ADOPTED on a unique basename match —
+        hashing tens of thousands of files over the share is the lockup we're
+        preventing. Ambiguity falls back to the hash identity check.
+        """
+        path_str = str(file_path)
+        if path_str not in self._processed_filenames:
+            entries = self._processed_basename.get(file_path.name)
+            if not entries:
+                return "new"            # truly new filename
+            st = self._disk_stats.get(path_str)
+            if st is None:
+                return "needs_hash"     # no discovery stat -> needs a stat()
+            for _stored, size, mtime in entries:
+                if (size is not None and mtime is not None
+                        and st[0] == size
+                        and abs(st[1] - mtime) <= 2.0):
+                    # Same name, same size, same mtime: the file we already
+                    # processed, reached via a new path form.
+                    self._processed_filenames.add(path_str)
+                    self._processed_stat[path_str] = st
+                    self._scan_rebound += 1
+                    return "processed"
+            if len(entries) == 1 and entries[0][1] is None:
+                # Single legacy record without stats (database predates the
+                # stat fast-path). Trust the unique name; record the observed
+                # stat so future scans are exact.
+                self._processed_filenames.add(path_str)
+                self._processed_stat[path_str] = st
+                self._scan_adopted += 1
+                return "processed"
+            # Ambiguous (same name in several folders / stat mismatch): the
+            # hash identity check decides.
+            return "needs_hash"
+
+        # Stat fast-path: if the recorded size AND mtime still match the file
+        # on disk, the content can't have changed — skip without reading the
+        # file at all. This is what makes re-scanning a mostly-processed
+        # network folder fast; hashing every path-hit meant reading every byte
+        # of every known file over the share. mtime tolerance 2s covers
+        # FAT/SMB timestamp granularity.
+        recorded = self._processed_stat.get(path_str)
+        if recorded is not None:
+            cur = self._disk_stats.get(path_str)
+            if cur is not None and cur[0] == recorded[0] and abs(cur[1] - recorded[1]) <= 2.0:
+                return "processed"
+        # Stat missing or stale -> CONFIRM content by hash before skipping.
+        return "needs_hash"
+
+    def _resolve_scan_io(self, file_path: Path) -> tuple:
+        """Resolve a "needs_hash" classification, doing the file I/O it needs.
+
+        Returns (is_processed, repair) where `repair` is None or a
+        (kind, path_str, stat_tuple, file_hash) tuple for
+        `_apply_scan_repair` to apply on the calling thread. Touches no
+        shared state itself, so it is safe to run in a worker thread.
+        """
+        path_str = str(file_path)
+        known_path = path_str in self._processed_filenames
+        st = self._disk_stats.get(path_str)
+        if st is None:
+            try:
+                st_ = file_path.stat()
+                st = (st_.st_size, st_.st_mtime)
+            except OSError:
+                st = None
+
+        if not known_path:
+            if st is None:
+                return False, None      # can't stat -> let it process
+            entries = self._processed_basename.get(file_path.name) or ()
+            for _stored, size, mtime in entries:
+                if (size is not None and mtime is not None
+                        and st[0] == size and abs(st[1] - mtime) <= 2.0):
+                    return True, ("rebound", path_str, st, None)
+            if len(entries) == 1 and entries[0][1] is None:
+                return True, ("adopted", path_str, st, None)
+            try:
+                file_hash = calculate_file_hash(file_path)
+            except Exception:
+                return False, None
+            if file_hash in self._processed_hashes:
+                return True, ("rebound_heal", path_str, st, file_hash)
+            return False, None
+
+        recorded = self._processed_stat.get(path_str)
+        if (recorded is not None and st is not None
+                and st[0] == recorded[0] and abs(st[1] - recorded[1]) <= 2.0):
+            return True, None
+        # The file_hash is the identity, not the path, so a re-export of new
+        # content to a fixed filename is NOT dropped.
+        try:
+            file_hash = calculate_file_hash(file_path)
+        except Exception:
+            return False, None          # can't hash -> don't skip
+        if file_hash in self._processed_hashes:
+            # Same content, stale/missing stat record — queue a repair so the
+            # NEXT scan takes the fast stat path for this file.
+            return True, ("heal", path_str, st, file_hash)
+        return False, None
+
+    def _apply_scan_repair(self, repair: tuple) -> None:
+        """Apply one `_resolve_scan_io` repair to the in-memory caches and the
+        stat-heal queue. Single-threaded: the caller owns the ordering."""
+        kind, path_str, st, file_hash = repair
+        if kind in ("rebound", "adopted", "rebound_heal"):
+            self._processed_filenames.add(path_str)
+        if st is not None:
+            self._processed_stat[path_str] = st
+            if kind in ("rebound_heal", "heal") and file_hash:
+                self._stat_heal.append((
+                    file_hash, st[0], datetime.fromtimestamp(st[1]),
+                ))
+        if kind in ("rebound", "rebound_heal"):
+            self._scan_rebound += 1
+        elif kind == "adopted":
+            self._scan_adopted += 1
+
     def _is_processed(self, file_path: Path) -> bool:
         """Check if file has already been processed.
 
@@ -1295,114 +1562,32 @@ class Processor:
         is confirmed by hash so a re-export of NEW content to a reused filename
         is processed rather than silently skipped.
 
+        Memory decision first (`_classify_scan`), then — only for the files it
+        can't settle — the stat/hash I/O inline. The parallel path splits those
+        two phases so the I/O runs in a thread pool.
+
         Falls back to the (hash-based) DB query only if the cache wasn't loaded.
         """
         try:
             # If cache was loaded (even if empty), use it.
             if self._processed_filenames is not None:
-                path_str = str(file_path)
-                # Full-path miss is NOT "definitely new" anymore. The work
-                # incident (2026-07-09): the same share browsed under a
-                # different path form (mapped drive vs UNC vs new root) missed
-                # on every file and the app set out to reprocess the entire
-                # history. Rescue by BASENAME (filenames carry model_serial_
-                # datetime, so they identify the export): confirm cheaply by
-                # recorded (size, mtime); legacy rows with no recorded stat
-                # (pre-fast-path databases) are ADOPTED on a unique basename
-                # match — hashing tens of thousands of files over the share
-                # is the lockup we're preventing. Ambiguity falls back to the
-                # hash identity check.
-                if path_str not in self._processed_filenames:
-                    entries = self._processed_basename.get(file_path.name)
-                    if not entries:
-                        return False        # truly new filename
-                    st = self._disk_stats.get(path_str)
-                    if st is None:
-                        try:
-                            st_ = file_path.stat()
-                            st = (st_.st_size, st_.st_mtime)
-                        except OSError:
-                            return False    # can't stat -> let it process
-                    for _stored, size, mtime in entries:
-                        if (size is not None and mtime is not None
-                                and st[0] == size
-                                and abs(st[1] - mtime) <= 2.0):
-                            # Same name, same size, same mtime: the file we
-                            # already processed, reached via a new path form.
-                            self._processed_filenames.add(path_str)
-                            self._processed_stat[path_str] = st
-                            self._scan_rebound += 1
-                            return True
-                    if len(entries) == 1 and entries[0][1] is None:
-                        # Single legacy record without stats (database predates
-                        # the stat fast-path). Trust the unique name; record
-                        # the observed stat so future scans are exact.
-                        self._processed_filenames.add(path_str)
-                        self._processed_stat[path_str] = st
-                        self._scan_adopted += 1
-                        return True
-                    # Ambiguous (same name in several folders / stat mismatch):
-                    # fall through to the hash identity check below.
-                    try:
-                        file_hash = calculate_file_hash(file_path)
-                    except Exception:
-                        return False
-                    if file_hash in self._processed_hashes:
-                        self._processed_filenames.add(path_str)
-                        self._stat_heal.append((
-                            file_hash, st[0],
-                            datetime.fromtimestamp(st[1]),
-                        ))
-                        self._processed_stat[path_str] = st
-                        self._scan_rebound += 1
-                        return True
-                    return False
-
-                # Stat fast-path: if the recorded size AND mtime still match the
-                # file on disk, the content can't have changed — skip without
-                # reading the file at all. This is what makes re-scanning a
-                # mostly-processed network folder fast; hashing every path-hit
-                # meant reading every byte of every known file over the share.
-                # mtime tolerance 2s covers FAT/SMB timestamp granularity.
-                recorded = self._processed_stat.get(path_str)
-                current_stat = None
-                if recorded is not None:
-                    cur = self._disk_stats.get(path_str)
-                    if cur is None:
-                        try:
-                            st_ = file_path.stat()
-                            cur = (st_.st_size, st_.st_mtime)
-                        except OSError:
-                            return False  # can't stat -> don't skip; let it process
-                    current_stat = cur
-                    rec_size, rec_mtime = recorded
-                    if cur[0] == rec_size and abs(cur[1] - rec_mtime) <= 2.0:
-                        return True
-
-                # Stat missing or stale -> CONFIRM content by hash before
-                # skipping. The file_hash is the identity, not the path, so a
-                # re-export of new content to a fixed filename is NOT dropped.
-                try:
-                    file_hash = calculate_file_hash(file_path)
-                except Exception:
-                    return False  # can't hash -> don't skip; let it process
-                if file_hash in self._processed_hashes:
-                    # Same content, stale/missing stat record — queue a repair
-                    # so the NEXT scan takes the fast stat path for this file.
-                    try:
-                        cur = current_stat or self._disk_stats.get(path_str)
-                        if cur is None:
-                            st_ = file_path.stat()
-                            cur = (st_.st_size, st_.st_mtime)
-                        self._stat_heal.append((
-                            file_hash, cur[0],
-                            datetime.fromtimestamp(cur[1]),
-                        ))
-                        self._processed_stat[path_str] = cur
-                    except OSError:
-                        pass
-                    return True
-                return False
+                stats = self.last_scan_stats
+                t0 = time.monotonic()
+                decision = self._classify_scan(file_path)
+                stats["check_seconds"] += time.monotonic() - t0
+                if decision in ("processed", "new"):
+                    stats["memory_hits" if decision == "processed"
+                          else "new_files"] += 1
+                    return decision == "processed"
+                stats["needs_hash"] += 1
+                t1 = time.monotonic()
+                processed, repair = self._resolve_scan_io(file_path)
+                if repair is not None:
+                    self._apply_scan_repair(repair)
+                stats["verify_seconds"] += time.monotonic() - t1
+                if processed:
+                    stats["verified_processed"] += 1
+                return processed
 
             # Cache not loaded - query database directly (already hash-based).
             from laser_trim_analyzer.database import get_database
@@ -1520,8 +1705,11 @@ class Processor:
                         self._processed_basename.setdefault(
                             PurePath(r.file_path).name, []
                         ).append((r.file_path, r.file_size, mt))
-                # Stat fast-path (ProcessedFile rows only — FT/smoothness tables
-                # don't carry size/mtime, so those fall back to hash-confirm).
+                # Stat fast-path. FT/smoothness rows join this too (2026-08-29
+                # — before that they had no size/mtime columns at all, so every
+                # known FT file fell through to a full-content hash on EVERY
+                # scan; rows still carrying NULL stats keep that behavior for
+                # one pass and then heal themselves).
                 self._processed_stat = {
                     r.file_path: (r.file_size, r.file_modified_date.timestamp())
                     for r in rows
@@ -1531,15 +1719,21 @@ class Processor:
 
                 # Also load Final Test file paths + hashes (always "successful" if in DB)
                 ft_rows = session.query(
-                    FinalTestResult.file_path, FinalTestResult.file_hash
+                    FinalTestResult.file_path, FinalTestResult.file_hash,
+                    FinalTestResult.file_size, FinalTestResult.file_modified_date
                 ).all()
                 ft_count = 0
                 for row in ft_rows:
                     if row.file_path:
+                        mt = (row.file_modified_date.timestamp()
+                              if row.file_modified_date is not None else None)
+                        size = row.file_size
                         self._processed_filenames.add(row.file_path)
                         self._processed_basename.setdefault(
                             PurePath(row.file_path).name, []
-                        ).append((row.file_path, None, None))
+                        ).append((row.file_path, size, mt))
+                        if size is not None and mt is not None:
+                            self._processed_stat[row.file_path] = (size, mt)
                         ft_count += 1
                     if row.file_hash:
                         self._processed_hashes.add(row.file_hash)
@@ -1549,14 +1743,21 @@ class Processor:
                 try:
                     from laser_trim_analyzer.database.models import SmoothnessResult as DBSmoothnessResult
                     smoothness_rows = session.query(
-                        DBSmoothnessResult.file_path, DBSmoothnessResult.file_hash
+                        DBSmoothnessResult.file_path, DBSmoothnessResult.file_hash,
+                        DBSmoothnessResult.file_size,
+                        DBSmoothnessResult.file_modified_date
                     ).all()
                     for row in smoothness_rows:
                         if row.file_path:
+                            mt = (row.file_modified_date.timestamp()
+                                  if row.file_modified_date is not None else None)
+                            size = row.file_size
                             self._processed_filenames.add(row.file_path)
                             self._processed_basename.setdefault(
                                 PurePath(row.file_path).name, []
-                            ).append((row.file_path, None, None))
+                            ).append((row.file_path, size, mt))
+                            if size is not None and mt is not None:
+                                self._processed_stat[row.file_path] = (size, mt)
                             smoothness_count += 1
                         if row.file_hash:
                             self._processed_hashes.add(row.file_hash)

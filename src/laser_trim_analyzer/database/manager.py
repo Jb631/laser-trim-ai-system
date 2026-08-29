@@ -1015,6 +1015,31 @@ class DatabaseManager:
                     logger.warning(f"ft theory_data migration: {e}")
                 session.rollback()
 
+            # Migration: Add file_size / file_modified_date to the Final Test
+            # and Smoothness result tables (2026-08-29). ProcessedFile rows had
+            # them; these two didn't, so the incremental scan's stat fast-path
+            # could never apply to an FT/smoothness path — every known file was
+            # re-HASHED (full read over the share) on EVERY scan, and the heal
+            # pass only touched processed_files so it never got better. See
+            # Processor._is_processed / _load_processed_hashes.
+            stat_columns = {
+                "file_size": "INTEGER",
+                "file_modified_date": "DATETIME",
+            }
+            for tbl in ("final_test_results", "smoothness_results"):
+                for col_name, col_type in stat_columns.items():
+                    try:
+                        session.execute(text(
+                            f"ALTER TABLE {tbl} ADD COLUMN {col_name} {col_type}"
+                        ))
+                        session.commit()
+                        logger.info(f"Migration: Added {col_name} column to {tbl}")
+                    except Exception as e:
+                        if ("duplicate column" not in str(e).lower()
+                                and "already exists" not in str(e).lower()):
+                            logger.warning(f"{tbl}.{col_name} migration warning: {e}")
+                        session.rollback()
+
             # Migration: Relax NOT NULL on sigma_gradient / sigma_threshold / sigma_pass
             # so UNTRIMMED tracks (test-sweep-only files with no laser-trim runs) can
             # be saved with sigma metrics absent. SQLite can't ALTER COLUMN nullability
@@ -1267,7 +1292,7 @@ class DatabaseManager:
             ).first()
 
             if existing:
-                logger.info(f"Updating existing analysis: {analysis.metadata.filename}")
+                logger.debug(f"Updating existing analysis: {analysis.metadata.filename}")
                 return self._update_existing_analysis(session, analysis)
 
             # No existing record, create new one
@@ -1285,7 +1310,7 @@ class DatabaseManager:
                 success=is_success,
             )
 
-            logger.info(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
+            logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
             return db_analysis.id
 
     def save_batch(self, analyses: List[AnalysisResult]) -> List[int]:
@@ -3371,7 +3396,7 @@ class DatabaseManager:
 
             # Flush to ensure changes are written
             session.flush()
-            logger.info(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
+            logger.debug(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
             return existing.id
 
         # If no existing record found, create new
@@ -4622,7 +4647,9 @@ class DatabaseManager:
         metadata: Dict[str, Any],
         tracks: List[Dict[str, Any]],
         test_results: Dict[str, Any],
-        file_hash: str
+        file_hash: str,
+        file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
     ) -> int:
         """
         Save a Final Test result to the database.
@@ -4632,6 +4659,9 @@ class DatabaseManager:
             tracks: List of track data dicts with positions, errors, etc.
             test_results: Dict with pass/fail for each test type
             file_hash: SHA256 hash of the file
+            file_size: On-disk size, recorded for the incremental scan's stat
+                fast-path (without it every later scan re-hashes this file)
+            file_modified_date: On-disk mtime, same purpose
 
         Returns:
             ID of saved FinalTestResult
@@ -4653,7 +4683,14 @@ class DatabaseManager:
                         .first()
                     )
                     if existing:
-                        logger.info(f"Final test already exists: {metadata.get('filename')}")
+                        # Stamp the stat onto a legacy row while we're here —
+                        # this file was fully read to get here, so record what
+                        # it costs nothing to record.
+                        if file_size is not None and existing.file_size is None:
+                            existing.file_size = file_size
+                            existing.file_modified_date = file_modified_date
+                            session.commit()
+                        logger.debug(f"Final test already exists: {metadata.get('filename')}")
                         return existing.id
 
                     # Determine overall status from corrected track-level
@@ -4678,6 +4715,8 @@ class DatabaseManager:
                         file_path=str(metadata.get("file_path", "")),
                         file_hash=file_hash,
                         file_date=metadata.get("file_date"),
+                        file_size=file_size,
+                        file_modified_date=file_modified_date,
                         model=metadata.get("model", "unknown"),
                         serial=metadata.get("serial", "unknown"),
                         test_date=metadata.get("test_date"),
@@ -4729,7 +4768,7 @@ class DatabaseManager:
                         session.add(db_track)
 
                     session.commit()
-                    logger.info(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
+                    logger.debug(f"Saved Final Test: {metadata.get('filename')} (ID: {result_id}, linked_trim: {linked_trim_id})")
                     return result_id
 
             except IntegrityError as e:
@@ -5372,13 +5411,22 @@ class DatabaseManager:
 
         return stats
 
-    def rematch_unlinked_final_tests(self) -> Dict[str, int]:
+    def rematch_unlinked_final_tests(self, models=None) -> Dict[str, int]:
         """Link-only rematch pass over FT records that have NO trim link yet.
 
         Why this exists (2026-07-13): matching runs at FT save time, so an FT
         file processed in the same batch as — or any batch before — its trim
         file finds nothing and stays NULL forever. Nothing ever retried. This
         runs automatically after every processing batch.
+
+        `models`: restrict the pass to FT records for these models (the models
+        whose trims were just saved). A late trim can only create links for
+        the models in that batch, so re-attempting the other ~100k
+        permanently-unmatchable FT records every batch is pure waste — the
+        work log read "Unlinked-FT rematch: 0 of 101,605 linked" after every
+        single batch. Scoping is by NORMALIZED model family, not by exact
+        name, so the model-variant stage ("8275" FT ↔ "8275A" trim) still
+        works. None = every unlinked record (full pass).
 
         Bulk strategy: instead of the per-record query cascade (minutes for
         30k+ records), load every candidate trim ONCE, build serial-form
@@ -5393,6 +5441,7 @@ class DatabaseManager:
         import bisect
         import time as _time
         from collections import defaultdict
+        from sqlalchemy import update as sa_update
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
@@ -5402,14 +5451,31 @@ class DatabaseManager:
         stats = {"unlinked": 0, "new_matches": 0, "still_unmatched": 0,
                  "seconds": 0.0, "models": []}
         window = timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+        families = None
+        if models is not None:
+            families = {self._normalize_model(m) for m in models if m}
+            if not families:
+                return stats
 
         with self._write_lock:
             with self.session() as session:
+                # Narrow column query, not full ORM entities: the loop reads
+                # five fields, and materializing 100k+ FinalTestResult objects
+                # (with their identity map) was minutes of the post-batch cost.
                 pending = (
-                    session.query(DBFinalTestResult)
+                    session.query(
+                        DBFinalTestResult.id, DBFinalTestResult.model,
+                        DBFinalTestResult.serial, DBFinalTestResult.file_date,
+                        DBFinalTestResult.test_date,
+                    )
                     .filter(DBFinalTestResult.linked_trim_id.is_(None))
                     .all()
                 )
+                if families is not None:
+                    # Normalization is Python-side, so the family filter can't
+                    # be pushed into SQL — but the rows are narrow tuples.
+                    pending = [ft for ft in pending if ft.model
+                               and self._normalize_model(ft.model) in families]
                 stats["unlinked"] = len(pending)
                 if not pending:
                     return stats
@@ -5429,6 +5495,8 @@ class DatabaseManager:
                     DBAnalysisResult.serial.isnot(None),
                 ).order_by(DBAnalysisResult.file_date).all()
                 for tid, tmodel, tserial, tdate in rows:
+                    if families is not None and self._normalize_model(tmodel) not in families:
+                        continue    # can't match any in-scope FT record
                     s_low = tserial.lower().strip()
                     s_norm = self._normalize_serial(tserial)
                     exact_ix[(tmodel, s_low)].append((tdate, tid))
@@ -5450,6 +5518,7 @@ class DatabaseManager:
                     return None
 
                 affected_models = set()
+                link_updates: List[Dict[str, Any]] = []
                 for ft in pending:
                     test_date = ft.file_date or ft.test_date
                     if not ft.model or not ft.serial or not test_date:
@@ -5504,20 +5573,30 @@ class DatabaseManager:
                         stats["still_unmatched"] += 1
                         continue
                     days_diff = (test_date - hit[0]).days
-                    ft.linked_trim_id = hit[1]
-                    ft.match_confidence = self._calculate_match_confidence(
-                        days_diff, exact_serial=exact_serial, model_variant=variant) * penalty
-                    ft.days_since_trim = days_diff
-                    ft.match_method = method
+                    link_updates.append({
+                        "id": ft.id,
+                        "linked_trim_id": hit[1],
+                        "match_confidence": self._calculate_match_confidence(
+                            days_diff, exact_serial=exact_serial,
+                            model_variant=variant) * penalty,
+                        "days_since_trim": days_diff,
+                        "match_method": method,
+                    })
                     affected_models.add(ft.model)
                     stats["new_matches"] += 1
                 stats["models"] = sorted(affected_models)
 
+                if link_updates:
+                    # Bulk UPDATE ... WHERE id = :id (one statement, no ORM
+                    # objects) — same four columns the loop used to assign.
+                    session.execute(sa_update(DBFinalTestResult), link_updates)
                 session.commit()
 
         stats["seconds"] = round(_time.time() - t0, 1)
         logger.info(
-            "Unlinked-FT rematch: %d of %d linked in %.1fs (%d still unmatched)",
+            "Unlinked-FT rematch (%s): %d of %d linked in %.1fs (%d still unmatched)",
+            "all models" if families is None
+            else f"{len(families)} model(s) from this batch",
             stats["new_matches"], stats["unlinked"], stats["seconds"],
             stats["still_unmatched"],
         )
@@ -6784,25 +6863,47 @@ class DatabaseManager:
                     success=True,
                 ))
 
-    def update_processed_file_stats(self, entries) -> int:
-        """Repair size/mtime on ProcessedFile rows after a hash-confirm.
+    def update_processed_file_stats(self, entries) -> Dict[str, int]:
+        """Repair size/mtime on processed rows after a hash-confirm.
 
         entries: iterable of (file_hash, file_size, file_modified_date).
         Lets the incremental scan's stat fast-path work on the next run for
         rows whose recorded stat was missing or stale. Content identity is
         unchanged — only rows matched by their content hash are updated.
+
+        Covers final_test_results and smoothness_results as well as
+        processed_files (2026-08-29): FT rows never carried a stat, so the
+        heal never reached them and every scan re-hashed the whole FT share.
+        The first scan after this ships hash-confirms once, stamps the rows,
+        and every scan after that is pure in-memory.
+
+        Returns rows updated PER TABLE plus "total". Per-table counts, not one
+        number, because the old single count hid the bug for six weeks: the
+        scan logged "Repaired stat records for 150,938 processed files" while
+        the UPDATE matched ~0 rows (FT files have no processed_files row).
+        The caller logs queued-vs-updated so a silent no-op can't hide again.
         """
-        updated = 0
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            SmoothnessResult as DBSmoothnessResult,
+        )
+
+        tables = (("processed_files", DBProcessedFile),
+                  ("final_test_results", DBFinalTestResult),
+                  ("smoothness_results", DBSmoothnessResult))
+        counts: Dict[str, int] = {name: 0 for name, _ in tables}
         with self._write_lock:
             with self.session() as session:
                 for file_hash, file_size, file_modified_date in entries:
-                    updated += session.query(DBProcessedFile).filter(
-                        DBProcessedFile.file_hash == file_hash
-                    ).update({
-                        DBProcessedFile.file_size: file_size,
-                        DBProcessedFile.file_modified_date: file_modified_date,
-                    })
-        return updated
+                    for name, model in tables:
+                        counts[name] += session.query(model).filter(
+                            model.file_hash == file_hash
+                        ).update({
+                            model.file_size: file_size,
+                            model.file_modified_date: file_modified_date,
+                        })
+        counts["total"] = sum(counts[name] for name, _ in tables)
+        return counts
 
     def recompute_overall_statuses(self, dry_run: bool = True,
                                    batch_size: int = 1000) -> Dict[str, Any]:
@@ -7576,9 +7677,15 @@ class DatabaseManager:
     # =========================================================================
 
     def save_smoothness_result(
-        self, metadata: Dict[str, Any], tracks: List[Dict[str, Any]], file_hash: str
+        self, metadata: Dict[str, Any], tracks: List[Dict[str, Any]], file_hash: str,
+        file_size: Optional[int] = None,
+        file_modified_date: Optional[datetime] = None,
     ) -> int:
-        """Save an Output Smoothness result. Returns ID."""
+        """Save an Output Smoothness result. Returns ID.
+
+        file_size / file_modified_date feed the incremental scan's stat
+        fast-path (see save_final_test).
+        """
         from laser_trim_analyzer.database.models import (
             SmoothnessResult as DBSmoothnessResult,
             SmoothnessTrack as DBSmoothnessTrack,
@@ -7614,6 +7721,9 @@ class DatabaseManager:
                         existing.max_smoothness_value = max_smooth
                         existing.avg_smoothness_value = avg_smooth
                         existing.smoothness_pass = passes
+                        if file_size is not None:
+                            existing.file_size = file_size
+                            existing.file_modified_date = file_modified_date
                         if metadata.get("file_date"):
                             existing.file_date = metadata.get("file_date")
                         if metadata.get("test_date"):
@@ -7640,7 +7750,7 @@ class DatabaseManager:
                             )
                             session.add(db_track)
 
-                        logger.info(
+                        logger.debug(
                             f"Updated Smoothness: {metadata.get('filename')} "
                             f"(ID: {existing.id}, max={max_smooth:.4f}, spec={spec}, "
                             f"tracks={len(tracks)})"
@@ -7657,6 +7767,8 @@ class DatabaseManager:
                         file_path=str(metadata.get("file_path", "")),
                         file_hash=file_hash,
                         file_date=metadata.get("file_date"),
+                        file_size=file_size,
+                        file_modified_date=file_modified_date,
                         model=metadata.get("model", "unknown"),
                         serial=metadata.get("serial", "unknown"),
                         element_label=metadata.get("element_label"),
@@ -7689,7 +7801,7 @@ class DatabaseManager:
                         )
                         session.add(db_track)
 
-                    logger.info(f"Saved Smoothness: {metadata.get('filename')} (ID: {result_id})")
+                    logger.debug(f"Saved Smoothness: {metadata.get('filename')} (ID: {result_id})")
                     return result_id
 
             except IntegrityError:

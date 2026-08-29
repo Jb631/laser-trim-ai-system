@@ -799,6 +799,11 @@ class FinalTestResult(Base):
     file_path = Column(Text)
     file_hash = Column(String(64))  # SHA256 hash for deduplication
     file_date = Column(DateTime)  # From filename parsing
+    # On-disk stat recorded at save time. Without these the incremental scan
+    # had to HASH (fully read, over the share) every known FT file on every
+    # scan — the 170k-file lockup. With them the check is pure in-memory.
+    file_size = Column(Integer)
+    file_modified_date = Column(DateTime)
 
     # Basic properties - required for production
     model = Column(String(50), nullable=False)
@@ -1297,6 +1302,9 @@ class SmoothnessResult(Base):
     file_path = Column(Text)
     file_hash = Column(String(64))
     file_date = Column(DateTime)
+    # Same stat fast-path fields as FinalTestResult (see there).
+    file_size = Column(Integer)
+    file_modified_date = Column(DateTime)
     model = Column(String(50), nullable=False)
     serial = Column(String(100), nullable=False)
     element_label = Column(String(30))

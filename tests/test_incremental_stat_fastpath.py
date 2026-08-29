@@ -117,7 +117,7 @@ def test_update_processed_file_stats_persists(tmp_path):
         file_modified_date=datetime(2020, 1, 1),
     )
     n = db.update_processed_file_stats([(fh, 100, datetime(2026, 7, 6))])
-    assert n == 1
+    assert n["processed_files"] == 1 and n["total"] == 1
 
     from laser_trim_analyzer.database.models import ProcessedFile
     with db.session() as s:

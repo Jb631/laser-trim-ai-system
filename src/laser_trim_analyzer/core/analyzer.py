@@ -199,7 +199,7 @@ class Analyzer:
         test_volts = track_data.get("test_volts")
         exclude_indices = parse_exclude_points(track_data.get("exclude_points"))
 
-        logger.info(f"Analyzing track {track_id}: {len(positions)} points")
+        logger.debug(f"Analyzing track {track_id}: {len(positions)} points")
 
         # Validate data
         if len(positions) < 10 or len(errors) < 10:

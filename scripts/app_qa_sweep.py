@@ -54,6 +54,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 import sqlite3  # noqa: E402
+from sqlalchemy import text as sqlalchemy_text  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 RESULTS: list = []
@@ -68,6 +69,109 @@ def warn(name, detail=""):
     RESULTS.append(("WARN", name, detail))
     print(f"WARN | {name}" + (f" | {detail}" if detail else ""))
 
+
+def check_ft_incremental_fastpath() -> None:
+    """FT incremental fast-path contract (2026-08-29 processing-speed fix).
+
+    Standalone by design: it builds its own throwaway DB from real FT sample
+    files, so it runs (and must pass) on a machine that has no copy of the
+    work database. Run just this section with:
+        python scripts/app_qa_sweep.py --only ft-fastpath
+    """
+    from laser_trim_analyzer.core.processor import Processor
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import FinalTestResult as DBFT
+
+    # ---- FT incremental fast-path: stats stamped, second scan hashes nothing -
+    # The 2026-08-29 fix. final_test_results had no size/mtime, so every known
+    # FT file was re-HASHED (full read over the share) on every scan — 70
+    # minutes for the 171k-file FT folder. Assert the contract end to end on
+    # real FT files, against a throwaway DB: (1) saved rows carry the stat,
+    # (2) a second pass settles every file in memory, (3) a row whose stat is
+    # NULL (legacy) heals itself after one verification pass.
+    import shutil, tempfile  # noqa: E402
+    from laser_trim_analyzer.database import manager as _dbmod  # noqa: E402
+    from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage  # noqa: E402
+    ft_src = sorted(p for p in (REPO / "Work Files" / "Sample_Base_2026-04-10"
+                                / "Test Station").rglob("*.xls*") if p.is_file())[:4]
+    if ft_src:
+        tmp = Path(tempfile.mkdtemp(prefix="ltaqa_ft_"))
+        saved_global = _dbmod._db_manager
+        try:
+            for f in ft_src:
+                shutil.copy2(f, tmp / f.name)          # copy2 keeps the mtime
+            ftdb = DatabaseManager(tmp / "ft_qa.db")
+            _dbmod._db_manager = ftdb                  # processor saves FT here
+
+            def _run_batch(turbo=10 ** 9):
+                # turbo=1 forces the PARALLEL two-phase filter; the default
+                # keeps the sequential one. Both must reach the same verdict.
+                proc = Processor(use_ml=False)
+                proc.config.processing.turbo_mode_threshold = turbo
+                files, stats = ProcessPage._discover(None, str(tmp))
+                files = [Path(f) for f in files if f.lower().endswith((".xls", ".xlsx"))]
+                gen = proc.process_batch(files, incremental=True, disk_stats=stats)
+                out = []
+                try:
+                    while True:
+                        out.append(next(gen))
+                except StopIteration as stop:
+                    return proc, out, stop.value
+                return proc, out, None
+
+            p1, res1, sum1 = _run_batch()
+            errs = [r for r in res1 if getattr(r.overall_status, "name", "") == "ERROR"]
+            check("FT fast-path: first pass parsed the sample FT files",
+                  len(res1) >= len(ft_src) and not errs,
+                  f"yielded={len(res1)} errors={len(errs)}"
+                  + (f" | {errs[0].errors[0][:70]}" if errs and errs[0].errors else ""))
+            with ftdb.session() as fs:
+                rows = fs.query(DBFT.file_path, DBFT.file_size,
+                                DBFT.file_modified_date).all()
+            check("FT fast-path: every saved row carries file_size + mtime",
+                  bool(rows) and all(r.file_size is not None
+                                     and r.file_modified_date is not None for r in rows),
+                  f"rows={len(rows)} "
+                  f"null={sum(1 for r in rows if r.file_size is None or r.file_modified_date is None)}")
+
+            for label, turbo in (("sequential", 10 ** 9), ("parallel", 1)):
+                p2, res2, sum2 = _run_batch(turbo)
+                s2 = p2.last_scan_stats
+                check(f"FT fast-path: second scan hashes/stats NOTHING ({label})",
+                      s2.get("needs_hash") == 0 and s2.get("memory_hits") == len(ft_src)
+                      and getattr(sum2, "processed", -1) == 0,
+                      f"needs_hash={s2.get('needs_hash')} memory_hits={s2.get('memory_hits')} "
+                      f"processed={getattr(sum2, 'processed', None)}")
+
+            # Legacy rows (saved before the columns existed) must self-repair:
+            # one verification pass, then back to pure memory.
+            with ftdb.session() as fs:
+                fs.execute(sqlalchemy_text(
+                    "UPDATE final_test_results SET file_size = NULL, "
+                    "file_modified_date = NULL"))
+                fs.commit()
+            p3, _res3, sum3 = _run_batch(turbo=1)   # parallel verify pool
+            s3 = p3.last_scan_stats
+            with ftdb.session() as fs:
+                healed = fs.query(DBFT).filter(DBFT.file_size.isnot(None)).count()
+                total_ft = fs.query(DBFT).count()
+            check("FT fast-path: NULL-stat rows verify once, then heal",
+                  s3.get("needs_hash") == len(ft_src) and healed == total_ft
+                  and getattr(sum3, "processed", -1) == 0,
+                  f"verified={s3.get('needs_hash')} healed={healed}/{total_ft} "
+                  f"heal_updated={s3.get('heal_updated')} processed={getattr(sum3, 'processed', None)}")
+            p4, _res4, _sum4 = _run_batch()
+            check("FT fast-path: the scan after the heal is memory-only again",
+                  p4.last_scan_stats.get("needs_hash") == 0,
+                  f"needs_hash={p4.last_scan_stats.get('needs_hash')}")
+        except Exception as exc:
+            check("FT fast-path: incremental scan contract", False,
+                  f"{type(exc).__name__}: {exc}")
+        finally:
+            _dbmod._db_manager = saved_global
+            shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        warn("FT fast-path: no Test Station sample files to scan")
 
 def main() -> int:
     from laser_trim_analyzer.database.manager import DatabaseManager
@@ -286,6 +390,9 @@ def main() -> int:
                 check(f"pipeline: {f.name[:40]}", False, f"{type(exc).__name__}: {exc}")
     else:
         warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
+
+    check_ft_incremental_fastpath()
+
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
         track_id="T1", status=AnalysisStatus.PASS, linearity_spec=0.05,
@@ -606,11 +713,27 @@ def main() -> int:
             check(f"data quality: no future-dated records in {table}", True)
 
     raw.close()
+    return _tally()
+
+
+def _tally() -> int:
     fails = sum(1 for s, *_ in RESULTS if s == "FAIL")
     warns = sum(1 for s, *_ in RESULTS if s == "WARN")
     print(f"\n==== APP QA SWEEP: {len(RESULTS)} checks, {fails} FAIL, {warns} WARN ====")
     return fails
 
 
+# Sections that stand alone (own temp DB, no work database needed), so they
+# can be run on a machine that has no copy of the real data:
+#     python scripts/app_qa_sweep.py --only ft-fastpath
+STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath}
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--only":
+        name = sys.argv[2]
+        if name not in STANDALONE:
+            raise SystemExit(f"unknown section {name!r}; have: {', '.join(STANDALONE)}")
+        STANDALONE[name]()
+        raise SystemExit(_tally())
     raise SystemExit(main())

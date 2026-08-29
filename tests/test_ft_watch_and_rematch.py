@@ -269,3 +269,70 @@ def test_normalize_model_glued_letter():
     assert n("8508-A") == "8508"
     assert n("8340-1") == "8340-1"      # numeric configs stay distinct
     assert n("2475-08") == "2475-8"
+
+
+def test_rematch_scoped_to_batch_models_skips_the_rest(tmp_path):
+    """2026-08-29: the work log read "Unlinked-FT rematch: 0 of 101,605
+    linked" after EVERY batch — 100k permanently-unmatchable records
+    re-attempted each time. Scoping to the models just saved does the same
+    work for those models and skips the rest."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "scope.db")
+    ftd = datetime(2025, 5, 10)
+    with db.session() as s:
+        _add_ft(s, "8340", "17", ftd, StatusType.PASS, 0, DBFT)
+        _add_trim(s, "8340", "17", ftd - timedelta(days=5), StatusType.PASS,
+                  0, DBAR, SystemType)
+        _add_ft(s, "2511", "9", ftd, StatusType.PASS, 1, DBFT)      # out of scope
+        _add_trim(s, "2511", "9", ftd - timedelta(days=5), StatusType.PASS,
+                  1, DBAR, SystemType)
+        s.commit()
+
+    stats = db.rematch_unlinked_final_tests(models={"8340"})
+    assert stats["unlinked"] == 1 and stats["new_matches"] == 1
+    with db.session() as s:
+        assert s.query(DBFT).filter_by(model="8340").first().linked_trim_id is not None
+        assert s.query(DBFT).filter_by(model="2511").first().linked_trim_id is None
+
+    # The skipped model still links on its own batch.
+    assert db.rematch_unlinked_final_tests(models={"2511"})["new_matches"] == 1
+
+
+def test_rematch_scope_keeps_model_variant_links(tmp_path):
+    """Scoping is by normalized FAMILY: a trim saved as "7953-1" must still
+    rematch the FT record filed under the variant "7953-1A"."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "scopevar.db")
+    ftd = datetime(2025, 6, 1)
+    with db.session() as s:
+        _add_ft(s, "7953-1A", "42", ftd, StatusType.FAIL, 0, DBFT)
+        _add_trim(s, "7953-1", "42", ftd - timedelta(days=10), StatusType.PASS,
+                  0, DBAR, SystemType)
+        s.commit()
+    stats = db.rematch_unlinked_final_tests(models={"7953-1"})
+    assert stats["unlinked"] == 1 and stats["new_matches"] == 1
+    with db.session() as s:
+        assert s.query(DBFT).first().match_method == "model_variant"
+
+
+def test_rematch_empty_model_scope_does_nothing(tmp_path):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, FinalTestResult as DBFT, StatusType, SystemType)
+
+    db = DatabaseManager(tmp_path / "noscope.db")
+    ftd = datetime(2025, 5, 10)
+    with db.session() as s:
+        _add_ft(s, "8340", "17", ftd, StatusType.PASS, 0, DBFT)
+        _add_trim(s, "8340", "17", ftd - timedelta(days=5), StatusType.PASS,
+                  0, DBAR, SystemType)
+        s.commit()
+    assert db.rematch_unlinked_final_tests(models=set())["new_matches"] == 0
+    with db.session() as s:
+        assert s.query(DBFT).first().linked_trim_id is None

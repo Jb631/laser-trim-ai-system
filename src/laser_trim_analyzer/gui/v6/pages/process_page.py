@@ -4,6 +4,7 @@ done-counter; final tally from BatchSummary."""
 import logging
 import os
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import List
 
@@ -142,9 +143,13 @@ class ProcessPage(PageBase):
                 self._progress.add_counts(counts, reasons)
 
     def _run(self, folder: str, incremental: bool = True) -> None:
+        import time as _time
+        phases = {}                      # phase name -> seconds (one log line)
         self.safe_after(lambda: self._progress.set_idle(
             "Scanning folder for Excel files… (network folders can take a minute)"))
+        _t = _time.monotonic()
         files, disk_stats = self._discover(folder)
+        phases["walk"] = _time.monotonic() - _t
         if not files:
             self.safe_after(lambda: self._progress.set_idle("No .xls/.xlsx files found."))
             self.safe_after(lambda: self._start_button.configure(state="normal"))
@@ -154,7 +159,6 @@ class ProcessPage(PageBase):
         self.safe_after(lambda t_=total: self._progress.set_idle(
             f"Checking {t_:,} files against the database…"))
 
-        import time as _time
         lock = threading.Lock()
         pend = {"done": 0, "file": "", "scan_msg": None, "moved": False,
                 "counts": {"passed": 0, "warnings": 0, "failed": 0,
@@ -183,6 +187,8 @@ class ProcessPage(PageBase):
                                       disk_stats=disk_stats)
         summary = None
         models_in_batch = set()
+        new_trims = 0            # trim analyses actually saved by THIS batch
+        _t = _time.monotonic()
         try:
             while True:
                 result = next(gen)
@@ -190,6 +196,7 @@ class ProcessPage(PageBase):
                 if getattr(result, "file_type", "trim") == "trim":
                     try:
                         self.app.db.save_analysis(result)
+                        new_trims += 1
                     except Exception as exc:
                         # A duplicate hitting the unique constraint means the
                         # unit is ALREADY in the database (e.g. same file under
@@ -208,6 +215,7 @@ class ProcessPage(PageBase):
                 _note_bucket(bucket, reason)
         except StopIteration as stop:
             summary = stop.value
+            phases["process"] = _time.monotonic() - _t
             ticker_stop.set()
             self.safe_after(lambda: self._pending_flush(lock, pend, total))
         except Exception as exc:
@@ -229,25 +237,38 @@ class ProcessPage(PageBase):
             # a third of recent unmatched FT records had an in-window trim
             # that simply wasn't in the DB yet). Must run before the drift
             # advance so escape/FT metrics see the fresh links.
-            try:
-                rl = self.app.db.rematch_unlinked_final_tests()
-                if rl.get("new_matches"):
-                    self.safe_after(lambda n=rl["new_matches"]: self._progress.set_idle(
-                        f"Re-linked {n:,} final-test records to their trim data…"))
-                    # Late links carry OLD test dates — often behind the
-                    # escape/FT watermark, so advance would never feed them
-                    # (code-review finding #3). Retrain the affected models so
-                    # their baselines rebuild WITH the new links.
-                    try:
-                        from laser_trim_analyzer.ml.drift_training import train_drift_detector
-                        for m in rl.get("models", []):
-                            train_drift_detector(self.app.db, model=m)
-                        logger.info("Retrained %d models after FT relink",
-                                    len(rl.get("models", [])))
-                    except Exception:
-                        logger.exception("Post-relink retrain failed")
-            except Exception:
-                logger.exception("Post-batch FT rematch failed")
+            #
+            # Only when this batch actually SAVED trims, and only for those
+            # models. FT records are matched at their own save time, so a
+            # rematch can only ever help trims that arrived after their FT
+            # record — no new trim, nothing to relink. An FT-only batch used
+            # to re-attempt all ~100k unmatchable records ("0 of 101,605
+            # linked" in the work log, after every batch).
+            if new_trims:
+                _t = _time.monotonic()
+                try:
+                    rl = self.app.db.rematch_unlinked_final_tests(models=models_in_batch)
+                    if rl.get("new_matches"):
+                        self.safe_after(lambda n=rl["new_matches"]: self._progress.set_idle(
+                            f"Re-linked {n:,} final-test records to their trim data…"))
+                        # Late links carry OLD test dates — often behind the
+                        # escape/FT watermark, so advance would never feed them
+                        # (code-review finding #3). Retrain the affected models
+                        # so their baselines rebuild WITH the new links.
+                        _tr = _time.monotonic()
+                        try:
+                            from laser_trim_analyzer.ml.drift_training import train_drift_detector
+                            for m in rl.get("models", []):
+                                train_drift_detector(self.app.db, model=m)
+                            logger.info("Retrained %d models after FT relink",
+                                        len(rl.get("models", [])))
+                        except Exception:
+                            logger.exception("Post-relink retrain failed")
+                        phases["retrain"] = _time.monotonic() - _tr
+                except Exception:
+                    logger.exception("Post-batch FT rematch failed")
+                phases["rematch"] = _time.monotonic() - _t
+            _t = _time.monotonic()
             try:
                 from laser_trim_analyzer.ml.drift_training import advance_drift_state
                 advanced = 0
@@ -257,10 +278,38 @@ class ProcessPage(PageBase):
                             "across %d models", advanced, len(models_in_batch))
             except Exception:
                 logger.exception("Drift advance after batch failed")
+            phases["advance"] = _time.monotonic() - _t
+        self._log_phases(phases, total, processor, summary)
         # Authoritative final tally from BatchSummary (reconciles live counts incl. skips).
         if summary is not None:
             self.safe_after(lambda sm=summary: self._progress.set_final(sm))
         self.safe_after(self._on_done)
+
+    @staticmethod
+    def _log_phases(phases: dict, total: int, processor: Processor,
+                    summary) -> None:
+        """One INFO line per batch naming every phase and what it cost.
+
+        When a batch is slow, this line says WHICH phase — the 2026-07/08
+        work investigations each cost hours of log archaeology because the
+        only timings were per-file DEBUG noise that had already rotated away.
+        """
+        s = getattr(processor, "last_scan_stats", {}) or {}
+        parts = [f"walk {phases.get('walk', 0):.1f}s ({total:,} files)",
+                 f"load {s.get('load_seconds', 0):.1f}s",
+                 f"check {s.get('check_seconds', 0):.1f}s "
+                 f"({s.get('memory_hits', 0):,} known in memory)",
+                 f"verify {s.get('needs_hash', 0):,} files "
+                 f"{s.get('verify_seconds', 0):.1f}s",
+                 f"process {getattr(summary, 'processed', 0):,} files "
+                 f"{phases.get('process', 0):.1f}s"]
+        parts.append(f"rematch {phases['rematch']:.1f}s" if "rematch" in phases
+                     else "rematch skipped (no new trims)")
+        if "retrain" in phases:
+            parts.append(f"retrains {phases['retrain']:.1f}s")
+        if "advance" in phases:
+            parts.append(f"advance {phases['advance']:.1f}s")
+        logger.info("Batch phases: %s", " | ".join(parts))
 
     def _discover(self, folder: str):
         """Walk the tree AND capture (size, mtime) from the directory listings.
@@ -270,26 +319,43 @@ class ProcessPage(PageBase):
         processor makes the incremental check pure in-memory comparison
         (V4-era seconds) instead of one stat() round trip per file
         (Friday 2026-07-10: 73 minutes for 170k files).
+
+        Parallel BFS, 8 workers: over SMB the cost of a listing is round-trip
+        LATENCY, not local work, so overlapping 8 of them is ~8x on a deep
+        tree. Each worker only READS one directory and RETURNS what it found;
+        the results are merged here, on one thread, so no lock is needed and
+        no shared structure can be torn. Unreadable entries/folders are
+        skipped exactly as before — a permissions hiccup must not end the walk.
         """
-        out: List[str] = []
-        stats: dict = {}
-        stack = [folder]
-        while stack:
-            d = stack.pop()
+        def scan_one(d):
+            subdirs, found = [], []
             try:
                 with os.scandir(d) as it:
                     for entry in it:
                         try:
                             if entry.is_dir(follow_symlinks=False):
-                                stack.append(entry.path)
+                                subdirs.append(entry.path)
                             elif entry.name.lower().endswith((".xls", ".xlsx")):
-                                out.append(entry.path)
                                 st = entry.stat()
-                                stats[entry.path] = (st.st_size, st.st_mtime)
+                                found.append((entry.path, (st.st_size, st.st_mtime)))
                         except OSError:
                             continue   # unreadable entry: skip, don't die
             except OSError:
                 logger.warning("Could not list folder: %s", d)
+            return subdirs, found
+
+        out: List[str] = []
+        stats: dict = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            pending = {pool.submit(scan_one, folder)}
+            while pending:      # ends when no directory is left in flight
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    subdirs, found = fut.result()
+                    for path, st in found:
+                        out.append(path)
+                        stats[path] = st
+                    pending |= {pool.submit(scan_one, d) for d in subdirs}
         return out, stats
 
     def _on_done(self):

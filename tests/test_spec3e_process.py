@@ -1,4 +1,5 @@
 """Spec 3e — Process page. Foundations §1.5. Fixtures in tests/conftest.py."""
+from pathlib import Path
 
 # ---- Task 1: FolderPicker -------------------------------------------------
 
@@ -75,3 +76,46 @@ def test_apply_progress_counts_skipped_from_processing_status(make_app):
     page._apply_progress(ProcessingStatus(filename="a.xls", status="skipped", progress_percent=10.0), total=100)
     assert page._progress._counters["skipped"] == 1
     assert page._done == 1
+
+
+# ---- 2026-08-29: parallel folder walk -------------------------------------
+
+def test_discover_finds_every_excel_file_with_stats(tmp_path):
+    """Parallel BFS must return the same (files, stats) as the old serial
+    walk: every .xls/.xlsx at any depth, each with its (size, mtime), and
+    nothing else."""
+    from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
+
+    made = []
+    for rel in ("a.xls", "sub/b.xlsx", "sub/deep/c.XLS", "sub/deep/deeper/d.xls"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x" * (len(rel) + 10))
+        made.append(str(p))
+    (tmp_path / "notes.txt").write_text("ignored")
+    (tmp_path / "sub" / "empty_dir").mkdir()
+
+    files, stats = ProcessPage._discover(None, str(tmp_path))
+    assert sorted(files) == sorted(made)
+    assert set(stats) == set(made)
+    for f in made:
+        st = Path(f).stat()
+        assert stats[f] == (st.st_size, st.st_mtime)
+
+
+def test_discover_survives_unreadable_folder(tmp_path):
+    """A permissions hiccup on one folder must not end the walk."""
+    import os
+    from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage
+
+    good = tmp_path / "good.xls"
+    good.write_bytes(b"data")
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "hidden.xls").write_bytes(b"data")
+    os.chmod(blocked, 0o000)
+    try:
+        files, _ = ProcessPage._discover(None, str(tmp_path))
+    finally:
+        os.chmod(blocked, 0o755)
+    assert str(good) in files

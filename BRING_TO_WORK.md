@@ -1,5 +1,26 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-08-29 — scanning is fixed (do nothing but pull)
+The Final Test folder took 68–75 minutes to scan every time because the app
+re-read all 171,000 files to identify them. It no longer needs to.
+
+1. `git pull`, then launch as normal. The database upgrades itself at
+   startup — no buttons, no terminal.
+2. **The first Final Test scan after the pull is a one-time verification
+   pass.** The progress bar says "Verifying changed/legacy files… X/Y".
+   Expect roughly 15–30 minutes on the share (it's the old work, done once,
+   8 files at a time instead of one). Let it finish.
+3. **Every scan after that costs about walk-time — a minute or two** for the
+   full FT folder. Small daily folders are near-instant. Nothing to press:
+   the records stamp themselves during that first pass.
+4. The log now prints one line per batch with every phase and its cost:
+   `Batch phases: walk 41.2s (171,006 files) | load 2.1s | check 1.4s
+   (170,940 known in memory) | verify 66 files 8.2s | process 66 files 240s |
+   rematch skipped (no new trims) | advance 3.2s`
+   If anything is ever slow again, that line names the phase — send it over
+   and it's diagnosed in one read. Per-file lines moved to DEBUG, so the
+   5 MB log now holds days instead of three hours.
+
 ## ⚡ 2026-07-14 morning (after tonight's push, commit 3d894fa)
 1. `git pull` on main.
 2. Settings → ML Training → **Retrain drift detector** once (~1 min). The

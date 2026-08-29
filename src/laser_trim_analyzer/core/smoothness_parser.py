@@ -150,7 +150,7 @@ class SmoothnessParser:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        logger.info(f"Parsing Output Smoothness file: {file_path.name}")
+        logger.debug(f"Parsing Output Smoothness file: {file_path.name}")
 
         file_hash = self._calculate_hash(file_path)
         metadata = self._parse_filename(file_path.name)

@@ -72,7 +72,7 @@ class ExcelParser:
         if file_path.suffix.lower() not in EXCEL_EXTENSIONS:
             raise ValueError(f"Not an Excel file: {file_path}")
 
-        logger.info(f"Parsing file: {file_path.name}")
+        logger.debug(f"Parsing file: {file_path.name}")
 
         # Calculate file hash for deduplication (separate read, that's fine)
         file_hash = self._calculate_hash(file_path)
@@ -710,7 +710,7 @@ class ExcelParser:
                     errors.append(float(m) - float(t))
                     recovered += 1
                 if recovered > 0:
-                    logger.info(
+                    logger.debug(
                         f"{file_path.name} [{trimmed_sheet}]: recovered "
                         f"{recovered} missing error(s) from measured-theory"
                     )
@@ -866,7 +866,7 @@ class ExcelParser:
                                 recomputed.append(measured_full[mi] - theory_coarse[i])
                             if len(recomputed) == n_pos:
                                 untrimmed_errors = recomputed
-                                logger.info(
+                                logger.debug(
                                     f"{file_path.name} [{untrimmed_sheet}]: untrimmed "
                                     f"measured is 2x grid resolution "
                                     f"({len(measured_full)} vs {n_pos} pts) — recomputed "
@@ -896,7 +896,7 @@ class ExcelParser:
                             # original error column
                             if len(recovered) > len(untrimmed_errors):
                                 untrimmed_errors = recovered
-                                logger.info(
+                                logger.debug(
                                     f"Recovered {len(recovered)} untrimmed errors "
                                     f"from measured-theory"
                                 )
@@ -1362,12 +1362,12 @@ def detect_file_type(file_path: Path) -> str:
     # These files contaminate the database if processed as trim data
     for pattern in NON_TRIM_FILENAME_PATTERNS:
         if pattern in filename_lower:
-            logger.info(f"Skipping non-trim file ('{pattern}' in filename): {filename}")
+            logger.debug(f"Skipping non-trim file ('{pattern}' in filename): {filename}")
             return "non_trim"
 
     for regex in NON_TRIM_FILENAME_REGEXES:
         if re.search(regex, filename_lower):
-            logger.info(f"Skipping non-trim file (regex '{regex}'): {filename}")
+            logger.debug(f"Skipping non-trim file (regex '{regex}'): {filename}")
             return "non_trim"
 
     # Check for Rout_ prefix (Format 2 final test)
@@ -1412,7 +1412,7 @@ def detect_file_type(file_path: Path) -> str:
             for sheet_lower in sheet_names_lower:
                 for pattern in NON_TRIM_FILENAME_PATTERNS:
                     if pattern in sheet_lower:
-                        logger.info(f"Skipping non-trim file ('{pattern}' in sheet name): {filename}")
+                        logger.debug(f"Skipping non-trim file ('{pattern}' in sheet name): {filename}")
                         return "non_trim"
 
             # Check for trim indicators in sheet names

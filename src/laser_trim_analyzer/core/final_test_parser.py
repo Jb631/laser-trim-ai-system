@@ -64,7 +64,7 @@ class FinalTestParser:
         if file_path.suffix.lower() not in EXCEL_EXTENSIONS:
             raise ValueError(f"Not an Excel file: {file_path}")
 
-        logger.info(f"Parsing Final Test file: {file_path.name}")
+        logger.debug(f"Parsing Final Test file: {file_path.name}")
 
         # Calculate file hash for deduplication (separate file read, that's fine)
         file_hash = self._calculate_hash(file_path)
