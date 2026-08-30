@@ -206,7 +206,7 @@ class FocusListZone(ctk.CTkFrame):
         # the membership window the computation actually uses.
         rule = (f"a model is here only while its last {RECENT_K} lots include "
                 "one outside its own control limits · ranked by extra failing "
-                "units per week")
+                "units per week, discounted for lots run clean since")
         if anchor is None:
             return rule
         return f"as of last processed data {anchor:%b %d} · {rule}"

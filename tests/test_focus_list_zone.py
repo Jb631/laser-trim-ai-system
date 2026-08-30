@@ -196,7 +196,8 @@ def test_zone_heading_counts_and_caption_names_the_anchor(tk_root):
     assert "FOCUS — drifting now, biggest first (2)" in texts
     assert (f"as of last processed data {res.anchor:%b %d} · a model is here "
             f"only while its last {RECENT_K} lots include one outside its own "
-            "control limits · ranked by extra failing units per week") in texts
+            "control limits · ranked by extra failing units per week, "
+            "discounted for lots run clean since") in texts
 
 
 def test_zone_empty_state_names_last_processed(tk_root):
