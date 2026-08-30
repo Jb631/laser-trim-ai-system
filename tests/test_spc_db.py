@@ -196,6 +196,103 @@ def _status(model, per_metric):
         worst_metric=worst, worst_alert_type=None, per_metric=pm)
 
 
+def test_clean_since_counts_the_closed_lots_after_the_blip(db):
+    """A model that blipped and then ran clean is recovering, not burning.
+
+    James (2026-08-30, on 6126): a single hairline excursion followed by clean
+    lots ranked above models that are failing right now. The count of closed,
+    in-band lots since the newest alarm is the evidence that separates them.
+    """
+    # BLIP: 10 quiet lots, one 60% excursion, then TWO clean lots.
+    for k in range(10):
+        _add_lot(db, "BLIP", D0 + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "BLIP", D0 + timedelta(days=7 * 10), 20, 12)      # the excursion
+    for k in (11, 12):
+        _add_lot(db, "BLIP", D0 + timedelta(days=7 * k), 20, 2)    # ran clean since
+    # CLOCK runs a week past BLIP and so owns the anchor: BLIP's own last lot
+    # is then CLOSED (an open lot is never recovery proof — see below).
+    _seed(db, "CLOCK", start=D0 + timedelta(days=14))
+
+    e = next(x for x in compute_focus_list(db).focus if x.model == "BLIP")
+    assert not e.series.points[-1].is_open              # fixture sanity
+    assert e.clean_since == 2
+    assert e.rank_score == pytest.approx(e.excess_per_week / 3.0)
+    assert e.sub_line.endswith(" · has run clean since")
+    # The MEASURED cost is never discounted — only the urgency is.
+    assert e.excess_per_week == pytest.approx(
+        max(e.p_recent - e.p_base, 0.0) * e.units_per_week)
+
+
+def test_no_clean_marker_when_the_newest_closed_lot_is_the_flagged_one(db):
+    """Still burning: nothing has run since the alarm, so nothing is discounted."""
+    for k in range(11):
+        _add_lot(db, "HOT", D0 + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "HOT", D0 + timedelta(days=7 * 11), 20, 12)       # newest = alarm
+    _seed(db, "CLOCK", start=D0 + timedelta(days=7))               # closes HOT's lot
+
+    e = next(x for x in compute_focus_list(db).focus if x.model == "HOT")
+    assert e.series.points[-1].ooc and not e.series.points[-1].is_open
+    assert e.clean_since == 0
+    assert e.rank_score == pytest.approx(e.excess_per_week)
+    assert "has run clean since" not in e.sub_line
+
+
+def test_recovered_blip_ranks_below_a_smaller_active_fire(db):
+    """The ranking answers "what do I work on", not "who blew up hardest"."""
+    # RECOVERED: a big 60% blip, then two clean closed lots.
+    for k in range(10):
+        _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * 10), 20, 12)
+    for k in (11, 12):
+        _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * k), 20, 2)
+    # ACTIVE: a smaller 35% excursion — but it is the newest lot, still burning.
+    start_a = D0 + timedelta(days=7)
+    for k in range(12):
+        _add_lot(db, "ACTIVE", start_a + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "ACTIVE", start_a + timedelta(days=7 * 12), 20, 7)
+
+    focus = compute_focus_list(db).focus
+    rec = next(e for e in focus if e.model == "RECOVERED")
+    act = next(e for e in focus if e.model == "ACTIVE")
+    assert rec.clean_since == 2 and act.clean_since == 0
+    # The old rule put the recovered model first; the discount crosses them.
+    assert rec.excess_per_week > act.excess_per_week
+    assert rec.rank_score < act.rank_score
+    order = [e.model for e in focus]
+    assert order.index("ACTIVE") < order.index("RECOVERED")
+
+
+def test_focus_is_ordered_by_rank_score(db):
+    """The list's own contract, asserted on the list it actually returns."""
+    for k in range(10):
+        _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * 10), 20, 12)
+    for k in (11, 12):
+        _add_lot(db, "RECOVERED", D0 + timedelta(days=7 * k), 20, 2)
+    start_a = D0 + timedelta(days=7)
+    for k in range(12):
+        _add_lot(db, "ACTIVE", start_a + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "ACTIVE", start_a + timedelta(days=7 * 12), 20, 7)
+
+    scores = [e.rank_score for e in compute_focus_list(db).focus]
+    assert len(scores) >= 2
+    assert all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+
+
+def test_an_open_lot_is_never_recovery_proof(db):
+    """A lot that may still be receiving units cannot prove anything yet."""
+    for k in range(11):
+        _add_lot(db, "OPENISH", D0 + timedelta(days=7 * k), 20, 2)
+    _add_lot(db, "OPENISH", D0 + timedelta(days=7 * 11), 20, 12)   # the excursion
+    _add_lot(db, "OPENISH", D0 + timedelta(days=7 * 12), 20, 2)    # clean, but OPEN
+
+    e = next(x for x in compute_focus_list(db).focus if x.model == "OPENISH")
+    assert e.series.points[-1].is_open                             # fixture sanity
+    assert e.clean_since == 0
+    assert "has run clean since" not in e.sub_line
+    assert e.rank_score == pytest.approx(e.excess_per_week)
+
+
 def test_driver_picks_worst_process_metric_and_formats_it(db, monkeypatch):
     from laser_trim_analyzer.ml import manager as ml_manager
     from laser_trim_analyzer.ml.drift_types import DriftTier

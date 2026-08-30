@@ -292,11 +292,29 @@ def main() -> int:
               not no_recent_ooc, f"offenders={no_recent_ooc[:5]}")
         check("chronic: no entry has a recent out-of-control lot",
               not chronic_alarming, f"offenders={chronic_alarming[:5]}")
-        # (c) The order IS the page's promise: biggest cost first.
-        ex = [e.excess_per_week for e in res_a.focus]
-        check("focus: ranked by excess units/week, descending",
-              all(ex[i] >= ex[i + 1] for i in range(len(ex) - 1)),
-              f"top={[round(x, 2) for x in ex[:5]]}")
+        # (c) The order IS the page's promise: biggest cost first — discounted
+        # by the lots a model has run CLEAN since its alarm (2026-08-30, the
+        # 6126 case: a hairline blip that has behaved since is not today's
+        # fire). rank_score is what the list sorts on; excess_per_week stays
+        # the measured number the verdict quotes, so it is NOT monotonic here.
+        rs = [e.rank_score for e in res_a.focus]
+        bad_score = [f"{e.model}: rank={e.rank_score:.3f} vs "
+                     f"excess={e.excess_per_week:.3f}/(1+{e.clean_since})"
+                     for e in res_a.focus
+                     if abs(e.rank_score
+                            - e.excess_per_week / (1.0 + e.clean_since)) > 1e-9]
+        check("focus: ranked by rank_score (excess discounted by clean lots), "
+              "descending",
+              all(rs[i] >= rs[i + 1] for i in range(len(rs) - 1)) and not bad_score,
+              f"top={[(e.model, round(e.rank_score, 2), e.clean_since) for e in res_a.focus[:5]]}"
+              + (f" bad_score={bad_score[:3]}" if bad_score else ""))
+        # The recovery marker and the ranking must tell the same story: a row
+        # that says "has run clean since" is exactly a row that was discounted.
+        marker_bad = [e.model for e in res_a.focus
+                      if (" · has run clean since" in e.sub_line)
+                      != (e.clean_since >= 1)]
+        check("focus: the 'has run clean since' marker matches the discount",
+              not marker_bad, f"offenders={marker_bad[:5]}")
         # (d) The one-computation guarantee: every number in a row falls out of
         # the series that row carries (same math as test_verdict_numbers_match_series).
         mismatched = []

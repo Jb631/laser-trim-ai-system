@@ -289,12 +289,21 @@ class FocusEntry:
     # "driver unclear — open the model". A hint from the drift detector, not
     # a p-chart verdict: the full diagnosis stays on the Model page.
     driver: Optional[str] = None
+    # Recovery evidence (James, 2026-08-30, on 6126: a single hairline blip that
+    # has run clean since ranked #3, above models burning right now). See
+    # `_clean_since` for what counts as proof.
+    clean_since: int = 0
+    # What the list SORTS by: the measured cost, discounted by that evidence.
+    # Deliberately separate from `excess_per_week` — the verdict keeps quoting
+    # the MEASURED number, because discounting the measurement would misstate
+    # what the excursion actually cost. Only the urgency is discounted.
+    rank_score: float = 0.0
 
 
 @dataclass
 class FocusResult:
     """What the FOCUS page shows: today's fires, the known-bad, and the clock."""
-    focus: List[FocusEntry]         # ranked by excess_per_week desc
+    focus: List[FocusEntry]         # ranked by rank_score desc
     chronic: List[FocusEntry]       # ranked by p_base * units_per_week desc
     anchor: Optional[datetime]      # newest usable file date; None = empty DB
 
@@ -459,6 +468,35 @@ def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
                  requal_floor=_requal_floor(db, model))
 
 
+def _clean_since(series: SpcSeries) -> int:
+    """How many CLOSED, in-band lots this model has run since its newest alarm.
+
+    James, 2026-08-30, looking at 6126: one hairline blip (33.3% against a
+    33.2% limit) that has run clean ever since sat at #3 on the list, above
+    models that are failing units right now. "Blipped, recovering" and
+    "burning" are different problems and the ranking has to say which is which.
+
+    Two rules make this honest evidence rather than a way to bury a fire:
+
+      * Counted from the NEWEST alarming lot, so a model that blipped, ran
+        clean for a month, then blipped again is back at zero — the clean run
+        in the middle is no longer proof of anything.
+      * An OPEN lot never counts. It may still be receiving units, so its rate
+        can only get worse; calling it proof would let a model discount itself
+        with a lot that hasn't finished. Only finished lots are evidence.
+
+    In-band means the lot's rate is inside its own limit. `ooc` alone is not
+    enough: a lot too small to alarm (below `MIN_LOT_BASELINE_N`) can still sit
+    well above the limit, and counting that as "ran clean" would be false.
+    """
+    points = series.points
+    flagged = [i for i, pt in enumerate(points) if pt.ooc]
+    if not flagged:
+        return 0                      # nothing to recover from
+    return sum(1 for pt in points[flagged[-1] + 1:]
+               if not pt.is_open and isfinite(pt.ucl) and pt.value <= pt.ucl)
+
+
 def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     """Rank every active model by what its drift is costing THIS week.
 
@@ -470,6 +508,11 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     from 5% to 15% on a 10-unit-a-week trickle is a smaller fire than one that
     went from 8% to 12% on 400 units a week, and the person choosing what to
     work on this morning needs the list to say so.
+
+    That cost is then discounted by the lots the model has run CLEAN since its
+    alarm (`_clean_since`) — a blip that has settled down is not the same
+    problem as one that is still burning, and the list ranks on the discounted
+    `rank_score` while every printed number stays the measured one.
     """
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR
     from laser_trim_analyzer.database.models import StatusType
@@ -533,6 +576,10 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
             # 10, show the tenth; above it, the tenth is noise.
             shown_excess = (f"{excess_per_week:.1f}" if excess_per_week < 10
                             else f"{excess_per_week:.0f}")
+            # Recovery discount. The evidence goes in the sub-line HERE, inside
+            # the one computation, so the list, the chart caption and the export
+            # cannot end up disagreeing about whether a model has settled down.
+            clean_since = _clean_since(series)
             focus.append(FocusEntry(
                 model=model, series=series, excess_per_week=excess_per_week,
                 units_per_week=units_per_week, p_base=series.p_base,
@@ -543,7 +590,13 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
                 sub_line=(f"{len(flagged)} of last {RECENT_K} lots out of control"
                           f" · fail rate {series.p_base * 100:.0f}%"
                           f" → {p_recent * 100:.0f}%"
-                          f" · ~{units_per_week:.0f} units/wk")))
+                          f" · ~{units_per_week:.0f} units/wk"
+                          + (" · has run clean since" if clean_since >= 1 else "")),
+                clean_since=clean_since,
+                # Each closed clean lot halves, thirds, quarters the urgency —
+                # never zeroes it. A model that blipped is still on the list
+                # (the excursion happened), just below the ones burning today.
+                rank_score=excess_per_week / (1.0 + clean_since)))
         elif series.chronic:
             # Bad but steady. Nothing changed today, so it is not a fire — and
             # re-alarming on it every morning is how a list loses its audience.
@@ -556,7 +609,9 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
                          "— capability problem, not drift"),
                 sub_line=f"~{units_per_week:.0f} units/wk"))
 
-    focus.sort(key=lambda e: e.excess_per_week, reverse=True)
+    # Sorted by the DISCOUNTED cost, not the raw one: "what should I work on
+    # this morning" is not the same question as "who blew up hardest recently".
+    focus.sort(key=lambda e: e.rank_score, reverse=True)
     # Enrich the rows that will actually render with their WHY. This runs
     # AFTER membership and ranking so its cost is bounded by the list length
     # (~a dozen models), not the model count — and a failure here degrades to
