@@ -234,9 +234,10 @@ class FocusListZone(ctk.CTkFrame):
                 self._rendered.append(row)
             if len(res.focus) > FOCUS_CAP:
                 hidden = len(res.focus) - FOCUS_CAP
+                noun = "model" if hidden == 1 else "models"
                 self._more_btn.configure(
                     text=(f"show only the top {FOCUS_CAP}" if self._expanded else
-                          f"+ {hidden} more models with smaller signals — show all"))
+                          f"+ {hidden} more {noun} with smaller signals — show all"))
                 self._more_btn.pack(side="top", fill="x", pady=(t.SPACE_XS, 0))
 
         if res.chronic:

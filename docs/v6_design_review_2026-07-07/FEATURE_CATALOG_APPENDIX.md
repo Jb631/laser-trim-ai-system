@@ -252,6 +252,7 @@ dashboard | Row click → Model | Routes model | dashboard_page.py:120
 ```
 
 ### Triage
+> Note (2026-08-30): the card wall below (`Flagged cards zone` / `Model alert card`) was replaced by the FOCUS list — see `docs/superpowers/specs/2026-08-29-focus-spc-redesign-design.md`. Rows below kept as historical record, not rewritten.
 ```
 triage | Scope toggle | Active / All models (default Active) | triage_page.py:33
 triage | Flagged cards zone | "Needs attention (N)" scrollable card grid | flagged_cards_zone.py:17,30

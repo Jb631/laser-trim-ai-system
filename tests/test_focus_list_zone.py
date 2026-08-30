@@ -179,6 +179,12 @@ def test_zone_caps_at_seven_rows_and_expands(tk_root):
     assert len(z._rows) == FOCUS_CAP
 
 
+def test_zone_expander_singular_for_one_hidden_model(tk_root):
+    z = _zone(tk_root)
+    z.set_result(_result([_entry(f"M{i}") for i in range(FOCUS_CAP + 1)]))
+    assert z._more_btn.cget("text") == "+ 1 more model with smaller signals — show all"
+
+
 def test_zone_hides_the_expander_when_everything_fits(tk_root):
     z = _zone(tk_root)
     z.set_result(_result([_entry("A")]))

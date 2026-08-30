@@ -1,5 +1,34 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-08-30 — Triage's card wall is now FOCUS (do nothing but pull)
+1. `git pull`, then launch as normal. No new database schema, nothing to
+   retrain, nothing to click — the drift detectors you already trained keep
+   running exactly as before.
+2. **Triage's card wall is gone.** The top of the page is now
+   **FOCUS — drifting now, biggest first**: a ranked list of models, biggest
+   problem first, measured in extra failing units per week instead of an
+   alert tier. A model only shows up while an out-of-control lot sits inside
+   its last 5 lots — and it drops off the list BY ITSELF once a few lots run
+   clean. No dismiss button, no queue to clear, nothing to acknowledge.
+   Underneath FOCUS, a smaller "chronically high, stable" strip holds models
+   that run a bad rate consistently but aren't currently drifting — that's a
+   different problem (capability, not drift), so it's kept out of FOCUS
+   instead of re-alarming on it every morning.
+3. **The Model page headline chart changed.** It now opens on the SPC lot
+   chart — fail rate per production lot, with a shaded band showing what
+   that model's own history says a lot that size can do by chance, and
+   flagged lots annotated in plain English. The old unit-dot chart is still
+   there, one click away behind a **Lots · SPC / Units** toggle at the top
+   of the chart.
+4. **Evidence Excel export gains a sheet.** "Export evidence pack" now
+   includes a "Lots (SPC)" sheet that mirrors exactly what the FOCUS row and
+   the Model-page chart show on screen — same numbers, so the export can
+   never contradict what you saw in the app.
+5. **Your turn:** do one manual smoke pass after pulling — open Triage,
+   click a FOCUS row (it should land you on that model's page, focused on
+   the metric that triggered it), then toggle Lots/Units on the Model-page
+   chart. That's the only step left undone; it needs eyes on the real GUI.
+
 ## ⚡ 2026-08-29 — scanning is fixed (do nothing but pull)
 The Final Test folder took 68–75 minutes to scan every time because the app
 re-read all 171,000 files to identify them. It no longer needs to.

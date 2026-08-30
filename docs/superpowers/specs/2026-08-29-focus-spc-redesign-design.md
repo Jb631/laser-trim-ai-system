@@ -168,3 +168,37 @@ Printable president-ready SPC report = later increment (approach C), not v1.
 - Western Electric run rules, Cpk-on-row, printable SPC report (increment 2).
 - FT-lot FOCUS membership (drill-down only in v1).
 - Any change to drift training/advance internals.
+
+## Implementation addenda (2026-08-30)
+
+Recorded after Tasks 1–7 shipped (HEAD `d007381`). Two intentional deviations
+from this spec's original wording, plus three implementation details worth
+knowing before touching the code.
+
+1. **`compute_focus_list` returns `FocusResult`, not `list[FocusEntry]`.**
+   `FocusResult(focus, chronic, anchor)` bundles the ranked list with the
+   chronic strip and the anchor date the whole page reads from — the three
+   things Triage needs from one call, not three. `ml/spc.py`.
+2. **`judged` requires 8 TOTAL lots in the window, not 8 baseline lots.**
+   This spec's Architecture section reads "if baseline has < `MIN_LOTS_TRAIN`
+   =8 usable lots → not judged"; the shipped rule is `len(lots) <
+   MIN_LOTS_TRAIN (8) or len(baseline) < MIN_BASELINE_LOTS (3)` — i.e. 8 lots
+   total (baseline + recent K combined), of which at least 3 must be
+   baseline. This is the mockup rule James approved live against the work
+   DB (resolved in Task 1), not a reinterpretation of the design intent.
+   `ml/spc.py`.
+3. **The chronic strip renders inside the FOCUS scroll body, not below it.**
+   `_chronic_heading` / `_chronic_body` are children of the same
+   `CTkScrollableFrame` (`self._body`) the ranked rows use, packed at a fixed
+   `BODY_HEIGHT`. Packed on `self` instead, five chronic rows plus their
+   heading grew the zone ~214px and starved the browse list beneath it at
+   the app's 1400x900 default (Task 5 geometry pass). `focus_list_zone.py`.
+4. **Sparklines draw the whole series window, not a trimmed last-20 tail.**
+   `_draw_sparkline` plots every point in `entry.series.points` (up to
+   `SERIES_WINDOW`=30 lots), because `flag_idx`/`old_idx` are positions into
+   that same list — trimming the drawn points without re-deriving the
+   indices would silently mark the wrong lots. `focus_list_zone.py`.
+5. **Verdict excess formats `.1f` below 10, `.0f` at or above 10.** "failing
+   ~N more units/week" reads e.g. `~7.3` under 10 units/week, where a whole
+   number would round away the only signal there is, and `~42` at or above
+   it, where a decimal would read as false precision. `ml/spc.py`.
