@@ -115,3 +115,61 @@ def test_evidence_pack_carries_the_lot_series(db, tmp_path):
     assert sheet["Out of control"].tolist() == [p.ooc for p in series.points]
     assert sheet["Fail rate"].tolist() == pytest.approx([p.value for p in series.points])
     assert sheet["Units"].tolist() == [p.n for p in series.points]
+
+
+def test_open_lot_uses_the_database_clock_not_the_models_own(db):
+    """ONE clock: a model idle for weeks is CLOSED on its own chart too.
+
+    The bug this pins: `compute_spc_series` used to anchor on the MODEL'S own
+    newest sample, which is a 0-day gap by construction — so every model's last
+    lot read as OPEN forever, the Model page drew a hollow "still filling"
+    marker, and the evidence pack printed `Open lot: TRUE` on the final row of
+    every export. The focus list, anchored on the whole database, said CLOSED
+    for the same lot. Openness must be one answer, not two.
+    """
+    a_last = _seed(db, "A", fails_last=12)                    # stops producing here
+    b_last = _seed(db, "B", start=D0 + timedelta(days=21))    # keeps running 21d longer
+
+    res = compute_focus_list(db)
+    assert res.anchor == b_last                               # the DB-global clock
+    series = compute_spc_series(db, "A")                      # no anchor passed
+    assert series.points[-1].end == a_last
+    assert series.points[-1].is_open is False                 # 21 days idle == closed
+
+    entry = next(e for e in res.focus if e.model == "A")       # A really is a fire
+    assert entry.series.points[-1].is_open == series.points[-1].is_open
+
+
+def test_explicit_anchor_still_wins(db):
+    """A caller that knows better (a replay, a report as-of a date) is obeyed."""
+    a_last = _seed(db, "A", fails_last=12)
+    _seed(db, "B", start=D0 + timedelta(days=21))
+    series = compute_spc_series(db, "A", anchor=a_last)
+    assert series.points[-1].is_open is True
+
+
+def test_a_metrics_own_newer_data_is_never_truncated(db):
+    """The clock must not cut off a metric that lives in a different table.
+
+    The anchor does two jobs: it dates the openness question AND sets `_clean`'s
+    forward cut. Final test happens days AFTER the trim and smoothness is its
+    own file, so those lots can legitimately postdate the newest trim file. A
+    clock taken only from `analysis_results` would drop the newest lots of those
+    metrics off the chart without saying a word.
+    """
+    from laser_trim_analyzer.database.models import SmoothnessResult
+
+    _seed(db, "T", fails_last=2)                     # sets the analysis_results clock
+    last_sm = D0 + timedelta(days=120)               # smoothness runs well past it
+    with db.session() as s:
+        for k in range(12):
+            day = D0 + timedelta(days=10 * k) if k < 11 else last_sm
+            for i in range(5):
+                s.add(SmoothnessResult(
+                    filename=f"S_{k}_{i}.xls", model="S", serial=f"S-{k}-{i}",
+                    overall_status=StatusType.PASS,
+                    file_date=day, max_smoothness_value=0.01 + 0.001 * i))
+
+    series = compute_spc_series(db, "S", "max_smoothness_value")
+    assert series.points, "smoothness series must not come back empty"
+    assert series.points[-1].end == last_sm          # newest lot survived the cut

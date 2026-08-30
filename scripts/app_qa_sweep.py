@@ -258,7 +258,8 @@ def main() -> int:
     from laser_trim_analyzer.ml.manager import (
         list_known_models, active_model_set,
         preview_alert_count, get_model_drift_status)
-    from laser_trim_analyzer.ml.spc import RECENT_K, compute_focus_list
+    from laser_trim_analyzer.ml.spc import (
+        RECENT_K, compute_focus_list, compute_spc_series)
     known = {m.model for m in list_known_models(db)}
     try:
         res_a = compute_focus_list(db)
@@ -321,6 +322,28 @@ def main() -> int:
         check("focus: every listed model exists in analysis_results",
               listed <= db_models,
               f"listed={len(listed)} missing={sorted(listed - db_models)[:5]}")
+        # (f) ONE CLOCK. Clicking a FOCUS row opens the Model page, which calls
+        # `compute_spc_series` with NO anchor — as does the evidence pack. If
+        # that default clock is not the same DB-global one the list used, the
+        # click-through contradicts the row it came from: a lot the list calls
+        # closed draws hollow ("· open") on the chart and exports as
+        # `Open lot: TRUE`. Capped at 5 models — one query each.
+        parity_bad = []
+        sampled = res_a.focus[:5]
+        for e in sampled:
+            try:
+                pt_series = compute_spc_series(db, e.model, e.series.metric).points[-1]
+                pt_row = e.series.points[-1]
+                if (pt_series.is_open, pt_series.ooc) != (pt_row.is_open, pt_row.ooc):
+                    parity_bad.append(
+                        f"{e.model}: click-through=(open={pt_series.is_open},"
+                        f"ooc={pt_series.ooc}) row=(open={pt_row.is_open},"
+                        f"ooc={pt_row.ooc})")
+            except Exception as exc:      # a crash here IS the regression
+                parity_bad.append(f"{e.model}: {type(exc).__name__}: {exc}")
+        check("focus: click-through series agrees with the row on the last lot "
+              "(open + out-of-control)",
+              not parity_bad, f"checked={len(sampled)} offenders={parity_bad[:3]}")
     counts = {}
     for preset in ("loose", "standard", "tight", "strict"):
         p = preview_alert_count(db, preset)

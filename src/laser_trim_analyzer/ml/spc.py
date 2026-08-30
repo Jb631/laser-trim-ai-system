@@ -92,6 +92,17 @@ class SpcSeries:
     chronic: bool                   # judged, p_base >= CHRONIC_PBAR, no recent ooc
 
 
+def _horizon(anchor: Optional[datetime] = None) -> datetime:
+    """One day past `anchor` (default: the wall clock) — the file-date junk cut.
+
+    Defined ONCE because four places need the identical cut: `_clean`, the
+    staleness test in `compute_focus_list`, `_newest_usable`, and the SQL in
+    `_db_anchor`. If two of them disagreed by a day, a junk-dated row could set
+    the clock in one and be dropped in another.
+    """
+    return (anchor or datetime.now()) + timedelta(days=1)
+
+
 def _clean(samples: List[Tuple[datetime, float]], *, anchor: datetime,
            requal_floor: Optional[datetime]) -> List[Tuple[datetime, float]]:
     """Drop the samples SPC must never see.
@@ -103,7 +114,7 @@ def _clean(samples: List[Tuple[datetime, float]], *, anchor: datetime,
     the newest lot and own the whole verdict. One day of slack covers timezone
     and end-of-shift skew.
     """
-    horizon = anchor + timedelta(days=1)
+    horizon = _horizon(anchor)
     out: List[Tuple[datetime, float]] = []
     for d, v in samples:
         if d is None or v is None:
@@ -340,9 +351,47 @@ def _newest_usable(dates) -> Optional[datetime]:
     would otherwise drag the anchor months into the future and make every
     active model look stale.
     """
-    horizon = datetime.now() + timedelta(days=1)
+    horizon = _horizon()
     usable = [d for d in dates if d is not None and d <= horizon]
     return max(usable) if usable else None
+
+
+def _db_anchor(db) -> Optional[datetime]:
+    """The WHOLE DATABASE's newest usable file date — the app's one clock.
+
+    Deliberately not per-model. A model's own newest sample is a zero-day gap
+    with itself, so anchoring a series on it makes that model's last lot OPEN
+    forever: the chart draws a "still filling" marker and the evidence pack
+    prints `Open lot: TRUE` on the final row of every export, for a model that
+    stopped running three weeks ago. The focus list has always used this global
+    clock, so the two surfaces contradicted each other on the same lot.
+
+    Filters mirror `compute_focus_list`'s row query exactly (gradeable statuses,
+    a real model, a real date) so the clock the list computes in memory and the
+    clock a single-model call reads from SQL cannot come out different — the
+    sweep's FOCUS parity check guards that. Cheap: one indexed MAX, not a scan
+    of every row. A DB that cannot answer (old schema, locked file) returns
+    None and the caller falls back, rather than taking the page down.
+    """
+    from sqlalchemy import func
+
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+    from laser_trim_analyzer.database.models import StatusType
+    try:
+        with db.session() as s:
+            newest = (s.query(func.max(DBAR.file_date))
+                      .filter(DBAR.overall_status.in_([StatusType.PASS,
+                                                       StatusType.WARNING,
+                                                       StatusType.FAIL]),
+                              DBAR.model.isnot(None),
+                              DBAR.file_date.isnot(None),
+                              # Junk cut in SQL: a mis-set clock's row would win
+                              # a bare MAX and drag the anchor months forward.
+                              DBAR.file_date <= _horizon())
+                      .scalar())
+    except Exception:
+        return None
+    return _newest_usable([newest])       # one definition of "usable", re-applied
 
 
 def _fail_flag(status) -> float:
@@ -360,6 +409,18 @@ def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
 
     Reuses the trainer's sample loader so the chart cannot be looking at a
     different population than the detector that alarmed on it.
+
+    ONE COMPUTATION, ONE CLOCK. The default anchor is the whole DATABASE's
+    newest usable date (`_db_anchor`), the same clock `compute_focus_list`
+    uses — never this model's own newest sample. Openness is the reason: a
+    model is judged against a zero-day gap with itself, so a per-model anchor
+    marks its last lot OPEN forever, and a lot the FOCUS row calls CLOSED would
+    show up hollow ("· open") the moment the user clicked through to the chart,
+    and print `Open lot: TRUE` in the AS9100 evidence pack. The list and every
+    click-through must answer that question the same way.
+
+    An explicitly passed `anchor` still wins — a replay or an as-of-date report
+    is asking to be judged from a different moment, and that is legitimate.
     """
     from laser_trim_analyzer.ml.drift_training import _load_samples_with_dates
     from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS
@@ -368,9 +429,19 @@ def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
                for (d, v, _rid) in _load_samples_with_dates(db, model, metric)
                if d is not None and v is not None]
     if anchor is None:
-        # No usable dates at all: fall back to the wall clock so the builder
-        # still returns an honest empty/unjudged series instead of raising.
-        anchor = _newest_usable(d for d, _v in samples) or datetime.now()
+        # The DB-global clock, but never OLDER than this metric's own newest
+        # sample. The anchor does two jobs — it dates the openness question AND
+        # sets `_clean`'s forward cut — and most watched metrics do not live in
+        # analysis_results: final test happens days AFTER the trim, so an FT lot
+        # can legitimately postdate the newest trim file, and anchoring it on
+        # the trim clock would silently drop the newest FT lots off the chart.
+        # For linearity — the only metric the focus list builds, so the only one
+        # parity is asserted on — `_db_anchor` is the max over every model's
+        # usable rows and so is already >= this model's, making the max() a
+        # no-op there. `_db_anchor` is None only on an empty/unreadable DB.
+        anchor = (max(filter(None, (_db_anchor(db),
+                                    _newest_usable(d for d, _v in samples))),
+                      default=None) or datetime.now())
     build = (build_fraction_series if metric in FRACTION_METRICS
              else build_continuous_series)
     return build(model, metric, samples, anchor=anchor,
@@ -409,7 +480,7 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     floors = _requal_floors(db)
     active_floor = anchor - timedelta(days=ACTIVE_DAYS)
     volume_floor = anchor - timedelta(days=UNITS_WEEK_DAYS)
-    horizon = anchor + timedelta(days=1)                # same cut `_clean` uses
+    horizon = _horizon(anchor)                          # same cut `_clean` uses
     weeks = UNITS_WEEK_DAYS / 7.0
 
     focus: List[FocusEntry] = []

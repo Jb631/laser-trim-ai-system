@@ -368,8 +368,12 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
         "Lot start": _d(pt.start), "Lot end": _d(pt.end), "Units": pt.n,
         "Fail rate": pt.value,
         # The limit is recomputed from each lot's OWN size — 2 fails out of 5
-        # units is noise, 2 out of 200 is a signal (ml/spc.py).
-        "Expected max (UCL)": pt.ucl if isfinite(pt.ucl) else None,
+        # units is noise, 2 out of 200 is a signal (ml/spc.py). DISPLAY ONLY:
+        # a tiny lot's binomial band runs past 1.0, and "expected at most 125%"
+        # of a lot is nonsense on the page. The OOC comparison upstream uses
+        # the UNCLAMPED value and must stay exact — clamping the math would
+        # silently un-flag a small lot that really did fail 100%.
+        "Expected max (UCL)": min(pt.ucl, 1.0) if isfinite(pt.ucl) else None,
         "Out of control": pt.ooc,
         # An open lot may still be receiving units: a preview, not a verdict.
         "Open lot": pt.is_open,

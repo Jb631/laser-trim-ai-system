@@ -22,9 +22,12 @@ is the computation's call — it already drops models with no recent production 
 and dropping rows from it here would make the list contradict the rule printed
 directly above it.
 """
+import logging
 import threading
 
 import customtkinter as ctk
+
+logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
@@ -91,6 +94,11 @@ class TriagePage(PageBase):
                 recent_days=getattr(cfg, "recent_days", 90) if cfg else 90,
                 mps_models=getattr(cfg, "mps_models", None) if cfg else None)
         except Exception:
+            # The page still renders (an empty FOCUS list reads as "all models
+            # within tolerance"), so without this line a compute crash is
+            # indistinguishable from a clean shop floor. Log loudly, degrade
+            # quietly: the fallback below is deliberate, the silence was not.
+            logger.exception("Triage query failed")
             result, models, active = _EMPTY, [], set()
         last = max((m.last_processed for m in models if m.last_processed), default=None)
         return result, models, active, last
