@@ -141,6 +141,23 @@ def test_row_texts_without_an_anchor_omit_the_age():
     assert x["when"] == f"last lot {e.last_lot_end:%b %d}"
 
 
+def test_row_texts_carry_the_likely_driver_when_known():
+    """James (2026-08-30): the row must say WHY, not just who and how much."""
+    e = _entry()
+    e.driver = "Untrimmed resistance ↑ (+2.1σ vs its baseline)"
+    x = focus_row_texts(e, _anchor_of(e))
+    assert x["line3"] == ("likely driver: Untrimmed resistance ↑ "
+                          "(+2.1σ vs its baseline)")
+
+
+def test_row_texts_admit_when_the_driver_is_unknown():
+    """No flagged process metric -> say so honestly, never guess."""
+    e = _entry()
+    e.driver = None
+    x = focus_row_texts(e, _anchor_of(e))
+    assert x["line3"] == "driver unclear — open the model"
+
+
 # ---- the zone -------------------------------------------------------------
 
 def test_zone_heading_counts_and_caption_names_the_anchor(tk_root):

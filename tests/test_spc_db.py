@@ -173,3 +173,82 @@ def test_a_metrics_own_newer_data_is_never_truncated(db):
     series = compute_spc_series(db, "S", "max_smoothness_value")
     assert series.points, "smoothness series must not come back empty"
     assert series.points[-1].end == last_sm          # newest lot survived the cut
+
+
+# --------------------------------------------------------------------------
+# Likely-driver hint (James, 2026-08-30: rows must say WHY a model is listed)
+# --------------------------------------------------------------------------
+
+def _status(model, per_metric):
+    """Hand-built ModelDriftStatus so the selection logic is tested directly —
+    seeding real detector state rows would test the hydrator, not the picker."""
+    from laser_trim_analyzer.ml.drift_types import (
+        DriftTier, MetricStatus, ModelDriftStatus)
+    pm = {}
+    for m, (tier, base, std, recent, mag) in per_metric.items():
+        pm[m] = MetricStatus(metric=m, tier=tier, alert_type=None,
+                             magnitude=mag, baseline_mean=base,
+                             baseline_std=std, recent_mean=recent,
+                             recent_count=5, is_trained=True)
+    worst = max(pm, key=lambda k: int(pm[k].tier)) if pm else None
+    return ModelDriftStatus(model=model, overall_tier=max(
+        (s.tier for s in pm.values()), default=DriftTier.STABLE),
+        worst_metric=worst, worst_alert_type=None, per_metric=pm)
+
+
+def test_driver_picks_worst_process_metric_and_formats_it(db, monkeypatch):
+    from laser_trim_analyzer.ml import manager as ml_manager
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    from laser_trim_analyzer.ml.spc import _likely_driver
+
+    st = _status("M", {
+        # outcome metric — MUST never be the driver even at the worst tier
+        "linearity_fail_fraction": (DriftTier.OUT_OF_CONTROL, 0.1, 0.05, 0.5, 9.0),
+        # two process metrics; resistance has moved further
+        "untrimmed_resistance": (DriftTier.DRIFT, 1000.0, 50.0, 1105.0, 2.0),
+        "untrimmed_error_max": (DriftTier.WARNING, 0.02, 0.01, 0.025, 1.0),
+    })
+    monkeypatch.setattr(ml_manager, "get_model_drift_status",
+                        lambda _db, _m: st)
+    out = _likely_driver(db, "M")
+    assert out == "Untrimmed resistance ↑ (+2.1σ vs its baseline)"
+
+
+def test_driver_none_when_only_outcome_metrics_flag(db, monkeypatch):
+    from laser_trim_analyzer.ml import manager as ml_manager
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+    from laser_trim_analyzer.ml.spc import _likely_driver
+
+    st = _status("M", {
+        "linearity_fail_fraction": (DriftTier.OUT_OF_CONTROL, 0.1, 0.05, 0.5, 9.0),
+        "ft_fail_fraction": (DriftTier.DRIFT, 0.2, 0.05, 0.4, 3.0),
+    })
+    monkeypatch.setattr(ml_manager, "get_model_drift_status",
+                        lambda _db, _m: st)
+    assert _likely_driver(db, "M") is None
+
+
+def test_driver_survives_a_broken_detector(db, monkeypatch):
+    """The hint must degrade to None, never take the list down with it."""
+    from laser_trim_analyzer.ml import manager as ml_manager
+    from laser_trim_analyzer.ml.spc import _likely_driver
+
+    def _boom(_db, _m):
+        raise RuntimeError("hydration failed")
+    monkeypatch.setattr(ml_manager, "get_model_drift_status", _boom)
+    assert _likely_driver(db, "M") is None
+
+
+def test_focus_entries_carry_a_driver_field(db, monkeypatch):
+    from laser_trim_analyzer.ml import manager as ml_manager
+    from laser_trim_analyzer.ml.drift_types import DriftTier
+
+    _seed(db, "HOT", fails_last=12)
+    st = _status("HOT", {
+        "untrimmed_resistance": (DriftTier.DRIFT, 1000.0, 50.0, 1105.0, 2.0)})
+    monkeypatch.setattr(ml_manager, "get_model_drift_status",
+                        lambda _db, _m: st)
+    res = compute_focus_list(db)
+    assert res.focus and res.focus[0].driver == (
+        "Untrimmed resistance ↑ (+2.1σ vs its baseline)")
+    assert all(e.driver is None for e in res.chronic)

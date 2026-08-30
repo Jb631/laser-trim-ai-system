@@ -66,8 +66,14 @@ def focus_row_texts(entry: FocusEntry,
         # Same disclosure the chart makes with its hollow marker: a lot that may
         # still be receiving units is a preview, not a verdict.
         when += " · lot still open"
+    # The WHY line (James, 2026-08-30: the row said who and how much, "but it
+    # doesnt tell me if its resistance, linearity or why"). The driver is the
+    # drift watch's hint, preformatted in ml/spc.py; when the watch has no
+    # flagged process metric we say so honestly instead of guessing.
+    line3 = (f"likely driver: {entry.driver}" if entry.driver
+             else "driver unclear — open the model")
     return {"title": entry.model, "when": when,
-            "line1": entry.verdict, "line2": entry.sub_line}
+            "line1": entry.verdict, "line2": entry.sub_line, "line3": line3}
 
 
 def _draw_sparkline(ax, p: dict, t: ThemeManager) -> None:
@@ -329,11 +335,16 @@ class _FocusRow(ctk.CTkFrame):
                              font=t.font(t.SIZE_CAPTION),
                              text_color=t.TEXT_SECONDARY)
         line2.pack(side="top", fill="x")
+        line3 = ctk.CTkLabel(col, text=x["line3"], anchor="w", justify="left",
+                             font=t.font(t.SIZE_CAPTION),
+                             text_color=t.TEXT_SECONDARY)
+        line3.pack(side="top", fill="x")
 
         # Bind the widgets we created — explicitly, not by walking the tree:
         # CTk widgets forward .bind() to their own internal canvas/label, so a
         # recursive walk binds those a second time and fires the click twice.
-        self._clickables = [self, num, spark, col, top, name, when, line1, line2]
+        self._clickables = [self, num, spark, col, top, name, when, line1,
+                            line2, line3]
         for w in self._clickables:
             w.bind("<Button-1>", lambda _e: self._on_click(), add="+")
 

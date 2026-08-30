@@ -344,6 +344,25 @@ def main() -> int:
         check("focus: click-through series agrees with the row on the last lot "
               "(open + out-of-control)",
               not parity_bad, f"checked={len(sampled)} offenders={parity_bad[:3]}")
+        # (g) The likely-driver hint (2026-08-30) must be honest: either None
+        # (rendered "driver unclear") or the plain-language label of a real,
+        # NON-outcome watched metric. A raw key, an outcome metric, or free
+        # text here means the enrichment drifted from drift_types' vocabulary.
+        from laser_trim_analyzer.ml.drift_types import (
+            FRACTION_METRICS, WATCHED_METRICS, metric_label)
+        valid_labels = {metric_label(m) for m in WATCHED_METRICS
+                        if m not in FRACTION_METRICS}
+        bad_drivers = []
+        for e in res_a.focus:
+            if e.driver is None:
+                continue
+            if not any(e.driver.startswith(lbl) for lbl in valid_labels):
+                bad_drivers.append(f"{e.model}: {e.driver!r}")
+        for e in res_a.chronic:
+            if e.driver is not None:     # chronic rows never carry a driver
+                bad_drivers.append(f"{e.model} (chronic): {e.driver!r}")
+        check("focus: driver hints name real process metrics (or are None)",
+              not bad_drivers, f"offenders={bad_drivers[:3]}")
     counts = {}
     for preset in ("loose", "standard", "tight", "strict"):
         p = preview_alert_count(db, preset)

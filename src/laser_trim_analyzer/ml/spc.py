@@ -39,6 +39,7 @@ Two layers, in this order:
     the only part that reads the database. They still never touch Tk, so the
     UI calls them from a worker and posts the result back through ui_dispatch.
 """
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import groupby
@@ -48,6 +49,8 @@ from typing import Dict, List, Optional, Tuple
 
 from laser_trim_analyzer.ml.lots import (
     LOT_GAP_DAYS, MIN_LOT_BASELINE_N, MIN_LOTS_TRAIN, Lot, cluster_lots)
+
+logger = logging.getLogger(__name__)
 
 RECENT_K = 5            # membership window: last K lots (incl. open)
 ACTIVE_DAYS = 60        # focus list requires production this recent
@@ -278,6 +281,14 @@ class FocusEntry:
     last_lot_end: datetime
     verdict: str                    # headline: what it is costing right now
     sub_line: str                   # the evidence behind the headline
+    # The WHY under the fail rate (James, 2026-08-30 smoke test: "it doesnt
+    # tell me if its resistance, linearity or why the model is flagged").
+    # Plain-language name of the worst-moving PROCESS metric on the drift
+    # watch, e.g. "Untrimmed resistance ↑ (+2.1σ vs its baseline)" — or None
+    # when no watched process metric is flagged, which the row renders as
+    # "driver unclear — open the model". A hint from the drift detector, not
+    # a p-chart verdict: the full diagnosis stays on the Model page.
+    driver: Optional[str] = None
 
 
 @dataclass
@@ -546,7 +557,58 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
                 sub_line=f"~{units_per_week:.0f} units/wk"))
 
     focus.sort(key=lambda e: e.excess_per_week, reverse=True)
+    # Enrich the rows that will actually render with their WHY. This runs
+    # AFTER membership and ranking so its cost is bounded by the list length
+    # (~a dozen models), not the model count — and a failure here degrades to
+    # "no hint", never to a broken list. Chronic rows are not enriched: their
+    # verdict already names the problem (capability, not drift).
+    for e in focus:
+        e.driver = _likely_driver(db, e.model)
     # Chronic ranks by steady bleed (rate x volume): the biggest standing loss
     # is the one worth an engineering project.
     chronic.sort(key=lambda e: e.p_base * e.units_per_week, reverse=True)
     return FocusResult(focus=focus, chronic=chronic[:CHRONIC_MAX], anchor=anchor)
+
+
+def _likely_driver(db, model: str) -> Optional[str]:
+    """The worst-moving PROCESS metric on the drift watch, in plain words.
+
+    The FOCUS row already IS the outcome (the lot fail rate) — the reader's
+    next question is WHY: which upstream metric moved underneath. That answer
+    lives in the multi-metric drift detector's state, so read it — never
+    retrain it. Outcome metrics (the FRACTION family) are excluded because
+    "your fail rate is up because your fail rate is up" is not a why.
+
+    Severity order: tier first, then how far the recent data actually sits
+    from baseline (|shift| in σ), falling back to the detector's magnitude
+    when no recent mean is recorded. Any hiccup returns None — a missing hint
+    must never take the list down with it.
+    """
+    try:
+        from laser_trim_analyzer.ml.drift_types import (
+            DriftTier, FRACTION_METRICS, metric_label)
+        from laser_trim_analyzer.ml.manager import get_model_drift_status
+
+        status = get_model_drift_status(db, model)
+        best = None                       # (sort_key, metric, shift)
+        for m, ms in status.per_metric.items():
+            if (m in FRACTION_METRICS or not ms.is_trained
+                    or ms.tier <= DriftTier.STABLE):
+                continue
+            shift = None
+            if ms.recent_mean is not None and ms.baseline_std:
+                shift = (ms.recent_mean - ms.baseline_mean) / ms.baseline_std
+            key = (int(ms.tier),
+                   abs(shift) if shift is not None else abs(ms.magnitude))
+            if best is None or key > best[0]:
+                best = (key, m, shift)
+        if best is None:
+            return None
+        _key, m, shift = best
+        if shift is None:
+            return f"{metric_label(m)} — flagged on the drift watch"
+        arrow = "↑" if shift >= 0 else "↓"
+        return f"{metric_label(m)} {arrow} ({shift:+.1f}σ vs its baseline)"
+    except Exception:
+        logger.exception("driver hint failed for %s", model)
+        return None
