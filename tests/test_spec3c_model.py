@@ -264,6 +264,44 @@ def test_model_page_focus_series_uses_shifted_linearity(make_app):
     assert values == [0.0042]
 
 
+def test_model_page_banners_a_trim_vs_ft_spec_mismatch(make_app):
+    """James (2026-08-30): "i also want to know when the trim and test specs
+    dont align." The banner has to say WHAT differs and WHY that matters to
+    the numbers already on the page — not just that something is wrong."""
+    from laser_trim_analyzer.core.spec_alignment import SpecComparison
+    app = make_app()
+    page = app.page_container.get_page("model")
+    page._set_spec_banner(SpecComparison(
+        status="differs", pct_positions_differing=1.0, matched_positions=200,
+        trim_typ_band=0.03, ft_typ_band=0.10,
+        note=("trim grades ±0.030 V where final test allows ±0.100 V "
+              "(100% of matched points differ)")))
+    assert page._spec_banner.cget("text") == (
+        "⚠ trim grades ±0.030 V where final test allows ±0.100 V "
+        "(100% of matched points differ) — cross-station numbers "
+        "(escapes, Gap) compare different requirements.")
+    assert page._spec_banner.winfo_manager() == "pack"
+    # It qualifies the VERDICT, so it must stay directly under it — pack()
+    # would otherwise re-append it at the bottom of the body when re-shown.
+    slaves = page._verdict.master.pack_slaves()
+    assert slaves.index(page._spec_banner) == slaves.index(page._verdict) + 1
+
+
+def test_model_page_says_nothing_when_the_stations_agree_or_are_unknown(make_app):
+    """Amber on an unanswered question is how a warning stops being believed."""
+    from laser_trim_analyzer.core.spec_alignment import SpecComparison
+    app = make_app()
+    page = app.page_container.get_page("model")
+    page._set_spec_banner(SpecComparison(
+        status="differs", pct_positions_differing=1.0, matched_positions=200,
+        trim_typ_band=0.03, ft_typ_band=0.10, note="n"))
+    for quiet in (SpecComparison("aligned", 0.0, 200, 0.03, 0.03, "same"),
+                  SpecComparison("insufficient", 0.0, 0, None, None, "no data"),
+                  None):                       # loader failed — say nothing
+        page._set_spec_banner(quiet)
+        assert page._spec_banner.winfo_manager() == ""
+
+
 # ---- Dashboard-round Model fixes ------------------------------------------
 
 def test_resolve_focus_metric_prefers_worst_when_not_user_picked():

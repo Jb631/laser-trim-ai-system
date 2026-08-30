@@ -381,6 +381,34 @@ def main() -> int:
                 bad_drivers.append(f"{e.model} (chronic): {e.driver!r}")
         check("focus: driver hints name real process metrics (or are None)",
               not bad_drivers, f"offenders={bad_drivers[:3]}")
+        # (h) Trim-vs-FT spec alignment (2026-08-30). 6126 is census-verified
+        # ground truth: its linked trim/FT pairs disagree at essentially every
+        # matched position, so the comparison MUST say "differs" here. This
+        # check is the guard on the pairing as much as on the arithmetic — an
+        # earlier cut sampled each station's newest tracks independently, which
+        # on this model matched a fifth as many positions and read "aligned".
+        try:
+            from laser_trim_analyzer.core.spec_alignment import (
+                compare_station_specs)
+            c6126 = compare_station_specs(db, "6126")
+            check("spec alignment: 6126's trim and FT specs differ (census "
+                  "ground truth)", c6126.status == "differs",
+                  f"status={c6126.status} matched={c6126.matched_positions} "
+                  f"pct={c6126.pct_positions_differing:.2f} | {c6126.note}")
+        except Exception as exc:
+            check("spec alignment: 6126's trim and FT specs differ (census "
+                  "ground truth)", False, f"{type(exc).__name__}: {exc}")
+        # Every focus row must carry a real bool: the enrichment degrades to
+        # False on failure, so a None/exception here means it did not run at all.
+        try:
+            flags = [(e.model, e.spec_mismatch) for e in res_a.focus]
+            bad_flags = [m for m, v in flags if not isinstance(v, bool)]
+            check("focus: every row carries a boolean spec_mismatch flag",
+                  not bad_flags,
+                  f"flagged={[m for m, v in flags if v]} offenders={bad_flags[:3]}")
+        except Exception as exc:
+            check("focus: every row carries a boolean spec_mismatch flag",
+                  False, f"{type(exc).__name__}: {exc}")
     counts = {}
     for preset in ("loose", "standard", "tight", "strict"):
         p = preview_alert_count(db, preset)

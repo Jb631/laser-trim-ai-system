@@ -158,6 +158,34 @@ def test_row_texts_admit_when_the_driver_is_unknown():
     assert x["line3"] == "driver unclear — open the model"
 
 
+def test_row_texts_flag_a_trim_vs_ft_spec_mismatch():
+    """James (2026-08-30): "i also want to know when the trim and test specs
+    dont align" — the marker rides the WHY line, next to the driver."""
+    e = _entry()
+    e.driver = "Untrimmed resistance ↑ (+2.1σ vs its baseline)"
+    e.spec_mismatch = True
+    x = focus_row_texts(e, _anchor_of(e))
+    assert x["line3"] == ("likely driver: Untrimmed resistance ↑ "
+                          "(+2.1σ vs its baseline) · ⚠ trim/FT specs differ")
+
+
+def test_the_spec_marker_shows_even_with_no_driver():
+    """Two independent facts: an unknown driver must not hide the mismatch."""
+    e = _entry()
+    e.driver = None
+    e.spec_mismatch = True
+    x = focus_row_texts(e, _anchor_of(e))
+    assert x["line3"] == "driver unclear — open the model · ⚠ trim/FT specs differ"
+
+
+def test_no_spec_marker_when_the_stations_agree():
+    """Aligned (or unknown) says nothing — a marker on every row means nothing."""
+    e = _entry()
+    e.driver = None
+    assert e.spec_mismatch is False                 # the default is silence
+    assert "specs differ" not in focus_row_texts(e, _anchor_of(e))["line3"]
+
+
 # ---- the zone -------------------------------------------------------------
 
 def test_zone_heading_counts_and_caption_names_the_anchor(tk_root):

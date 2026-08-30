@@ -298,6 +298,12 @@ class FocusEntry:
     # the MEASURED number, because discounting the measurement would misstate
     # what the excursion actually cost. Only the urgency is discounted.
     rank_score: float = 0.0
+    # Do the trim station and final test hold this model to the SAME limits?
+    # (James, 2026-08-30: "i also want to know when the trim and test specs
+    # dont align.") Visibility only — it changes no verdict and no ranking;
+    # it warns that the cross-station numbers on the model's page are
+    # comparing two different requirements. See core/spec_alignment.py.
+    spec_mismatch: bool = False
 
 
 @dataclass
@@ -612,17 +618,36 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     # Sorted by the DISCOUNTED cost, not the raw one: "what should I work on
     # this morning" is not the same question as "who blew up hardest recently".
     focus.sort(key=lambda e: e.rank_score, reverse=True)
-    # Enrich the rows that will actually render with their WHY. This runs
+    # Enrich the rows that will actually render — with their WHY, and with
+    # whether the two stations even grade this model the same way. This runs
     # AFTER membership and ranking so its cost is bounded by the list length
     # (~a dozen models), not the model count — and a failure here degrades to
     # "no hint", never to a broken list. Chronic rows are not enriched: their
     # verdict already names the problem (capability, not drift).
     for e in focus:
         e.driver = _likely_driver(db, e.model)
+        e.spec_mismatch = _spec_mismatch(db, e.model)
     # Chronic ranks by steady bleed (rate x volume): the biggest standing loss
     # is the one worth an engineering project.
     chronic.sort(key=lambda e: e.p_base * e.units_per_week, reverse=True)
     return FocusResult(focus=focus, chronic=chronic[:CHRONIC_MAX], anchor=anchor)
+
+
+def _spec_mismatch(db, model: str) -> bool:
+    """Do the two stations grade this model against different limits?
+
+    A flag, not a diagnosis: the row shows a marker, the Model page shows the
+    sentence, and neither re-grades anything (spec governance is a separate
+    decision). Same contract as `_likely_driver` — it runs after ranking, so
+    its cost is bounded by the list length, and any failure degrades to False
+    rather than taking the whole list down.
+    """
+    try:
+        from laser_trim_analyzer.core.spec_alignment import compare_station_specs
+        return compare_station_specs(db, model).status == "differs"
+    except Exception:
+        logger.exception("spec alignment check failed for %s", model)
+        return False
 
 
 def _likely_driver(db, model: str) -> Optional[str]:

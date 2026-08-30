@@ -9,6 +9,7 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.gui.v6.page_base import PageBase
@@ -136,6 +137,16 @@ class ModelPage(PageBase):
                                      text_color=t.TEXT_PRIMARY, anchor="w",
                                      justify="left", wraplength=1200)
         self._verdict.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
+        # Trim-vs-FT spec misalignment (James, 2026-08-30: "i also want to know
+        # when the trim and test specs dont align"). It sits with the verdict
+        # because it changes how EVERY cross-station number on this page reads:
+        # when the two stations grade to different limits, an "escape" is not a
+        # missed defect, it is two different questions subtracted. Packed only
+        # when there is something to say — an always-present banner is wallpaper.
+        self._spec_banner = ctk.CTkLabel(self._body, text="", anchor="w",
+                                         justify="left", wraplength=1200,
+                                         font=t.font(t.SIZE_CAPTION),
+                                         text_color=t.TIER_WARNING)
         self._pill_row = MetricPillRow(self._body, theme=t, on_pill_click=self._on_pill_click)
         self._pill_row.pack(side="top", fill="x", pady=(0, t.SPACE_XS))
         # Plain-language key for the pill numbers: σ was shown with no
@@ -312,6 +323,14 @@ class ModelPage(PageBase):
                 verdict = self._compute_verdict(model, cutoff, status, recent)
             except Exception:
                 logger.exception("Model %s: verdict failed", model)
+            spec = None
+            try:
+                # Two small sampling queries, memoized per model — cheap, but
+                # it is still I/O, so it belongs here on the worker with the
+                # rest of the loaders, never in the apply below.
+                spec = compare_station_specs(self.app.db, model)
+            except Exception:
+                logger.exception("Model %s: spec alignment failed", model)
             smooth_models = []
             try:
                 from sqlalchemy import func as _f
@@ -343,6 +362,7 @@ class ModelPage(PageBase):
                 if verdict:
                     _try("verdict", lambda: self._verdict.configure(
                         text=verdict[0], text_color=verdict[1]))
+                _try("spec banner", lambda: self._set_spec_banner(spec))
                 _try("focus chart", lambda: self._set_chart_data(
                     chosen, spc, dates, values, baseline))
                 _try("units tab", lambda: self._units_tab.set_units(units))
@@ -359,6 +379,27 @@ class ModelPage(PageBase):
             work()
         else:
             threading.Thread(target=work, daemon=True).start()
+
+    def _set_spec_banner(self, comparison) -> None:
+        """Show the amber line only when the two stations really do differ.
+
+        "aligned" and "insufficient" both say nothing: one is good news that
+        needs no banner, the other is an unanswered question, and dressing an
+        unanswered question in amber is how a warning stops being believed.
+
+        `after=self._verdict` because pack() would otherwise re-append the
+        label at the BOTTOM of the body every time it is shown again — the
+        banner has to stay with the verdict it qualifies.
+        """
+        if comparison is None or comparison.status != "differs":
+            self._spec_banner.pack_forget()
+            return
+        self._spec_banner.configure(
+            text=("⚠ " + comparison.note + " — cross-station numbers "
+                  "(escapes, Gap) compare different requirements."))
+        self._spec_banner.pack(side="top", fill="x",
+                               pady=(0, self.theme.SPACE_SM),
+                               after=self._verdict)
 
     # ---- headline chart: two views over ONE load ----
     def _set_chart_data(self, metric, spc, dates, values, baseline):

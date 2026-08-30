@@ -72,6 +72,12 @@ def focus_row_texts(entry: FocusEntry,
     # flagged process metric we say so honestly instead of guessing.
     line3 = (f"likely driver: {entry.driver}" if entry.driver
              else "driver unclear — open the model")
+    # The trim station and final test do not always hold the model to the same
+    # limits (James, 2026-08-30). When they don't, every cross-station number
+    # on the model's page is comparing two different requirements — so the row
+    # flags it here and the Model page spells out the two bands.
+    if entry.spec_mismatch:
+        line3 += " · ⚠ trim/FT specs differ"
     return {"title": entry.model, "when": when,
             "line1": entry.verdict, "line2": entry.sub_line, "line3": line3}
 
