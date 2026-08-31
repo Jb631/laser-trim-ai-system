@@ -1,5 +1,60 @@
 # Taking V6 to work — first-day checklist
 
+## ⚠ 2026-08-30 night — ONE COMMAND TO RUN, then a new stats table
+
+### 1. Run this once, before you trust any trim-vs-FT number
+
+```bash
+python scripts/repair_trim_ft_links.py
+```
+
+Takes about six minutes. Here's why it matters: a unit that fails linearity
+gets re-trimmed until it passes, and all those attempts happen on the same
+day. The only record of their ORDER was the clock time in the filename — and
+the parser was throwing it away. So the app linked an arbitrary attempt, and
+a failing early attempt scored as the trim station wrongly rejecting a good
+unit. Separately, a two-track unit writes one file per track, and reading
+only one of them let a passing Track B hide a failing Track A.
+
+Both are fixed in the code, but **your database still has the old links** —
+106,237 of its rows carry no clock time yet. Until you run that script, the
+Gap and the trim-vs-FT tab keep showing the old numbers. Two checks in the
+QA sweep will keep failing until you do; that's expected, not a broken build.
+
+After the repair, the numbers move — and not all in the direction you'd
+guess. **6607's overkills go UP 415 → 484**, because that model is mostly
+dual-track and its failures were being masked. **8508 gains 20 real escapes**
+(30 → 50) that were being hidden as agreement. 8340-1 drops 145 → 132.
+
+### 2. INVESTIGATE — the stats table that replaces the Excel round-trip
+
+On the Model page: **n · avg · min · max** for untrimmed and trimmed
+resistance, electrical angle, linearity error, margin to spec and sigma
+gradient — split **ALL units | LIN-PASSING** (lin-passing = PASS + WARNING,
+your rule: linearity is the disposition, WARNING is the internal sigma
+watch). There's a **lot selector** next to the model and window pickers, and
+picking a lot adds that lot's values beside the historical band with a
+plain-English verdict per metric. "Export model to Excel" gains a **Stats
+table** sheet that mirrors the screen exactly, so what you show an engineer
+equals what you saw.
+
+**Read the small print on two rows.** "Tracks that passed linearity" and
+"Tracks already in spec before trim" count **tracks, not units** — they're
+named that way on purpose. On 6607, 1,087 of 4,841 unit-days have one track
+passing while another fails, so a track rate and a unit yield are genuinely
+different numbers. Unit yield lives on the Dashboard, computed properly.
+
+**Every cell shows what it threw away.** Your resistance columns contain
+readings of 1e12 Ω and 0 — only 38 in the whole database, but on 6607 seven
+of them dragged the average from a true 4,282 Ω to 32,079 Ω. Those are now
+excluded per model, with the count shown. Same for 94 rows storing a sigma
+gradient of 999.999, which turned out to be a marker on records whose
+processing errored — they made 8856's average read 433.5 instead of 0.001.
+
+**One thing I inferred, so check it:** "already in spec before trim" means
+`untrimmed_error_max <= linearity_spec`. That's my reading of the columns,
+not your words. It reads 17 of 9,922 on 6607.
+
 ## ⚡ 2026-08-30 evening — FOCUS rows now say WHY, and flag mismatched specs
 Same pull, no schema change, nothing to retrain. Three things look different
 on screen.
