@@ -179,11 +179,12 @@ def check_ft_incremental_fastpath() -> None:
 def check_model_stats_vs_sql(db, raw) -> None:
     """INVESTIGATE stats table == raw SQL, filter and all.
 
-    Written as SQL that redoes the work independently: the median over the
-    model's positive readings, then the [median/100, median*100] band, then
-    COUNT/AVG/MIN/MAX inside it. If the module's filter drifted, or was never
-    applied, these numbers separate immediately — 6607's untrimmed resistance
-    reads 4,282 filtered against 32,079 raw.
+    Written as SQL that redoes the work independently: drop the records whose
+    processing failed, take the median over the model's positive readings, then
+    the [median/100, median*100] band, then COUNT/AVG/MIN/MAX inside it. If the
+    module's filter drifted, or was never applied, these numbers separate
+    immediately — 6607's untrimmed resistance reads 4,282 filtered against
+    32,079 raw, and 8856's sigma gradient 0.0012 against 433.5.
 
     Any exception here is a FAIL, never a skip: a check that can pass on an
     ERROR result is the exact weak assertion CLAUDE.md forbids.
@@ -193,27 +194,35 @@ def check_model_stats_vs_sql(db, raw) -> None:
 
     JOIN = ("FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
             "WHERE a.model = ?")
+    # A record whose processing FAILED holds sentinels, not measurements (all
+    # 94 in the work DB carry sigma_gradient = 999.999). Out of both columns.
+    USABLE = " AND a.overall_status NOT IN ('ERROR','PROCESSING_FAILED')"
+    BROKEN = " AND a.overall_status IN ('ERROR','PROCESSING_FAILED')"
     LIN = " AND a.overall_status IN ('PASS','WARNING')"
     METRICS = ["untrimmed_resistance", "trimmed_resistance",
                "measured_electrical_angle", "final_linearity_error_shifted",
                "margin_to_spec", "sigma_gradient"]
 
     def sql_median(model, col):
-        """Median of the model's POSITIVE readings — SQLite's ORDER/OFFSET
-        idiom, averaging the two middle values on an even count exactly like
-        Python's statistics.median."""
-        n = raw.execute(f"SELECT COUNT(*) {JOIN} AND t.{col} > 0",
+        """Median of the model's POSITIVE usable readings — SQLite's
+        ORDER/OFFSET idiom, averaging the two middle values on an even count
+        exactly like Python's statistics.median."""
+        n = raw.execute(f"SELECT COUNT(*) {JOIN}{USABLE} AND t.{col} > 0",
                         (model,)).fetchone()[0]
         if not n:
             return None
         return raw.execute(
-            f"SELECT AVG(x) FROM (SELECT t.{col} AS x {JOIN} AND t.{col} > 0 "
-            f"ORDER BY x LIMIT {2 - (n % 2)} OFFSET {(n - 1) // 2})",
-            (model,)).fetchone()[0]
+            f"SELECT AVG(x) FROM (SELECT t.{col} AS x {JOIN}{USABLE} "
+            f"AND t.{col} > 0 ORDER BY x LIMIT {2 - (n % 2)} "
+            f"OFFSET {(n - 1) // 2})", (model,)).fetchone()[0]
 
-    for model in ("6607", "8340-1"):
+    for model in ("6607", "8340-1", "8856"):
         try:
             stats = compute_model_stats(db, model)
+            broken = raw.execute(f"SELECT COUNT(*) {JOIN}{BROKEN}",
+                                 (model,)).fetchone()[0]
+            check(f"stats table vs SQL: {model} failed-processing records dropped",
+                  stats.errored == broken, f"py={stats.errored} sql={broken}")
             for col in METRICS:
                 med = sql_median(model, col) if metric_policy(col) == POSITIVE_RATIO else None
                 if med is not None:
@@ -222,8 +231,8 @@ def check_model_stats_vs_sql(db, raw) -> None:
                 else:
                     keep = f" AND t.{col} IS NOT NULL"
                 row = next(r for r in stats.rows if r.key == col)
-                for label, cell, extra in (("ALL", row.all_, ""),
-                                           ("LIN", row.lin_passing, LIN)):
+                for label, cell, extra, errs in (("ALL", row.all_, USABLE, broken),
+                                                 ("LIN", row.lin_passing, LIN, 0)):
                     n, avg, lo, hi = raw.execute(
                         f"SELECT COUNT(*), AVG(t.{col}), MIN(t.{col}), MAX(t.{col}) "
                         f"{JOIN}{extra}{keep}", (model,)).fetchone()
@@ -233,14 +242,15 @@ def check_model_stats_vs_sql(db, raw) -> None:
                     total = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}",
                                         (model,)).fetchone()[0]
                     ok = (cell.n == n and cell.missing == nulls
+                          and cell.errored == errs
                           and cell.excluded == total - n - nulls
                           and (n == 0 or (abs(cell.avg - avg) <= 1e-9 * max(1.0, abs(avg))
                                           and cell.low == lo and cell.high == hi)))
                     check(f"stats table vs SQL: {model} {col} [{label}]", ok,
                           f"py n={cell.n} avg={cell.avg} min={cell.low} max={cell.high} "
-                          f"excl={cell.excluded} null={cell.missing} | "
+                          f"excl={cell.excluded} err={cell.errored} null={cell.missing} | "
                           f"sql n={n} avg={avg} min={lo} max={hi} "
-                          f"excl={total - n - nulls} null={nulls}")
+                          f"excl={total - n - nulls} err={errs} null={nulls}")
             # Rate rows: the same discipline, and the NULL rows must sit in
             # `missing`, never in the denominator.
             for key, keep_sql, null_sql in (
@@ -251,7 +261,7 @@ def check_model_stats_vs_sql(db, raw) -> None:
                      " AND t.untrimmed_error_max <= t.linearity_spec",
                      " AND (t.untrimmed_error_max IS NULL OR t.linearity_spec IS NULL)")):
                 row = next(r for r in stats.rows if r.key == key)
-                for label, cell, extra in (("ALL", row.all_, ""),
+                for label, cell, extra in (("ALL", row.all_, USABLE),
                                            ("LIN", row.lin_passing, LIN)):
                     hits = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}{keep_sql}",
                                        (model,)).fetchone()[0]
@@ -275,6 +285,18 @@ def check_model_stats_vs_sql(db, raw) -> None:
                       and ur.all_.high < 1e5,
                       f"excluded={ur.all_.excluded} avg={ur.all_.avg:.1f} "
                       f"max={ur.all_.high:.0f}")
+            # 8856 is the ERROR-sentinel case: 75 of its 173 sigma readings are
+            # 999.999 on records that failed processing. Averaged in they read
+            # 433.5 against a true 0.0012 — a 430,000x error that no VALUE
+            # policy catches (a band around a 0.001 median would delete
+            # 8340-1's real 1.x values on failed units). Pinned by number.
+            if model == "8856":
+                sg = next(r for r in stats.rows if r.key == "sigma_gradient")
+                check("stats table: 8856's sigma gradient is 0.0012, not 433",
+                      sg.all_.avg is not None and sg.all_.avg < 0.01
+                      and sg.all_.high < 0.01 and sg.all_.errored > 0,
+                      f"avg={sg.all_.avg} max={sg.all_.high} "
+                      f"errored={sg.all_.errored}")
         except Exception as exc:
             check(f"stats table vs SQL ({model})", False,
                   f"{type(exc).__name__}: {exc}")

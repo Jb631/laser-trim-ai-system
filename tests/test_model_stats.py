@@ -68,14 +68,57 @@ def test_warning_unit_is_lin_passing_and_fail_unit_is_not(db):
     assert r.lin_passing.avg == pytest.approx(1050.0)
 
 
-def test_untrimmed_and_error_rows_are_in_all_but_not_lin_passing(db):
-    """ALL is every track row carrying a usable value, whatever the status."""
+def test_untrimmed_rows_are_in_all_but_not_lin_passing(db):
+    """ALL is every track row carrying a usable value, whatever the
+    DISPOSITION — an untrimmed test sweep really did measure the part."""
     _add(db, "M", D0, StatusType.PASS, untrimmed_resistance=1000.0)
     _add(db, "M", D0, StatusType.UNTRIMMED, untrimmed_resistance=1200.0)
-    _add(db, "M", D0, StatusType.ERROR, untrimmed_resistance=1400.0)
+    _add(db, "M", D0, StatusType.FAIL, untrimmed_resistance=1400.0)
     st = compute_model_stats(db, "M")
     r = _row(st, "untrimmed_resistance")
     assert r.all_.n == 3 and r.lin_passing.n == 1
+
+
+def test_a_record_that_failed_processing_is_dropped_and_disclosed(db):
+    """The 8856 case: all 94 ERROR records carry sigma_gradient = 999.999, the
+    analyser's saturation sentinel, and averaging them in put 8856's sigma at
+    433.5 against a true 0.0012. No value policy catches that — a 100x band
+    around a 0.001 median would delete 8340-1's real 1.x values on FAILED
+    units. The record's own status is what says these are not measurements."""
+    for v in (0.001, 0.0012, 0.0014):
+        _add(db, "M", D0, StatusType.PASS, sigma_gradient=v)
+    _add(db, "M", D0, StatusType.ERROR, sigma_gradient=999.999)
+    st = compute_model_stats(db, "M")
+    r = _row(st, "sigma_gradient")
+    assert r.all_.n == 3
+    assert r.all_.avg == pytest.approx(0.0012)   # not 250.0
+    assert r.all_.high == pytest.approx(0.0014)
+    assert r.all_.errored == 1                   # disclosed, never hidden
+    assert r.lin_passing.errored == 0            # never in that population
+    assert st.errored == 1 and st.tracks == 3
+    assert "processing failed" in st.note
+
+
+def test_a_failed_record_is_dropped_from_every_row_including_the_rates(db):
+    _add(db, "M", D0, StatusType.PASS, linearity_pass=True,
+         untrimmed_error_max=0.1, linearity_spec=0.5)
+    _add(db, "M", D0, StatusType.ERROR, linearity_pass=False,
+         untrimmed_error_max=0.1, linearity_spec=0.5)
+    st = compute_model_stats(db, "M")
+    rate = _row(st, "trim_passed_linearity")
+    assert rate.all_.n == 1 and rate.all_.count == 1 and rate.all_.pct == 100.0
+    assert rate.all_.errored == 1
+    assert _row(st, "already_met_spec").all_.n == 1
+
+
+def test_a_failed_record_cannot_stretch_the_plausibility_band(db):
+    """The band's median is taken AFTER the failed records are removed."""
+    for v in (1000.0, 1100.0, 1200.0):
+        _add(db, "M", D0, StatusType.PASS, untrimmed_resistance=v)
+    _add(db, "M", D0, StatusType.ERROR, untrimmed_resistance=1e12)
+    st = compute_model_stats(db, "M")
+    r = _row(st, "untrimmed_resistance")
+    assert r.all_.n == 3 and r.all_.errored == 1 and r.all_.excluded == 0
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +230,9 @@ def test_trim_pass_rate_row(db):
     _add(db, "M", D0, StatusType.PASS, linearity_pass=True)
     _add(db, "M", D0, StatusType.WARNING, linearity_pass=True)
     _add(db, "M", D0, StatusType.FAIL, linearity_pass=False)
-    _add(db, "M", D0, StatusType.ERROR, linearity_pass=None)
+    # A track that recorded no verdict at all — `missing`, never a 0 in the
+    # denominator ("10% of what we measured" is not "10% of what we ran").
+    _add(db, "M", D0, StatusType.UNTRIMMED, linearity_pass=None)
     st = compute_model_stats(db, "M")
     r = _row(st, "trim_passed_linearity")
     assert r.kind == "rate"

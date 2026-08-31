@@ -15,14 +15,34 @@ from 29.6 kΩ to 2.1e8 Ω. A stats table that shipped those numbers would fail
 the exact Excel round trip it exists to replace, so every metric runs through a
 declared plausibility policy before anything is averaged.
 
-DISCLOSE, NEVER HIDE. Every cell carries the count it dropped (`excluded`) and
-the count that was never recorded (`missing`) next to the n it actually used.
-Same rule as the future-dated-record warning in `core/yield_stats.py`: a number
-quietly laundered is a source file nobody ever fixes.
+A RECORD THAT FAILED PROCESSING IS NOT A MEASUREMENT
+----------------------------------------------------
+The same failure arrives a second way, through a column no value policy can
+catch. All 94 ERROR records in the work database carry `sigma_gradient =
+999.999` — the analyzer's saturation sentinel, written when the file could not
+be analysed — and none of them carries a resistance at all. Averaged in, they
+put 8856's sigma gradient at 433.5 against a true 0.0012: a 430,000x error, on
+a model with 173 rows. So ERROR (and PROCESSING_FAILED) records are dropped
+from BOTH columns before anything is computed, and counted in `errored`.
+
+No value policy would have caught this: a 100x band around a 0.001 median is
+[0.00001, 0.1], which would delete 8340-1's legitimate 1.x sigma gradients on
+FAILED units. The record's own status is what says these are not measurements.
+This is also the convention the rest of the app already follows —
+`core/yield_stats.compute_yield` excludes ERROR from both yield denominators.
+
+DISCLOSE, NEVER HIDE. Every cell carries the count it dropped (`excluded`), the
+count from records that failed processing (`errored`) and the count that was
+never recorded (`missing`), next to the n it actually used. Same rule as the
+future-dated-record warning in `core/yield_stats.py`: a number quietly
+laundered is a source file nobody ever fixes.
 
 THE TWO COLUMNS (D2)
 --------------------
-  * ALL          — every track row carrying a usable value, whatever status.
+  * ALL          — every track row carrying a usable value, whatever the
+                   DISPOSITION: passes, sigma watches, linearity rejects and
+                   untrimmed test sweeps all count. Only records whose
+                   processing FAILED are out, for the reason above.
   * LIN-PASSING  — rows whose PARENT unit's `overall_status` is PASS or
                    WARNING. Linearity is the zero-tolerance customer
                    disposition; WARNING is the internal sigma drift-watch on
@@ -80,11 +100,11 @@ _POLICY = {
     "measured_electrical_angle": FINITE,
     "final_linearity_error_shifted": FINITE,
     "margin_to_spec": FINITE,
-    # FINITE deliberately, despite reaching 999.999 in the database: on 8340-1
-    # every sigma_gradient above 1.0 belongs to a FAILED unit, so those are the
-    # real signal the ALL column exists to show, not corruption. See the report
-    # note — the 94 rows at exactly 999.999 look like a saturation sentinel and
-    # are a data question, not a filtering one.
+    # FINITE deliberately. 8340-1's sigma gradients above 1.0 all belong to
+    # FAILED units — real signal the ALL column exists to show — and a ratio
+    # band around this metric's ~0.001 median would delete them. The 999.999
+    # sentinels that used to poison this row are ERROR records, removed by
+    # status before any policy runs (see the module docstring).
     "sigma_gradient": FINITE,
 }
 
@@ -100,11 +120,18 @@ def metric_policy(metric: str) -> str:
 class Cell:
     """One (row, column) box: the numbers, and what did not make it into them.
 
-    Distribution rows fill avg/low/high; rate rows fill count/pct. Both always
-    carry `n` (readings actually used), `excluded` (present but unusable — a
-    non-finite or implausible reading) and `missing` (nothing was recorded).
-    n + excluded + missing is the number of track rows the column considered,
-    so a reader can always see what happened to every row.
+    Distribution rows fill avg/low/high; rate rows fill count/pct. Every cell
+    carries four counts, kept separate because they mean four different things
+    to whoever has to act on them:
+      * `n`        — readings actually used.
+      * `excluded` — a reading that is not a measurement (non-finite, or
+                     outside the metric's plausibility band). A source file
+                     to go and fix.
+      * `errored`  — records whose PROCESSING failed, dropped whole. Nothing
+                     was measured; the analyser is what needs looking at.
+      * `missing`  — nothing was recorded in that column at all.
+    Their sum is every track row the column considered, so a reader can always
+    account for every row.
     """
     n: int
     excluded: int
@@ -114,10 +141,11 @@ class Cell:
     high: Optional[float] = None
     count: Optional[int] = None
     pct: Optional[float] = None
+    errored: int = 0
 
     @property
     def considered(self) -> int:
-        return self.n + self.excluded + self.missing
+        return self.n + self.excluded + self.missing + self.errored
 
 
 @dataclass(frozen=True)
@@ -136,12 +164,14 @@ class ModelStats:
     """The whole table for one (model, window) — plus what it had to drop."""
     model: str
     rows: List[StatRow]
-    tracks: int                  # track rows in the window (any status)
+    tracks: int                  # USABLE track rows in the window (any status
+                                 # except a failed-processing record)
     units: int                   # distinct parent units in the window
     cutoff: Optional[datetime]
     lot: Optional[Tuple[datetime, datetime]]
     future_dated: int            # file-date junk skipped (see compute_yield)
     note: str                    # one plain sentence for the UI; "" when clean
+    errored: int = 0             # records dropped whole: processing failed
 
     @property
     def distribution_rows(self) -> List[StatRow]:
@@ -189,6 +219,10 @@ _DISTRIBUTION_ROWS = [
 
 # The LIN-PASSING population: the parent unit's disposition, not the track's.
 _LIN_PASSING = ("PASS", "WARNING")
+# Records whose PROCESSING failed. Not a disposition — a file the analyser
+# could not read — so the values on them are not measurements. Both names
+# bucket together in `core/yield_stats.compute_yield`; they do here too.
+_FAILED_PROCESSING = ("ERROR", "PROCESSING_FAILED")
 
 
 def _status_name(status) -> str:
@@ -203,6 +237,17 @@ def is_lin_passing(status) -> bool:
     dispositions at all, so they are not in the accepted population either.
     """
     return _status_name(status) in _LIN_PASSING
+
+
+def failed_processing(status) -> bool:
+    """Did this record fail to process at all?
+
+    Then its columns hold whatever the analyser left behind, not readings —
+    in the work database, all 94 such rows carry `sigma_gradient = 999.999`
+    and no resistance whatsoever. UNTRIMMED is deliberately NOT here: an
+    untrimmed test sweep really did measure the part before the laser ran.
+    """
+    return _status_name(status) in _FAILED_PROCESSING
 
 
 # ---- the pure computation --------------------------------------------------
@@ -236,8 +281,9 @@ def _band(values: Sequence[Optional[float]], policy: str
 
 
 def _distribution_cell(raw: Sequence, policy: str,
-                       band: Optional[Tuple[float, float]]) -> Cell:
-    """n / avg / min / max over what survived, with both drop counts kept."""
+                       band: Optional[Tuple[float, float]],
+                       errored: int = 0) -> Cell:
+    """n / avg / min / max over what survived, with every drop count kept."""
     kept: List[float] = []
     excluded = missing = 0
     for value in raw:
@@ -254,12 +300,12 @@ def _distribution_cell(raw: Sequence, policy: str,
                 continue
         kept.append(f)
     if not kept:
-        return Cell(n=0, excluded=excluded, missing=missing)
-    return Cell(n=len(kept), excluded=excluded, missing=missing,
+        return Cell(n=0, excluded=excluded, missing=missing, errored=errored)
+    return Cell(n=len(kept), excluded=excluded, missing=missing, errored=errored,
                 avg=sum(kept) / len(kept), low=min(kept), high=max(kept))
 
 
-def _rate_cell(flags: Sequence[Optional[bool]]) -> Cell:
+def _rate_cell(flags: Sequence[Optional[bool]], errored: int = 0) -> Cell:
     """n / count / pct over rows that could be judged at all.
 
     A row whose inputs were NULL is `missing`, never a 0 in the denominator —
@@ -273,7 +319,7 @@ def _rate_cell(flags: Sequence[Optional[bool]]) -> Cell:
             continue
         n += 1
         count += 1 if flag else 0
-    return Cell(n=n, excluded=0, missing=missing, count=count,
+    return Cell(n=n, excluded=0, missing=missing, errored=errored, count=count,
                 pct=(count / n * 100.0) if n else None)
 
 
@@ -319,28 +365,41 @@ def build_model_stats(model: str, records: Sequence[TrackRecord], *,
 
     ONE PASS over the records per metric — the columns are split by the parent
     unit's status while the values are being read, never by re-querying.
+
+    Records whose processing FAILED come out first, before any metric is
+    looked at: their columns hold sentinels, not readings. They are counted on
+    the ALL cells (`errored`) so the drop is visible; the LIN-PASSING cells
+    read 0, because an errored record was never in that population to begin
+    with — same as a linearity reject.
     """
-    lin_mask = [is_lin_passing(r.status) for r in records]
+    errored = sum(1 for r in records if failed_processing(r.status))
+    usable = [r for r in records if not failed_processing(r.status)]
+    lin_mask = [is_lin_passing(r.status) for r in usable]
     rows: List[StatRow] = []
     for key, label, unit in _DISTRIBUTION_ROWS:
         policy = metric_policy(key)
-        all_raw = [getattr(r, key) for r in records]
+        all_raw = [getattr(r, key) for r in usable]
         # The band comes from the ALL population so both columns share it.
         band = _band([_usable(v) for v in all_raw], policy)
         lin_raw = [v for v, keep in zip(all_raw, lin_mask) if keep]
         rows.append(StatRow(key=key, label=label, unit=unit, kind="distribution",
-                            all_=_distribution_cell(all_raw, policy, band),
+                            all_=_distribution_cell(all_raw, policy, band, errored),
                             lin_passing=_distribution_cell(lin_raw, policy, band)))
     for key, label, unit, flag_of in _RATE_ROWS:
-        all_flags = [flag_of(r) for r in records]
+        all_flags = [flag_of(r) for r in usable]
         lin_flags = [f for f, keep in zip(all_flags, lin_mask) if keep]
         rows.append(StatRow(key=key, label=label, unit=unit, kind="rate",
-                            all_=_rate_cell(all_flags),
+                            all_=_rate_cell(all_flags, errored),
                             lin_passing=_rate_cell(lin_flags)))
-    units = len({r.unit_id for r in records if r.unit_id is not None})
-    return ModelStats(model=model, rows=rows, tracks=len(records),
-                      units=units or len(records), cutoff=cutoff, lot=lot,
-                      future_dated=future_dated, note=note)
+    units = len({r.unit_id for r in usable if r.unit_id is not None})
+    notes = [note] if note else []
+    if errored:
+        notes.append(f"{errored} record(s) whose processing failed were left "
+                     "out — their columns hold error sentinels, not readings")
+    return ModelStats(model=model, rows=rows, tracks=len(usable),
+                      units=units or len(usable), cutoff=cutoff, lot=lot,
+                      future_dated=future_dated, note=" · ".join(notes),
+                      errored=errored)
 
 
 def _empty(model: str, note: str, cutoff=None, lot=None) -> ModelStats:
