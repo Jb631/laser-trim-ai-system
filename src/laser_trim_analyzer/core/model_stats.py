@@ -368,9 +368,12 @@ def _already_met_spec(rec: TrackRecord) -> Optional[bool]:
 # (a failing track re-trimmed until it passes, only the last attempt counting).
 # The unit-level rule — per track take the LAST attempt of the day, then the
 # unit passes only if EVERY track's last attempt passed, grouped on
-# `analysis_results.unit_id` — is real and it MATTERS: on 6607, 1,368 of 4,841
-# unit-days have some track passing while not all tracks do, and linearity is
-# zero-tolerance, so those units failed.
+# `analysis_results.unit_id` — is real and it MATTERS: on 6607, 1,087 of 4,841
+# unit-days (22%) have some track passing while not all tracks do, and linearity
+# is zero-tolerance, so those units failed. (An earlier 1,368 here came from me
+# and was wrong: it counted a track's SUPERSEDED failing attempts as masking,
+# which is exactly what the last-attempt rule exists to discount. Collapse
+# re-trims first — ROW_NUMBER over (unit_id, track_id) — then test the tracks.)
 #
 # Counting track rows separately is CORRECT for the distributions above — a
 # two-track unit genuinely contributes two measurements — and it is a DIFFERENT
