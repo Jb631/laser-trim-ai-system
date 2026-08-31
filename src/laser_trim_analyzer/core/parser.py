@@ -438,22 +438,56 @@ class ExcelParser:
             logger.debug(f"Could not extract test date from Excel: {e}")
             return None
 
+    # Clock time trailing the date in a trim filename: "_9-08 AM", "_12-32 PM",
+    # or the H-MM-SS form on shop-serial files (" 10-14-41 AM"). This is the ONLY
+    # record of the order of same-day re-trim attempts — a unit that fails
+    # linearity is re-trimmed until it passes, and every attempt writes its own
+    # file with the same calendar date. Dropping it makes the attempts tie on
+    # file_date, so _find_matching_trim links an arbitrary one and a unit that
+    # was re-trimmed into spec gets scored as a trim-station "overkill".
+    _FILENAME_TIME_RE = re.compile(
+        r'^[_\s-]*(\d{1,2})-(\d{2})(?:-(\d{2}))?\s*([AaPp])[Mm]')
+
+    def _time_after_date(self, remainder: str) -> Optional[Tuple[int, int, int]]:
+        """Parse the 12-hour clock time immediately following a filename date."""
+        m = self._FILENAME_TIME_RE.match(remainder)
+        if not m:
+            return None
+        hour, minute = int(m.group(1)), int(m.group(2))
+        second = int(m.group(3)) if m.group(3) else 0
+        if not (1 <= hour <= 12 and minute < 60 and second < 60):
+            return None
+        if m.group(4).upper() == 'P':
+            hour = hour if hour == 12 else hour + 12
+        elif hour == 12:                      # 12:xx AM is midnight
+            hour = 0
+        return hour, minute, second
+
     def _extract_date_from_filename(self, filename: str) -> Optional[datetime]:
         """
-        Extract date from filename.
+        Extract date — and the clock time when the filename carries one — from
+        a filename.
 
         Handles patterns like:
         - 1844202_10_TA_Test Data_11-22-2024_9-08 AMTrimmed Correct.xls
         - 8887_14_TA_Test Data_5-5-2025_9-58 AMScrap_Cut in wiper path.xls
+        - 8444-shop0_12-7-2021 10-14-41 AM.xlsx
+
+        The time matters: it is what orders same-day re-trim attempts. Files
+        with no time in the name keep resolving to midnight, as before.
         """
         # Look for date pattern M-D-YYYY or MM-DD-YYYY
         date_match = re.search(r'(\d{1,2})-(\d{1,2})-(\d{4})', filename)
         if date_match:
             month, day, year = date_match.groups()
             try:
-                return datetime.strptime(f'{month}-{day}-{year}', '%m-%d-%Y')
+                stamp = datetime.strptime(f'{month}-{day}-{year}', '%m-%d-%Y')
             except ValueError:
                 pass
+            else:
+                clock = self._time_after_date(filename[date_match.end():])
+                return stamp.replace(hour=clock[0], minute=clock[1],
+                                     second=clock[2]) if clock else stamp
 
         # Also try YYYY-MM-DD format (with boundary checks to avoid matching model numbers)
         date_match = re.search(r'(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)', filename)
@@ -462,9 +496,12 @@ class ExcelParser:
             if 1990 <= year <= 2100:
                 try:
                     test_date = datetime(year, month, day)
-                    return test_date
                 except ValueError:
                     pass
+                else:
+                    clock = self._time_after_date(filename[date_match.end():])
+                    return test_date.replace(hour=clock[0], minute=clock[1],
+                                             second=clock[2]) if clock else test_date
 
         return None
 

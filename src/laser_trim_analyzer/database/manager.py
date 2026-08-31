@@ -16,7 +16,7 @@ import json
 import logging
 import re
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
@@ -2365,44 +2365,84 @@ class DatabaseManager:
                 "link_rate": (linked_count / total_ft * 100) if total_ft > 0 else 0,
             }
 
-    def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
-        """Analyze escapes and overkills by comparing trim vs FT linearity results.
+    # ---- Trim-vs-final-test disposition: ONE definition, used everywhere ----
+    #
+    # A unit's trim disposition is its LAST trim attempt before final test, not
+    # whichever attempt happens to be on file. A unit that fails linearity is
+    # re-trimmed until it passes, so several attempts share one calendar date;
+    # `_find_matching_trim` resolves that by clock time and `linked_trim_id`
+    # therefore already names the day's final attempt. Reading any other record
+    # — or pooling all runs for a serial, which shop-number reuse makes span
+    # years — reintroduces the confound that inflated "overkill".
+    #
+    # Escape   = trim PASSED linearity, final test FAILED  (a bad unit shipped)
+    # Overkill = trim FAILED linearity, final test PASSED  (rejected for nothing)
+    # Agreement= both agree
+    ESCAPE = "escape"
+    OVERKILL = "overkill"
+    AGREEMENT = "agreement"
 
-        Escape = trim passed linearity but FT failed (bad unit shipped)
-        Overkill = trim failed linearity but FT passed (unnecessarily rejected)
+    @staticmethod
+    def classify_trim_ft(trim_pass: Any, ft_pass: Any) -> str:
+        """Classify one linked trim/final-test pair. The only place this
+        comparison is written; every surface that reports escapes, overkills or
+        agreement must route through it so the numbers cannot disagree."""
+        tp, fp = bool(trim_pass), bool(ft_pass)
+        if tp and not fp:
+            return DatabaseManager.ESCAPE
+        if not tp and fp:
+            return DatabaseManager.OVERKILL
+        return DatabaseManager.AGREEMENT
+
+    def _linked_trim_ft_rows(self, session, *, min_confidence: float,
+                             model: Optional[str] = None,
+                             cutoff: Optional[datetime] = None) -> List[Any]:
+        """Every confidently-linked (trim, final-test) pair, one row per FT
+        record, carrying the unit's trim disposition as `trim_pass`.
+
+        Shared by the company Gap and the per-model trim-vs-FT tab. Unlinked FT
+        records are excluded — a comparison needs both stations. UNTRIMMED
+        tracks are excluded because their NULL linearity_pass would force
+        trim_pass=0, fabricating overkills and masking escapes.
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
 
+        q = (session.query(
+                DBFinalTestResult.model,
+                DBFinalTestResult.serial,
+                DBFinalTestResult.linearity_pass.label("ft_pass"),
+                func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0))
+                    .label("trim_pass"))
+             .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
+             .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+             .filter(DBFinalTestResult.linked_trim_id.isnot(None),
+                     DBFinalTestResult.linearity_pass.isnot(None),
+                     DBFinalTestResult.match_confidence >= min_confidence,
+                     DBTrackResult.status != DBStatusType.UNTRIMMED.name))
+        if model is not None:
+            q = q.filter(DBFinalTestResult.model == model)
+        if cutoff is not None:
+            q = q.filter(DBFinalTestResult.file_date >= cutoff)
+        return q.group_by(DBFinalTestResult.id, DBFinalTestResult.model,
+                          DBFinalTestResult.serial,
+                          DBFinalTestResult.linearity_pass).all()
+
+    def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
+        """Company-wide escapes and overkills (the 'Gap' numbers).
+
+        Escape = trim passed linearity but FT failed (bad unit shipped)
+        Overkill = trim failed linearity but FT passed (unnecessarily rejected)
+
+        Shares `_linked_trim_ft_rows` / `classify_trim_ft` with the per-model
+        view so the two can never report different totals.
+        """
         with self.session() as session:
             cutoff_date = datetime.now() - timedelta(days=days_back)
 
-            # File-level comparison: FT linearity_pass vs trim ALL-tracks-pass
-            # For each linked FT record, check if trim linearity passed (all tracks)
-            linked_data = (
-                session.query(
-                    DBFinalTestResult.model,
-                    DBFinalTestResult.linearity_pass.label('ft_lin_pass'),
-                    # Trim passed linearity if minimum track pass is 1 (all passed)
-                    func.min(case(
-                        (DBTrackResult.linearity_pass == True, 1), else_=0
-                    )).label('trim_all_pass'),
-                )
-                .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
-                .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
-                .filter(
-                    DBFinalTestResult.file_date >= cutoff_date,
-                    DBFinalTestResult.linked_trim_id.isnot(None),
-                    DBFinalTestResult.linearity_pass.isnot(None),
-                    DBFinalTestResult.match_confidence >= min_confidence,
-                    # Exclude UNTRIMMED tracks: their NULL linearity_pass would force
-                    # trim_all_pass=0, fabricating overkills and masking escapes.
-                    DBTrackResult.status != DBStatusType.UNTRIMMED.name,
-                )
-                .group_by(DBFinalTestResult.id, DBFinalTestResult.model, DBFinalTestResult.linearity_pass)
-                .all()
-            )
+            linked_data = self._linked_trim_ft_rows(
+                session, min_confidence=min_confidence, cutoff=cutoff_date)
 
             if not linked_data:
                 return {
@@ -2419,15 +2459,13 @@ class DatabaseManager:
             model_escapes = {}
 
             for row in linked_data:
-                trim_pass = bool(row.trim_all_pass)
-                ft_pass = bool(row.ft_lin_pass)
-
-                if trim_pass and not ft_pass:
+                verdict = self.classify_trim_ft(row.trim_pass, row.ft_pass)
+                if verdict == self.ESCAPE:
                     escapes += 1
                     model_escapes[row.model] = model_escapes.get(row.model, 0) + 1
-                elif not trim_pass and ft_pass:
+                elif verdict == self.OVERKILL:
                     overkills += 1
-                elif trim_pass and ft_pass:
+                elif row.ft_pass:
                     true_positives += 1
                 else:
                     true_negatives += 1
@@ -2497,29 +2535,17 @@ class DatabaseManager:
             if out["ft_total"]:
                 out["ft_pass_rate"] = out["ft_pass"] / out["ft_total"] * 100.0
 
-            # Escapes / overkills on LINKED units (both stations present, confident match).
-            lq = (session.query(
-                    DBFinalTestResult.serial,
-                    DBFinalTestResult.linearity_pass.label("ft_pass"),
-                    func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)).label("trim_pass"))
-                  .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
-                  .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
-                  .filter(DBFinalTestResult.model == model,
-                          DBFinalTestResult.linked_trim_id.isnot(None),
-                          DBFinalTestResult.linearity_pass.isnot(None),
-                          DBFinalTestResult.match_confidence >= min_confidence,
-                          DBTrackResult.status != DBStatusType.UNTRIMMED.name))
-            if cutoff is not None:
-                lq = lq.filter(DBFinalTestResult.file_date >= cutoff)
-            linked = lq.group_by(DBFinalTestResult.id, DBFinalTestResult.serial,
-                                 DBFinalTestResult.linearity_pass).all()
+            # Escapes / overkills on LINKED units (both stations present, confident
+            # match). Same rows, same classifier as the company-wide Gap.
+            linked = self._linked_trim_ft_rows(
+                session, min_confidence=min_confidence, model=model, cutoff=cutoff)
             out["linked"] = len(linked)
             agree = 0
             for r in linked:
-                tp, fp = bool(r.trim_pass), bool(r.ft_pass)
-                if tp and not fp:
+                verdict = self.classify_trim_ft(r.trim_pass, r.ft_pass)
+                if verdict == self.ESCAPE:
                     out["escapes"] += 1; out["escape_units"].append(r.serial)
-                elif not tp and fp:
+                elif verdict == self.OVERKILL:
                     out["overkills"] += 1; out["overkill_units"].append(r.serial)
                 else:
                     agree += 1
@@ -5071,6 +5097,16 @@ class DatabaseManager:
         2. Exact model + fuzzy serial match (strip zeros, prefixes, track suffixes)
         3. Normalized model + fuzzy serial match (8275A trim matches 8275 FT)
 
+        Among candidates the LATEST trim wins, and "latest" is resolved down to
+        the clock time: a unit that fails linearity is re-trimmed until it
+        passes, so several attempts share one calendar date and only the last
+        one is the disposition the unit carried to final test. Linking an
+        earlier failing attempt is what inflated the "overkill" metric.
+
+        The window is bounded by calendar DATE, not by the raw timestamps —
+        final-test records are stored at midnight, so a same-day trim at 14:30
+        must still match (7,263 real linked rows are same-day).
+
         Returns:
             Tuple of (trim_id, confidence, days_since_trim, match_method)
         """
@@ -5080,7 +5116,15 @@ class DatabaseManager:
             return None, None, None, None
 
         serial_clean = serial.lower().strip()
-        cutoff_date = test_date - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+        test_day = test_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Half-open [cutoff, next midnight): keeps the file_date index usable.
+        cutoff_date = test_day - timedelta(days=FINAL_TEST_MAX_DAYS_FROM_TRIM)
+        before_date = test_day + timedelta(days=1)
+
+        def _days_since(trim_date: datetime) -> int:
+            """Trim→FT age in whole days, immune to the trim's clock time."""
+            return (test_day - trim_date.replace(
+                hour=0, minute=0, second=0, microsecond=0)).days
 
         # Attempt 1: Exact model + exact serial match (case-insensitive)
         candidates = (
@@ -5089,17 +5133,17 @@ class DatabaseManager:
                 DBAnalysisResult.model == model,
                 func.lower(DBAnalysisResult.serial) == serial_clean,
                 DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date <= test_date,
+                DBAnalysisResult.file_date < before_date,
                 DBAnalysisResult.file_date >= cutoff_date,
             )
-            .order_by(desc(DBAnalysisResult.file_date))
+            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
             .limit(5)
             .all()
         )
 
         if candidates:
             match = candidates[0]
-            days_diff = (test_date - match.file_date).days
+            days_diff = _days_since(match.file_date)
             confidence = self._calculate_match_confidence(days_diff, exact_serial=True)
             return match.id, confidence, days_diff, "exact"
 
@@ -5111,16 +5155,16 @@ class DatabaseManager:
             .filter(
                 DBAnalysisResult.model == model,
                 DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date <= test_date,
+                DBAnalysisResult.file_date < before_date,
                 DBAnalysisResult.file_date >= cutoff_date,
             )
-            .order_by(desc(DBAnalysisResult.file_date))
+            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
             .all()
         )
 
         for trim_id, trim_serial, trim_date in model_trims:
             if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                days_diff = (test_date - trim_date).days
+                days_diff = _days_since(trim_date)
                 confidence = self._calculate_match_confidence(days_diff, exact_serial=False)
                 logger.debug(
                     f"Fuzzy match: FT serial '{serial}' → trim serial '{trim_serial}' "
@@ -5133,7 +5177,7 @@ class DatabaseManager:
         if ft_serial_aggressive != ft_serial_norm:
             for trim_id, trim_serial, trim_date in model_trims:
                 if trim_serial and self._normalize_serial_aggressive(trim_serial) == ft_serial_aggressive:
-                    days_diff = (test_date - trim_date).days
+                    days_diff = _days_since(trim_date)
                     confidence = self._calculate_match_confidence(days_diff, exact_serial=False) * 0.90
                     logger.debug(
                         f"Aggressive fuzzy match: FT serial '{serial}' -> trim serial '{trim_serial}' "
@@ -5154,15 +5198,15 @@ class DatabaseManager:
                 .filter(
                     DBAnalysisResult.model == ft_model_norm,
                     DBAnalysisResult.file_date.isnot(None),
-                    DBAnalysisResult.file_date <= test_date,
+                    DBAnalysisResult.file_date < before_date,
                     DBAnalysisResult.file_date >= cutoff_date,
                 )
-                .order_by(desc(DBAnalysisResult.file_date))
+                .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
                 .all()
             )
             for trim_id, trim_serial, trim_date, trim_model in variant_trims:
                 if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                    days_diff = (test_date - trim_date).days
+                    days_diff = _days_since(trim_date)
                     confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
                     logger.debug(
                         f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
@@ -5180,10 +5224,10 @@ class DatabaseManager:
                 DBAnalysisResult.model.like(f"{model}%"),
                 DBAnalysisResult.model != model,  # Skip exact (already tried)
                 DBAnalysisResult.file_date.isnot(None),
-                DBAnalysisResult.file_date <= test_date,
+                DBAnalysisResult.file_date < before_date,
                 DBAnalysisResult.file_date >= cutoff_date,
             )
-            .order_by(desc(DBAnalysisResult.file_date))
+            .order_by(desc(DBAnalysisResult.file_date), desc(DBAnalysisResult.id))
             .all()
         )
 
@@ -5192,7 +5236,7 @@ class DatabaseManager:
             if self._normalize_model(trim_model) != ft_model_norm:
                 continue
             if trim_serial and self._normalize_serial(trim_serial) == ft_serial_norm:
-                days_diff = (test_date - trim_date).days
+                days_diff = _days_since(trim_date)
                 confidence = self._calculate_match_confidence(days_diff, exact_serial=False, model_variant=True)
                 logger.debug(
                     f"Model variant match: FT {model}/{serial} → trim {trim_model}/{trim_serial} "
@@ -5356,6 +5400,66 @@ class DatabaseManager:
                 results.append(diag)
 
         return results
+
+    def backfill_trim_file_times(self, chunk_size: int = 5000) -> Dict[str, int]:
+        """Recover the clock time for trim rows stored before the parser kept it.
+
+        Until 2026-08-30 `_extract_date_from_filename` parsed only the calendar
+        date and threw away the time sitting in the same filename, so every
+        same-day re-trim attempt tied on `file_date`. `_find_matching_trim` then
+        linked an arbitrary attempt — in practice the earliest-ingested — and a
+        unit that was re-trimmed into spec before final test scored as a trim
+        "overkill". This re-reads the time out of `filename` for rows still at
+        midnight and rewrites `file_date` in place.
+
+        Idempotent: rows already carrying a time, and rows whose filename has no
+        time to recover, are left alone. Callers that care about link accuracy
+        should follow this with `rematch_final_tests()`.
+
+        Returns counts: scanned, updated, no_time_in_filename.
+        """
+        from laser_trim_analyzer.core.parser import ExcelParser
+
+        parser = ExcelParser()
+        stats = {"scanned": 0, "updated": 0, "no_time_in_filename": 0}
+
+        with self._write_lock:
+            with self.session() as session:
+                # Only rows sitting exactly at midnight can be missing a time.
+                base = (session.query(DBAnalysisResult.id, DBAnalysisResult.filename,
+                                      DBAnalysisResult.file_date)
+                        .filter(DBAnalysisResult.file_date.isnot(None),
+                                func.strftime('%H:%M:%S', DBAnalysisResult.file_date)
+                                == '00:00:00')
+                        .order_by(DBAnalysisResult.id))
+                offset = 0
+                while True:
+                    rows = base.limit(chunk_size).offset(offset).all()
+                    if not rows:
+                        break
+                    updates = []
+                    for row_id, filename, file_date in rows:
+                        stats["scanned"] += 1
+                        stamp = parser._extract_date_from_filename(filename or "")
+                        # Trust only the TIME: the filename date can disagree with
+                        # a date taken from inside the workbook, and re-dating rows
+                        # is not this method's job.
+                        if stamp is None or stamp.time() == time(0, 0):
+                            stats["no_time_in_filename"] += 1
+                            continue
+                        updates.append({"id": row_id, "file_date": file_date.replace(
+                            hour=stamp.hour, minute=stamp.minute, second=stamp.second)})
+                    if updates:
+                        session.bulk_update_mappings(DBAnalysisResult, updates)
+                        stats["updated"] += len(updates)
+                    session.commit()
+                    # Updated rows drop out of the midnight filter, so only the
+                    # skipped ones remain ahead of the cursor.
+                    offset += len(rows) - len(updates)
+
+        logger.info("Trim time backfill: %d scanned, %d updated, %d had no time in filename",
+                    stats["scanned"], stats["updated"], stats["no_time_in_filename"])
+        return stats
 
     def rematch_final_tests(self) -> Dict[str, int]:
         """

@@ -317,6 +317,173 @@ def check_model_stats_vs_sql(db, raw) -> None:
         check("stats table: window narrowing", False, f"{type(exc).__name__}: {exc}")
 
 
+def check_trim_ft_disposition_vs_sql(db, raw) -> None:
+    """Escapes/overkills == raw SQL, and the re-trim confound stays fixed
+    (2026-08-30).
+
+    A unit that fails linearity is re-trimmed until it passes; every attempt
+    writes its own file with the same calendar date, and the clock time that
+    orders them lives only in the filename. While the parser discarded that
+    time, all attempts tied on file_date and `_find_matching_trim` linked an
+    arbitrary one — so a unit re-trimmed INTO spec, which final test then
+    passed, was reported as the trim station's "overkill". On the work DB that
+    was 124 phantom overkills and 32 hidden escapes over 12 months.
+
+    The correction is bounded to the trim DAY on purpose: shop numbers get
+    reused, so repeated serials span ~6 years and "the best run for this
+    serial" would credit a 2012 unit's pass to a 2026 unit. The
+    not-overcorrected check below is what pins that, and it is the one that
+    fails if someone "simplifies" the fix into pooling by serial.
+
+    Any exception here is a FAIL, never a skip: a check that can pass on an
+    ERROR result is the exact weak assertion CLAUDE.md forbids.
+    """
+    from laser_trim_analyzer.database.manager import DatabaseManager
+
+    CONF, DAYS = 0.70, 365
+    cutoff = (datetime.now() - timedelta(days=DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Re-derived independently of the ORM: one row per linked FT record, the
+    # trim disposition being all-tracks-pass on the LINKED attempt.
+    LINKED = """
+      SELECT f.id fid, f.model, f.serial, a.id tid, date(a.file_date) tday,
+             a.file_date tstamp, f.linearity_pass ft_pass,
+             MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) trim_pass
+      FROM final_test_results f
+      JOIN analysis_results a ON a.id = f.linked_trim_id
+      JOIN track_results t ON t.analysis_id = a.id
+      WHERE f.linked_trim_id IS NOT NULL AND f.linearity_pass IS NOT NULL
+        AND f.match_confidence >= ? AND t.status <> 'UNTRIMMED' """
+    WINDOW = " AND f.file_date >= ? "
+    GROUP = " GROUP BY f.id "
+
+    # ---- 0. the repair actually ran on this database -----------------------
+    # Rows the OLD parser wrote sit at midnight with the time still in the
+    # filename. If any survive, linked_trim_id is still resolving same-day
+    # attempts arbitrarily and every number below is measuring the old bug.
+    # SQLite has no REGEXP, so the filename test runs in Python — through the
+    # very parser the app uses, so the check tracks the parser rather than a
+    # second copy of its pattern.
+    from datetime import time as _time
+    from laser_trim_analyzer.core.parser import ExcelParser
+    _p = ExcelParser()
+    midnight = raw.execute(
+        "SELECT filename FROM analysis_results "
+        "WHERE file_date IS NOT NULL "
+        "AND strftime('%H:%M:%S', file_date) = '00:00:00'").fetchall()
+    stranded = sum(1 for (fn,) in midnight
+                   if (_ts := _p._extract_date_from_filename(fn or ""))
+                   and _ts.time() != _time(0, 0))
+    check("trim times: no row still stranded at midnight with a time in its "
+          "filename", stranded == 0,
+          f"stranded={stranded} of {len(midnight)} midnight rows | remedy: "
+          f"python scripts/repair_trim_ft_links.py <db>")
+
+    # ---- 1. linked trim IS the day's final attempt --------------------------
+    late = raw.execute(f"""
+      WITH L AS ({LINKED}{GROUP})
+      SELECT COUNT(*) FROM L
+      WHERE EXISTS (SELECT 1 FROM analysis_results a2
+                    WHERE a2.model = (SELECT model FROM analysis_results WHERE id = L.tid)
+                      AND a2.serial = (SELECT serial FROM analysis_results WHERE id = L.tid)
+                      AND date(a2.file_date) = L.tday
+                      AND (a2.file_date > L.tstamp
+                           OR (a2.file_date = L.tstamp AND a2.id > L.tid)))
+    """, (CONF,)).fetchone()[0]
+    check("trim/FT link points at the day's FINAL trim attempt", late == 0,
+          f"links with a later same-day attempt = {late}")
+
+    # ---- 2. the confound itself is gone ------------------------------------
+    # An overkill that has a PASSING attempt later the same day is the process
+    # working as designed, not the trim station over-rejecting.
+    phantom = raw.execute(f"""
+      WITH L AS ({LINKED}{WINDOW}{GROUP}),
+      RUN AS (SELECT a.id tid, a.model, a.serial, a.file_date,
+                     MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) ap
+              FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id
+              WHERE t.status <> 'UNTRIMMED' GROUP BY a.id)
+      SELECT COUNT(*) FROM L
+      WHERE L.trim_pass = 0 AND L.ft_pass = 1
+        AND EXISTS (SELECT 1 FROM RUN r
+                    JOIN analysis_results la ON la.id = L.tid
+                    WHERE r.model = la.model AND r.serial = la.serial
+                      AND date(r.file_date) = L.tday
+                      AND r.file_date > L.tstamp AND r.ap = 1)
+    """, (CONF, cutoff)).fetchone()[0]
+    check("overkills: none has a passing re-trim later the same day",
+          phantom == 0, f"re-trim-confounded overkills = {phantom}")
+
+    # ---- 3. API == raw SQL --------------------------------------------------
+    n, esc, ovk = raw.execute(f"""
+      WITH L AS ({LINKED}{WINDOW}{GROUP})
+      SELECT COUNT(*),
+             SUM(CASE WHEN trim_pass=1 AND ft_pass=0 THEN 1 ELSE 0 END),
+             SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END) FROM L
+    """, (CONF, cutoff)).fetchone()
+    api = db.get_escape_overkill_analysis(days_back=DAYS, min_confidence=CONF)
+    check("Gap: company escapes/overkills match raw SQL",
+          (api["total_linked"], api["escapes"], api["overkills"]) == (n, esc, ovk),
+          f"api=({api['total_linked']},{api['escapes']},{api['overkills']}) "
+          f"sql=({n},{esc},{ovk})")
+    check("Gap: agreements complete the partition",
+          api["escapes"] + api["overkills"] + api["agreements"] == api["total_linked"],
+          f"{api['escapes']}+{api['overkills']}+{api['agreements']} "
+          f"vs {api['total_linked']}")
+
+    # ---- 4. per-model surface agrees with the company surface --------------
+    # Same rows, same classifier — the trim-vs-FT tab and the Gap cannot drift.
+    for m in ("6607", "8340-1", "8232-1"):
+        mn, mesc, movk = raw.execute(f"""
+          WITH L AS ({LINKED} AND f.model = ? {WINDOW}{GROUP})
+          SELECT COUNT(*),
+                 SUM(CASE WHEN trim_pass=1 AND ft_pass=0 THEN 1 ELSE 0 END),
+                 SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END) FROM L
+        """, (CONF, m, cutoff)).fetchone()
+        tf = db.get_model_trim_ft_agreement(
+            m, cutoff_date=datetime.now() - timedelta(days=DAYS), min_confidence=CONF)
+        check(f"trim-vs-FT tab matches raw SQL ({m})",
+              (tf["linked"], tf["escapes"], tf["overkills"]) == (mn, mesc or 0, movk or 0),
+              f"api=({tf['linked']},{tf['escapes']},{tf['overkills']}) "
+              f"sql=({mn},{mesc},{movk})")
+        check(f"trim-vs-FT tab lists one serial per counted unit ({m})",
+              len(tf["escape_units"]) == tf["escapes"]
+              and len(tf["overkill_units"]) == tf["overkills"],
+              f"escape_units={len(tf['escape_units'])}/{tf['escapes']} "
+              f"overkill_units={len(tf['overkill_units'])}/{tf['overkills']}")
+
+    # ---- 5. NOT overcorrected ----------------------------------------------
+    # The tempting "wrong" fix is to take the best/last run for the serial over
+    # all history. Shop numbers get reused, so that credits a different physical
+    # unit's pass and zeroes the metric out. These two pin that it did not.
+    check("overkills survive the correction (metric not zeroed)",
+          (ovk or 0) > 0, f"overkills={ovk}")
+    cross_day = raw.execute(f"""
+      WITH L AS ({LINKED}{WINDOW}{GROUP}),
+      RUN AS (SELECT a.id tid, a.model, a.serial, a.file_date,
+                     MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) ap
+              FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id
+              WHERE t.status <> 'UNTRIMMED' GROUP BY a.id)
+      SELECT COUNT(*) FROM L
+      WHERE L.trim_pass = 0 AND L.ft_pass = 1
+        AND EXISTS (SELECT 1 FROM RUN r
+                    JOIN analysis_results la ON la.id = L.tid
+                    WHERE r.model = la.model AND r.serial = la.serial
+                      AND date(r.file_date) <> L.tday AND r.ap = 1)
+    """, (CONF, cutoff)).fetchone()[0]
+    check("recycled shop numbers do NOT cancel overkills (correction is "
+          "bounded to the trim day)", cross_day > 0,
+          f"overkills whose serial passed on some OTHER day = {cross_day} "
+          f"(pooling by serial would wrongly erase these)")
+
+    # ---- 6. the classifier is the only definition --------------------------
+    cls = DatabaseManager.classify_trim_ft
+    check("classify_trim_ft covers the truth table exactly",
+          (cls(True, False), cls(False, True), cls(True, True), cls(False, False))
+          == (DatabaseManager.ESCAPE, DatabaseManager.OVERKILL,
+              DatabaseManager.AGREEMENT, DatabaseManager.AGREEMENT),
+          "escape / overkill / agreement / agreement")
+
+
 def main() -> int:
     # Optional DB-path argv (2026-08-29): the work database does not live at
     # data/analysis.db on every machine, and the sweep is worthless run against
@@ -587,6 +754,13 @@ def main() -> int:
     # check that compared against a bare AVG() would pass on the wrong number.
     check_model_stats_vs_sql(db, raw)
 
+    # ---- trim-vs-FT disposition vs RAW SQL (2026-08-30) --------------------
+    # Escapes/overkills read the LAST trim attempt of the day, because a unit
+    # is re-trimmed until it passes and only the final attempt is the
+    # disposition it carried to final test. Bounded to the day on purpose:
+    # shop numbers get reused across lots.
+    check_trim_ft_disposition_vs_sql(db, raw)
+
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with db.session() as s:
         from sqlalchemy import func
@@ -836,10 +1010,17 @@ def main() -> int:
         # test. No linked pair anywhere in the real DB may have the trim
         # dated after the FT record (matcher date preference: file_date,
         # else test_date).
+        #
+        # Compared by calendar DATE, not raw timestamp (2026-08-30): trim rows
+        # now carry the clock time that orders same-day re-trim attempts, while
+        # final-test rows are still stored at midnight. A trim at 14:30 and its
+        # same-day FT are in the correct order — 6,713 real pairs are same-day —
+        # and a raw timestamp compare would read every one of them as reversed.
         n_rev = raw.execute(
             "SELECT COUNT(*) FROM final_test_results f "
             "JOIN analysis_results a ON a.id = f.linked_trim_id "
-            "WHERE a.file_date > COALESCE(f.file_date, f.test_date)").fetchone()[0]
+            "WHERE date(a.file_date) > date(COALESCE(f.file_date, f.test_date))"
+        ).fetchone()[0]
         check("matcher: zero links with trim dated AFTER final test",
               n_rev == 0, f"{n_rev} reversed-order links")
     except Exception as e:
