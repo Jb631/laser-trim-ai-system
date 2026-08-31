@@ -1,5 +1,39 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-08-30 evening — FOCUS rows now say WHY, and flag mismatched specs
+Same pull, no schema change, nothing to retrain. Three things look different
+on screen.
+
+1. **Rows say what's driving them.** Each FOCUS row carries a short tag from
+   the drift watch naming the metric most likely behind the excursion —
+   so the row tells you where to look, not just that something moved.
+2. **A blip that recovered ranks below a fire that's still burning.** If a
+   model has run at its own baseline since its last out-of-control lot, the
+   row says **"has run at baseline since"** and its rank is divided by the
+   number of clean lots since. The failing-units-per-week number you see is
+   still the real measured one — only the position in the list is discounted.
+   Live example: **6126** blipped once on Jul 31 (33.3% against a 33.2%
+   limit) and has run at baseline since; it sat at #3 and now sits at #4,
+   below everything actively burning.
+   Read "at baseline" literally — it means *back to its own normal rate*, not
+   *good*. **8340-1** says it while running 73%, which is exactly its normal.
+3. **NEW — the app tells you when trim and final test aren't grading the same
+   thing.** Where a model's two stations hold different limits, the Model page
+   shows an amber line under the verdict, and the FOCUS row is marked
+   **⚠ trim/FT specs differ**. This matters because every cross-station number
+   the app prints (escapes, overkills, the Gap) assumes both stations ask the
+   same question — where they don't, an "escape" isn't a missed defect, it's
+   two different requirements being subtracted.
+   **Four of the eleven models on FOCUS are flagged right now, including the
+   top two:** 8232-1 (100% of shared positions graded differently), 6126
+   (96%), 8340-1 (24%), 6607 (21%).
+   This is **visibility only** — nothing was re-graded, no verdict moved, and
+   the app does not pick a "correct" spec. What to do about the mismatches is
+   your call, and it's the biggest open question on the app right now.
+4. **Your turn:** open 6126 and 8340-1 on the Model page. Those two rows are
+   where all of this shows at once — the recovery marker, the driver tag, and
+   the spec banner. Tell me if any sentence reads wrong.
+
 ## ⚡ 2026-08-30 — Triage's card wall is now FOCUS (do nothing but pull)
 1. `git pull`, then launch as normal. No new database schema, nothing to
    retrain, nothing to click — the drift detectors you already trained keep
