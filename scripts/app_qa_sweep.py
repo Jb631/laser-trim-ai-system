@@ -496,6 +496,53 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           f"overkills whose serial passed on some OTHER day = {cross_day} "
           f"(pooling by serial would wrongly erase these)")
 
+    # ---- 5b. dual-naming unit-days stay visible and stay handled -----------
+    # Two unit-days in the work DB record the SAME physical tracks under BOTH
+    # naming conventions on one day — 8555/25/2016-01-15 has TA/TB files
+    # ('Track A', 'Track B') plus a legacy 8555_25.xls carrying TRK1+TRK2. The
+    # disposition rule cannot know 'Track A' means the same element as 'TRK1',
+    # so it evaluates 4 tracks for a 2-track unit. That errs conservatively —
+    # an extra track can only make a unit FAIL, never hide a failure — which is
+    # the safe direction for a zero-tolerance metric, so it is deliberately not
+    # "fixed" by guessing that the two conventions are equivalent.
+    #
+    # The check exists because this population is invisible in the usual
+    # one-file-per-track / re-trim split (those two shapes are `rows = tracks`
+    # and `rows > tracks`; this is `rows < tracks` and falls in neither). If it
+    # ever grows, the conservative bias grows with it and someone should decide
+    # whether the conventions must be reconciled at ingest instead.
+    dual = raw.execute("""
+      WITH u AS (SELECT a.unit_id uid, COUNT(DISTINCT a.id) rows_,
+                        COUNT(DISTINCT t.track_id) tracks
+                 FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
+                 WHERE a.unit_id IS NOT NULL AND a.unit_id <> ''
+                 GROUP BY a.unit_id HAVING rows_ > 1)
+      SELECT COUNT(*) FROM u WHERE rows_ < tracks""").fetchone()[0]
+    check("unit-days mixing BOTH track-naming conventions stay a handful",
+          dual <= 10,
+          f"{dual} unit-day(s) with more distinct track_ids than files; the rule "
+          f"treats 'Track A' and 'TRK1' as separate tracks (conservative)")
+    # And they must not silently drop OUT of the metric: every such unit-day
+    # still has to yield a disposition.
+    undecided = raw.execute("""
+      WITH att AS (
+        SELECT a.unit_id uid, t.linearity_pass lp,
+               ROW_NUMBER() OVER (PARTITION BY a.unit_id, t.track_id
+                                  ORDER BY a.file_date DESC, a.id DESC) rn
+        FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
+        WHERE t.status <> 'UNTRIMMED' AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
+      u AS (SELECT a.unit_id uid, COUNT(DISTINCT a.id) rows_,
+                   COUNT(DISTINCT t.track_id) tracks
+            FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
+            WHERE a.unit_id IS NOT NULL AND a.unit_id <> ''
+            GROUP BY a.unit_id HAVING rows_ > 1)
+      SELECT COUNT(*) FROM u
+      WHERE u.rows_ < u.tracks
+        AND (SELECT MIN(CASE WHEN lp=1 THEN 1 ELSE 0 END)
+             FROM att WHERE att.uid = u.uid AND att.rn = 1) IS NULL""").fetchone()[0]
+    check("dual-naming unit-days still produce a trim disposition",
+          undecided == 0, f"{undecided} left undecided")
+
     # ---- 6. the classifier is the only definition --------------------------
     cls = DatabaseManager.classify_trim_ft
     check("classify_trim_ft covers the truth table exactly",
