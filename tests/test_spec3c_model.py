@@ -481,3 +481,164 @@ def test_continuous_metric_also_opens_on_the_lot_chart(make_app, monkeypatch):
     series = calls[0][1]
     assert series.metric == "untrimmed_sigma_gradient"
     assert series.judged and len(series.points) == 12   # lot medians, not units
+
+
+# ---- INVESTIGATE: stats table + lot-vs-history (app-shape spec §2) --------
+
+def _stats_row(key="untrimmed_resistance", *, n=3, avg=4281.8, low=422.0,
+               high=29576.0, excluded=7, missing=1):
+    from laser_trim_analyzer.core.model_stats import Cell, StatRow
+    cell = Cell(n=n, excluded=excluded, missing=missing, avg=avg, low=low, high=high)
+    return StatRow(key=key, label="Untrimmed resistance", unit="ohms",
+                   kind="distribution", all_=cell, lin_passing=cell)
+
+
+def test_stats_cells_render_one_unit_per_row():
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import cell_texts
+    row = _stats_row()
+    assert cell_texts(row, row.all_) == ["3", "4.28 kΩ", "0.422 kΩ", "29.6 kΩ"]
+
+
+def test_rate_cells_render_count_and_percent():
+    from laser_trim_analyzer.core.model_stats import Cell, StatRow
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import cell_texts
+    cell = Cell(n=9934, excluded=0, missing=10, count=6325, pct=63.67)
+    row = StatRow(key="trim_passed_linearity", label="Passed linearity at trim",
+                  unit="%", kind="rate", all_=cell, lin_passing=cell)
+    assert cell_texts(row, cell) == ["9,934", "6,325", "63.7%"]
+
+
+def test_the_table_says_what_it_left_out():
+    """Disclose, never hide — every drop is named on the row that made it,
+    and the three reasons send you to three different places."""
+    from laser_trim_analyzer.core.model_stats import Cell
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import disclosure_text
+    row = _stats_row()
+    assert disclosure_text(row.all_) == "7 impossible readings excluded · 1 not recorded"
+    assert disclosure_text(_stats_row(excluded=0, missing=0).all_) == ""
+    assert disclosure_text(_stats_row(excluded=1, missing=0).all_) \
+        == "1 impossible reading excluded"
+    # The 8856 case: 75 records the analyser could not read. A row that showed
+    # n=113 and said nothing would hide them.
+    assert disclosure_text(Cell(n=113, excluded=0, missing=0, errored=75)) \
+        == "75 from records that failed processing"
+
+
+def test_summary_line_names_the_window_and_the_drops():
+    from datetime import datetime
+    from laser_trim_analyzer.core.model_stats import ModelStats
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import summary_line
+    stats = ModelStats(model="6607", rows=[_stats_row()], tracks=9944, units=9944,
+                       cutoff=None, lot=None, future_dated=0, note="")
+    text = summary_line(stats)
+    assert "9,944 track measurements over all history" in text
+    assert "7 impossible readings left out" in text
+    windowed = ModelStats(model="6607", rows=[_stats_row()], tracks=302, units=302,
+                          cutoff=datetime(2026, 5, 13), lot=None, future_dated=0,
+                          note="")
+    assert "since May 13, 2026" in summary_line(windowed)
+
+
+def test_lot_line_carries_the_numbers_and_the_verdict():
+    from laser_trim_analyzer.core.model_stats import Cell, LotVerdict
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import lot_line
+    row = _stats_row()
+    cell = Cell(n=69, excluded=0, missing=0, avg=4430.0, low=4100.0, high=4800.0)
+    verdict = LotVerdict(metric="untrimmed_resistance", label="Untrimmed resistance",
+                         status="within", lot_typical=4431.0, lot_n=69,
+                         normal_low=1000.0, normal_high=9800.0,
+                         text="Untrimmed resistance for this lot is within its normal")
+    text = lot_line(row, cell, verdict)
+    assert text.startswith("this lot: 69 readings · avg 4.43 kΩ · 4.10 kΩ to 4.80 kΩ")
+    assert "within its normal" in text
+    assert lot_line(row, Cell(n=0, excluded=0, missing=5), None) \
+        == "this lot: nothing recorded"
+
+
+def _stats_app(make_app, model="HOT"):
+    """App on the Model page with a seeded model, loaded synchronously."""
+    app = make_app()
+    _seed_tracks(app.db, model, "untrimmed_resistance")
+    app.set_model_route(model)
+    page = app.page_container.get_page("model")
+    page._reload = lambda **kw: None
+    app.show_page("model")
+    del page._reload
+    page.reload_now()
+    return app, page
+
+
+def test_model_page_shows_the_stats_table(make_app):
+    """The table replaces the Excel round trip, so it has to be ON the page."""
+    app, page = _stats_app(make_app)
+    texts = [w.cget("text") for w in _all_labels(page._stats_table)]
+    assert any("track measurements" in t for t in texts)
+    assert any("Untrimmed resistance" in t for t in texts)
+    assert any("LIN-PASSING" in t for t in texts)
+    assert any("Passed linearity at trim" in t for t in texts)
+
+
+def test_model_page_lot_selector_offers_all_history_plus_the_lots(make_app):
+    app, page = _stats_app(make_app)
+    values = page._lot_menu.cget("values")
+    assert values[0] == "All history (no lot)"
+    assert len(values) == 13                      # _seed_tracks builds 12 lots
+    assert any("unit" in v for v in values[1:])
+
+
+def test_model_page_defaults_to_the_current_lot_when_one_is_open(make_app):
+    """James's default: when a lot is running, that is what he is asking about."""
+    app, page = _stats_app(make_app)
+    assert page._lot_label is not None
+    assert "current lot" in page._lot_menu.get()
+
+
+def test_choosing_all_history_sticks_across_a_reload(make_app):
+    """The per-model default must not fight the user's own pick."""
+    app, page = _stats_app(make_app)
+    page._on_lot_change("All history (no lot)")
+    assert page._lot_label is None
+    page.reload_now()
+    assert page._lot_label is None
+    assert page._lot_menu.get() == "All history (no lot)"
+
+
+def test_selecting_a_lot_adds_this_lot_lines_and_a_verdict(make_app):
+    app, page = _stats_app(make_app)
+    texts = [w.cget("text") for w in _all_labels(page._stats_table)]
+    assert any(t.strip().startswith("this lot:") for t in texts)
+    assert any("normal" in t for t in texts)      # the SPC core's own words
+
+
+def test_existing_model_page_content_is_still_there(make_app):
+    """Nothing currently reachable may be lost (app-shape spec §2)."""
+    app, page = _stats_app(make_app)
+    for attr in ("_focus_chart", "_pill_row", "_drift_tab", "_smoothness_tab",
+                 "_units_tab", "_ft_units_tab", "_trimft_tab", "_history_tab",
+                 "_predictor", "_verdict"):
+        assert getattr(page, attr) is not None
+
+
+def _all_labels(widget):
+    """Every label in a widget tree (the table renders into nested frames)."""
+    out = []
+    for child in widget.winfo_children():
+        if hasattr(child, "cget"):
+            try:
+                child.cget("text")
+                out.append(child)
+            except Exception:
+                pass
+        out.extend(_all_labels(child))
+    return out
+
+
+def test_summary_line_discloses_records_that_failed_processing():
+    """The table's own note carries the 8856 disclosure to the top of the zone."""
+    from laser_trim_analyzer.core.model_stats import ModelStats
+    from laser_trim_analyzer.gui.v6.widgets.stats_table import summary_line
+    stats = ModelStats(model="8856", rows=[_stats_row()], tracks=113, units=113,
+                       cutoff=None, lot=None, future_dated=0, errored=75,
+                       note="75 record(s) whose processing failed were left out "
+                            "— their columns hold error sentinels, not readings")
+    assert "processing failed" in summary_line(stats)

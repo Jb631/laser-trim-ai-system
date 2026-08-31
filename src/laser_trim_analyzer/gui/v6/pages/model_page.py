@@ -9,6 +9,8 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+from laser_trim_analyzer.core.model_stats import (
+    compute_lot_verdicts, compute_model_stats, default_lot_index, model_lots)
 from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
@@ -19,6 +21,7 @@ from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
 from laser_trim_analyzer.gui.v6.widgets.metric_pill_row import MetricPillRow
 from laser_trim_analyzer.gui.v6.widgets.predictor_panel import PredictorPanel
 from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
+from laser_trim_analyzer.gui.v6.widgets.stats_table import StatsTableZone
 from laser_trim_analyzer.gui.v6.widgets.tab_view import ThemedTabView
 from laser_trim_analyzer.gui.v6.widgets.trim_ft_tab import TrimFtTab
 from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
@@ -37,6 +40,11 @@ _WINDOW_DAYS = {"30d": 30, "90d": 90, "365d": 365, "All": None}
 # the default for EVERY metric; the per-unit scatter that used to be the only
 # view stays one click away for "what did each unit measure".
 _VIEW_LOTS, _VIEW_UNITS = "Lots · SPC", "Units"
+
+# Lot selector's "no lot" entry. Named, not blank: "all history" is the answer
+# to James's main question (what has this model ever done), so it is a real
+# choice, not an absence of one.
+_ALL_HISTORY = "All history (no lot)"
 
 # Default focus metric when no alert-triggered focus is supplied. The headline
 # element-production drift signal (post-trim sigma_gradient is no longer
@@ -61,6 +69,13 @@ class ModelPage(PageBase):
         # so flipping the toggle is a re-render, never a second DB round trip.
         self._spc_series = None
         self._unit_series = (_DEFAULT_METRIC, [], [], (None, None))
+        # Lot selection. Held by LABEL, not index: `_reload` re-reads the lots
+        # every pass (new files may have arrived, or the model may have
+        # changed), and an index would silently point at a different run.
+        # None = all history.
+        self._lot_label: Optional[str] = None
+        self._lots: List = []
+        self._lot_default_applied_for: Optional[str] = None
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     @staticmethod
@@ -105,6 +120,18 @@ class ModelPage(PageBase):
                                               text_color=t.TEXT_PRIMARY)
         self._window_menu.set(self._window_choice)
         self._window_menu.pack(side="left", padx=(0, t.SPACE_SM))
+        # Lot selector (app-shape spec §2): production runs newest first, from
+        # the SAME clustering the FOCUS list ranks and the lot chart draws.
+        # Sits with the model and window pickers because all three answer "what
+        # am I looking at"; it is what turns the stats table from a history
+        # into "is THIS run different".
+        self._lot_menu = ctk.CTkOptionMenu(parent, values=[_ALL_HISTORY], width=210,
+                                           command=self._on_lot_change, fg_color=t.CARD,
+                                           button_color=t.ACCENT,
+                                           button_hover_color=t.ACCENT_HOVER,
+                                           text_color=t.TEXT_PRIMARY)
+        self._lot_menu.set(_ALL_HISTORY)
+        self._lot_menu.pack(side="left", padx=(0, t.SPACE_SM))
         ctk.CTkButton(parent, text="Copy summary", command=self._on_copy_summary, fg_color=t.CARD,
                       hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM)\
             .pack(side="left", padx=(0, t.SPACE_SM))
@@ -162,6 +189,13 @@ class ModelPage(PageBase):
         # ---- ZONE 2: the data itself — where the read above is verified.
         self._zone_header(self._body, "WHAT YOU'RE LOOKING AT",
                           "the measurements — chart the pill you clicked; units & final tests in the tabs")
+        # The stats table goes FIRST in this zone: it is the thing James
+        # currently leaves the app to compute (export to Excel, work out
+        # historical avg/min/max for resistance and angle, all units vs
+        # lin-passing). Everything below it — chart, tabs — is the deep dive
+        # you take once these numbers raise a question.
+        self._stats_table = StatsTableZone(self._body, theme=t)
+        self._stats_table.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         # Chart card header: the view toggle sits with the chart it controls.
         # Same segmented-button styling as the Triage scope toggle so the two
         # "this switches what you're looking at" controls read as one thing.
@@ -340,6 +374,27 @@ class ModelPage(PageBase):
                                      .order_by(_f.count(DBSR.id).desc()).limit(12).all())
             except Exception:
                 logger.exception("smoothness model list failed")
+            # ---- the stats table + lot-vs-history (app-shape spec §2) -------
+            # All three reads happen HERE, on the worker, with the rest of the
+            # loaders. Each is one bulk query; on 6607's ~10,000 tracks the
+            # table is ~50 ms and the verdicts ~200 ms.
+            stats = lot_stats = None
+            lots, verdicts, lot_label = [], {}, ""
+            try:
+                stats = compute_model_stats(self.app.db, model, cutoff=cutoff)
+            except Exception:
+                logger.exception("Model %s: stats table failed", model)
+            try:
+                lots = model_lots(self.app.db, model)
+                chosen_lot = self._resolve_lot(model, lots)
+                if chosen_lot is not None:
+                    lot_label = chosen_lot.label
+                    lot_stats = compute_model_stats(self.app.db, model,
+                                                    lot=chosen_lot.window)
+                    verdicts = compute_lot_verdicts(self.app.db, model,
+                                                    chosen_lot.window)
+            except Exception:
+                logger.exception("Model %s: lot stats failed", model)
 
             def apply():
                 if gen != self._reload_gen:
@@ -363,6 +418,10 @@ class ModelPage(PageBase):
                     _try("verdict", lambda: self._verdict.configure(
                         text=verdict[0], text_color=verdict[1]))
                 _try("spec banner", lambda: self._set_spec_banner(spec))
+                _try("lot selector", lambda: self._set_lot_choices(lots, lot_label))
+                _try("stats table", lambda: self._stats_table.set_stats(
+                    stats, lot_stats=lot_stats, verdicts=verdicts,
+                    lot_label=lot_label))
                 _try("focus chart", lambda: self._set_chart_data(
                     chosen, spc, dates, values, baseline))
                 _try("units tab", lambda: self._units_tab.set_units(units))
@@ -379,6 +438,41 @@ class ModelPage(PageBase):
             work()
         else:
             threading.Thread(target=work, daemon=True).start()
+
+    # ---- lot selection ----
+    def _resolve_lot(self, model, lots):
+        """Which lot the stats table should describe — worker-side, no Tk.
+
+        The rule (app-shape spec §2): the CURRENT lot when one is open, and
+        all history otherwise. The default is applied once per model, so it
+        cannot fight the user — once he picks "all history" on a model, a
+        refresh does not put him back on the open lot.
+        """
+        self._lots = lots
+        if self._lot_default_applied_for != model:
+            self._lot_default_applied_for = model
+            index = default_lot_index(lots)
+            self._lot_label = lots[index].label if index is not None else None
+        if self._lot_label is None:
+            return None
+        # Re-resolve by label: new files can reshape the newest lot between
+        # reloads, and a stale index would quietly describe a different run.
+        for lot in lots:
+            if lot.label == self._lot_label:
+                return lot
+        self._lot_label = None
+        return None
+
+    def _set_lot_choices(self, lots, lot_label) -> None:
+        values = [_ALL_HISTORY] + [lot.label for lot in lots]
+        self._lot_menu.configure(values=values)
+        self._lot_menu.set(lot_label or _ALL_HISTORY)
+
+    def _on_lot_change(self, choice):
+        self._lot_label = None if choice == _ALL_HISTORY else choice
+        # Applied by the user: never override it with the per-model default.
+        self._lot_default_applied_for = self._current_model
+        self._reload()
 
     def _set_spec_banner(self, comparison) -> None:
         """Show the amber line only when the two stations really do differ.

@@ -429,6 +429,28 @@ def _fail_flag(status) -> float:
     return 1.0 if getattr(status, "name", str(status)) == "FAIL" else 0.0
 
 
+def series_anchor(db, sample_dates) -> datetime:
+    """The clock a series is judged from: the DB-global one, never older than
+    this metric's own newest sample.
+
+    The anchor does two jobs — it dates the openness question AND sets
+    `_clean`'s forward cut — and most watched metrics do not live in
+    analysis_results: final test happens days AFTER the trim, so an FT lot can
+    legitimately postdate the newest trim file, and anchoring it on the trim
+    clock would silently drop the newest FT lots off the chart. For linearity —
+    the only metric the focus list builds, so the only one parity is asserted
+    on — `_db_anchor` is the max over every model's usable rows and so is
+    already >= this model's, making the max() a no-op there. `_db_anchor` is
+    None only on an empty/unreadable DB.
+
+    Public because anyone building a series from samples they already hold
+    (the INVESTIGATE lot verdicts do, off the stats table's own query) has to
+    use the SAME clock, or two surfaces would disagree about which lot is open.
+    """
+    return (max(filter(None, (_db_anchor(db), _newest_usable(sample_dates))),
+                default=None) or datetime.now())
+
+
 def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
                        *, anchor: Optional[datetime] = None) -> SpcSeries:
     """The series for ONE (model, metric) — what the chart and the export draw.
@@ -455,19 +477,7 @@ def compute_spc_series(db, model: str, metric: str = "linearity_fail_fraction",
                for (d, v, _rid) in _load_samples_with_dates(db, model, metric)
                if d is not None and v is not None]
     if anchor is None:
-        # The DB-global clock, but never OLDER than this metric's own newest
-        # sample. The anchor does two jobs — it dates the openness question AND
-        # sets `_clean`'s forward cut — and most watched metrics do not live in
-        # analysis_results: final test happens days AFTER the trim, so an FT lot
-        # can legitimately postdate the newest trim file, and anchoring it on
-        # the trim clock would silently drop the newest FT lots off the chart.
-        # For linearity — the only metric the focus list builds, so the only one
-        # parity is asserted on — `_db_anchor` is the max over every model's
-        # usable rows and so is already >= this model's, making the max() a
-        # no-op there. `_db_anchor` is None only on an empty/unreadable DB.
-        anchor = (max(filter(None, (_db_anchor(db),
-                                    _newest_usable(d for d, _v in samples))),
-                      default=None) or datetime.now())
+        anchor = series_anchor(db, (d for d, _v in samples))
     build = (build_fraction_series if metric in FRACTION_METRICS
              else build_continuous_series)
     return build(model, metric, samples, anchor=anchor,

@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 import pytest
 
 from laser_trim_analyzer.core.model_stats import (
-    POSITIVE_RATIO, RATIO_BAND, compute_model_stats, metric_policy)
+    POSITIVE_RATIO, RATIO_BAND, Cell, StatRow, compute_model_stats,
+    metric_policy)
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.database.models import (
     AnalysisResult, StatusType, SystemType, TrackResult)
@@ -328,3 +329,209 @@ def test_rows_are_ordered_and_labelled(db):
     assert all(r.label and r.kind in ("distribution", "rate") for r in st.rows)
     assert [r.key for r in st.distribution_rows] == [r.key for r in st.rows[:6]]
     assert [r.key for r in st.rate_rows] == [r.key for r in st.rows[6:]]
+
+
+# ---------------------------------------------------------------------------
+# display formatting — one scale per row, kohms where that reads better
+# ---------------------------------------------------------------------------
+
+def test_ohms_read_as_kilohms_above_a_thousand():
+    from laser_trim_analyzer.core.model_stats import display_unit, format_in
+    assert display_unit("ohms", 4281.8) == "kΩ"
+    assert display_unit("ohms", 929.0) == "Ω"
+    assert format_in(4281.8, "kΩ") == "4.28 kΩ"
+    assert format_in(29576.0, "kΩ") == "29.6 kΩ"
+    assert format_in(422.0, "Ω") == "422 Ω"
+
+
+def test_a_row_uses_one_scale_for_all_its_cells():
+    """min 422 Ω next to max 29.6 kΩ is unreadable — the ROW picks the scale."""
+    from laser_trim_analyzer.core.model_stats import row_unit
+    row = StatRow(key="untrimmed_resistance", label="R", unit="ohms",
+                  kind="distribution",
+                  all_=Cell(n=3, excluded=0, missing=0, avg=4281.8,
+                            low=422.0, high=29576.0),
+                  lin_passing=Cell(n=0, excluded=0, missing=0))
+    assert row_unit(row) == "kΩ"
+
+
+def test_other_units_and_missing_values():
+    from laser_trim_analyzer.core.model_stats import format_in
+    assert format_in(None, "kΩ") == "—"
+    assert format_in(46.789, "°") == "46.8°"
+    assert format_in(13.5786, "%") == "13.6%"
+    assert format_in(0.0056266, "") == "0.005627"
+
+
+# ---------------------------------------------------------------------------
+# lot-vs-history verdicts (the shared SPC core writes "normal")
+# ---------------------------------------------------------------------------
+
+def _seed_lots(db, model, n_lots=12, value=1000.0, last_value=None, spacing=7):
+    """One lot a week, `n_lots` of them, 6 units each. Lot boundaries come from
+    ml/lots.py (a gap > LOT_GAP_DAYS starts a new lot), so weekly spacing gives
+    one lot per day-cluster.
+
+    Lots jitter by 0-2 ohms with no trend: the SPC core refuses to judge a
+    baseline with ZERO lot-to-lot spread (±3*0 would flag every lot that is not
+    exactly the centre), so a fixture of identical lots would test nothing.
+    """
+    for k in range(n_lots):
+        v = (value + k % 3) if (k < n_lots - 1 or last_value is None) else last_value
+        day = D0 + timedelta(days=spacing * k)
+        for i in range(6):
+            _add(db, model, day, StatusType.PASS,
+                 untrimmed_resistance=v + i, linearity_pass=True)
+    return D0 + timedelta(days=spacing * (n_lots - 1))
+
+
+def test_lot_within_its_normal(db):
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    last = _seed_lots(db, "M", value=1000.0)
+    v = compute_lot_verdicts(db, "M", (last, last))["untrimmed_resistance"]
+    assert v.status == "within"
+    assert "within its normal" in v.text
+
+
+def test_lot_above_everything_this_model_has_done(db):
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    # Lot medians wobble by 1 ohm between lots, so a 500-ohm jump is far
+    # outside the model's own lot-to-lot spread.
+    last = _seed_lots(db, "M", value=1000.0, last_value=1500.0)
+    v = compute_lot_verdicts(db, "M", (last, last))["untrimmed_resistance"]
+    assert v.status == "above"
+    assert "above everything this model has done" in v.text
+    assert "typically 1.50 kΩ" in v.text     # this lot's value, in the row's unit
+    assert "kΩ–" not in v.text               # the band names its unit once
+    assert v.normal_low is not None and v.normal_high is not None
+
+
+def test_lot_below_everything_this_model_has_done(db):
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    last = _seed_lots(db, "M", value=1000.0, last_value=500.0)
+    v = compute_lot_verdicts(db, "M", (last, last))["untrimmed_resistance"]
+    assert v.status == "below"
+    assert "below anything this model has done" in v.text
+
+
+def test_short_history_says_so_instead_of_inventing_a_band(db):
+    """Below MIN_LOTS_TRAIN the SPC core refuses to judge — and so do we."""
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    last = _seed_lots(db, "M", n_lots=3, value=1000.0)
+    v = compute_lot_verdicts(db, "M", (last, last))["untrimmed_resistance"]
+    assert v.status == "unjudged"
+    assert "not run enough lots" in v.text
+    assert v.normal_low is None
+
+
+def test_metric_with_no_readings_in_the_lot_says_so(db):
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    last = _seed_lots(db, "M", value=1000.0)
+    v = compute_lot_verdicts(db, "M", (last, last))["margin_to_spec"]
+    assert v.status == "no data"
+    assert v.lot_typical is None
+
+
+def test_lot_verdicts_never_raise_on_a_dead_database():
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    class Boom:
+        def session(self):
+            raise RuntimeError("database is locked")
+    out = compute_lot_verdicts(Boom(), "M", (D0, D0))
+    assert out == {}
+
+
+# ---------------------------------------------------------------------------
+# the lot selector's choices (the SHARED clustering, never a second one)
+# ---------------------------------------------------------------------------
+
+def test_model_lots_are_newest_first_and_labelled(db):
+    from laser_trim_analyzer.core.model_stats import model_lots
+    last = _seed_lots(db, "M", n_lots=4)
+    lots = model_lots(db, "M")
+    assert len(lots) == 4
+    assert lots[0].end == last                       # newest first
+    assert lots[0].n == 6 and lots[0].label
+    assert all(lots[i].end > lots[i + 1].end for i in range(len(lots) - 1))
+
+
+def test_open_lot_is_marked_and_is_the_default(db):
+    from laser_trim_analyzer.core.model_stats import default_lot_index, model_lots
+    _seed_lots(db, "M", n_lots=4)
+    lots = model_lots(db, "M")
+    # The newest lot ends on the DB's own newest date, so it is still open.
+    assert lots[0].is_open and "current lot" in lots[0].label
+    assert default_lot_index(lots) == 0
+
+
+def test_no_open_lot_defaults_to_all_history(db):
+    from laser_trim_analyzer.core.model_stats import default_lot_index, model_lots
+    _seed_lots(db, "M", n_lots=4)
+    # A newer model moves the DB's clock past M's last lot, closing it. The
+    # date stays in the PAST: the app's anchor throws out file-date junk more
+    # than a day ahead of the wall clock, so a "future" row would move nothing.
+    _add(db, "OTHER", D0 + timedelta(days=120), StatusType.PASS,
+         untrimmed_resistance=1000.0)
+    lots = model_lots(db, "M")
+    assert not lots[0].is_open
+    assert default_lot_index(lots) is None           # None = all history
+
+
+def test_model_lots_on_an_unreadable_database():
+    from laser_trim_analyzer.core.model_stats import model_lots
+    class Boom:
+        def session(self):
+            raise RuntimeError("database is locked")
+    assert model_lots(Boom(), "M") == []
+
+
+def test_a_resistance_band_never_prints_a_negative_normal(db):
+    """±3σ on lot medians dips below zero when the spread is wide; a
+    resistance "normal -1.02 kΩ" is not something an engineer can read.
+    The SENTENCE clamps, the comparison does not (evidence.py's precedent)."""
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    # Lots alternating 1 kohm / 3 kohm: a lot-to-lot spread that wide next to
+    # the centre puts the lower 3-sigma limit below zero.
+    for k in range(12):
+        day = D0 + timedelta(days=7 * k)
+        for i in range(6):
+            _add(db, "M", day, StatusType.PASS,
+                 untrimmed_resistance=(3000.0 if k % 2 else 1000.0) + i)
+    last = D0 + timedelta(days=7 * 11)
+    v = compute_lot_verdicts(db, "M", (last, last))["untrimmed_resistance"]
+    assert v.normal_low is not None and v.normal_low < 0    # math untouched
+    assert "normal under" in v.text and "-" not in v.text.split("normal")[-1]
+
+
+def test_electrical_angle_keeps_its_negative_band(db):
+    """The one metric that IS legitimately negative must keep both bounds."""
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    for k in range(12):
+        day = D0 + timedelta(days=7 * k)
+        for i in range(6):
+            _add(db, "M", day, StatusType.PASS,
+                 measured_electrical_angle=(2.0 if k % 2 else 0.5) + 0.01 * i)
+    last = D0 + timedelta(days=7 * 11)
+    v = compute_lot_verdicts(db, "M", (last, last))["measured_electrical_angle"]
+    assert v.normal_low is not None and v.normal_low < 0
+    assert "normal under" not in v.text and "–" in v.text
+
+
+def test_lot_verdicts_ignore_records_that_failed_processing(db):
+    """8856's 75 failed records carry 999.999 in the linearity column too — a
+    lot median built from those would produce a confident, wrong sentence."""
+    from laser_trim_analyzer.core.model_stats import compute_lot_verdicts
+    for k in range(12):
+        day = D0 + timedelta(days=7 * k)
+        for i in range(6):
+            _add(db, "M", day, StatusType.PASS,
+                 final_linearity_error_shifted=0.01 + 0.001 * (k % 3) + 0.0001 * i)
+        # Two sentinel rows in every lot: enough to own the median if kept.
+        for _ in range(2):
+            _add(db, "M", day, StatusType.ERROR,
+                 final_linearity_error_shifted=999.999)
+    last = D0 + timedelta(days=7 * 11)
+    v = compute_lot_verdicts(db, "M", (last, last))["final_linearity_error_shifted"]
+    assert v.lot_typical is not None and v.lot_typical < 1.0
+    assert v.lot_n == 6                       # the sentinels are not readings
+    assert "999" not in v.text

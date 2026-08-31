@@ -294,10 +294,9 @@ def _distribution_cell(raw: Sequence, policy: str,
         if f is None:                       # NaN/inf: a reading, but not a number
             excluded += 1
             continue
-        if policy == POSITIVE_RATIO:
-            if f <= 0 or (band is not None and not (band[0] <= f <= band[1])):
-                excluded += 1
-                continue
+        if not _plausible(f, policy, band):
+            excluded += 1
+            continue
         kept.append(f)
     if not kept:
         return Cell(n=0, excluded=excluded, missing=missing, errored=errored)
@@ -477,3 +476,287 @@ def compute_model_stats(db, model: str, *, cutoff: Optional[datetime] = None,
     return build_model_stats(model, [TrackRecord(*r) for r in rows],
                              cutoff=cutoff, lot=lot, future_dated=junk,
                              note=note)
+
+
+# ===========================================================================
+# Display — the ONE place a number becomes words.
+# ===========================================================================
+# The table, the lot verdict sentence and the Excel sheet all format through
+# here, so the screen and the export cannot round a number differently. Same
+# rule `ml/spc.py` follows for its verdicts.
+
+_OHM, _KOHM = "Ω", "kΩ"
+# Above this many ohms the row reads better in kilohms: 4.28 kΩ, not 4282 Ω.
+_KILO = 1000.0
+
+
+def _num(value: float) -> str:
+    """Three-ish significant digits, never scientific notation.
+
+    These columns span 0.0028 (sigma gradient) to 344 (electrical angle) to
+    35,000 (ohms), and `%g` would print 2.96e+04 in the middle of a table a
+    person is reading against a print-out.
+    """
+    a = abs(value)
+    if a >= 100:
+        return f"{value:,.0f}"
+    if a >= 10:
+        return f"{value:.1f}"
+    if a >= 1:
+        return f"{value:.2f}"
+    if a >= 0.01:
+        return f"{value:.3f}"
+    return f"{value:.4g}"
+
+
+def display_unit(unit: str, reference: Optional[float]) -> str:
+    """The unit this value should be SHOWN in (the data layer keeps raw ohms)."""
+    if unit == "ohms":
+        return _KOHM if (reference is not None and abs(reference) >= _KILO) else _OHM
+    return {"deg": "°", "%": "%"}.get(unit, "")
+
+
+def bare_number(value: Optional[float], unit_text: str) -> str:
+    """The number alone, scaled to the unit — for a range that names it once."""
+    if value is None:
+        return "—"
+    return _num(value / _KILO if unit_text == _KOHM else value)
+
+
+def format_in(value: Optional[float], unit_text: str) -> str:
+    """One value in an already-chosen unit. None reads as an em dash, never 0."""
+    if value is None:
+        return "—"
+    text = bare_number(value, unit_text)
+    return f"{text} {unit_text}" if unit_text in (_OHM, _KOHM) else f"{text}{unit_text}"
+
+
+def row_unit(row: "StatRow") -> str:
+    """ONE scale for the whole row.
+
+    A row that printed "min 422 Ω" beside "max 29.6 kΩ" makes the reader do
+    unit arithmetic to compare its own three numbers, so the row picks its
+    scale once — from the ALL average, falling back to the lin-passing one.
+    """
+    reference = row.all_.avg if row.all_.avg is not None else row.lin_passing.avg
+    return display_unit(row.unit, reference)
+
+
+# ===========================================================================
+# Lot selection — the SHARED clustering, never a second one.
+# ===========================================================================
+
+@dataclass(frozen=True)
+class LotChoice:
+    """One production run, as the selector offers it."""
+    start: datetime
+    end: datetime
+    n: int                       # units in the lot
+    is_open: bool                # may still be receiving units — a preview
+    label: str                   # what the selector shows
+
+    @property
+    def window(self) -> Tuple[datetime, datetime]:
+        return (self.start, self.end)
+
+
+def _lot_label(start: datetime, end: datetime, n: int, is_open: bool) -> str:
+    span = (f"{start:%b %d}" if start.date() == end.date()
+            else f"{start:%b %d}–{end:%b %d}")
+    if start.year != end.year or start.year != datetime.now().year:
+        span += f" {end:%Y}"
+    label = f"{span} · {n} unit{'s' if n != 1 else ''}"
+    return label + " · current lot" if is_open else label
+
+
+def model_lots(db, model: str) -> List[LotChoice]:
+    """This model's production runs, newest first.
+
+    Read straight off the SPC core's default series (`compute_spc_series`),
+    which is the clustering the FOCUS list ranks from and the p-chart draws.
+    Re-clustering here with its own query is exactly how two surfaces end up
+    disagreeing about where a lot started, so this does not do that — it maps
+    the series' points, and inherits its window (the last 30 lots), its
+    requalification floor and its clock for free.
+
+    Never raises: the selector degrades to "all history" rather than taking
+    the page down.
+    """
+    try:
+        from laser_trim_analyzer.ml.spc import compute_spc_series
+        series = compute_spc_series(db, model)
+    except Exception:
+        logger.exception("model lots: series failed for %s", model)
+        return []
+    return [LotChoice(start=p.start, end=p.end, n=p.n, is_open=p.is_open,
+                      label=_lot_label(p.start, p.end, p.n, p.is_open))
+            for p in reversed(series.points)]
+
+
+def default_lot_index(lots: Sequence[LotChoice]) -> Optional[int]:
+    """The lot to select on arrival: the CURRENT one when a lot is open.
+
+    None means "all history" — the right default when nothing is running,
+    because that is the question James opens this page to answer.
+    """
+    return 0 if lots and lots[0].is_open else None
+
+
+# ===========================================================================
+# Lot vs history — is this run out of family for this model?
+# ===========================================================================
+
+@dataclass(frozen=True)
+class LotVerdict:
+    """What the shared SPC core says about this lot, for one metric."""
+    metric: str
+    label: str
+    status: str                  # above | below | within | unjudged | no data
+    lot_typical: Optional[float]     # this lot's MEDIAN (the SPC observation)
+    lot_n: int
+    normal_low: Optional[float]      # the model's own ±3σ band on lot medians
+    normal_high: Optional[float]
+    text: str                        # the sentence the UI and Excel print
+
+
+# Metrics that cannot physically be negative — verified over the whole work
+# database (2026-08-30): only `measured_electrical_angle` ever is (2,416 rows,
+# min -2.56); the other five have a minimum of exactly 0. A ±3σ band on lot
+# medians dips below zero whenever the lot-to-lot spread is wide next to the
+# centre, and "normal -1.02–9.80 kΩ" is not a resistance anyone recognises.
+# The BAND ITSELF is never clamped — the above/below/within comparison stays
+# exactly the shared SPC core's numbers, the same display-only discipline the
+# evidence pack applies to a small lot's binomial UCL (export/evidence.py).
+# Only the sentence changes, to "normal under 9.80 kΩ".
+_NON_NEGATIVE = ({key for key, _label, _unit in _DISTRIBUTION_ROWS}
+                 - {"measured_electrical_angle"})
+
+
+def _verdict_text(key: str, label: str, unit: str, status: str,
+                  typical, low, high) -> str:
+    """The sentence. Written here so the screen and the export cannot differ."""
+    shown = display_unit(unit, typical if typical is not None else low)
+    value = format_in(typical, shown)
+    if status == "no data":
+        return f"{label}: no readings in this lot"
+    if status == "unjudged":
+        return (f"{label}: this lot is typically {value}, but the model has "
+                "not run enough lots yet to say what normal is")
+    if low is not None and low <= 0 and key in _NON_NEGATIVE:
+        band = f"under {format_in(high, shown)}"
+    else:
+        # "8.1–9.6 kΩ", not "8.1 kΩ–9.6 kΩ": the unit names the range once.
+        band = f"{bare_number(low, shown)}–{format_in(high, shown)}"
+    if status == "above":
+        return (f"{label} for this lot sits above everything this model has "
+                f"done (typically {value} vs normal {band})")
+    if status == "below":
+        return (f"{label} for this lot sits below anything this model has "
+                f"done (typically {value} vs normal {band})")
+    return (f"{label} for this lot is within its normal "
+            f"(typically {value} vs normal {band})")
+
+
+def compute_lot_verdicts(db, model: str, lot: Tuple[datetime, datetime]
+                         ) -> "dict":
+    """Per-metric plain-English verdict for one lot: metric key -> LotVerdict.
+
+    "Normal" is not invented here — it is the shared SPC core's band
+    (`ml/spc.build_continuous_series`): the ±3σ of this model's own baseline
+    LOT MEDIANS, the same band the Model page's lot chart draws. This function
+    only supplies the samples and asks where the selected lot falls.
+
+    The lot's own value is its MEDIAN, matching the observation `ml/lots.py`
+    aggregates and the chart plots — not the table's average. The two live
+    side by side deliberately: the average is what James reads off the table,
+    the median is what the control limits were built from, and quoting the
+    average against a median-derived band would be comparing two things.
+
+    The samples get the SAME two cleanings the table applies: records whose
+    processing failed are dropped whole, and the resistances run through their
+    plausibility policy. A lot median is already robust to a stray reading, so
+    this barely moves the band — verified against `compute_spc_series` on the
+    real data: 8340-1's limits are IDENTICAL, 6607's differ by 0.02 Ω on a
+    9.8 kΩ limit. It is here so a lot that is MOSTLY sentinel cannot produce a
+    confident sentence, which is a live risk: 8856's 75 failed records carry
+    999.999 in BOTH `final_linearity_error_shifted` and `sigma_gradient`.
+
+    That last cleaning is the one place this deliberately does NOT match
+    `compute_spc_series`, which still feeds failed records to the linearity
+    chart. Flagged for James rather than changed here — the drift watch's
+    trained baselines were built from that population, and silently moving
+    them from a stats-table commit would be worse than the divergence.
+
+    ONE query for every metric, over the FULL history: the band needs the
+    model's whole record, not the page's 30/90-day window.
+    """
+    try:
+        from laser_trim_analyzer.ml.spc import (
+            build_continuous_series, series_anchor)
+        from laser_trim_analyzer.database.models import AnalysisResult as DBAR
+        from laser_trim_analyzer.database.models import TrackResult as DBTR
+        with db.session() as s:
+            rows = [r for r in
+                    (s.query(DBAR.file_date,
+                             DBTR.untrimmed_resistance, DBTR.trimmed_resistance,
+                             DBTR.measured_electrical_angle,
+                             DBTR.final_linearity_error_shifted,
+                             DBTR.margin_to_spec, DBTR.sigma_gradient,
+                             DBAR.overall_status)
+                     .join(DBTR, DBTR.analysis_id == DBAR.id)
+                     .filter(DBAR.model == model, DBAR.file_date.isnot(None))
+                     .all())
+                    if not failed_processing(r[-1])]
+        anchor = series_anchor(db, (r[0] for r in rows))
+        floor = _requal_floor(db, model)
+    except Exception:
+        logger.exception("lot verdicts: query failed for %s", model)
+        return {}
+    start, end = lot[0], lot[1] + timedelta(days=1)
+    out = {}
+    for index, (key, label, unit) in enumerate(_DISTRIBUTION_ROWS, start=1):
+        policy = metric_policy(key)
+        raw = [(r[0], _usable(r[index])) for r in rows]
+        band = _band([v for _d, v in raw], policy)
+        samples = [(d, v) for d, v in raw
+                   if v is not None and _plausible(v, policy, band)]
+        in_lot = [v for d, v in samples if start <= d < end]
+        try:
+            series = build_continuous_series(model, key, samples, anchor=anchor,
+                                             requal_floor=floor)
+        except Exception:
+            logger.exception("lot verdicts: series failed for %s/%s", model, key)
+            series = None
+        typical = float(median(in_lot)) if in_lot else None
+        if typical is None:
+            status, low, high = "no data", None, None
+        elif series is None or not series.judged or not series.points:
+            status, low, high = "unjudged", None, None
+        else:
+            low, high = series.points[-1].lcl, series.points[-1].ucl
+            status = ("above" if typical > high else
+                      "below" if typical < low else "within")
+        out[key] = LotVerdict(
+            metric=key, label=label, status=status, lot_typical=typical,
+            lot_n=len(in_lot), normal_low=low, normal_high=high,
+            text=_verdict_text(key, label, unit, status, typical, low, high))
+    return out
+
+
+def _plausible(value: float, policy: str,
+               band: Optional[Tuple[float, float]]) -> bool:
+    """The same admission test `_distribution_cell` applies, as a predicate."""
+    if policy != POSITIVE_RATIO:
+        return True
+    if value <= 0:
+        return False
+    return band is None or band[0] <= value <= band[1]
+
+
+def _requal_floor(db, model: str):
+    """The model's baseline requalification date, via the SPC core's reader."""
+    try:
+        from laser_trim_analyzer.ml.spc import _requal_floor as spc_floor
+        return spc_floor(db, model)
+    except Exception:
+        return None
