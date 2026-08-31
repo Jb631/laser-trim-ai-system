@@ -2404,19 +2404,66 @@ class DatabaseManager:
         records are excluded — a comparison needs both stations. UNTRIMMED
         tracks are excluded because their NULL linearity_pass would force
         trim_pass=0, fabricating overkills and masking escapes.
+
+        The disposition is computed over the whole UNIT-DAY, not over the single
+        linked file, because one unit-day is spread across several rows in two
+        different ways and they need opposite treatment:
+
+          * a multi-track unit writes one file PER TRACK ("6607_102_TA_...",
+            "6607_102_TB_...", minutes apart, track_id 'Track A' / 'Track B').
+            Linearity is zero-tolerance, so the unit passes only if EVERY track
+            passes — taking the latest file would let a passing Track B hide a
+            failing Track A. 4,659 unit-days in the work DB are this shape.
+          * a track that fails is re-trimmed until it passes, writing a new file
+            each attempt. Only the LAST attempt on that track is the disposition
+            the unit carried to final test. 13,104 unit-days have this shape.
+
+        So: per track take the last attempt, then require all tracks to pass.
+        `unit_id` ("<model>/<shop>/<YYYY-MM-DD>") is the unit-day key and is
+        already day-bounded, which is what keeps reused shop numbers from
+        pooling different physical units across lots. Rows with no unit_id (no
+        shop number in the serial) fall back to the linked file's own tracks.
         """
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
         )
 
+        # Last attempt per (unit-day, track), ordered by the clock time the
+        # parser now keeps; id breaks exact ties deterministically.
+        attempts = (
+            session.query(
+                DBAnalysisResult.unit_id.label("uid"),
+                DBTrackResult.linearity_pass.label("lin_pass"),
+                func.row_number().over(
+                    partition_by=(DBAnalysisResult.unit_id, DBTrackResult.track_id),
+                    order_by=(DBAnalysisResult.file_date.desc(),
+                              DBAnalysisResult.id.desc()),
+                ).label("rn"))
+            .join(DBTrackResult, DBTrackResult.analysis_id == DBAnalysisResult.id)
+            .filter(DBTrackResult.status != DBStatusType.UNTRIMMED.name,
+                    DBAnalysisResult.unit_id.isnot(None),
+                    DBAnalysisResult.unit_id != "")
+            .subquery())
+        unit_disp = (
+            session.query(
+                attempts.c.uid.label("uid"),
+                func.min(case((attempts.c.lin_pass == True, 1), else_=0))
+                    .label("trim_pass"))
+            .filter(attempts.c.rn == 1)
+            .group_by(attempts.c.uid)
+            .subquery())
+
         q = (session.query(
                 DBFinalTestResult.model,
                 DBFinalTestResult.serial,
                 DBFinalTestResult.linearity_pass.label("ft_pass"),
-                func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0))
-                    .label("trim_pass"))
+                func.coalesce(
+                    unit_disp.c.trim_pass,
+                    func.min(case((DBTrackResult.linearity_pass == True, 1), else_=0)),
+                ).label("trim_pass"))
              .join(DBAnalysisResult, DBFinalTestResult.linked_trim_id == DBAnalysisResult.id)
              .join(DBTrackResult, DBAnalysisResult.id == DBTrackResult.analysis_id)
+             .outerjoin(unit_disp, unit_disp.c.uid == DBAnalysisResult.unit_id)
              .filter(DBFinalTestResult.linked_trim_id.isnot(None),
                      DBFinalTestResult.linearity_pass.isnot(None),
                      DBFinalTestResult.match_confidence >= min_confidence,
@@ -2427,7 +2474,8 @@ class DatabaseManager:
             q = q.filter(DBFinalTestResult.file_date >= cutoff)
         return q.group_by(DBFinalTestResult.id, DBFinalTestResult.model,
                           DBFinalTestResult.serial,
-                          DBFinalTestResult.linearity_pass).all()
+                          DBFinalTestResult.linearity_pass,
+                          unit_disp.c.trim_pass).all()
 
     def get_escape_overkill_analysis(self, days_back: int = 90, min_confidence: float = 0.70) -> Dict[str, Any]:
         """Company-wide escapes and overkills (the 'Gap' numbers).

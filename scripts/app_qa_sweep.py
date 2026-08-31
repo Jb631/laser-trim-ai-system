@@ -343,19 +343,35 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
     CONF, DAYS = 0.70, 365
     cutoff = (datetime.now() - timedelta(days=DAYS)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Re-derived independently of the ORM: one row per linked FT record, the
-    # trim disposition being all-tracks-pass on the LINKED attempt.
+    # Re-derived independently of the ORM. The disposition is the UNIT-DAY's,
+    # not the linked file's: per track take the LAST attempt of the day, then
+    # require every track to pass. One unit-day spans several rows two ways —
+    # one file per track on a multi-track unit (4,659 unit-days), and one file
+    # per re-trim attempt on a track (13,104) — and they need opposite
+    # treatment. `unit_id` ("<model>/<shop>/<date>") is the unit-day key.
+    DISP = """
+      att AS (
+        SELECT a.unit_id uid, t.linearity_pass lp,
+               ROW_NUMBER() OVER (PARTITION BY a.unit_id, t.track_id
+                                  ORDER BY a.file_date DESC, a.id DESC) rn
+        FROM analysis_results a JOIN track_results t ON t.analysis_id = a.id
+        WHERE t.status <> 'UNTRIMMED' AND a.unit_id IS NOT NULL AND a.unit_id <> ''),
+      disp AS (SELECT uid, MIN(CASE WHEN lp=1 THEN 1 ELSE 0 END) tp
+               FROM att WHERE rn = 1 GROUP BY uid),
+    """
     LINKED = """
       SELECT f.id fid, f.model, f.serial, a.id tid, date(a.file_date) tday,
              a.file_date tstamp, f.linearity_pass ft_pass,
-             MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) trim_pass
+             COALESCE(d.tp, MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END))
+               trim_pass
       FROM final_test_results f
       JOIN analysis_results a ON a.id = f.linked_trim_id
       JOIN track_results t ON t.analysis_id = a.id
+      LEFT JOIN disp d ON d.uid = a.unit_id
       WHERE f.linked_trim_id IS NOT NULL AND f.linearity_pass IS NOT NULL
         AND f.match_confidence >= ? AND t.status <> 'UNTRIMMED' """
     WINDOW = " AND f.file_date >= ? "
-    GROUP = " GROUP BY f.id "
+    GROUP = " GROUP BY f.id, d.tp "
 
     # ---- 0. the repair actually ran on this database -----------------------
     # Rows the OLD parser wrote sit at midnight with the time still in the
@@ -381,7 +397,7 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
 
     # ---- 1. linked trim IS the day's final attempt --------------------------
     late = raw.execute(f"""
-      WITH L AS ({LINKED}{GROUP})
+      WITH {DISP} L AS ({LINKED}{GROUP})
       SELECT COUNT(*) FROM L
       WHERE EXISTS (SELECT 1 FROM analysis_results a2
                     WHERE a2.model = (SELECT model FROM analysis_results WHERE id = L.tid)
@@ -394,28 +410,33 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           f"links with a later same-day attempt = {late}")
 
     # ---- 2. the confound itself is gone ------------------------------------
-    # An overkill that has a PASSING attempt later the same day is the process
-    # working as designed, not the trim station over-rejecting.
+    # A unit whose every track's LAST attempt of the day passed must never be
+    # counted as an overkill — that is the process working as designed. Note
+    # this is per TRACK: a passing later attempt on Track A does NOT excuse a
+    # Track B that never passed, which is why check 3's numbers moved up on
+    # multi-track models rather than down.
     phantom = raw.execute(f"""
-      WITH L AS ({LINKED}{WINDOW}{GROUP}),
-      RUN AS (SELECT a.id tid, a.model, a.serial, a.file_date,
-                     MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) ap
-              FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id
-              WHERE t.status <> 'UNTRIMMED' GROUP BY a.id)
+      WITH {DISP} L AS ({LINKED}{WINDOW}{GROUP})
       SELECT COUNT(*) FROM L
       WHERE L.trim_pass = 0 AND L.ft_pass = 1
-        AND EXISTS (SELECT 1 FROM RUN r
-                    JOIN analysis_results la ON la.id = L.tid
-                    WHERE r.model = la.model AND r.serial = la.serial
-                      AND date(r.file_date) = L.tday
-                      AND r.file_date > L.tstamp AND r.ap = 1)
+        AND NOT EXISTS (
+          SELECT 1 FROM analysis_results a2
+          JOIN track_results t2 ON t2.analysis_id = a2.id
+          WHERE a2.unit_id = (SELECT unit_id FROM analysis_results WHERE id = L.tid)
+            AND t2.status <> 'UNTRIMMED'
+            AND a2.id = (SELECT a3.id FROM analysis_results a3
+                         JOIN track_results t3 ON t3.analysis_id = a3.id
+                         WHERE a3.unit_id = a2.unit_id AND t3.track_id = t2.track_id
+                           AND t3.status <> 'UNTRIMMED'
+                         ORDER BY a3.file_date DESC, a3.id DESC LIMIT 1)
+            AND (t2.linearity_pass IS NOT 1))
     """, (CONF, cutoff)).fetchone()[0]
-    check("overkills: none has a passing re-trim later the same day",
+    check("overkills: none where every track's last attempt of the day passed",
           phantom == 0, f"re-trim-confounded overkills = {phantom}")
 
     # ---- 3. API == raw SQL --------------------------------------------------
     n, esc, ovk = raw.execute(f"""
-      WITH L AS ({LINKED}{WINDOW}{GROUP})
+      WITH {DISP} L AS ({LINKED}{WINDOW}{GROUP})
       SELECT COUNT(*),
              SUM(CASE WHEN trim_pass=1 AND ft_pass=0 THEN 1 ELSE 0 END),
              SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END) FROM L
@@ -434,7 +455,7 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
     # Same rows, same classifier — the trim-vs-FT tab and the Gap cannot drift.
     for m in ("6607", "8340-1", "8232-1"):
         mn, mesc, movk = raw.execute(f"""
-          WITH L AS ({LINKED} AND f.model = ? {WINDOW}{GROUP})
+          WITH {DISP} L AS ({LINKED} AND f.model = ? {WINDOW}{GROUP})
           SELECT COUNT(*),
                  SUM(CASE WHEN trim_pass=1 AND ft_pass=0 THEN 1 ELSE 0 END),
                  SUM(CASE WHEN trim_pass=0 AND ft_pass=1 THEN 1 ELSE 0 END) FROM L
@@ -458,7 +479,7 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
     check("overkills survive the correction (metric not zeroed)",
           (ovk or 0) > 0, f"overkills={ovk}")
     cross_day = raw.execute(f"""
-      WITH L AS ({LINKED}{WINDOW}{GROUP}),
+      WITH {DISP} L AS ({LINKED}{WINDOW}{GROUP}),
       RUN AS (SELECT a.id tid, a.model, a.serial, a.file_date,
                      MIN(CASE WHEN t.linearity_pass=1 THEN 1 ELSE 0 END) ap
               FROM analysis_results a JOIN track_results t ON t.analysis_id=a.id

@@ -295,6 +295,140 @@ def test_earlier_day_pass_does_not_rescue_an_overkill(tmp_path, models):
 
 
 # --------------------------------------------------------------------------
+# Multi-track units: one unit-day spread across one file PER TRACK
+# --------------------------------------------------------------------------
+#
+# A dual-track unit writes "MODEL_SERIAL_TA_..." and "MODEL_SERIAL_TB_..."
+# minutes apart, as two analysis rows with track_id 'Track A' / 'Track B'
+# sharing one unit_id. They are NOT re-trim attempts, and "last file of the
+# day wins" is exactly wrong for them: linearity is zero-tolerance, so a
+# passing Track B must not hide a failing Track A. 4,659 unit-days in the work
+# DB are this shape (against 13,104 with genuine within-track re-trims).
+
+def _track(s, model, serial, when, track_id, lin_pass, i, DBAR, DBTR,
+           StatusType, SystemType):
+    """One track's file for a unit-day (the TA/TB layout)."""
+    stamp = f"{when.month}-{when.day}-{when.year}_{when.hour % 12 or 12}-" \
+            f"{when.minute:02d} {'PM' if when.hour >= 12 else 'AM'}"
+    tag = "TA" if track_id.endswith("A") else "TB"
+    a = DBAR(filename=f"{model}_{serial}_{tag}_Test Data_{stamp}Trimmed Correct.xls",
+             file_path=f"/t/{model}/{i}", file_hash=f"{model}{serial}{i}".ljust(64, "0"),
+             model=model, serial=serial, system=SystemType.B,
+             file_date=when.replace(hour=0, minute=0, second=0, microsecond=0),
+             timestamp=when,
+             overall_status=StatusType.PASS if lin_pass else StatusType.FAIL,
+             has_multi_tracks=False, processing_time=0.1,
+             unit_id=f"{model}/{serial}/{when.strftime('%Y-%m-%d')}")
+    s.add(a)
+    s.flush()
+    s.add(DBTR(analysis_id=a.id, track_id=track_id,
+               status=StatusType.PASS if lin_pass else StatusType.FAIL,
+               linearity_pass=lin_pass, sigma_gradient=0.01, sigma_pass=True))
+    return a
+
+
+def test_failing_track_a_is_not_hidden_by_passing_track_b(tmp_path, models):
+    """Track A fails at 1:39 PM, Track B passes at 1:49 PM. Linearity is
+    zero-tolerance, so the UNIT failed trim — final test passing it is a
+    genuine overkill, not an agreement. Taking the day's last file would read
+    'trim passed' and lose the failure entirely."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "tracks.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        _track(s, "M1", "102", day.replace(hour=13, minute=39), "Track A", False, 0,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=13, minute=49), "Track B", True, 1,
+               DBAR, DBTR, StatusType, SystemType)
+        s.commit()
+        _ft(s, "M1", "102", day + timedelta(days=3), True, 0, DBFT, StatusType)
+        s.commit()
+    _repair(db)
+
+    out = _agreement(db, "M1")
+    assert out["overkills"] == 1, "a failing Track A must not be hidden by Track B"
+    assert out["escapes"] == 0
+
+
+def test_both_tracks_passing_is_a_trim_pass(tmp_path, models):
+    """The control: when every track passes, the unit passed trim, so an FT
+    failure is a real escape."""
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "tracks_ok.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        _track(s, "M1", "102", day.replace(hour=13, minute=39), "Track A", True, 0,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=13, minute=49), "Track B", True, 1,
+               DBAR, DBTR, StatusType, SystemType)
+        s.commit()
+        _ft(s, "M1", "102", day + timedelta(days=3), False, 0, DBFT, StatusType)
+        s.commit()
+    _repair(db)
+
+    out = _agreement(db, "M1")
+    assert out["escapes"] == 1 and out["overkills"] == 0
+
+
+def test_retrim_of_one_track_composes_with_the_other_track(tmp_path, models):
+    """Both shapes at once — the case NEITHER rule handles alone.
+
+    Track A fails at 10:01 and is re-trimmed into spec at 11:17 (so it is the
+    day's LAST file); Track B failed at 10:30 and was never fixed. Per track
+    the last attempt counts (A passed), then every track must pass (B did not),
+    so the unit FAILED trim and final test passing it is a real overkill.
+
+    Deliberately shaped so the day's last file PASSES: 'last file of the day
+    wins' answers 'trim passed' here and loses the overkill, and 'every row of
+    the day must pass' would wrongly count A's superseded 10:01 failure.
+    """
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    DBAR, DBFT, DBTR, StatusType, SystemType = models
+
+    db = DatabaseManager(tmp_path / "compose.db")
+    day = datetime(2026, 3, 2)
+    with db.session() as s:
+        _track(s, "M1", "102", day.replace(hour=10, minute=1), "Track A", False, 0,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=10, minute=30), "Track B", False, 1,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=11, minute=17), "Track A", True, 2,
+               DBAR, DBTR, StatusType, SystemType)
+        s.commit()
+        _ft(s, "M1", "102", day + timedelta(days=3), True, 0, DBFT, StatusType)
+        s.commit()
+    _repair(db)
+
+    out = _agreement(db, "M1")
+    assert out["overkills"] == 1, "Track B never passed, so the unit failed trim"
+    assert out["escapes"] == 0
+
+    # Mirror: same layout, but Track B's own re-trim fixed it. Now every
+    # track's last attempt passed, so the unit passed and an FT failure is an
+    # escape — the superseded 10:01/10:30 failures must not count against it.
+    db2 = DatabaseManager(tmp_path / "compose2.db")
+    with db2.session() as s:
+        _track(s, "M1", "102", day.replace(hour=10, minute=1), "Track A", False, 0,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=10, minute=30), "Track B", False, 1,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=11, minute=17), "Track A", True, 2,
+               DBAR, DBTR, StatusType, SystemType)
+        _track(s, "M1", "102", day.replace(hour=11, minute=40), "Track B", True, 3,
+               DBAR, DBTR, StatusType, SystemType)
+        s.commit()
+        _ft(s, "M1", "102", day + timedelta(days=3), False, 0, DBFT, StatusType)
+        s.commit()
+    _repair(db2)
+    out2 = _agreement(db2, "M1")
+    assert out2["escapes"] == 1 and out2["overkills"] == 0
+
+
+# --------------------------------------------------------------------------
 # One definition, one place
 # --------------------------------------------------------------------------
 
