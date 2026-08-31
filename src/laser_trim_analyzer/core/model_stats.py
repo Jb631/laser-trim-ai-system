@@ -166,7 +166,12 @@ class ModelStats:
     rows: List[StatRow]
     tracks: int                  # USABLE track rows in the window (any status
                                  # except a failed-processing record)
-    units: int                   # distinct parent units in the window
+    # Distinct analysis RECORDS — files, not unit-days. A dual-track unit
+    # writes one file per track, and a re-trimmed track writes one file per
+    # attempt, so this is deliberately NOT called `units`: a unit-day spans
+    # several records and its key is `analysis_results.unit_id`. Nothing on
+    # this table is a unit-level statistic (see `_RATE_ROWS`).
+    records: int
     cutoff: Optional[datetime]
     lot: Optional[Tuple[datetime, datetime]]
     future_dated: int            # file-date junk skipped (see compute_yield)
@@ -204,7 +209,7 @@ class TrackRecord(NamedTuple):
     linearity_pass: Optional[bool]
     untrimmed_error_max: Optional[float]
     linearity_spec: Optional[float]
-    unit_id: Optional[int] = None
+    record_id: Optional[int] = None
 
 
 # key, label, unit
@@ -323,7 +328,11 @@ def _rate_cell(flags: Sequence[Optional[bool]], errored: int = 0) -> Cell:
 
 
 def _trim_passed(rec: TrackRecord) -> Optional[bool]:
-    """Did the track pass linearity at the trim station? (`linearity_pass`.)"""
+    """Did THIS TRACK ROW pass linearity at the trim station?
+
+    Per TRACK, per ATTEMPT — not a unit yield, which is why the row is called
+    "Tracks that passed linearity". See `_RATE_ROWS` for why.
+    """
     return None if rec.linearity_pass is None else bool(rec.linearity_pass)
 
 
@@ -338,10 +347,11 @@ def _already_met_spec(rec: TrackRecord) -> Optional[bool]:
     definite cases) and it is the same expression `yield_stats
     .compute_trim_necessity` uses for the same question.
 
-    It is NOT the same POPULATION as that helper: this row is per TRACK over
-    the selected window, so it lines up with the distribution rows above it,
-    while `compute_trim_necessity` is per UNIT and counts only units that were
-    actually trimmed. Two questions, deliberately not merged.
+    It is NOT the same POPULATION as that helper: this row is per TRACK ROW
+    over the selected window, so it lines up with the distribution rows above
+    it, while `compute_trim_necessity` is per UNIT and counts only units that
+    were actually trimmed. Two questions, deliberately not merged — see
+    `_RATE_ROWS`.
     """
     err = _usable(rec.untrimmed_error_max)
     spec = _usable(rec.linearity_spec)
@@ -350,9 +360,29 @@ def _already_met_spec(rec: TrackRecord) -> Optional[bool]:
     return err <= spec
 
 
+# THE RATE ROWS COUNT TRACK ROWS, AND THEIR NAMES SAY SO.
+#
+# A UNIT-DAY is not one row. It spans several `analysis_results` rows in two
+# ways that need opposite treatment: one file PER TRACK (a dual-track unit
+# writes Track A and Track B minutes apart), and one file per RE-TRIM ATTEMPT
+# (a failing track re-trimmed until it passes, only the last attempt counting).
+# The unit-level rule — per track take the LAST attempt of the day, then the
+# unit passes only if EVERY track's last attempt passed, grouped on
+# `analysis_results.unit_id` — is real and it MATTERS: on 6607, 1,368 of 4,841
+# unit-days have some track passing while not all tracks do, and linearity is
+# zero-tolerance, so those units failed.
+#
+# Counting track rows separately is CORRECT for the distributions above — a
+# two-track unit genuinely contributes two measurements — and it is a DIFFERENT
+# QUESTION from unit yield here. Rather than mix two grains in one table (where
+# the `n` column would silently mean two things down one column), these rows
+# stay per-track and are NAMED per-track, so nobody can read a track rate as a
+# unit yield. The unit basis already exists, computed properly, in
+# `core/yield_stats.py` (`compute_unit_yield_monthly`) and on the Dashboard.
 _RATE_ROWS = [
-    ("trim_passed_linearity", "Passed linearity at trim", "%", _trim_passed),
-    ("already_met_spec", "Already met spec before trim", "%", _already_met_spec),
+    ("trim_passed_linearity", "Tracks that passed linearity", "%", _trim_passed),
+    ("already_met_spec", "Tracks already in spec before trim", "%",
+     _already_met_spec),
 ]
 
 
@@ -390,13 +420,13 @@ def build_model_stats(model: str, records: Sequence[TrackRecord], *,
         rows.append(StatRow(key=key, label=label, unit=unit, kind="rate",
                             all_=_rate_cell(all_flags, errored),
                             lin_passing=_rate_cell(lin_flags)))
-    units = len({r.unit_id for r in usable if r.unit_id is not None})
+    records = len({r.record_id for r in usable if r.record_id is not None})
     notes = [note] if note else []
     if errored:
         notes.append(f"{errored} record(s) whose processing failed were left "
                      "out — their columns hold error sentinels, not readings")
     return ModelStats(model=model, rows=rows, tracks=len(usable),
-                      units=units or len(usable), cutoff=cutoff, lot=lot,
+                      records=records or len(usable), cutoff=cutoff, lot=lot,
                       future_dated=future_dated, note=" · ".join(notes),
                       errored=errored)
 

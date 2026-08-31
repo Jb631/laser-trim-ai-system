@@ -503,7 +503,7 @@ def test_rate_cells_render_count_and_percent():
     from laser_trim_analyzer.core.model_stats import Cell, StatRow
     from laser_trim_analyzer.gui.v6.widgets.stats_table import cell_texts
     cell = Cell(n=9934, excluded=0, missing=10, count=6325, pct=63.67)
-    row = StatRow(key="trim_passed_linearity", label="Passed linearity at trim",
+    row = StatRow(key="trim_passed_linearity", label="Tracks that passed linearity",
                   unit="%", kind="rate", all_=cell, lin_passing=cell)
     assert cell_texts(row, cell) == ["9,934", "6,325", "63.7%"]
 
@@ -528,12 +528,12 @@ def test_summary_line_names_the_window_and_the_drops():
     from datetime import datetime
     from laser_trim_analyzer.core.model_stats import ModelStats
     from laser_trim_analyzer.gui.v6.widgets.stats_table import summary_line
-    stats = ModelStats(model="6607", rows=[_stats_row()], tracks=9944, units=9944,
+    stats = ModelStats(model="6607", rows=[_stats_row()], tracks=9944, records=9944,
                        cutoff=None, lot=None, future_dated=0, note="")
     text = summary_line(stats)
     assert "9,944 track measurements over all history" in text
     assert "7 impossible readings left out" in text
-    windowed = ModelStats(model="6607", rows=[_stats_row()], tracks=302, units=302,
+    windowed = ModelStats(model="6607", rows=[_stats_row()], tracks=302, records=302,
                           cutoff=datetime(2026, 5, 13), lot=None, future_dated=0,
                           note="")
     assert "since May 13, 2026" in summary_line(windowed)
@@ -575,7 +575,7 @@ def test_model_page_shows_the_stats_table(make_app):
     assert any("track measurements" in t for t in texts)
     assert any("Untrimmed resistance" in t for t in texts)
     assert any("LIN-PASSING" in t for t in texts)
-    assert any("Passed linearity at trim" in t for t in texts)
+    assert any("Tracks that passed linearity" in t for t in texts)
 
 
 def test_model_page_lot_selector_offers_all_history_plus_the_lots(make_app):
@@ -637,7 +637,7 @@ def test_summary_line_discloses_records_that_failed_processing():
     """The table's own note carries the 8856 disclosure to the top of the zone."""
     from laser_trim_analyzer.core.model_stats import ModelStats
     from laser_trim_analyzer.gui.v6.widgets.stats_table import summary_line
-    stats = ModelStats(model="8856", rows=[_stats_row()], tracks=113, units=113,
+    stats = ModelStats(model="8856", rows=[_stats_row()], tracks=113, records=113,
                        cutoff=None, lot=None, future_dated=0, errored=75,
                        note="75 record(s) whose processing failed were left out "
                             "— their columns hold error sentinels, not readings")
@@ -717,7 +717,7 @@ def test_a_rate_row_gets_a_this_lot_line_too():
     screen exists to answer, and a count is what answers it."""
     from laser_trim_analyzer.core.model_stats import Cell, StatRow, lot_line
     cell = Cell(n=69, excluded=0, missing=0, count=32, pct=46.376811594)
-    row = StatRow(key="trim_passed_linearity", label="Passed linearity at trim",
+    row = StatRow(key="trim_passed_linearity", label="Tracks that passed linearity",
                   unit="%", kind="rate", all_=cell, lin_passing=cell)
     assert lot_line(row, cell, None) == "this lot: 32 of 69 (46.4%)"
     assert lot_line(row, Cell(n=0, excluded=0, missing=3), None) \

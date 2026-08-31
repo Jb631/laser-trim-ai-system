@@ -34,6 +34,11 @@ class StatsTableZone(ctk.CTkFrame):
                "a sigma WARNING still ships). ALL = every unit, including the "
                "linearity rejects. Blank cells mean nothing was recorded — "
                "never a zero.")
+    RATE_CAPTION = ("These two count TRACK measurements, not units: a two-track "
+                    "unit is two rows here, and a re-trimmed track is one row "
+                    "per attempt. Not a unit yield — for that, see the "
+                    "Dashboard's yield, which takes each track's last attempt "
+                    "of the day and requires every track to pass.")
     LOT_CAPTION = ("\"Typically\" is the lot's median — the value the control "
                    "chart plots and the limits were built from; the avg column "
                    "beside it is the plain average of the same lot.")
@@ -71,6 +76,7 @@ class StatsTableZone(ctk.CTkFrame):
                    verdicts or {})
         self._line("", t.TEXT_SECONDARY)
         self._grid(stats.rate_rows, RATE_HEADERS, lot_rows, verdicts or {})
+        self._line(self.RATE_CAPTION, t.TEXT_SECONDARY, caption=True)
         self._line(self.CAPTION, t.TEXT_SECONDARY, caption=True)
         if lot_stats is not None:
             self._line(self.LOT_CAPTION, t.TEXT_SECONDARY, caption=True)

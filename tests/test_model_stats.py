@@ -535,3 +535,65 @@ def test_lot_verdicts_ignore_records_that_failed_processing(db):
     assert v.lot_typical is not None and v.lot_typical < 1.0
     assert v.lot_n == 6                       # the sentinels are not readings
     assert "999" not in v.text
+
+
+# ---------------------------------------------------------------------------
+# grain: a unit-day is not one row (5a8f100)
+# ---------------------------------------------------------------------------
+
+def _add_multi(db, model, day, status, tracks):
+    """One analysis record with SEVERAL tracks — a dual-track unit's file."""
+    _SEQ[0] += 1
+    with db.session() as s:
+        ar = AnalysisResult(
+            model=model, serial=f"{model}-{_SEQ[0]}", system=SystemType.A,
+            filename=f"{model}_{_SEQ[0]}_{day:%m-%d-%Y}.xls", file_date=day,
+            overall_status=status, has_multi_tracks=True)
+        s.add(ar)
+        s.flush()
+        for track_id, cols in tracks.items():
+            s.add(TrackResult(analysis_id=ar.id, track_id=track_id,
+                              status=status, **cols))
+
+
+def test_a_two_track_unit_contributes_two_measurements(db):
+    """Correct for the DISTRIBUTIONS: each track really did measure the part,
+    so a dual-track unit is two readings, not one averaged one."""
+    _add_multi(db, "M", D0, StatusType.FAIL, {
+        "TRK1": {"untrimmed_resistance": 1000.0, "linearity_pass": True},
+        "TRK2": {"untrimmed_resistance": 1400.0, "linearity_pass": False}})
+    st = compute_model_stats(db, "M")
+    r = _row(st, "untrimmed_resistance")
+    assert r.all_.n == 2
+    assert r.all_.avg == pytest.approx(1200.0)
+    assert (r.all_.low, r.all_.high) == (1000.0, 1400.0)
+    assert st.tracks == 2 and st.records == 1     # two rows, ONE file
+
+
+def test_the_rate_rows_are_track_rates_and_say_so(db):
+    """PINNED, not accidental. Linearity is zero-tolerance, so a unit with one
+    failing track FAILED — and this row would read 50% for it, because it
+    counts TRACKS. That is a different question from unit yield, and the row
+    name is what keeps the two from being confused."""
+    _add_multi(db, "M", D0, StatusType.FAIL, {
+        "TRK1": {"linearity_pass": True},
+        "TRK2": {"linearity_pass": False}})
+    st = compute_model_stats(db, "M")
+    rate = _row(st, "trim_passed_linearity")
+    assert rate.label == "Tracks that passed linearity"
+    assert rate.all_.n == 2 and rate.all_.count == 1
+    assert rate.all_.pct == pytest.approx(50.0)
+    # And the unit is NOT in the accepted population: its file failed.
+    assert rate.lin_passing.n == 0
+
+
+def test_a_re_trimmed_track_counts_once_per_attempt(db):
+    """The other way a unit-day spans rows: the same track trimmed twice.
+    Both attempts are rows here — the row name says "tracks", and the unit
+    basis lives in core/yield_stats.py."""
+    _add(db, "M", D0, StatusType.FAIL, linearity_pass=False)
+    _add(db, "M", D0, StatusType.PASS, linearity_pass=True)
+    st = compute_model_stats(db, "M")
+    rate = _row(st, "trim_passed_linearity")
+    assert rate.all_.n == 2 and rate.all_.count == 1
+    assert _row(st, "already_met_spec").label == "Tracks already in spec before trim"
