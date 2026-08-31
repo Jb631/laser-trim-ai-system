@@ -40,12 +40,15 @@ logger = logging.getLogger(__name__)
 # Below this many position matches the two arrays have not really been
 # compared — a handful of coincidences is not evidence either way.
 MIN_MATCHED = 20
-# "Differs" means differing is the RULE, not an edge: more than half the
-# matched positions disagree. Deliberately stricter than the census's 10%
-# reporting threshold — the census is a measurement pass looking for anything
-# worth investigating, this drives a warning banner a user sees every day, and
-# a banner that cries wolf on a handful of knee points gets ignored.
-DIFFER_SHARE = 0.5
+# The census's own reporting threshold, kept deliberately: on the real
+# database the models whose stations agree sit at EXACTLY 0.0% differing, so
+# there is no noise floor at 20% to protect against — a fifth of the travel
+# graded differently is a real difference, not a handful of knee points. Half
+# the positions (the first cut here) hid the common shape: 8340-1 differs over
+# 23.7% of its sweep and printed escapes as if both stations asked the same
+# question. The note carries the percentage so a reader can tell a quarter of
+# the travel from all of it.
+DIFFER_SHARE = 0.10
 # A limit "differs" when either bound is off by more than a fifth of the trim
 # band's own width — the census's tolerance, so both surfaces agree on what a
 # difference IS. Relative, because a ±0.03 V band and a ±3 V band cannot share
@@ -276,8 +279,13 @@ def compare_station_specs(db, model: str, *,
     trim_typ, ft_typ = median(trim_bands), median(ft_bands)
     t_text, f_text = _band_text(trim_bands), _band_text(ft_bands)
     if pct > DIFFER_SHARE:
-        note = (f"trim grades {t_text} where final test allows {f_text} "
-                f"({pct * 100:.0f}% of matched points differ)")
+        # Magnitude FIRST. "trim grades ±0.03 where final test allows ±0.10"
+        # reads as a wholesale difference, which is a lie at 25% — and 25% is
+        # the common case. Leading with the share lets one sentence be true
+        # whether a quarter of the travel differs or all of it.
+        note = (f"{pct * 100:.0f}% of the positions both stations measure are "
+                f"graded to different limits (trim {t_text}, "
+                f"final test {f_text})")
         status = "differs"
     else:
         note = (f"trim and final test grade to the same limits at matched "

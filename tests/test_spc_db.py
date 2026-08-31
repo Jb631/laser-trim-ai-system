@@ -7,7 +7,7 @@ import pytest
 from laser_trim_analyzer.database.manager import DatabaseManager
 from laser_trim_analyzer.database.models import AnalysisResult, StatusType, SystemType
 from laser_trim_analyzer.ml.spc import (
-    RECENT_K, compute_focus_list, compute_spc_series)
+    CHRONIC_PBAR, RECENT_K, compute_focus_list, compute_spc_series)
 
 D0 = datetime(2026, 1, 5)
 
@@ -217,7 +217,7 @@ def test_clean_since_counts_the_closed_lots_after_the_blip(db):
     assert not e.series.points[-1].is_open              # fixture sanity
     assert e.clean_since == 2
     assert e.rank_score == pytest.approx(e.excess_per_week / 3.0)
-    assert e.sub_line.endswith(" · has run clean since")
+    assert e.sub_line.endswith(" · has run at baseline since")
     # The MEASURED cost is never discounted — only the urgency is.
     assert e.excess_per_week == pytest.approx(
         max(e.p_recent - e.p_base, 0.0) * e.units_per_week)
@@ -234,7 +234,37 @@ def test_no_clean_marker_when_the_newest_closed_lot_is_the_flagged_one(db):
     assert e.series.points[-1].ooc and not e.series.points[-1].is_open
     assert e.clean_since == 0
     assert e.rank_score == pytest.approx(e.excess_per_week)
-    assert "has run clean since" not in e.sub_line
+    assert "has run at baseline since" not in e.sub_line
+
+
+def test_a_terrible_model_recovering_never_says_it_ran_clean(db):
+    """The marker must not read as "fine" for a model that fails 3 units in 4.
+
+    8340-1 on the real database: baseline 73%, blipped to 94%, then two lots
+    back around 73% — inside its own control limits, so the recovery discount
+    is right, but the first wording ("has run clean since") sat next to "fail
+    rate 73% → 94%" and told the reader the model was fine. "At baseline" is
+    what the arithmetic actually checked, so the row is true here and for a
+    model whose baseline is 2%; the sub-line prints the baseline either way.
+    """
+    # Lots of 200, not 20: at a 75% baseline an n=20 lot has a 3-sigma limit
+    # above 100%, so nothing can alarm at all — which is the same arithmetic
+    # that makes 8340-1's real limits ~98% and its 89% lots "in band".
+    for k in range(10):
+        _add_lot(db, "AWFUL", D0 + timedelta(days=7 * k), 200, 150)  # 75% baseline
+    _add_lot(db, "AWFUL", D0 + timedelta(days=7 * 10), 200, 190)     # 95% excursion
+    for k in (11, 12):
+        _add_lot(db, "AWFUL", D0 + timedelta(days=7 * k), 200, 150)  # back to 75%
+    _seed(db, "CLOCK", start=D0 + timedelta(days=14))
+
+    e = next(x for x in compute_focus_list(db).focus if x.model == "AWFUL")
+    assert e.p_base >= CHRONIC_PBAR                     # fixture sanity: awful
+    assert e.clean_since == 2                           # the discount is unchanged
+    assert e.rank_score == pytest.approx(e.excess_per_week / 3.0)
+    assert "clean" not in e.sub_line                    # never claims to be fine
+    assert e.sub_line.endswith(" · has run at baseline since")
+    # ...and the baseline it returned to is right there to be judged.
+    assert f"fail rate {e.p_base * 100:.0f}%" in e.sub_line
 
 
 def test_recovered_blip_ranks_below_a_smaller_active_fire(db):
@@ -289,7 +319,7 @@ def test_an_open_lot_is_never_recovery_proof(db):
     e = next(x for x in compute_focus_list(db).focus if x.model == "OPENISH")
     assert e.series.points[-1].is_open                             # fixture sanity
     assert e.clean_since == 0
-    assert "has run clean since" not in e.sub_line
+    assert "has run at baseline since" not in e.sub_line
     assert e.rank_score == pytest.approx(e.excess_per_week)
 
 

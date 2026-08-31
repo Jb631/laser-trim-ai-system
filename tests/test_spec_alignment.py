@@ -191,6 +191,47 @@ def test_a_real_bowtie_difference_is_still_caught(db):
     assert c.pct_positions_differing == pytest.approx(0.75)
 
 
+def test_a_difference_over_part_of_the_travel_still_counts(db):
+    """A quarter of the sweep graded differently is a real mismatch.
+
+    James (2026-08-30) asked to know when the specs "dont align" — not only
+    when they disagree everywhere. On the real database this is the common
+    shape: models sit at EXACTLY 0% differing when the two stations agree, so
+    a fifth to a third of positions disagreeing is signal, never noise. 8340-1
+    (23.7%) read as "aligned" under the old half-the-points rule and printed
+    escapes/Gap as if both stations asked the same question.
+    """
+    n = 80
+    quarter = n // 4
+    pos = [float(x) for x in range(n)]
+    trim_up = [0.05] * n
+    # Final test holds the same band except over the first quarter of travel.
+    ft_up = [0.30 if x < quarter else 0.05 for x in range(n)]
+    _seed(db, "PARTIAL", (pos, trim_up, [-u for u in trim_up]),
+          (pos, ft_up, [-u for u in ft_up]))
+
+    c = compare_station_specs(db, "PARTIAL")
+    assert c.status == "differs"
+    assert c.pct_positions_differing == pytest.approx(0.25)
+    # The note has to carry the MAGNITUDE, because "differs" now spans a
+    # quarter of the travel through all of it, and a reader deciding whether to
+    # trust an escape count needs to know which they are looking at.
+    assert "25%" in c.note
+
+
+def test_a_handful_of_differing_points_stays_aligned(db):
+    """The threshold still has to hold a floor, or the banner cries wolf."""
+    n = 80
+    pos = [float(x) for x in range(n)]
+    trim_up = [0.05] * n
+    ft_up = [0.30 if x < 4 else 0.05 for x in range(n)]      # 5% of positions
+    _seed(db, "FEWPTS", (pos, trim_up, [-u for u in trim_up]),
+          (pos, ft_up, [-u for u in ft_up]))
+
+    c = compare_station_specs(db, "FEWPTS")
+    assert c.status == "aligned"
+
+
 # ---- which records get compared -------------------------------------------
 
 def test_linked_pairs_beat_the_newest_unlinked_records(db):

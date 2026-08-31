@@ -274,12 +274,13 @@ def test_model_page_banners_a_trim_vs_ft_spec_mismatch(make_app):
     page._set_spec_banner(SpecComparison(
         status="differs", pct_positions_differing=1.0, matched_positions=200,
         trim_typ_band=0.03, ft_typ_band=0.10,
-        note=("trim grades ±0.030 V where final test allows ±0.100 V "
-              "(100% of matched points differ)")))
+        note=("100% of the positions both stations measure are graded to "
+              "different limits (trim ±0.030 V, final test ±0.100 V)")))
     assert page._spec_banner.cget("text") == (
-        "⚠ trim grades ±0.030 V where final test allows ±0.100 V "
-        "(100% of matched points differ) — cross-station numbers "
-        "(escapes, Gap) compare different requirements.")
+        "⚠ 100% of the positions both stations measure are graded to "
+        "different limits (trim ±0.030 V, final test ±0.100 V) — "
+        "cross-station numbers (escapes, Gap) compare different "
+        "requirements at those positions.")
     assert page._spec_banner.winfo_manager() == "pack"
     # It qualifies the VERDICT, so it must stay directly under it — pack()
     # would otherwise re-append it at the bottom of the body when re-shown.

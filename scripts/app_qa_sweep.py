@@ -309,11 +309,11 @@ def main() -> int:
               f"top={[(e.model, round(e.rank_score, 2), e.clean_since) for e in res_a.focus[:5]]}"
               + (f" bad_score={bad_score[:3]}" if bad_score else ""))
         # The recovery marker and the ranking must tell the same story: a row
-        # that says "has run clean since" is exactly a row that was discounted.
+        # that says "has run at baseline since" is exactly a row discounted.
         marker_bad = [e.model for e in res_a.focus
-                      if (" · has run clean since" in e.sub_line)
+                      if (" · has run at baseline since" in e.sub_line)
                       != (e.clean_since >= 1)]
-        check("focus: the 'has run clean since' marker matches the discount",
+        check("focus: the 'has run at baseline since' marker matches the discount",
               not marker_bad, f"offenders={marker_bad[:5]}")
         # (d) The one-computation guarantee: every number in a row falls out of
         # the series that row carries (same math as test_verdict_numbers_match_series).

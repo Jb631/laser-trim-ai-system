@@ -503,6 +503,25 @@ def _clean_since(series: SpcSeries) -> int:
                if not pt.is_open and isfinite(pt.ucl) and pt.value <= pt.ucl)
 
 
+def _recovery_text(clean_since: int) -> str:
+    """What the row says about lots run since the alarm — in plain English.
+
+    NOT "has run clean since", which was the first cut. "In band" is measured
+    against the model's OWN baseline, so for a model that normally fails 3
+    units in 4, an in-band lot still fails 3 units in 4: 8340-1 read "fail rate
+    73% → 94% · has run clean since" and told the reader it was fine. It is
+    not; it is back to being terrible on schedule.
+
+    "At baseline" is the thing the arithmetic actually checked, and it is true
+    at every failure rate, so no threshold has to decide which models may use
+    the word "clean" — a threshold that put 6126 (baseline exactly 15%) on the
+    wrong side of the line the moment one was tried. The row prints the
+    baseline a few characters earlier, so the reader can see what returning to
+    it is worth.
+    """
+    return " · has run at baseline since" if clean_since >= 1 else ""
+
+
 def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
     """Rank every active model by what its drift is costing THIS week.
 
@@ -597,7 +616,7 @@ def compute_focus_list(db, *, anchor: Optional[datetime] = None) -> FocusResult:
                           f" · fail rate {series.p_base * 100:.0f}%"
                           f" → {p_recent * 100:.0f}%"
                           f" · ~{units_per_week:.0f} units/wk"
-                          + (" · has run clean since" if clean_since >= 1 else "")),
+                          + _recovery_text(clean_since)),
                 clean_since=clean_since,
                 # Each closed clean lot halves, thirds, quarters the urgency —
                 # never zeroes it. A model that blipped is still on the list

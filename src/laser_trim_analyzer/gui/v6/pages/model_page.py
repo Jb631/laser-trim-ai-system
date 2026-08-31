@@ -394,9 +394,13 @@ class ModelPage(PageBase):
         if comparison is None or comparison.status != "differs":
             self._spec_banner.pack_forget()
             return
+        # "at those positions", not a flat "compare different requirements":
+        # the banner now fires from a tenth of the travel upward, and the note
+        # it follows already says what share that is.
         self._spec_banner.configure(
             text=("⚠ " + comparison.note + " — cross-station numbers "
-                  "(escapes, Gap) compare different requirements."))
+                  "(escapes, Gap) compare different requirements at those "
+                  "positions."))
         self._spec_banner.pack(side="top", fill="x",
                                pady=(0, self.theme.SPACE_SM),
                                after=self._verdict)
