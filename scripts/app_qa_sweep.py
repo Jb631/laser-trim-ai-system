@@ -407,7 +407,10 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
                            OR (a2.file_date = L.tstamp AND a2.id > L.tid)))
     """, (CONF,)).fetchone()[0]
     check("trim/FT link points at the day's FINAL trim attempt", late == 0,
-          f"links with a later same-day attempt = {late}")
+          f"links with a later same-day attempt = {late}" + ("" if late == 0 else
+          " | same remedy: python scripts/repair_trim_ft_links.py <db> — the "
+          "backfill gives same-day attempts an order and the rematch re-points "
+          "the links; escapes/overkills are close but not exact until then"))
 
     # ---- 2. the confound itself is gone ------------------------------------
     # A unit whose every track's LAST attempt of the day passed must never be
