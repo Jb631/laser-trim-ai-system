@@ -813,10 +813,10 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
     sheets = pd.read_excel(pack, sheet_name=None)
-    _all6 = {"Drift evidence", "Lots (SPC)", "Unit history", "Monthly summary",
-             "Final test units", "Smoothness"}
-    check("evidence pack: all 6 sheets, stable shape + expected columns",
-          set(sheets) == _all6
+    _all7 = {"Drift evidence", "Lots (SPC)", "Unit history", "Monthly summary",
+             "Final test units", "Smoothness", "Stats table"}
+    check("evidence pack: all 7 sheets, stable shape + expected columns",
+          set(sheets) == _all7
           and "Expected max (UCL)" in sheets["Lots (SPC)"].columns
           and "Suspect excluded" in sheets["Drift evidence"].columns
           and "Linearity yield %" in sheets["Monthly summary"].columns
@@ -841,6 +841,56 @@ def main() -> int:
                   zip(_lots["Fail rate"].tolist(), [pt.value for pt in _screen.points])),
           f"rows={len(_lots)} lots={len(_screen.points)} "
           f"ooc={sum(pt.ooc for pt in _screen.points)}")
+    # ---- the Excel stats sheet IS the on-screen table (spec line 95) -------
+    # Not "agrees with": the same characters. The sheet is what James hands an
+    # engineer, so a value rounded differently there than on the page he read
+    # it off is the contradiction this whole redesign exists to end. Rebuilt
+    # here from the SCREEN's own helpers and compared cell by cell.
+    try:
+        from laser_trim_analyzer.core.model_stats import (
+            cell_texts, compute_model_stats, disclosure_text)
+        _stats = compute_model_stats(db, "6607")
+        _sheet = pd.read_excel(pack, sheet_name="Stats table", header=2)
+        _by_metric = {r["Metric"]: r for _, r in _sheet.iterrows()}
+        _bad = []
+        for _row in _stats.rows:
+            _cells = _by_metric.get(_row.label)
+            if _cells is None:
+                _bad.append(f"{_row.label}: missing from the sheet")
+                continue
+            for _side, _cell, _prefix in (("ALL", _row.all_, "ALL"),
+                                          ("LIN", _row.lin_passing, "LIN-PASSING")):
+                _shown = cell_texts(_row, _cell)
+                # n stays a NUMBER in the sheet so Excel can sort and sum it;
+                # the screen prints the same number with a thousands separator.
+                # Everything else is compared as characters.
+                if int(_cells[f"{_prefix} n"]) != _cell.n:
+                    _bad.append(f"{_row.label}[{_side}] n "
+                                f"{_cells[f'{_prefix} n']} != {_cell.n}")
+                _sheet_cells = [_cells[f"{_prefix} avg / count"],
+                                _cells[f"{_prefix} min / %"]]
+                if _row.kind == "distribution":
+                    _sheet_cells.append(_cells[f"{_prefix} max"])
+                if _sheet_cells != _shown[1:]:
+                    _bad.append(f"{_row.label}[{_side}] {_sheet_cells} != {_shown[1:]}")
+            _left = _cells["Left out"]
+            _left = _left if isinstance(_left, str) else ""
+            if _left != disclosure_text(_row.all_):
+                _bad.append(f"{_row.label} disclosure {_left!r} "
+                            f"!= {disclosure_text(_row.all_)!r}")
+        check("evidence pack: Stats sheet is character-for-character the screen",
+              not _bad and len(_sheet) == len(_stats.rows),
+              "; ".join(_bad[:3]) or f"{len(_sheet)} rows match the table")
+        # The window and the lot the numbers describe, above the table: a
+        # column of numbers with neither on it is not evidence.
+        _head = pd.read_excel(pack, sheet_name="Stats table", header=None, nrows=2)
+        check("evidence pack: Stats sheet says which window and lot it describes",
+              "track measurements over" in str(_head.iloc[0, 0])
+              and str(_head.iloc[1, 0]).strip() not in ("", "nan"),
+              f"{str(_head.iloc[0, 0])[:60]} | {str(_head.iloc[1, 0])[:40]}")
+    except Exception as _exc:
+        check("evidence pack: Stats sheet is character-for-character the screen",
+              False, f"{type(_exc).__name__}: {_exc}")
     # Dates are day-granularity strings, not '… 00:00:00' (work finding #6).
     _dates = sheets["Unit history"]["Date"].dropna().astype(str)
     check("evidence pack: dates are clean day strings",

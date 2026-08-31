@@ -408,6 +408,24 @@ def _empty(model: str, note: str, cutoff=None, lot=None) -> ModelStats:
 
 # ---- DB layer — everything above is pure -----------------------------------
 
+def lot_bounds(lot: Tuple[datetime, datetime]) -> Tuple[datetime, datetime]:
+    """A lot's (start, end) as a half-open range of whole DAYS.
+
+    A lot is a run of production DAYS (`ml/lots.py` clusters by day and hands
+    back midnight-normalised bounds), so the window has to be a day range, not
+    a timestamp range. That distinction became load-bearing on 2026-08-30:
+    `analysis_results.file_date` used to be midnight for every trim row, and
+    the parser now keeps the clock time from the filename because it is the
+    only record of the ORDER of same-day re-trim attempts (90dc95e). On the
+    live database most rows are still midnight and new ones are not, so this
+    normalises explicitly instead of relying on either shape — a lot's last
+    day includes the unit trimmed at 23:37, in both worlds.
+    """
+    start = datetime(lot[0].year, lot[0].month, lot[0].day)
+    end = datetime(lot[1].year, lot[1].month, lot[1].day) + timedelta(days=1)
+    return start, end
+
+
 def _horizon() -> datetime:
     """One day past the wall clock: the file-date junk cut.
 
@@ -455,10 +473,11 @@ def compute_model_stats(db, model: str, *, cutoff: Optional[datetime] = None,
             if cutoff is not None:
                 q = q.filter(DBAR.file_date >= cutoff)
             if lot is not None:
-                # `< end + 1 day` rather than `<= end`: the lot's end is a DAY,
-                # and a file stamped later that day belongs to that run.
-                q = q.filter(DBAR.file_date >= lot[0],
-                             DBAR.file_date < lot[1] + timedelta(days=1))
+                # Whole days, half-open — see `lot_bounds`: a file stamped
+                # 23:37 on the lot's last day belongs to that run.
+                lot_from, lot_to = lot_bounds(lot)
+                q = q.filter(DBAR.file_date >= lot_from,
+                             DBAR.file_date < lot_to)
             junk = q.filter(DBAR.file_date > horizon).count()
             rows = q.filter((DBAR.file_date <= horizon)
                             | (DBAR.file_date.is_(None))).all()
@@ -540,6 +559,91 @@ def row_unit(row: "StatRow") -> str:
     """
     reference = row.all_.avg if row.all_.avg is not None else row.lin_passing.avg
     return display_unit(row.unit, reference)
+
+
+# ---- how the table READS ----------------------------------------------
+# The strings themselves, not just the numbers. They live here so the
+# screen (gui/v6/widgets/stats_table.py) and the Excel sheet
+# (export/evidence.py) print the SAME characters — an export that did
+# its own formatting is how a sheet ends up contradicting the page it
+# was taken from.
+
+# Column layout: the metric name, then four numbers under each disposition.
+DIST_HEADERS = ("n", "avg", "min", "max")
+RATE_HEADERS = ("n", "count", "%")
+
+
+def cell_texts(row: StatRow, cell: Cell) -> List[str]:
+    """The four (or three) strings one cell shows. Pure — this is the table."""
+    if row.kind == "rate":
+        return [f"{cell.n:,}",
+                "—" if cell.count is None else f"{cell.count:,}",
+                "—" if cell.pct is None else f"{cell.pct:.1f}%"]
+    unit = row_unit(row)
+    return [f"{cell.n:,}", format_in(cell.avg, unit),
+            format_in(cell.low, unit), format_in(cell.high, unit)]
+
+
+def disclosure_text(cell: Cell) -> str:
+    """What this cell had to leave out — said out loud, never implied.
+
+    Empty when there is nothing to disclose, so a clean row stays clean. The
+    three reasons are worded separately on purpose, because they send whoever
+    is reading to three different places: an IMPOSSIBLE reading is a source
+    file to fix, a FAILED record is a file the analyser could not read, and a
+    missing one is simply a measurement never taken. Every row carries its own
+    line so a reader can account for every record from the row alone, without
+    holding the summary above in their head.
+    """
+    parts = []
+    if cell.excluded:
+        parts.append(f"{cell.excluded:,} impossible reading"
+                     f"{'s' if cell.excluded != 1 else ''} excluded")
+    if cell.errored:
+        parts.append(f"{cell.errored:,} from records that failed processing")
+    if cell.missing:
+        parts.append(f"{cell.missing:,} not recorded")
+    return " · ".join(parts)
+
+
+def lot_line(row: StatRow, cell: Cell, verdict: Optional[LotVerdict]) -> str:
+    """The "this lot" line under a metric: its numbers, then what they mean.
+
+    Rate rows get one too, and deliberately: "% of the lot that didn't trim" is
+    one of the three questions James named this screen to answer (app-shape
+    spec §2), and it is the count, not a distribution, that answers it. They
+    carry no SPC verdict — the control limits here are built on lot medians of
+    a continuous metric, and there is no such series behind a pass count.
+    """
+    if cell.n == 0:
+        return "this lot: nothing recorded"
+    if row.kind == "rate":
+        return (f"this lot: {cell.count:,} of {cell.n:,} "
+                f"({cell.pct:.1f}%)")
+    unit = row_unit(row)
+    numbers = (f"this lot: {cell.n:,} readings · avg {format_in(cell.avg, unit)} "
+               f"· {format_in(cell.low, unit)} to {format_in(cell.high, unit)}")
+    return f"{numbers} — {verdict.text}" if verdict else numbers
+
+
+def summary_line(stats: ModelStats) -> str:
+    """One line over the table: what population these numbers came from."""
+    if not stats.tracks:
+        return stats.note or "No measurements for this model."
+    window = "all history"
+    if stats.lot is not None:
+        window = "the selected lot"
+    elif stats.cutoff is not None:
+        window = f"since {stats.cutoff:%b %d, %Y}"
+    text = f"{stats.tracks:,} track measurements over {window}"
+    dropped = stats.excluded_total
+    if dropped:
+        text += (f" · {dropped:,} impossible reading"
+                 f"{'s' if dropped != 1 else ''} left out of the numbers below "
+                 "(open-circuit and zero readings — the source files need fixing)")
+    if stats.note:
+        text += f" · {stats.note}"
+    return text
 
 
 # ===========================================================================
@@ -712,7 +816,7 @@ def compute_lot_verdicts(db, model: str, lot: Tuple[datetime, datetime]
     except Exception:
         logger.exception("lot verdicts: query failed for %s", model)
         return {}
-    start, end = lot[0], lot[1] + timedelta(days=1)
+    start, end = lot_bounds(lot)          # whole days, half-open (see lot_bounds)
     out = {}
     for index, (key, label, unit) in enumerate(_DISTRIBUTION_ROWS, start=1):
         policy = metric_policy(key)

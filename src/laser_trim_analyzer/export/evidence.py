@@ -97,11 +97,90 @@ def build_summary_text(model: str, status, recent_means: Optional[dict] = None,
     return "\n".join(lines)
 
 
-def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = None) -> Path:
+STATS_SHEET = "Stats table"
+
+
+def build_stats_sheet(db, model: str, cutoff=None, lot=None):
+    """The INVESTIGATE stats table, as rows for Excel: (context, rows).
+
+    Spec §2, 2026-08-29: "The Excel pack gains a sheet mirroring the stats
+    table + lot verdicts — what he shows people equals what the screen says."
+
+    So this writes NO numbers of its own. Every cell is a string produced by
+    `core/model_stats.py`'s own display helpers — the exact ones the on-screen
+    zone renders — which is what makes the parity structural instead of a
+    promise. The same reason the "Lots (SPC)" sheet merely transcribes an
+    `SpcSeries`: a sheet that did its own arithmetic would put a second story
+    in front of an engineer.
+
+    `lot` (start, end) picks the run to compare against; omitted, it takes the
+    page's own default — the CURRENT lot when one is open, otherwise no lot
+    comparison at all, exactly as the screen opens.
+    """
+    from laser_trim_analyzer.core.model_stats import (
+        cell_texts, compute_lot_verdicts, compute_model_stats, default_lot_index,
+        disclosure_text, model_lots, row_unit, summary_line)
+
+    stats = compute_model_stats(db, model, cutoff=cutoff)
+    lot_stats = None
+    verdicts: dict = {}
+    lot_label = "No lot selected — the columns below are this model's history."
+    if lot is None:
+        lots = model_lots(db, model)
+        index = default_lot_index(lots)
+        chosen = lots[index] if index is not None else None
+    else:
+        chosen = next((l_ for l_ in model_lots(db, model)
+                       if l_.window == tuple(lot)), None)
+    if chosen is not None:
+        lot_label = f"Lot: {chosen.label}"
+        lot_stats = compute_model_stats(db, model, lot=chosen.window)
+        verdicts = compute_lot_verdicts(db, model, chosen.window)
+    lot_rows = {r.key: r for r in (lot_stats.rows if lot_stats else [])}
+
+    rows = []
+    for row in stats.rows:
+        shown_all = cell_texts(row, row.all_)
+        shown_lin = cell_texts(row, row.lin_passing)
+        lot_row = lot_rows.get(row.key)
+        lot_cells = cell_texts(row, lot_row.all_) if lot_row is not None else None
+        verdict = verdicts.get(row.key)
+        rows.append({
+            "Metric": row.label,
+            "Kind": row.kind,
+            "Unit": row_unit(row),
+            # Distribution rows read n / avg / min / max; rate rows read
+            # n / count / %. One column set, named for both, so the sheet
+            # stays one filterable table instead of two stacked ones.
+            "ALL n": row.all_.n,
+            "ALL avg / count": shown_all[1],
+            "ALL min / %": shown_all[2],
+            "ALL max": shown_all[3] if len(shown_all) > 3 else "",
+            "LIN-PASSING n": row.lin_passing.n,
+            "LIN-PASSING avg / count": shown_lin[1],
+            "LIN-PASSING min / %": shown_lin[2],
+            "LIN-PASSING max": shown_lin[3] if len(shown_lin) > 3 else "",
+            "Left out": disclosure_text(row.all_),
+            "This lot n": lot_row.all_.n if lot_row is not None else "",
+            "This lot avg / count": lot_cells[1] if lot_cells else "",
+            "This lot min / %": lot_cells[2] if lot_cells else "",
+            "This lot max": (lot_cells[3] if lot_cells and len(lot_cells) > 3
+                             else ""),
+            "Lot vs history": verdict.text if verdict else "",
+        })
+    return [summary_line(stats), lot_label], rows
+
+
+def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = None,
+                         lot=None) -> Path:
     """Write a traceable evidence workbook for `model`.
 
     Sheets:
       * Drift evidence — per-metric baseline vs recent, honest σ-shift, tier
+      * Stats table   — the INVESTIGATE screen's own table, character for
+        character, with the lot-vs-history verdicts beside it. `lot` is the
+        (start, end) run to compare; the Model page passes whatever the user
+        has selected, so the sheet answers the question he was looking at.
       * Lots (SPC)    — the model's production lots with the control limits
         the Model page draws: rate, the limit for a lot THAT SIZE, and which
         lots broke it. The paper trail behind a FOCUS-list verdict.
@@ -380,9 +459,33 @@ def export_evidence_pack(db, model: str, out_path, window_days: Optional[int] = 
         "Note": pt.note if spc.judged else unjudged_note,
     } for pt in spc.points]
 
+    # The INVESTIGATE stats table, as the screen shows it (spec §2). Built
+    # AFTER the queries above so a failure here cannot cost the rest of the
+    # pack — the sheet is new, the pack is the daily artifact.
+    try:
+        stats_context, stats_rows = build_stats_sheet(db, model, cutoff=cutoff,
+                                                      lot=lot)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "evidence pack: stats sheet failed for %s", model)
+        stats_context, stats_rows = ["stats table unavailable", ""], []
+
     out_path = Path(out_path)
     with pd.ExcelWriter(out_path, engine="openpyxl") as xl:
         pd.DataFrame(metric_rows).to_excel(xl, sheet_name="Drift evidence", index=False)
+        # Two context lines above the table: a column of numbers with no window
+        # and no lot on it is not evidence, it is a screenshot of arithmetic.
+        _stats_cols = ["Metric", "Kind", "Unit", "ALL n", "ALL avg / count",
+                       "ALL min / %", "ALL max", "LIN-PASSING n",
+                       "LIN-PASSING avg / count", "LIN-PASSING min / %",
+                       "LIN-PASSING max", "Left out", "This lot n",
+                       "This lot avg / count", "This lot min / %",
+                       "This lot max", "Lot vs history"]
+        pd.DataFrame(stats_rows, columns=(None if stats_rows else _stats_cols))\
+            .to_excel(xl, sheet_name=STATS_SHEET, index=False, startrow=2)
+        _ws = xl.book[STATS_SHEET]
+        _ws["A1"], _ws["A2"] = stats_context[0], stats_context[1]
         _lot_cols = ["Lot start", "Lot end", "Units", "Fail rate",
                      "Expected max (UCL)", "Out of control", "Open lot", "Note"]
         pd.DataFrame(lot_rows, columns=(None if lot_rows else _lot_cols))\

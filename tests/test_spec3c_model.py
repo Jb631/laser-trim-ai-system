@@ -642,3 +642,162 @@ def test_summary_line_discloses_records_that_failed_processing():
                        note="75 record(s) whose processing failed were left out "
                             "— their columns hold error sentinels, not readings")
     assert "processing failed" in summary_line(stats)
+
+
+# ---- INVESTIGATE: the Excel sheet is the screen, not a second rendering ----
+
+def _pack_with_stats(tmp_path, model="HOT"):
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.export.evidence import export_evidence_pack
+    db = DatabaseManager(tmp_path / "ev.db")
+    _seed_tracks(db, model, "untrimmed_resistance")
+    out = export_evidence_pack(db, model, tmp_path / "pack.xlsx")
+    import pandas as pd
+    return db, pd.read_excel(out, sheet_name=STATS_SHEET, header=2), out
+
+
+STATS_SHEET = "Stats table"
+
+
+def test_evidence_pack_has_a_stats_sheet(tmp_path):
+    import pandas as pd
+    db, sheet, out = _pack_with_stats(tmp_path)
+    assert list(pd.read_excel(out, sheet_name=None)) [-1] == STATS_SHEET \
+        or STATS_SHEET in pd.read_excel(out, sheet_name=None)
+    assert len(sheet) == 8                       # six distributions + two rates
+    assert list(sheet["Metric"])[0] == "Untrimmed resistance"
+
+
+def test_excel_stats_sheet_prints_exactly_what_the_screen_shows(tmp_path):
+    """The sheet is what James hands an engineer; it may not round a number
+    differently from the page he read it off."""
+    from laser_trim_analyzer.core.model_stats import (
+        cell_texts, compute_model_stats, disclosure_text)
+    db, sheet, _ = _pack_with_stats(tmp_path)
+    stats = compute_model_stats(db, "HOT")
+    by_metric = {r["Metric"]: r for _, r in sheet.iterrows()}
+    for row in stats.rows:
+        cells = by_metric[row.label]
+        shown = cell_texts(row, row.all_)
+        # n stays a NUMBER so Excel can sort and sum it; the screen prints the
+        # same number with a thousands separator. The rest is characters.
+        assert int(cells["ALL n"]) == row.all_.n
+        assert [cells["ALL avg / count"], cells["ALL min / %"]] == shown[1:3]
+        lin = cell_texts(row, row.lin_passing)
+        assert int(cells["LIN-PASSING n"]) == row.lin_passing.n
+        assert cells["LIN-PASSING avg / count"] == lin[1]
+        # pandas reads an empty cell back as NaN; the sheet wrote "".
+        left_out = cells["Left out"]
+        left_out = "" if not isinstance(left_out, str) else left_out
+        assert left_out == disclosure_text(row.all_)
+
+
+def test_excel_stats_sheet_carries_the_lot_verdicts(tmp_path):
+    from laser_trim_analyzer.core.model_stats import model_lots
+    db, sheet, _ = _pack_with_stats(tmp_path)
+    lots = model_lots(db, "HOT")
+    assert lots                                   # the fixture builds 12
+    verdicts = [v for v in sheet["Lot vs history"] if isinstance(v, str)]
+    assert verdicts and any("normal" in v for v in verdicts)
+    row = sheet.iloc[0]
+    assert str(row["This lot n"]).strip() not in ("", "nan")
+
+
+def test_excel_stats_sheet_says_which_window_and_lot_it_describes(tmp_path):
+    """A table of numbers with no window on it is not evidence."""
+    import pandas as pd
+    db, _sheet, out = _pack_with_stats(tmp_path)
+    head = pd.read_excel(out, sheet_name=STATS_SHEET, header=None, nrows=2)
+    assert "track measurements over all history" in str(head.iloc[0, 0])
+    assert "unit" in str(head.iloc[1, 0])          # the lot label
+
+
+def test_a_rate_row_gets_a_this_lot_line_too():
+    """"% of the lot that didn't trim" is one of the three questions this
+    screen exists to answer, and a count is what answers it."""
+    from laser_trim_analyzer.core.model_stats import Cell, StatRow, lot_line
+    cell = Cell(n=69, excluded=0, missing=0, count=32, pct=46.376811594)
+    row = StatRow(key="trim_passed_linearity", label="Passed linearity at trim",
+                  unit="%", kind="rate", all_=cell, lin_passing=cell)
+    assert lot_line(row, cell, None) == "this lot: 32 of 69 (46.4%)"
+    assert lot_line(row, Cell(n=0, excluded=0, missing=3), None) \
+        == "this lot: nothing recorded"
+
+
+def test_excel_lot_columns_match_the_screen_for_rate_rows_too(tmp_path):
+    from laser_trim_analyzer.core.model_stats import (
+        cell_texts, compute_model_stats, model_lots)
+    db, sheet, _ = _pack_with_stats(tmp_path)
+    lots = model_lots(db, "HOT")
+    lot_stats = compute_model_stats(db, "HOT", lot=lots[0].window)
+    by_metric = {r["Metric"]: r for _, r in sheet.iterrows()}
+    for row in lot_stats.rate_rows:
+        shown = cell_texts(row, row.all_)
+        cells = by_metric[row.label]
+        assert int(cells["This lot n"]) == row.all_.n
+        assert cells["This lot avg / count"] == shown[1]
+        assert cells["This lot min / %"] == shown[2]
+
+
+def test_stats_sheet_exists_with_headers_for_a_model_with_no_rows(tmp_path):
+    """Same invariant the other six sheets hold: the sheet ALWAYS exists, so
+    "no records" cannot be mistaken for a broken export."""
+    import pandas as pd
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.export.evidence import export_evidence_pack
+    db = DatabaseManager(tmp_path / "empty.db")
+    out = export_evidence_pack(db, "NO-SUCH-MODEL", tmp_path / "pack.xlsx")
+    sheets = pd.read_excel(out, sheet_name=None)
+    assert STATS_SHEET in sheets
+    sheet = pd.read_excel(out, sheet_name=STATS_SHEET, header=2)
+    for col in ("Metric", "ALL n", "LIN-PASSING n", "Left out", "Lot vs history"):
+        assert col in sheet.columns
+    # The eight rows still print, each honestly reading zero.
+    assert len(sheet) == 8 and set(sheet["ALL n"]) == {0}
+
+
+def test_window_and_lot_still_hold_when_file_date_carries_a_clock_time(tmp_path):
+    """`analysis_results.file_date` stopped being midnight (90dc95e): the
+    parser keeps the filename's clock time, because it is the only record of
+    the order of same-day re-trim attempts. Every window here is a half-open
+    range, never a same-day equality, so a time component must change nothing.
+    """
+    from datetime import datetime, timedelta
+    from laser_trim_analyzer.core.model_stats import compute_model_stats
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    db = DatabaseManager(tmp_path / "clock.db")
+    day = datetime(2026, 8, 11)
+    with db.session() as s:
+        for i, hour in enumerate((0, 9, 16, 23)):
+            ar = DBAR(model="CLK", serial=f"sn{i}", system=SystemType.A,
+                      filename=f"CLK_{i}.xls",
+                      file_date=day + timedelta(hours=hour, minutes=37),
+                      overall_status=StatusType.PASS)
+            s.add(ar); s.flush()
+            s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                       untrimmed_resistance=1000.0 + i))
+        s.commit()
+    # A lot is a run of DAYS, so the last day's 23:37 unit has to fall inside
+    # a lot ending that day.
+    assert compute_model_stats(db, "CLK", lot=(day, day)).tracks == 4
+    # And a cutoff at the start of the day keeps all four, not just the 00:37 one.
+    assert compute_model_stats(db, "CLK", cutoff=day).tracks == 4
+    # Bounds handed in WITH a clock time still mean the whole day: nothing may
+    # depend on the caller's value happening to be midnight.
+    noon = day + timedelta(hours=12)
+    assert compute_model_stats(db, "CLK", lot=(noon, noon)).tracks == 4
+    # And the same code on midnight-only data (every other test in this file,
+    # and most of the live database today) is unchanged.
+    with db.session() as s:
+        ar = DBAR(model="MID", serial="m1", system=SystemType.A,
+                  filename="MID_1.xls", file_date=day, overall_status=StatusType.PASS)
+        s.add(ar); s.flush()
+        s.add(DBTR(analysis_id=ar.id, track_id="T1", status=StatusType.PASS,
+                   untrimmed_resistance=1000.0))
+        s.commit()
+    assert compute_model_stats(db, "MID", lot=(day, day)).tracks == 1
+    assert compute_model_stats(db, "MID",
+                               lot=(day - timedelta(days=1),
+                                    day - timedelta(days=1))).tracks == 0

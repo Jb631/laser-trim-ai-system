@@ -47,10 +47,14 @@ def test_export_full_history_and_monthly(tmp_path):
     out = export_evidence_pack(db, "EXP-1", tmp_path / "pack.xlsx")
     sheets = pd.read_excel(out, sheet_name=None)
 
-    # Stable workbook shape: all six sheets ALWAYS exist (empty = headers
-    # only) so "no records" can't be mistaken for a broken export.
+    # Stable workbook shape: all seven sheets ALWAYS exist (empty = headers
+    # only) so "no records" can't be mistaken for a broken export. Exact set,
+    # never a subset: a subset check would let a dropped sheet pass silently.
+    # "Stats table" joined in 2026-08-30 — the INVESTIGATE screen's own table,
+    # so what James shows an engineer equals what the page said.
     assert set(sheets) == {"Drift evidence", "Lots (SPC)", "Unit history",
-                           "Monthly summary", "Final test units", "Smoothness"}
+                           "Monthly summary", "Final test units", "Smoothness",
+                           "Stats table"}
 
     # Lots (SPC) is the paper trail behind a FOCUS-list verdict: one row per
     # production lot, the limit for a lot THAT SIZE, and whether it broke it.

@@ -1164,6 +1164,14 @@ class ModelPage(PageBase):
         # of record for judging process direction (the on-screen window only
         # controls the view). James' workflow: analyze units on screen, export
         # the model to Excel for full history, unit charts for the team.
+        #
+        # The LOT is the exception, and goes with him: the stats sheet compares
+        # the run he currently has selected, so the sheet he hands an engineer
+        # answers the question he was just looking at rather than re-deriving
+        # its own default.
+        lot = next((l_.window for l_ in self._lots
+                    if l_.label == self._lot_label), None)
         threading.Thread(
-            target=lambda: export_evidence_pack(self.app.db, self._current_model, path),
+            target=lambda: export_evidence_pack(self.app.db, self._current_model,
+                                                path, lot=lot),
             daemon=True).start()

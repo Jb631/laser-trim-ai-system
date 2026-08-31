@@ -18,77 +18,14 @@ from typing import Dict, List, Optional
 
 import customtkinter as ctk
 
+# The TEXT lives in core/model_stats.py, next to the numbers it formats, and is
+# imported here rather than written here. That is what lets `export/evidence.py`
+# print the identical strings without importing Tk — the sheet James hands an
+# engineer is the screen, not a second rendering of the same data.
 from laser_trim_analyzer.core.model_stats import (
-    Cell, LotVerdict, ModelStats, StatRow, format_in, row_unit)
+    DIST_HEADERS, RATE_HEADERS, Cell, LotVerdict, ModelStats, StatRow,
+    cell_texts, disclosure_text, format_in, lot_line, row_unit, summary_line)
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
-
-# Column layout: the metric name, then four numbers under each disposition.
-DIST_HEADERS = ("n", "avg", "min", "max")
-RATE_HEADERS = ("n", "count", "%")
-
-
-def cell_texts(row: StatRow, cell: Cell) -> List[str]:
-    """The four (or three) strings one cell shows. Pure — this is the table."""
-    if row.kind == "rate":
-        return [f"{cell.n:,}",
-                "—" if cell.count is None else f"{cell.count:,}",
-                "—" if cell.pct is None else f"{cell.pct:.1f}%"]
-    unit = row_unit(row)
-    return [f"{cell.n:,}", format_in(cell.avg, unit),
-            format_in(cell.low, unit), format_in(cell.high, unit)]
-
-
-def disclosure_text(cell: Cell) -> str:
-    """What this cell had to leave out — said out loud, never implied.
-
-    Empty when there is nothing to disclose, so a clean row stays clean. The
-    three reasons are worded separately on purpose, because they send whoever
-    is reading to three different places: an IMPOSSIBLE reading is a source
-    file to fix, a FAILED record is a file the analyser could not read, and a
-    missing one is simply a measurement never taken. Every row carries its own
-    line so a reader can account for every record from the row alone, without
-    holding the summary above in their head.
-    """
-    parts = []
-    if cell.excluded:
-        parts.append(f"{cell.excluded:,} impossible reading"
-                     f"{'s' if cell.excluded != 1 else ''} excluded")
-    if cell.errored:
-        parts.append(f"{cell.errored:,} from records that failed processing")
-    if cell.missing:
-        parts.append(f"{cell.missing:,} not recorded")
-    return " · ".join(parts)
-
-
-def lot_line(row: StatRow, cell: Cell, verdict: Optional[LotVerdict]) -> str:
-    """The "this lot" line under a metric: its numbers, then what they mean."""
-    unit = row_unit(row)
-    numbers = (f"this lot: {cell.n:,} readings · avg {format_in(cell.avg, unit)} "
-               f"· {format_in(cell.low, unit)} to {format_in(cell.high, unit)}")
-    if cell.n == 0:
-        numbers = "this lot: nothing recorded"
-    return f"{numbers} — {verdict.text}" if verdict else numbers
-
-
-def summary_line(stats: ModelStats) -> str:
-    """One line over the table: what population these numbers came from."""
-    if not stats.tracks:
-        return stats.note or "No measurements for this model."
-    window = "all history"
-    if stats.lot is not None:
-        window = "the selected lot"
-    elif stats.cutoff is not None:
-        window = f"since {stats.cutoff:%b %d, %Y}"
-    text = f"{stats.tracks:,} track measurements over {window}"
-    dropped = stats.excluded_total
-    if dropped:
-        text += (f" · {dropped:,} impossible reading"
-                 f"{'s' if dropped != 1 else ''} left out of the numbers below "
-                 "(open-circuit and zero readings — the source files need fixing)")
-    if stats.note:
-        text += f" · {stats.note}"
-    return text
-
 
 class StatsTableZone(ctk.CTkFrame):
     """The stats table, and — when a lot is selected — how that lot compares."""
@@ -182,7 +119,7 @@ class StatsTableZone(ctk.CTkFrame):
                           sticky="w")
                 line += 1
             lot_row = lot_rows.get(row.key)
-            if lot_row is not None and row.kind == "distribution":
+            if lot_row is not None:
                 verdict = verdicts.get(row.key)
                 # Amber only when the lot is genuinely out of family: a page
                 # that colours "within its normal" teaches people to ignore it.
