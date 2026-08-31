@@ -1,30 +1,43 @@
 # Taking V6 to work — first-day checklist
 
-## ⚠ 2026-08-30 night — ONE COMMAND TO RUN, then a new stats table
+## ⚡ 2026-08-30 night — trim-vs-FT numbers change, and a new stats table
 
-### 1. Run this once, before you trust any trim-vs-FT number
+### 1. Trim-vs-FT was reading the wrong file — the pull fixes most of it
+
+A unit that fails linearity gets re-trimmed until it passes, all on the same
+day, and a two-track unit writes one file *per track*. The app was reading a
+single file for the unit's verdict, which went wrong two ways: it could link
+an early failing attempt (scoring a good unit as wrongly rejected), and on a
+two-track unit a passing Track B could hide a failing Track A. Linearity is
+zero-tolerance, so that second one was calling failed units passed.
+
+**Just pulling gets you most of the correction** — the "every track must
+pass" rule needs no repair at all. The numbers, company-wide over 12 months:
+
+| | overkills | escapes |
+|---|---|---|
+| before | 1257 | 761 |
+| **after pulling** | **1304** | **783** |
+| after also repairing | 1238 | 806 |
+
+Not all in the direction you'd guess: **6607's overkills go UP, 415 → 486**,
+because it's mostly dual-track and its failures were being masked. **8508
+gains 20 real escapes** (30 → 50) that were being hidden as agreement.
+
+### 2. Optional, when you want the last few percent
 
 ```bash
 python scripts/repair_trim_ft_links.py
 ```
 
-Takes about six minutes. Here's why it matters: a unit that fails linearity
-gets re-trimmed until it passes, and all those attempts happen on the same
-day. The only record of their ORDER was the clock time in the filename — and
-the parser was throwing it away. So the app linked an arbitrary attempt, and
-a failing early attempt scored as the trim station wrongly rejecting a good
-unit. Separately, a two-track unit writes one file per track, and reading
-only one of them let a passing Track B hide a failing Track A.
+About six minutes, and it rewrites ~106k rows, so it's your call whether to
+run it on the production database. All it adds is correct *ordering* among
+same-day attempts — worth a further 66 overkills and 23 escapes company-wide.
+Per model the difference is small: 6607 486 → 484, 8340-1 135 → 132, 8232-1
+escapes 614 → 619. Look at the corrected numbers first and decide.
 
-Both are fixed in the code, but **your database still has the old links** —
-106,237 of its rows carry no clock time yet. Until you run that script, the
-Gap and the trim-vs-FT tab keep showing the old numbers. Two checks in the
-QA sweep will keep failing until you do; that's expected, not a broken build.
-
-After the repair, the numbers move — and not all in the direction you'd
-guess. **6607's overkills go UP 415 → 484**, because that model is mostly
-dual-track and its failures were being masked. **8508 gains 20 real escapes**
-(30 → 50) that were being hidden as agreement. 8340-1 drops 145 → 132.
+Until you run it, two QA sweep checks fail by design, naming this script as
+the remedy. That's expected, not a broken build.
 
 ### 2. INVESTIGATE — the stats table that replaces the Excel round-trip
 
