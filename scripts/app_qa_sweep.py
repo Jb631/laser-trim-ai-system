@@ -176,6 +176,125 @@ def check_ft_incremental_fastpath() -> None:
     else:
         warn("FT fast-path: no Test Station sample files to scan")
 
+def check_model_stats_vs_sql(db, raw) -> None:
+    """INVESTIGATE stats table == raw SQL, filter and all.
+
+    Written as SQL that redoes the work independently: the median over the
+    model's positive readings, then the [median/100, median*100] band, then
+    COUNT/AVG/MIN/MAX inside it. If the module's filter drifted, or was never
+    applied, these numbers separate immediately — 6607's untrimmed resistance
+    reads 4,282 filtered against 32,079 raw.
+
+    Any exception here is a FAIL, never a skip: a check that can pass on an
+    ERROR result is the exact weak assertion CLAUDE.md forbids.
+    """
+    from laser_trim_analyzer.core.model_stats import (
+        POSITIVE_RATIO, compute_model_stats, metric_policy)
+
+    JOIN = ("FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
+            "WHERE a.model = ?")
+    LIN = " AND a.overall_status IN ('PASS','WARNING')"
+    METRICS = ["untrimmed_resistance", "trimmed_resistance",
+               "measured_electrical_angle", "final_linearity_error_shifted",
+               "margin_to_spec", "sigma_gradient"]
+
+    def sql_median(model, col):
+        """Median of the model's POSITIVE readings — SQLite's ORDER/OFFSET
+        idiom, averaging the two middle values on an even count exactly like
+        Python's statistics.median."""
+        n = raw.execute(f"SELECT COUNT(*) {JOIN} AND t.{col} > 0",
+                        (model,)).fetchone()[0]
+        if not n:
+            return None
+        return raw.execute(
+            f"SELECT AVG(x) FROM (SELECT t.{col} AS x {JOIN} AND t.{col} > 0 "
+            f"ORDER BY x LIMIT {2 - (n % 2)} OFFSET {(n - 1) // 2})",
+            (model,)).fetchone()[0]
+
+    for model in ("6607", "8340-1"):
+        try:
+            stats = compute_model_stats(db, model)
+            for col in METRICS:
+                med = sql_median(model, col) if metric_policy(col) == POSITIVE_RATIO else None
+                if med is not None:
+                    keep = (f" AND t.{col} > 0 AND t.{col} BETWEEN {med / 100.0!r} "
+                            f"AND {med * 100.0!r}")
+                else:
+                    keep = f" AND t.{col} IS NOT NULL"
+                row = next(r for r in stats.rows if r.key == col)
+                for label, cell, extra in (("ALL", row.all_, ""),
+                                           ("LIN", row.lin_passing, LIN)):
+                    n, avg, lo, hi = raw.execute(
+                        f"SELECT COUNT(*), AVG(t.{col}), MIN(t.{col}), MAX(t.{col}) "
+                        f"{JOIN}{extra}{keep}", (model,)).fetchone()
+                    nulls = raw.execute(
+                        f"SELECT COUNT(*) {JOIN}{extra} AND t.{col} IS NULL",
+                        (model,)).fetchone()[0]
+                    total = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}",
+                                        (model,)).fetchone()[0]
+                    ok = (cell.n == n and cell.missing == nulls
+                          and cell.excluded == total - n - nulls
+                          and (n == 0 or (abs(cell.avg - avg) <= 1e-9 * max(1.0, abs(avg))
+                                          and cell.low == lo and cell.high == hi)))
+                    check(f"stats table vs SQL: {model} {col} [{label}]", ok,
+                          f"py n={cell.n} avg={cell.avg} min={cell.low} max={cell.high} "
+                          f"excl={cell.excluded} null={cell.missing} | "
+                          f"sql n={n} avg={avg} min={lo} max={hi} "
+                          f"excl={total - n - nulls} null={nulls}")
+            # Rate rows: the same discipline, and the NULL rows must sit in
+            # `missing`, never in the denominator.
+            for key, keep_sql, null_sql in (
+                    ("trim_passed_linearity",
+                     " AND t.linearity_pass = 1",
+                     " AND t.linearity_pass IS NULL"),
+                    ("already_met_spec",
+                     " AND t.untrimmed_error_max <= t.linearity_spec",
+                     " AND (t.untrimmed_error_max IS NULL OR t.linearity_spec IS NULL)")):
+                row = next(r for r in stats.rows if r.key == key)
+                for label, cell, extra in (("ALL", row.all_, ""),
+                                           ("LIN", row.lin_passing, LIN)):
+                    hits = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}{keep_sql}",
+                                       (model,)).fetchone()[0]
+                    nulls = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}{null_sql}",
+                                        (model,)).fetchone()[0]
+                    total = raw.execute(f"SELECT COUNT(*) {JOIN}{extra}",
+                                        (model,)).fetchone()[0]
+                    ok = (cell.count == hits and cell.missing == nulls
+                          and cell.n == total - nulls
+                          and (cell.n == 0
+                               or abs(cell.pct - 100.0 * hits / cell.n) < 1e-9))
+                    check(f"stats table vs SQL: {model} {key} [{label}]", ok,
+                          f"py {cell.count}/{cell.n} null={cell.missing} | "
+                          f"sql {hits}/{total - nulls} null={nulls}")
+            # The corrupt-reading disclosure is the whole point of the filter:
+            # 6607 must SAY it dropped readings, not silently launder them.
+            if model == "6607":
+                ur = next(r for r in stats.rows if r.key == "untrimmed_resistance")
+                check("stats table: 6607 discloses the open-circuit readings it dropped",
+                      ur.all_.excluded >= 7 and ur.all_.avg < 5000.0
+                      and ur.all_.high < 1e5,
+                      f"excluded={ur.all_.excluded} avg={ur.all_.avg:.1f} "
+                      f"max={ur.all_.high:.0f}")
+        except Exception as exc:
+            check(f"stats table vs SQL ({model})", False,
+                  f"{type(exc).__name__}: {exc}")
+
+    # Window + lot narrowing must actually narrow (and never widen).
+    try:
+        from sqlalchemy import func as _f
+        from laser_trim_analyzer.database.models import AnalysisResult as _AR
+        with db.session() as s:
+            anchor = (s.query(_f.max(_AR.file_date))
+                      .filter(_AR.model == "6607").scalar())
+        full = compute_model_stats(db, "6607")
+        win = compute_model_stats(db, "6607", cutoff=anchor - timedelta(days=90))
+        check("stats table: a 90d window is a strict subset of all history",
+              0 < win.tracks <= full.tracks,
+              f"90d={win.tracks} all={full.tracks}")
+    except Exception as exc:
+        check("stats table: window narrowing", False, f"{type(exc).__name__}: {exc}")
+
+
 def main() -> int:
     # Optional DB-path argv (2026-08-29): the work database does not live at
     # data/analysis.db on every machine, and the sweep is worthless run against
@@ -437,6 +556,14 @@ def main() -> int:
                       f"{tf['escapes']}+{tf['overkills']}+{tf['agreements']} vs {tf['linked']}")
         except Exception as exc:
             check(f"model loaders run clean ({m})", False, f"{type(exc).__name__}: {exc}")
+
+    # ---- INVESTIGATE stats table vs RAW SQL (2026-08-30) -------------------
+    # The table replaces an Excel round trip, so it has to agree with the
+    # database to the digit. The SQL below REPRODUCES the plausibility filter
+    # (median, then the 100x band) rather than assuming it: on 6607 the raw
+    # average of untrimmed_resistance is 32,079 ohms against a true 4,282, so a
+    # check that compared against a bare AVG() would pass on the wrong number.
+    check_model_stats_vs_sql(db, raw)
 
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with db.session() as s:
