@@ -1799,6 +1799,24 @@ def main() -> int:
         check("ingest guard: no graded track stored without its measurement", False,
               f"{type(e).__name__}: {e}")
 
+    # The row count above is zero today, and would stay zero for a while if the
+    # guard were deleted — bad data has to accumulate before a data check can
+    # see it. So assert the guard is actually WIRED, not just currently unviolated.
+    try:
+        _proc = open(REPO / "src/laser_trim_analyzer/core/processor.py",
+                     encoding="utf-8").read()
+        defined = "def enforce_measurement_backed_verdict" in _proc
+        called = _proc.count("enforce_measurement_backed_verdict(") - (1 if defined else 0)
+        check("ingest guard is wired into the track loop, not just defined",
+              defined and called >= 1,
+              f"defined={defined}, call sites={called}"
+              + ("" if defined and called >= 1 else
+                 " | without a call site the data check above passes on an "
+                 "unguarded pipeline until bad rows accumulate"))
+    except Exception as e:
+        check("ingest guard is wired into the track loop, not just defined", False,
+              f"{type(e).__name__}: {e}")
+
     try:
         rows = raw.execute(
             f"SELECT a.model, COUNT(*) FROM analysis_results a "

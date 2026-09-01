@@ -55,6 +55,49 @@ MEMORY_WARNING_PERCENT = 90   # Throttle (reduce workers) above this RAM usage %
 MEMORY_CRITICAL_PERCENT = 95  # Force sequential processing above this RAM usage %
 MAX_WORKERS_LOW_MEMORY = 2    # Workers when memory is tight
 
+# Statuses that assert a customer-facing disposition.
+_GRADEABLE_STATUSES = (AnalysisStatus.PASS, AnalysisStatus.WARNING, AnalysisStatus.FAIL)
+
+
+def enforce_measurement_backed_verdict(track, source: str = "") -> Optional[str]:
+    """A graded track must carry the measurement its grade came from.
+
+    PASS/WARNING/FAIL is a customer disposition on a zero-tolerance
+    characteristic. Without position/error arrays there is nothing behind that
+    claim: it cannot be plotted, re-graded, or defended in an audit, and it is
+    exactly the shape Fix Missing Tracks exists to repair. So an array-less
+    graded track is an ungradeable READ, not a quiet verdict — demote it to
+    ERROR and withdraw the pass flags, the same call the parser already makes
+    when a file's limit columns are unusable (linearity_spec_warning).
+
+    The verdict is withdrawn, never inverted. Marking it FAIL would invent a
+    linearity rejection the unit never earned; NULL flags are honest and are
+    what the repair tool looks for.
+
+    UNTRIMMED tracks are untouched: a test sweep with no laser-trim run has no
+    trimmed arrays BY DESIGN (the parser moves its sweep into untrimmed_* and
+    clears the trimmed arrays), and it claims no verdict to back up. Keying on
+    the TRACK's own status rather than the file's is what keeps a normal
+    two-track unit — one trimmed track, one untrimmed sweep — out of this.
+
+    Mutates `track` in place. Returns the reason it fired, or None.
+    """
+    if track.status not in _GRADEABLE_STATUSES:
+        return None
+    if track.position_data and track.error_data:
+        return None
+
+    reason = (f"graded {track.status.value} with no measurement "
+              f"(positions={len(track.position_data or [])}, "
+              f"errors={len(track.error_data or [])})")
+    logger.error(f"Ingest guard: track {track.track_id}"
+                 f"{' of ' + source if source else ''} {reason} — recording as "
+                 f"ERROR (ungraded) instead of storing an unbacked verdict")
+    track.status = AnalysisStatus.ERROR
+    track.linearity_pass = None
+    track.sigma_pass = None
+    return reason
+
 
 class Processor:
     """
@@ -363,6 +406,9 @@ class Processor:
                         })
                 except Exception:
                     pass  # scoring is non-essential; never fail a unit over it
+
+                # Last gate before this verdict becomes a stored row.
+                enforce_measurement_backed_verdict(track_result, file_path.name)
 
                 analyzed_tracks.append(track_result)
 

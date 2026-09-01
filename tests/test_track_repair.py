@@ -156,3 +156,54 @@ def test_progress_callback_failure_does_not_abort_the_batch(tmp_path):
 
     report = repair_missing_tracks(db=db, progress=boom, linked_only=False)
     assert report.examined == 1 and report.unreachable == 1
+
+
+# --- ingest guard: a verdict must be backed by the measurement -------------
+# Nothing may create the shape the repair tool exists to fix. A track that
+# claims PASS/WARNING/FAIL while carrying no arrays is not a quiet grade, it
+# is an ungradeable read — the same call the parser already makes when the
+# limit columns are corrupt (linearity_spec_warning -> ERROR, verdict None).
+
+def _track(status, positions, errors):
+    from laser_trim_analyzer.core.models import AnalysisStatus, TrackData
+    return TrackData(
+        track_id="TRK1", status=AnalysisStatus[status], travel_length=1.0,
+        linearity_spec=0.05, sigma_gradient=0.001, sigma_pass=True,
+        linearity_error=0.01, linearity_pass=True,
+        position_data=positions, error_data=errors)
+
+
+def test_gradeable_track_without_arrays_is_demoted_to_error():
+    from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core.processor import enforce_measurement_backed_verdict
+
+    for arrays in ((None, None), ([], []), ([0.0, 1.0], None), (None, [0.1])):
+        for status in ("PASS", "WARNING", "FAIL"):
+            t = _track(status, *arrays)
+            reason = enforce_measurement_backed_verdict(t)
+            assert reason, f"{status} with arrays={arrays} passed the guard"
+            assert t.status == AnalysisStatus.ERROR
+            # The verdict is withdrawn, never inverted: an ungraded unit must
+            # not read as a linearity rejection it never earned.
+            assert t.linearity_pass is None and t.sigma_pass is None
+
+
+def test_guard_leaves_measured_tracks_and_untrimmed_sweeps_alone():
+    from laser_trim_analyzer.core.models import AnalysisStatus
+    from laser_trim_analyzer.core.processor import enforce_measurement_backed_verdict
+
+    good = _track("PASS", [0.0, 1.0], [0.1, 0.2])
+    assert enforce_measurement_backed_verdict(good) is None
+    assert good.status == AnalysisStatus.PASS and good.linearity_pass is True
+
+    # An untrimmed-only sweep legitimately has no trimmed arrays and claims no
+    # verdict — the by-design shape that must never be demoted or flagged.
+    sweep = _track("UNTRIMMED", None, None)
+    sweep.linearity_pass = None
+    sweep.sigma_pass = None
+    assert enforce_measurement_backed_verdict(sweep) is None
+    assert sweep.status == AnalysisStatus.UNTRIMMED
+
+    # ERROR tracks are already ungraded; the guard has nothing to add.
+    err = _track("ERROR", None, None)
+    assert enforce_measurement_backed_verdict(err) is None
