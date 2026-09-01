@@ -70,9 +70,13 @@ def test_theme_font_returns_ctkfont(tk_root):
 # ---- Task 2: Sidebar ------------------------------------------------------
 
 def test_sidebar_items_in_order():
+    """Reordered 2026-08-31 (app-shape spec): Home · Investigate · Settings
+    lead, the older views follow behind a separator. Keys are unchanged —
+    "model" is still "model" and only its LABEL reads "Investigate"."""
     from laser_trim_analyzer.gui.v6.sidebar import Sidebar
-    assert Sidebar.ITEMS == [("dashboard", "Dashboard"), ("triage", "Triage"),
-                             ("process", "Process"), ("model", "Model"), ("settings", "Settings")]
+    assert Sidebar.ITEMS == [("home", "Home"), ("model", "Investigate"),
+                             ("settings", "Settings"), ("dashboard", "Dashboard"),
+                             ("triage", "Triage"), ("process", "Process")]
 
 
 def test_sidebar_emits_selection(tk_root):
@@ -178,10 +182,10 @@ def test_page_container_add_get_show(tk_root):
 
 # ---- Task 4: V6App --------------------------------------------------------
 
-def test_v6app_starts_on_dashboard(make_app):
+def test_v6app_starts_on_home(make_app):
     app = make_app()
-    assert app.page_container.current_page == "dashboard"
-    assert app.sidebar._active_name == "dashboard"
+    assert app.page_container.current_page == "home"
+    assert app.sidebar._active_name == "home"
 
 
 def test_v6app_show_page(make_app):
@@ -200,7 +204,8 @@ def test_v6app_show_unknown_no_op(make_app):
 
 def test_v6app_has_all_pages(make_app):
     app = make_app()
-    assert set(app.page_container._pages) == {"dashboard", "triage", "process", "model", "settings"}
+    assert set(app.page_container._pages) == {"home", "dashboard", "triage",
+                                              "process", "model", "settings"}
 
 
 def test_v6app_auto_train_off_does_not_offer(make_app):

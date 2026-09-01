@@ -240,10 +240,15 @@ def test_worst_models_list_empty(tk_root):
     assert w._rows == []
 
 
-def test_dashboard_is_landing(make_app):
+def test_dashboard_is_still_reachable(make_app):
+    """Home took the landing slot on 2026-08-31 (app-shape spec §1). Dashboard
+    was DE-EMPHASIZED, not deleted — its retirement is an explicit later call,
+    so it stays registered and one show_page away."""
     app = make_app()
-    assert app.page_container.current_page == "dashboard"
+    assert app.page_container.current_page == "home"
     assert app.page_container.get_page("dashboard") is not None
+    app.show_page("dashboard")
+    assert app.page_container.current_page == "dashboard"
 
 
 def test_dashboard_reload_now_populates(make_app):

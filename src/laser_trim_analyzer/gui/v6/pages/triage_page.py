@@ -29,13 +29,11 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+from laser_trim_analyzer.gui.v6.focus_data import EMPTY as _EMPTY, load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.browse_zone import BrowseZone
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import FocusListZone
 from laser_trim_analyzer.ml.manager import active_model_set, list_known_models
-from laser_trim_analyzer.ml.spc import FocusResult, compute_focus_list
-
-_EMPTY = FocusResult(focus=[], chronic=[], anchor=None)
 
 
 class TriagePage(PageBase):
@@ -84,9 +82,13 @@ class TriagePage(PageBase):
         threading.Thread(target=work, daemon=True).start()
 
     def _query(self):
-        """One DB pass -> (FocusResult, models, active, last). Worker-safe: no Tk."""
+        """One DB pass -> (FocusResult, models, active, last). Worker-safe: no Tk.
+
+        The FOCUS half goes through `focus_data.load_focus`, which Home calls
+        too — the two landing screens must not be able to disagree about what
+        is drifting. The browse half is this page's alone.
+        """
         try:
-            result = compute_focus_list(self.app.db)
             models = list_known_models(self.app.db)
             cfg = getattr(self.app.config, "active_models", None)
             active = active_model_set(
@@ -94,13 +96,13 @@ class TriagePage(PageBase):
                 recent_days=getattr(cfg, "recent_days", 90) if cfg else 90,
                 mps_models=getattr(cfg, "mps_models", None) if cfg else None)
         except Exception:
-            # The page still renders (an empty FOCUS list reads as "all models
-            # within tolerance"), so without this line a compute crash is
-            # indistinguishable from a clean shop floor. Log loudly, degrade
-            # quietly: the fallback below is deliberate, the silence was not.
+            # The page still renders (an empty browse list reads as "no models
+            # on record"), so without this line a query crash is
+            # indistinguishable from an empty database. Log loudly, degrade
+            # quietly: the fallback is deliberate, the silence was not.
             logger.exception("Triage query failed")
-            result, models, active = _EMPTY, [], set()
-        last = max((m.last_processed for m in models if m.last_processed), default=None)
+            models, active = [], set()
+        result, last = load_focus(self.app.db, models=models)
         return result, models, active, last
 
     def _apply(self, result, models, active, last):

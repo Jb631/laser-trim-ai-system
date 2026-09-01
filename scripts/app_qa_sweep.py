@@ -882,6 +882,57 @@ def main() -> int:
         except Exception as exc:
             check("focus: every row carries a boolean spec_mismatch flag",
                   False, f"{type(exc).__name__}: {exc}")
+    # ---- HOME and TRIAGE cannot disagree about what is drifting ------------
+    # Two landing screens showing two different FOCUS lists would be worse
+    # than either of them being wrong, so both go through focus_data.load_focus
+    # and it must be a faithful pass-through of the computation.
+    try:
+        from laser_trim_analyzer.gui.v6 import focus_data
+        from laser_trim_analyzer.gui.v6.pages import home_page, triage_page
+        check("home/triage: both landing screens call ONE focus loader",
+              home_page.load_focus is focus_data.load_focus
+              is triage_page.load_focus)
+        loaded, last_seen = focus_data.load_focus(db)
+        raw_focus = compute_focus_list(db)
+        check("home/triage: the loader passes the computation through untouched",
+              [e.model for e in loaded.focus] == [e.model for e in raw_focus.focus]
+              and [e.model for e in loaded.chronic] == [e.model for e in raw_focus.chronic]
+              and loaded.anchor == raw_focus.anchor,
+              f"{len(loaded.focus)} focus / {len(loaded.chronic)} chronic, "
+              f"anchor={loaded.anchor}")
+        expect_last = max((m.last_processed for m in list_known_models(db)
+                           if m.last_processed), default=None)
+        check("home/triage: the empty-state stamp is the newest data on record",
+              last_seen == expect_last, f"{last_seen} vs {expect_last}")
+    except Exception as exc:
+        check("home/triage: one FOCUS loader behind both screens", False,
+              f"{type(exc).__name__}: {exc}")
+
+    # ---- every sidebar row points at a page that exists --------------------
+    # A nav row whose key was never registered is a dead click with no error;
+    # the keys are also what FOCUS deep-links navigate by, so they are a
+    # contract, not decoration.
+    try:
+        import re as _re
+        from laser_trim_analyzer.gui.v6.sidebar import Sidebar
+        app_src = open(REPO / "src/laser_trim_analyzer/gui/v6/app.py",
+                       encoding="utf-8").read()
+        registered = set(_re.findall(r'add_page\(\s*"([a-z_]+)"', app_src))
+        keys = [k for k, _ in Sidebar.ITEMS]
+        check("shell: every sidebar row has a registered page",
+              set(keys) == registered, f"sidebar={keys} registered={sorted(registered)}")
+        check("shell: Home leads, Investigate keeps the 'model' key",
+              keys[:3] == ["home", "model", "settings"]
+              and dict(Sidebar.ITEMS)["model"] == "Investigate"
+              and Sidebar.MUTED == {"dashboard", "triage", "process"},
+              f"{Sidebar.ITEMS}")
+        check("shell: nothing reachable was lost",
+              {"dashboard", "triage", "process"} <= registered,
+              f"registered={sorted(registered)}")
+    except Exception as exc:
+        check("shell: sidebar/page registration contract", False,
+              f"{type(exc).__name__}: {exc}")
+
     counts = {}
     for preset in ("loose", "standard", "tight", "strict"):
         p = preview_alert_count(db, preset)
