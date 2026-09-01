@@ -24,6 +24,14 @@ index 0 → magnitude NULL (3,314 tracks), NaN anywhere else → stored fine (2)
 never lost, so the old blanks are recomputable exactly from arrays already in
 the DB:
 
+> **✅ ALREADY RUN on this machine's `data/analysis.db` (2026-08-31).** Backup
+> at `data/analysis.db.bak-2026-08-31-pre-linerror-fix`. Verified after:
+> magnitudes 92,819 → **100,585** (+7,766 exactly, matching the dry run),
+> 8232-1 4,035 → **9,541** (+5,506), **FAIL count unchanged at 29,455 — no
+> verdict moved**, `PRAGMA quick_check` ok. The sweep check it was failing now
+> passes. You do NOT need to run it again here. Run it on the WORK machine's
+> database when you next pull there — these commands, in this order:
+
 ```bash
 cp data/analysis.db data/analysis.db.bak-2026-08-31-pre-linerror-fix
 python scripts/backfill_linearity_error.py --dry-run
