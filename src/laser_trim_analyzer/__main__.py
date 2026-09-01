@@ -11,6 +11,8 @@ import warnings
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from laser_trim_analyzer.config import get_app_directory
+
 # Suppress scikit-learn parallel warnings (compatibility issue with joblib)
 warnings.filterwarnings("ignore", message=".*sklearn.utils.parallel.delayed.*")
 
@@ -26,8 +28,13 @@ if sys.platform == "darwin" and "TCL_LIBRARY" not in os.environ:
         os.environ["TK_LIBRARY"] = str(tk_path)
 
 # Setup logging — console + persistent log file
-# Log file lives in data/ next to the database so it's easy to find
-log_dir = Path("data")
+# Log file lives in data/ next to the database so it's easy to find.
+# Anchored to the app directory, not the cwd: the launchers cd here first so
+# this is the same folder in production, but a bare Path("data") also made
+# `import laser_trim_analyzer.__main__` scribble a data/ dir into whatever
+# directory the importer happened to be sitting in (the test suite, notably —
+# test_spec3a_shell.py:232 and :250 import it).
+log_dir = get_app_directory() / "data"
 log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / "laser_trim.log"
 

@@ -53,27 +53,74 @@ def test_light_load_query_does_not_crash():
     assert tracks_loader is not None
 
 
-def test_get_historical_data_light_load_returns_rows():
-    """End-to-end: hit the actual fixed function against the local DB and
-    confirm it returns rows without crashing.
+def test_get_historical_data_light_load_returns_rows(tmp_path):
+    """End-to-end: hit the actual fixed function against a real SQLite file and
+    confirm the deferred-column query returns usable rows.
+
+    This used to open `<repo>/data/analysis.db` — the real multi-GB work
+    database — by explicit path, skipping only when that file was absent, which
+    in a normal checkout it never is. Constructing a DatabaseManager runs
+    PRAGMA journal_mode=WAL, so the test WROTE to production every run. The two
+    rows it actually needs cost nothing to make, so it makes its own.
     """
-    db_path = Path(__file__).resolve().parents[1] / "data" / "analysis.db"
-    if not db_path.exists():
-        # If the local DB doesn't exist, skip rather than fail — the
-        # production crash repro lives at the API level above.
-        import pytest
-        pytest.skip("local analysis.db not present")
+    from datetime import datetime
 
     from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAnalysisResult,
+        TrackResult as DBTrackResult,
+        SystemType as DBSystemType,
+        StatusType as DBStatusType,
+        RiskCategory as DBRiskCategory,
+    )
 
-    # DatabaseManager takes a Path, not a URL.
-    db = DatabaseManager(db_path)
+    db = DatabaseManager(tmp_path / "light_load.db")
+    trimmed_on = datetime.now()
+    with db.session() as session:
+        for serial in ("0001", "0002"):
+            analysis = DBAnalysisResult(
+                filename=f"7965_{serial}_20260508.xls",
+                file_path=f"/fake/7965_{serial}.xls",
+                file_hash=f"hash-7965-{serial}",
+                model="7965",
+                serial=serial,
+                system=DBSystemType.B,
+                file_date=trimmed_on,
+                timestamp=trimmed_on,
+                overall_status=DBStatusType.PASS,
+                has_multi_tracks=False,
+                processing_time=0.1,
+            )
+            session.add(analysis)
+            session.flush()
+            session.add(DBTrackResult(
+                analysis_id=analysis.id,
+                track_id="TRK1",
+                status=DBStatusType.PASS,
+                sigma_gradient=0.012,
+                sigma_threshold=0.02,
+                sigma_pass=True,
+                travel_length=1.0,
+                linearity_spec=0.01,
+                risk_category=DBRiskCategory.LOW,
+                # The blob columns light_load defers. Populated so that
+                # deferring them is doing real work, not skipping empties.
+                position_data=[0.0, 0.5, 1.0],
+                error_data=[0.001, 0.002, 0.001],
+                upper_limits=[0.01, 0.01, 0.01],
+                lower_limits=[-0.01, -0.01, -0.01],
+            ))
+        session.commit()
+
     rows = db.get_historical_data(
         model="7965", days_back=36500, limit=10, light_load=True
     )
     assert isinstance(rows, list)
-    # 7965 has 1101 rows in the local DB; expect at least one back.
-    assert len(rows) > 0
+    assert len(rows) == 2
+    # The scalar metrics the summary export reads must survive the defer().
+    track = rows[0].tracks[0]
+    assert track.sigma_gradient == 0.012
+    assert track.linearity_spec == 0.01
 
 
 # ---------------------------------------------------------------------------
