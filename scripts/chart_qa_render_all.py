@@ -312,8 +312,11 @@ def main(out_dir: str, db_path: Path) -> int:
                       (MULTITRACK_AID, "multi-track unit (track selector target)")]:
         data = load_unit_track(db, aid)
         serial, fdate = unit_meta(aid)
+        _k = data.get("optimal_slope") or 0.0
+        _theory = data.get("theory_data")
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"],
-                                 offset=data.get("optimal_offset") or 0.0)
+                                 offset=data.get("optimal_offset") or 0.0,
+                                 k=_k, theory=_theory)
         cw = _v5chart()
         cw.plot_error_vs_position(
             positions=data["position_data"], trimmed_errors=data["error_data"],
@@ -322,6 +325,7 @@ def main(out_dir: str, db_path: Path) -> int:
             untrimmed_positions=data["untrimmed_positions"] or None,
             untrimmed_errors=data["untrimmed_errors"] or None,
             offset=data.get("optimal_offset") or 0.0,
+            k=_k, theory_data=_theory,
             trim_improvement_percent=data.get("trim_improvement_percent"),
             trim_date=fdate, fail_points=fp,
             title=f"Unit {serial}", serial_number=serial)

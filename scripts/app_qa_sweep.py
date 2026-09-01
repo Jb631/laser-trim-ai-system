@@ -989,38 +989,126 @@ def main() -> int:
           n_win > 0, f"units={n_win}")
 
     # ============ 5. UNIT VERDICT CONSISTENCY (broad sample) ==================
-    # Stored linearity_pass must not contradict fail points recomputed on the
-    # CORRECTED trace (the bug class the chart sweep caught on one unit —
-    # verified here across a sample).
+    # Linearity is the ZERO-TOLERANCE customer disposition, so these are hard
+    # zeros — no percentage budget, no "small tolerance for exclusions".
+    #
+    # The check that used to live here had both, plus a dead ternary, and it
+    # called compute_fail_points WITHOUT the rotation term. It therefore
+    # tolerated the exact defect it existed to catch: 831 units rendering
+    # "Fail Points: N" beside "Linearity Pass: YES" (2026-08-31, found on
+    # 8415-1 SN 26). Weak assertions are forbidden in this sweep.
     from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
-    rows = raw.execute(
-        "SELECT id, linearity_pass, optimal_offset, position_data, error_data,"
-        " upper_limits, lower_limits FROM track_results "
-        "WHERE position_data IS NOT NULL AND error_data IS NOT NULL "
-        "AND linearity_pass IS NOT NULL ORDER BY id DESC LIMIT 200").fetchall()
+    from laser_trim_analyzer.export.unit_chart import (
+        build_unit_export_figure, corrected_errors)
     import json as _json
-    contradictions = 0
-    checked = 0
-    for _id, lp, off, pos, err, up, lo in rows:
+
+    def _arr(v):
+        return _json.loads(v) if isinstance(v, str) else v
+
+    rows = raw.execute(
+        "SELECT id, linearity_pass, linearity_fail_points, optimal_offset,"
+        " optimal_slope, theory_data, error_data, upper_limits, lower_limits,"
+        " final_linearity_error_shifted FROM track_results "
+        "WHERE position_data IS NOT NULL AND error_data IS NOT NULL "
+        "AND linearity_fail_points IS NOT NULL ORDER BY id DESC LIMIT 4000"
+    ).fetchall()
+
+    checked = rot_checked = 0
+    rot_bad: list = []
+    mag_bad: list = []
+    nan_skipped = legacy_bad = 0
+    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
         try:
-            err_l = _json.loads(err) if isinstance(err, str) else err
-            up_l = _json.loads(up) if isinstance(up, str) else up
-            lo_l = _json.loads(lo) if isinstance(lo, str) else lo
+            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
+            if not err_l or not up_l or not lo_l:
+                continue
+            off, k = off or 0.0, k or 0.0
+            # The analyzer counts a NaN error point as a FAIL (analyzer.py
+            # _count_fail_points, deliberate on a zero-tolerance spec); the
+            # renderer cannot mark a point that has no value. Known, tracked
+            # divergence — excluded here so it cannot mask a rotation bug.
+            if any(e is None or (isinstance(e, float) and e != e) for e in err_l):
+                nan_skipped += 1
+                continue
+            checked += 1
+            fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k, theory=th_l)
+            if k:
+                rot_checked += 1
+                if len(fp) != lfp:
+                    rot_bad.append(_id)
+            elif len(fp) != lfp:
+                legacy_bad += 1
+            # Mirror check: the renderer must also reproduce the analyzer's
+            # linearity MAGNITUDE. This catches a wrong corrected trace even
+            # when the fail-count coincidentally agrees.
+            if mag is not None:
+                vals = [abs(v) for v in corrected_errors(err_l, off, k, th_l)
+                        if v is not None]
+                if vals and abs(max(vals) - mag) > 1e-6:
+                    mag_bad.append(_id)
+        except Exception as exc:
+            check(f"verdict consistency: track {_id} raised", False, repr(exc))
+
+    check("verdict consistency: sample is non-empty (guard against a vacuous pass)",
+          checked > 0, f"checked={checked} nan_skipped={nan_skipped}")
+    check("verdict consistency: rotation tracks (k != 0) reproduce the stored "
+          "fail-point count EXACTLY",
+          not rot_bad, f"{len(rot_bad)}/{rot_checked} disagree"
+                       + (f" e.g. track ids {rot_bad[:5]}" if rot_bad else ""))
+    check("verdict consistency: renderer reproduces stored linearity MAGNITUDE "
+          "(final_linearity_error_shifted)",
+          not mag_bad, f"{len(mag_bad)}/{checked} disagree"
+                       + (f" e.g. track ids {mag_bad[:5]}" if mag_bad else ""))
+    if legacy_bad:
+        warn("verdict consistency: k==0 tracks disagreeing (stale stored offsets "
+             "from an older analyzer — reprocess candidates)",
+             f"{legacy_bad}/{checked}")
+
+    # The DOCUMENT invariant James actually reads: the print export must never
+    # show a fail count beside a passing verdict or a green PASS stamp. Both
+    # now derive from ONE re-grade, so this is zero-tolerance by construction —
+    # asserted on real rows, including deliberately falsified fail points.
+    def _doc_texts(fig):
+        return [t.get_text() for ax in fig.axes for t in ax.texts]
+
+    doc_bad: list = []
+    doc_checked = 0
+    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows[:60]:
+        try:
+            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
             if not err_l or not up_l:
                 continue
-            fp = compute_fail_points(err_l, up_l, lo_l, offset=off or 0.0)
-            checked += 1
-            if bool(lp) and len(fp) > 3:      # small tolerance: exclusions
-                contradictions += 1
-        except Exception:
-            continue
-    if checked:
-        pct = 100 * contradictions / checked
-        (check if pct <= 5 else check)(
-            "verdict consistency: stored pass vs corrected fail-points (200-track sample)",
-            pct <= 5, f"{contradictions}/{checked} contradictions ({pct:.1f}%)")
-    else:
-        warn("verdict consistency: no checkable tracks in sample")
+            data = {"position_data": list(range(len(err_l))), "error_data": err_l,
+                    "upper_limits": up_l, "lower_limits": lo_l,
+                    "optimal_offset": off or 0.0, "optimal_slope": k or 0.0,
+                    "theory_data": th_l, "linearity_pass": bool(lp),
+                    "linearity_error": mag, "sigma_pass": True}
+            for forced in (None, [0], list(range(min(5, len(err_l))))):
+                fp = (compute_fail_points(err_l, up_l, lo_l, offset=off or 0.0,
+                                          k=k or 0.0, theory=th_l)
+                      if forced is None else forced)
+                fig = build_unit_export_figure(
+                    {"model": "QA", "serial": str(_id), "n_tracks": 1},
+                    data, fail_points=fp, kind="trim")
+                txt = _doc_texts(fig)
+                n_line = next((t for t in txt if t.startswith("Fail Points:")), "")
+                v_line = next((t for t in txt if t.startswith("Linearity Pass:")), "")
+                stamp = next((t for t in txt if t in ("PASS", "FAIL", "PASS (WATCH)",
+                                                      "PASS*", "NOT EVALUATED")), "")
+                doc_checked += 1
+                if n_line != "Fail Points: 0" and (
+                        v_line == "Linearity Pass: YES" or stamp == "PASS"):
+                    doc_bad.append((_id, n_line, v_line, stamp))
+                import matplotlib.pyplot as _plt
+                _plt.close(fig)
+        except Exception as exc:
+            check(f"unit export document: track {_id} raised", False, repr(exc))
+
+    check("unit export document: rendered fail count NEVER shown beside a "
+          "passing verdict or green PASS stamp",
+          not doc_bad and doc_checked > 0,
+          f"{len(doc_bad)}/{doc_checked} contradictions"
+          + (f" e.g. {doc_bad[:3]}" if doc_bad else ""))
 
     # ============ 6. EXPORTS ===================================================
     from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text

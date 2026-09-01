@@ -46,14 +46,23 @@ def compute_offset_feasibility(errors, upper_limits, lower_limits):
 _FEAS_EPS = 1e-9
 
 
-def _offset_verdict_note(fail_points, errors, upper_limits, lower_limits):
+def _offset_verdict_note(fail_points, errors, upper_limits, lower_limits,
+                         k: float = 0.0, theory=None):
     """Plain-language WHY for a failing sweep: name the opposing constraints
     that make the fail unfixable by offset, call out zero-margin boundary
     riding, or flag loudly that a WORKABLE clearing offset exists (verdict
     inconsistent with data — reprocess). Returns (note, binding_point_
-    indices) — (None, None) when not failing or when limits are absent."""
+    indices) — (None, None) when not failing or when limits are absent.
+
+    The rotation term is applied FIRST: k is fixed by the analyzer, so the
+    only free variable left is the offset, and the feasibility window must be
+    solved against the rotated residual or the note quotes offsets that do
+    not correspond to the trace actually being graded."""
     if not fail_points:
         return None, None
+    from laser_trim_analyzer.export.unit_chart import corrected_errors
+
+    errors = corrected_errors(errors, 0.0, k, theory)
     fz = compute_offset_feasibility(errors, upper_limits, lower_limits)
     if fz is None:
         return None, None
@@ -119,20 +128,24 @@ def ft_reconciled_verdict(data):
 
 
 def compute_fail_points(errors, upper_limits, lower_limits,
-                        offset: float = 0.0) -> List[int]:
+                        offset: float = 0.0, k: float = 0.0,
+                        theory=None) -> List[int]:
     """Indices where the CORRECTED post-trim error violates the per-point spec
     band (zero-tolerance, Q1).
 
-    `offset` is the stored optimal_offset — grading of record is done on the
-    corrected trace. Checking raw errors marked 'fail points' on units whose
-    corrected trace is in spec (X markers contradicting 'Linearity Pass: YES',
-    found by the 2026-07-07 QA sweep on unit 8074-1/30)."""
+    The adjustment is `error + theory*k + offset` — the analyzer's grading of
+    record. `offset` is the stored optimal_offset and `k` the stored
+    optimal_slope (theory rotation factor). Checking raw errors marked 'fail
+    points' on units whose corrected trace is in spec (X markers contradicting
+    'Linearity Pass: YES', found by the 2026-07-07 QA sweep on unit 8074-1/30).
+    Dropping k re-introduced that same contradiction from the other side —
+    18 phantom fail points on a passing 8415-1 SN 26 (2026-08-31)."""
+    from laser_trim_analyzer.export.unit_chart import corrected_errors
+
     out = []
-    off = offset or 0.0
-    for i, e in enumerate(errors or []):
+    for i, e in enumerate(corrected_errors(errors, offset, k, theory)):
         if e is None:
             continue
-        e = e + off
         up = upper_limits[i] if upper_limits and i < len(upper_limits) else None
         lo = lower_limits[i] if lower_limits and i < len(lower_limits) else None
         if (up is not None and e > up) or (lo is not None and e < lo):
@@ -198,6 +211,13 @@ def load_unit_track(db, analysis_id: int,
             # Context v5's Analyze chart always showed (v6 parity, 2026-07-07):
             # corrected trace offset + how much the trim improved the unit.
             "optimal_offset": tr.optimal_offset,
+            # The OTHER half of the analyzer's adjustment: theory rotation
+            # factor k + the theory column it multiplies. Without these the
+            # renderers re-grade on `error + offset` and invent fail points
+            # at the end of travel (2026-08-31, 8415-1 SN 26). V5's pages
+            # always read optimal_slope; V6 dropped it.
+            "optimal_slope": tr.optimal_slope,
+            "theory_data": list(tr.theory_data or []),
             "trim_improvement_percent": tr.trim_improvement_percent,
             # Detail metrics for the print-ready export (export/unit_chart.py).
             "sigma_gradient": tr.sigma_gradient,
@@ -311,10 +331,15 @@ class UnitChartModal(ctk.CTkToplevel):
                 "the sweep.")
             self._save_btn.configure(state="disabled")
             return
+        # Grade on the analyzer's full adjustment (offset AND theory rotation).
+        _k = data.get("optimal_slope") or 0.0
+        _theory = data.get("theory_data")
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"],
-                                 offset=data.get("optimal_offset") or 0.0)
+                                 offset=data.get("optimal_offset") or 0.0,
+                                 k=_k, theory=_theory)
         note, binding = _offset_verdict_note(
-            fp, data["error_data"], data["upper_limits"], data["lower_limits"])
+            fp, data["error_data"], data["upper_limits"], data["lower_limits"],
+            k=_k, theory=_theory)
         title = f"Unit {unit.get('serial', '')}"
         if data["n_tracks"] > 1:
             title += f" — {data['track_id']} of {data['n_tracks']} tracks"
@@ -324,6 +349,7 @@ class UnitChartModal(ctk.CTkToplevel):
             untrimmed_positions=data["untrimmed_positions"] or None,
             untrimmed_errors=data["untrimmed_errors"] or None,
             offset=data.get("optimal_offset") or 0.0,
+            k=_k, theory_data=_theory,
             trim_improvement_percent=data.get("trim_improvement_percent"),
             trim_date=str(unit.get("file_date", "")).split(" ")[0] or None,
             fail_points=fp, title=title, serial_number=str(unit.get("serial", "")),
@@ -355,7 +381,9 @@ class UnitChartModal(ctk.CTkToplevel):
             from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
             fp = compute_fail_points(data.get("error_data"), data.get("upper_limits"),
                                      data.get("lower_limits"),
-                                     offset=data.get("optimal_offset") or 0.0)
+                                     offset=data.get("optimal_offset") or 0.0,
+                                     k=data.get("optimal_slope") or 0.0,
+                                     theory=data.get("theory_data"))
             meta = {"model": data.get("model") or self._unit.get("model", ""),
                     "serial": self._unit.get("serial", ""),
                     "system": data.get("system") or self._unit.get("system", ""),
