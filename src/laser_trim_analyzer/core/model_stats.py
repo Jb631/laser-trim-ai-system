@@ -663,12 +663,16 @@ def summary_line(stats: ModelStats) -> str:
     """One line over the table: what population these numbers came from."""
     if not stats.tracks:
         return stats.note or "No measurements for this model."
-    window = "all history"
+    # The window phrase carries its OWN preposition. Gluing a fixed "over" onto
+    # each branch put "measurements over since May 14, 2026" on the screen —
+    # "over" reads correctly with a span ("all history", "the selected lot") and
+    # not with a start date.
+    window = "over all history"
     if stats.lot is not None:
-        window = "the selected lot"
+        window = "over the selected lot"
     elif stats.cutoff is not None:
         window = f"since {stats.cutoff:%b %d, %Y}"
-    text = f"{stats.tracks:,} track measurements over {window}"
+    text = f"{stats.tracks:,} track measurements {window}"
     dropped = stats.excluded_total
     if dropped:
         text += (f" · {dropped:,} impossible reading"

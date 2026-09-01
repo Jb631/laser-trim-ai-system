@@ -533,10 +533,18 @@ def test_summary_line_names_the_window_and_the_drops():
     text = summary_line(stats)
     assert "9,944 track measurements over all history" in text
     assert "7 impossible readings left out" in text
+    # Assert the WHOLE phrase, not just the date. Checking for "since May 13"
+    # alone passed while the line actually read "measurements over since
+    # May 13, 2026" — a weak assertion that let broken copy ship to the screen.
     windowed = ModelStats(model="6607", rows=[_stats_row()], tracks=302, records=302,
                           cutoff=datetime(2026, 5, 13), lot=None, future_dated=0,
                           note="")
-    assert "since May 13, 2026" in summary_line(windowed)
+    assert summary_line(windowed).startswith(
+        "302 track measurements since May 13, 2026")
+    lot_scoped = ModelStats(model="6607", rows=[_stats_row()], tracks=15, records=15,
+                            cutoff=None, lot=object(), future_dated=0, note="")
+    assert summary_line(lot_scoped).startswith(
+        "15 track measurements over the selected lot")
 
 
 def test_lot_line_carries_the_numbers_and_the_verdict():
