@@ -52,6 +52,11 @@ from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
 
+# app_meta key: how many "Unknown" model rows the re-parse migration last
+# looked at (post-fix). Its whole job is to keep that migration from redoing
+# work the parser has already refused, on every launch, forever.
+UNKNOWN_REPARSE_COUNT_KEY = "unknown_model_reparse.last_count"
+
 
 # ---------------------------------------------------------------------------
 # Unit identity helpers — used at write time and by the migration backfill.
@@ -377,6 +382,43 @@ class DatabaseManager:
                 {"m": model}).fetchone()
         return (row[0], row[1], row[2]) if row else None
 
+    @staticmethod
+    def _meta_get(session, key: str) -> Optional[str]:
+        """Read an app_meta value, or None if unset.
+
+        Never raises. It is called from inside migrations, and a database
+        opened before app_meta existed (or one where the CREATE failed) must
+        degrade to "no memory of a previous run" rather than take the whole
+        migration pass down with it.
+        """
+        try:
+            row = session.execute(
+                text("SELECT value FROM app_meta WHERE key = :k"), {"k": key}).fetchone()
+            return row[0] if row else None
+        except Exception:
+            session.rollback()
+            return None
+
+    @staticmethod
+    def _meta_set(session, key: str, value: str) -> None:
+        """Write an app_meta value, committing it. Never raises (see _meta_get).
+
+        A failure here costs only the skip — the next launch redoes the work
+        and tries to record it again — so it must not abort the migration that
+        just succeeded.
+        """
+        try:
+            session.execute(text(
+                "INSERT INTO app_meta (key, value, updated_at) VALUES (:k, :v, :t) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at"),
+                {"k": key, "v": value,
+                 "t": datetime.now().isoformat(sep=" ", timespec="seconds")})
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.warning(f"could not record app_meta[{key}]", exc_info=True)
+
     def _run_migrations(self) -> None:
         """Run database migrations for schema updates."""
         # Baseline requalification audit table (2026-07-13: per-model manual
@@ -393,6 +435,23 @@ class DatabaseManager:
                 _s.commit()
         except Exception:
             logger.exception("baseline_requalifications migration failed")
+
+        # App-level key/value state (2026-08-31). Every other table in this
+        # schema is domain data and there was no meta/settings table, so
+        # migrations had nowhere to record what they had already tried — see
+        # the Unknown-model re-parse below, its first and so far only user.
+        # Deliberately dumb: TEXT values, one row per key, raw SQL and no ORM
+        # model, matching baseline_requalifications directly above.
+        try:
+            with self.session() as _s:
+                _s.execute(text(
+                    "CREATE TABLE IF NOT EXISTS app_meta ("
+                    "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+                    "updated_at TEXT NOT NULL)"))
+                _s.commit()
+        except Exception:
+            logger.exception("app_meta migration failed")
+
         needs_rematch = False
 
         with self.session() as session:
@@ -517,11 +576,35 @@ class DatabaseManager:
             # Migration: Re-parse "Unknown" model records with improved parser logic
             # Handles: multi-hyphen models (7280-1-CT), -sn serial indicators,
             # concatenated sn patterns, "final NNN" serials, etc.
+            #
+            # Runs only when the Unknown population has CHANGED since the last
+            # attempt (2026-08-31). On the work database it re-parsed the same
+            # 381 filenames, fixed 0 of them and printed two INFO lines on
+            # every single launch for months. A migration that has provably
+            # finished should cost nothing and say nothing; otherwise the
+            # startup log stops being something anyone reads, and the next real
+            # message hides in the noise. The parser is what decides these
+            # filenames are unreadable, and the parser does not change between
+            # two launches — only the rows do. So the count of Unknown rows is
+            # the whole trigger: a different count means rows this has never
+            # tried (new Unknown rows arrived, or some were fixed or deleted),
+            # and it runs again and reports at INFO. Same count, same verdict,
+            # no work. The fix logic below is untouched.
             try:
-                unknown_records = session.execute(text(
-                    "SELECT id, filename FROM analysis_results WHERE model = 'Unknown'"
-                )).fetchall()
-                if unknown_records:
+                unknown_count = session.execute(text(
+                    "SELECT COUNT(*) FROM analysis_results WHERE model = 'Unknown'"
+                )).scalar() or 0
+                attempted = self._meta_get(session, UNKNOWN_REPARSE_COUNT_KEY)
+                if not unknown_count:
+                    pass  # nothing to re-parse, and nothing worth saying
+                elif attempted == str(unknown_count):
+                    logger.debug(
+                        f"Unknown model re-parse: skipped, {unknown_count} records "
+                        f"unchanged since the last attempt")
+                else:
+                    unknown_records = session.execute(text(
+                        "SELECT id, filename FROM analysis_results WHERE model = 'Unknown'"
+                    )).fetchall()
                     logger.info(f"Running migration: Re-parsing {len(unknown_records)} Unknown model records")
                     fixed = 0
                     for row in unknown_records:
@@ -538,6 +621,12 @@ class DatabaseManager:
                         logger.info(f"Migration completed: Fixed {fixed} of {len(unknown_records)} Unknown model records")
                     else:
                         logger.info("Migration: No Unknown records could be re-parsed")
+                    # The REMAINDER, not what we started with: storing the
+                    # pre-fix count on a run that fixed something would leave a
+                    # marker no future launch can ever match, and this would
+                    # re-run forever on exactly the databases it had improved.
+                    self._meta_set(session, UNKNOWN_REPARSE_COUNT_KEY,
+                                   str(unknown_count - fixed))
             except Exception as e:
                 logger.warning(f"Unknown model re-parse warning: {e}")
 
