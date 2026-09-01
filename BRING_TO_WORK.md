@@ -322,6 +322,23 @@ The app also self-checks its environment at every launch and writes
   monthly better-or-worse summary.
 - **Dashboard Gap column.** Trim% − FT% per model: big negative = rejecting
   good product at trim (overkill), positive = escapes reaching final test.
+- **Final test overlay, on the unit chart.** Open any unit and flip the
+  "Final test overlay" switch: the linked final-test sweep is drawn over the
+  trim trace in orange, with its OWN correction and its OWN spec limits (the
+  FT station makes its own adjustment — grading it with the trim's would draw
+  a curve nobody measured). The caption names the linked file's date and the
+  match confidence. If the unit was final-tested more than once, you get the
+  NEWEST test and the chart says "newest of N". "Save chart…" includes the
+  overlay when it is on. When there is nothing to show — no link, a match
+  below 0.70, no stored sweep, or an FT file whose position column isn't a
+  position — the switch is greyed out and the caption says which of those it
+  is, instead of a blank chart. This was the last thing V5 could do that V6
+  could not.
+- **Unmeasured points are visible.** A point the tester recorded no value for
+  is counted as a failure (a zero-tolerance spec can't call an unmeasured
+  point good) — it now shows as a hollow purple square on the axis line at
+  the position it belongs to, so the marker count on the chart matches the
+  fail count beside it. The document adds "Unmeasured: N (counted as fail)".
 
 ## If something looks wrong at work
 Tell Claude what you saw — screenshots help. Two self-check programs ship in
@@ -329,8 +346,9 @@ Tell Claude what you saw — screenshots help. Two self-check programs ship in
 but they're why each change arrives verified.
 
 ## Known items still on the list (not blockers)
-- Trim-vs-FT overlay chart inside the unit view (V5's Compare page still has
-  it; V5 remains launchable).
+- ~~Trim-vs-FT overlay chart inside the unit view~~ — **done 2026-08-31**, see
+  above. V5's Compare page no longer holds anything V6 lacks; V5 remains
+  launchable as the fallback until you have used the V6 overlay at work.
 - Fix Missing Tracks for records with no stored sweep (5,379 units are
   un-gradeable until re-parsed; they're skipped, never guessed).
 - The 2.1e8 Ω-style historical bad readings get flagged at ingest going

@@ -24,6 +24,8 @@ _C = {
     # unmeasured point is a different KIND of thing from a measurement that
     # went out of band, and must not read as one.
     "unmeasured": "#8e44ad",
+    # Linked final-test overlay: distinct from the trim green and the spec red.
+    "ft": "#d35400",
 }
 
 
@@ -104,15 +106,56 @@ def classify_graded_points(errors, upper_limits, lower_limits,
     return out_of_band, unmeasured
 
 
+def draw_ft_overlay(ax, ft_overlay: Optional[Dict[str, Any]],
+                    color: Optional[str] = None) -> None:
+    """The linked final-test sweep on the trim axes, styled clearly apart.
+
+    Its own correction (already applied by core.ft_overlay) and its own spec
+    band — the FT station's limits are not the trim's, and reusing the trim
+    band would grade the FT trace against the wrong thing.
+    """
+    if not ft_overlay or not ft_overlay.get("available"):
+        return
+    pos = ft_overlay.get("positions") or []
+    corrected = ft_overlay.get("corrected") or []
+    if not pos or not corrected:
+        return
+    c = color or _C["ft"]
+    n = min(len(pos), len(corrected))
+    label = ft_overlay.get("label") or "Final test"
+    ax.plot(pos[:n], corrected[:n], lw=1.7, color=c, alpha=0.95,
+            zorder=4, label=f"{label} — corrected")
+    raw = ft_overlay.get("errors") or []
+    if raw:
+        m = min(len(pos), len(raw))
+        ax.plot(pos[:m], raw[:m], ":", lw=1.1, color=c, alpha=0.45,
+                zorder=3, label="Final test (as measured)")
+    up = ft_overlay.get("upper_limits") or []
+    lo = ft_overlay.get("lower_limits") or []
+    if up and lo:
+        u = np.asarray([v if v is not None else np.nan for v in up], dtype=float)
+        l = np.asarray([v if v is not None else np.nan for v in lo], dtype=float)
+        m = min(len(pos), len(u), len(l))
+        p = np.asarray(pos[:m], dtype=float)
+        ax.plot(p, u[:m], "-.", lw=0.9, color=c, alpha=0.55,
+                label="Final test limits")
+        ax.plot(p, l[:m], "-.", lw=0.9, color=c, alpha=0.55)
+
+
 def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                              fail_points: Optional[List[int]] = None,
-                             kind: str = "trim") -> Figure:
+                             kind: str = "trim",
+                             ft_overlay: Optional[Dict[str, Any]] = None) -> Figure:
     """Light-mode 4-panel unit document.
 
     meta: model, serial, system, trim_date (str), track_id, n_tracks.
     data: load_unit_track (trim) or load_ft_track (FT) dict.
     kind: "trim" (default) or "ft". FT drops the sigma metrics (there is no
     sigma at final test) and takes its PASS/FAIL from the final-test result.
+    ft_overlay: an available payload from core.ft_overlay.load_ft_overlay —
+    the linked final-test sweep, drawn with its OWN correction and its OWN
+    spec band beside the trim trace. Omitted (or unavailable) draws nothing
+    extra, so every existing caller is unaffected.
     """
     fail_points = fail_points or []
     is_ft = kind == "ft"
@@ -212,6 +255,7 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                            clip_on=False,
                            label=f"Unmeasured points ({len(ux)}) — counted as "
                                  "failures (zero-tolerance)")
+        draw_ft_overlay(ax, ft_overlay)
         ax.legend(loc="lower right", fontsize=8.5, framealpha=0.9)
 
     ax.set_facecolor("white")
@@ -240,6 +284,13 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
         lines.append(f"Meas. Elec. Angle: {_fmt(data['measured_electrical_angle'], '.4g')}")
     if data.get("trim_improvement_percent") is not None:
         lines.append(f"Trim Improvement: {data['trim_improvement_percent']:.1f}%")
+    if ft_overlay and ft_overlay.get("available"):
+        # Name the linked record so the overlay is traceable back to a file,
+        # confidence included — this is a fuzzy match, not a key join.
+        lines.append(f"Final test: {ft_overlay.get('date') or 'no date'}"
+                     f" (match {float(ft_overlay.get('confidence') or 0):.2f})")
+        if (ft_overlay.get("n_links") or 1) > 1:
+            lines.append(f"  newest of {ft_overlay['n_links']} tests")
     ax_info.text(0.02, 0.98, "Unit Information", fontsize=11, fontweight="bold",
                  va="top", transform=ax_info.transAxes, color="black")
     for i, ln in enumerate(lines):

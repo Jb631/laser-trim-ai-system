@@ -294,6 +294,24 @@ class UnitChartModal(ctk.CTkToplevel):
             bar, values=["Track"], width=140, command=self._on_track_change,
             fg_color=theme.CARD, button_color=theme.ACCENT,
             button_hover_color=theme.ACCENT_HOVER, text_color=theme.TEXT_PRIMARY)
+        # Trim / Trim + FT. The overlay was V5 Compare's alone until now; it is
+        # OFF by default so the unit chart still opens as the trim chart it is.
+        self._show_ft = False
+        self._ft_overlay = None
+        self._ft_toggle = ctk.CTkSwitch(
+            bar, text="Final test overlay", command=self._on_ft_toggle,
+            progress_color=theme.ACCENT, text_color=theme.TEXT_PRIMARY,
+            font=theme.font(theme.SIZE_CAPTION))
+        self._ft_toggle.deselect()
+        self._ft_toggle.configure(state="disabled")   # until a link is found
+        self._ft_toggle.pack(side="left", padx=(0, theme.SPACE_SM))
+        # Why the overlay is unavailable, or what it is showing — a plain
+        # sentence beats a toggle that does nothing for no stated reason.
+        self._note_lbl = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
+                                      text_color=theme.TEXT_SECONDARY, anchor="w",
+                                      justify="left", wraplength=840)
+        self._note_lbl.pack(side="bottom", fill="x",
+                            padx=theme.SPACE_MD, pady=(0, theme.SPACE_XS))
         self._db = db
 
         # Resolve the app's UiDispatcher now (main thread); master may be nested.
@@ -307,14 +325,47 @@ class UnitChartModal(ctk.CTkToplevel):
         self._save_btn.configure(state="disabled")
 
         def work():
-            try:
-                data = load_unit_track(db, unit.get("analysis_id"))
-            except Exception:
-                data = None
-            self._post(lambda: self._render(data))
+            data, overlay = self._load()
+            self._post(lambda: self._render(data, overlay))
 
         import threading
         threading.Thread(target=work, daemon=True).start()
+
+    def _load(self, track_id: Optional[str] = None):
+        """(track data, FT overlay) — the whole DB read, off the UI thread."""
+        try:
+            data = load_unit_track(self._db, self._unit.get("analysis_id"),
+                                   track_id=track_id)
+        except Exception:
+            return None, None
+        overlay = None
+        if data:
+            try:
+                from laser_trim_analyzer.core.ft_overlay import load_ft_overlay
+                overlay = load_ft_overlay(
+                    self._db, self._unit.get("analysis_id"),
+                    trim_track_id=data.get("track_id"),
+                    trim_positions=data.get("position_data"))
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("FT overlay lookup failed")
+                overlay = {"available": False,
+                           "reason": "Could not read the linked final test "
+                                     "(see the log)."}
+        return data, overlay
+
+    def _render_sync(self, track_id: Optional[str] = None) -> None:
+        """Load and render on the CALLING thread. For tests and for callers
+        that already run off the UI thread — the worker path above stays the
+        one the modal itself uses."""
+        data, overlay = self._load(track_id)
+        self._render(data, overlay)
+
+    def _on_ft_toggle(self) -> None:
+        self._show_ft = bool(self._ft_toggle.get())
+        data = getattr(self, "_track_data", None)
+        if data:
+            self._render(data, self._ft_overlay)
 
     def _post(self, fn) -> None:
         def guarded():
@@ -336,19 +387,35 @@ class UnitChartModal(ctk.CTkToplevel):
         self._chart.show_placeholder(f"Loading {choice}…")
 
         def work():
-            try:
-                new = load_unit_track(self._db, self._unit.get("analysis_id"),
-                                      track_id=choice)
-            except Exception:
-                new = None
-            self._post(lambda: self._render(new))
+            # Re-resolved per track: on a multi-track unit the FT sweep must be
+            # the one paired to THIS track, not whichever came first.
+            data, overlay = self._load(track_id=choice)
+            self._post(lambda: self._render(data, overlay))
 
         import threading
         threading.Thread(target=work, daemon=True).start()
 
-    def _render(self, data: Optional[dict]) -> None:
+    def _render(self, data: Optional[dict],
+                ft_overlay: Optional[dict] = None) -> None:
         self._track_data = data  # kept for the print-ready export
+        self._ft_overlay = ft_overlay
         unit = self._unit
+        # The toggle only offers what exists; when it doesn't, the reason is
+        # stated rather than left as a dead control or an empty chart.
+        if ft_overlay and ft_overlay.get("available"):
+            self._ft_toggle.configure(state="normal")
+            self._note_lbl.configure(
+                text=(f"Final test linked: {ft_overlay.get('label', '')} · "
+                      f"match {float(ft_overlay.get('confidence') or 0):.2f}"
+                      if self._show_ft else
+                      "A linked final test is available — switch to Trim + FT."))
+        else:
+            self._show_ft = False
+            self._ft_toggle.deselect()
+            self._ft_toggle.configure(state="disabled")
+            self._note_lbl.configure(
+                text=(ft_overlay or {}).get("reason")
+                     or "No final test is linked to this unit.")
         # Multi-track: surface the selector with the real track ids.
         if data and data.get("n_tracks", 1) > 1 and data.get("track_ids"):
             self._track_menu.configure(values=data["track_ids"])
@@ -388,6 +455,7 @@ class UnitChartModal(ctk.CTkToplevel):
             trim_improvement_percent=data.get("trim_improvement_percent"),
             trim_date=str(unit.get("file_date", "")).split(" ")[0] or None,
             fail_points=fp, unmeasured_points=unmeasured,
+            ft_overlay=ft_overlay if self._show_ft else None,
             title=title, serial_number=str(unit.get("serial", "")),
             verdict_note=note, binding_points=binding)
         self._save_btn.configure(state="normal")
@@ -426,7 +494,10 @@ class UnitChartModal(ctk.CTkToplevel):
                     "trim_date": date,
                     "track_id": data.get("track_id"),
                     "n_tracks": data.get("n_tracks", 1)}
-            fig = build_unit_export_figure(meta, data, fp)
+            # The saved document shows what the screen shows, overlay included.
+            fig = build_unit_export_figure(
+                meta, data, fp,
+                ft_overlay=self._ft_overlay if self._show_ft else None)
             fig.savefig(path, facecolor="white", bbox_inches="tight")
         except Exception:
             import logging

@@ -200,6 +200,33 @@ def resolve_unit_fixtures(db):
     return int(heavy[0]), int(multi[0])
 
 
+def resolve_ft_overlay_unit(db):
+    """A trim analysis whose linked final test actually has a drawable sweep.
+
+    Same rule as the fixtures above: resolved by the PROPERTY, never a literal
+    id. Prefers a unit final-tested more than once, so the "newest of N"
+    disclosure is exercised too. None when this database has no such pair —
+    the overlay render is then skipped with a printed reason rather than
+    rendering a trim chart and calling it an overlay.
+    """
+    from laser_trim_analyzer.core.ft_overlay import MIN_MATCH_CONFIDENCE
+    from laser_trim_analyzer.database.models import (
+        FinalTestResult as DBFT, FinalTestTrack as DBFTT)
+    from sqlalchemy import func
+
+    with db.session() as s:
+        q = (s.query(DBFT.linked_trim_id, func.count(DBFT.id).label("n"))
+             .join(DBFTT, DBFTT.final_test_id == DBFT.id)
+             .filter(DBFT.linked_trim_id.isnot(None),
+                     DBFT.match_confidence >= MIN_MATCH_CONFIDENCE,
+                     DBFTT.position_data.isnot(None),
+                     DBFTT.error_data.isnot(None))
+             .group_by(DBFT.linked_trim_id)
+             .order_by(func.count(DBFT.id).desc(), DBFT.linked_trim_id.desc())
+             .first())
+    return int(q[0]) if q else None
+
+
 def main(out_dir: str, db_path: Path) -> int:
     if not db_path.exists():
         # BEFORE DatabaseManager, which CREATES the file it is handed: charts
@@ -382,6 +409,49 @@ def main(out_dir: str, db_path: Path) -> int:
         fig.savefig(out / f"unit_export_{aid}.png", facecolor="white", bbox_inches="tight")
         manifest.append(f"unit_export_{aid}.png | print export aid={aid} — {note}")
         print("saved", f"unit_export_{aid}.png")
+
+    # ---- 5b. Trim-vs-FT overlay (V6's replacement for V5 Compare) ----
+    from laser_trim_analyzer.core.ft_overlay import load_ft_overlay
+
+    ov_aid = resolve_ft_overlay_unit(db)
+    if ov_aid is None:
+        print("skipped overlay render | no trim in this database has a linked "
+              "final test with a stored sweep")
+    else:
+        data = load_unit_track(db, ov_aid)
+        serial, fdate = unit_meta(ov_aid)
+        ov = load_ft_overlay(db, ov_aid, trim_track_id=data.get("track_id"),
+                             trim_positions=data.get("position_data"))
+        if not ov.get("available"):
+            print(f"skipped overlay render | aid={ov_aid}: {ov.get('reason')}")
+        else:
+            _k = data.get("optimal_slope") or 0.0
+            fp = compute_fail_points(data["error_data"], data["upper_limits"],
+                                     data["lower_limits"],
+                                     offset=data.get("optimal_offset") or 0.0,
+                                     k=_k, theory=data.get("theory_data"))
+            cw = _v5chart()
+            cw.plot_error_vs_position(
+                positions=data["position_data"], trimmed_errors=data["error_data"],
+                upper_limits=data["upper_limits"] or None,
+                lower_limits=data["lower_limits"] or None,
+                offset=data.get("optimal_offset") or 0.0,
+                k=_k, theory_data=data.get("theory_data"),
+                trim_date=fdate, fail_points=fp, ft_overlay=ov,
+                title=f"Unit {serial} + final test", serial_number=serial)
+            _save(cw, out / f"unit_ft_overlay_screen_{ov_aid}.png", manifest,
+                  f"Unit + FT overlay aid={ov_aid} — {ov['label']}; FT trace "
+                  "must carry its OWN band and correction")
+            meta = {"model": data.get("model"), "serial": serial,
+                    "system": data.get("system"), "trim_date": fdate,
+                    "track_id": data.get("track_id"),
+                    "n_tracks": data.get("n_tracks", 1)}
+            fig = build_unit_export_figure(meta, data, fp, ft_overlay=ov)
+            fig.savefig(out / f"unit_ft_overlay_export_{ov_aid}.png",
+                        facecolor="white", bbox_inches="tight")
+            manifest.append(f"unit_ft_overlay_export_{ov_aid}.png | print export "
+                            f"with FT overlay — {ov['label']}")
+            print("saved", f"unit_ft_overlay_export_{ov_aid}.png")
 
     # ---- 6. Evidence pack + copy summary (data products) ----
     from laser_trim_analyzer.export.evidence import (

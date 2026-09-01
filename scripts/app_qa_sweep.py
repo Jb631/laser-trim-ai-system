@@ -1188,6 +1188,75 @@ def main() -> int:
           f"{len(mark_bad)}/{mark_checked} disagree (id, drawn, reported, stored)"
           + (f" e.g. {mark_bad[:3]}" if mark_bad else ""))
 
+    # ---- trim-vs-FT overlay (V6 unit chart; was V5 Compare's alone) ----------
+    # The overlay must resolve real linkages, grade the FT sweep on the FT's
+    # OWN adjustment, and refuse rather than guess. Run on real linked pairs.
+    from laser_trim_analyzer.core.ft_overlay import (
+        MIN_MATCH_CONFIDENCE, load_ft_overlay)
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import load_unit_track
+
+    ov_rows = raw.execute(
+        "SELECT DISTINCT f.linked_trim_id "
+        "FROM final_test_results f JOIN final_test_tracks t "
+        "  ON t.final_test_id = f.id "
+        "WHERE f.linked_trim_id IS NOT NULL AND f.match_confidence >= ? "
+        "  AND t.position_data IS NOT NULL AND t.error_data IS NOT NULL "
+        "ORDER BY f.id DESC LIMIT 40", (MIN_MATCH_CONFIDENCE,)).fetchall()
+    ov_ok = ov_refused = ov_multi = 0
+    ov_bad: list = []
+    for (aid,) in ov_rows:
+        try:
+            trim = load_unit_track(db, aid)
+            if not trim:
+                continue
+            ov = load_ft_overlay(db, aid, trim_track_id=trim.get("track_id"),
+                                 trim_positions=trim.get("position_data"))
+            if not ov.get("available"):
+                # A refusal is a PASS as long as it carries a reason — that is
+                # the contract: never an empty chart with no explanation.
+                if ov.get("reason"):
+                    ov_refused += 1
+                else:
+                    ov_bad.append((aid, "refused with no reason"))
+                continue
+            ov_ok += 1
+            if (ov.get("confidence") or 0) < MIN_MATCH_CONFIDENCE:
+                ov_bad.append((aid, "below the confidence floor"))
+            # A unit can be final-tested many times; the NEWEST qualifying test
+            # is the one to show. Verified against SQL, not against the code's
+            # own idea of newest.
+            newest, n_links = raw.execute(
+                "SELECT id, COUNT(*) OVER () FROM final_test_results "
+                "WHERE linked_trim_id = ? AND match_confidence >= ? "
+                "ORDER BY COALESCE(test_date, file_date) DESC, id DESC LIMIT 1",
+                (aid, MIN_MATCH_CONFIDENCE)).fetchone()
+            if n_links > 1:
+                ov_multi += 1
+                if str(ov["n_links"]) not in ov["label"]:
+                    ov_bad.append((aid, "multi-test unit does not say so"))
+            if ov["ft_id"] != newest:
+                ov_bad.append((aid, f"showed ft {ov['ft_id']}, newest is {newest}"))
+            # The FT trace carries the FT's OWN offset — never the trim's. Read
+            # back from the exact FT track the overlay chose.
+            row = raw.execute(
+                "SELECT optimal_offset FROM final_test_tracks "
+                "WHERE final_test_id = ? AND track_id = ?",
+                (ov["ft_id"], ov["track_id"])).fetchone()
+            ft_off = (row[0] if row else None) or 0.0
+            if abs(ov["offset"] - ft_off) > 1e-9:
+                ov_bad.append((aid, "FT offset is not the FT's own"))
+            trim_off = trim.get("optimal_offset") or 0.0
+            if abs(trim_off - ft_off) > 1e-9 and abs(ov["offset"] - trim_off) < 1e-12:
+                ov_bad.append((aid, "trim offset leaked onto the FT trace"))
+        except Exception as exc:
+            ov_bad.append((aid, repr(exc)))
+    check("trim/FT overlay: shows the NEWEST linked test and grades its sweep "
+          "on the FT's OWN offset (never the trim's)",
+          not ov_bad and ov_ok > 0 and ov_multi > 0,
+          f"{ov_ok} drawn ({ov_multi} multi-test units), {ov_refused} refused "
+          f"with a reason, {len(ov_bad)} wrong"
+          + (f" e.g. {ov_bad[:3]}" if ov_bad else ""))
+
     # ============ 6. EXPORTS ===================================================
     from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text
     import pandas as pd
@@ -1687,6 +1756,93 @@ def main() -> int:
                  "excluded from trends; fix the source filename date")
         else:
             check(f"data quality: no future-dated records in {table}", True)
+
+    # ---- data quality: verdicts must be backed by a measurement (2026-08-31) --
+    # SafeJSON binds Python None through SQLAlchemy's JSON type, which stores
+    # the JSON literal 'null' as TEXT — so `IS NULL` finds none of the ~5,811
+    # array-less track rows. Every predicate here tests the stored text.
+    #
+    # Three separate populations, and conflating them is the trap this block
+    # exists to prevent:
+    #   1. graded track with no arrays  -> FAIL. The ingest guard
+    #      (processor.enforce_measurement_backed_verdict) makes this
+    #      unreachable, so any occurrence is a code defect, not data debt.
+    #   2. graded unit whose tracks are ALL array-less -> WARN. Repairable
+    #      data debt; Fix Missing Tracks re-parses it.
+    #   3. untrimmed-only track inside a graded unit -> reported, never
+    #      flagged. A two-track unit where one track was a test sweep with no
+    #      laser-trim run is BY DESIGN (parser moves the sweep into untrimmed_*
+    #      and clears the trimmed arrays); its waveform is in untrimmed_positions
+    #      and its parent is graded from the other track. 145 such tracks on the
+    #      work database as of 2026-08-31 — alarming on them would be crying
+    #      wolf on normal ingest.
+    _NO_ARRAY = ("(CAST({c} AS TEXT) IN ('','null','NULL','None','[]','{{}}') "
+                 "OR {c} IS NULL)")
+    _BOTH_ABSENT = (_NO_ARRAY.format(c="t.position_data") + " AND "
+                    + _NO_ARRAY.format(c="t.error_data"))
+    try:
+        n_graded_trackless = raw.execute(
+            f"SELECT COUNT(*) FROM track_results t "
+            f"WHERE t.status IN ('PASS','WARNING','FAIL') AND ({_BOTH_ABSENT})"
+        ).fetchone()[0]
+        n_tracks_total = raw.execute("SELECT COUNT(*) FROM track_results").fetchone()[0]
+        # Counts, not a bare boolean: a scan that examined nothing must not
+        # read as green.
+        check("ingest guard: no graded track stored without its measurement",
+              n_graded_trackless == 0 and n_tracks_total > 0,
+              f"{n_graded_trackless} unbacked verdict(s) of {n_tracks_total} tracks"
+              + ("" if n_tracks_total else " — SCANNED NOTHING")
+              + ("" if not n_graded_trackless else
+                 " | code defect: processor.enforce_measurement_backed_verdict "
+                 "should have made this impossible"))
+    except Exception as e:
+        check("ingest guard: no graded track stored without its measurement", False,
+              f"{type(e).__name__}: {e}")
+
+    try:
+        rows = raw.execute(
+            f"SELECT a.model, COUNT(*) FROM analysis_results a "
+            f"WHERE a.overall_status IN ('PASS','WARNING','FAIL') "
+            f"  AND EXISTS (SELECT 1 FROM track_results t WHERE t.analysis_id=a.id) "
+            f"  AND NOT EXISTS (SELECT 1 FROM track_results t "
+            f"                  WHERE t.analysis_id=a.id AND NOT ({_BOTH_ABSENT})) "
+            f"GROUP BY a.model ORDER BY COUNT(*) DESC").fetchall()
+        n_units = sum(n for _m, n in rows)
+        if n_units:
+            warn(f"data quality: {n_units} graded unit(s) with no measurement on any "
+                 f"track across {len(rows)} model(s)",
+                 "; ".join(f"{m}={n}" for m, n in rows[:6])
+                 + " | remedy: run Fix Missing Tracks at the work machine "
+                   "(Settings > Database maintenance) — the source share is "
+                   "unreachable elsewhere")
+        else:
+            check("data quality: every graded unit has a measurement behind it",
+                  True, f"0 of {n_tracks_total} tracks orphan a verdict")
+    except Exception as e:
+        check("data quality: every graded unit has a measurement behind it", False,
+              f"{type(e).__name__}: {e}")
+
+    try:
+        n_by_design = raw.execute(
+            f"SELECT COUNT(*) FROM track_results t "
+            f"JOIN analysis_results a ON a.id = t.analysis_id "
+            f"WHERE a.overall_status IN ('PASS','WARNING','FAIL') "
+            f"  AND t.status = 'UNTRIMMED' AND ({_BOTH_ABSENT})").fetchone()[0]
+        n_with_sweep = raw.execute(
+            f"SELECT COUNT(*) FROM track_results t "
+            f"JOIN analysis_results a ON a.id = t.analysis_id "
+            f"WHERE a.overall_status IN ('PASS','WARNING','FAIL') "
+            f"  AND t.status = 'UNTRIMMED' AND ({_BOTH_ABSENT}) "
+            f"  AND NOT " + _NO_ARRAY.format(c="t.untrimmed_positions")).fetchone()[0]
+        # By design, but only if the sweep it was moved to actually survived.
+        # A bare count would hide an untrimmed track that lost BOTH arrays.
+        check("untrimmed-only tracks in graded units keep their pre-trim sweep",
+              n_by_design == n_with_sweep,
+              f"{n_with_sweep} of {n_by_design} retain untrimmed_positions "
+              f"(by design: one track of a multi-track unit had no laser-trim run)")
+    except Exception as e:
+        check("untrimmed-only tracks in graded units keep their pre-trim sweep",
+              False, f"{type(e).__name__}: {e}")
 
     # ---- data quality: corrupt linearity_spec limit columns (2026-08-30) ----
     # Model 8888 stored a 63.03 V "spec" on 13 tracks. Not a parser bug: the

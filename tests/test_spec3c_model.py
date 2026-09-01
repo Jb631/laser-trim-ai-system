@@ -164,6 +164,42 @@ def test_unit_chart_modal_marks_fail_points(tk_root):
     assert compute_fail_points(err, upper, lower) == [1, 3]  # 0.5>0.4 and 0.9>0.4
 
 
+def test_unit_chart_modal_ft_toggle_disabled_with_a_reason(tk_root, tmp_path):
+    """V6 unit chart gains the trim-vs-FT overlay (V5 Compare's last unique
+    feature). With no linked final test the toggle is DISABLED and says why —
+    never an empty chart the user has to interpret."""
+    from datetime import datetime
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import (
+        AnalysisResult as DBAR, TrackResult as DBTR, StatusType, SystemType)
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import UnitChartModal
+
+    db = DatabaseManager(tmp_path / "ftmodal.db")
+    when = datetime(2026, 3, 1)
+    with db.session() as s:
+        ar = DBAR(filename="u.xls", file_path="/t/u", file_hash="u".ljust(64, "0"),
+                  model="8340-1", serial="77", system=SystemType.A, file_date=when,
+                  timestamp=when, overall_status=StatusType.PASS,
+                  has_multi_tracks=False, processing_time=0.1)
+        s.add(ar); s.flush()
+        s.add(DBTR(analysis_id=ar.id, track_id="TRK1", status=StatusType.PASS,
+                   position_data=[0.0, 1.0, 2.0], error_data=[0.0, 0.0, 0.0],
+                   upper_limits=[0.02] * 3, lower_limits=[-0.02] * 3,
+                   optimal_offset=0.0, linearity_pass=True, linearity_fail_points=0))
+        s.commit()
+        aid = ar.id
+
+    m = UnitChartModal(tk_root, ThemeManager(), db,
+                       {"analysis_id": aid, "serial": "77", "file_date": when})
+    try:
+        m._render_sync()      # deterministic: no worker thread in the test
+        assert str(m._ft_toggle.cget("state")) == "disabled"
+        assert "final test" in m._note_lbl.cget("text").lower()
+    finally:
+        m.destroy()
+
+
 # ---- Task 8: PredictorPanel -----------------------------------------------
 
 def test_predictor_panel_collapsed_then_toggles(tk_root):

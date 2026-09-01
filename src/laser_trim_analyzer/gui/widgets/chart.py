@@ -38,6 +38,9 @@ COLORS = {
     # Unmeasured (no error value at a graded position) — deliberately neither
     # the fail red nor the binding-point orange: a different kind of thing.
     'unmeasured': '#b07cf0',  # Light purple (readable on the dark chart)
+    # Linked final-test overlay on a trim chart — apart from the trim green,
+    # the untrimmed blue and the spec red.
+    'final_test': '#ff8c42',  # Warm orange
     'background': '#2b2b2b', # Dark background
     'text': '#ffffff',       # White text
     'grid': '#404040',       # Grid lines
@@ -231,6 +234,7 @@ class ChartWidget(ctk.CTkFrame):
         linearity_type: Optional[str] = None,
         excluded_points: Optional[List[int]] = None,
         unmeasured_points: Optional[List[int]] = None,
+        ft_overlay: Optional[dict] = None,
         measured_label: str = "Trimmed (as measured)",
         verdict_note: Optional[str] = None,
         binding_points: Optional[List[int]] = None,
@@ -414,6 +418,14 @@ class ChartWidget(ctk.CTkFrame):
                 where=~np.isnan(upper_plot) & ~np.isnan(lower_plot)
             )
 
+        # Linked FINAL-TEST sweep, when the caller asked for the overlay. Drawn
+        # by the same helper the print document uses (export/unit_chart.py), so
+        # screen and paper cannot disagree about what the FT trace is; the
+        # correction and limits are the FT's own (core/ft_overlay.py).
+        if ft_overlay and ft_overlay.get("available"):
+            from laser_trim_analyzer.export.unit_chart import draw_ft_overlay
+            draw_ft_overlay(ax, ft_overlay, color=COLORS['final_test'])
+
         # UNMEASURED points: graded positions with no error value. The analyzer
         # counts them as fails (zero-tolerance — an unmeasured point cannot be
         # shown to be in spec), but a NaN y is silently dropped by matplotlib,
@@ -545,6 +557,21 @@ class ChartWidget(ctk.CTkFrame):
             # only by the 2/98 percentile below (spike rejection), and only when
             # there are >=20 untrimmed points. (The old >3x-band dual-axis
             # fallback was removed this same session — see the header comment.)
+            # Same treatment for the FT overlay: an overlay drawn outside the
+            # window is an overlay the user cannot see, which is worse than not
+            # drawing it. Percentile-bounded so an FT end-of-travel spike still
+            # can't blow the view out.
+            if ft_overlay and ft_overlay.get("available"):
+                farr = np.array([e for e in (ft_overlay.get("corrected") or [])
+                                 if e is not None and np.isfinite(e)], dtype=float)
+                if farr.size:
+                    if farr.size >= 20:
+                        f_lo, f_hi = np.percentile(farr, [2, 98])
+                    else:
+                        f_lo, f_hi = float(farr.min()), float(farr.max())
+                    y_lo = float(f_lo) if y_lo is None else min(y_lo, float(f_lo))
+                    y_hi = float(f_hi) if y_hi is None else max(y_hi, float(f_hi))
+
             if untrimmed_errors:
                 uarr = np.array([e for e in untrimmed_errors
                                  if e is not None and np.isfinite(e)], dtype=float)
