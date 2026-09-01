@@ -1346,6 +1346,55 @@ def main() -> int:
         else:
             check(f"data quality: no future-dated records in {table}", True)
 
+    # ---- data quality: corrupt linearity_spec limit columns (2026-08-30) ----
+    # Model 8888 stored a 63.03 V "spec" on 13 tracks. Not a parser bug: the
+    # source workbooks really hold 0.03 x23 then 1.03, 2.03 ... 148.03 — an
+    # Excel fill-handle "Fill Series" artifact — and 63.03 is the honest
+    # median of that. A 63 V limit passes every unit, so those tracks' verdicts
+    # were meaningless. ExcelParser._validate_limit_columns now rejects such a
+    # band at ingest and linearity is recorded as indeterminate instead.
+    #
+    # This check re-runs that guard over every stored limit column. It reports
+    # counts rather than a bare boolean on purpose: a scan that silently drops
+    # to zero rows examined would otherwise read as green.
+    try:
+        import json as _json
+        from laser_trim_analyzer.core.parser import ExcelParser
+        _p = ExcelParser()
+        scanned = 0
+        offenders: dict = {}
+        for model, up, lo in raw.execute(
+                "SELECT a.model, t.upper_limits, t.lower_limits "
+                "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
+                "WHERE t.upper_limits IS NOT NULL AND t.lower_limits IS NOT NULL"):
+            try:
+                U = _json.loads(up) or []
+                L = _json.loads(lo) or []
+            except (TypeError, ValueError):
+                continue
+            if not U or not L:
+                continue
+            scanned += 1
+            reason = _p._validate_limit_columns(U, L, _p._calculate_linearity_spec(U, L))
+            if reason:
+                offenders.setdefault(model, [0, reason])
+                offenders[model][0] += 1
+        # Guard against a silently-empty scan (weak-assertion trap).
+        check("data quality: limit-column scan actually examined rows",
+              scanned > 100_000, f"{scanned} tracks with limit data scanned")
+        n_bad = sum(v[0] for v in offenders.values())
+        if n_bad:
+            detail = "; ".join(f"{m}={v[0]}" for m, v in sorted(offenders.items()))
+            warn(f"data quality: {n_bad} track(s) with an unusable linearity_spec "
+                 f"limit column across {len(offenders)} model(s)",
+                 f"{detail} | linearity NOT graded on these; fix the source workbook")
+        else:
+            check("data quality: every stored limit column is a usable spec band",
+                  True, f"0 of {scanned} tracks flagged")
+    except Exception as e:
+        check("data quality: linearity_spec limit-column guard", False,
+              f"{type(e).__name__}: {e}")
+
     raw.close()
     return _tally()
 

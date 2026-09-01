@@ -359,6 +359,9 @@ class TrackResult(Base):
     final_linearity_error_shifted = Column(Float)
     linearity_pass = Column(Boolean)
     linearity_fail_points = Column(Integer)
+    # Non-NULL when the source file's limit columns were not a usable spec
+    # band. linearity_pass is NULL (indeterminate) on these rows by design.
+    linearity_spec_warning = Column(Text)
 
     # Spec-aware optimization (Phase 2)
     optimal_slope = Column(Float, default=0.0)  # Theory rotation factor k (0.0 = no rotation)

@@ -583,6 +583,19 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning(f"Failure margin migration warning (may already exist): {e}")
 
+            # Migration: Add linearity_spec_warning column to track_results
+            try:
+                session.execute(text("SELECT linearity_spec_warning FROM track_results LIMIT 1"))
+            except OperationalError:
+                session.rollback()  # Clear error state from failed probe
+                logger.info("Running migration: Adding linearity_spec_warning column")
+                try:
+                    session.execute(text("ALTER TABLE track_results ADD COLUMN linearity_spec_warning TEXT"))
+                    session.commit()
+                    logger.info("Migration completed: Added linearity_spec_warning column")
+                except Exception as e:
+                    logger.warning(f"linearity_spec_warning migration warning (may already exist): {e}")
+
             # Migration: Add measured_electrical_angle column to track_results
             try:
                 session.execute(text("SELECT measured_electrical_angle FROM track_results LIMIT 1"))
@@ -3147,6 +3160,7 @@ class DatabaseManager:
             final_linearity_error_shifted=track.linearity_error,
             linearity_pass=track.linearity_pass,
             linearity_fail_points=track.linearity_fail_points,
+            linearity_spec_warning=track.linearity_spec_warning,
             failure_probability=track.failure_probability,
             risk_category=risk_category,
             is_anomaly=track.is_anomaly,  # Anomaly detection flag
@@ -3344,6 +3358,7 @@ class DatabaseManager:
                 linearity_error=linearity_error_val,
                 linearity_pass=linearity_pass_val,
                 linearity_fail_points=db_track.linearity_fail_points or 0,
+                linearity_spec_warning=getattr(db_track, 'linearity_spec_warning', None),
                 unit_length=db_track.unit_length,
                 untrimmed_resistance=db_track.untrimmed_resistance,
                 trimmed_resistance=db_track.trimmed_resistance,

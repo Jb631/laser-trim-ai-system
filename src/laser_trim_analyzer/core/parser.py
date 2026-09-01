@@ -7,9 +7,10 @@ Handles both System A and System B file formats.
 
 import re
 import hashlib
+from collections import Counter
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Final
 import logging
 
 import pandas as pd
@@ -995,6 +996,19 @@ class ExcelParser:
             # We preserve NaN values - they mean "unlimited" at that position
             linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
 
+            # Plausibility guard. A bad limit column yields a spec that is
+            # silently wrong rather than obviously missing, so it is recorded
+            # and carried forward instead of being used to grade linearity.
+            linearity_spec_warning = self._validate_limit_columns(
+                upper_limits, lower_limits, linearity_spec
+            )
+            if linearity_spec_warning:
+                logger.warning(
+                    f"{file_path.name} [{trimmed_sheet}]: {linearity_spec_warning}. "
+                    f"Computed spec {linearity_spec:.4g} is NOT trustworthy; "
+                    f"linearity will be recorded as indeterminate, not passing."
+                )
+
             return {
                 "track_id": track_id,
                 "positions": positions,
@@ -1008,6 +1022,7 @@ class ExcelParser:
                 "untrimmed_errors": untrimmed_errors,
                 "travel_length": travel_length,
                 "linearity_spec": linearity_spec,
+                "linearity_spec_warning": linearity_spec_warning,
                 "unit_length": unit_length,
                 "untrimmed_resistance": untrimmed_resistance,
                 "trimmed_resistance": trimmed_resistance,
@@ -1325,6 +1340,93 @@ class ExcelParser:
             return None
         valid = [v for v in values if v is not None and not np.isnan(v)]
         return float(np.median(valid)) if valid else None
+
+    # ------------------------------------------------------------------
+    # Linearity spec plausibility guard
+    # ------------------------------------------------------------------
+    # A limit column pair is only a usable spec band if it is (a) a genuine
+    # +/- band, (b) internally consistent, and (c) physically sensible.
+    # Real files violate all three, so the spec that comes out of a bad
+    # column must never be used to grade a customer disposition:
+    #
+    #   8888  (13 tracks) - Excel fill-handle "Fill Series" ran down the
+    #         Upper/Lower Lin Lim columns when the template was built, so
+    #         the cells hold 0.03 x23 then 1.03, 2.03 ... 148.03. The median
+    #         of that is 63.03, a 63 V "spec" that passes everything.
+    #   8094-2 (1 track) - same fill-series artifact, median 1.025 vs 0.025.
+    #   8097  (5 tracks) - lower limit stored as +0.005 instead of -0.005,
+    #         so upper-lower collapses to a spec of exactly 0.0.
+    #   6952  (1 track) - the position column landed in upper_limits.
+    #   7965  (1 track) - lower limit jumps between -0.05, 0.0, 0.02, 0.05.
+    #
+    # Thresholds are measured, not guessed. Across all 102,333 tracks that
+    # carry limit data in the production DB these three checks flag exactly
+    # those 21 tracks and nothing else. Headroom on real data:
+    #   - median/mode disagreement: worst legitimate track is 7.14x
+    #     (6607), so 20x leaves 2.8x of headroom and still sits 2x below
+    #     the lowest true defect (8094-2 at 41x).
+    #   - absolute range: model 8802 ("Every deg") legitimately runs a
+    #     1.0 V spec, so the ceiling has to clear 1.0; 2.0 does.
+    LINEARITY_SPEC_ABS_MIN: Final[float] = 0.0001
+    LINEARITY_SPEC_ABS_MAX: Final[float] = 2.0
+    LINEARITY_SPEC_MAX_DISAGREEMENT: Final[float] = 20.0
+
+    def _validate_limit_columns(
+        self,
+        upper_limits: List[Optional[float]],
+        lower_limits: List[Optional[float]],
+        spec: float,
+    ) -> Optional[str]:
+        """
+        Check that a limit column pair really describes a spec band.
+
+        Returns None when the band is usable, otherwise a human-readable
+        reason. A reason means the computed ``spec`` is not trustworthy and
+        linearity must not be graded against it.
+        """
+        valid_upper = [u for u in upper_limits if u is not None and not np.isnan(u)]
+        valid_lower = [l for l in lower_limits if l is not None and not np.isnan(l)]
+        if not valid_upper or not valid_lower:
+            return None  # Absent limits are handled by _calculate_linearity_spec
+
+        # (a) A spec band straddles zero. If both medians share a sign the
+        # columns are offset, swapped, or sign-corrupted in the source file.
+        med_upper = float(np.median(valid_upper))
+        med_lower = float(np.median(valid_lower))
+        if not (med_upper > 0 and med_lower < 0):
+            return (
+                f"limit columns are not a +/- band "
+                f"(median upper={med_upper:.4g}, median lower={med_lower:.4g})"
+            )
+
+        # (b) The half-width must be representative of the column. When the
+        # median and the modal half-width diverge, more than half the column
+        # is something other than the spec — the median is then meaningless.
+        half_widths = [
+            round((u - l) / 2, 9)
+            for u, l in zip(upper_limits, lower_limits)
+            if u is not None and l is not None
+            and not np.isnan(u) and not np.isnan(l) and (u - l) > 0
+        ]
+        if len(half_widths) >= 5:
+            med_hw = float(np.median(half_widths))
+            mode_hw = Counter(half_widths).most_common(1)[0][0]
+            lo, hi = min(med_hw, mode_hw), max(med_hw, mode_hw)
+            if lo > 0 and (hi / lo) > self.LINEARITY_SPEC_MAX_DISAGREEMENT:
+                return (
+                    f"limit column is not a consistent band "
+                    f"(median half-width {med_hw:.4g} vs modal {mode_hw:.4g}, "
+                    f"{hi / lo:.0f}x apart)"
+                )
+
+        # (c) Physical backstop.
+        if not (self.LINEARITY_SPEC_ABS_MIN <= spec <= self.LINEARITY_SPEC_ABS_MAX):
+            return (
+                f"linearity spec {spec:.4g} is outside the physically "
+                f"sensible range "
+                f"[{self.LINEARITY_SPEC_ABS_MIN}, {self.LINEARITY_SPEC_ABS_MAX}]"
+            )
+        return None
 
     def _calculate_linearity_spec(
         self, upper_limits: List[float], lower_limits: List[float]

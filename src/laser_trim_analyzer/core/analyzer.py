@@ -189,6 +189,7 @@ class Analyzer:
         lower_limits = track_data.get("lower_limits", [])
         travel_length = track_data.get("travel_length", 0.0)
         linearity_spec = track_data.get("linearity_spec", 0.01)
+        linearity_spec_warning = track_data.get("linearity_spec_warning")
         unit_length = track_data.get("unit_length")
         untrimmed_resistance = track_data.get("untrimmed_resistance")
         trimmed_resistance = track_data.get("trimmed_resistance")
@@ -265,6 +266,16 @@ class Analyzer:
             theory_volts=theory_volts,
         )
 
+        # A corrupt limit column cannot grade a zero-tolerance disposition.
+        # The measurement data is kept (positions/errors are fine — only the
+        # limit columns are bad), but the verdict becomes indeterminate
+        # rather than a PASS manufactured by a meaningless spec.
+        if linearity_spec_warning:
+            logger.warning(
+                f"Track {track_id!r}: linearity NOT graded — {linearity_spec_warning}"
+            )
+            linearity_pass = None
+
         # Risk assessment
         failure_probability, risk_category = self._assess_risk(
             sigma_gradient, sigma_threshold, linearity_pass
@@ -278,7 +289,10 @@ class Analyzer:
         # Determine overall status
         # Linearity is zero-tolerance: any linearity failure = FAIL
         # WARNING = linearity passed but sigma is concerning (process health signal)
-        if not linearity_pass:
+        if linearity_spec_warning:
+            # Not a measured failure — the file never provided a usable spec.
+            status = AnalysisStatus.ERROR
+        elif not linearity_pass:
             status = AnalysisStatus.FAIL
         elif sigma_pass:
             status = AnalysisStatus.PASS
@@ -342,6 +356,7 @@ class Analyzer:
             linearity_error=linearity_error,
             linearity_pass=linearity_pass,
             linearity_fail_points=fail_points,
+            linearity_spec_warning=linearity_spec_warning,
             # Spec-aware optimization
             station_compensation=station_compensation,
             linearity_type=linearity_type,

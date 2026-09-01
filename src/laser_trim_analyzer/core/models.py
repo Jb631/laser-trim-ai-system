@@ -138,6 +138,14 @@ class TrackData(BaseAnalysisModel):
     linearity_error: Optional[float] = Field(None, ge=0, description="Linearity error")
     linearity_pass: Optional[bool] = Field(None, description="Linearity test passed")
     linearity_fail_points: int = Field(default=0, ge=0, description="Failing points count")
+    # Set when the source file's limit columns do not describe a usable spec
+    # band (see LaserTrimParser._validate_limit_columns). When present,
+    # linearity_pass is forced to None: the unit is NOT graded, because
+    # grading it against a corrupt limit would manufacture a false PASS on a
+    # zero-tolerance customer disposition.
+    linearity_spec_warning: Optional[str] = Field(
+        None, description="Why linearity_spec is untrustworthy (None = spec is usable)"
+    )
 
     # Spec-aware optimization results (Phase 2)
     optimal_slope: float = Field(default=0.0, description="Theory rotation factor k (0.0 = no rotation)")
