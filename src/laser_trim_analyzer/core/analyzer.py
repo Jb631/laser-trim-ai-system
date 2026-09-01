@@ -135,6 +135,30 @@ def human_to_exclude_json(text: str) -> Optional[str]:
     return json.dumps({"exclude": items})
 
 
+def max_abs_measured(values: Optional[List[Any]]) -> Optional[float]:
+    """Largest |value| over the points that were actually MEASURED.
+
+    Returns None when nothing was measured — never 0.0, which on a
+    zero-tolerance metric reads as a flawless part.
+
+    Why this exists (2026-08-31): the magnitude used to be
+    `max(abs(e) for e in errors)`. Python's max() seeds with the first
+    element and every later comparison against NaN is False, so one NaN at
+    index 0 propagated straight to the result while a NaN anywhere else was
+    skipped and the answer came out right. Model 8232-1's files open with a
+    six-point unmeasured lead-in, so its magnitude was NaN on every track,
+    coerced to None by BaseAnalysisModel._nan_means_missing, and stored as
+    NULL — 3,108 tracks on the #1 FOCUS model, with pass/fail intact so
+    nothing looked wrong. Position must not decide whether a number
+    survives; this filters first, then takes the max.
+    """
+    if not values:
+        return None
+    measured = [abs(v) for v in values
+                if v is not None and not np.isnan(v) and not np.isinf(v)]
+    return max(measured) if measured else None
+
+
 class Analyzer:
     """
     Combined analyzer for laser trim data.
@@ -265,6 +289,18 @@ class Analyzer:
             exclude_indices=exclude_indices,
             theory_volts=theory_volts,
         )
+
+        # An unmeasurable magnitude must SAY so. A bare NULL on the
+        # zero-tolerance customer metric is indistinguishable from "not
+        # analysed yet", and manager.py reads the column back as
+        # `abs(... or 0.0)` — so silence re-enters the app as a flawless
+        # part. Route it through the same "cannot grade" channel a corrupt
+        # limit column uses, so the track lands as ERROR with a reason.
+        if linearity_error is None and not linearity_spec_warning:
+            linearity_spec_warning = (
+                "linearity error not measured — the sweep carries no valid "
+                "error reading, so no magnitude could be computed"
+            )
 
         # A corrupt limit column cannot grade a zero-tolerance disposition.
         # The measurement data is kept (positions/errors are fine — only the
@@ -543,9 +579,13 @@ class Analyzer:
         angle_tol_type: Optional[str] = None,
         exclude_indices: Optional[Set[int]] = None,
         theory_volts: Optional[List[float]] = None,
-    ) -> Tuple[float, float, float, bool, int, float, int]:
+    ) -> Tuple[float, float, Optional[float], bool, int, Optional[float], int]:
         """
         Calculate linearity metrics with spec-aware optimal adjustment.
+
+        The two error magnitudes are None — never 0.0 — when the sweep holds
+        no measured point to take them from. Callers must disclose that
+        rather than store a bare NULL; see analyze_track.
 
         Returns:
             (optimal_offset, optimal_k, linearity_error, linearity_pass,
@@ -553,7 +593,7 @@ class Analyzer:
         """
         # Calculate raw results (no adjustment)
         raw_fail_points = self._count_fail_points(errors, upper_limits, lower_limits, exclude_indices)
-        raw_linearity_error = max(abs(e) for e in errors) if errors else 0.0
+        raw_linearity_error = max_abs_measured(errors)
 
         # Calculate optimal adjustment. k bounds are driven by the model
         # spec's angle tolerance — no tolerance means k stays at 0.0.
@@ -574,7 +614,7 @@ class Analyzer:
             shifted_errors = [e + optimal_offset for e in errors]
 
         # Calculate optimized max error
-        linearity_error = max(abs(e) for e in shifted_errors) if shifted_errors else 0.0
+        linearity_error = max_abs_measured(shifted_errors)
 
         # Count fail points after adjustment
         fail_points = self._count_fail_points(shifted_errors, upper_limits, lower_limits, exclude_indices)
@@ -584,7 +624,8 @@ class Analyzer:
 
         logger.debug(
             f"Linearity: type={linearity_type}, offset={optimal_offset:.6f}, "
-            f"k={optimal_k:.6f}, error={linearity_error:.6f}, "
+            f"k={optimal_k:.6f}, "
+            f"error={'unmeasured' if linearity_error is None else f'{linearity_error:.6f}'}, "
             f"fail_points={fail_points} (raw={raw_fail_points}), pass={linearity_pass}"
         )
 
@@ -813,6 +854,18 @@ class Analyzer:
                 continue
             if upper_limits[i] is not None and lower_limits[i] is not None:
                 if not (np.isnan(upper_limits[i]) or np.isnan(lower_limits[i])):
+                    # errors[i] needs the same NaN guard the limits get: an
+                    # unmeasured point inside the graded band yields a
+                    # (NaN, NaN) interval, and one of those poisons the
+                    # boundary list and the offset chosen from it. Measured
+                    # 2026-08-31: every one of the 1,842 tracks with a NULL
+                    # optimal_offset has a NaN error at a limited index, and
+                    # all 1,842 were recorded FAIL on the strength of that
+                    # failed computation. The point still counts as a fail
+                    # in _count_fail_points — it is just no longer allowed
+                    # to decide the offset for every OTHER point too.
+                    if errors[i] is None or np.isnan(errors[i]):
+                        continue
                     lo = lower_limits[i] - errors[i]
                     hi = upper_limits[i] - errors[i]
                     intervals.append((lo, hi))

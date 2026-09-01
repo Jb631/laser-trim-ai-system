@@ -1,5 +1,65 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-08-31 — 8232-1 never recorded HOW FAR out of spec it was (pull, then one script)
+
+8232-1 recorded whether each track passed linearity and how many points
+failed — but never **by how much**. The error magnitude was NULL on all 3,108
+tracks since 2023, and on 5,506 going back to 2011. 8770 lost 361 the same
+way. That is the zero-tolerance customer metric, missing on the model sitting
+at #1 on FOCUS with a 57.8% escape rate.
+
+Nothing looked broken, because every verdict column was intact. And it was
+worse than missing: the app reads that column back as `abs(value or 0.0)`, so
+a dropped magnitude re-entered charts and exports as **0.000 — a flawless
+part**.
+
+**Cause.** These files open with a six-point unmeasured lead-in, so the error
+array starts with NaN. The magnitude was taken with `max(abs(e) for e in
+errors)`, and Python's `max()` returns NaN when the *first* element is NaN —
+a NaN anywhere else is skipped and the answer comes out right. Pure positional
+lottery, and the DB agrees exactly: across 42,387 tracks since 2023, NaN at
+index 0 → magnitude NULL (3,314 tracks), NaN anywhere else → stored fine (2).
+
+**Pulling fixes every file processed from now on.** The measurements were
+never lost, so the old blanks are recomputable exactly from arrays already in
+the DB:
+
+```bash
+cp data/analysis.db data/analysis.db.bak-2026-08-31-pre-linerror-fix
+python scripts/backfill_linearity_error.py --dry-run
+python scripts/backfill_linearity_error.py
+```
+
+Recovers 7,766 magnitudes across 20 models (8232-1: 5,506). Rehearsed on a
+copy of the work DB — 400 recovered values checked against a fresh analyzer
+run, all identical to the last digit. It writes magnitude columns only, so
+**no verdict moves**; the code change was separately confirmed not to flip a
+single pass/fail across the 2,439 tracks it can touch.
+
+Expect 8232-1 to look bad rather than blank: median 2.3x spec, landing in the
+same distribution as the tracks that never broke. That is the real number, and
+it has been invisible for years.
+
+The script also names 1,842 older tracks (8084-2, 7458, 8531-1 — all pre-2023)
+it deliberately leaves alone: their `optimal_offset` is missing too, so they
+need reprocessing, not a backfill.
+
+### One number will move if you ever reprocess those older tracks
+
+Those same 1,842 tracks carry an **inflated fail-point count** today. When the
+offset came out NaN, every graded point compared as a failure, so the DB holds
+things like **71 fail points where the truth is 13**. The verdict was right
+(they really do fail) but the count is manufactured. Reprocessing corrects it;
+the backfill deliberately does not touch it, so nothing changes under your feet.
+
+Checked the whole blast radius against the work DB before committing: all
+9,633 NaN-carrying tracks re-run — **0 verdict changes, 0 tracks newly marked
+ERROR** — and 1,867 fail-point counts corrected downward (1,842 of them the
+NULL-offset set above, plus 25 that shift by one). On 2,317 NaN-free control
+tracks the new code is byte-for-byte identical to the old.
+
+The sweep now fails if any model ever grades tracks it cannot measure again.
+
 ## ⚡ 2026-08-30 night — trim-vs-FT numbers change, and a new stats table
 
 ### 1. Trim-vs-FT was reading the wrong file — the pull fixes most of it

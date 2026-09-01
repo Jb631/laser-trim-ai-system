@@ -1571,6 +1571,55 @@ def main() -> int:
         check("data quality: linearity_spec limit-column guard", False,
               f"{type(e).__name__}: {e}")
 
+    # ---- data quality: linearity error MAGNITUDE coverage (2026-08-31) -----
+    # Model 8232-1 recorded linearity_pass, fail_points, spec and offset on
+    # 3,108 tracks since 2023 and the error magnitude on NONE of them; 8770
+    # lost 206 more. Cause: analyzer took the magnitude with
+    # `max(abs(e) for e in errors)`, and Python's max() returns NaN when the
+    # FIRST element is NaN — these files open with a six-point unmeasured
+    # lead-in. The NaN was then coerced to None and stored as NULL. Nothing
+    # looked wrong because the disposition columns were all intact.
+    #
+    # That asymmetry IS the signature, so this check looks for exactly it:
+    # a model that grades its tracks but cannot say by how much. Anything
+    # that can be graded has a magnitude; if a model's magnitude coverage
+    # collapses while its pass/fail coverage stays complete, the number is
+    # being dropped somewhere and the zero-tolerance metric is blind.
+    try:
+        rows = raw.execute(
+            "SELECT a.model, COUNT(*) n,"
+            "       SUM(t.linearity_pass IS NOT NULL) graded,"
+            "       SUM(t.final_linearity_error_shifted IS NOT NULL) mag "
+            "FROM track_results t JOIN analysis_results a ON a.id = t.analysis_id "
+            "WHERE t.status != 'UNTRIMMED' AND a.file_date >= '2023-01-01' "
+            "GROUP BY a.model HAVING n >= 50").fetchall()
+        # Weak-assertion trap: an empty or tiny result set must not read green.
+        check("linearity magnitude: coverage scan examined real models",
+              len(rows) >= 20 and sum(r[1] for r in rows) > 10_000,
+              f"{len(rows)} models, {sum(r[1] for r in rows)} graded tracks")
+        blind = []
+        for model, n, graded, mag in rows:
+            # "Grades but cannot measure": >=90% dispositioned, <10% measured.
+            if graded >= 0.90 * n and mag < 0.10 * n:
+                blind.append(f"{model}: {graded}/{n} graded but only {mag} magnitudes")
+        check("linearity magnitude: no model grades tracks it cannot measure",
+              not blind,
+              "; ".join(blind) if blind
+              else f"{len(rows)} models all carry magnitudes where they carry verdicts")
+        # A softer companion: a real regression usually shows as a partial
+        # slide before it becomes a collapse, so surface those too.
+        thin = [f"{m}: {mag}/{n}" for m, n, graded, mag in rows
+                if graded >= 0.90 * n and 0.10 * n <= mag < 0.70 * n]
+        if thin:
+            warn(f"linearity magnitude: {len(thin)} model(s) measure under 70% "
+                 f"of the tracks they grade", "; ".join(thin))
+        else:
+            check("linearity magnitude: no model sits in the thin-coverage band",
+                  True, f"0 of {len(rows)} models between 10% and 70%")
+    except Exception as e:
+        check("linearity magnitude: coverage guard", False,
+              f"{type(e).__name__}: {e}")
+
     raw.close()
     return _tally()
 
