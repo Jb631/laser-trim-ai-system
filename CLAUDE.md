@@ -112,7 +112,8 @@ green once). New features get a sweep entry in the same commit.
 
 ### Database
 - SQLite at `./data/analysis.db`
-- User settings at `~/.laser_trim_analyzer/config.yaml`
+- User settings at `./data/config.yaml` (self-contained deployment — see
+  `config.py`; it is NOT under `~/.laser_trim_analyzer/`)
 
 ---
 

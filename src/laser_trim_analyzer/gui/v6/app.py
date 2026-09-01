@@ -159,7 +159,10 @@ class V6App(ctk.CTk):
         )
         self.page_container.add_page(
             "model",
-            ModelPage(self.page_container, theme=self.theme, app=self, page_title="Model"),
+            # Route key stays "model" (FOCUS rows and set_model_route navigate to
+            # it); only what the user reads says "Investigate", matching the nav.
+            ModelPage(self.page_container, theme=self.theme, app=self,
+                      page_title="Investigate"),
         )
         self.page_container.add_page(
             "settings",
