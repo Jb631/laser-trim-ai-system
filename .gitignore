@@ -143,6 +143,9 @@ Thumbs.db
 /data/
 /output/
 /logs/
+# QA harness scratch (chart_qa_render_all.py + app_qa_sweep.py). Regenerated
+# on every sweep; inspected, never committed.
+/qa_output/
 *.db
 *.db-journal
 /models/

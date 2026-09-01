@@ -94,6 +94,8 @@ after any change to charts, queries, exports, or page data-loaders:
 1. `python scripts/chart_qa_render_all.py` — renders every v6 chart across a
    real-data variant matrix (dense/sparse/single/stale models, fail-heavy and
    multi-track units). INSPECT the output PNGs; don't just check it ran.
+   Both harnesses write to `qa_output/` (gitignored) — a sweep must never
+   leave modified tracked files behind.
 2. `python scripts/app_qa_sweep.py` — 35+ feature/invariant checks (dashboard
    vs raw SQL, triage==preview, preset monotonicity, verdict-vs-failpoint
    consistency, export schemas/row counts, pipeline on test_files, ingest

@@ -10,6 +10,12 @@ matrix below so every change gets the same sweep — run it headless anywhere:
 The optional DB path is for machines where the work database is not at
 data/analysis.db — pass a COPY, never the original (it is opened read-write).
 
+Output defaults to qa_output/ at the repo root, which is gitignored: a QA run
+is scratch, and defaulting it into a tracked docs folder (as this did until
+2026-08-31) left ~25 rewritten PNGs in `git status` after every sweep, which
+trains you to ignore a dirty tree. docs/v6_design_review_2026-07-07/qa_sweep/
+stays as committed — a frozen snapshot of that review, not a live target.
+
 Variants: dense-batch model, sparse model, single-unit model, stale flagged
 model, smoothness-rich model, fail-heavy unit, multi-track unit, no-sweep
 unit, empty/None inputs. Output: PNGs + MANIFEST.txt listing what to inspect.
@@ -55,6 +61,8 @@ _tkagg.FigureCanvasTkAgg = FigureCanvasTkAgg
 sys.modules["matplotlib.backends.backend_tkagg"] = _tkagg
 
 REPO = Path(__file__).resolve().parents[1]
+# Scratch, gitignored, shared with app_qa_sweep.py. Never a tracked directory.
+QA_OUTPUT = REPO / "qa_output"
 sys.path.insert(0, str(REPO / "src"))
 
 from datetime import datetime  # noqa: E402
@@ -472,7 +480,6 @@ def main(out_dir: str, db_path: Path) -> int:
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else str(
-        REPO / "docs" / "v6_design_review_2026-07-07" / "qa_sweep")
+    target = sys.argv[1] if len(sys.argv) > 1 else str(QA_OUTPUT)
     db_arg = Path(sys.argv[2]) if len(sys.argv) > 2 else REPO / "data" / "analysis.db"
     raise SystemExit(main(target, db_arg))

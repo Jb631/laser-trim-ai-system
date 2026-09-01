@@ -12,6 +12,9 @@ through the app.
 The optional path is for machines where the work database is not at
 data/analysis.db — pass a COPY, never the original (this opens it read-write).
 
+The one artifact it writes (the evidence workbook it re-reads to check the
+export schema) lands in qa_output/ at the repo root, which is gitignored.
+
 Exit code = number of FAILs. WARNs are judgment items for review.
 """
 import sys
@@ -54,6 +57,11 @@ _tkagg.FigureCanvasTkAgg = FigureCanvasTkAgg
 sys.modules["matplotlib.backends.backend_tkagg"] = _tkagg
 
 REPO = Path(__file__).resolve().parents[1]
+# Scratch, gitignored, shared with chart_qa_render_all.py. Never a tracked
+# directory: until 2026-08-31 this pointed at docs/v6_design_review_2026-07-07/
+# qa_sweep/, so every sweep rewrote a committed workbook and the churn had to
+# be committed or reverted by hand. That review folder is now frozen.
+QA_OUTPUT = REPO / "qa_output"
 sys.path.insert(0, str(REPO / "src"))
 
 import sqlite3  # noqa: E402
@@ -1260,7 +1268,7 @@ def main() -> int:
     # ============ 6. EXPORTS ===================================================
     from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text
     import pandas as pd
-    out = REPO / "docs" / "v6_design_review_2026-07-07" / "qa_sweep"
+    out = QA_OUTPUT
     out.mkdir(parents=True, exist_ok=True)
     pack = export_evidence_pack(db, "6607", out / "qa_evidence_6607.xlsx")
     sheets = pd.read_excel(pack, sheet_name=None)
