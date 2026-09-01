@@ -154,8 +154,50 @@ SMOOTH_RICH = "7458-1"
 # Same five models app_qa_sweep.py exercises, so a shape that breaks a loader
 # and a shape that breaks a chart are found on the same data.
 VARIANTS = [DENSE, SPARSE, SINGLE, STALE, SMOOTH_RICH]
-FAIL_HEAVY_AID = 90636        # 8340-1 / SN 153
-MULTITRACK_AID = 88725        # 8074-1, 2 tracks
+# Unit fixtures are RESOLVED BY QUERY, never hard-coded.
+#
+# They used to be literal analysis ids with a model/serial in the comment, and
+# both had silently drifted: FAIL_HEAVY_AID=90636 ("8340-1 / SN 153") was in
+# fact SN 336 with ZERO fail points, and MULTITRACK_AID=88725 ("8074-1,
+# 2 tracks") was a SINGLE-track 8415-1. So the visual sweep rendered neither
+# the fail-marker path nor the track selector it exists to exercise, while
+# still producing two confident-looking PNGs. `analysis_results.id` is a
+# surrogate key — it moves whenever the database is rebuilt or reprocessed, so
+# any literal here is a fixture with an expiry date nobody can see.
+#
+# Resolving by the PROPERTY each fixture is named for makes drift impossible:
+# the fail-heavy unit is whichever unit has the most fail points, the
+# multi-track unit is one that genuinely has more than one track. Both raise
+# if the database holds no such unit, because rendering a substitute that
+# quietly lacks the property is the failure being fixed.
+
+def resolve_unit_fixtures(db):
+    """(fail_heavy_aid, multitrack_aid) for THIS database. Never guesses."""
+    from sqlalchemy import func
+
+    # Imported here, not at module scope: the GUI stubs at the top of this file
+    # must be installed before anything pulls in the package.
+    from laser_trim_analyzer.database.models import TrackResult as DBTR
+
+    with db.session() as s:
+        heavy = (s.query(DBTR.analysis_id,
+                         func.sum(func.coalesce(DBTR.linearity_fail_points, 0)).label("fp"))
+                 .group_by(DBTR.analysis_id)
+                 .having(func.sum(func.coalesce(DBTR.linearity_fail_points, 0)) > 0)
+                 .order_by(func.sum(func.coalesce(DBTR.linearity_fail_points, 0)).desc())
+                 .first())
+        multi = (s.query(DBTR.analysis_id)
+                 .group_by(DBTR.analysis_id)
+                 .having(func.count(DBTR.id) > 1)
+                 .order_by(func.count(DBTR.id).desc(), DBTR.analysis_id.desc())
+                 .first())
+    if heavy is None:
+        raise SystemExit("FATAL | no unit in this database has any fail points — "
+                         "the fail-marker rendering path cannot be exercised")
+    if multi is None:
+        raise SystemExit("FATAL | no multi-track unit in this database — "
+                         "the track selector cannot be exercised")
+    return int(heavy[0]), int(multi[0])
 
 
 def main(out_dir: str, db_path: Path) -> int:
@@ -308,8 +350,9 @@ def main(out_dir: str, db_path: Path) -> int:
             r = s.query(DBAR.serial, DBAR.file_date).filter(DBAR.id == aid).first()
         return str(r[0]), str(r[1]).split(" ")[0]
 
-    for aid, note in [(FAIL_HEAVY_AID, "fail-heavy unit (James's SN153)"),
-                      (MULTITRACK_AID, "multi-track unit (track selector target)")]:
+    fail_heavy_aid, multitrack_aid = resolve_unit_fixtures(db)
+    for aid, note in [(fail_heavy_aid, "fail-heavy unit (most fail points in this DB)"),
+                      (multitrack_aid, "multi-track unit (track selector target)")]:
         data = load_unit_track(db, aid)
         serial, fdate = unit_meta(aid)
         _k = data.get("optimal_slope") or 0.0
