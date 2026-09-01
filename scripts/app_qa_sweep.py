@@ -94,7 +94,7 @@ def check_ft_incremental_fastpath() -> None:
     # NULL (legacy) heals itself after one verification pass.
     import shutil, tempfile  # noqa: E402
     from laser_trim_analyzer.database import manager as _dbmod  # noqa: E402
-    from laser_trim_analyzer.gui.v6.pages.process_page import ProcessPage  # noqa: E402
+    from laser_trim_analyzer.core.ingest_run import discover_excel_files  # noqa: E402
     ft_src = sorted(p for p in (REPO / "Work Files" / "Sample_Base_2026-04-10"
                                 / "Test Station").rglob("*.xls*") if p.is_file())[:4]
     if ft_src:
@@ -111,7 +111,7 @@ def check_ft_incremental_fastpath() -> None:
                 # keeps the sequential one. Both must reach the same verdict.
                 proc = Processor(use_ml=False)
                 proc.config.processing.turbo_mode_threshold = turbo
-                files, stats = ProcessPage._discover(None, str(tmp))
+                files, stats = discover_excel_files(str(tmp))
                 files = [Path(f) for f in files if f.lower().endswith((".xls", ".xlsx"))]
                 gen = proc.process_batch(files, incremental=True, disk_stats=stats)
                 out = []
@@ -553,6 +553,100 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           == (DatabaseManager.ESCAPE, DatabaseManager.OVERKILL,
               DatabaseManager.AGREEMENT, DatabaseManager.AGREEMENT),
           "escape / overkill / agreement / agreement")
+
+
+def check_multi_folder_ingest() -> None:
+    """Home's one-click batch IS the Process page's batch (2026-08-31).
+
+    Standalone: real trim files, a throwaway DB, no work database needed.
+        python scripts/app_qa_sweep.py --only ingest
+
+    The contract this pins is the one a second implementation would break —
+    every folder attempted in order, a dead folder reported instead of
+    silently skipped, the counts adding up, and the second pass finding
+    nothing new because the first pass really saved.
+    """
+    import shutil, tempfile  # noqa: E402
+    from laser_trim_analyzer.config import Config  # noqa: E402
+    from laser_trim_analyzer.core.ingest_run import (  # noqa: E402
+        format_ingest_summary, run_folders)
+    from laser_trim_analyzer.core.parser import detect_file_type  # noqa: E402
+    from laser_trim_analyzer.database import manager as _dbmod  # noqa: E402
+    from laser_trim_analyzer.database.manager import DatabaseManager  # noqa: E402
+    from laser_trim_analyzer.database.models import AnalysisResult as DBAR  # noqa: E402
+
+    src = []
+    for p in sorted((REPO / "Work Files" / "Sample_Base_2026-04-10").rglob("*.xls*")):
+        if not p.is_file():
+            continue
+        try:
+            if detect_file_type(p) != "trim":
+                continue
+        except Exception:
+            continue
+        src.append(p)
+        if len(src) == 5:
+            break
+    if len(src) < 5:
+        warn("multi-folder ingest: fewer than 5 trim samples available")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="ltaqa_ingest_"))
+    saved_global = _dbmod._db_manager
+    try:
+        a, b = tmp / "laser_a", tmp / "laser_b"
+        a.mkdir(); b.mkdir()
+        for f in src[:3]:
+            shutil.copy2(f, a / f.name)
+        for f in src[3:]:
+            shutil.copy2(f, b / f.name)
+        offline = str(tmp / "offline_share")          # never created
+
+        cfg = Config()
+        cfg.database.path = tmp / "ingest_qa.db"
+        db = DatabaseManager(cfg.database.path)
+        # The processor reaches for the global manager for its incremental
+        # index; without this it would consult (and open) the real database.
+        _dbmod._db_manager = db
+
+        seen = []
+        rep = run_folders([str(a), offline, str(b)], db=db, config=cfg,
+                          incremental=True,
+                          on_folder_start=lambda i, n, f: seen.append(f))
+        check("multi-folder ingest: every folder attempted, in order",
+              seen == [str(a), offline, str(b)], f"{seen}")
+        check("multi-folder ingest: the dead folder is reported, not skipped",
+              [r.folder for r in rep.failed] == [offline]
+              and bool(rep.failed[0].error), f"{[r.error for r in rep.failed]}")
+        check("multi-folder ingest: a dead folder does not abort the rest",
+              rep.new_files == 5 and rep.results[0].new_files == 3
+              and rep.results[2].new_files == 2,
+              f"new_files={rep.new_files} per-folder="
+              f"{[r.new_files for r in rep.results]}")
+        with db.session() as s:
+            saved = s.query(DBAR.id).count()
+        check("multi-folder ingest: every processed file really landed in the DB",
+              saved == 5, f"rows={saved}")
+        line = format_ingest_summary(rep)
+        check("multi-folder ingest: the summary line counts and names the failure",
+              "3 folders" in line and "5 new files" in line and offline in line,
+              line)
+
+        rep2 = run_folders([str(a), str(b)], db=db, config=cfg, incremental=True)
+        with db.session() as s:
+            saved2 = s.query(DBAR.id).count()
+        check("multi-folder ingest: the second pass processes nothing new",
+              rep2.ok and rep2.new_files == 0 and saved2 == 5,
+              f"new_files={rep2.new_files} rows={saved2}")
+        check("multi-folder ingest: 'no new files' is what an idle run says",
+              "no new files" in format_ingest_summary(rep2),
+              format_ingest_summary(rep2))
+    except Exception as exc:
+        check("multi-folder ingest: shared pipeline contract", False,
+              f"{type(exc).__name__}: {exc}")
+    finally:
+        _dbmod._db_manager = saved_global
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main() -> int:
@@ -1017,6 +1111,7 @@ def main() -> int:
         warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
 
     check_ft_incremental_fastpath()
+    check_multi_folder_ingest()
 
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
@@ -1148,13 +1243,15 @@ def main() -> int:
         check("matcher: glued-letter variant normalizes (7953-1A → 7953-1)",
               _DM._normalize_model("7953-1A") == "7953-1"
               and _DM._normalize_model("8340-1") == "8340-1")
-        src = open(REPO / "src/laser_trim_analyzer/gui/v6/pages/process_page.py",
+        # The post-batch order lives in core/ingest_run.py since 2026-08-31
+        # (one pipeline behind both the Process page and Home).
+        src = open(REPO / "src/laser_trim_analyzer/core/ingest_run.py",
                    encoding="utf-8").read()
         # Compare against the advance CALL SITE, not the first mention — an
         # older comment names advance_drift_state above the rematch block.
         check("matcher: post-batch rematch wired BEFORE drift advance",
-              0 < src.find("rematch_unlinked_final_tests")
-              < src.find("advance_drift_state(self.app.db"))
+              0 < src.find("db.rematch_unlinked_final_tests")
+              < src.find("advance_drift_state(db, model="))
         # Domain invariant (James, 2026-07-13): trim ALWAYS precedes final
         # test. No linked pair anywhere in the real DB may have the trim
         # dated after the FT record (matcher date preference: file_date,
@@ -1437,7 +1534,8 @@ def _tally() -> int:
 # Sections that stand alone (own temp DB, no work database needed), so they
 # can be run on a machine that has no copy of the real data:
 #     python scripts/app_qa_sweep.py --only ft-fastpath
-STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath}
+STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
+              "ingest": check_multi_folder_ingest}
 
 
 if __name__ == "__main__":
