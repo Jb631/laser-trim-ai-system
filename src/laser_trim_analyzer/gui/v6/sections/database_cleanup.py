@@ -228,3 +228,58 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
     ctk.CTkButton(parent, text="Recompute unit statuses", command=_recompute_statuses,
                   fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
                   corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+
+    def _fix_missing_tracks():
+        """Re-parse records whose track measurements are missing.
+
+        The prerequisite for 'Recompute unit statuses' above, which skips rows
+        with NULL pass flags. Until now this tool only existed on the V5
+        Compare page, so V6 told users to run something V6 did not have; the
+        loop itself lives in core.track_repair and is shared by both.
+
+        Count off-thread → confirm on the Tk thread → repair off-thread. The
+        source workbooks live on the plant share, so off the work network
+        every record reports 'source unreachable' rather than failing.
+        """
+        from tkinter import messagebox
+        from laser_trim_analyzer.core.track_repair import repair_missing_tracks
+
+        status.configure(text="Finding records with missing tracks…")
+
+        def runner():
+            try:
+                n_ft = len(db.get_final_tests_missing_tracks())
+                n_trim = len(db.get_trim_records_missing_tracks(linked_only=False))
+            except Exception as exc:
+                post_ui(app, lambda: status.winfo_exists() and status.configure(
+                    text=f"Error: {exc}"))
+                return
+
+            def confirm_and_run():
+                if not status.winfo_exists():
+                    return
+                if not (n_ft or n_trim):
+                    status.configure(text="No records need fixing.")
+                    return
+                if not messagebox.askyesno(
+                        "Fix missing tracks",
+                        f"Re-parse {n_ft + n_trim} record(s) with missing track "
+                        f"measurements ({n_ft} Final Test, {n_trim} Trim)?\n\n"
+                        f"Each one is read again from its source workbook on the "
+                        f"plant share and its tracks are rewritten. Off the work "
+                        f"network the sources are unreachable and nothing is "
+                        f"changed.\n\nThis can take several minutes."):
+                    return
+
+                def on_progress(done, total, phase):
+                    post_ui(app, lambda: status.winfo_exists() and status.configure(
+                        text=f"Re-parsing {phase} {done}/{total}…"))
+
+                _async(lambda: repair_missing_tracks(
+                    db=db, progress=on_progress, linked_only=False).summary())
+            post_ui(app, confirm_and_run)
+        threading.Thread(target=runner, daemon=True).start()
+
+    ctk.CTkButton(parent, text="Fix missing tracks", command=_fix_missing_tracks,
+                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))

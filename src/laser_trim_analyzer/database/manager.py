@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Iterator, Tuple
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, exists, func, and_, or_, desc, text, case, select
+from sqlalchemy import (create_engine, exists, func, and_, or_, desc, text, case, select,
+                        cast, Text)
 from sqlalchemy.orm import sessionmaker, Session, joinedload, subqueryload
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -102,6 +103,30 @@ def _model_sort_key(model: str) -> tuple:
     base = model.split('-')[0] if model else ''
     num = int(''.join(c for c in base if c.isdigit()) or '0')
     return (num, model)
+
+
+# Raw column texts that SafeJSON.process_result_value decodes to "no array".
+# SafeJSON binds Python None through SQLAlchemy's JSON type, which writes the
+# JSON literal 'null' (4 characters of text) rather than SQL NULL — so an
+# `IS NULL` test alone misses the overwhelming majority of array-less rows.
+# Keep this list in sync with SafeJSON.process_result_value.
+_EMPTY_JSON_TEXTS = ('', 'null', 'NULL', 'None', '[]', '{}')
+
+# Statuses that represent a customer-facing disposition. A gradeable row is
+# claiming a verdict, so it owes us the measurement the verdict came from.
+GRADEABLE_STATUS_NAMES = (DBStatusType.PASS.name,
+                          DBStatusType.WARNING.name,
+                          DBStatusType.FAIL.name)
+
+
+def json_array_absent(column) -> Any:
+    """SQL predicate: this SafeJSON column holds no usable array.
+
+    True for SQL NULL *and* for the stored JSON literal 'null' / '[]' / ''.
+    Use this instead of `column.is_(None)` anywhere array presence matters —
+    a bare IS NULL check silently reads array-less rows as populated.
+    """
+    return or_(column.is_(None), cast(column, Text).in_(_EMPTY_JSON_TEXTS))
 
 
 def _status_matches(status: Any, *targets: DBStatusType) -> bool:
@@ -6275,7 +6300,32 @@ class DatabaseManager:
 
     def get_trim_records_missing_tracks(self, linked_only: bool = True) -> List[Dict[str, Any]]:
         """
-        Get Trim (AnalysisResult) records that have no track data stored.
+        Get Trim (AnalysisResult) records whose track measurements are missing.
+
+        Two shapes count as missing, and re-parsing the source file is the
+        repair for both:
+
+        1. ZERO track rows — the record was stored before track persistence
+           existed, so there is nothing to plot or re-grade.
+        2. Every track row present but ALL of them array-less (position_data
+           and error_data both decode to nothing) while the parent carries a
+           gradeable status. That is a unit claiming a PASS/WARNING/FAIL
+           disposition with no measurement anywhere behind it.
+
+        UNTRIMMED and ERROR parents are excluded from shape 2 ON PURPOSE.
+        Array-lessness is the *expected* state for both: an UNTRIMMED file is
+        a test sweep with no laser-trim run (the parser deliberately moves its
+        sweep into untrimmed_positions/untrimmed_errors and clears the trimmed
+        arrays — see LaserTrimParser._parse_untrimmed_only_track), and an
+        ERROR row never got far enough to measure anything. On the work
+        database those two account for ~5,666 of the ~5,811 array-less track
+        rows; flagging them would bury any genuine defect in by-design noise
+        and would send the repair tool off to re-parse thousands of files
+        that would come back byte-identical.
+
+        Partial data is likewise NOT missing: a multi-track unit with one real
+        track and one array-less track keeps its measurement and its verdict,
+        so it is left alone. Re-parsing it would rewrite good rows.
 
         Args:
             linked_only: If True, only return records that are linked to Final Tests
@@ -6284,24 +6334,38 @@ class DatabaseManager:
             List of record info dicts with id, filename, file_path, model, serial
         """
         with self.session() as session:
-            # Subquery to count tracks per analysis
+            # Per-analysis track census: how many rows, and how many of those
+            # carry no arrays at all.
             track_count_subq = (
                 session.query(
                     DBTrackResult.analysis_id,
-                    func.count(DBTrackResult.id).label('track_count')
+                    func.count(DBTrackResult.id).label('track_count'),
+                    func.sum(
+                        case(
+                            (and_(json_array_absent(DBTrackResult.position_data),
+                                  json_array_absent(DBTrackResult.error_data)), 1),
+                            else_=0,
+                        )
+                    ).label('empty_track_count'),
                 )
                 .group_by(DBTrackResult.analysis_id)
                 .subquery()
             )
 
-            # Base query for analyses with no tracks
+            no_tracks = or_(
+                track_count_subq.c.track_count == None,  # noqa: E711 (SQL NULL)
+                track_count_subq.c.track_count == 0,
+            )
+            all_tracks_empty = and_(
+                track_count_subq.c.track_count > 0,
+                track_count_subq.c.track_count == track_count_subq.c.empty_track_count,
+                DBAnalysisResult.overall_status.in_(GRADEABLE_STATUS_NAMES),
+            )
+
             query = (
                 session.query(DBAnalysisResult)
                 .outerjoin(track_count_subq, DBAnalysisResult.id == track_count_subq.c.analysis_id)
-                .filter(
-                    (track_count_subq.c.track_count == None) |
-                    (track_count_subq.c.track_count == 0)
-                )
+                .filter(or_(no_tracks, all_tracks_empty))
             )
 
             if linked_only:

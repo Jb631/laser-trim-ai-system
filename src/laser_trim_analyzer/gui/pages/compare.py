@@ -1235,118 +1235,26 @@ Match: {method_label} ({confidence_str})"""
         self._load_comparisons()
 
     def _fix_missing_tracks(self):
-        """Re-parse Final Test and Trim files that have missing track data."""
-        from pathlib import Path
-        from laser_trim_analyzer.core.final_test_parser import FinalTestParser
-        from laser_trim_analyzer.core.processor import Processor
+        """Re-parse Final Test and Trim files that have missing track data.
+
+        The loop itself lives in core.track_repair so this page and the V6
+        Settings maintenance section share one repair path.
+        """
+        from laser_trim_analyzer.core.track_repair import repair_missing_tracks
 
         self.fix_tracks_btn.configure(state="disabled", text="Fixing...")
         self.count_label.configure(text="Finding records with missing tracks...")
 
         def fix():
             try:
-                db = get_database()
-                ft_parser = FinalTestParser()
-                trim_processor = Processor(use_ml=False)
-
-                fixed_ft = 0
-                failed_ft = 0
-                fixed_trim = 0
-                failed_trim = 0
-
-                # Phase 1: Fix Final Test tracks
-                ft_missing = db.get_final_tests_missing_tracks()
-                total_ft = len(ft_missing)
-
-                for i, record in enumerate(ft_missing):
-                    self.after(0, lambda c=i+1, t=total_ft: self._update_fix_progress(c, t, "Final Test"))
-
-                    file_path = Path(record["file_path"]) if record.get("file_path") else None
-                    if not file_path or not file_path.exists():
-                        model = record.get("model", "")
-                        filename = record.get("filename", "")
-                        alt_path = Path(f"test_files/Final Test files/{model}/{filename}")
-                        if alt_path.exists():
-                            file_path = alt_path
-                        else:
-                            logger.warning(f"Final Test file not found: {record.get('file_path')}")
-                            failed_ft += 1
-                            continue
-
-                    try:
-                        result = ft_parser.parse_file(file_path)
-                        tracks = result.get("tracks", [])
-                        if tracks and db.update_final_test_tracks(record["id"], tracks):
-                            fixed_ft += 1
-                        else:
-                            failed_ft += 1
-                    except Exception as e:
-                        logger.error(f"Error fixing Final Test {record.get('filename')}: {e}")
-                        failed_ft += 1
-
-                # Phase 2: Fix Trim tracks (linked ones only)
-                # Note: Some "Trim" records may actually point to Final Test files
-                # if the original data was imported incorrectly. We'll try both parsers.
-                trim_missing = db.get_trim_records_missing_tracks(linked_only=True)
-                total_trim = len(trim_missing)
-
-                for i, record in enumerate(trim_missing):
-                    self.after(0, lambda c=i+1, t=total_trim: self._update_fix_progress(c, t, "Trim"))
-
-                    file_path = Path(record["file_path"]) if record.get("file_path") else None
-                    if not file_path or not file_path.exists():
-                        model = record.get("model", "")
-                        filename = record.get("filename", "")
-                        # Try common locations
-                        for base in ["test_files/System A test files", "test_files/System B test files",
-                                     "test_files/Final Test files"]:
-                            alt_path = Path(base) / model / filename
-                            if alt_path.exists():
-                                file_path = alt_path
-                                break
-                        else:
-                            logger.warning(f"Trim file not found: {record.get('file_path')}")
-                            failed_trim += 1
-                            continue
-
-                    try:
-                        # Try Trim processor first — this is a trim record so
-                        # the file is most likely a trim file.
-                        analysis = trim_processor.process_file(file_path)
-                        if analysis and analysis.tracks:
-                            if db.update_trim_tracks(record["id"], analysis.tracks):
-                                fixed_trim += 1
-                                continue
-                            else:
-                                failed_trim += 1
-                                continue
-
-                        # Only fall back to FT parsing if trim processing
-                        # returned no tracks (some "Trim" records genuinely
-                        # point to FT files due to mis-classification)
-                        ft_result = ft_parser.parse_file(file_path)
-                        ft_tracks = ft_result.get("tracks", [])
-
-                        if ft_tracks:
-                            track_data = db.update_trim_tracks_from_final_test(record["id"], ft_tracks)
-                            if track_data:
-                                fixed_trim += 1
-                                continue
-
-                        logger.warning(f"No tracks from re-processing {record.get('filename')}")
-                        failed_trim += 1
-                    except Exception as e:
-                        logger.error(f"Error fixing Trim {record.get('filename')}: {e}")
-                        failed_trim += 1
-
-                # Report results
-                total_fixed = fixed_ft + fixed_trim
-                total_failed = failed_ft + failed_trim
+                report = repair_missing_tracks(
+                    db=get_database(),
+                    progress=lambda c, t, phase: self.after(
+                        0, lambda c=c, t=t, p=phase: self._update_fix_progress(c, t, p)),
+                )
                 self.after(0, lambda: self._fix_complete(
-                    total_fixed, total_failed,
-                    details=f"FT:{fixed_ft}/{fixed_ft+failed_ft}, Trim:{fixed_trim}/{fixed_trim+failed_trim}"
-                ))
-
+                    report.repaired, report.failed + report.unreachable,
+                    details=report.summary()))
             except Exception as e:
                 logger.exception(f"Error in fix missing tracks: {e}")
                 self.after(0, lambda: self._fix_complete(0, 0, str(e)))
