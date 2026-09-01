@@ -190,12 +190,11 @@ class ModelAlertSummary:
     alert_type: AlertType
     worst_metric: str
     magnitude: float
-    # Signed shift of the recent data from baseline, in std-dev units:
-    # (recent_mean - baseline_mean) / baseline_std on the worst metric. This is the
-    # honest, human-readable "how far has it actually moved" number — unlike
-    # `magnitude` (CUSUM/EWMA distance past the control limit), which can read in the
-    # hundreds for a sub-1σ shift. None when recent data isn't available to confirm.
-    sigma_shift: Optional[float] = None
+    # A `sigma_shift` field lived here until 2026-08-31. Only get_triage_alerts
+    # ever populated it and only its ordering helper ever read it; both went
+    # when the FOCUS list replaced that feed. The equivalent "how far has it
+    # actually moved" number is computed where it is still shown — evidence.py
+    # `_sigma_shift` for the export, and the detector's own worst-metric pick.
 
 
 @dataclass

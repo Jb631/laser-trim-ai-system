@@ -732,10 +732,11 @@ def main() -> int:
           all(0 <= r_ <= 100 for r_ in rates), f"n={len(rates)}")
 
     # ============ 3. FOCUS LIST: the SPC invariants the page now rests on ====
-    # Replaces the get_triage_alerts checks (2026-08-29): the Triage page ranks
-    # models from `compute_focus_list` now, so THESE are the invariants a
-    # regression would break. The promise being guarded is that every row can
-    # point at the lot in its own series that put it there.
+    # Replaces the σ-alert-feed checks that stood here until 2026-08-29 (that
+    # feed was deleted 2026-08-31): the Triage page ranks models from
+    # `compute_focus_list` now, so THESE are the invariants a regression would
+    # break. The promise being guarded is that every row can point at the lot
+    # in its own series that put it there.
     from laser_trim_analyzer.ml.manager import (
         list_known_models, active_model_set,
         preview_alert_count, get_model_drift_status)
@@ -813,8 +814,9 @@ def main() -> int:
                 mismatched.append(e.model)
         check("focus: row numbers recompute from the row's own series (1e-9)",
               not mismatched, f"offenders={mismatched[:5]}")
-        # (e) A verdict about a model that isn't in the data is a phantom. This
-        # is the invariant whose get_triage_alerts version failed on this DB.
+        # (e) A verdict about a model that isn't in the data is a phantom. The
+        # old σ-alert-feed version of this invariant failed on this DB, which is
+        # why it is still asserted here after that feed was removed.
         db_models = {r[0] for r in raw.execute(
             "SELECT DISTINCT model FROM analysis_results WHERE model IS NOT NULL")}
         listed = {e.model for e in res_a.focus} | {e.model for e in res_a.chronic}

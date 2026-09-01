@@ -7,7 +7,8 @@ metric that put the model there; clicking a browse row deep-links with the
 model only.
 
 2026-08-29 redesign — this page used to render a wall of per-model σ cards fed
-by `get_triage_alerts`. The wall had no order anyone could act on and it never
+by a drift-alert accessor in ml/manager.py (deleted 2026-08-31 once this page
+stopped being its caller). The wall had no order anyone could act on and it never
 cleared itself, so the first question every morning ("what do I work on?")
 still needed a human sort. `compute_focus_list` now owns both halves of that
 answer: MEMBERSHIP (a model is listed only while one of its last RECENT_K lots

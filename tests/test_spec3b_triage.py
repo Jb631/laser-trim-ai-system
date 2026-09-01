@@ -94,38 +94,15 @@ def test_list_known_models_single_query_no_per_model_status(tmp_path, monkeypatc
     assert calls["n"] == 0  # tiers come from get_drifting_models, not per-model status
 
 
-# ---- Task 2: triage alert ordering ---------------------------------------
-# The v6 Triage page no longer renders these summaries — the FOCUS list took
-# that surface on 2026-08-29 — but `get_triage_alerts` still feeds the drift
-# table and the v5 pages, so its ordering rules stay under test here.
-
-
-def _summary(model="8340-1", tier=None, metric="untrimmed_resistance", mag=4.2, alert=None, shift=4.2):
-    from laser_trim_analyzer.ml.drift_types import AlertType, DriftTier, ModelAlertSummary
-    return ModelAlertSummary(model=model, tier=tier or DriftTier.DRIFT,
-                             alert_type=alert or AlertType.STEP_CHANGE,
-                             worst_metric=metric, magnitude=mag, sigma_shift=shift)
-
-
-def test_order_triage_alerts_tier_first_then_shift():
-    """Tier stays the primary key (worst on top); |shift| only reorders WITHIN a tier."""
-    from laser_trim_analyzer.ml.manager import _order_triage_alerts
-    from laser_trim_analyzer.ml.drift_types import DriftTier
-    a = _summary(model="DRIFT_BIG", tier=DriftTier.DRIFT, shift=9.0)
-    b = _summary(model="OOC_SMALL", tier=DriftTier.OUT_OF_CONTROL, shift=0.2)
-    c = _summary(model="DRIFT_SMALL", tier=DriftTier.DRIFT, shift=1.0)
-    ordered = [x.model for x in _order_triage_alerts([a, b, c])]
-    # OOC outranks both DRIFTs despite a tiny shift; within DRIFT, bigger shift leads.
-    assert ordered == ["OOC_SMALL", "DRIFT_BIG", "DRIFT_SMALL"]
-
-
-def test_order_triage_alerts_gate_hides_below_threshold():
-    from laser_trim_analyzer.ml.manager import _order_triage_alerts
-    from laser_trim_analyzer.ml.drift_types import DriftTier
-    big = _summary(model="BIG", tier=DriftTier.DRIFT, shift=3.0)
-    tiny = _summary(model="TINY", tier=DriftTier.DRIFT, shift=0.1)
-    assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=0.0)] == ["BIG", "TINY"]
-    assert [x.model for x in _order_triage_alerts([big, tiny], min_sigma_shift=1.0)] == ["BIG"]
+# ---- Task 2: triage alert ordering — REMOVED 2026-08-31 -------------------
+# Two tests lived here for the σ-alert ordering helper. The comment above them
+# claimed the feed "still feeds the drift table and the v5 pages"; a grep for
+# call sites across src/, scripts/ and tests/ found none — the FOCUS list had
+# taken the only surface on 2026-08-29 and nothing replaced the caller. The
+# feed, its ordering helper and these two tests were deleted together. What the
+# tests protected (worst tier on top) still holds where it is still used: the
+# detector's own worst-metric pick in multi_metric_drift_detector.py, and the
+# FOCUS ordering asserted in test_focus_list_zone.py and the sweep.
 
 
 # ---- Task 4: BrowseZone ---------------------------------------------------
