@@ -62,6 +62,26 @@ def _offset_verdict_note(fail_points, errors, upper_limits, lower_limits,
         return None, None
     from laser_trim_analyzer.export.unit_chart import corrected_errors
 
+    # Unmeasured points come first: no offset can clear a point that was never
+    # measured, and the feasibility solver below cannot see them (every NaN
+    # comparison is False). Without this branch a track failing ONLY on
+    # unmeasured points fell through to the "an offset WOULD clear every point
+    # — reprocess" note, which is both wrong and alarming.
+    unmeasured = unmeasured_points(errors, upper_limits, lower_limits,
+                                   0.0, k, theory)
+    if unmeasured:
+        n = len(unmeasured)
+        others = len(fail_points) - n
+        return (f"{n} point{'s' if n != 1 else ''} could not be measured "
+                f"(position recorded, no error value). A zero-tolerance spec "
+                f"cannot show an unmeasured point is in spec, so "
+                f"{'they are' if n != 1 else 'it is'} counted as "
+                f"{'failures' if n != 1 else 'a failure'} — no offset can "
+                f"clear {'them' if n != 1 else 'it'}."
+                + (f" {others} further point{'s' if others != 1 else ''} "
+                   "measured out of band." if others > 0 else ""),
+                None)
+
     errors = corrected_errors(errors, 0.0, k, theory)
     fz = compute_offset_feasibility(errors, upper_limits, lower_limits)
     if fz is None:
@@ -129,9 +149,9 @@ def ft_reconciled_verdict(data):
 
 def compute_fail_points(errors, upper_limits, lower_limits,
                         offset: float = 0.0, k: float = 0.0,
-                        theory=None) -> List[int]:
-    """Indices where the CORRECTED post-trim error violates the per-point spec
-    band (zero-tolerance, Q1).
+                        theory=None, exclude_indices=None) -> List[int]:
+    """Every graded index the analyzer counts as a fail — out-of-band
+    measurements AND unmeasured points (zero-tolerance, Q1).
 
     The adjustment is `error + theory*k + offset` — the analyzer's grading of
     record. `offset` is the stored optimal_offset and `k` the stored
@@ -139,18 +159,30 @@ def compute_fail_points(errors, upper_limits, lower_limits,
     points' on units whose corrected trace is in spec (X markers contradicting
     'Linearity Pass: YES', found by the 2026-07-07 QA sweep on unit 8074-1/30).
     Dropping k re-introduced that same contradiction from the other side —
-    18 phantom fail points on a passing 8415-1 SN 26 (2026-08-31)."""
-    from laser_trim_analyzer.export.unit_chart import corrected_errors
+    18 phantom fail points on a passing 8415-1 SN 26 (2026-08-31).
 
-    out = []
-    for i, e in enumerate(corrected_errors(errors, offset, k, theory)):
-        if e is None:
-            continue
-        up = upper_limits[i] if upper_limits and i < len(upper_limits) else None
-        lo = lower_limits[i] if lower_limits and i < len(lower_limits) else None
-        if (up is not None and e > up) or (lo is not None and e < lo):
-            out.append(i)
-    return out
+    A point with NO measured error is counted here, exactly as the analyzer
+    counts it: the returned list is the count of record, so callers that only
+    take len() stay right. Renderers must ALSO ask unmeasured_points() to draw
+    those indices with their own marker — there is no y to put an X at.
+    Grading now lives in ONE place (export.unit_chart.classify_graded_points)
+    so the count and the markers cannot drift apart again."""
+    from laser_trim_analyzer.export.unit_chart import classify_graded_points
+
+    out_of_band, unmeasured = classify_graded_points(
+        errors, upper_limits, lower_limits, offset, k, theory, exclude_indices)
+    return sorted(out_of_band + unmeasured)
+
+
+def unmeasured_points(errors, upper_limits, lower_limits,
+                      offset: float = 0.0, k: float = 0.0,
+                      theory=None, exclude_indices=None) -> List[int]:
+    """The graded indices with no error value — the subset of
+    compute_fail_points() that must be drawn WITHOUT a y coordinate."""
+    from laser_trim_analyzer.export.unit_chart import classify_graded_points
+
+    return classify_graded_points(
+        errors, upper_limits, lower_limits, offset, k, theory, exclude_indices)[1]
 
 
 def ft_best_fit_offset(errors, upper_limits, lower_limits) -> float:
@@ -337,6 +369,9 @@ class UnitChartModal(ctk.CTkToplevel):
         fp = compute_fail_points(data["error_data"], data["upper_limits"], data["lower_limits"],
                                  offset=data.get("optimal_offset") or 0.0,
                                  k=_k, theory=_theory)
+        unmeasured = unmeasured_points(
+            data["error_data"], data["upper_limits"], data["lower_limits"],
+            offset=data.get("optimal_offset") or 0.0, k=_k, theory=_theory)
         note, binding = _offset_verdict_note(
             fp, data["error_data"], data["upper_limits"], data["lower_limits"],
             k=_k, theory=_theory)
@@ -352,7 +387,8 @@ class UnitChartModal(ctk.CTkToplevel):
             k=_k, theory_data=_theory,
             trim_improvement_percent=data.get("trim_improvement_percent"),
             trim_date=str(unit.get("file_date", "")).split(" ")[0] or None,
-            fail_points=fp, title=title, serial_number=str(unit.get("serial", "")),
+            fail_points=fp, unmeasured_points=unmeasured,
+            title=title, serial_number=str(unit.get("serial", "")),
             verdict_note=note, binding_points=binding)
         self._save_btn.configure(state="normal")
 

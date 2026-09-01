@@ -200,6 +200,179 @@ def test_load_unit_track_carries_rotation_terms(tmp_path):
     assert data.get("theory_data") == pytest.approx(_THEORY)
 
 
+# ---------------------------------------------------------------------------
+# UNMEASURED POINTS (2026-08-31). The analyzer counts a NaN error at a spec'd
+# index as a FAIL — on a zero-tolerance spec you cannot show an unmeasured
+# point is in spec. The renderers skipped NaN silently (a NaN y is dropped by
+# matplotlib and NaN comparisons are always False), so the drawn marker count
+# and the stored linearity_fail_points disagreed on 597 gradeable tracks.
+# The x POSITION of such a point is known — only its y is missing — so it can
+# be marked honestly at the axis line instead of being invented or dropped.
+# ---------------------------------------------------------------------------
+_NAN = float("nan")
+# index 3: measured position, no error value -> unmeasured, counted as fail
+# index 6: a genuine out-of-band measurement -> ordinary fail
+_NAN_ERRORS = [0.0, 0.0, 0.0, _NAN, 0.0, 0.0, 0.05, 0.0]
+_NAN_UPPER = [0.025] * 8
+_NAN_LOWER = [-0.025] * 8
+
+
+def _analyzer_count(errors, upper, lower):
+    """What the analyzer of record counts on these arrays."""
+    from laser_trim_analyzer.core.analyzer import Analyzer
+
+    return Analyzer()._count_fail_points(errors, upper, lower)
+
+
+def test_unmeasured_in_band_point_is_counted_as_a_fail():
+    """A NaN error at a spec'd index counts, and matches the analyzer exactly.
+
+    Fails while compute_fail_points lets NaN slip through its comparisons.
+    """
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
+
+    fp = compute_fail_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER)
+    assert fp == [3, 6]
+    assert len(fp) == _analyzer_count(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER)
+
+
+def test_unmeasured_points_helper_names_only_the_unmeasured():
+    """The renderer needs the unmeasured subset separately: it is drawn with
+    its own marker (no y value to place an X at)."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import unmeasured_points
+
+    assert unmeasured_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER) == [3]
+
+
+def test_unmeasured_outside_the_graded_band_stays_excluded():
+    """No limits at that index = the analyzer never graded it. Mirror that
+    exactly: not counted, and not drawn."""
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        compute_fail_points, unmeasured_points)
+
+    for absent in (None, _NAN):
+        upper = list(_NAN_UPPER)
+        lower = list(_NAN_LOWER)
+        upper[3] = lower[3] = absent
+        assert compute_fail_points(_NAN_ERRORS, upper, lower) == [6], absent
+        assert unmeasured_points(_NAN_ERRORS, upper, lower) == [], absent
+        assert _analyzer_count(_NAN_ERRORS, upper, lower) == 1, absent
+
+
+def test_unmeasured_classification_follows_the_correction():
+    """Classification runs on the CORRECTED trace, like the analyzer's count.
+
+    A NaN error stays NaN through `error + theory*k + offset`, so it is
+    unmeasured at any offset; a measured point can move in or out of band.
+    """
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        compute_fail_points, unmeasured_points)
+
+    # +0.03 pushes index 6 (0.05) further out and lifts nothing into failure.
+    fp = compute_fail_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER, offset=0.03)
+    assert 3 in fp and 6 in fp
+    assert unmeasured_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER, offset=0.03) == [3]
+
+
+def test_export_document_marks_names_and_counts_unmeasured_points():
+    """The print document must mark the unmeasured point at its real x, name
+    it in the legend, and say how many there are — never drop it silently."""
+    from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
+
+    data = {
+        "position_data": [float(i) for i in range(8)],
+        "error_data": _NAN_ERRORS,
+        "upper_limits": _NAN_UPPER, "lower_limits": _NAN_LOWER,
+        "optimal_offset": 0.0, "linearity_pass": False, "sigma_pass": True,
+    }
+    fp = compute_fail_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER)
+    fig = build_unit_export_figure({"model": "M", "serial": "1", "n_tracks": 1},
+                                   data, fail_points=fp, kind="trim")
+
+    labels = [(c.get_label() or "") for c in fig.axes[0].collections]
+    named = [l for l in labels if "nmeasured" in l]
+    assert named, f"no unmeasured marker drawn; collections: {labels}"
+    assert "fail" in named[0].lower(), (
+        f"legend must say the unmeasured point is counted as a failure: {named[0]!r}")
+
+    # Marked at its real x position — the position IS known.
+    marked = [tuple(p) for c in fig.axes[0].collections
+              if "nmeasured" in (c.get_label() or "") for p in c.get_offsets()]
+    assert any(abs(x - 3.0) < 1e-9 for x, _y in marked), marked
+
+    txt = _texts(fig)
+    assert "Fail Points: 2" in txt, [t for t in txt if "Fail" in t]
+    assert any(t.startswith("Unmeasured:") and "1" in t for t in txt), (
+        [t for t in txt if "nmeasured" in t])
+
+
+def test_export_document_says_nothing_when_nothing_is_unmeasured():
+    """No NaN -> no extra marker and no extra line (the common case stays clean)."""
+    from laser_trim_analyzer.export.unit_chart import build_unit_export_figure
+
+    data = {
+        "position_data": [float(i) for i in range(8)],
+        "error_data": [0.0] * 8,
+        "upper_limits": _NAN_UPPER, "lower_limits": _NAN_LOWER,
+        "optimal_offset": 0.0, "linearity_pass": True, "sigma_pass": True,
+    }
+    fig = build_unit_export_figure({"model": "M", "serial": "1", "n_tracks": 1},
+                                   data, fail_points=[], kind="trim")
+    assert not [c for c in fig.axes[0].collections
+                if "nmeasured" in (c.get_label() or "")]
+    assert not [t for t in _texts(fig) if t.startswith("Unmeasured:")]
+
+
+def test_screen_chart_marks_unmeasured_points_distinctly():
+    """The on-screen chart marks them too, apart from the red fail X, and
+    without inventing a y value."""
+    import customtkinter as ctk
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        compute_fail_points, unmeasured_points)
+
+    root = ctk.CTk()
+    try:
+        from laser_trim_analyzer.gui.widgets.chart import ChartWidget
+
+        chart = ChartWidget(root)
+        chart.plot_error_vs_position(
+            positions=[float(i) for i in range(8)],
+            trimmed_errors=_NAN_ERRORS,
+            upper_limits=_NAN_UPPER, lower_limits=_NAN_LOWER,
+            fail_points=compute_fail_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER),
+            unmeasured_points=unmeasured_points(_NAN_ERRORS, _NAN_UPPER, _NAN_LOWER),
+        )
+        ax = chart.figure.axes[0]
+        marks = [c for c in ax.collections if "nmeasured" in (c.get_label() or "")]
+        assert marks, [c.get_label() for c in ax.collections]
+        xs = [p[0] for p in marks[0].get_offsets()]
+        assert any(abs(x - 3.0) < 1e-9 for x in xs), xs
+        # Hollow marker: it must not read as a measured fail point.
+        assert marks[0].get_facecolors().size == 0 or \
+            marks[0].get_facecolors()[0][3] == 0.0
+    finally:
+        root.destroy()
+
+
+def test_verdict_note_explains_unmeasured_instead_of_blaming_the_offset():
+    """A fail made of unmeasured points is not an offset problem.
+
+    Before this fix the feasibility solver ignored NaN, so a track failing
+    only on unmeasured points produced the alarming "an offset WOULD clear
+    every point — reprocess" note.
+    """
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        _offset_verdict_note, compute_fail_points)
+
+    errors = [0.0, 0.0, _NAN, 0.0]
+    upper, lower = [0.025] * 4, [-0.025] * 4
+    fp = compute_fail_points(errors, upper, lower)
+    note, binding = _offset_verdict_note(fp, errors, upper, lower)
+    assert note and "unmeasured" in note.lower(), note
+    assert "WOULD clear every point" not in note, note
+
+
 def test_loaded_track_reproduces_stored_analyzer_verdict(tmp_path):
     """End-to-end: what load_unit_track returns, fed to compute_fail_points,
     must reproduce the analyzer's STORED fail-point count.

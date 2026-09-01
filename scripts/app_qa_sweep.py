@@ -997,7 +997,8 @@ def main() -> int:
     # tolerated the exact defect it existed to catch: 831 units rendering
     # "Fail Points: N" beside "Linearity Pass: YES" (2026-08-31, found on
     # 8415-1 SN 26). Weak assertions are forbidden in this sweep.
-    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
+    from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import (
+        compute_fail_points, unmeasured_points)
     from laser_trim_analyzer.export.unit_chart import (
         build_unit_export_figure, corrected_errors)
     import json as _json
@@ -1016,20 +1017,36 @@ def main() -> int:
     checked = rot_checked = 0
     rot_bad: list = []
     mag_bad: list = []
-    nan_skipped = legacy_bad = 0
+    nan_checked = nan_inband = nan_offset_null = legacy_bad = 0
+    nan_bad: list = []
     for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
         try:
             err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
             if not err_l or not up_l or not lo_l:
                 continue
-            off, k = off or 0.0, k or 0.0
-            # The analyzer counts a NaN error point as a FAIL (analyzer.py
-            # _count_fail_points, deliberate on a zero-tolerance spec); the
-            # renderer cannot mark a point that has no value. Known, tracked
-            # divergence — excluded here so it cannot mask a rotation bug.
-            if any(e is None or (isinstance(e, float) and e != e) for e in err_l):
-                nan_skipped += 1
+            has_nan = any(e is None or (isinstance(e, float) and e != e)
+                          for e in err_l)
+            # NaN-bearing tracks used to be SKIPPED here: the analyzer counts an
+            # unmeasured point as a FAIL (zero-tolerance) and the renderer
+            # dropped it, so the counts disagreed by construction. Since the
+            # unmeasured points are marked and counted, these tracks are held to
+            # the same standard as every other. The one class that still cannot
+            # be reproduced is optimal_offset IS NULL: the NaN leak poisoned the
+            # analyzer's own offset search, so it stored "every point fails" and
+            # no magnitude (see scripts/backfill_linearity_error.py). Those are
+            # reprocess candidates, counted and warned about, never asserted on.
+            if has_nan and off is None:
+                nan_offset_null += 1
                 continue
+            off, k = off or 0.0, k or 0.0
+            if has_nan:
+                nan_checked += 1
+                if unmeasured_points(err_l, up_l, lo_l, offset=off, k=k,
+                                     theory=th_l):
+                    nan_inband += 1
+                if len(compute_fail_points(err_l, up_l, lo_l, offset=off, k=k,
+                                           theory=th_l)) != lfp:
+                    nan_bad.append(_id)
             checked += 1
             fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k, theory=th_l)
             if k:
@@ -1050,7 +1067,21 @@ def main() -> int:
             check(f"verdict consistency: track {_id} raised", False, repr(exc))
 
     check("verdict consistency: sample is non-empty (guard against a vacuous pass)",
-          checked > 0, f"checked={checked} nan_skipped={nan_skipped}")
+          checked > 0, f"checked={checked} nan_offset_null={nan_offset_null}")
+    # Zero-tolerance, like every other verdict check here: an unmeasured point
+    # is counted, so the renderer's count must equal the stored one EXACTLY.
+    # Both non-emptiness guards matter — without the second, a data shift that
+    # removed every in-band NaN would let this pass without exercising the
+    # unmeasured path at all.
+    check("verdict consistency: NaN-bearing tracks reproduce the stored "
+          "fail-point count EXACTLY (unmeasured points counted, not skipped)",
+          not nan_bad and nan_checked > 0 and nan_inband > 0,
+          f"{len(nan_bad)}/{nan_checked} disagree, {nan_inband} with NaN inside "
+          f"the graded band" + (f" e.g. track ids {nan_bad[:5]}" if nan_bad else ""))
+    if nan_offset_null:
+        warn("verdict consistency: NaN tracks with NULL optimal_offset (the "
+             "analyzer's offset search was itself poisoned — reprocess candidates)",
+             f"{nan_offset_null} skipped")
     check("verdict consistency: rotation tracks (k != 0) reproduce the stored "
           "fail-point count EXACTLY",
           not rot_bad, f"{len(rot_bad)}/{rot_checked} disagree"
@@ -1109,6 +1140,53 @@ def main() -> int:
           not doc_bad and doc_checked > 0,
           f"{len(doc_bad)}/{doc_checked} contradictions"
           + (f" e.g. {doc_bad[:3]}" if doc_bad else ""))
+
+    # Every point that is COUNTED is a point that is DRAWN. The unmeasured ones
+    # have no y, so they are marked on the axis line instead of an X — but they
+    # must still appear, or the document reports a number the picture doesn't
+    # show (the 2026-08-31 divergence: 597 gradeable tracks whose marker count
+    # was short of their stored linearity_fail_points).
+    mark_bad: list = []
+    mark_checked = 0
+    for (_id, lp, lfp, off, k, th, err, up, lo, mag) in rows:
+        if mark_checked >= 40:
+            break
+        try:
+            err_l, up_l, lo_l, th_l = _arr(err), _arr(up), _arr(lo), _arr(th)
+            if not err_l or not up_l or not lo_l or off is None:
+                continue
+            if not any(e is None or (isinstance(e, float) and e != e)
+                       for e in err_l):
+                continue
+            if not unmeasured_points(err_l, up_l, lo_l, offset=off,
+                                     k=k or 0.0, theory=th_l):
+                continue
+            mark_checked += 1
+            fp = compute_fail_points(err_l, up_l, lo_l, offset=off, k=k or 0.0,
+                                     theory=th_l)
+            data = {"position_data": list(range(len(err_l))), "error_data": err_l,
+                    "upper_limits": up_l, "lower_limits": lo_l,
+                    "optimal_offset": off, "optimal_slope": k or 0.0,
+                    "theory_data": th_l, "linearity_pass": bool(lp),
+                    "linearity_error": mag, "sigma_pass": True}
+            fig = build_unit_export_figure(
+                {"model": "QA", "serial": str(_id), "n_tracks": 1},
+                data, fail_points=fp, kind="trim")
+            drawn = sum(len(c.get_offsets()) for c in fig.axes[0].collections
+                        if (c.get_label() or "").startswith(
+                            ("Fail points", "Unmeasured points")))
+            if drawn != len(fp) or len(fp) != lfp:
+                mark_bad.append((_id, drawn, len(fp), lfp))
+            import matplotlib.pyplot as _plt
+            _plt.close(fig)
+        except Exception as exc:
+            check(f"unmeasured markers: track {_id} raised", False, repr(exc))
+
+    check("unit export document: on tracks with unmeasured points, the DRAWN "
+          "marker count equals the reported count equals the STORED count",
+          not mark_bad and mark_checked > 0,
+          f"{len(mark_bad)}/{mark_checked} disagree (id, drawn, reported, stored)"
+          + (f" e.g. {mark_bad[:3]}" if mark_bad else ""))
 
     # ============ 6. EXPORTS ===================================================
     from laser_trim_analyzer.export.evidence import export_evidence_pack, build_summary_text

@@ -35,6 +35,9 @@ COLORS = {
     'trimmed': '#27ae60',    # Green
     'spec_limit': '#e74c3c', # Red
     'threshold': '#f39c12',  # Orange
+    # Unmeasured (no error value at a graded position) — deliberately neither
+    # the fail red nor the binding-point orange: a different kind of thing.
+    'unmeasured': '#b07cf0',  # Light purple (readable on the dark chart)
     'background': '#2b2b2b', # Dark background
     'text': '#ffffff',       # White text
     'grid': '#404040',       # Grid lines
@@ -227,6 +230,7 @@ class ChartWidget(ctk.CTkFrame):
         station_compensation: Optional[float] = None,
         linearity_type: Optional[str] = None,
         excluded_points: Optional[List[int]] = None,
+        unmeasured_points: Optional[List[int]] = None,
         measured_label: str = "Trimmed (as measured)",
         verdict_note: Optional[str] = None,
         binding_points: Optional[List[int]] = None,
@@ -410,19 +414,53 @@ class ChartWidget(ctk.CTkFrame):
                 where=~np.isnan(upper_plot) & ~np.isnan(lower_plot)
             )
 
-        # Mark fail points
+        # UNMEASURED points: graded positions with no error value. The analyzer
+        # counts them as fails (zero-tolerance — an unmeasured point cannot be
+        # shown to be in spec), but a NaN y is silently dropped by matplotlib,
+        # so they used to vanish from the chart while still inflating the
+        # count. Their x IS known, so they are marked ON the axis line, which
+        # states the position without inventing an error value. Derived here
+        # when the caller doesn't supply them, so every chart — V5's Analyze
+        # page included — marks them rather than dropping them.
+        if unmeasured_points is None:
+            from laser_trim_analyzer.export.unit_chart import classify_graded_points
+            unmeasured_points = classify_graded_points(
+                trimmed_errors, upper_limits, lower_limits,
+                offset, k, theory_data)[1]
+        unmeasured_set = set(unmeasured_points or [])
+
+        # Mark fail points (measured ones — the unmeasured have no y for an X)
         if fail_points:
-            fail_x = [positions[i] for i in fail_points if i < len(positions)]
-            fail_y = [shifted_errors[i] for i in fail_points if i < len(shifted_errors)]
-            ax.scatter(
-                fail_x, fail_y,
-                color=COLORS['fail'],
-                marker='x',
-                s=50,
-                linewidths=2,
-                label='Fail Points',
-                zorder=5
-            )
+            drawn = [i for i in fail_points
+                     if i not in unmeasured_set and i < len(positions)]
+            fail_x = [positions[i] for i in drawn]
+            fail_y = [shifted_errors[i] for i in drawn if i < len(shifted_errors)]
+            if fail_x:
+                ax.scatter(
+                    fail_x, fail_y,
+                    color=COLORS['fail'],
+                    marker='x',
+                    s=50,
+                    linewidths=2,
+                    label='Fail Points',
+                    zorder=5
+                )
+
+        if unmeasured_set:
+            ux = [positions[i] for i in sorted(unmeasured_set) if i < len(positions)]
+            if ux:
+                ax.scatter(
+                    ux, [0.0] * len(ux),
+                    transform=ax.get_xaxis_transform(),
+                    marker='s',
+                    s=46,
+                    facecolors='none',
+                    edgecolors=COLORS.get('unmeasured', '#9b59b6'),
+                    linewidths=1.6,
+                    clip_on=False,
+                    label=f'Unmeasured ({len(ux)}) — counted as fail',
+                    zorder=6,
+                )
 
         # BINDING points: the measurements that constrain the offset window —
         # why the "one little fail point" can't just be shifted into spec

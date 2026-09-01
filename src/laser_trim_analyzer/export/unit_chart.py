@@ -20,6 +20,10 @@ from matplotlib.patches import Rectangle
 _C = {
     "pass": "#27ae60", "fail": "#e74c3c", "warning": "#f39c12",
     "trimmed": "#27ae60", "untrimmed": "#3498db", "spec": "#e74c3c",
+    # Deliberately not the fail red and not the binding-point orange: an
+    # unmeasured point is a different KIND of thing from a measurement that
+    # went out of band, and must not read as one.
+    "unmeasured": "#8e44ad",
 }
 
 
@@ -51,6 +55,55 @@ def corrected_errors(errors, offset=0.0, k=0.0, theory=None):
             for i, e in enumerate(errs)]
 
 
+def _missing(v) -> bool:
+    """None or NaN — the two ways a number can be absent in these arrays."""
+    return v is None or (isinstance(v, float) and v != v)
+
+
+def classify_graded_points(errors, upper_limits, lower_limits,
+                           offset=0.0, k=0.0, theory=None,
+                           exclude_indices=None):
+    """Split the GRADED points into (out_of_band, unmeasured).
+
+    A byte-for-byte mirror of Analyzer._count_fail_points, which is the
+    grading of record:
+
+      * no limit arrays at all           -> nothing is graded
+      * index >= min(len(errors), len(upper), len(lower))  -> not graded
+      * index in exclude_indices         -> not graded (per-model spec)
+      * either limit None or NaN         -> not graded at that index
+      * corrected error None or NaN      -> UNMEASURED, counted as a fail
+      * corrected error outside the band -> ordinary fail
+
+    The unmeasured bucket is the whole point of splitting: the analyzer counts
+    such a point (a zero-tolerance spec cannot show an unmeasured point is in
+    spec) but the renderers used to drop it — NaN comparisons are all False
+    and matplotlib silently discards a NaN y — so the drawn marker count
+    disagreed with the stored linearity_fail_points. Its x POSITION is known;
+    only the y is missing, so it can be marked honestly at the axis line.
+
+    `len(out_of_band) + len(unmeasured)` is the fail-point count of record.
+    """
+    out_of_band: List[int] = []
+    unmeasured: List[int] = []
+    if not upper_limits or not lower_limits:
+        return out_of_band, unmeasured
+    corrected = corrected_errors(errors, offset, k, theory)
+    n = min(len(corrected), len(upper_limits), len(lower_limits))
+    for i in range(n):
+        if exclude_indices and i in exclude_indices:
+            continue
+        up, lo = upper_limits[i], lower_limits[i]
+        if _missing(up) or _missing(lo):
+            continue
+        e = corrected[i]
+        if _missing(e):
+            unmeasured.append(i)
+        elif e > up or e < lo:
+            out_of_band.append(i)
+    return out_of_band, unmeasured
+
+
 def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                              fail_points: Optional[List[int]] = None,
                              kind: str = "trim") -> Figure:
@@ -63,6 +116,13 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     """
     fail_points = fail_points or []
     is_ft = kind == "ft"
+    # Derived here, not passed in, so EVERY caller of this document (modal,
+    # model page, QA renderer, sweep) marks unmeasured points without having
+    # to remember to. Same classifier the fail count comes from.
+    _oob, unmeasured_idx = classify_graded_points(
+        data.get("error_data"), data.get("upper_limits"), data.get("lower_limits"),
+        float(data.get("optimal_offset") or 0.0),
+        float(data.get("optimal_slope") or 0.0), data.get("theory_data"))
     fig = Figure(figsize=(11, 8.5), dpi=120, facecolor="white")  # landscape letter
     gs = fig.add_gridspec(2, 3, height_ratios=[2.1, 1.0],
                           hspace=0.28, wspace=0.18,
@@ -132,11 +192,26 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             ax.plot(positions[:n], lo[:n], "--", lw=1, color=_C["spec"], alpha=0.8)
             ax.fill_between(positions[:n], lo[:n], u[:n], color=_C["spec"], alpha=0.06,
                             where=~np.isnan(u[:n]) & ~np.isnan(lo[:n]))
+        # Unmeasured points are counted as fails but have NO y to mark: draw
+        # them ON the axis line (x in data coords, y in axes fraction) so the
+        # marker states the position without inventing an error value.
+        unmeasured = set(unmeasured_idx)
         if fail_points:
-            fx = [positions[i] for i in fail_points if i < len(positions)]
-            fy = [corrected[i] for i in fail_points if i < len(corrected)]
-            ax.scatter(fx, fy, marker="x", s=55, color=_C["fail"], zorder=5,
-                       linewidths=2, label=f"Fail points ({len(fail_points)})")
+            measured = [i for i in fail_points if i not in unmeasured]
+            fx = [positions[i] for i in measured if i < len(positions)]
+            fy = [corrected[i] for i in measured if i < len(corrected)]
+            if fx:
+                ax.scatter(fx, fy, marker="x", s=55, color=_C["fail"], zorder=5,
+                           linewidths=2, label=f"Fail points ({len(fx)})")
+        if unmeasured:
+            ux = [positions[i] for i in sorted(unmeasured) if i < len(positions)]
+            if ux:
+                ax.scatter(ux, [0.0] * len(ux), transform=ax.get_xaxis_transform(),
+                           marker="s", s=48, facecolors="none",
+                           edgecolors=_C["unmeasured"], linewidths=1.6, zorder=6,
+                           clip_on=False,
+                           label=f"Unmeasured points ({len(ux)}) — counted as "
+                                 "failures (zero-tolerance)")
         ax.legend(loc="lower right", fontsize=8.5, framealpha=0.9)
 
     ax.set_facecolor("white")
@@ -213,12 +288,18 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
         ]
         if has_trace and lin_pass is not None and bool(lin_pass) != trim_pass:
             rows.append(f"Stored Verdict: {'PASS' if lin_pass else 'FAIL'}")
+    # Both branches: say how many of the fail points were never measured, so
+    # the count above is readable rather than mysterious.
+    if unmeasured_idx:
+        rows.append(f"Unmeasured: {len(unmeasured_idx)} (counted as fail)")
     ax_metrics.text(0.02, 0.98, "Final Test Metrics" if is_ft else "Analysis Metrics",
                     fontsize=11, fontweight="bold",
                     va="top", transform=ax_metrics.transAxes, color="black")
     for i, ln in enumerate(rows):
         col = "black"
-        if ln.startswith("Stored Verdict:"):
+        if ln.startswith("Unmeasured:"):
+            col = _C["unmeasured"]
+        elif ln.startswith("Stored Verdict:"):
             # Only printed when it disagrees with the re-grade — amber either
             # way, because either direction means "reprocess this unit".
             col = _C["warning"]
