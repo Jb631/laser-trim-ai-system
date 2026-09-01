@@ -27,6 +27,30 @@ def _fmt(v, spec=".6f", na="N/A"):
     return format(v, spec) if isinstance(v, (int, float)) else na
 
 
+def corrected_errors(errors, offset=0.0, k=0.0, theory=None):
+    """The GRADED trace: `error + theory*k + offset`.
+
+    Single definition of the adjustment, shared by this export, the V6 unit
+    modal's fail-point count and its on-screen chart, so all three can never
+    disagree about which curve is being judged.
+
+    k (stored as TrackResult.optimal_slope) is the theory ROTATION factor;
+    dropping it re-grades the unit on a curve the analyzer never judged and
+    invents fail points at the end of travel, where theory is largest —
+    the 2026-08-31 "Fail Points: 18 / Linearity Pass: YES" contradiction on
+    8415-1 SN 26. Mirrors analyzer._calculate_linearity, including its
+    `if theory_volts and optimal_k != 0` guard: no theory column or no k
+    means offset-only, exactly as the analyzer graded it.
+    """
+    errs = list(errors or [])
+    off = float(offset or 0.0)
+    k = float(k or 0.0)
+    if not k or not theory or len(theory) < len(errs):
+        return [None if e is None else e + off for e in errs]
+    return [None if e is None else e + (theory[i] or 0.0) * k + off
+            for i, e in enumerate(errs)]
+
+
 def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                              fail_points: Optional[List[int]] = None,
                              kind: str = "trim") -> Figure:
@@ -57,6 +81,10 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
     # ---- main error-vs-position plot (light mode) ----
     pos = data.get("position_data") or []
     err = data.get("error_data") or []
+    # Only a drawn sweep can be re-graded. With no trace there are no fail
+    # markers either, so nothing can contradict the stored verdict and it
+    # stands on its own (a resistance-only row must not read as "in spec").
+    has_trace = bool(pos and err)
     if not pos or not err:
         up, ue = data.get("untrimmed_positions") or [], data.get("untrimmed_errors") or []
         if up and ue:
@@ -70,7 +98,10 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
         positions = np.asarray(pos, dtype=float)
         errors = np.asarray(err, dtype=float)
         offset = float(data.get("optimal_offset") or 0.0)
-        corrected = errors + offset
+        k = float(data.get("optimal_slope") or 0.0)
+        corrected = np.asarray(
+            corrected_errors(err, offset, k, data.get("theory_data")),
+            dtype=float)
 
         up, ue = data.get("untrimmed_positions") or [], data.get("untrimmed_errors") or []
         if up and ue:
@@ -80,8 +111,12 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             ax.plot(up, ue, "--", lw=1.4, color=_C["untrimmed"], alpha=0.6, label=lbl)
 
         _base = "Final test" if is_ft else "Trimmed"
-        corr_lbl = (f"{_base} (no-op)" if abs(offset) < 1e-9
-                    else f"{_base} corrected (offset: {offset:+.6f})")
+        _rot = k and data.get("theory_data")
+        if abs(offset) < 1e-9 and not _rot:
+            corr_lbl = f"{_base} (no-op)"
+        else:
+            corr_lbl = f"{_base} corrected (offset: {offset:+.6f}"
+            corr_lbl += f", k: {k:+.6f})" if _rot else ")"
         ax.plot(positions, corrected, lw=2, color=_C["trimmed"], zorder=3, label=corr_lbl)
         ax.plot(positions, errors, "--", lw=1.1, color=_C["trimmed"], alpha=0.35,
                 zorder=2, label=f"{_base} (as measured)")
@@ -158,6 +193,14 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             f"Station Result: {_station}",
         ]
     else:
+        # Same rule the FT branch above applies: Linearity Pass is RE-GRADED on
+        # the fail points printed directly above it, so the two lines can never
+        # contradict each other. Pairing a renderer-computed count with the
+        # STORED verdict is what printed "Fail Points: 18 / Linearity Pass: YES"
+        # on 8415-1 SN 26. When the re-grade disagrees with what the analyzer
+        # stored, the stored verdict gets its own line rather than vanishing —
+        # a zero-tolerance customer disposition is never silently overwritten.
+        trim_pass = (len(fail_points) == 0) if has_trace else bool(lin_pass)
         rows = [
             f"Sigma Gradient: {_fmt(data.get('sigma_gradient'))}",
             f"Sigma Threshold: {_fmt(data.get('sigma_threshold'))}",
@@ -166,14 +209,20 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
             f"Linearity Error: {_fmt(data.get('linearity_error'))}",
             f"Fail Points: {len(fail_points)}",
-            f"Linearity Pass: {'YES' if lin_pass else ('NO' if lin_pass is not None else 'N/A')}",
+            f"Linearity Pass: {'YES' if trim_pass else ('NO' if (has_trace or lin_pass is not None) else 'N/A')}",
         ]
+        if has_trace and lin_pass is not None and bool(lin_pass) != trim_pass:
+            rows.append(f"Stored Verdict: {'PASS' if lin_pass else 'FAIL'}")
     ax_metrics.text(0.02, 0.98, "Final Test Metrics" if is_ft else "Analysis Metrics",
                     fontsize=11, fontweight="bold",
                     va="top", transform=ax_metrics.transAxes, color="black")
     for i, ln in enumerate(rows):
         col = "black"
-        if ln.endswith(": NO") or ln.endswith("Watch: YES") or ln.endswith("Result: FAIL"):
+        if ln.startswith("Stored Verdict:"):
+            # Only printed when it disagrees with the re-grade — amber either
+            # way, because either direction means "reprocess this unit".
+            col = _C["warning"]
+        elif ln.endswith(": NO") or ln.endswith("Watch: YES") or ln.endswith("Result: FAIL"):
             col = _C["fail"] if ("Linearity" in ln or "Result" in ln) else _C["warning"]
         elif ln.endswith(": YES"):
             col = _C["pass"]
@@ -199,14 +248,35 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             status, color, note = "PASS", _C["pass"], "Final test — accepted"
         else:
             status, color, note = "NOT EVALUATED", "#7f8c8d", "No final-test grading stored"
-    elif lin_pass is False:
-        status, color, note = "FAIL", _C["fail"], "Linearity out of spec (zero-tolerance)"
-    elif lin_pass and sig_pass:
-        status, color, note = "PASS", _C["pass"], "Linearity in spec · no sigma watch"
-    elif lin_pass:
-        status, color, note = "PASS (WATCH)", _C["warning"], "Linearity in spec · sigma drift-watch"
+    elif not has_trace:
+        # No sweep to re-grade — the stored verdict stands alone.
+        if lin_pass is False:
+            status, color, note = "FAIL", _C["fail"], "Linearity out of spec (zero-tolerance)"
+        elif lin_pass and sig_pass:
+            status, color, note = "PASS", _C["pass"], "Linearity in spec · no sigma watch"
+        elif lin_pass:
+            status, color, note = "PASS (WATCH)", _C["warning"], "Linearity in spec · sigma drift-watch"
+        else:
+            status, color, note = "NOT EVALUATED", "#7f8c8d", "No linearity grading stored"
     else:
-        status, color, note = "NOT EVALUATED", "#7f8c8d", "No linearity grading stored"
+        # Stamp is RE-GRADED on the SAME fail points the chart marks, so the
+        # markers, the count, the Linearity Pass line and this stamp are one
+        # verdict. Disagreement with the stored value is surfaced, never
+        # laundered — in EITHER direction (both are reprocess signals).
+        trim_pass = (len(fail_points) == 0)
+        stored_disagrees = lin_pass is not None and bool(lin_pass) != trim_pass
+        if not trim_pass:
+            status, color = "FAIL", _C["fail"]
+            note = ("Linearity out of spec (zero-tolerance)"
+                    + (" · stored verdict: PASS — reprocess" if stored_disagrees else ""))
+        elif stored_disagrees:
+            status, color, note = ("PASS*", _C["warning"],
+                                   "In spec under the stored adjustment · stored "
+                                   "verdict: FAIL — reprocess")
+        elif sig_pass:
+            status, color, note = "PASS", _C["pass"], "Linearity in spec · no sigma watch"
+        else:
+            status, color, note = "PASS (WATCH)", _C["warning"], "Linearity in spec · sigma drift-watch"
     ax_status.add_patch(Rectangle((0.06, 0.58), 0.88, 0.30, linewidth=3,
                                   edgecolor=color, facecolor="white"))
     ax_status.text(0.5, 0.73, status, ha="center", va="center", fontsize=15,
