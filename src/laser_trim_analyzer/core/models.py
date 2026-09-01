@@ -9,9 +9,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from enum import Enum
+import logging
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -78,8 +81,24 @@ class BaseAnalysisModel(BaseModel):
         through, which is how home kept working while the fresh work venv
         broke. Coercing NaN→None is version-proof AND more honest: NaN was
         never a real measurement, and downstream code already handles None.
+
+        It logs (2026-08-31). Coercing silently is how model 8232-1 lost its
+        linearity error magnitude on 3,108 tracks without anyone noticing: a
+        NaN produced by a failed computation — not by an unmeasured cell —
+        arrived here and left as an ordinary missing value. This hook cannot
+        tell those two cases apart, so it records every drop and lets the
+        reader judge. See analyzer.max_abs_measured.
         """
         if isinstance(data, dict):
+            dropped = sorted(k for k, v in data.items()
+                             if isinstance(v, float) and v != v)
+            if dropped:
+                logger.warning(
+                    "NaN→None coercion dropped %s on %s; a NaN here is either "
+                    "an unmeasured cell or a failed computation — check the "
+                    "producer if these fields should have carried values",
+                    ", ".join(dropped), cls.__name__,
+                )
             return {k: (None if isinstance(v, float) and v != v else v)
                     for k, v in data.items()}
         return data
