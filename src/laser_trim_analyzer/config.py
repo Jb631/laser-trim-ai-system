@@ -70,6 +70,12 @@ class ProcessingConfig:
     turbo_mode_threshold: int = 100  # Files before turbo mode kicks in
 
 
+# The drift presets the app accepts. Duplicated here rather than imported
+# from ml.drift_types so config stays dependency-free (ml imports config);
+# a test asserts the two lists stay identical.
+DRIFT_SENSITIVITY_PRESETS = ("loose", "standard", "tight", "strict")
+
+
 @dataclass
 class MLConfig:
     """ML configuration."""
@@ -264,6 +270,16 @@ class Config:
                     for key, value in data["ml"].items():
                         if hasattr(config.ml, key):
                             setattr(config.ml, key, value)
+                    # An unknown preset is a KeyError deep in the drift
+                    # threshold math (target_fp_for_tier), which would surface
+                    # as a training crash rather than a bad setting. A config
+                    # file is hand-editable, so validate here instead.
+                    if config.ml.drift_sensitivity not in DRIFT_SENSITIVITY_PRESETS:
+                        logger.warning(
+                            "Unknown ml.drift_sensitivity %r in %s; using 'standard'",
+                            config.ml.drift_sensitivity, config_path,
+                        )
+                        config.ml.drift_sensitivity = "standard"
 
                 if "gui" in data:
                     for key, value in data["gui"].items():
@@ -322,6 +338,10 @@ class Config:
                 "use_threshold_optimizer": self.ml.use_threshold_optimizer,
                 "use_drift_detector": self.ml.use_drift_detector,
                 "min_samples_for_training": self.ml.min_samples_for_training,
+                # Omitting this dropped the user's drift preset on every save:
+                # load() applies whatever keys it finds, so a key save() never
+                # writes silently reverts to the dataclass default.
+                "drift_sensitivity": self.ml.drift_sensitivity,
             },
             "gui": {
                 "theme": self.gui.theme,

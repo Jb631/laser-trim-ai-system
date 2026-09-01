@@ -761,6 +761,100 @@ def test_config_load_reads_drift_sensitivity(tmp_path):
     assert cfg.ml.drift_sensitivity == "tight"
 
 
+def test_config_save_round_trips_drift_sensitivity(tmp_path):
+    """A non-default preset survives save -> load.
+
+    It did not: `drift_sensitivity` was absent from `Config.save()`'s ml block,
+    so saving ANY setting from the Settings page dropped the key, and the next
+    launch fell back to the "standard" default.
+    """
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    cfg = Config()
+    cfg.ml.drift_sensitivity = "tight"
+    cfg.save(yaml_path)
+
+    assert Config.load(yaml_path).ml.drift_sensitivity == "tight"
+
+
+def test_config_load_without_drift_sensitivity_defaults_standard(tmp_path):
+    """Every config file written before this fix lacks the key: load it anyway."""
+    import yaml
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(yaml.safe_dump({
+        "ml": {"enabled": True, "min_samples_for_training": 20},
+        "gui": {"theme": "dark"},
+    }))
+
+    cfg = Config.load(yaml_path)
+    assert cfg.ml.drift_sensitivity == "standard"
+
+
+def test_saving_an_unrelated_setting_preserves_drift_sensitivity(tmp_path):
+    """The Settings page saves the whole Config; an unrelated edit must not
+    reset the drift preset."""
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    cfg = Config()
+    cfg.ml.drift_sensitivity = "strict"
+    cfg.save(yaml_path)
+
+    reopened = Config.load(yaml_path)
+    reopened.gui.theme = "light"          # an unrelated setting
+    reopened.save(yaml_path)
+
+    after = Config.load(yaml_path)
+    assert after.gui.theme == "light"
+    assert after.ml.drift_sensitivity == "strict"
+
+
+def test_every_saved_section_saves_every_field_of_its_dataclass(tmp_path):
+    """The invariant that `drift_sensitivity` broke, stated once.
+
+    `Config.save()` hand-writes each section's keys while `Config.load()`
+    applies whatever keys it finds. A field added to a dataclass but not to
+    save() is therefore silently reset on the next save — invisible until a
+    user notices their preference reverting. Any section save() emits must
+    emit ALL of that dataclass's fields.
+    """
+    import dataclasses
+    import yaml
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    cfg = Config()
+    cfg.save(yaml_path)
+    written = yaml.safe_load(yaml_path.read_text())
+
+    for section in ("database", "processing", "ml", "gui", "active_models", "ingest"):
+        expected = {f.name for f in dataclasses.fields(getattr(cfg, section))}
+        missing = expected - set(written.get(section, {}))
+        assert not missing, f"Config.save() drops {section}: {sorted(missing)}"
+
+
+def test_config_presets_match_the_drift_threshold_matrix():
+    """config.py duplicates the preset names; they must not drift apart."""
+    from laser_trim_analyzer.config import DRIFT_SENSITIVITY_PRESETS
+    from laser_trim_analyzer.ml.drift_types import _PRESET_FP_MATRIX
+
+    assert set(DRIFT_SENSITIVITY_PRESETS) == set(_PRESET_FP_MATRIX)
+
+
+def test_config_load_rejects_an_unknown_drift_preset(tmp_path):
+    """A hand-edited bad preset must not become a KeyError inside training."""
+    import yaml
+    from laser_trim_analyzer.config import Config
+
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(yaml.safe_dump({"ml": {"drift_sensitivity": "medium"}}))
+
+    assert Config.load(yaml_path).ml.drift_sensitivity == "standard"
+
+
 def test_first_startup_does_not_crash_on_empty_db(tmp_path):
     """A brand-new DB initializes without raising, even though model_metric_
     state is empty and auto-train would have nothing to do.
