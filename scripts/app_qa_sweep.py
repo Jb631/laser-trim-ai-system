@@ -658,11 +658,24 @@ def check_multi_folder_ingest() -> None:
 
 
 def main() -> int:
-    # Optional DB-path argv (2026-08-29): the work database does not live at
-    # data/analysis.db on every machine, and the sweep is worthless run against
-    # anything else. Point it at a COPY — DatabaseManager opens read-write.
-    #     python scripts/app_qa_sweep.py /path/to/copy_of_analysis.db
-    db_path = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "data" / "analysis.db"
+    # REQUIRED DB-path argv (2026-08-31; was optional with a production
+    # default). The sweep opens its target read-write, and the old default —
+    # the real data/analysis.db — was opened by accident by three separate
+    # sessions in one night. There is no legitimate sweep use of the
+    # production file, so it is refused even when named explicitly.
+    #     python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db
+    if len(sys.argv) < 2 or sys.argv[1].startswith("--"):
+        print("usage: python scripts/app_qa_sweep.py /path/to/COPY_of_analysis.db [--only ...]\n"
+              "(the DB argument is required — the sweep refuses the production database)")
+        return 1
+    db_path = Path(sys.argv[1])
+    if db_path.resolve() == (REPO / "data" / "analysis.db").resolve():
+        print(f"FATAL | {db_path} is the PRODUCTION database and the sweep "
+              f"opens it READ-WRITE.\n"
+              f"      | make a copy and pass that instead:\n"
+              f"      |     cp data/analysis.db /tmp/qa_copy.db\n"
+              f"      |     python scripts/app_qa_sweep.py /tmp/qa_copy.db")
+        return 1
     if not db_path.exists():
         # Checked BEFORE DatabaseManager on purpose: constructing it CREATES an
         # empty database, and a sweep against an empty DB reports a wall of

@@ -89,17 +89,23 @@ src/laser_trim_analyzer/
    Do not re-suggest PyInstaller packaging.
 
 ### QA Sweeps (mandatory before calling any change done)
-Two standing harnesses exercise the whole app against the real DB — run BOTH
-after any change to charts, queries, exports, or page data-loaders:
-1. `python scripts/chart_qa_render_all.py` — renders every v6 chart across a
-   real-data variant matrix (dense/sparse/single/stale models, fail-heavy and
-   multi-track units). INSPECT the output PNGs; don't just check it ran.
-   Both harnesses write to `qa_output/` (gitignored) — a sweep must never
-   leave modified tracked files behind.
-2. `python scripts/app_qa_sweep.py` — 35+ feature/invariant checks (dashboard
-   vs raw SQL, triage==preview, preset monotonicity, verdict-vs-failpoint
-   consistency, export schemas/row counts, pipeline on test_files, ingest
-   guard). Exit code = FAIL count.
+Two standing harnesses exercise the whole app against a COPY of the real DB —
+run BOTH after any change to charts, queries, exports, or page data-loaders.
+The DB argument is REQUIRED and both harnesses REFUSE `data/analysis.db`
+itself (they open their target read-write; three sessions opened production
+by accident in one night before the refusal existed):
+
+    cp data/analysis.db /tmp/qa_copy.db
+1. `python scripts/chart_qa_render_all.py qa_output /tmp/qa_copy.db` —
+   renders every v6 chart across a real-data variant matrix (dense/sparse/
+   single/stale models, fail-heavy and multi-track units resolved by query).
+   INSPECT the output PNGs; don't just check it ran. Both harnesses write to
+   `qa_output/` (gitignored) — a sweep must never leave modified tracked
+   files behind.
+2. `python scripts/app_qa_sweep.py /tmp/qa_copy.db` — 190+ feature/invariant
+   checks (dashboard vs raw SQL, verdict-vs-failpoint consistency, export
+   schemas/row counts, pipeline on test_files, ingest guards). Exit code =
+   FAIL count. Delete the copy when done.
 Weak assertions are forbidden in the sweeps: a check that can pass on an
 ERROR result is a bug (that exact pattern let a missing dependency read as
 green once). New features get a sweep entry in the same commit.
@@ -124,7 +130,7 @@ green once). New features get a sweep entry in the same commit.
 ### V5 — Released (tag `v5.0.0`, 2026-04-16)
 `pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
 
-**Current focus:** V6 shipped to `main` + `V6` (merge `fffe2d7`, 2026-07-08) — see `BRING_TO_WORK.md`. Both UIs stay for now (V5 = fallback, has the trim-vs-FT overlay). Remaining: Fix Missing Tracks for NULL-array rows, trim-vs-FT overlay in V6, first real LTS3 file validation, eventual V5 page retirement. Older plans live in git history at `4c6ebd8` under `archive/completed_docs/`.
+**Current focus:** V6 is feature-complete per the 2026-08-29 app-shape spec (FOCUS · INVESTIGATE stats table · HOME/shell, all shipped) — see `BRING_TO_WORK.md`. The trim-vs-FT overlay is in V6 (2026-08-31) and Fix Missing Tracks lives in V6 Settings, so V5 no longer holds anything V6 lacks; it stays launchable as fallback until James retires it explicitly. Remaining: first real LTS3 file validation (work machine), work-machine data scripts per BRING_TO_WORK. Older plans live in git history at `4c6ebd8` under `archive/completed_docs/`.
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
 **Plan/Tracker:** `git show 4c6ebd8:archive/completed_docs/UPGRADE_PLAN_V4.md` (and `UPGRADE_TRACKER.md`)

@@ -479,7 +479,36 @@ def main(out_dir: str, db_path: Path) -> int:
     return 0
 
 
+def refuse_production_db(db_path: Path) -> str | None:
+    """The one database this harness must never open.
+
+    Opening it is a WRITE: DatabaseManager's engine setup commits index
+    creation into the file. Three separate sessions opened the real DB by
+    accident on 2026-08-31 — every one of them through the no-argument
+    default that used to live below. There is no legitimate harness use of
+    the production file, so this refuses it even when passed explicitly.
+    Returns the error text, or None when the path is fine.
+    """
+    if db_path.resolve() == (REPO / "data" / "analysis.db").resolve():
+        return (f"FATAL | {db_path} is the PRODUCTION database and opening it "
+                f"WRITES to it.\n"
+                f"      | make a copy and pass that instead:\n"
+                f"      |     cp data/analysis.db /tmp/qa_copy.db\n"
+                f"      |     python scripts/chart_qa_render_all.py "
+                f"qa_output /tmp/qa_copy.db")
+    return None
+
+
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else str(QA_OUTPUT)
-    db_arg = Path(sys.argv[2]) if len(sys.argv) > 2 else REPO / "data" / "analysis.db"
-    raise SystemExit(main(target, db_arg))
+    if len(sys.argv) < 3:
+        print("usage: python scripts/chart_qa_render_all.py OUTPUT_DIR "
+              "/path/to/COPY_of_analysis.db\n"
+              "(the DB argument is required — the harness refuses the "
+              "production database)")
+        raise SystemExit(1)
+    db_arg = Path(sys.argv[2])
+    err = refuse_production_db(db_arg)
+    if err:
+        print(err)
+        raise SystemExit(1)
+    raise SystemExit(main(sys.argv[1], db_arg))
