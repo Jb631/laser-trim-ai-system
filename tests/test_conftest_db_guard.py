@@ -93,3 +93,14 @@ def test_the_ml_models_directory_is_not_in_production_either():
         f"ML models would be written to {got}, inside the production data "
         f"directory {production_data}"
     )
+
+
+def test_the_managers_own_config_is_safe_in_every_path_not_just_the_db():
+    """The manager's `get_config()` hands out a whole Config, and callers read
+    more than `.database.path` off it. Built before the app-directory patch it
+    would carry a production models directory alongside the redirected DB."""
+    production_data = _production_db().parent
+    got = Path(mgr.get_config().models.path).resolve()
+    assert got != production_data and production_data not in got.parents, (
+        f"manager.get_config() carries a production models path: {got}"
+    )

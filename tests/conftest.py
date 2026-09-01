@@ -41,15 +41,14 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     from laser_trim_analyzer.config import Config, get_app_directory
     from laser_trim_analyzer.database import manager as _mgr
 
-    safe = Config()
-    safe.database.path = tmp_path / "guard.db"
-    monkeypatch.setattr(_mgr, "get_config", lambda: safe)
-
     # Both roots: the tree the tests live in and the tree the package was
     # imported from. They differ when the suite runs from a git worktree.
     protected = {
         (Path(__file__).resolve().parents[1] / "data").resolve(),
-        (Path(get_app_directory()).resolve() / "data"),
+        # Resolve the WHOLE path, as the first entry does. `target` below is
+        # fully resolved, so resolving only the parent here would silently stop
+        # matching if data/ were ever a symlink — leaving that root unguarded.
+        (Path(get_app_directory()) / "data").resolve(),
     }
     _unguarded_init = _mgr.DatabaseManager.__init__
 
@@ -84,6 +83,14 @@ def _never_touch_the_real_database(tmp_path, monkeypatch):
     # get_config() memoises; without this it hands back a Config built before
     # the patch, still holding the production path.
     monkeypatch.setattr(_cfg, "_config", None)
+
+    # Built AFTER the patch above, so every path on it — the ML models
+    # directory included, not just the database — is already tmp-based. Built
+    # before it, this object would hand `manager.get_config()` callers a
+    # production models path.
+    safe = Config()
+    safe.database.path = tmp_path / "guard.db"
+    monkeypatch.setattr(_mgr, "get_config", lambda: safe)
 
     previous = _mgr._db_manager
     _mgr._db_manager = _mgr.DatabaseManager(safe.database.path)
