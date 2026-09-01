@@ -349,7 +349,13 @@ but they're why each change arrives verified.
 - ~~Trim-vs-FT overlay chart inside the unit view~~ — **done 2026-08-31**, see
   above. V5's Compare page no longer holds anything V6 lacks; V5 remains
   launchable as the fallback until you have used the V6 overlay at work.
-- Fix Missing Tracks for records with no stored sweep (5,379 units are
-  un-gradeable until re-parsed; they're skipped, never guessed).
+- ~~Fix Missing Tracks~~ — **closed 2026-08-31.** The tool now lives in V6
+  (Settings → Database maintenance), so no V5 fallback needed. What it will
+  actually find on your database: **264 final-test + 3 trim records** with no
+  stored sweep, re-parseable only at work (the source share). The long-carried
+  "NULL-array rows" worry turned out to be by-design: those tracks are the
+  untrimmed second tracks of 2-track units and still hold their pre-trim
+  sweep. Zero gradeable tracks lack their waveform — now pinned by the
+  self-check so it stays true.
 - The 2.1e8 Ω-style historical bad readings get flagged at ingest going
-  forward; a cleanup pass for old ones comes with Fix Missing Tracks.
+  forward; the stored ones are excluded-and-disclosed by the stats table.
