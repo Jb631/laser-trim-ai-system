@@ -194,12 +194,13 @@ def test_build_cleanup_options():
 
 # ---- Task 10: SettingsPage + auto-train ------------------------------------
 
-def test_settings_page_has_six_cards(make_app):
-    """Thresholds, Active Models, Per-model Specs, ML Training, Pricing,
-    Database Cleanup (stale '5' predated the Per-model Specs card)."""
+def test_settings_page_has_seven_cards(make_app):
+    """Ingest Folders, Thresholds, Active Models, Per-model Specs, ML Training,
+    Pricing, Database Cleanup (stale '5' predated the Per-model Specs card;
+    Ingest Folders arrived with Home's one-click batch)."""
     app = make_app()
     page = app.page_container.get_page("settings")
-    assert len(page._cards) == 6
+    assert len(page._cards) == 7
 
 
 def test_should_offer_first_startup_train_is_data_gated(make_app):

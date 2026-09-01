@@ -1050,6 +1050,34 @@ def main() -> int:
           opts is not None and opts["delete_suspect_quality"] is True
           and opts["delete_before_date"] is not None)
 
+    # ---- ingest folder list: survives a real YAML round trip ---------------
+    # Home's one-click batch walks this list IN ORDER, so a round trip that
+    # reorders it, de-dupes it or mangles a UNC path silently changes what
+    # gets processed. Written to a temp file, not the user's config.
+    import tempfile as _tempfile
+    from laser_trim_analyzer.config import Config as _Config, missing_ingest_folders
+    with _tempfile.TemporaryDirectory() as _td:
+        _cfgp = Path(_td) / "config.yaml"
+        _c = _Config()
+        _c.database.path = Path(_td) / "unused.db"
+        # The offline entry is a path under this temp dir that is never
+        # created — unreachable on every platform, unlike a real UNC share
+        # which may genuinely exist on the work machine.
+        _offline = str(Path(_td) / "offline_share")
+        _wanted = ["\\\\192.168.66.9\\Public\\LaserTrim", str(REPO / "Work Files"),
+                   _offline]
+        for _f in _wanted:
+            _c.ingest.add(_f)
+        _c.ingest.add(_wanted[0] + "\\")          # duplicate: must not land
+        _c.save(_cfgp)
+        _back = _Config.load(_cfgp).ingest.folders
+        check("ingest folders: config round-trip preserves the exact order",
+              _back == _wanted, f"{_back}")
+        _bad = dict(missing_ingest_folders(_back))
+        check("ingest folders: an unreachable folder is reported with a reason",
+              str(REPO / "Work Files") not in _bad and bool(_bad.get(_offline)),
+              f"{len(_bad)} unreachable of {len(_back)}: {_bad.get(_offline)}")
+
     # ---- drift tab constructs against real drift state (2026-07-10) --------
     # The tab render at work failed with AttributeError inside _MetricRow and
     # the per-widget guard swallowed it -> blank tab on every model. Construct

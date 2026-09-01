@@ -115,6 +115,102 @@ class ActiveModelsConfig:
     enable_unit_yield_view: bool = True
 
 
+def normalize_ingest_path(path: str) -> str:
+    """One canonical spelling of a folder, so duplicate detection can work.
+
+    Cosmetic differences only: surrounding whitespace, environment variables,
+    and a trailing separator. Nothing is resolved against the filesystem —
+    these are network shares that are routinely offline when the app starts,
+    and resolve()/realpath() on a dead SMB path blocks for the mount timeout.
+    """
+    p = os.path.expandvars(str(path or "").strip())
+    while len(p) > 1 and p[-1] in ("/", "\\") and not p.endswith((":\\", ":/")):
+        p = p[:-1]
+    return p
+
+
+def _ingest_key(path: str) -> str:
+    """Comparison key: case-insensitive on Windows, exact everywhere else."""
+    return os.path.normcase(normalize_ingest_path(path))
+
+
+def ingest_folder_problem(path: str) -> Optional[str]:
+    """None when the folder is usable; otherwise a sentence naming the problem.
+
+    A folder that cannot be read must be REPORTED, never quietly skipped:
+    these are shares like \\\\192.168.66.9\\... that do go offline, and a batch
+    that silently processes 2 of 3 folders looks exactly like a batch that
+    found nothing new.
+    """
+    p = normalize_ingest_path(path)
+    if not p:
+        return "empty path"
+    try:
+        target = Path(p)
+        if not target.exists():
+            return "not found — offline share, renamed, or unmapped drive?"
+        if not target.is_dir():
+            return "not a folder"
+        os.listdir(target)
+    except OSError as exc:
+        return f"unreadable: {exc.strerror or exc}"
+    return None
+
+
+def missing_ingest_folders(folders: List[str]) -> List["tuple[str, str]"]:
+    """[(folder, reason)] for every configured folder that cannot be used."""
+    out = []
+    for f in folders or []:
+        problem = ingest_folder_problem(f)
+        if problem:
+            out.append((f, problem))
+    return out
+
+
+@dataclass
+class IngestConfig:
+    """The remembered ingest folders behind HOME's "Process everything new".
+
+    ORDERED on purpose: the laser folders run first and the Final Test folder
+    last, and the one-click batch walks the list top to bottom, so the order
+    the user sets in Settings is the order the work happens in.
+
+    Stored as plain strings, not Path: a UNC share is what the user typed and
+    should round-trip through the config file unchanged.
+    """
+    folders: List[str] = field(default_factory=list)
+
+    def index_of(self, path: str) -> Optional[int]:
+        key = _ingest_key(path)
+        for i, f in enumerate(self.folders):
+            if _ingest_key(f) == key:
+                return i
+        return None
+
+    def add(self, path: str) -> bool:
+        """Append. False when the path is empty or already on the list."""
+        p = normalize_ingest_path(path)
+        if not p or self.index_of(p) is not None:
+            return False
+        self.folders.append(p)
+        return True
+
+    def remove(self, path: str) -> bool:
+        i = self.index_of(path)
+        if i is None:
+            return False
+        del self.folders[i]
+        return True
+
+    def move(self, index: int, delta: int) -> bool:
+        """Move one entry by `delta` positions. False (no change) off either end."""
+        j = index + delta
+        if not (0 <= index < len(self.folders)) or not (0 <= j < len(self.folders)):
+            return False
+        self.folders.insert(j, self.folders.pop(index))
+        return True
+
+
 @dataclass
 class Config:
     """Main configuration container."""
@@ -124,6 +220,7 @@ class Config:
     gui: GUIConfig = field(default_factory=GUIConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
     active_models: ActiveModelsConfig = field(default_factory=ActiveModelsConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
 
     # Export settings
     export_path: Optional[str] = None
@@ -178,6 +275,18 @@ class Config:
                         if hasattr(config.active_models, key):
                             setattr(config.active_models, key, value)
 
+                if "ingest" in data:
+                    # Order is the contract; only str entries survive, so a
+                    # hand-edited config that put a mapping here degrades to
+                    # "no folders" (empty state) instead of crashing startup.
+                    raw = (data["ingest"] or {}).get("folders") \
+                        if isinstance(data["ingest"], dict) else None
+                    if isinstance(raw, list):
+                        config.ingest.folders = [
+                            normalize_ingest_path(f) for f in raw
+                            if isinstance(f, str) and normalize_ingest_path(f)
+                        ]
+
                 if "export_path" in data:
                     config.export_path = data["export_path"]
 
@@ -227,6 +336,9 @@ class Config:
                 "model_prices": self.active_models.model_prices,
                 "cost_ratio": self.active_models.cost_ratio,
                 "enable_unit_yield_view": self.active_models.enable_unit_yield_view,
+            },
+            "ingest": {
+                "folders": list(self.ingest.folders),
             },
             "export_path": self.export_path,
         }
