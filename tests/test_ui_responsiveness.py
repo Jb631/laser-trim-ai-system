@@ -190,3 +190,102 @@ def test_scrollable_frame_with_100_children_still_scrolls_to_the_bottom(tk_root,
     assert bottom[1] == pytest.approx(1.0, abs=1e-6)
     assert bottom[0] > top[0], "the scrollbar did not follow the view to the bottom"
     frame.destroy()
+
+
+# ---- Commit 3: charts render once per burst, and once per resize ----------
+
+def _chart(tk_root):
+    from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
+    chart = FocusChart(tk_root, theme=ThemeManager())
+    chart.pack(fill="both", expand=True)
+    tk_root.update_idletasks()
+    return chart
+
+
+def test_five_rapid_set_series_calls_render_once(tk_root):
+    """draw_idle() coalesces; five set_series in one apply() must not be five
+    full Agg renders. Counted on the canvas's real draw, not on draw_idle."""
+    from datetime import datetime, timedelta
+
+    chart = _chart(tk_root)
+    draws = []
+    real_draw = chart.canvas.draw
+
+    def counting_draw(*args, **kwargs):
+        draws.append(1)
+        return real_draw(*args, **kwargs)
+
+    chart.canvas.draw = counting_draw
+    dates = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(20)]
+    for run in range(5):
+        chart.set_series("sigma_gradient", dates, [0.01 + run + i * 1e-4 for i in range(20)])
+    assert draws == [], "a set_series rendered synchronously; use draw_idle()"
+
+    tk_root.update_idletasks()          # cash in the single pending idle draw
+    assert len(draws) == 1, f"{len(draws)} renders for 5 set_series calls, expected 1"
+    chart.destroy()
+
+
+def _queued_after_ids(widget):
+    return set(widget.tk.splitlist(widget.tk.call("after", "info")))
+
+
+def test_the_chart_binds_its_debounce_to_configure(tk_root):
+    """The wiring, asserted separately from the logic.
+
+    The two tests below drive `on_configure` directly. That is deliberate — an
+    earlier version generated real <Configure> events into a mapped
+    CTkToplevel and spun the Tk event loop forever inside a full pytest
+    session (it passed in isolation and hung the suite at test ~1340). So this
+    test carries the other half: the handler really is on the widget's
+    <Configure>, and a rename or a dropped bind fails here.
+    """
+    chart = _chart(tk_root)
+    bindings = chart.canvas.get_tk_widget().bind("<Configure>")
+    assert "on_configure" in bindings, f"debounce not bound; bindings={bindings!r}"
+    # ...and matplotlib's own resize handler is still there, ahead of it: the
+    # debounce cancels the idle draw that `resize` arms, so order matters.
+    assert bindings.index("resize") < bindings.index("on_configure")
+    chart.destroy()
+
+
+def test_a_burst_of_configure_events_leaves_exactly_one_pending_redraw(tk_root):
+    """A drag is ~90 <Configure> events. They must collapse to one after-call."""
+    chart = _chart(tk_root)
+    state = chart._redraw
+    tk_widget = chart.canvas.get_tk_widget()
+    state.pending = None
+
+    ids = []
+    for _ in range(9):                  # nine configure events, as a drag sends
+        state.on_configure()
+        ids.append(state.pending)
+
+    assert all(i is not None for i in ids), "no redraw was scheduled at all"
+    assert len(set(ids)) == len(ids), "the pending callback was never re-armed"
+    # Only the LAST survives: every earlier one was cancelled, so nine configure
+    # events leave one queued render rather than nine.
+    queued = _queued_after_ids(tk_widget)
+    assert [i for i in ids if i in queued] == [ids[-1]], (
+        "more than the newest redraw is still queued — the burst was not debounced")
+    assert state.pending == ids[-1]
+    chart.destroy()
+
+
+def test_the_debounced_redraw_defers_the_render_without_swallowing_it(tk_root):
+    """Deferred, not dropped: the render still happens, just once and later."""
+    from laser_trim_analyzer.gui.v6 import chart_redraw
+
+    chart = _chart(tk_root)
+    state = chart._redraw
+    before = state.renders
+
+    state.on_configure()
+    assert state.pending is not None, "the configure event scheduled nothing"
+    assert state.renders == before, "rendered during the burst instead of after it"
+
+    state.render_now()                  # what the pending after-callback runs
+    assert state.renders == before + 1, "the deferred render never happened"
+    assert state.pending is None, "the render did not clear its own pending id"
+    assert chart_redraw.QUIET_MS >= 60, "a quiet window shorter than a frame debounces nothing"
+    chart.destroy()

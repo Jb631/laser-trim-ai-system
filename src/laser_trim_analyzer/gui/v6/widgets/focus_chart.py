@@ -12,6 +12,7 @@ import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import FRACTION_METRICS, metric_label
 from laser_trim_analyzer.ml.lots import MIN_LOTS_TRAIN
@@ -82,6 +83,8 @@ class FocusChart(ctk.CTkFrame):
         self.canvas = FigureCanvasTkAgg(self._fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True,
                                           padx=theme.SPACE_SM, pady=theme.SPACE_SM)
+        # One render at the end of a resize, not one per <Configure>.
+        self._redraw = debounce_resize_redraws(self.canvas)
         self.bind("<Destroy>", self._on_destroy)
         self._style()
 

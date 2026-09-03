@@ -5,6 +5,7 @@ import customtkinter as ctk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from laser_trim_analyzer.gui.v6.chart_redraw import debounce_resize_redraws
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
@@ -32,6 +33,8 @@ class MiniTrendChart(ctk.CTkFrame):
         self._ax = self._fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self._fig, master=self)   # NOTE: `canvas`, not `_canvas`
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        # One render at the end of a resize, not one per <Configure>.
+        self._redraw = debounce_resize_redraws(self.canvas)
         self.bind("<Destroy>", self._on_destroy)
 
     def set_points(self, points: List[Tuple[str, float]],
