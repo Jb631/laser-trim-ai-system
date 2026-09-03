@@ -3,6 +3,14 @@
 Recent list is capped (most-recent N for the window). The search box bypasses that cap and
 the window via on_search → a DB query, so you can pull up a specific unit by serial even if
 it's old or outside the current window — the Job-2a 'find the unit I'm working on now' need.
+
+RENDER BUDGET (2026-09-02). A CTk row-frame is not cheap: building one per record
+froze the Tk thread for the whole model switch — measured on an M-series Mac,
+200 units = 545 ms and the FT tab's 500 rows = 1,419 ms, with a re-set (destroy
++ rebuild) costing 2,105 ms. The work laptop is slower still. So the tabs render
+`INITIAL_ROWS` and put the rest behind one button, exactly as `FocusListZone`
+does — including its rule that new data collapses the view again, because "show
+all" describes a list that no longer exists once the model changed.
 """
 from typing import Callable, Dict, List, Optional
 
@@ -13,8 +21,61 @@ from laser_trim_analyzer.gui.v6.theme import ThemeManager
 _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Status"),
             ("sigma_gradient", "Sigma gradient"), ("linearity_error", "Linearity error")]
 
+# Shared by the three row-list tabs on the Model page (units, final test,
+# smoothness) so the budget is one number with one rationale — see the module
+# docstring. 50 fills the visible list on a 1400x900 window; the rest is one
+# click away and the button says how many.
+INITIAL_ROWS = 50
 
-class UnitsTab(ctk.CTkFrame):
+
+def show_all_label(total: int, noun: str, expanded: bool) -> str:
+    """The button's wording. Pure, so the phrasing is testable.
+
+    The collapsed label carries the REAL total, never the budget: "show all"
+    over an unstated count is how a render cap turns into hidden data.
+    """
+    if expanded:
+        return f"Show only the first {INITIAL_ROWS} of {total} {noun}"
+    return f"Show all {total} {noun}"
+
+
+class RowBudgetMixin:
+    """First `INITIAL_ROWS` rows + one "show all" control — see module docstring.
+
+    The host widget provides `self.theme`, `self._list` (the scrollable frame
+    the rows go in) and a `_render()` that rebuilds `self._rows` under
+    `self._rows_host`; `_ROW_NOUN` is what the button counts.
+    """
+
+    _ROW_NOUN = "rows"
+
+    def _reset_rows_host(self) -> None:
+        """Drop the whole list in one native teardown, then start fresh."""
+        self._show_all_btn.pack_forget()      # re-packed last, below the rows
+        self._rows_host.destroy()
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host.pack(side="top", fill="x")
+        self._rows = []
+
+    def _budget_slice(self, ordered: list) -> list:
+        return list(ordered) if self._expanded else list(ordered[:INITIAL_ROWS])
+
+    def _apply_show_all(self, total: int) -> None:
+        """Pack the control below the rows — only when rows are actually held back."""
+        if total <= INITIAL_ROWS:
+            return
+        self._show_all_btn.configure(
+            text=show_all_label(total, self._ROW_NOUN, self._expanded))
+        self._show_all_btn.pack(side="top", fill="x", pady=(self.theme.SPACE_XS, 0))
+
+    def _toggle_expand(self) -> None:
+        self._expanded = not self._expanded
+        self._render()
+
+
+class UnitsTab(RowBudgetMixin, ctk.CTkFrame):
+    _ROW_NOUN = "units"
+
     def __init__(self, master, theme: ThemeManager, on_unit_click: Callable[[dict], None],
                  on_export: Callable[[], None],
                  on_search: Optional[Callable[[str], None]] = None,
@@ -28,6 +89,7 @@ class UnitsTab(ctk.CTkFrame):
         self._rows: List[_UnitRow] = []
         self._sort_key = "file_date"
         self._sort_rev = True
+        self._expanded = False        # render budget — see module docstring
         self._selected: set = set()   # analysis_id of checked rows (subset export)
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="top", fill="x", pady=(0, theme.SPACE_SM))
@@ -66,6 +128,19 @@ class UnitsTab(ctk.CTkFrame):
             h.bind("<Button-1>", lambda e, k=key: self._sort_by(k))
         self._list = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._list.pack(side="top", fill="both", expand=True)
+        # Rows live in their own frame so a refresh is ONE native teardown
+        # instead of N: destroying 200 row widgets one at a time cost as much
+        # as building them (2,105 ms on the FT tab's 500).
+        self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
+        self._rows_host.pack(side="top", fill="x")
+        # Persistent, never destroyed — the FocusListZone reason: CTkButton
+        # schedules a click animation on itself, so destroying it from inside
+        # its own command leaves a pending `after` on a dead widget. Packed and
+        # unpacked instead.
+        self._show_all_btn = ctk.CTkButton(self._list, text="", command=self._toggle_expand,
+                                           fg_color="transparent", hover_color=theme.CARD,
+                                           text_color=theme.ACCENT, anchor="w", height=26,
+                                           font=theme.font(theme.SIZE_BODY))
         self._cap = ctk.CTkLabel(self, text="", font=theme.font(theme.SIZE_CAPTION),
                                  text_color=theme.TEXT_SECONDARY)
         self._cap.pack(side="top", fill="x")
@@ -78,10 +153,16 @@ class UnitsTab(ctk.CTkFrame):
         self._units = list(units)
         self._caption = caption
         self._selected = set()       # new model/window → clear checkboxes
+        self._expanded = False       # ...and "show all" described the old list
         self._render()
 
     def get_selected_units(self) -> List[dict]:
-        """The checked rows; if none are checked, every unit currently shown."""
+        """The checked rows; if none are checked, every unit the tab HOLDS.
+
+        Deliberately `self._units`, not the rendered rows: the render budget is
+        a drawing limit, and an export that silently shrank to the 50 visible
+        rows would be a data-loss bug wearing a performance fix's clothes.
+        """
         if not self._selected:
             return list(self._units)
         return [u for u in self._units if u.get("analysis_id") in self._selected]
@@ -112,18 +193,17 @@ class UnitsTab(ctk.CTkFrame):
         self._render()
 
     def _render(self):
-        for r in self._rows:
-            r.destroy()
-        self._rows.clear()
+        self._reset_rows_host()
         ordered = sorted(self._units,
                          key=lambda u: (u.get(self._sort_key) is None, u.get(self._sort_key)),
                          reverse=self._sort_rev)
-        for u in ordered:
+        for u in self._budget_slice(ordered):
             uid = u.get("analysis_id")
-            row = _UnitRow(self._list, unit=u, theme=self.theme, on_click=self._on_unit_click,
+            row = _UnitRow(self._rows_host, unit=u, theme=self.theme, on_click=self._on_unit_click,
                            on_toggle=self._toggle_select, selected=(uid in self._selected))
             row.pack(side="top", fill="x", pady=1)
             self._rows.append(row)
+        self._apply_show_all(len(ordered))
         cap = getattr(self, "_caption", None)
         n = len(self._selected)
         base = cap if cap else f"{len(ordered)} unit(s)"

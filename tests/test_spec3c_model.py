@@ -156,6 +156,159 @@ def test_units_tab_row_per_unit_keeps_duplicate_serials(tk_root):
     assert len(tab._rows) == 2
 
 
+# ---- Row-render budget (2026-09-02 perf fix) -------------------------------
+# Building one CTk row-frame per record blocked the Tk thread for 0.5-2.1 s on a
+# model switch (measured: 200 units 545 ms, 500 FT rows 1419 ms, FT re-set
+# 2105 ms). The tabs now render INITIAL_ROWS and offer "show all" — the same
+# pattern FocusListZone uses, collapse-on-new-data included.
+#
+# These are STRUCTURAL assertions on purpose: a timing assertion would flake on
+# CI while a row count cannot.
+
+def _bench_units(n):
+    from datetime import datetime, timedelta
+    return [{"analysis_id": i, "serial": f"SN{i:05d}",
+             "file_date": datetime(2026, 1, 1) + timedelta(days=i % 90),
+             "overall_status": "Fail" if i % 3 == 0 else "Pass",
+             "sigma_gradient": 0.01 + i * 1e-5,
+             "linearity_error": 0.004 + i * 1e-5} for i in range(n)]
+
+
+def _bench_ft(n):
+    from datetime import datetime, timedelta
+    return [{"id": i, "serial": f"SN{i:05d}",
+             "file_date": datetime(2026, 1, 1) + timedelta(days=i % 90),
+             "result": "FAIL" if i % 4 == 0 else "PASS",
+             "linked": bool(i % 2), "match": 90 + (i % 10)} for i in range(n)]
+
+
+def _bench_smooth(n):
+    from datetime import datetime, timedelta
+    return [{"serial": f"SN{i:05d}",
+             "file_date": datetime(2026, 1, 1) + timedelta(days=i % 90),
+             "max_smoothness_value": 0.4 + i * 1e-4, "smoothness_spec": 1.0,
+             "smoothness_pass": bool(i % 3)} for i in range(n)]
+
+
+def _units_tab(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
+    return UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=lambda u: None,
+                    on_export=lambda: None)
+
+
+def test_units_tab_renders_only_the_budget_and_offers_the_real_total(tk_root):
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import INITIAL_ROWS
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(200))
+    assert len(tab._rows) == INITIAL_ROWS == 50
+    # The control is packed, and its label names the REAL total — not the
+    # budget. "Show all" over an unstated count is how a cap hides data.
+    assert tab._show_all_btn.winfo_manager() == "pack"
+    assert "Show all 200" in tab._show_all_btn.cget("text")
+
+
+def test_units_tab_show_all_builds_the_remainder(tk_root):
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(200))
+    tab._show_all_btn.invoke()
+    assert len(tab._rows) == 200
+
+
+def test_units_tab_collapses_back_to_the_budget_on_new_data(tk_root):
+    """FocusListZone's rule: "show all" describes a list that no longer exists."""
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import INITIAL_ROWS
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(200))
+    tab._show_all_btn.invoke()
+    assert len(tab._rows) == 200
+    tab.set_units(_bench_units(200))          # new model selected
+    assert tab._expanded is False
+    assert len(tab._rows) == INITIAL_ROWS
+
+
+def test_units_tab_show_all_rows_click_through_identically(tk_root):
+    """A row built by "show all" opens the same modal as a first-50 row."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import UnitsTab
+    seen = []
+    tab = UnitsTab(tk_root, theme=ThemeManager(), on_unit_click=seen.append,
+                   on_export=lambda: None)
+    tab.set_units(_bench_units(200))
+    tab._show_all_btn.invoke()
+    tab._rows[150]._on_click()                # a row that only show-all built
+    assert len(seen) == 1 and seen[0] is tab._rows[150].unit
+
+
+def test_units_tab_under_the_budget_has_no_show_all_control(tk_root):
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(12))
+    assert len(tab._rows) == 12
+    assert tab._show_all_btn.winfo_manager() == ""
+
+
+def test_row_budget_never_shrinks_an_export(tk_root):
+    """The budget caps DRAWING. An export that quietly dropped the 150 unbuilt
+    rows would be data loss dressed up as a performance fix."""
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(200))
+    assert len(tab._rows) == 50 and len(tab.get_selected_units()) == 200
+    ft = FtUnitsTab(tk_root, theme=ThemeManager())
+    ft.set_units(_bench_ft(500))
+    assert len(ft._rows) == 50 and len(ft.get_selected_units()) == 500
+
+
+def test_units_tab_sorting_keeps_the_expanded_view(tk_root):
+    """Sorting reorders the same list, so it must not silently re-collapse."""
+    tab = _units_tab(tk_root)
+    tab.set_units(_bench_units(200))
+    tab._show_all_btn.invoke()
+    tab._sort_by("serial")
+    assert len(tab._rows) == 200
+
+
+def test_ft_units_tab_budget_show_all_and_collapse(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import INITIAL_ROWS
+    seen = []
+    tab = FtUnitsTab(tk_root, theme=ThemeManager(), on_unit_click=seen.append)
+    tab.set_units(_bench_ft(500))
+    assert len(tab._rows) == INITIAL_ROWS
+    assert "Show all 500" in tab._show_all_btn.cget("text")
+    tab._show_all_btn.invoke()
+    assert len(tab._rows) == 500
+    tab.set_units(_bench_ft(500))
+    assert len(tab._rows) == INITIAL_ROWS
+    # Selection survives the refactor: checking a row still scopes the export.
+    tab._toggle_select({"id": 3}, True)
+    assert tab.get_selected_units() == [u for u in tab._units if u["id"] == 3]
+
+
+def test_ft_units_tab_empty_state_has_no_show_all_control(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.ft_units_tab import FtUnitsTab
+    tab = FtUnitsTab(tk_root, theme=ThemeManager())
+    tab.set_units([])
+    assert tab._show_all_btn.winfo_manager() == ""
+
+
+def test_smoothness_tab_budget_show_all_and_collapse(tk_root):
+    from laser_trim_analyzer.gui.v6.theme import ThemeManager
+    from laser_trim_analyzer.gui.v6.widgets.smoothness_tab import SmoothnessTab
+    from laser_trim_analyzer.gui.v6.widgets.units_tab import INITIAL_ROWS
+    tab = SmoothnessTab(tk_root, theme=ThemeManager())
+    tab.set_records(_bench_smooth(200))
+    assert len(tab._rows) == INITIAL_ROWS
+    assert "Show all 200" in tab._show_all_btn.cget("text")
+    tab._show_all_btn.invoke()
+    assert len(tab._rows) == 200
+    tab.set_records(_bench_smooth(200))
+    assert len(tab._rows) == INITIAL_ROWS
+
+
 def test_unit_chart_modal_marks_fail_points(tk_root):
     """Q1: every point shown; out-of-limit points become fail_points."""
     from laser_trim_analyzer.gui.v6.widgets.unit_chart_modal import compute_fail_points
