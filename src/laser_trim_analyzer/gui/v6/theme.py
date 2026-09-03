@@ -4,8 +4,9 @@ Foundations §2.3. Frozen dataclass; every widget/page reads a shared instance.
 Helpers: tier_color (bg, fg) pair, tier_dot_color (visible STABLE), font() (real
 fallback to an available family).
 """
+import tkinter
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -40,6 +41,12 @@ class ThemeManager:
     RADIUS_SM: int = 4; RADIUS_MD: int = 6; RADIUS_LG: int = 8
 
     resolved_family: str = field(default="", init=False)
+    # One CTkFont per (family, size, weight) — see font(). Excluded from
+    # repr/eq: it is a performance cache, not part of the theme's identity.
+    _font_cache: Dict[Tuple[str, int, str], ctk.CTkFont] = field(
+        default_factory=dict, init=False, repr=False, compare=False)
+    _font_root: Optional[object] = field(
+        default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         # Resolve the font family ONCE against what Tk actually has (real fallback).
@@ -58,7 +65,35 @@ class ThemeManager:
 
     # ---- Helpers ----
     def font(self, size: int, weight: str = "normal") -> ctk.CTkFont:
-        return ctk.CTkFont(family=self.resolved_family, size=size, weight=weight)
+        """One shared CTkFont per (family, size, weight).
+
+        This used to mint a NEW CTkFont on every call, and it has ~144 call
+        sites — so a 50-row UnitsTab alone built 250+ of them. A CTkFont is a
+        `tkinter.font.Font`: constructing one is a `font create` round trip
+        into Tcl plus a `font actual` to read the resolved family back, and
+        dropping one is a `font delete`. Rebuilding a page therefore paid a
+        few thousand Tcl round trips for maybe ten distinct fonts. Sharing
+        font objects between widgets is CustomTkinter's documented usage.
+
+        The cache is keyed on the Tk root as well, because a `Font` belongs to
+        the interpreter that created it: hand a font from a destroyed root to
+        a new widget and Tk raises. In the app that never happens (the theme
+        dies with its V6App), but tests build and tear down roots, so the
+        cache is dropped whenever the default root changes.
+
+        Do not `configure()` a font you get from here — it is shared, and the
+        change would land on every widget using that size. Nothing does today.
+        """
+        root = getattr(tkinter, "_default_root", None)
+        if root is not self._font_root:
+            self._font_cache.clear()
+            self._font_root = root
+        key = (self.resolved_family, size, weight)
+        cached = self._font_cache.get(key)
+        if cached is None:
+            cached = ctk.CTkFont(family=self.resolved_family, size=size, weight=weight)
+            self._font_cache[key] = cached
+        return cached
 
     def tier_color(self, tier: DriftTier) -> Tuple[str, str]:
         """(background, foreground) for a tier. STABLE blends into SURFACE."""

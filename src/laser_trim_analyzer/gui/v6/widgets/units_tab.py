@@ -220,8 +220,12 @@ class _UnitRow(ctk.CTkFrame):
         # Per-row select checkbox for subset chart export. It's a real widget so
         # it consumes its own click and toggling never opens the chart modal.
         if on_toggle is not None:
+            # font= is not cosmetic here: a CTk widget given no font builds its
+            # OWN CTkFont, i.e. a Tcl `font create` per row. Passing the shared
+            # theme font is what keeps a 200-row render at a handful of fonts.
             self._chk = ctk.CTkCheckBox(self, text="", width=26, checkbox_width=16,
                                         checkbox_height=16, fg_color=theme.ACCENT,
+                                        font=theme.font(theme.SIZE_BODY),
                                         hover_color=theme.ACCENT_HOVER, command=self._toggled)
             if selected:
                 self._chk.select()

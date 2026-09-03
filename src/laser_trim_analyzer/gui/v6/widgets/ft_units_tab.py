@@ -126,8 +126,11 @@ class FtUnitsTab(RowBudgetMixin, ctk.CTkFrame):
         t = self.theme
         color = {"FAIL": t.TIER_OOC, "PASS": t.TEXT_PRIMARY, "WARNING": t.TIER_WARNING}
         row = ctk.CTkFrame(self._rows_host, fg_color=t.SURFACE)
+        # font= is not cosmetic: a CTk widget given no font builds its OWN
+        # CTkFont — a Tcl `font create` per row. Share the theme's instead.
         chk = ctk.CTkCheckBox(row, text="", width=26, checkbox_width=16,
                               checkbox_height=16, fg_color=t.ACCENT,
+                              font=t.font(t.SIZE_BODY),
                               hover_color=t.ACCENT_HOVER,
                               command=lambda: self._toggle_select(u, bool(chk.get())))
         chk.pack(side="left", padx=(t.SPACE_SM, 0))
