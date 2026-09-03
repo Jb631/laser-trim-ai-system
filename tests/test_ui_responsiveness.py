@@ -73,3 +73,120 @@ def test_two_hundred_rows_build_a_handful_of_fonts_not_one_per_row(tk_root, monk
     assert len(tab._rows) == 200
     assert len(live) <= 12, f"{len(live)} CTkFont objects for 200 rows"
     tab.destroy()
+
+
+# ---- Commit 2: the CTkScrollbar redraw must not re-enter -------------------
+
+@pytest.fixture
+def patched_ctk():
+    """The pinned-CustomTkinter patches, installed. Strict: a dependency bump
+    that moves off 5.2.2 fails here instead of quietly un-patching the UI."""
+    from laser_trim_analyzer.gui.v6 import ctk_patches
+    assert ctk_patches.apply(strict=True)
+    return ctk_patches
+
+
+class _ScrollDepth:
+    depth = 0
+
+
+def test_nested_scrollbar_draw_does_not_pump_the_idle_queue_again(tk_root, patched_ctk):
+    """The whole cascade: _draw -> update_idletasks -> (Tk fires a scroll
+    callback) -> set -> _draw -> update_idletasks -> ... 46 levels deep.
+
+    The nested redraw must still DRAW (the scrollbar has to track content) but
+    must not drain the idle queue a second time.
+
+    Re-entry is provoked from inside the idle pump, which is where Tk really
+    does it — geometry management runs there, fires <Configure>, and a scroll
+    region change calls set(). Provoking it anywhere else would test a path the
+    guard is not even on, and pass without proving anything.
+    """
+    sb = ctk.CTkScrollbar(tk_root)
+    sb.pack()
+    tk_root.update_idletasks()
+
+    draws = []
+    patched_draw = type(sb)._draw
+
+    def counting_draw(self, *args, **kwargs):
+        _ScrollDepth.depth += 1
+        draws.append(_ScrollDepth.depth)
+        try:
+            return patched_draw(self, *args, **kwargs)
+        finally:
+            _ScrollDepth.depth -= 1
+
+    pumps = []
+    real_pump = type(sb._canvas).update_idletasks
+
+    def spying_pump():
+        pumps.append(_ScrollDepth.depth)
+        if len(pumps) == 1:                 # exactly as Tk does: from the pump
+            sb.set(0.25, 0.75)
+        return real_pump(sb._canvas)
+
+    type(sb)._draw = counting_draw
+    sb._canvas.update_idletasks = spying_pump
+    try:
+        sb.set(0.0, 0.5)
+    finally:
+        type(sb)._draw = patched_draw
+        sb._canvas.__dict__.pop("update_idletasks", None)
+        _ScrollDepth.depth = 0
+
+    assert max(draws) == 2, "the re-entry the test provokes did not happen"
+    assert pumps == [1], (
+        f"the idle queue was pumped at _draw depths {pumps}; only the outermost "
+        f"redraw may pump, or the cascade is back")
+    # ...and the nested draw still took effect: set() is not a no-op.
+    assert sb.get() == (0.25, 0.75)
+    sb.destroy()
+
+
+def test_scrollbar_redraw_guard_is_released_after_an_exception(tk_root, patched_ctk):
+    """A raising redraw must not leave every later scrollbar un-pumped."""
+    from laser_trim_analyzer.gui.v6.ctk_patches import _ScrollbarRedraw
+
+    sb = ctk.CTkScrollbar(tk_root)
+    sb.pack()
+
+    def boom():
+        raise RuntimeError("redraw blew up")
+
+    # The last thing CustomTkinter's _draw does is pump this; make it raise.
+    sb._canvas.update_idletasks = boom
+    with pytest.raises(RuntimeError):
+        sb.set(0.1, 0.4)
+    del sb._canvas.update_idletasks
+
+    assert _ScrollbarRedraw.in_progress is False
+    sb.set(0.2, 0.5)          # and the next redraw works normally
+    assert sb.get() == (0.2, 0.5)
+    sb.destroy()
+
+
+def test_scrollable_frame_with_100_children_still_scrolls_to_the_bottom(tk_root, patched_ctk):
+    """Behavioural guard on the patch: the scrollbar must still track content.
+
+    A guard that suppressed the redraw itself (rather than only the nested idle
+    pump) would leave the thumb stuck at the top — the scrollbar would lie
+    about where you are in the list. This asserts it does not.
+    """
+    theme = ThemeManager()
+    frame = ctk.CTkScrollableFrame(tk_root, width=200, height=150)
+    frame.pack(fill="both", expand=True)
+    for i in range(100):
+        ctk.CTkLabel(frame, text=f"row {i}", font=theme.font(theme.SIZE_BODY)).pack()
+    tk_root.update_idletasks()
+
+    top = frame._scrollbar.get()
+    assert top[0] == pytest.approx(0.0, abs=1e-6)
+    assert top[1] < 1.0, "100 rows in a 150px frame should overflow"
+
+    frame._parent_canvas.yview_moveto(1.0)
+    tk_root.update_idletasks()
+    bottom = frame._scrollbar.get()
+    assert bottom[1] == pytest.approx(1.0, abs=1e-6)
+    assert bottom[0] > top[0], "the scrollbar did not follow the view to the bottom"
+    frame.destroy()

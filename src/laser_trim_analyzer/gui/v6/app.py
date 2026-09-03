@@ -5,6 +5,7 @@ import customtkinter as ctk
 
 from laser_trim_analyzer.config import Config
 from laser_trim_analyzer.database import get_database
+from laser_trim_analyzer.gui.v6 import ctk_patches
 from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
@@ -18,6 +19,9 @@ class V6App(ctk.CTk):
         # global CTk state for V5 or test runs.
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+        # Same reason, and the same place: patches on the pinned CustomTkinter
+        # (see ctk_patches.py). Idempotent, so a second V6App is fine.
+        ctk_patches.apply()
 
         self.config = config
         self.theme = ThemeManager()
