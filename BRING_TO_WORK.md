@@ -1,5 +1,38 @@
 # Taking V6 to work — first-day checklist
 
+## 🆕 NEW LAPTOP, CLEAN DATABASE — this is the whole checklist (2026-09-02)
+
+You said you'll reprocess every file fresh on the new machine. That is the
+best possible path: **every data-repair script further down this page
+becomes unnecessary**, because the fixed parser and analyzer produce
+correct data on first parse — magnitudes recorded, clock times kept so
+trim/FT links are right from the start, corrupt limit columns caught at
+ingest, fail-point counts computed correctly. Skip those sections unless
+you decide to keep an old database after all.
+
+1. **Install Python 3.12 or newer** (3.13 is fine; this Mac runs 3.14). The
+   pinned libraries — the exact set that passed 1,386 tests tonight — need
+   3.11+, so the old "3.10+" note in the launcher was wrong and is fixed.
+2. **Clone / pull `main`** — it is identical to `V6` now. Run `run_v6.bat`.
+   First run builds `.venv` from `requirements-pinned.txt` (a few minutes,
+   needs proxy/internet once).
+3. **Settings → ingest folders**: add each laser folder and the Final Test
+   folder, in the order you want them run. Once.
+4. **HOME → "Process everything new"**, then walk away. The first run is
+   the full history (~106k trim files, ~150k final-test files). The scan
+   fast-path is in, but the first pass is still the long one — run it and
+   let it finish; the summary line tells you folders · new files · time.
+5. **Settings → train the per-model ML** after the ingest, so FOCUS drift
+   baselines and the predictor exist on this machine.
+6. Then the smoke pass: HOME shows FOCUS; Investigate → 8232-1 → stats
+   table with banding; a unit → Final test overlay.
+
+If anything in that flow feels slow, that is a bug, not a fact of life —
+`scripts/ui_stall_probe.py` measures it; say what felt slow.
+
+---
+*Everything below is for a machine that keeps an EXISTING database.*
+
 ## ⚡ 2026-08-31 — 8232-1 never recorded HOW FAR out of spec it was (pull, then one script)
 
 8232-1 recorded whether each track passed linearity and how many points

@@ -1,7 +1,7 @@
 @echo off
 REM Laser Trim Analyzer V6 — Windows launcher (work machine).
 REM No hardcoded paths: runs from wherever this folder lives.
-REM First run: creates .venv and installs dependencies (needs Python 3.10+
+REM First run: creates .venv and installs dependencies (needs Python 3.12+ (numpy 2.5 needs 3.11+; this set was proven on 3.14)
 REM on PATH and one-time internet/proxy access for pip).
 cd /d "%~dp0"
 
