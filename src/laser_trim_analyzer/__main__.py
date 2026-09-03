@@ -65,8 +65,18 @@ def main():
     try:
         import pydantic, numpy, pandas, sqlalchemy, matplotlib, customtkinter
         from laser_trim_analyzer.core.models import TrackData, AnalysisStatus
-        _t = TrackData(track_id="_env", travel_length=1.0, linearity_spec=0.01,
-                       status=AnalysisStatus.PASS, linearity_error=float("nan"))
+        # The coercion hook rightly WARNS when it drops a NaN (2026-08-31, the
+        # linearity-magnitude fix made that silencer loud). This probe feeds it
+        # a deliberate NaN, so mute the models logger for just this line —
+        # otherwise every launch opens with an alarming warning the self-check
+        # itself caused, and real drop warnings lose their signal value.
+        _models_logger = logging.getLogger("laser_trim_analyzer.core.models")
+        _models_logger.disabled = True
+        try:
+            _t = TrackData(track_id="_env", travel_length=1.0, linearity_spec=0.01,
+                           status=AnalysisStatus.PASS, linearity_error=float("nan"))
+        finally:
+            _models_logger.disabled = False
         assert _t.linearity_error is None, "NaN coercion inactive"
         logging.getLogger(__name__).info(
             "Environment OK — pydantic %s, numpy %s, pandas %s, sqlalchemy %s, "
