@@ -34,6 +34,14 @@ you decide to keep an old database after all.
 If anything in that flow feels slow, that is a bug, not a fact of life —
 `scripts/ui_stall_probe.py` measures it; say what felt slow.
 
+**Known and not yet fixed (2026-09-03):** picking a model on Investigate
+pauses ~1.5 s on the Mac (longer on the laptop) while the previous model's
+rows are torn down. Window resizes pause ~0.65 s. Everything else — page
+switches, scrolling, HOME — is instant. The fix that cuts the model pause
+to ~0.5 s exists on branch `wip/deferred-teardown`; it runs cleanly in the
+app but its test file hangs pytest, so it was held back rather than shipped
+unverified. It lands once that is resolved.
+
 ---
 *Everything below is for a machine that keeps an EXISTING database.*
 
