@@ -184,6 +184,130 @@ def check_ft_incremental_fastpath() -> None:
     else:
         warn("FT fast-path: no Test Station sample files to scan")
 
+
+def check_ft_parser_console_silence() -> None:
+    """No non-finite / degenerate x ever reaches the FT ideal-line fit.
+
+    A full `Work Files` ingest printed 12 lines of
+
+        ** On entry to DLASCL, parameter number  4 had an illegal value
+
+    every single time — the only console noise the whole run produced. All 12
+    came from the one np.polyfit in `_extract_format2_tracks`, six per call,
+    on two real 8213-1 files whose Position column is 2,998 rows of literal
+    0.0. np.polyfit conditions its Vandermonde matrix by dividing each column
+    by that column's norm; a constant-zero x column has norm 0, so the
+    division is 0/0, the column fills with NaN, LAPACK's XERBLA prints those
+    six lines and the fit raises LinAlgError into a broad `except`. An
+    infinity in either column arrives at the same place by the other road:
+    the norm overflows to inf and inf/inf is NaN again. James's first full
+    ingest on the new laptop is ~150k final-test files; the console has to
+    stay clean.
+
+    Standalone — the synthetic sheets need neither the work database nor the
+    sample corpus, so this runs on any machine:
+        python scripts/app_qa_sweep.py --only ft-silence
+
+    Two mechanics matter. The capture is of FILE DESCRIPTOR 1, not
+    `sys.stdout`: XERBLA prints with C `printf` and sails past anything
+    Python swaps in. And `fflush(NULL)` is mandatory, because C stdout is
+    block-buffered when fd 1 is not a tty — without it the bytes sit in
+    libc's buffer until interpreter exit and this check reads clean while the
+    console still gets the noise.
+
+    The healthy sheet is the reason this cannot pass on an ERROR: a parser
+    that failed on everything would print nothing at all, so silence by
+    itself is not evidence. The check fails unless a good sheet still returns
+    its track with a real linearity_error, an inf row is dropped without
+    disturbing the fit through the surviving rows, and the degenerate file
+    yields no track rather than a fabricated linearity_error of 0.0.
+    """
+    import ctypes, os, tempfile, shutil  # noqa: E402
+    import numpy as np  # noqa: E402
+    import pandas as pd  # noqa: E402
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser  # noqa: E402
+
+    def same_series(a, b, tol=1e-12):
+        return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+    libc = ctypes.CDLL(None)
+    tmp = Path(tempfile.mkdtemp(prefix="ltaqa_ftsilence_"))
+
+    def sheet(name, measured, positions):
+        """'Data' + 'Charts' is the Format-2 signature; no header row."""
+        path = tmp / name
+        with pd.ExcelWriter(path, engine="openpyxl") as w:
+            pd.DataFrame({0: list(measured), 1: list(positions),
+                          2: list(range(1, len(measured) + 1))}).to_excel(
+                w, sheet_name="Data", header=False, index=False)
+            pd.DataFrame({0: ["x"]}).to_excel(
+                w, sheet_name="Charts", header=False, index=False)
+        return path
+
+    n = 40
+    pos = [i / (n - 1) for i in range(n)]
+    meas = [5.0 * p + 0.01 * np.sin(np.pi * p) for p in pos]       # bowed ramp
+    inf_pos, inf_meas = list(pos), list(meas)
+    inf_pos.insert(20, float("inf"))
+    inf_meas.insert(20, 2.5)
+
+    cases = {
+        "healthy": sheet("healthy.xlsx", meas, pos),
+        "inf_row": sheet("inf_row.xlsx", inf_meas, inf_pos),
+        "flat_x": sheet("flat_x.xlsx", meas, [0.0] * n),
+    }
+    real = [REPO / "Work Files/Sample_Base_2026-04-10/Test Station/8213-4"
+                 / f"8213-1_sn{s}.xls" for s in (21, 22)]
+    for p in real:
+        if p.exists():
+            cases[p.name] = p
+
+    parser = FinalTestParser()
+    parsed, failures = {}, []
+    sys.stdout.flush(); libc.fflush(None)
+    saved_fd = os.dup(1)
+    sink = tempfile.TemporaryFile()
+    os.dup2(sink.fileno(), 1)
+    try:
+        for label, path in cases.items():
+            try:
+                parsed[label] = parser.parse_file(path)
+            except Exception as exc:
+                failures.append(f"{label}: {type(exc).__name__}: {exc}")
+    finally:
+        sys.stdout.flush(); libc.fflush(None)
+        os.dup2(saved_fd, 1); os.close(saved_fd)
+        sink.seek(0)
+        console = sink.read().decode(errors="replace")
+        sink.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def tracks(label):
+        return (parsed.get(label) or {}).get("tracks") or []
+
+    good = tracks("healthy")
+    healthy_ok = len(good) == 1 and (good[0].get("linearity_error") or 0) > 0
+    dropped_ok = (healthy_ok and len(tracks("inf_row")) == 1
+                  and same_series(tracks("inf_row")[0]["errors"], good[0]["errors"]))
+    flat_ok = tracks("flat_x") == []
+    real_ok = all(tracks(p.name) == [] for p in real if p.name in parsed)
+    xerbla = sum(1 for line in console.splitlines()
+                 if "DLASCL" in line or "XERBLA" in line)
+
+    check("FT parser: no non-finite or flat x reaches the ideal-line fit "
+          "(console stays silent)",
+          not failures and healthy_ok and dropped_ok and flat_ok and real_ok
+          and console == "",
+          f"parsed={len(parsed)}/{len(cases)} real_samples="
+          f"{sum(1 for p in real if p.name in parsed)}/{len(real)} "
+          f"healthy_track={len(good)} healthy_error="
+          f"{good[0].get('linearity_error') if good else None} "
+          f"inf_row_matches_healthy={dropped_ok} flat_x_tracks="
+          f"{len(tracks('flat_x'))} xerbla_lines={xerbla} "
+          f"console_bytes={len(console)}"
+          + (f" | raised: {failures}" if failures else ""))
+
+
 def check_model_stats_vs_sql(db, raw) -> None:
     """INVESTIGATE stats table == raw SQL, filter and all.
 
@@ -1420,6 +1544,7 @@ def main() -> int:
         warn("pipeline: no sample files found under Work Files/Sample_Base_2026-04-10/")
 
     check_ft_incremental_fastpath()
+    check_ft_parser_console_silence()
     check_multi_folder_ingest()
 
     # Ingest guard fires on a synthetic corrupt track.
@@ -1998,6 +2123,7 @@ def _tally() -> int:
 # can be run on a machine that has no copy of the real data:
 #     python scripts/app_qa_sweep.py --only ft-fastpath
 STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
+              "ft-silence": check_ft_parser_console_silence,
               "ingest": check_multi_folder_ingest}
 
 

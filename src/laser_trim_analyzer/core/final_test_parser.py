@@ -741,26 +741,38 @@ class FinalTestParser:
             for i in range(data_start, len(df)):
                 row = df.iloc[i]
 
-                # Get position
+                # Get position — finite values only. `pd.notna` (and so
+                # is_numeric) answers True for ±inf, and an infinity is not a
+                # position: np.polyfit conditions its Vandermonde matrix by
+                # dividing each column by that column's norm, an infinite
+                # entry makes the norm inf, and inf/inf fills the column with
+                # NaN. LAPACK then prints six lines of XERBLA to the console
+                # and the fit raises. Drop the row instead.
                 if df.shape[1] > cols["position"]:
                     pos = row.iloc[cols["position"]]
-                    if is_numeric(pos):
-                        pos_val = float(pos)
-                    else:
+                    if not is_numeric(pos):
+                        continue
+                    pos_val = float(pos)
+                    if not np.isfinite(pos_val):
                         continue
                 else:
                     continue
 
                 # Get measured value — skip the row entirely when the cell
-                # is missing/NaN. Substituting 0.0 fabricates a measurement
-                # at the lowest possible voltage, which corrupts the
-                # measured-vs-ideal-line fit and the resulting error series.
+                # is missing/NaN or non-finite. Substituting 0.0 fabricates a
+                # measurement at the lowest possible voltage, which corrupts
+                # the measured-vs-ideal-line fit and the resulting error
+                # series; an infinity poisons the same fit the same way a
+                # non-finite position does.
                 if df.shape[1] > cols["measured"]:
                     meas = row.iloc[cols["measured"]]
                     if not pd.notna(meas):
                         continue
+                    meas_val = float(meas)
+                    if not np.isfinite(meas_val):
+                        continue
                     positions.append(pos_val)
-                    measured_values.append(float(meas))
+                    measured_values.append(meas_val)
                 else:
                     continue
 
@@ -768,6 +780,32 @@ class FinalTestParser:
                 # CALCULATE linearity error from measured vs ideal
                 positions_arr = np.array(positions)
                 measured_arr = np.array(measured_values)
+
+                # A line needs the x axis to actually move. When every
+                # surviving position is the SAME value, np.polyfit divides
+                # that Vandermonde column by its own norm — 0/0 — fills it
+                # with NaN, and LAPACK refuses the matrix: six XERBLA lines
+                # printed with C printf — straight to file descriptor 1, so
+                # replacing sys.stdout does not intercept them — followed by
+                # LinAlgError. Two real 8213-1 files carry 2,998 rows of
+                # position 0.0 and did exactly that on every ingest.
+                #
+                # There is no honest result to fall back to. With no position
+                # information there is no deviation-from-ideal to measure, and
+                # Format 2 carries no spec limits to judge one against, so an
+                # errors array of zeros would enter final_test_tracks as
+                # linearity_error 0.0 — a perfect score for a file that
+                # measured nothing, dragging down every FT average it joins.
+                # Report no track, which is what the swallowed LinAlgError
+                # already produced, and say why.
+                if len(positions) >= 2 and positions_arr.min() == positions_arr.max():
+                    logger.warning(
+                        "FT format2: position column has no spread (%r on all "
+                        "%d rows) — no ideal line can be fitted, so no track "
+                        "is reported for this file.",
+                        positions[0], len(positions)
+                    )
+                    return tracks
 
                 # Fit ideal line: measured = m * position + b
                 if len(positions) >= 2:
