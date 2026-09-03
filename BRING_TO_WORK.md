@@ -18,10 +18,14 @@ you decide to keep an old database after all.
    needs proxy/internet once).
 3. **Settings → ingest folders**: add each laser folder and the Final Test
    folder, in the order you want them run. Once.
-4. **HOME → "Process everything new"**, then walk away. The first run is
-   the full history (~106k trim files, ~150k final-test files). The scan
-   fast-path is in, but the first pass is still the long one — run it and
-   let it finish; the summary line tells you folders · new files · time.
+4. **HOME → "Process everything new"**, then walk away — **start it at
+   the end of a day and let it run overnight.** The first run is the full
+   history (~106k trim files, ~150k final-test files). Measured here:
+   1,308 files in 77 s (about 17 files/s), so the whole history is roughly
+   **4 hours on this Mac and plausibly 6–8 on the laptop**. Later runs
+   only touch new files and take minutes. The summary line tells you
+   folders · new files · time; a folder that is offline is reported and
+   skipped, never silently dropped.
 5. **Settings → train the per-model ML** after the ingest, so FOCUS drift
    baselines and the predictor exist on this machine.
 6. Then the smoke pass: HOME shows FOCUS; Investigate → 8232-1 → stats
