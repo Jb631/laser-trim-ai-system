@@ -11,11 +11,16 @@ froze the Tk thread for the whole model switch — measured on an M-series Mac,
 `INITIAL_ROWS` and put the rest behind one button, exactly as `FocusListZone`
 does — including its rule that new data collapses the view again, because "show
 all" describes a list that no longer exists once the model changed.
+
+The other half of that measurement — the 2,105 ms re-set was mostly the DESTROY
+half — is answered by `gui/v6/retire.py`: `_reset_rows_host` unmaps the old rows
+and buries them on idle time instead of making the click wait for them.
 """
 from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.retire import retire
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 _COLUMNS = [("serial", "Serial"), ("file_date", "Date"), ("overall_status", "Status"),
@@ -50,9 +55,18 @@ class RowBudgetMixin:
     _ROW_NOUN = "rows"
 
     def _reset_rows_host(self) -> None:
-        """Drop the whole list in one native teardown, then start fresh."""
+        """Swap in an empty list NOW; bury the old one on idle time.
+
+        The old host is unmapped in this call — so the switch is visually
+        instant — and its widgets are destroyed a slice at a time afterwards.
+        Destroying them here cost 1.5 s of frozen Tk thread on a model switch
+        (`scripts/ui_stall_probe.py`, 2026-09-02); see `gui/v6/retire.py` for
+        why a CTk destroy is that expensive. A brand-new host every time is
+        what makes that safe: nothing is ever built into a container that is
+        still draining.
+        """
         self._show_all_btn.pack_forget()      # re-packed last, below the rows
-        self._rows_host.destroy()
+        retire(self._rows_host)
         self._rows_host = ctk.CTkFrame(self._list, fg_color="transparent")
         self._rows_host.pack(side="top", fill="x")
         self._rows = []

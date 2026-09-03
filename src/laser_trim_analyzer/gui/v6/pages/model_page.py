@@ -15,6 +15,7 @@ from laser_trim_analyzer.core.spec_alignment import compare_station_specs
 from laser_trim_analyzer.database.models import (
     AnalysisResult as DBAR, ModelMetricState, SmoothnessResult as DBSR, TrackResult as DBTR, StatusType)
 from laser_trim_analyzer.gui.v6.page_base import PageBase
+from laser_trim_analyzer.gui.v6.retire import retire
 from laser_trim_analyzer.gui.v6.widgets.drift_metrics_tab import DriftMetricsTab
 from laser_trim_analyzer.gui.v6.widgets.focus_chart import FocusChart
 from laser_trim_analyzer.gui.v6.widgets.history_tab import HistoryTab
@@ -902,11 +903,11 @@ class ModelPage(PageBase):
             self._on_model_selected(name)
 
         def render():
-            for r in rows:
-                try:
-                    r.destroy()
-                except Exception:
-                    pass
+            # Every keystroke re-filters the list. Retiring the old labels (as
+            # every other rebuild on this page now does) keeps the typing
+            # latency off the destroy of up to 200 rows — they vanish from the
+            # list in this call and are buried between keystrokes.
+            retire(*rows)
             rows.clear()
             flt = search.get().strip().lower()
             matches = [m for m in values if not flt or flt in m.lower()]

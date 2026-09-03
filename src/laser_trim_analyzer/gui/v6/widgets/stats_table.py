@@ -52,6 +52,7 @@ import customtkinter as ctk
 from laser_trim_analyzer.core.model_stats import (
     DIST_HEADERS, RATE_HEADERS, Cell, LotVerdict, ModelStats, StatRow,
     cell_texts, disclosure_text, format_in, lot_line, row_unit, summary_line)
+from laser_trim_analyzer.gui.v6.retire import retire
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 # The fixed rows at the top of every block, and the first row a metric may use.
@@ -130,11 +131,12 @@ class StatsTableZone(ctk.CTkFrame):
                   lot_stats: Optional[ModelStats] = None,
                   verdicts: Optional[Dict[str, LotVerdict]] = None,
                   lot_label: str = "") -> None:
-        for w in self._rendered:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+        # The previous render is unmapped here and destroyed on idle time: one
+        # of these grid frames is ~450 native widgets, and paying for them
+        # inside the model switch was a measured 1.5 s freeze (see
+        # `gui/v6/retire.py`). The new render is built into new frames, so
+        # nothing below can touch a retiring one.
+        retire(*self._rendered)
         self._rendered = []
         t = self.theme
         if stats is None:

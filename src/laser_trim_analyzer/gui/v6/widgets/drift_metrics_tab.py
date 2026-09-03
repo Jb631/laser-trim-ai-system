@@ -7,6 +7,7 @@ from typing import Callable, Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.retire import retire
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.ml.drift_types import (
     AlertType, METRIC_GROUPS, ModelDriftStatus, format_metric_value,
@@ -65,12 +66,13 @@ class DriftMetricsTab(ctk.CTkScrollableFrame):
 
     def set_status(self, status: ModelDriftStatus, recent_means: dict = None) -> None:
         recent_means = recent_means or {}
-        for r in self._rows.values():
-            r.destroy()
+        # Unmapped now, destroyed on idle time (see `gui/v6/retire.py`): 12
+        # metric rows are ~250 native widgets, and this is one of the six
+        # rebuilds a single model switch used to pay for synchronously.
         # __dict__.get, not getattr: the QA sweep's headless widget stub
         # answers ANY attribute with a callable, which is not iterable.
-        for h in (self.__dict__.get("_group_headers") or []):
-            h.destroy()
+        retire(*self._rows.values(),
+               *(self.__dict__.get("_group_headers") or []))
         self._rows.clear()
         self._group_headers = []
         t = self.theme

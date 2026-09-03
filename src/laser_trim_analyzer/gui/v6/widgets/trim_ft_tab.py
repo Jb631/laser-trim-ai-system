@@ -9,6 +9,7 @@ from typing import Dict, List
 
 import customtkinter as ctk
 
+from laser_trim_analyzer.gui.v6.retire import retire
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 
 
@@ -19,11 +20,9 @@ class TrimFtTab(ctk.CTkScrollableFrame):
         self._rendered: List[ctk.CTkBaseClass] = []
 
     def set_data(self, d: Dict) -> None:
-        for w in self._rendered:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+        # Unmapped now, destroyed on idle time — the model switch must not wait
+        # for the previous model's rows (see `gui/v6/retire.py`).
+        retire(*self._rendered)
         self._rendered = []
         t = self.theme
         if not d:
