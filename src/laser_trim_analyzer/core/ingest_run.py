@@ -33,8 +33,10 @@ work incident to learn:
     folder. Offline shares are routine, and "0 new files" is the same thing a
     healthy, already-ingested folder says.
 """
+import functools
 import logging
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -52,6 +54,74 @@ logger = logging.getLogger(__name__)
 BUCKETS = ("passed", "warnings", "failed", "skipped", "errors")
 MAX_REASONS = 10          # what one repaint can usefully show
 TICK_SECONDS = 0.25       # 4 Hz: responsive, and nowhere near saturating Tk
+
+# CPython hands the GIL to a waiting thread only every `switchinterval`
+# seconds, and 5 ms (the default) is an eternity to a Tk repaint that needs
+# the lock dozens of times per frame. This is why the app "kept freezing" on
+# the new laptop's first full ingest: the ingest was never stuck, the window
+# just could not get the lock. Measured with the real V6 window open,
+# run_folder over 1,308 files into a fresh database, a 20 ms heartbeat on the
+# Tk thread — median of three runs each:
+#
+#   default (5 ms):  283 UI stalls > 60 ms, 48% of the run frozen, worst 439 ms
+#   0.5 ms:           77 UI stalls > 60 ms, 12% frozen,            worst 142 ms
+#
+# with ingest wall clock 66 s -> 68 s. Sampled stacks put the blame on
+# Processor._process_parallel's Excel parsers: up to four CPU-bound threads,
+# and the UI lost every race to them by about one switch interval. Capping
+# that pool to 2 was measured too and bought nothing, while costing read
+# parallelism against the network share — so the pool is left alone and only
+# the interval moves.
+#
+# It is a trade, not a free win: more switching means a LONG main-thread job
+# that overlaps a batch gets preempted more and finishes slower in wall clock.
+# A chart paint forced to overlap the start of a batch went 555 ms -> 1030 ms
+# in the same probe. That is the right way round — a window that answers every
+# 140 ms beats one that vanishes for 400 ms at a time — but it is the cost.
+INGEST_SWITCH_INTERVAL = 0.0005
+
+_switch_lock = threading.Lock()
+_switch_depth = 0                        # ingests currently inside the guard
+_switch_saved: Optional[float] = None    # the caller's interval, to give back
+
+
+def _with_ingest_switch_interval(fn):
+    """Hold a UI-friendly switch interval for as long as `fn` runs.
+
+    `sys.setswitchinterval` is PROCESS-WIDE, which is the entire risk here, so
+    the scope is deliberately the ingest and nothing else: an idle app keeps
+    the interpreter default, and whatever the caller had set comes back in
+    `finally` — on a failure result, and on an exception, not just the happy
+    path. The cost of the fast interval is more context switches, which is a
+    fine trade while a batch is running and a pointless one while it is not.
+
+    Runs are COUNTED rather than each minding its own, because they nest and
+    overlap: `run_folders` calls `run_folder`, and Home's "process everything
+    new" and the Process page's folder run each disable only their own button,
+    so two ingests can be in flight on two worker threads. A run that saved
+    the interval for itself would save the other run's already-fast 0.5 ms as
+    "the caller's" and hand that back at the end — leaving the whole process
+    fast forever — and would restore mid-flight while the other run is still
+    parsing. Only the outermost run in flight touches the interval, and the
+    lock is what keeps that count honest across threads.
+    """
+    @functools.wraps(fn)
+    def guarded(*args, **kwargs):
+        global _switch_depth, _switch_saved
+        with _switch_lock:
+            if _switch_depth == 0:
+                _switch_saved = sys.getswitchinterval()
+                sys.setswitchinterval(INGEST_SWITCH_INTERVAL)
+            _switch_depth += 1
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            with _switch_lock:
+                _switch_depth -= 1
+                if _switch_depth == 0:
+                    sys.setswitchinterval(_switch_saved)
+                    _switch_saved = None
+    return guarded
 
 
 def bucket_for_status(status: AnalysisStatus) -> str:
@@ -373,6 +443,7 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
     phases["advance"] = time.monotonic() - t
 
 
+@_with_ingest_switch_interval
 def run_folder(folder: str, *, db, config, incremental: bool = True,
                progress: Optional[ProgressCoalescer] = None,
                on_phase: Optional[Callable[[str], None]] = None,
@@ -473,6 +544,7 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                         seconds=time.monotonic() - started)
 
 
+@_with_ingest_switch_interval
 def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
                 progress: Optional[ProgressCoalescer] = None,
                 on_phase: Optional[Callable[[str], None]] = None,

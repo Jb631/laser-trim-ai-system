@@ -26,6 +26,18 @@ you decide to keep an old database after all.
    only touch new files and take minutes. The summary line tells you
    folders · new files · time; a folder that is offline is reported and
    skipped, never silently dropped.
+
+   **The window stays usable while it runs** (fixed 2026-09-08). Earlier
+   builds froze in bursts during an ingest — the window would stop answering
+   for a third to half a second at a time, roughly half the run. Nothing was
+   ever stuck: up to four Excel parsers were holding the interpreter lock,
+   and the UI could not get a look in edge-wise. The ingest now asks CPython
+   to hand that lock around ten times more often while a batch is running,
+   and puts the setting back the moment it ends. Measured on the same
+   1,308-file run: the worst pause dropped from ~440 ms to ~140 ms and the
+   frozen share from 48% to 12%, for two seconds of extra ingest time in
+   sixty-eight. If it still stutters on the laptop, say so — that is a bug,
+   not a fact of life.
 5. **Settings → train the per-model ML** after the ingest, so FOCUS drift
    baselines and the predictor exist on this machine.
 6. Then the smoke pass: HOME shows FOCUS; Investigate → 8232-1 → stats
