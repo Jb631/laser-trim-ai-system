@@ -1,5 +1,7 @@
 """V6App root — sidebar + page container + the four real pages. Foundations §2.2."""
-from typing import Optional, Tuple
+import logging
+import time
+from typing import List, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -10,6 +12,13 @@ from laser_trim_analyzer.gui.v6.page_container import PageContainer
 from laser_trim_analyzer.gui.v6.sidebar import Sidebar
 from laser_trim_analyzer.gui.v6.theme import ThemeManager
 from laser_trim_analyzer.gui.v6.ui_dispatch import UiDispatcher
+
+logger = logging.getLogger(__name__)
+
+# How long closing the window waits for an ingest to finish the 20-file batch
+# it is on. Long enough for a batch of network-share Excel files, short enough
+# that a wedged worker cannot hold the window hostage.
+CLOSE_GRACE_SECONDS = 2.0
 
 
 class V6App(ctk.CTk):
@@ -30,6 +39,10 @@ class V6App(ctk.CTk):
         self.db = db if db is not None else get_database()
         self._model_route: Optional[Tuple[str, Optional[str]]] = None
         self._auto_train_on_first_run = auto_train_on_first_run
+        # In-flight ingests: (cancel Event, worker thread). Closing the window
+        # used to destroy Tk while a batch was mid-write — the worker kept
+        # parsing and saving into a database whose app was already gone.
+        self._ingest_runs: List[Tuple[object, object]] = []
 
         # Main-thread UI dispatcher: workers post callbacks here instead of
         # touching Tk from their own threads (see ui_dispatch.py).
@@ -177,8 +190,57 @@ class V6App(ctk.CTk):
             ProcessPage(self.page_container, theme=self.theme, app=self, page_title="Process"),
         )
 
+    # ---- in-flight ingests ----
+    def register_ingest(self, cancel, thread) -> None:
+        """Remember a running ingest so closing the window can stop it first.
+
+        Called from the page's Tk thread right after the worker starts. Dead
+        entries are swept here rather than by the worker, which must not touch
+        app state from off-thread.
+        """
+        self._ingest_runs = [(c, t) for c, t in self._ingest_runs
+                             if _alive(t)]
+        self._ingest_runs.append((cancel, thread))
+
+    def stop_ingests(self, timeout: float = CLOSE_GRACE_SECONDS) -> None:
+        """Ask every in-flight ingest to stop and give it `timeout` to land.
+
+        Cooperative, never forced: the worker finishes the batch it already
+        handed to the thread pool and persists it. If it needs longer than the
+        grace period we stop waiting — the window closes, the daemon thread
+        dies with the process, and the batch boundary means the database is
+        consistent either way.
+        """
+        runs = [(c, t) for c, t in self._ingest_runs if _alive(t)]
+        self._ingest_runs = []
+        if not runs:
+            return
+        logger.info("Closing with %d ingest(s) in flight — asking them to stop",
+                    len(runs))
+        for cancel, _ in runs:
+            try:
+                cancel.set()
+            except Exception:
+                logger.exception("Could not signal an ingest to stop")
+        deadline = time.monotonic() + timeout
+        for _, thread in runs:
+            try:
+                thread.join(max(0.0, deadline - time.monotonic()))
+            except Exception:
+                logger.exception("Could not wait for an ingest thread")
+
     def _on_closing(self) -> None:
+        self.stop_ingests()
         self.destroy()
 
     def run(self) -> None:
         self.mainloop()
+
+
+
+def _alive(thread) -> bool:
+    """True only for a thread object that says it is still running."""
+    try:
+        return bool(thread.is_alive())
+    except Exception:
+        return False

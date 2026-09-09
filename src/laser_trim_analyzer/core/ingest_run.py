@@ -276,10 +276,16 @@ class ProgressTicker:
 
 @dataclass
 class FolderResult:
-    """What one folder's pass produced. `ok=False` always carries an `error`."""
+    """What one folder's pass produced. `ok=False` always carries an `error`.
+
+    `cancelled` is NOT a failure: the folder did real work and saved it, the
+    user just asked it to stop. Conflating the two would put a red "folder
+    failed" line under a perfectly healthy partial run.
+    """
     folder: str
     ok: bool
     error: Optional[str] = None
+    cancelled: bool = False
     files_found: int = 0          # Excel files on disk
     new_files: int = 0            # actually processed (not skipped as known)
     new_trims: int = 0            # trim analyses this pass saved
@@ -294,6 +300,12 @@ class IngestReport:
     """Every folder's result plus the wall-clock the whole run took."""
     results: List[FolderResult] = field(default_factory=list)
     seconds: float = 0.0
+    cancelled: bool = False
+    # What the run SET OUT to do, as opposed to what it got through. Both are
+    # 0 when nobody told us (a direct run_folders call in a test); the summary
+    # line prints only the halves it actually knows.
+    folders_requested: int = 0
+    files_planned: int = 0
 
     @property
     def folder_count(self) -> int:
@@ -338,11 +350,36 @@ def format_elapsed(seconds: float) -> str:
 
 def format_ingest_summary(report: IngestReport) -> str:
     """The one line Home shows after a run. Spec: "3 folders · 214 new files ·
-    2 min 40 s" — and, when a share was down, which one and why."""
-    if not report.results:
+    2 min 40 s" — and, when a share was down, which one and why.
+
+    A STOPPED run gets a different sentence, not the same one with a smaller
+    number: "3 folders · 214 new files" reads as a completed history import,
+    and being wrong about that costs hours. It says how far it got, out of
+    what, and — the part that decides whether Stop ever gets pressed — that
+    pressing the button again continues rather than starts over.
+    """
+    if not report.results and not report.cancelled:
         return "No folders configured — add them in Settings."
     n = report.folder_count
     new = report.new_files
+    if report.cancelled:
+        total_folders = report.folders_requested or n
+        # "of N" only when N was actually measured (the pre-run scan). An
+        # invented denominator is worse than none.
+        of_planned = f" of {report.files_planned:,}" if report.files_planned else ""
+        line = (f"Stopped after {new:,}{of_planned} new file"
+                + ("" if new == 1 and not of_planned else "s")
+                + f" ({n} of {total_folders} folder"
+                + ("" if total_folders == 1 else "s") + ")"
+                f" · {format_elapsed(report.seconds)}"
+                " — press Process everything new again to continue; it resumes "
+                "where this left off (everything already saved is skipped).")
+        bad = report.failed
+        if bad:
+            detail = "; ".join(f"{r.folder} ({r.error})" for r in bad)
+            line += f"  ⚠ {len(bad)} folder" + ("" if len(bad) == 1 else "s")
+            line += f" failed: {detail}"
+        return line
     files = ("no new files" if new == 0 else
              f"{new:,} new file" + ("" if new == 1 else "s"))
     line = (f"{n} folder" + ("" if n == 1 else "s") + f" · {files}"
@@ -447,11 +484,18 @@ def _post_batch(db, models_in_batch: Set[str], new_trims: int, phases: dict,
 def run_folder(folder: str, *, db, config, incremental: bool = True,
                progress: Optional[ProgressCoalescer] = None,
                on_phase: Optional[Callable[[str], None]] = None,
-               on_total: Optional[Callable[[int], None]] = None) -> FolderResult:
+               on_total: Optional[Callable[[int], None]] = None,
+               cancel: Optional[threading.Event] = None) -> FolderResult:
     """Process ONE folder end to end. Never raises; failures come back as data.
 
     Blocking and thread-safe to call from a worker. Every callback is invoked
     on THIS thread, so a caller that touches widgets must marshal them itself.
+
+    `cancel` is cooperative and lands at a batch boundary inside the processor
+    (see Processor.process_batch). Everything the run had already saved stays
+    saved and still gets its post-batch consistency work — the FT re-link and
+    the drift advance — because a stopped run's rows are as real as a finished
+    run's, and leaving them unlinked would quietly skew the next FOCUS list.
     """
     started = time.monotonic()
     phases: dict = {}
@@ -490,7 +534,8 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     gen = processor.process_batch([Path(p) for p in files],
                                   progress_callback=progress_callback,
                                   incremental=incremental,
-                                  disk_stats=disk_stats)
+                                  disk_stats=disk_stats,
+                                  cancel=cancel)
     summary = None
     models_in_batch: Set[str] = set()
     new_trims = 0                # trim analyses actually saved by THIS batch
@@ -537,7 +582,9 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
     if models_in_batch:
         _post_batch(db, models_in_batch, new_trims, phases, on_phase)
     log_phases(phases, total, processor, summary)
-    return FolderResult(folder=folder, ok=True, files_found=total,
+    stopped = bool(cancel is not None and cancel.is_set())
+    return FolderResult(folder=folder, ok=True, cancelled=stopped,
+                        files_found=total,
                         new_files=int(getattr(summary, "processed", 0) or 0),
                         new_trims=new_trims, models=models_in_batch,
                         summary=summary, phases=phases,
@@ -551,6 +598,7 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
                 on_total: Optional[Callable[[int], None]] = None,
                 on_folder_start: Optional[Callable[[int, int, str], None]] = None,
                 on_folder_done: Optional[Callable[[FolderResult], None]] = None,
+                cancel: Optional[threading.Event] = None,
                 ) -> IngestReport:
     """Run the configured folders SEQUENTIALLY, in order, to the end.
 
@@ -562,18 +610,29 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
     One folder failing does NOT stop the run. A share being down is a Tuesday,
     and losing the other two folders' work over it is a much worse day; the
     failure is carried in the report and named in the summary line.
+
+    A CANCEL, by contrast, does stop the run — that is the whole point of the
+    button — but only between folders and only after the folder in flight has
+    finished its current batch and saved it. Every folder that ran is still in
+    the report, with everything it counted.
     """
     started = time.monotonic()
-    report = IngestReport()
+    report = IngestReport(folders_requested=len(folders))
     total_folders = len(folders)
     for i, folder in enumerate(folders, start=1):
+        if cancel is not None and cancel.is_set():
+            report.cancelled = True
+            break
         if on_folder_start is not None:
             on_folder_start(i, total_folders, folder)
         result = run_folder(folder, db=db, config=config,
                             incremental=incremental, progress=progress,
-                            on_phase=on_phase, on_total=on_total)
+                            on_phase=on_phase, on_total=on_total, cancel=cancel)
         report.results.append(result)
         if on_folder_done is not None:
             on_folder_done(result)
+        if result.cancelled or (cancel is not None and cancel.is_set()):
+            report.cancelled = True
+            break
     report.seconds = time.monotonic() - started
     return report

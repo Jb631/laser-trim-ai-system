@@ -23,6 +23,7 @@ and is passed INTO the worker; the worker only posts back through
 """
 import logging
 import threading
+from threading import Event
 
 import customtkinter as ctk
 
@@ -43,6 +44,7 @@ class HomePage(PageBase):
 
     def __init__(self, master, *, theme, app, page_title="Home"):
         self._running = False
+        self._cancel = None            # threading.Event while a run is in flight
         super().__init__(master, theme=theme, app=app, page_title=page_title)
         self.refresh_folders()
 
@@ -66,6 +68,14 @@ class HomePage(PageBase):
             hover_color=t.ACCENT_HOVER, text_color=t.TEXT_INVERSE,
             corner_radius=t.RADIUS_SM, command=self._start)
         self._run_button.pack(side="left")
+        # Packed only while a run is in flight (see _set_running). A Stop
+        # button on an idle screen is a question with no answer; a run with no
+        # Stop button is hours you cannot get back — the first full ingest is
+        # ~4 hours here and 6-8 on the laptop.
+        self._stop_button = ctk.CTkButton(
+            top, text="Stop", height=38, fg_color=t.CARD, hover_color=t.ELEVATED,
+            text_color=t.TEXT_PRIMARY, corner_radius=t.RADIUS_SM,
+            font=t.font(t.SIZE_BODY, "bold"), command=self._stop)
         # The escape hatch, right beside the button it is an alternative to.
         self._specific_button = ctk.CTkButton(
             top, text="process a specific folder…", fg_color="transparent",
@@ -141,19 +151,45 @@ class HomePage(PageBase):
         folders = self._folders()
         if not folders or self._running:
             return
-        self._set_running(True)
+        self._cancel = Event()         # a FRESH event: a stopped run must not
+        self._set_running(True)        # leave the next one pre-cancelled
         self._progress.reset()
         self._summary.configure(text="")
         # "New" is the whole promise of the button, so the run is always
         # incremental; the Process page keeps the checkbox for a re-run.
-        threading.Thread(target=self._run, args=(folders, True),
-                         daemon=True).start()
+        thread = threading.Thread(target=self._run,
+                                  args=(folders, True, self._cancel),
+                                  daemon=True)
+        thread.start()
+        # So closing the window can stop this cleanly instead of destroying Tk
+        # out from under a batch that is mid-write.
+        register = getattr(self.app, "register_ingest", None)
+        if register is not None:
+            register(self._cancel, thread)
+
+    def _stop(self) -> None:
+        """Ask the run to stop. Tk thread; the worker sees a set() Event.
+
+        Relabels IMMEDIATELY, because the stop lands at the end of the current
+        20-file batch and a button that looks unpressed gets pressed again.
+        """
+        if not self._running or self._cancel is None:
+            return
+        self._cancel.set()
+        self._stop_button.configure(text="Stopping after this batch…",
+                                    state="disabled")
 
     def _set_running(self, running: bool) -> None:
         self._running = running
         self._run_button.configure(state="disabled" if running else "normal",
                                    text=("Processing…" if running
                                          else "Process everything new"))
+        if running:
+            self._stop_button.configure(text="Stop", state="normal")
+            self._stop_button.pack(side="left", after=self._run_button,
+                                   padx=(self.theme.SPACE_SM, 0))
+        else:
+            self._stop_button.pack_forget()
 
     def _paint(self, coalescer: ProgressCoalescer, total: dict) -> None:
         """Paint ONE coalesced snapshot (Tk thread). See core/ingest_run.py."""
@@ -166,7 +202,7 @@ class HomePage(PageBase):
             if snap["counts"] or snap["reasons"]:
                 self._progress.add_counts(snap["counts"], snap["reasons"])
 
-    def _run(self, folders, incremental: bool) -> None:
+    def _run(self, folders, incremental: bool, cancel=None) -> None:
         """Worker: drive the shared multi-folder run. Never touches Tk."""
         coalescer = ProgressCoalescer()
         total = {"n": 0}
@@ -188,7 +224,7 @@ class HomePage(PageBase):
                 on_phase=lambda msg: self.safe_after(
                     lambda m=msg: self._progress.set_idle(m)),
                 on_total=lambda n: total.__setitem__("n", n),
-                on_folder_start=folder_start)
+                on_folder_start=folder_start, cancel=cancel)
         except Exception as exc:
             # run_folders returns failures as data; reaching here means
             # something outside a folder's own run broke. Say so rather than

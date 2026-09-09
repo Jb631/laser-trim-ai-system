@@ -16,6 +16,7 @@ ML Integration:
 """
 
 import gc
+import threading
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -722,6 +723,7 @@ class Processor:
         progress_callback: Optional[Callable[[ProcessingStatus], None]] = None,
         incremental: bool = True,
         disk_stats: Optional[Dict[str, tuple]] = None,
+        cancel: Optional["threading.Event"] = None,
     ) -> Generator[AnalysisResult, None, BatchSummary]:
         """
         Process multiple files with progress reporting.
@@ -730,6 +732,11 @@ class Processor:
             file_paths: List of file paths
             progress_callback: Called with status updates
             incremental: Skip already processed files
+            cancel: Cooperative stop. Checked at each batch boundary — the
+                files already handed to the pool always finish and are yielded
+                for persistence, and only then does the loop end. Nothing is
+                killed, so no batch is ever half-written. The summary comes
+                back exactly as it would from a finished run.
 
         Yields:
             AnalysisResult for each file
@@ -768,12 +775,12 @@ class Processor:
         if use_parallel:
             logger.info(f"Using parallel processing ({total_files} >= {turbo_threshold})")
             yield from self._process_parallel(
-                file_paths, progress_callback, incremental, summary
+                file_paths, progress_callback, incremental, summary, cancel
             )
         else:
             logger.info(f"Using sequential processing ({total_files} < {turbo_threshold})")
             yield from self._process_sequential(
-                file_paths, progress_callback, incremental, summary
+                file_paths, progress_callback, incremental, summary, cancel
             )
 
         # Persist any stat repairs collected during the incremental scan (rows
@@ -840,11 +847,19 @@ class Processor:
         progress_callback: Optional[Callable],
         incremental: bool,
         summary: BatchSummary,
+        cancel: Optional["threading.Event"] = None,
     ) -> Generator[AnalysisResult, None, None]:
         """Process files sequentially with memory management."""
         gc_interval = 50  # Run GC every 50 files
 
         for i, file_path in enumerate(file_paths):
+            # Cooperative stop. One file IS the batch here, so the boundary is
+            # the top of the loop: whatever was already parsed has been
+            # yielded and saved.
+            if cancel is not None and cancel.is_set():
+                logger.info("Batch cancelled after %d of %d files (sequential)",
+                            i, len(file_paths))
+                return
             file_path = Path(file_path)
 
             # Check if already processed
@@ -913,6 +928,7 @@ class Processor:
         progress_callback: Optional[Callable],
         incremental: bool,
         summary: BatchSummary,
+        cancel: Optional["threading.Event"] = None,
     ) -> Generator[AnalysisResult, None, None]:
         """
         Process files in parallel with memory-aware throttling.
@@ -1064,6 +1080,16 @@ class Processor:
         batch_size = 20  # Process in batches to control memory
 
         for batch_start in range(0, len(files_to_process), batch_size):
+            # Cooperative stop, checked HERE and nowhere deeper: the previous
+            # batch's futures have all completed and been yielded (the
+            # ThreadPoolExecutor block above joins them), so stopping at the
+            # top of the next iteration can never leave a file half-saved.
+            # Killing the pool's threads instead would.
+            if cancel is not None and cancel.is_set():
+                logger.info("Batch cancelled after %d of %d files — the "
+                            "in-flight batch finished and was saved",
+                            completed, len(files_to_process))
+                break
             batch = files_to_process[batch_start:batch_start + batch_size]
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:

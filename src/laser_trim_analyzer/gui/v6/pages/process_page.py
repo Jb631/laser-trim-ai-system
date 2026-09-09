@@ -7,6 +7,7 @@ the marshalling between the worker and Tk.
 """
 import logging
 import threading
+from threading import Event
 
 import customtkinter as ctk
 
@@ -25,6 +26,7 @@ class ProcessPage(PageBase):
 
     def __init__(self, master, *, theme, app, page_title="Process"):
         self._done = 0
+        self._cancel = None            # threading.Event while a run is in flight
         super().__init__(master, theme=theme, app=app, page_title=page_title)
 
     def build_content(self, parent):
@@ -43,6 +45,13 @@ class ProcessPage(PageBase):
                                            text_color=t.TEXT_INVERSE, command=self._start,
                                            corner_radius=t.RADIUS_SM)
         self._start_button.pack(side="top", anchor="w", pady=(0, t.SPACE_MD))
+        # Packed only while a run is in flight (see _set_running) — same
+        # cooperative stop Home offers, on the same shared runner.
+        self._stop_button = ctk.CTkButton(parent, text="Stop", fg_color=t.CARD,
+                                          hover_color=t.ELEVATED,
+                                          text_color=t.TEXT_PRIMARY,
+                                          command=self._stop,
+                                          corner_radius=t.RADIUS_SM)
         self._progress = ProcessProgressSection(parent, theme=t)
         self._progress.pack(side="top", fill="x", pady=(0, t.SPACE_MD))
         self._goto_triage = ctk.CTkButton(parent, text="Go to Triage", fg_color=t.ACCENT,
@@ -79,7 +88,8 @@ class ProcessPage(PageBase):
         folder = self._folder_picker.value()
         if not folder:
             return
-        self._start_button.configure(state="disabled")
+        self._cancel = Event()          # fresh per run; never a reused event
+        self._set_running(True)
         self._goto_triage.pack_forget()
         self._progress.reset()
         self._done = 0
@@ -87,8 +97,31 @@ class ProcessPage(PageBase):
         # called self._incremental.get() (a Tcl call) off-thread, violating
         # the "workers never call Tk" rule (code-review finding #8).
         incremental = bool(self._incremental.get())
-        threading.Thread(target=self._run, args=(folder, incremental),
-                         daemon=True).start()
+        thread = threading.Thread(target=self._run,
+                                  args=(folder, incremental, self._cancel),
+                                  daemon=True)
+        thread.start()
+        register = getattr(self.app, "register_ingest", None)
+        if register is not None:
+            register(self._cancel, thread)
+
+    def _stop(self):
+        """Ask the run to stop; it lands at the end of the current batch."""
+        if self._cancel is None:
+            return
+        self._cancel.set()
+        self._stop_button.configure(text="Stopping after this batch…",
+                                    state="disabled")
+
+    def _set_running(self, running: bool) -> None:
+        self._start_button.configure(state="disabled" if running else "normal")
+        if running:
+            self._stop_button.configure(text="Stop", state="normal")
+            self._stop_button.pack(side="top", anchor="w",
+                                   pady=(0, self.theme.SPACE_MD),
+                                   after=self._start_button)
+        else:
+            self._stop_button.pack_forget()
 
     # ---- progress (kept for tests: single-event path on the Tk thread) ----
     def _apply_progress(self, status: ProcessingStatus, total: int) -> None:
@@ -119,7 +152,7 @@ class ProcessPage(PageBase):
             if snap["counts"] or snap["reasons"]:
                 self._progress.add_counts(snap["counts"], snap["reasons"])
 
-    def _run(self, folder: str, incremental: bool = True) -> None:
+    def _run(self, folder: str, incremental: bool = True, cancel=None) -> None:
         """Worker: drive the shared pipeline for one folder. Never calls Tk."""
         coalescer = ProgressCoalescer()
         total = {"n": 0}          # denominator, learned once the walk is done
@@ -133,13 +166,19 @@ class ProcessPage(PageBase):
                 incremental=incremental, progress=coalescer,
                 on_phase=lambda msg: self.safe_after(
                     lambda m=msg: self._progress.set_idle(m)),
-                on_total=lambda n: total.__setitem__("n", n))
+                on_total=lambda n: total.__setitem__("n", n), cancel=cancel)
         finally:
             ticker.stop()
         self.safe_after(lambda: self._paint(coalescer, total["n"]))
 
         if not result.ok:
             self.safe_after(lambda e=result.error: self._progress.set_idle(f"Stopped: {e}"))
+        elif result.cancelled:
+            # NOT set_final(): a full-looking tally on a folder that stopped
+            # half-way is the one thing this must never say.
+            self.safe_after(lambda r=result: self._progress.set_idle(
+                f"Stopped after {r.new_files:,} of {r.files_found:,} files — "
+                "start again to continue where this left off."))
         elif result.summary is not None:
             # Authoritative final tally from BatchSummary (reconciles the live
             # counts, including skips).
@@ -147,5 +186,5 @@ class ProcessPage(PageBase):
         self.safe_after(self._on_done)
 
     def _on_done(self):
-        self._start_button.configure(state="normal")
+        self._set_running(False)
         self._goto_triage.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0))
