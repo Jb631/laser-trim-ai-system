@@ -18,14 +18,39 @@ you decide to keep an old database after all.
    needs proxy/internet once).
 3. **Settings → ingest folders**: add each laser folder and the Final Test
    folder, in the order you want them run. Once.
-4. **HOME → "Process everything new"**, then walk away — **start it at
-   the end of a day and let it run overnight.** The first run is the full
-   history (~106k trim files, ~150k final-test files). Measured here:
-   1,308 files in 77 s (about 17 files/s), so the whole history is roughly
-   **4 hours on this Mac and plausibly 6–8 on the laptop**. Later runs
-   only touch new files and take minutes. The summary line tells you
-   folders · new files · time; a folder that is offline is reported and
-   skipped, never silently dropped.
+4. **HOME → "Process everything new"** — **start it at the end of a day
+   and let it run overnight.** The first run is the full history (~106k
+   trim files, ~150k final-test files). Measured here: 1,308 files in 77 s
+   (about 17 files/s), so the whole history is roughly **4 hours on this
+   Mac and plausibly 6–8 on the laptop**. Later runs only touch new files
+   and take minutes. The summary line tells you folders · new files ·
+   time; a folder that is offline is reported and skipped, never silently
+   dropped.
+
+   **The window now tells you where it is** (2026-09-08). It walks every
+   configured folder first — "Scanning folder 2 of 3…", which on the work
+   shares is the slow part — and only then starts processing, so the bar
+   has a real denominator for the whole run instead of restarting at each
+   folder. While it runs the line above the bar reads:
+
+       Folder 2 of 3 · 1,214 / 8,900 files · 17 files/s · about 7 min left
+       · elapsed 12:04
+
+   The rate is an average of the last minute, so a share that goes slow
+   shows up within a minute. The ETA says nothing for the first 30 seconds
+   and is deliberately coarse after that — "about 2 h 47 min left", never
+   a fake "6 min 41 s". On a later incremental run the bar jumps as soon
+   as each folder's scan says how many files are already in the database:
+   those count as done, because the total counts every file found.
+
+   **There is a Stop button now, and it is safe.** It appears only while a
+   run is going. Pressing it finishes the 20 files already in flight,
+   saves them normally, does the usual final-test re-linking for them, and
+   stops — nothing is killed and nothing is left half-written. Closing the
+   window mid-run does the same thing and waits up to two seconds for it.
+   Starting again continues: the run is always incremental, so everything
+   already saved is skipped. Stopping to go home and resuming tomorrow is
+   a supported way to do the first ingest.
 
    **The window stays usable while it runs** (fixed 2026-09-08). Earlier
    builds froze in bursts during an ingest — the window would stop answering

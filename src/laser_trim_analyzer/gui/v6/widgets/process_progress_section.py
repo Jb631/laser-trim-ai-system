@@ -43,6 +43,28 @@ class ProcessProgressSection(ctk.CTkFrame):
             txt += f": {current_filename}"
         self._status.configure(text=txt)
 
+    def set_overall(self, done: int, total: int, line: str) -> None:
+        """The whole RUN's progress: a fraction and one finished sentence.
+
+        A thin view on purpose. Every number in `line` — the rate, the ETA
+        wording, the elapsed clock — was computed by core/ingest_run
+        (EtaEstimator + format_progress_line), so the arithmetic is unit-tested
+        once and Home and Process cannot drift into two vocabularies for the
+        same run.
+        """
+        self._bar.set(min(1.0, done / max(total, 1)))
+        self._status.configure(text=line)
+
+    def set_phase(self, message: str) -> None:
+        """Say what phase the run is in, leaving the bar alone.
+
+        set_idle() zeroes the bar, which is right for "Ready" and wrong for
+        every mid-run phase message ("Checking 8,900 files against the
+        database…", "Re-linked 12 final-test records…"): a bar that drops to
+        zero half-way through reads as progress lost.
+        """
+        self._status.configure(text=message)
+
     def increment(self, key: str, reason: str = "") -> None:
         if key not in self._counters:
             return

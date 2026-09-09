@@ -55,6 +55,17 @@ BUCKETS = ("passed", "warnings", "failed", "skipped", "errors")
 MAX_REASONS = 10          # what one repaint can usefully show
 TICK_SECONDS = 0.25       # 4 Hz: responsive, and nowhere near saturating Tk
 
+# Rate/ETA shape. The window is short on purpose: a share that goes slow
+# half-way through a four-hour run has to become visible within a minute, not
+# be averaged away by the hour of fast files before it.
+RATE_WINDOW_SECONDS = 60.0
+# Nothing is claimed for the first half minute. That early sample is one
+# folder's worth of small files and predicts nothing about 106k of them; a
+# confident wrong ETA is worse than no ETA.
+ETA_WARMUP_SECONDS = 30.0
+# Two samples 0.25 s apart are noise, not a rate.
+MIN_RATE_SPAN_SECONDS = 2.0
+
 # CPython hands the GIL to a waiting thread only every `switchinterval`
 # seconds, and 5 ms (the default) is an eternity to a Tk repaint that needs
 # the lock dozens of times per frame. This is why the app "kept freezing" on
@@ -195,6 +206,12 @@ class ProgressCoalescer:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._done = 0
+        # Of `_done`, how many were CREDITED in bulk by the incremental scan
+        # rather than processed. The bar wants both together; the rate wants
+        # only the work, or one 148,000-file credit in a single 0.25 s tick
+        # reads as 592,000 files/s and the ETA says "under a minute" to a run
+        # with three hours left.
+        self._known = 0
         self._file = ""
         self._scan_msg: Optional[str] = None
         self._moved = False
@@ -209,8 +226,19 @@ class ProgressCoalescer:
                 # the user waits for. Not progress: it precedes it.
                 self._scan_msg = status.message or "Scanning…"
                 return
+            if status.status == "known":
+                # The whole already-in-database population of this folder, in
+                # one event. It IS progress against a denominator that counts
+                # every file found on disk — an incremental re-run would
+                # otherwise sit at 0/150,000 for the entire pass — but it is
+                # not work, so it stays out of the five per-folder counters.
+                n = int(getattr(status, "count", 0) or 0)
+                self._done += n
+                self._known += n
+                self._moved = self._moved or bool(n)
+                return
             if status.status in ("completed", "skipped", "failed"):
-                self._done += 1
+                self._done += int(getattr(status, "count", 1) or 1)
                 self._file = status.filename or self._file
             if status.status == "skipped":
                 self._counts["skipped"] += 1
@@ -232,12 +260,14 @@ class ProgressCoalescer:
             self._counts = {k: 0 for k in BUCKETS}
             self._reasons.clear()
             self._moved = False
-            return {"scan_msg": scan_msg, "done": self._done, "file": self._file,
+            return {"scan_msg": scan_msg, "done": self._done,
+                    "processed": self._done - self._known, "file": self._file,
                     "counts": counts, "reasons": reasons, "moved": moved}
 
     def reset(self) -> None:
         with self._lock:
             self._done = 0
+            self._known = 0
             self._file = ""
             self._scan_msg = None
             self._moved = False
@@ -272,6 +302,140 @@ class ProgressTicker:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+class EtaEstimator:
+    """How fast the run is going and how much longer it has. Pure, Tk-free.
+
+    Lives here rather than in the page for one reason: the wording is the part
+    that can be wrong. "about 7 min left" is a claim a moving average can
+    support; "6 min 41 s left" is a claim nothing here can support, and
+    printing it makes someone stand and wait for a number that was never real.
+    Keeping the arithmetic in `core/` means the thresholds are unit-tested once
+    and both front ends say the same words.
+
+    Fed with the PROCESSED count — files this run actually parsed — not the
+    bar's numerator. They differ by the incremental scan's bulk credit for
+    files the database already had, and folding a 148,000-file step change
+    into a moving average computed over 0.25 s produces a rate off by five
+    orders of magnitude.
+
+    Every method takes an optional `now` so the tests can drive time instead
+    of sleeping through a minute of it.
+    """
+
+    def __init__(self, *, window: float = RATE_WINDOW_SECONDS,
+                 warmup: float = ETA_WARMUP_SECONDS,
+                 min_span: float = MIN_RATE_SPAN_SECONDS,
+                 now: Optional[float] = None) -> None:
+        self._window = window
+        self._warmup = warmup
+        self._min_span = min_span
+        self._started = time.monotonic() if now is None else now
+        self._samples: deque = deque()      # (timestamp, processed count)
+
+    def note(self, processed: int, now: Optional[float] = None) -> None:
+        """Record where the run is. Called on the Tk thread, 4 Hz, arithmetic
+        only — cheap enough to run on every repaint, and running on EVERY
+        repaint (not only the ones where the count moved) is what makes a
+        stall show up as a falling rate instead of a frozen one."""
+        t = time.monotonic() if now is None else now
+        self._samples.append((t, processed))
+        cutoff = t - self._window
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+    def elapsed(self, now: Optional[float] = None) -> float:
+        return max(0.0, (time.monotonic() if now is None else now) - self._started)
+
+    def rate(self, now: Optional[float] = None) -> Optional[float]:
+        """Files per second over the retained window, or None when the sample
+        is too short to mean anything."""
+        if len(self._samples) < 2:
+            return None
+        (t0, d0), (t1, d1) = self._samples[0], self._samples[-1]
+        span = t1 - t0
+        if span < self._min_span:
+            return None
+        return max(0.0, (d1 - d0) / span)
+
+    def eta_seconds(self, remaining: int,
+                    now: Optional[float] = None) -> Optional[float]:
+        if remaining <= 0:
+            return 0.0
+        if self.elapsed(now) < self._warmup:
+            return None
+        r = self.rate(now)
+        if not r:                       # None, or a dead stop: no honest answer
+            return None
+        return remaining / r
+
+    def eta_text(self, remaining: int, now: Optional[float] = None) -> str:
+        if remaining <= 0:
+            # Nothing left to predict. Saying "under a minute left" about a
+            # run that has finished counting is worse than saying nothing.
+            return ""
+        eta = self.eta_seconds(remaining, now)
+        if eta is None:
+            return "estimating…"
+        return format_eta(eta)
+
+
+def format_eta(seconds: float) -> str:
+    """Words for a duration, at the precision the estimate deserves.
+
+    Deliberately coarse. Rounding 401 seconds to "about 7 min" is honest about
+    a moving average; rendering it "6 min 41 s" invents four significant
+    figures out of a number that moves every tick.
+    """
+    if seconds < 60:
+        return "under a minute left"
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return f"about {max(1, minutes)} min left"
+    hours, minutes = divmod(minutes, 60)
+    if minutes == 0:
+        return f"about {hours} h left"
+    return f"about {hours} h {minutes} min left"
+
+
+def format_rate(rate: float) -> str:
+    """"17 files/s" — one decimal only where it carries information."""
+    return (f"{rate:.0f} files/s" if rate >= 10 else f"{rate:.1f} files/s")
+
+
+def format_clock(seconds: float) -> str:
+    """Elapsed as a clock: 0:04, 12:04, 1:02:05."""
+    s = int(max(0.0, seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def format_progress_line(done: int, total: int, *, folder: int = 0,
+                         folders: int = 0, rate: Optional[float] = None,
+                         eta: str = "", elapsed: Optional[float] = None,
+                         filename: str = "") -> str:
+    """The one line above the bar, for the WHOLE run.
+
+    Spec: "Folder 2 of 3 · 1,214 / 8,900 files · 17 files/s · about 7 min left
+    · elapsed 12:04". Every part is dropped when it is not known yet rather
+    than rendered as a zero — "0 / 0 files · 0 files/s" during the folder walk
+    is worse than saying nothing, because it looks like a stuck run.
+    """
+    parts = []
+    if folders > 1 and folder:
+        parts.append(f"Folder {folder} of {folders}")
+    parts.append(f"{done:,} / {total:,} files" if total > 0 else f"{done:,} files")
+    if rate:
+        parts.append(format_rate(rate))
+    if eta:
+        parts.append(eta)
+    if elapsed is not None:
+        parts.append(f"elapsed {format_clock(elapsed)}")
+    if filename:
+        parts.append(filename)
+    return " · ".join(parts)
 
 
 @dataclass
@@ -485,7 +649,9 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                progress: Optional[ProgressCoalescer] = None,
                on_phase: Optional[Callable[[str], None]] = None,
                on_total: Optional[Callable[[int], None]] = None,
-               cancel: Optional[threading.Event] = None) -> FolderResult:
+               cancel: Optional[threading.Event] = None,
+               discovered: Optional[Tuple[List[str], Dict[str, tuple]]] = None,
+               walk_seconds: float = 0.0) -> FolderResult:
     """Process ONE folder end to end. Never raises; failures come back as data.
 
     Blocking and thread-safe to call from a worker. Every callback is invoked
@@ -509,9 +675,13 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         return FolderResult(folder=folder, ok=False, error=problem,
                             seconds=time.monotonic() - started)
 
-    t = time.monotonic()
-    files, disk_stats = discover_excel_files(folder)
-    phases["walk"] = time.monotonic() - t
+    if discovered is not None:
+        files, disk_stats = discovered
+        phases["walk"] = walk_seconds
+    else:
+        t = time.monotonic()
+        files, disk_stats = discover_excel_files(folder)
+        phases["walk"] = time.monotonic() - t
     if not files:
         _say(on_phase, "No .xls/.xlsx files found.")
         return FolderResult(folder=folder, ok=True, files_found=0, phases=phases,
@@ -591,6 +761,46 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                         seconds=time.monotonic() - started)
 
 
+def _prescan(folders: Sequence[str], on_phase, cancel
+             ) -> Tuple[Dict[str, tuple], int, bool]:
+    """Walk every folder BEFORE processing any of it, so the run knows its size.
+
+    This is the whole of "how many files has it got to go?". Until it existed
+    the panel knew only the folder in flight, and the bar restarted at every
+    folder boundary — during a four-hour first ingest that is three separate
+    progress bars and no answer.
+
+    The total counts every Excel file FOUND, not every file that will be
+    processed. Deciding which are new is the processor's incremental scan: it
+    needs the processed-file index loaded from the database and, for anything
+    whose recorded stat does not match, a hash of the file itself over the
+    share — the pass that once took 70 minutes for 170k files. Paying that
+    here would either double it or mean lifting the scan out of the processor,
+    and neither is worth it: the already-known files are credited to the bar
+    in one step the moment each folder's scan lands (ProcessingStatus
+    "known"), so an incremental re-run still shows a bar that moves.
+
+    Folders that are unusable are NOT walked and NOT reported here — run_folder
+    owns the "offline share?" wording and the ok=False result, and having two
+    places that decide a share is dead is how they end up disagreeing.
+    """
+    walked: Dict[str, tuple] = {}
+    total = 0
+    n = len(folders)
+    for i, folder in enumerate(folders, start=1):
+        if cancel is not None and cancel.is_set():
+            return walked, total, False
+        _say(on_phase, f"Scanning folder {i} of {n} for Excel files… "
+                       "(network folders can take a minute)")
+        if ingest_folder_problem(folder):
+            continue
+        t = time.monotonic()
+        files, stats = discover_excel_files(folder)
+        walked[folder] = (files, stats, time.monotonic() - t)
+        total += len(files)
+    return walked, total, True
+
+
 @_with_ingest_switch_interval
 def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
                 progress: Optional[ProgressCoalescer] = None,
@@ -615,19 +825,37 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
     button — but only between folders and only after the folder in flight has
     finished its current batch and saved it. Every folder that ran is still in
     the report, with everything it counted.
+
+    `on_total` is called ONCE, with the whole run's file count, after the
+    pre-scan and before the first file is processed. It used to fire per
+    folder, which is why the bar restarted twice during a run and why "how
+    many to go" had no answer.
     """
     started = time.monotonic()
     report = IngestReport(folders_requested=len(folders))
     total_folders = len(folders)
+    walked, planned, complete = _prescan(folders, on_phase, cancel)
+    if not complete:
+        # Stopped during the scan: nothing was processed, and half a scan is
+        # not a denominator to quote afterwards.
+        report.cancelled = True
+        report.seconds = time.monotonic() - started
+        return report
+    report.files_planned = planned
+    if on_total is not None:
+        on_total(planned)
     for i, folder in enumerate(folders, start=1):
         if cancel is not None and cancel.is_set():
             report.cancelled = True
             break
         if on_folder_start is not None:
             on_folder_start(i, total_folders, folder)
+        pre = walked.get(folder)
         result = run_folder(folder, db=db, config=config,
                             incremental=incremental, progress=progress,
-                            on_phase=on_phase, on_total=on_total, cancel=cancel)
+                            on_phase=on_phase, cancel=cancel,
+                            discovered=None if pre is None else (pre[0], pre[1]),
+                            walk_seconds=0.0 if pre is None else pre[2])
         report.results.append(result)
         if on_folder_done is not None:
             on_folder_done(result)

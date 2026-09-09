@@ -1056,6 +1056,19 @@ class Processor:
                     filename="", status="scanning",
                     message=scan_msg, progress_percent=0,
                 ))
+                # Credit the already-known files to the progress bar in ONE
+                # event. The run's denominator is every file found on disk
+                # (the pre-scan cannot afford to work out which are new — see
+                # ingest_run._prescan), so without this an incremental pass
+                # over 150k known files sits at 0/150,000 from start to
+                # finish. One event, not 150k: the flood is exactly what the
+                # coalescer exists to prevent (2026-07-13).
+                if summary.skipped:
+                    progress_callback(ProcessingStatus(
+                        filename="", status="known", count=summary.skipped,
+                        message=f"{summary.skipped:,} already in database",
+                        progress_percent=0,
+                    ))
         else:
             files_to_process = list(file_paths)
 

@@ -391,9 +391,17 @@ class AnalysisResult(BaseAnalysisModel):
 class ProcessingStatus(BaseAnalysisModel):
     """Status of file processing."""
     filename: str
-    status: str  # "pending", "processing", "completed", "failed", "skipped"
+    # "pending", "processing", "completed", "failed", "skipped", "scanning",
+    # and "known" — the last being the incremental scan reporting, in ONE
+    # event, how many of the files it was handed the database already has.
+    status: str
     message: Optional[str] = None
     progress_percent: float = 0.0
+    # How many files this event accounts for. Always 1 for a per-file status;
+    # a "known" event carries the whole already-processed population, because
+    # 150,000 individual callbacks is exactly the flood the coalescer exists
+    # to prevent (2026-07-13).
+    count: int = 1
 
     # For completed files
     result: Optional[AnalysisResult] = None

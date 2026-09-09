@@ -14,7 +14,8 @@ import customtkinter as ctk
 logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.core import ingest_run
-from laser_trim_analyzer.core.ingest_run import ProgressCoalescer, ProgressTicker
+from laser_trim_analyzer.core.ingest_run import (
+    EtaEstimator, ProgressCoalescer, ProgressTicker, format_progress_line)
 from laser_trim_analyzer.core.models import ProcessingStatus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.folder_picker import FolderPicker
@@ -130,35 +131,49 @@ class ProcessPage(PageBase):
             # user waits for (work finding #11).
             self._progress.set_idle(status.message or "Scanning…")
             return
-        if status.status in ("completed", "skipped", "failed"):
+        if status.status == "known":
+            # The scan's one-shot credit for files the database already has
+            # (see ProgressCoalescer.note) — progress, not work.
+            self._done += int(getattr(status, "count", 0) or 0)
+        elif status.status in ("completed", "skipped", "failed"):
             self._done += 1
         self._progress.set_progress(self._done, total, status.filename or "")
         if status.status == "skipped":
             self._progress.increment("skipped")
 
-    def _paint(self, coalescer: ProgressCoalescer, total: int) -> None:
+    def _paint(self, coalescer: ProgressCoalescer, state: dict,
+               eta: EtaEstimator) -> None:
         """Paint ONE coalesced snapshot. Tk thread only.
 
         One post per file made the whole app sluggish for the length of a
         170k-file batch (2026-07-13); the counters accumulate in memory and
         this runs a few times a second.
+
+        Same words as Home, from the same helper: one folder is just a run of
+        one, so the rate and the ETA come out of core/ingest_run either way.
         """
         snap = coalescer.drain()
+        eta.note(snap["processed"])
         if snap["scan_msg"] and not snap["moved"]:
-            self._progress.set_idle(snap["scan_msg"])
+            self._progress.set_phase(snap["scan_msg"])
             return
         if snap["moved"] or snap["done"]:
-            self._progress.set_progress(snap["done"], total, snap["file"])
+            total = state["n"]
+            self._progress.set_overall(snap["done"], total, format_progress_line(
+                snap["done"], total, rate=eta.rate(),
+                eta=eta.eta_text(max(0, total - snap["done"])),
+                elapsed=eta.elapsed(), filename=snap["file"]))
             if snap["counts"] or snap["reasons"]:
                 self._progress.add_counts(snap["counts"], snap["reasons"])
 
     def _run(self, folder: str, incremental: bool = True, cancel=None) -> None:
         """Worker: drive the shared pipeline for one folder. Never calls Tk."""
         coalescer = ProgressCoalescer()
-        total = {"n": 0}          # denominator, learned once the walk is done
+        state = {"n": 0}          # denominator, learned once the walk is done
+        eta = EtaEstimator()
 
         ticker = ProgressTicker(
-            lambda: self.safe_after(lambda: self._paint(coalescer, total["n"]))
+            lambda: self.safe_after(lambda: self._paint(coalescer, state, eta))
         ).start()
         try:
             result = ingest_run.run_folder(
@@ -166,17 +181,17 @@ class ProcessPage(PageBase):
                 incremental=incremental, progress=coalescer,
                 on_phase=lambda msg: self.safe_after(
                     lambda m=msg: self._progress.set_idle(m)),
-                on_total=lambda n: total.__setitem__("n", n), cancel=cancel)
+                on_total=lambda n: state.__setitem__("n", n), cancel=cancel)
         finally:
             ticker.stop()
-        self.safe_after(lambda: self._paint(coalescer, total["n"]))
+        self.safe_after(lambda: self._paint(coalescer, state, eta))
 
         if not result.ok:
             self.safe_after(lambda e=result.error: self._progress.set_idle(f"Stopped: {e}"))
         elif result.cancelled:
             # NOT set_final(): a full-looking tally on a folder that stopped
             # half-way is the one thing this must never say.
-            self.safe_after(lambda r=result: self._progress.set_idle(
+            self.safe_after(lambda r=result: self._progress.set_phase(
                 f"Stopped after {r.new_files:,} of {r.files_found:,} files — "
                 "start again to continue where this left off."))
         elif result.summary is not None:

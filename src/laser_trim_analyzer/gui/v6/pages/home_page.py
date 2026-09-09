@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.core import ingest_run
 from laser_trim_analyzer.core.ingest_run import (
-    ProgressCoalescer, ProgressTicker, format_ingest_summary)
+    EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
+    format_progress_line)
 from laser_trim_analyzer.gui.v6.focus_data import load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import FocusListZone
@@ -191,30 +192,56 @@ class HomePage(PageBase):
         else:
             self._stop_button.pack_forget()
 
-    def _paint(self, coalescer: ProgressCoalescer, total: dict) -> None:
-        """Paint ONE coalesced snapshot (Tk thread). See core/ingest_run.py."""
+    def _paint(self, coalescer: ProgressCoalescer, state: dict,
+               eta: EtaEstimator) -> None:
+        """Paint ONE coalesced snapshot (Tk thread). See core/ingest_run.py.
+
+        The whole RUN's numbers, not the folder's: how far through every file
+        the pre-scan found, how fast, and how much longer. All of it is
+        arithmetic on ints — cheap enough for 4 Hz on the Tk thread, and the
+        only thread allowed to hold these widgets.
+
+        The estimator is fed on EVERY paint, including the ones where nothing
+        moved: that is what turns a stalled share into a falling rate and a
+        growing ETA instead of a number frozen at whatever it last was.
+        """
         snap = coalescer.drain()
+        eta.note(snap["processed"])
         if snap["scan_msg"] and not snap["moved"]:
-            self._progress.set_idle(snap["scan_msg"])
+            # set_phase, never set_idle: set_idle zeroes the bar, and a bar
+            # that drops to zero mid-run reads as progress thrown away.
+            self._progress.set_phase(snap["scan_msg"])
             return
         if snap["moved"] or snap["done"]:
-            self._progress.set_progress(snap["done"], total["n"], snap["file"])
+            total = state["n"]
+            self._progress.set_overall(snap["done"], total, format_progress_line(
+                snap["done"], total, folder=state["folder"],
+                folders=state["folders"], rate=eta.rate(),
+                eta=eta.eta_text(max(0, total - snap["done"])),
+                elapsed=eta.elapsed(), filename=snap["file"]))
             if snap["counts"] or snap["reasons"]:
                 self._progress.add_counts(snap["counts"], snap["reasons"])
 
     def _run(self, folders, incremental: bool, cancel=None) -> None:
         """Worker: drive the shared multi-folder run. Never touches Tk."""
         coalescer = ProgressCoalescer()
-        total = {"n": 0}
+        # The run's own numbers, shared with _paint: the overall denominator
+        # (announced once, after run_folders has scanned every folder) and
+        # where in the folder list it is. Written here and in folder_start,
+        # read in _paint — plain ints, no Tk.
+        state = {"n": 0, "folder": 0, "folders": len(folders)}
+        eta = EtaEstimator()
         ticker = ProgressTicker(
-            lambda: self.safe_after(lambda: self._paint(coalescer, total))).start()
+            lambda: self.safe_after(
+                lambda: self._paint(coalescer, state, eta))).start()
 
         def folder_start(i, n, folder):
-            # Each folder has its own denominator, so the bar restarts with it;
-            # the bucket counters keep accumulating across the whole run.
-            coalescer.reset()
-            total["n"] = 0
-            self.safe_after(lambda: self._progress.set_idle(
+            # The coalescer is NOT reset. The bar's denominator is the whole
+            # run now, so zeroing the count at a folder boundary would throw
+            # away everything the previous folders did — which is exactly what
+            # made "how many files has it got to go?" unanswerable.
+            state["folder"], state["folders"] = i, n
+            self.safe_after(lambda: self._progress.set_phase(
                 f"Folder {i} of {n}: {folder}"))
 
         try:
@@ -222,8 +249,8 @@ class HomePage(PageBase):
                 folders, db=self.app.db, config=self.app.config,
                 incremental=incremental, progress=coalescer,
                 on_phase=lambda msg: self.safe_after(
-                    lambda m=msg: self._progress.set_idle(m)),
-                on_total=lambda n: total.__setitem__("n", n),
+                    lambda m=msg: self._progress.set_phase(m)),
+                on_total=lambda n: state.__setitem__("n", n),
                 on_folder_start=folder_start, cancel=cancel)
         except Exception as exc:
             # run_folders returns failures as data; reaching here means
@@ -236,7 +263,7 @@ class HomePage(PageBase):
             return
         finally:
             ticker.stop()
-        self.safe_after(lambda: self._paint(coalescer, total))
+        self.safe_after(lambda: self._paint(coalescer, state, eta))
         self.safe_after(lambda r=report: self._on_run_done(r))
 
     def _on_run_done(self, report) -> None:
