@@ -110,6 +110,22 @@ FINAL_TEST_FORMAT1_COLUMNS: Final[Dict[str, int]] = {
                              #   Rotary pots (2475): -170° to +170°
     "upper_limit": 6,        # Column G - Upper Spec Limit
     "lower_limit": 7,        # Column H - Lower Spec Limit
+    # Column I - the station's own per-point verdict flag: 1 = this point's
+    # error was outside G/H, 0 = inside. Populated ONLY on the rows the
+    # station actually graded, which is how the GRADED WINDOW is recovered
+    # (see FinalTestParser._read_station_flags). Blank rows are rows the
+    # station ignored -- the lead-in/run-out the "# of elements to ignore"
+    # parameters describe -- and grading them is what produced false FAILs.
+    "station_flag": 8,
+}
+
+# Where the Format 1 / Format 3 parameter block states how many sweep samples
+# the station ignores at each end. Label in column J (9), value in column L
+# (11). The label wording varies by template vintage ("at start" vs "from
+# start"), so the match is on the substrings, never the whole string.
+FINAL_TEST_IGNORE_CELLS: Final[Dict[str, int]] = {
+    "label_col": 9,
+    "value_col": 11,
 }
 
 # Final Test Format 2 - Rout_ files (e.g., Rout_1091701_sn1695a_vo.xls)

@@ -15,6 +15,7 @@ import logging
 import pandas as pd
 import numpy as np
 
+from laser_trim_analyzer.core.analyzer import max_abs_measured
 from laser_trim_analyzer.utils.constants import (
     FINAL_TEST_FORMAT1_COLUMNS,
     FINAL_TEST_FORMAT2_COLUMNS,
@@ -22,6 +23,7 @@ from laser_trim_analyzer.utils.constants import (
     FINAL_TEST_DATA_TABLE_ROWS,
     FINAL_TEST_DATA_TABLE_COLUMNS,
     FINAL_TEST_ROUT_PREFIX,
+    FINAL_TEST_IGNORE_CELLS,
     EXCEL_EXTENSIONS,
 )
 
@@ -86,6 +88,288 @@ class FinalTestParser:
                 return self._parse_format_shop_test(xl, file_path, file_hash)
             else:
                 return self._parse_format1(xl, file_path, file_hash)
+
+    # ---- The graded window: which sweep rows the station actually judged ----
+    #
+    # A final-test sheet grades itself. Column I carries a per-point 0/1 flag
+    # (1 = this point's error fell outside the row's G/H limits) and the
+    # station writes it ONLY on the rows it graded; the lead-in and run-out
+    # rows named by the "# of elements to ignore at start / at end" parameters
+    # are left blank. The verdict cell next to "Linearity Test:" is the AND of
+    # those flags.
+    #
+    # The app grades the sweep itself -- offset/slope corrected, per-point,
+    # zero-tolerance -- and that remains the disposition. What changed
+    # (2026-09-13) is WHICH rows it may grade: the ungraded lead-in of model
+    # 8232-1 reads 0 V against a theory of -0.045 V, a phantom 0.047 error
+    # against a +/-0.010 band, and grading it failed 98.5% of that model's
+    # files at a station that passed them. So the window is read off the file
+    # and the rows outside it are excluded from grading, exactly as the
+    # station excludes them.
+
+    @staticmethod
+    def _station_verdict_from_cell(value) -> Optional[bool]:
+        """PASSED/FAILED -> True/False; anything else (incl. 'Not Tested') -> None."""
+        if value is None:
+            return None
+        text = str(value).strip().upper()
+        if text == "PASSED":
+            return True
+        if text == "FAILED":
+            return False
+        return None
+
+    @classmethod
+    def _read_sheet_verdict(cls, df, max_rows: int = 10) -> Optional[bool]:
+        """The sheet's own linearity verdict, from the label/value pair in
+        columns K/L (10/11). Format 3 carries one PER TRACK SHEET, which is why
+        this takes a frame rather than the workbook."""
+        if df is None or df.shape[1] <= 11:
+            return None
+        for row_idx in range(min(max_rows, df.shape[0])):
+            label = df.iloc[row_idx, 10]
+            if pd.notna(label) and "linearity" in str(label).lower():
+                return cls._station_verdict_from_cell(df.iloc[row_idx, 11])
+        return None
+
+    @staticmethod
+    def _read_ignore_counts(df) -> Tuple[Optional[int], Optional[int]]:
+        """(ignore_start, ignore_end) from the parameter block, or (None, None).
+
+        The label wording differs between template vintages -- 8232-1 says
+        "# of elements to ignore at start", 7458 says "...from start" -- so the
+        match is on 'ignore' plus 'start'/'end', and the value cell is read as
+        text because some templates store it as a string.
+        """
+        label_col = FINAL_TEST_IGNORE_CELLS["label_col"]
+        value_col = FINAL_TEST_IGNORE_CELLS["value_col"]
+        if df is None or df.shape[1] <= value_col:
+            return (None, None)
+        start = end = None
+        for row_idx in range(df.shape[0]):
+            label = df.iloc[row_idx, label_col]
+            if not isinstance(label, str) or "ignor" not in label.lower():
+                continue
+            lowered = label.lower()
+            try:
+                value = int(float(str(df.iloc[row_idx, value_col]).strip()))
+            except (TypeError, ValueError):
+                continue
+            if value < 0:
+                continue
+            if "start" in lowered:
+                start = value
+            elif "end" in lowered:
+                end = value
+        return (start, end)
+
+    @staticmethod
+    def _station_flag(value) -> Optional[int]:
+        """One column-I cell as 0/1, or None for blank/non-binary.
+
+        Non-binary is deliberately None rather than a guess: a template whose
+        column I holds something else must not be read as a grading flag.
+        """
+        if value is None or not isinstance(value, (int, float, np.integer, np.floating)):
+            return None
+        if pd.isna(value):
+            return None
+        as_float = float(value)
+        if as_float == 0.0:
+            return 0
+        if as_float == 1.0:
+            return 1
+        return None
+
+    @staticmethod
+    def _window_from_flags(flags: List[Optional[int]], errors=None
+                           ) -> Optional[Tuple[int, int]]:
+        """(first, last) index the station both FLAGGED and MEASURED.
+
+        A populated flag is the station saying "I judged this row". Most
+        templates leave the ignored lead-in/run-out blank and the span is
+        exactly the graded block (8232-1: rows 5..49 of 57, matching its
+        declared 6-and-6 ignore counts). But model 7458's template writes a
+        literal 0 on rows it never measured -- rows whose error cell is empty --
+        and taking those at face value would put unmeasured points back inside
+        the graded window, where a zero-tolerance grade must count each one as
+        a fail. That is the exact false-FAIL this whole change exists to stop,
+        so a row with no error reading cannot bound the window.
+
+        Only the ENDS are trimmed: a blank error INSIDE the span stays inside
+        it and is graded (as a fail), because the station would have flagged it.
+        """
+        n = len(flags)
+        def measured(i: int) -> bool:
+            if errors is None or i >= len(errors):
+                return True
+            value = errors[i]
+            if value is None:
+                return False
+            return not (isinstance(value, float) and np.isnan(value))
+        populated = [i for i in range(n) if flags[i] is not None and measured(i)]
+        if not populated:
+            return None
+        return (populated[0], populated[-1])
+
+    @staticmethod
+    def _window_from_ignore(n_points: int, ignore_start: Optional[int],
+                            ignore_end: Optional[int]) -> Optional[Tuple[int, int]]:
+        """(first, last) graded index implied by the ignore counts.
+
+        Returns None when neither count is known or when they would leave
+        nothing to grade -- an empty window is not a fallback, it is a reason
+        to grade everything and say so.
+        """
+        if ignore_start is None and ignore_end is None:
+            return None
+        low = max(0, int(ignore_start or 0))
+        high = n_points - 1 - max(0, int(ignore_end or 0))
+        if low > high or n_points <= 0:
+            return None
+        return (low, high)
+
+    @classmethod
+    def _graded_window(cls, n_points: int, flags: List[Optional[int]],
+                       ignore_start: Optional[int], ignore_end: Optional[int],
+                       errors=None
+                       ) -> Tuple[Optional[Tuple[int, int]], str]:
+        """The window and WHERE it came from.
+
+        Precedence: the flags the station actually wrote, then the declared
+        ignore counts, then nothing ('all_rows' -- grade the whole sweep, which
+        is what the app did before this existed).
+        """
+        window = cls._window_from_flags(flags, errors)
+        if window is not None:
+            return window, "flags"
+        window = cls._window_from_ignore(n_points, ignore_start, ignore_end)
+        if window is not None:
+            return window, "ignore_cells"
+        return None, "all_rows"
+
+    @staticmethod
+    def _grade_points(errors, upper_limits, lower_limits,
+                      window: Optional[Tuple[int, int]]
+                      ) -> Tuple[int, Optional[bool]]:
+        """Raw per-point grading, restricted to the graded window.
+
+        This is the parser's UNCORRECTED count -- the processor replaces it
+        with the analyzer's offset/slope-corrected one, which is the verdict of
+        record. It still matters: it is what a track carries when no spec is
+        found, and what `core.track_repair` writes back.
+
+        `None` verdict means nothing was gradeable (no limits, or no point
+        inside the window carrying both a limit pair and a reading). A track
+        the app could not judge must not be recorded as a pass.
+        """
+        if not errors or not upper_limits or not lower_limits:
+            return 0, None
+        low, high = (window if window is not None else (0, len(errors) - 1))
+        fail_points = 0
+        graded = 0
+        for i, err in enumerate(errors):
+            if i < low or i > high:
+                continue
+            upper = upper_limits[i] if i < len(upper_limits) else None
+            lower = lower_limits[i] if i < len(lower_limits) else None
+            if upper is None or lower is None:
+                continue
+            if (isinstance(upper, float) and np.isnan(upper)) or \
+               (isinstance(lower, float) and np.isnan(lower)):
+                continue
+            graded += 1
+            # Same rule as Analyzer._count_fail_points: an unmeasured point
+            # inside the graded band counts as a fail, because a zero-tolerance
+            # spec cannot show it was in spec.
+            if err is None or (isinstance(err, float) and np.isnan(err)):
+                fail_points += 1
+                continue
+            if err > upper or err < lower:
+                fail_points += 1
+        if graded == 0:
+            return 0, None
+        return fail_points, fail_points == 0
+
+    @staticmethod
+    def _max_deviation_angle(errors, positions) -> Optional[float]:
+        """Position of the largest MEASURED deviation, or None."""
+        best_idx = None
+        best = None
+        for i, err in enumerate(errors):
+            if err is None or (isinstance(err, float) and (np.isnan(err) or np.isinf(err))):
+                continue
+            magnitude = abs(err)
+            if best is None or magnitude > best:
+                best, best_idx = magnitude, i
+        if best_idx is None or best_idx >= len(positions):
+            return None
+        return positions[best_idx]
+
+    @staticmethod
+    def _station_fields(station_flags, window, window_source,
+                        ignore_start, ignore_end) -> Dict[str, Any]:
+        """The station's own grading, carried alongside the app's as REFERENCE.
+
+        None everywhere the file does not say: a template with no flag column
+        gets `station_linearity_pass` None, not a manufactured True.
+        """
+        populated = [f for f in station_flags if f is not None]
+        return {
+            "station_flags": list(station_flags),
+            "station_fail_points": (sum(1 for f in populated if f == 1)
+                                    if populated else None),
+            "station_linearity_pass": (all(f == 0 for f in populated)
+                                       if populated else None),
+            "graded_window": window,
+            "graded_window_source": window_source,
+            "graded_start": window[0] if window else None,
+            "graded_end": window[1] if window else None,
+            "ignore_start": ignore_start,
+            "ignore_end": ignore_end,
+        }
+
+    @staticmethod
+    def _note_cell_flag_conflict(test_results: Dict[str, Any],
+                                 tracks: List[Dict[str, Any]]) -> None:
+        """Record when the sheet's verdict cell and its own flags disagree.
+
+        Neither is overridden -- both are stored, and this says they differ.
+        45 of the 607 local Format 1 sample files with a verdict cell are in
+        this state, almost all of them old templates whose verdict formula
+        covers a narrower range than the flag column (8322-10 reads PASSED
+        with 42 flags set). The conflict is a property of the FILE, not a
+        parsing failure, so it is data rather than a warning.
+        """
+        cell = test_results.get("station_linearity_pass")
+        flag_values = [t.get("station_linearity_pass") for t in tracks
+                       if t.get("station_linearity_pass") is not None]
+        if cell is None or not flag_values:
+            test_results["station_cell_flag_conflict"] = None
+            return
+        test_results["station_cell_flag_conflict"] = (cell != all(flag_values))
+
+    @staticmethod
+    def _no_station_grading() -> Dict[str, Any]:
+        """Station fields for a template that states none.
+
+        Format 2 (Rout_) and the shop-test sheets carry no verdict cell and no
+        flag column, and Format 4's flag column could not be identified (see
+        _parse_format4_parameters). They get explicit Nones so every track dict
+        has the same shape for `save_final_test` -- a missing key and a
+        deliberate "the file does not say" must not look different downstream.
+        """
+        return {
+            "station_flags": None,
+            "station_fail_points": None,
+            "station_linearity_pass": None,
+            "graded_window": None,
+            "graded_window_source": "all_rows",
+            "graded_start": None,
+            "graded_end": None,
+            "ignore_start": None,
+            "ignore_end": None,
+        }
 
     def _calculate_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of file."""
@@ -200,6 +484,7 @@ class FinalTestParser:
 
         # Extract test results from Data Table
         test_results = self._extract_test_results(xl)
+        self._note_cell_flag_conflict(test_results, tracks)
 
         return {
             "metadata": metadata,
@@ -250,6 +535,8 @@ class FinalTestParser:
         # Format 2 may not have detailed test results
         test_results = {
             "linearity_pass": None,
+            "station_linearity_pass": None,
+            "station_cell_flag_conflict": None,
             "resistance_pass": None,
             "electrical_angle_pass": None,
             "hysteresis_pass": None,
@@ -507,6 +794,13 @@ class FinalTestParser:
             file_errors = []  # Pre-calculated errors from file
             upper_limits = []
             lower_limits = []
+            # The station's own per-point flags, aligned to the rows that
+            # SURVIVE the filters below, never to the raw spreadsheet rows.
+            # Some files carry a stray populated row hundreds of rows past the
+            # sweep (7281-sn466b: one at row 344 of a 29-row sweep); tying the
+            # flags to kept rows is what keeps such a row from moving the
+            # window.
+            station_flags = []
 
             for i in range(data_start, len(df)):
                 row = df.iloc[i]
@@ -565,6 +859,12 @@ class FinalTestParser:
                 else:
                     lower_limits.append(None)
 
+                # Get the station's own verdict flag (Column I)
+                if df.shape[1] > cols["station_flag"]:
+                    station_flags.append(self._station_flag(row.iloc[cols["station_flag"]]))
+                else:
+                    station_flags.append(None)
+
             if electrical_angles and measured_values:
                 # Use pre-calculated errors from file if available
                 valid_file_errors = [e for e in file_errors if e is not None]
@@ -602,8 +902,14 @@ class FinalTestParser:
                         )
 
                 if len(valid_file_errors) >= n_points * 0.9:
-                    # Use file errors (replace None with 0)
-                    errors = [e if e is not None else 0.0 for e in file_errors]
+                    # Use the file's own error column AS IT IS. A blank cell
+                    # stays None -- it is a point the station did not measure,
+                    # and the 0.0 that used to be written there is the most
+                    # flattering value a zero-tolerance metric can hold: dead
+                    # centre of every band. Downstream, None is either excluded
+                    # (outside the graded window) or counted as a fail point
+                    # (inside it), which is what an unmeasured point deserves.
+                    errors = list(file_errors)
                     logger.debug("Using pre-calculated errors from file")
                 else:
                     # Fall back to calculating errors from measured vs theory or ideal line
@@ -654,28 +960,28 @@ class FinalTestParser:
                         theory_values = [theory_values[i] for i in sorted_indices]
                         upper_limits = [upper_limits[i] for i in sorted_indices] if upper_limits else []
                         lower_limits = [lower_limits[i] for i in sorted_indices] if lower_limits else []
+                        # The flags travel with their rows. A window derived
+                        # from an unsorted flag list would name indices in the
+                        # other sweep direction.
+                        station_flags = ([station_flags[i] for i in sorted_indices]
+                                         if station_flags else [])
                         logger.debug(f"Sorted data by electrical angle: {electrical_angles[0]:.2f} -> {electrical_angles[-1]:.2f}")
 
-                # Calculate linearity metrics
-                linearity_error = max(abs(e) for e in errors) if errors else 0.0
+                # The window the STATION graded, and where that came from.
+                ignore_start, ignore_end = self._read_ignore_counts(df)
+                window, window_source = self._graded_window(
+                    len(errors), station_flags, ignore_start, ignore_end, errors)
+
+                # Calculate linearity metrics. The magnitude skips unmeasured
+                # points rather than letting one at index 0 poison max().
+                linearity_error = max_abs_measured(errors)
                 linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
 
-                # Count fail points (comparing error to spec limits per point)
-                fail_points = 0
-                for i, err in enumerate(errors):
-                    upper = upper_limits[i] if i < len(upper_limits) else None
-                    lower = lower_limits[i] if i < len(lower_limits) else None
-                    if upper is not None and err > upper:
-                        fail_points += 1
-                    elif lower is not None and err < lower:
-                        fail_points += 1
+                fail_points, linearity_pass = self._grade_points(
+                    errors, upper_limits, lower_limits, window)
 
-                # Zero-tolerance: linearity passes only if ALL points are within limits
-                linearity_pass = fail_points == 0
-
-                # Find electrical angle of max deviation
-                max_err_idx = errors.index(max(errors, key=abs)) if errors else 0
-                max_dev_angle = electrical_angles[max_err_idx] if max_err_idx < len(electrical_angles) else 0.0
+                # Find electrical angle of max deviation (measured points only)
+                max_dev_angle = self._max_deviation_angle(errors, electrical_angles)
 
                 tracks.append({
                     "track_id": "default",
@@ -691,6 +997,8 @@ class FinalTestParser:
                     "linearity_fail_points": fail_points,
                     "max_deviation": linearity_error,
                     "max_deviation_angle": max_dev_angle,
+                    **self._station_fields(station_flags, window, window_source,
+                                           ignore_start, ignore_end),
                 })
 
         except Exception as e:
@@ -844,6 +1152,7 @@ class FinalTestParser:
                     "linearity_fail_points": 0,
                     "max_deviation": linearity_error,
                     "max_deviation_position": max_dev_position,
+                    **self._no_station_grading(),
                 })
 
         except Exception as e:
@@ -880,6 +1189,16 @@ class FinalTestParser:
 
         # Extract test results from Data Table
         test_results = self._extract_test_results(xl)
+        # Format 3 has no file-level verdict cell: each track sheet carries
+        # its own. Zero-tolerance linearity means the file passed only if
+        # every sheet that stated a verdict passed.
+        cells = [t.get("station_cell_pass") for t in tracks
+                 if t.get("station_cell_pass") is not None]
+        if cells:
+            test_results["station_linearity_pass"] = all(cells)
+            if test_results.get("linearity_pass") is None:
+                test_results["linearity_pass"] = all(cells)
+        self._note_cell_flag_conflict(test_results, tracks)
 
         return {
             "metadata": metadata,
@@ -926,6 +1245,8 @@ class FinalTestParser:
             errors = []
             upper_limits = []
             lower_limits = []
+            # Column I again, aligned to the rows that survive the filters.
+            station_flags = []
 
             for i in range(data_start, len(df)):
                 row = df.iloc[i]
@@ -945,6 +1266,8 @@ class FinalTestParser:
 
                 electrical_angles.append(pos_val)
                 errors.append(err_val)
+                station_flags.append(
+                    self._station_flag(row.iloc[8]) if df.shape[1] > 8 else None)
 
                 # Upper limit from column 6
                 if df.shape[1] > 6 and is_numeric(row.iloc[6]):
@@ -959,18 +1282,15 @@ class FinalTestParser:
                     lower_limits.append(None)
 
             if electrical_angles and errors:
-                linearity_error = max(abs(e) for e in errors) if errors else 0.0
+                ignore_start, ignore_end = self._read_ignore_counts(df)
+                window, window_source = self._graded_window(
+                    len(errors), station_flags, ignore_start, ignore_end, errors)
+
+                linearity_error = max_abs_measured(errors)
                 linearity_spec = self._calculate_linearity_spec(upper_limits, lower_limits)
 
-                # Count fail points
-                fail_points = 0
-                for i, err in enumerate(errors):
-                    upper = upper_limits[i] if i < len(upper_limits) else None
-                    lower = lower_limits[i] if i < len(lower_limits) else None
-                    if upper is not None and err > upper:
-                        fail_points += 1
-                    elif lower is not None and err < lower:
-                        fail_points += 1
+                fail_points, linearity_pass = self._grade_points(
+                    errors, upper_limits, lower_limits, window)
 
                 return {
                     "track_id": track_id,
@@ -980,9 +1300,16 @@ class FinalTestParser:
                     "lower_limits": lower_limits,
                     "linearity_error": linearity_error,
                     "linearity_spec": linearity_spec,
-                    "linearity_pass": fail_points == 0,
+                    "linearity_pass": linearity_pass,
                     "linearity_fail_points": fail_points,
                     "max_deviation": linearity_error,
+                    # Format 3 keeps its verdict cell PER TRACK SHEET: A, B and
+                    # C each carry their own "Linearity Test:" pair, so the
+                    # file-level cell read by _extract_test_results does not
+                    # exist for these workbooks.
+                    "station_cell_pass": self._read_sheet_verdict(df),
+                    **self._station_fields(station_flags, window, window_source,
+                                           ignore_start, ignore_end),
                 }
 
         except Exception as e:
@@ -1084,6 +1411,7 @@ class FinalTestParser:
                     "linearity_pass": fail_points == 0,
                     "linearity_fail_points": fail_points,
                     "max_deviation": linearity_error,
+                    **self._no_station_grading(),
                 })
 
         except Exception as e:
@@ -1092,9 +1420,29 @@ class FinalTestParser:
             if df is not None:
                 del df  # Free memory
 
-        # No detailed test results for this format
+        # Format 4 states ONE verdict, in the top-right cell of the
+        # Parameters sheet (row 0, col L). Read separately from the frame
+        # above so a failure to build tracks still recovers it.
+        #
+        # UNVERIFIED, deliberately left alone (2026-09-13): which column holds
+        # this template's per-point flag. The obvious candidate, col K, is
+        # populated on 21 of 8434ct-1118D's 101 sweep rows and on 34 of
+        # 8407-51's 71 -- neither count lines up with the sweep, so it is not
+        # a per-point flag and reading it as one would invent a graded window.
+        # All four local Format 4 files were checked. Flags stay NULL and the
+        # window stays 'all_rows' until a file proves otherwise.
+        station_cell = None
+        try:
+            head = pd.read_excel(xl, sheet_name="Parameters", header=None, nrows=1)
+            if head.shape[1] > 11 and head.shape[0] > 0:
+                station_cell = self._station_verdict_from_cell(head.iloc[0, 11])
+        except Exception as e:
+            logger.debug(f"Format 4 verdict cell unreadable: {e}")
+
         test_results = {
-            "linearity_pass": None,
+            "linearity_pass": station_cell,
+            "station_linearity_pass": station_cell,
+            "station_cell_flag_conflict": None,
             "resistance_pass": None,
             "electrical_angle_pass": None,
             "hysteresis_pass": None,
@@ -1238,6 +1586,7 @@ class FinalTestParser:
                     "linearity_fail_points": fail_points,
                     "max_deviation": linearity_error,
                     "max_deviation_angle": max_dev_angle,
+                    **self._no_station_grading(),
                 })
 
         except Exception as e:
@@ -1249,6 +1598,8 @@ class FinalTestParser:
         # No detailed test results for this format
         test_results = {
             "linearity_pass": None,
+            "station_linearity_pass": None,
+            "station_cell_flag_conflict": None,
             "resistance_pass": None,
             "electrical_angle_pass": None,
             "hysteresis_pass": None,
@@ -1275,6 +1626,12 @@ class FinalTestParser:
         """
         results = {
             "linearity_pass": None,
+            # The same cell, under a name that says whose verdict it is. The
+            # processor overwrites `linearity_pass` with the app's own
+            # corrected grade (that is the disposition); this one is kept as
+            # the station's REFERENCE and is never overwritten.
+            "station_linearity_pass": None,
+            "station_cell_flag_conflict": None,
             "resistance_pass": None,
             "resistance_value": None,
             "resistance_tolerance": None,
@@ -1331,6 +1688,7 @@ class FinalTestParser:
                     if "linearity" in test_name_str:
                         if is_passed or is_failed:
                             results["linearity_pass"] = is_passed
+                            results["station_linearity_pass"] = is_passed
                     elif "electrical angle" in test_name_str:
                         if is_passed or is_failed:
                             results["electrical_angle_pass"] = is_passed
