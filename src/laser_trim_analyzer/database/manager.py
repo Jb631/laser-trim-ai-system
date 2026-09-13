@@ -1089,6 +1089,54 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            # Migration: Add the STATION-REFERENCE columns (2026-09-13).
+            #
+            # The app's own corrected grade stays in linearity_pass — these
+            # record what the SHEET said and which rows it graded, so a
+            # disagreement is visible instead of invisible. graded_window_source
+            # NULL is load-bearing: it marks a row graded before the window fix
+            # and is what count_legacy_ft_verdicts() counts and what the
+            # re-grade pass selects by default. Never backfill it with a
+            # default — a default would erase the record of what needs redoing.
+            ft_station_columns = {
+                "final_test_results": {
+                    "station_linearity_pass": "BOOLEAN",
+                    "station_cell_flag_conflict": "BOOLEAN",
+                    "graded_window_source": "VARCHAR(16)",
+                },
+                "final_test_tracks": {
+                    "station_flags": "TEXT",
+                    "station_fail_points": "INTEGER",
+                    "graded_start": "INTEGER",
+                    "graded_end": "INTEGER",
+                    "ignore_start": "INTEGER",
+                    "ignore_end": "INTEGER",
+                },
+            }
+            for _table, _columns in ft_station_columns.items():
+                for col_name, col_type in _columns.items():
+                    try:
+                        session.execute(text(
+                            f"ALTER TABLE {_table} ADD COLUMN {col_name} {col_type}"
+                        ))
+                        session.commit()
+                    except Exception as e:
+                        if ("duplicate column" not in str(e).lower()
+                                and "already exists" not in str(e).lower()):
+                            logger.warning(
+                                f"FT station-reference migration warning "
+                                f"adding {_table}.{col_name}: {e}")
+                        session.rollback()
+            try:
+                session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_ft_graded_window_source "
+                    "ON final_test_results (graded_window_source)"
+                ))
+                session.commit()
+            except Exception as e:
+                logger.warning(f"graded_window_source index warning: {e}")
+                session.rollback()
+
             # Migration: Add consecutive_recovered column to model_ml_state
             try:
                 session.execute(text("ALTER TABLE model_ml_state ADD COLUMN consecutive_recovered INTEGER DEFAULT 0"))
@@ -4843,7 +4891,23 @@ class DatabaseManager:
         if known_track_values:
             return all(known_track_values)
 
+        # Every track came back None — nothing was gradeable (no limit
+        # columns, or the station's window left nothing inside it). That is
+        # "no disposition", and the header cell must not supply one: the
+        # header is the STATION's verdict and this column is the APP's.
+        if tracks:
+            return None
+
         return cls._coerce_optional_bool(test_results.get("linearity_pass"))
+
+    def resolve_final_test_linearity_pass(
+        self,
+        test_results: Dict[str, Any],
+        tracks: List[Dict[str, Any]],
+    ) -> Optional[bool]:
+        """Instance-facing name for the resolver, so callers outside this
+        module (core.ft_regrade) share the one precedence rule."""
+        return self._resolve_final_test_linearity_pass(test_results, tracks)
 
     def save_final_test(
         self,
@@ -4870,6 +4934,8 @@ class DatabaseManager:
             ID of saved FinalTestResult
         """
         from sqlalchemy.exc import IntegrityError
+        from laser_trim_analyzer.core.ft_regrade import (
+            ft_reference_fields, graded_window_source)
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
             FinalTestTrack as DBFinalTestTrack,
@@ -4925,6 +4991,13 @@ class DatabaseManager:
                         test_date=metadata.get("test_date"),
                         overall_status=overall_status,
                         linearity_pass=linearity_pass,
+                        # Reference, never the disposition — see the column
+                        # comments on FinalTestResult.
+                        station_linearity_pass=self._coerce_optional_bool(
+                            test_results.get("station_linearity_pass")),
+                        station_cell_flag_conflict=self._coerce_optional_bool(
+                            test_results.get("station_cell_flag_conflict")),
+                        graded_window_source=graded_window_source(tracks),
                         linearity_error=tracks[0].get("linearity_error") if tracks else None,
                         resistance_pass=test_results.get("resistance_pass"),
                         resistance_value=test_results.get("resistance_value"),
@@ -4967,6 +5040,7 @@ class DatabaseManager:
                             optimal_offset=track_data.get("optimal_offset"),
                             optimal_slope=track_data.get("optimal_slope"),
                             linearity_type=track_data.get("linearity_type"),
+                            **ft_reference_fields(track_data),
                         )
                         session.add(db_track)
 
@@ -5006,6 +5080,148 @@ class DatabaseManager:
                 except Exception:
                     logger.debug("FT duplicate-recovery query failed", exc_info=True)
                 raise
+
+    def count_legacy_ft_verdicts(self) -> int:
+        """How many final-test rows were graded BEFORE the ignore-window fix.
+
+        `graded_window_source IS NULL` is the marker: every row written since
+        2026-09-13 records how its graded window was established, so a NULL is
+        a row whose verdict may include sweep points the station never graded
+        (the 8232-1 lead-in, a phantom 0.047 error against a +/-0.010 band).
+        HOME shows this count; Settings -> Re-grade final tests clears it.
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+        try:
+            with self.session() as session:
+                return int(
+                    session.query(func.count(DBFinalTestResult.id))
+                    .filter(DBFinalTestResult.graded_window_source.is_(None))
+                    .scalar() or 0
+                )
+        except Exception as e:
+            # A database that predates the migration must not break HOME.
+            logger.debug(f"count_legacy_ft_verdicts unavailable: {e}")
+            return 0
+
+    def get_final_tests_for_regrade(
+        self,
+        only_legacy: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Rows for `core.ft_regrade.regrade_final_tests`, oldest first.
+
+        Plain dicts, detached from the session: the re-grade parses files on
+        worker threads and must not hold ORM instances across them.
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+        with self.session() as session:
+            query = session.query(
+                DBFinalTestResult.id,
+                DBFinalTestResult.filename,
+                DBFinalTestResult.file_path,
+                DBFinalTestResult.model,
+                DBFinalTestResult.serial,
+                DBFinalTestResult.linearity_pass,
+                DBFinalTestResult.graded_window_source,
+            )
+            if only_legacy:
+                query = query.filter(DBFinalTestResult.graded_window_source.is_(None))
+            query = query.order_by(DBFinalTestResult.id)
+            if limit:
+                query = query.limit(int(limit))
+            return [{
+                "id": row.id,
+                "filename": row.filename,
+                "file_path": row.file_path,
+                "model": row.model,
+                "serial": row.serial,
+                "linearity_pass": row.linearity_pass,
+                "graded_window_source": row.graded_window_source,
+            } for row in query.all()]
+
+    def apply_final_test_regrade(
+        self,
+        final_test_id: int,
+        tracks: List[Dict[str, Any]],
+        test_results: Dict[str, Any],
+    ) -> bool:
+        """Write a re-graded final test back over its stored row.
+
+        Replaces the tracks (same writer shape as `update_final_test_tracks`)
+        and re-derives the file-level verdict through the ONE resolver, so a
+        re-graded row is indistinguishable from a freshly ingested one. The
+        station-reference columns are rewritten from the same parse.
+        """
+        from laser_trim_analyzer.core.ft_regrade import (
+            ft_reference_fields, graded_window_source)
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+            FinalTestTrack as DBFinalTestTrack,
+        )
+
+        with self._write_lock:
+            try:
+                with self.session() as session:
+                    result = session.get(DBFinalTestResult, final_test_id)
+                    if not result:
+                        logger.warning(f"Final Test ID {final_test_id} not found")
+                        return False
+
+                    linearity_pass = self._resolve_final_test_linearity_pass(
+                        test_results, tracks)
+                    result.linearity_pass = linearity_pass
+                    result.overall_status = (
+                        DBStatusType.FAIL if linearity_pass is False
+                        else DBStatusType.PASS
+                    )
+                    result.linearity_error = (
+                        tracks[0].get("linearity_error") if tracks else None)
+                    result.station_linearity_pass = self._coerce_optional_bool(
+                        test_results.get("station_linearity_pass"))
+                    result.station_cell_flag_conflict = self._coerce_optional_bool(
+                        test_results.get("station_cell_flag_conflict"))
+                    result.graded_window_source = graded_window_source(tracks)
+
+                    session.query(DBFinalTestTrack).filter(
+                        DBFinalTestTrack.final_test_id == final_test_id
+                    ).delete()
+
+                    for track_data in tracks:
+                        position_values = (track_data.get("electrical_angles")
+                                           or track_data.get("positions"))
+                        session.add(DBFinalTestTrack(
+                            final_test_id=final_test_id,
+                            track_id=track_data.get("track_id", "default"),
+                            status=(DBStatusType.FAIL
+                                    if track_data.get("linearity_pass") is False
+                                    else DBStatusType.PASS),
+                            linearity_spec=track_data.get("linearity_spec"),
+                            linearity_error=track_data.get("linearity_error"),
+                            linearity_pass=track_data.get("linearity_pass"),
+                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                            position_data=position_values,
+                            error_data=track_data.get("errors"),
+                            theory_data=track_data.get("theory_values"),
+                            electrical_angle_data=track_data.get("electrical_angles"),
+                            upper_limits=track_data.get("upper_limits"),
+                            lower_limits=track_data.get("lower_limits"),
+                            max_deviation=track_data.get("max_deviation"),
+                            max_deviation_position=track_data.get("max_deviation_angle"),
+                            optimal_offset=track_data.get("optimal_offset"),
+                            optimal_slope=track_data.get("optimal_slope"),
+                            linearity_type=track_data.get("linearity_type"),
+                            **ft_reference_fields(track_data),
+                        ))
+
+                    session.commit()
+                    return True
+            except Exception as e:
+                logger.error(f"Failed to apply re-grade to FT {final_test_id}: {e}")
+                return False
 
     def get_ml_staleness(self) -> List[Dict[str, Any]]:
         """
@@ -6330,6 +6546,7 @@ class DatabaseManager:
         Returns:
             True if successful
         """
+        from laser_trim_analyzer.core.ft_regrade import ft_reference_fields
         from laser_trim_analyzer.database.models import (
             FinalTestResult as DBFinalTestResult,
             FinalTestTrack as DBFinalTestTrack,
@@ -6372,6 +6589,7 @@ class DatabaseManager:
                             optimal_offset=track_data.get("optimal_offset"),
                             optimal_slope=track_data.get("optimal_slope"),
                             linearity_type=track_data.get("linearity_type"),
+                            **ft_reference_fields(track_data),
                         )
                         session.add(db_track)
 

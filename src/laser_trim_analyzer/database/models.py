@@ -818,7 +818,24 @@ class FinalTestResult(Base):
     overall_status = Column(Enum(StatusType), nullable=False)
 
     # Individual test results (stored for future use)
+    #
+    # linearity_pass IS THE DISPOSITION and it is the APP's grade: the
+    # analyzer's per-point verdict on the corrected error trace, zero
+    # tolerance. The three columns below are REFERENCE ONLY and never feed a
+    # pass/fail rate, an escape/overkill classification, FOCUS or an ML label.
     linearity_pass = Column(Boolean)
+    # What the sheet's own "Linearity Test:" cell said. NULL when the template
+    # has no such cell (Format 2 / shop test) or it read "Not Tested".
+    station_linearity_pass = Column(Boolean)
+    # True when that cell disagrees with the sheet's OWN column-I flags — old
+    # templates whose verdict formula covers a narrower range than the flag
+    # column (8322-10 reads PASSED with 42 flags set). Neither is overridden.
+    station_cell_flag_conflict = Column(Boolean)
+    # How the graded window was established for this file: 'flags',
+    # 'ignore_cells' or 'all_rows'. NULL means the row was graded BEFORE the
+    # ignore-window fix (2026-09-13) and its verdict may include points the
+    # station never graded — this is what count_legacy_ft_verdicts() counts.
+    graded_window_source = Column(String(16))
     linearity_error = Column(Float)
     resistance_pass = Column(Boolean)
     resistance_value = Column(Float)
@@ -943,11 +960,26 @@ class FinalTestTrack(Base):
     track_id = Column(String(20), nullable=False, default='default')
     status = Column(Enum(StatusType), nullable=False)
 
-    # Core linearity data for comparison
+    # Core linearity data for comparison. linearity_pass is the APP's
+    # corrected per-point grade — the disposition.
     linearity_spec = Column(Float)
     linearity_error = Column(Float)
     linearity_pass = Column(Boolean)
     linearity_fail_points = Column(Integer)
+
+    # The station's own grading, kept as REFERENCE beside the app's.
+    # station_flags is the sheet's column I aligned to position_data: 1 = the
+    # station judged this point out of limits, 0 = in limits, null = the
+    # station did not grade this point. graded_start/end bound the points the
+    # app is allowed to grade; ignore_start/end are the file's declared
+    # lead-in/run-out counts, kept for disclosure because they do not always
+    # agree with the flags (8232-1 declares 6 and 6 but flags 5..49 of 57).
+    station_flags = Column(SafeJSON, nullable=True)
+    station_fail_points = Column(Integer, nullable=True)
+    graded_start = Column(Integer, nullable=True)
+    graded_end = Column(Integer, nullable=True)
+    ignore_start = Column(Integer, nullable=True)
+    ignore_end = Column(Integer, nullable=True)
 
     # Raw data for overlay chart (JSON arrays)
     position_data = Column(SafeJSON, nullable=True)  # Array of position values

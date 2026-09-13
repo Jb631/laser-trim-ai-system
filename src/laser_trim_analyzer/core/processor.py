@@ -33,6 +33,7 @@ except ImportError:
 from laser_trim_analyzer.core.parser import (
     ExcelParser, NonTrimWorkbookError, detect_file_type)
 from laser_trim_analyzer.core.analyzer import Analyzer
+from laser_trim_analyzer.core.ft_regrade import grade_ft_track
 from laser_trim_analyzer.core.models import (
     FileMetadata,
     TrackData,
@@ -557,110 +558,24 @@ class Processor:
             ft_model = metadata.get("model", "unknown")
             ft_serial = metadata.get("serial")
             ft_spec = self._get_spec_for_analysis(ft_model, ft_serial, is_final_test=True)
-            ft_linearity_type = ft_spec["linearity_type"]
             ft_compensation = metadata.get("station_compensation")
 
             # Run analyzer BEFORE saving so slope/offset/linearity_type flow into
             # the final_test_tracks rows. The analyzer output is used both for
             # the display result (analyzed_tracks) and for enriching the raw
             # track dicts passed to save_final_test.
-            analyzed_tracks = []
-            for track in tracks:
-                # Handle None values explicitly (dict.get returns None if key exists with None value).
-                # Format 2 FT files have no spec limits and the parser returns None — treat as
-                # FAIL rather than silently calling unknown-status units PASS.
-                linearity_pass = track.get("linearity_pass")
-                if linearity_pass is None:
-                    logger.warning(
-                        f"FT track {track.get('track_id', '?')} of {file_path.name}: "
-                        f"linearity_pass unknown (no spec limits) — defaulting to FAIL"
-                    )
-                    linearity_pass = False
-
-                # Use analyzer for spec-aware optimization when we have error data
-                positions = track.get("positions") or track.get("electrical_angles") or []
-                errors = track.get("errors") or []
-                upper_lims = track.get("upper_limits") or []
-                lower_lims = track.get("lower_limits") or []
-
-                if positions and errors and upper_lims and lower_lims:
-                    # Full analysis through analyzer
-                    track_dict = {
-                        "track_id": track.get("track_id", "default"),
-                        "positions": positions,
-                        "errors": errors,
-                        "upper_limits": upper_lims,
-                        "lower_limits": lower_lims,
-                        "travel_length": max(positions) - min(positions) if positions else 1.0,
-                        "linearity_spec": track.get("linearity_spec") or 0.01,
-                    }
-                    # Pass theory_values so the analyzer can run slope optimization
-                    # (adjusted = error + theory * k + offset)
-                    theory_vals = track.get("theory_values")
-                    if theory_vals:
-                        track_dict["theory_volts"] = theory_vals
-                    track_dict["exclude_points"] = ft_spec["exclude_points"]
-                    track_result = self.analyzer.analyze_track(
-                        track_dict,
-                        model=ft_model,
-                        linearity_type=ft_linearity_type,
-                        angle_spec=ft_spec["angle_spec"],
-                        angle_tol=ft_spec["angle_tol"],
-                        angle_tol_type=ft_spec["angle_tol_type"],
-                        station_compensation=track.get("station_compensation") or ft_compensation,
-                    )
-                    analyzed_tracks.append(track_result)
-
-                    # Enrich the raw parser track dict with spec-aware values so
-                    # save_final_test can persist them on final_test_tracks.
-                    track["optimal_offset"] = getattr(track_result, "optimal_offset", 0.0)
-                    track["optimal_slope"] = getattr(track_result, "optimal_slope", 0.0)
-                    track["linearity_type"] = (
-                        str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
-                        else (str(ft_linearity_type) if ft_linearity_type else None)
-                    )
-                    # Overwrite the parser's raw-error fail count with the
-                    # analyzer's corrected-error count. Pass/fail is judged
-                    # on corrected errors (error + theory*k + offset), not raw,
-                    # so this is what should land in the DB.
-                    corrected_fail_points = getattr(track_result, "linearity_fail_points", None)
-                    if corrected_fail_points is not None:
-                        track["linearity_fail_points"] = corrected_fail_points
-                    corrected_lin_pass = getattr(track_result, "linearity_pass", None)
-                    if corrected_lin_pass is not None:
-                        track["linearity_pass"] = corrected_lin_pass
-                    corrected_lin_error = getattr(track_result, "linearity_error", None)
-                    if corrected_lin_error is not None:
-                        track["linearity_error"] = corrected_lin_error
-                else:
-                    # Minimal TrackData when no error data available
-                    track_data = TrackData(
-                        track_id=track.get("track_id", "default"),
-                        status=AnalysisStatus.PASS if linearity_pass else AnalysisStatus.FAIL,
-                        travel_length=1.0,
-                        linearity_spec=track.get("linearity_spec") or 0.01,
-                        sigma_gradient=0.0,
-                        sigma_threshold=0.01,
-                        sigma_pass=True,
-                        optimal_offset=0.0,
-                        linearity_error=track.get("linearity_error") or 0.0,
-                        linearity_pass=linearity_pass,
-                        linearity_fail_points=track.get("linearity_fail_points") or 0,
-                        linearity_type=ft_linearity_type,
-                        station_compensation=track.get("station_compensation") or ft_compensation,
-                        position_data=positions,
-                        error_data=errors,
-                    )
-                    analyzed_tracks.append(track_data)
-
-                    # Enrich with identity correction so the columns are always
-                    # populated for every track.
-                    track["optimal_offset"] = 0.0
-                    track["optimal_slope"] = 0.0
-                    track["linearity_type"] = (
-                        str(ft_linearity_type.value) if hasattr(ft_linearity_type, "value")
-                        else (str(ft_linearity_type) if ft_linearity_type else None)
-                    )
+            #
+            # The grade itself lives in core.ft_regrade.grade_ft_track, shared
+            # with the re-grade repair pass so the two can never disagree about
+            # what a final test's verdict is. It grades only the rows the
+            # station graded (the parser's graded_window), merged with the
+            # model spec's exclude_points_ft.
+            analyzed_tracks = [
+                grade_ft_track(self.analyzer, track, ft_spec, model=ft_model,
+                               ft_compensation=ft_compensation,
+                               filename=file_path.name)
+                for track in tracks
+            ]
 
             # Determine overall status from CORRECTED analyzer results so the
             # top-level pass/fail reflects pass/fail on corrected errors
