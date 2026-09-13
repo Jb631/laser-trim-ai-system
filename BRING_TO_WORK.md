@@ -1,5 +1,73 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-13 — FIRST THING TOMORROW: re-grade the final tests
+
+**Pull, then run one thing.** Every final-test number in the app moves
+afterwards, so do this before you read any of them.
+
+**What was wrong.** A final-test sheet grades a WINDOW of its sweep, not the
+whole thing. Column I holds a per-point flag the station writes only on the
+rows it actually judged, and the parameter block says how many samples it
+ignores at each end. The app had never looked at either, so it graded every
+row — including the lead-in. On 8232-1 that lead-in is six rows where the pot
+reads 0 V against a theory of −0.045 V: a phantom 0.047 "error" against a
+±0.010 band, five times the limit, on a part nobody measured. **98.5% of that
+model's files failed here at a station that passed them.**
+
+On the 690 local sample files, 35 files (5.2%) change verdict once the window
+is respected: 28 FAIL→PASS, 3 PASS→FAIL (blank cells that used to be stored
+as a flattering 0.0 and now count honestly), 4 FAIL→not-graded (Format 2 files
+with no limit columns at all, which were never gradeable).
+
+**What did NOT change: the disposition is still the app's own grade.** You
+were clear about this — "i dont want to just copy the excel, i want to grade
+the error and correct the offset but if cells should be ignored then we should
+ignore those cells." So the app still corrects the offset and grades every
+point itself. It just no longer grades cells the sheet leaves ungraded. The
+sheet's own PASSED/FAILED is now STORED beside the app's verdict as a
+reference, and the two are allowed to differ — when the offset correction
+rescues a unit the station rejected, that is the app working, and the chart
+says so in words instead of hiding it.
+
+**Do this:**
+
+1. `git pull`
+2. Launch V6. HOME will show an amber line: *"150,202 final-test records were
+   graded before the ignore-window fix…"* (that is every row in the work
+   database — nothing was graded with a window before today).
+3. **Back up the database first.** `copy data\analysis.db data\analysis.db.bak-2026-09-13`
+4. **Settings → Database → "Re-grade final tests."** It asks before starting
+   and tells you how many. It re-reads each workbook from the plant share and
+   re-grades it, four at a time. **Stop is safe** — what is written stays
+   written and starting again continues where it left off. Expect this to take
+   a while: 150k workbooks off the share.
+5. The amber line on HOME disappears when it is done.
+
+**Prefer the command line?** Dry run first — it grades everything, writes
+nothing, and prints per model how many verdicts would move:
+
+```
+python scripts\regrade_final_tests.py data\analysis.db
+python scripts\regrade_final_tests.py data\analysis.db --apply
+```
+
+**Off the work network nothing happens.** Every source file reports
+"unreachable" and no row is touched. That is the expected result on the Mac.
+
+**What moves after it runs.** Final-test fail rates. Escapes and overkills
+(both directions — the Gap numbers will shift). The FOCUS list, because it
+ranks on those. Any ML model trained on final test as ground truth: **retrain
+after this**, the labels have changed.
+
+**Two smaller things in the same pull.** The unit chart now shades the rows
+the station never graded, rings the points the station itself flagged, and
+names both verdicts in one line. And "Linearity Spec" on that chart stopped
+printing the MEAN of a bowtie band — it shows the real range now
+("±0.008–0.010"), which is what sent you looking for a fault that was not
+there this morning.
+
+---
+
 ## 🆕 NEW LAPTOP, CLEAN DATABASE — this is the whole checklist (2026-09-02)
 
 You said you'll reprocess every file fresh on the new machine. That is the

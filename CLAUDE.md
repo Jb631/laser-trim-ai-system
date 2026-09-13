@@ -112,6 +112,15 @@ green once). New features get a sweep entry in the same commit.
 5. **UI thread discipline** - workers NEVER call Tk; post via gui/v6/ui_dispatch
 6. **Domain rule** - linearity is the zero-tolerance customer disposition;
    sigma is an internal drift-watch signal, never a rejection
+7. **Final-test grading** (James, 2026-09-13) - the disposition is the APP's
+   corrected per-point grade, restricted to the cells the sheet grades (the
+   column-I flag block, else the "# of elements to ignore" counts). The
+   sheet's own PASSED/FAILED is stored as a reference only and must never
+   overwrite it — "i dont want to just copy the excel, i want to grade the
+   error and correct the offset but if cells should be ignored then we should
+   ignore those cells." Blank cells are ungraded, never 0.0. One grading body,
+   `core/ft_regrade.grade_ft_track`, shared by the processor and the re-grade
+   repair pass.
 
 ### Code Style
 - Type hints where practical
