@@ -19,16 +19,20 @@ What is pinned here:
     support; "6 min 41 s left" is not, and reading it makes people wait for a
     number that was never real. Nothing is claimed at all for the first 30
     seconds, when the sample is one folder's worth of small files.
-  * Already-processed files count toward the bar. The total is every file
-    discovered, so on an incremental re-run the bar has to jump the moment the
-    scan says "148,000 of these are already in the database" — otherwise the
-    denominator is a lie for the whole run.
+  * The bar counts WORK, not files on disk (2026-09-13). It used to count
+    every file discovered and credit the already-known ones back a folder at a
+    time, so on a re-run the thousands of known files in every folder the run
+    had not reached yet sat inside "remaining" — and remaining divided by a
+    real processing rate is where James's "it says like 24 hours" came from.
+    The pre-scan decides new-vs-known from the in-memory index before the
+    first file opens; the total is what is left to do, and the line says so.
 """
 from threading import Event
 
 import pytest
 
 from laser_trim_analyzer.core import ingest_run
+from laser_trim_analyzer.core.processor import Processor as _RealProcessor
 from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator,
     FolderResult,
@@ -138,25 +142,28 @@ def test_nothing_left_to_do_says_nothing_rather_than_under_a_minute():
 
 # ---- the line --------------------------------------------------------------
 
-def test_the_progress_line_reads_like_the_spec():
+def test_the_progress_line_says_how_many_are_left():
+    """James, mid-ingest: "it doesnt tell me how many files it has to go".
+    "1,214 / 8,900" made him do the subtraction — and until the total became
+    the run's WORK, the subtraction gave the wrong answer anyway."""
     assert format_progress_line(1214, 8900, folder=2, folders=3, rate=17.0,
                                 eta="about 7 min left", elapsed=724.0) == \
-        "Folder 2 of 3 · 1,214 / 8,900 files · 17 files/s · about 7 min left" \
-        " · elapsed 12:04"
+        "Folder 2 of 3 · 1,214 done · 7,686 to go · 17 files/s · about 7 min " \
+        "left · elapsed 12:04"
 
 
 def test_the_line_drops_what_it_does_not_know_yet():
     """Before the scan finishes there is no total and no rate — say the one
-    real number rather than "0 / 0 files · 0 files/s"."""
+    real number rather than "0 to go · 0 files/s"."""
     line = format_progress_line(12, 0, folder=1, folders=1, rate=None,
                                 eta="estimating…", elapsed=4.0)
-    assert line == "12 files · estimating… · elapsed 0:04"
+    assert line == "12 done · estimating… · elapsed 0:04"
 
 
 def test_a_single_folder_run_does_not_say_folder_1_of_1():
     line = format_progress_line(5, 10, folder=1, folders=1, rate=2.0,
                                 eta="under a minute left", elapsed=3.0)
-    assert line.startswith("5 / 10 files")
+    assert line.startswith("5 done · 5 to go")
 
 
 def test_the_line_can_still_name_the_file_it_is_on():
@@ -418,7 +425,7 @@ def test_home_paints_the_run_total_not_the_folders(make_app):
     state = {"n": 8900, "folder": 2, "folders": 3}
     page._paint(coalescer, state, EtaEstimator())
     text = page._progress._status.cget("text")
-    assert "401 / 8,900 files" in text
+    assert "401 done · 8,499 to go" in text
     assert "Folder 2 of 3" in text
 
 
@@ -440,3 +447,231 @@ def test_home_does_not_zero_the_count_at_a_folder_boundary(make_app,
     app = make_app()
     _home(app)._run(["/a", "/b"], True, Event())
     assert started == [1], "the folder boundary threw away a file's progress"
+
+
+# ---- the total is WORK, not files on disk ---------------------------------
+#
+# The bug this section exists for (James, 2026-09-12): "we recently tried to
+# add to the processor to show how many files are left to process while its
+# working. thats not working and the time remaining is not working its saying
+# like 24 hours sometimes?" — on a re-run where the database already had
+# nearly everything. The pre-scan counted every Excel file on the share, and a
+# folder's known population only left "remaining" when that folder's own scan
+# landed, so the denominator was ~150,000 files nobody was going to open.
+
+def _known_db(tmp_path, paths):
+    """A real SQLite DB whose processed_files rows match `paths` on disk.
+
+    Real rows, real (size, mtime): `_classify_scan`'s stat fast-path is the
+    thing under test, and a mocked index could not exercise it.
+    """
+    from datetime import datetime
+
+    from laser_trim_analyzer.database.manager import DatabaseManager
+    from laser_trim_analyzer.database.models import ProcessedFile
+
+    db = DatabaseManager(tmp_path / "known.db")
+    with db.session() as s:
+        for i, p in enumerate(paths):
+            st = p.stat()
+            s.add(ProcessedFile(
+                filename=p.name, file_path=str(p), file_hash=f"{i:064d}",   # the model validates 64 hex chars
+                file_size=st.st_size,
+                file_modified_date=datetime.fromtimestamp(st.st_mtime),
+                success=True))
+    return db
+
+
+def _folder(tmp_path, name, n):
+    d = tmp_path / name
+    d.mkdir()
+    out = []
+    for i in range(n):
+        f = d / f"{name}_{i:03d}.xls"
+        f.write_bytes(b"x" * (10 + i))       # distinct sizes: real stat data
+        out.append(f)
+    return d, out
+
+
+def _use_db(monkeypatch, db):
+    """Point the module-global manager at this DB.
+
+    Processor._load_processed_hashes reaches for `get_database()`, which
+    IGNORES any manager handed to run_folders — the whole reason the QA sweep
+    sets this too (memory: get_database() bypasses injection).
+    """
+    from laser_trim_analyzer.database import manager as _dbmod
+    monkeypatch.setattr(_dbmod, "_db_manager", db)
+
+
+def _totals_run(monkeypatch, folders, *, incremental=True):
+    """run_folders with the real pre-scan and a stubbed folder run."""
+    said, totals = [], []
+    monkeypatch.setattr(ingest_run, "run_folder",
+                        lambda folder, **kw: FolderResult(folder=folder, ok=True))
+    run_folders([str(f) for f in folders], db=None, config=None,
+                incremental=incremental, on_phase=said.append,
+                on_total=totals.append)
+    return totals, said
+
+
+def test_the_total_counts_only_what_is_left_to_do(tmp_path, monkeypatch):
+    """8 files on disk, 5 of them already in the database: the run has 3."""
+    folder, files = _folder(tmp_path, "laser", 8)
+    _use_db(monkeypatch, _known_db(tmp_path, files[:5]))
+    totals, said = _totals_run(monkeypatch, [folder])
+    assert totals == [3]
+    assert any("5 files already in the database will be skipped." in s
+               for s in said)
+
+
+def test_a_folder_that_is_entirely_known_is_not_in_the_remainder(tmp_path,
+                                                                 monkeypatch):
+    """The shape of James's re-run: folder 2 is done, and until the run
+    reached it, every one of its files counted as still to do."""
+    a, a_files = _folder(tmp_path, "new_work", 4)
+    b, b_files = _folder(tmp_path, "all_known", 60)
+    _use_db(monkeypatch, _known_db(tmp_path, b_files))
+    totals, said = _totals_run(monkeypatch, [a, b])
+    assert totals == [4], "folder 2 was already in the database"
+    assert any("60 files already in the database" in s for s in said)
+    # ...and the line the user reads says the same thing.
+    assert format_progress_line(0, totals[0], folder=1, folders=2,
+                                elapsed=1.0) == \
+        "Folder 1 of 2 · 0 done · 4 to go · elapsed 0:01"
+
+
+def test_a_full_reprocess_counts_every_file(tmp_path, monkeypatch):
+    """Incremental unchecked: nothing is skipped, so everything is work."""
+    folder, files = _folder(tmp_path, "laser", 6)
+    _use_db(monkeypatch, _known_db(tmp_path, files))
+    totals, said = _totals_run(monkeypatch, [folder], incremental=False)
+    assert totals == [6]
+    assert not any("already in the database" in s for s in said)
+
+
+def test_an_unreadable_index_falls_back_to_every_file_and_says_so(tmp_path,
+                                                                  monkeypatch):
+    """Wrong to the SAFE side: over-state the run rather than promise a finish
+    that isn't coming — and never silently."""
+    folder, files = _folder(tmp_path, "laser", 7)
+    _use_db(monkeypatch, _known_db(tmp_path, files[:5]))
+
+    class _NoIndex:
+        def __init__(self, *a, **k):
+            pass
+
+        def _load_processed_hashes(self):
+            raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ingest_run, "Processor", _NoIndex)
+    totals, said = _totals_run(monkeypatch, [folder])
+    assert totals == [7]
+    assert any("Could not read the processed-file index" in s for s in said)
+
+
+def test_the_run_hands_the_coalescer_the_total_and_the_known_count(tmp_path,
+                                                                   monkeypatch):
+    """The two halves have to meet: the pre-scan's per-folder known count is
+    what the coalescer subtracts from the processor's bulk credit."""
+    folder, files = _folder(tmp_path, "laser", 9)
+    _use_db(monkeypatch, _known_db(tmp_path, files[:6]))
+    seen = {}
+
+    class _Spy(ProgressCoalescer):
+        def set_total(self, total):
+            seen["total"] = total
+            super().set_total(total)
+
+        def expect_known(self, n):
+            seen["known"] = n
+            super().expect_known(n)
+
+    spy = _Spy()
+    monkeypatch.setattr(ingest_run, "Processor", _NothingProcessor)
+    run_folders([str(folder)], db=None, config=None, progress=spy,
+                incremental=True)
+    assert seen == {"total": 3, "known": 6}
+
+
+class _NothingProcessor(_RealProcessor):
+    """The REAL incremental scan with the parsing taken out.
+
+    It cannot be a bare stub: the pre-scan drives the same class through
+    `_classify_scan`, so a processor with no scan would test the fallback
+    instead of the plan.
+    """
+
+    def __init__(self, *a, **k):
+        k.setdefault("use_ml", False)     # the ML load goes to the DB global
+        super().__init__(*a, **k)
+
+    def process_batch(self, paths, **kw):
+        return iter(())
+
+
+# ---- the coalescer counts work, not files ---------------------------------
+
+def test_the_bulk_credit_drops_the_files_the_scan_already_knew():
+    """summary.skipped counts BOTH the memory-settled files and the ones the
+    scan had to hash. Only the hashed ones were work this run paid for."""
+    c = ProgressCoalescer()
+    c.set_total(200)
+    c.expect_known(1480)                      # what the pre-scan settled free
+    c.note(_status(status="known", count=1530))   # +50 verified by hash
+    snap = c.drain()
+    assert snap["done"] == 50
+    assert snap["moved"] is True
+
+
+def test_a_folder_the_scan_settled_whole_moves_nothing():
+    """Every file known in memory: no work was done, so the bar must not move
+    — and the panel keeps showing the scan's own sentence."""
+    c = ProgressCoalescer()
+    c.set_total(0)
+    c.expect_known(150_938)
+    c.note(_status(status="known", count=150_938))
+    snap = c.drain()
+    assert snap["done"] == 0 and snap["moved"] is False
+
+
+def test_the_sequential_path_spends_the_same_budget_one_file_at_a_time():
+    """Folders under the turbo threshold skip each known file individually —
+    there is no bulk event to subtract from."""
+    c = ProgressCoalescer()
+    c.set_total(2)
+    c.expect_known(3)
+    for i in range(3):
+        c.note(_status(status="skipped", filename=f"known{i}.xls"))
+    assert c.drain()["done"] == 0
+    for i in range(2):
+        c.note(_status(status="completed", filename=f"new{i}.xls"))
+    assert c.drain()["done"] == 2
+
+
+def test_each_folder_gets_its_own_budget_not_the_last_one_s_leftovers():
+    c = ProgressCoalescer()
+    c.set_total(100)
+    c.expect_known(40)
+    c.note(_status(status="known", count=40))     # folder 1: all known
+    c.expect_known(5)                             # folder 2 starts fresh
+    c.note(_status(status="known", count=25))     # 5 settled, 20 verified
+    assert c.drain()["done"] == 20
+
+
+def test_the_bar_never_overruns_the_total_it_announced():
+    """If the plan and the processor ever disagree, clamp and LOG it — a bar
+    reading 104% hides the disagreement instead of reporting it."""
+    c = ProgressCoalescer()
+    c.set_total(10)
+    for i in range(15):
+        c.note(_status(status="completed", filename=f"{i}.xls"))
+    assert c.drain()["done"] == 10
+
+
+def test_without_an_announced_total_nothing_is_clamped():
+    """A direct run_folder call with no plan still counts honestly."""
+    c = ProgressCoalescer()
+    for i in range(15):
+        c.note(_status(status="completed", filename=f"{i}.xls"))
+    assert c.drain()["done"] == 15

@@ -156,6 +156,16 @@ def test_run_folder_persists_the_finished_batch_and_says_it_was_cancelled(
         def bucket(self, name, reason=""):
             pass
 
+        # The run sizes itself through the coalescer before the first file
+        # (work total, and how much of this folder the database already has).
+        # A progress object that cannot take those is not one run_folder can
+        # drive, so the stub carries them rather than the code guessing.
+        def set_total(self, total):
+            pass
+
+        def expect_known(self, n):
+            pass
+
     res = run_folder(str(tmp_path / "laser"), db=db, config=Config(),
                      incremental=False, progress=_Trip(), cancel=cancel)
     assert res.cancelled is True
@@ -181,6 +191,16 @@ def test_a_small_folder_stops_too_even_though_it_never_batches(tmp_path,
                     cancel.set()
 
         def bucket(self, name, reason=""):
+            pass
+
+        # The run sizes itself through the coalescer before the first file
+        # (work total, and how much of this folder the database already has).
+        # A progress object that cannot take those is not one run_folder can
+        # drive, so the stub carries them rather than the code guessing.
+        def set_total(self, total):
+            pass
+
+        def expect_known(self, n):
             pass
 
     res = run_folder(str(tmp_path / "small"), db=db, config=Config(),
