@@ -41,8 +41,8 @@ BODY_HEIGHT = 320                       # scroll-bounded, like the zone it repla
 SPARK_W, SPARK_H, SPARK_DPI = 260, 64, 96
 
 
-def focus_row_texts(entry: FocusEntry,
-                    anchor: Optional[datetime]) -> Dict[str, str]:
+def focus_row_texts(entry: FocusEntry, anchor: Optional[datetime], *,
+                    today: Optional[datetime] = None) -> Dict[str, str]:
     """The four strings one FOCUS row shows. Pure, so the wording is testable.
 
     `line1`/`line2` are the entry's own verdict and sub-line, passed through
@@ -50,16 +50,32 @@ def focus_row_texts(entry: FocusEntry,
     function writes is `when`, and it says three things a supervisor asks in
     order: which lot, how old it is, and whether it is even finished yet.
 
-    An anchor of None (empty database) prints the date with no age rather than
-    inventing one against the wall clock — the wall clock is not this data's
-    clock.
+    The age is CALENDAR days, from `today` — the reader's own clock (James,
+    2026-09-13: "it says the lot was 2 days ago for example but it was longer
+    than 2 days"). It used to be measured from the data anchor, the newest
+    usable file date in the database, which is right for deciding what counts
+    as a recent lot and wrong for telling someone how long ago something ran:
+    when the database itself is a week behind (a nightly sync that did not
+    land, an ingest that was stopped), every row understated its age by
+    exactly that week. The caption above the list still discloses the anchor
+    ("as of last processed data Sep 11"), so the two now agree instead of
+    quietly cancelling out — "last lot Sep 04 (9d ago)" under a Sep 11 anchor
+    says both what the data is and how old it is.
+
+    Whether a lot is still OPEN is still the series' own decision, made in
+    ml/spc.py against the data anchor: that is a question about the data, not
+    about today.
+
+    No anchor (empty database) or no `today` prints the date with no age
+    rather than inventing one.
     """
     end = entry.last_lot_end
     when = f"last lot {end:%b %d}"
-    if anchor is not None:
-        # Clamped at 0: a per-model anchor can sit a few hours behind a lot's
-        # midnight-normalized end, and "(-1d ago)" is nonsense.
-        days = max((anchor - end).days, 0)
+    if anchor is not None and today is not None:
+        # Whole calendar days, so "2d ago" means what a person counting on a
+        # calendar means. Clamped at 0: a lot stamped later today (or a clock
+        # that disagrees by an hour) must not read "(-1d ago)".
+        days = max((today.date() - end.date()).days, 0)
         when += " (today)" if days == 0 else f" ({days}d ago)"
     points = entry.series.points
     if points and points[-1].is_open:
@@ -238,9 +254,13 @@ class FocusListZone(ctk.CTkFrame):
             self._rendered.append(lbl)
         else:
             shown = res.focus if self._expanded else res.focus[:FOCUS_CAP]
+            # One clock for the whole list: rows rendered either side of
+            # midnight must not disagree about what "today" is.
+            now = datetime.now()
             for rank, entry in enumerate(shown, start=1):
                 row = _FocusRow(self._body, entry=entry, rank=rank,
-                                anchor=res.anchor, theme=t, on_click=self._cb)
+                                anchor=res.anchor, theme=t, on_click=self._cb,
+                                today=now)
                 row.pack(side="top", fill="x", pady=(0, t.SPACE_SM))
                 self._rows.append(row)
                 self._rendered.append(row)
@@ -281,14 +301,18 @@ class _FocusRow(ctk.CTkFrame):
 
     def __init__(self, master, *, entry: FocusEntry, rank: int,
                  anchor: Optional[datetime], theme: ThemeManager,
-                 on_click: Callable[[str, str], None]):
+                 on_click: Callable[[str, str], None],
+                 today: Optional[datetime] = None):
         super().__init__(master, fg_color=theme.CARD,
                          corner_radius=theme.RADIUS_MD)
         self.theme = theme
         self.entry = entry
         self.rank = rank
         self._cb = on_click
-        self.texts = focus_row_texts(entry, anchor)
+        # A row on screen always has a clock — the age is wall-clock now, and
+        # a row built without one would silently drop it.
+        self.texts = focus_row_texts(entry, anchor,
+                                     today=today or datetime.now())
         # The chart's own draw helper — the row cannot mark a different lot.
         self.params = spc_draw_params(entry.series)
         self.fig: Optional[Figure] = None

@@ -76,6 +76,16 @@ def _entry(model="8340-1", *, days_ago=10, history=None, excess=12.0,
 
 
 def _anchor_of(entry, days_ago=10):
+    """The DATA anchor: the newest usable file date in the database.
+
+    It decides what counts as a recent lot (ml/spc.py) and whether the last
+    one is still open. It is NOT the row's age any more — see `_today_of`.
+    """
+    return entry.last_lot_end + timedelta(days=days_ago)
+
+
+def _today_of(entry, days_ago=10):
+    """The wall clock the reader is holding, `days_ago` after the last lot."""
     return entry.last_lot_end + timedelta(days=days_ago)
 
 
@@ -107,7 +117,7 @@ def _zone(tk_root, sink=None):
 def test_row_texts_pass_the_entry_lines_through_untouched():
     """One computation: the row quotes the entry, it never re-derives a number."""
     e = _entry()
-    x = focus_row_texts(e, _anchor_of(e))
+    x = focus_row_texts(e, _anchor_of(e), today=_today_of(e))
     assert x["title"] == "8340-1"
     assert x["line1"] == e.verdict
     assert x["line2"] == e.sub_line
@@ -115,14 +125,14 @@ def test_row_texts_pass_the_entry_lines_through_untouched():
 
 def test_row_texts_name_the_last_lot_and_its_age():
     e = _entry(days_ago=10)
-    x = focus_row_texts(e, _anchor_of(e, 10))
+    x = focus_row_texts(e, _anchor_of(e, 10), today=_today_of(e, 10))
     assert x["when"] == f"last lot {e.last_lot_end:%b %d} (10d ago)"
     assert "still open" not in x["when"]           # 10 days idle = closed
 
 
 def test_row_texts_say_today_for_a_same_day_lot():
     e = _entry(days_ago=0)
-    x = focus_row_texts(e, _anchor_of(e, 0))
+    x = focus_row_texts(e, _anchor_of(e, 0), today=_today_of(e, 0))
     assert x["when"].startswith(f"last lot {e.last_lot_end:%b %d} (today)")
 
 
@@ -130,22 +140,54 @@ def test_row_texts_disclose_a_still_open_lot():
     """A lot that may still be receiving units is a preview, not a verdict."""
     e = _entry(days_ago=1)
     assert e.series.points[-1].is_open                       # fixture sanity
-    x = focus_row_texts(e, _anchor_of(e, 1))
+    x = focus_row_texts(e, _anchor_of(e, 1), today=_today_of(e, 1))
     assert x["when"] == f"last lot {e.last_lot_end:%b %d} (1d ago) · lot still open"
 
 
 def test_row_texts_without_an_anchor_omit_the_age():
     """No anchor (empty DB edge) must not fabricate an age or crash."""
     e = _entry()
-    x = focus_row_texts(e, None)
+    x = focus_row_texts(e, None, today=_today_of(e))
     assert x["when"] == f"last lot {e.last_lot_end:%b %d}"
+
+
+def test_the_age_is_counted_from_today_not_from_the_newest_data():
+    """James, 2026-09-13: "it says the lot was 2 days ago for example but it
+    was longer than 2 days".
+
+    The anchor is the newest usable file date in the DATABASE. When the
+    database is itself behind — a sync that did not land, an ingest that was
+    stopped — measuring the row's age from it understates every row by exactly
+    that lag. Here the last lot ran 9 days ago and the newest data in the
+    database is 4 days old: the row says 9, which is what a calendar says.
+    """
+    e = _entry(days_ago=4)
+    stale_anchor = _anchor_of(e, 4)              # DB is 5 days behind today
+    x = focus_row_texts(e, stale_anchor, today=_today_of(e, 9))
+    assert x["when"].startswith(f"last lot {e.last_lot_end:%b %d} (9d ago)")
+    # ...and the anchor still decides what the SERIES says about the lot being
+    # open — that is a fact about the data, not about today.
+    assert ("· lot still open" in x["when"]) is e.series.points[-1].is_open
+
+
+def test_the_row_the_widget_builds_uses_the_real_clock(tk_root):
+    """The pure function can be handed any day; the widget must hand it this
+    one. Without this the fix is testable and unshipped."""
+    from datetime import datetime as _dt
+    z = _zone(tk_root)
+    e = _entry(days_ago=1)                       # anchor a day after the lot
+    z.set_result(_result([e], days_ago=1))
+    days = (_dt.now().date() - e.last_lot_end.date()).days
+    assert days > 30, "fixture must be older than any plausible anchor lag"
+    assert z._rows[0].texts["when"].startswith(
+        f"last lot {e.last_lot_end:%b %d} ({days}d ago)")
 
 
 def test_row_texts_carry_the_likely_driver_when_known():
     """James (2026-08-30): the row must say WHY, not just who and how much."""
     e = _entry()
     e.driver = "Untrimmed resistance ↑ (+2.1σ vs its baseline)"
-    x = focus_row_texts(e, _anchor_of(e))
+    x = focus_row_texts(e, _anchor_of(e), today=_today_of(e))
     assert x["line3"] == ("likely driver: Untrimmed resistance ↑ "
                           "(+2.1σ vs its baseline)")
 
@@ -154,7 +196,7 @@ def test_row_texts_admit_when_the_driver_is_unknown():
     """No flagged process metric -> say so honestly, never guess."""
     e = _entry()
     e.driver = None
-    x = focus_row_texts(e, _anchor_of(e))
+    x = focus_row_texts(e, _anchor_of(e), today=_today_of(e))
     assert x["line3"] == "driver unclear — open the model"
 
 
@@ -164,7 +206,7 @@ def test_row_texts_flag_a_trim_vs_ft_spec_mismatch():
     e = _entry()
     e.driver = "Untrimmed resistance ↑ (+2.1σ vs its baseline)"
     e.spec_mismatch = True
-    x = focus_row_texts(e, _anchor_of(e))
+    x = focus_row_texts(e, _anchor_of(e), today=_today_of(e))
     assert x["line3"] == ("likely driver: Untrimmed resistance ↑ "
                           "(+2.1σ vs its baseline) · ⚠ trim/FT specs differ")
 
@@ -174,7 +216,7 @@ def test_the_spec_marker_shows_even_with_no_driver():
     e = _entry()
     e.driver = None
     e.spec_mismatch = True
-    x = focus_row_texts(e, _anchor_of(e))
+    x = focus_row_texts(e, _anchor_of(e), today=_today_of(e))
     assert x["line3"] == "driver unclear — open the model · ⚠ trim/FT specs differ"
 
 
@@ -183,7 +225,8 @@ def test_no_spec_marker_when_the_stations_agree():
     e = _entry()
     e.driver = None
     assert e.spec_mismatch is False                 # the default is silence
-    assert "specs differ" not in focus_row_texts(e, _anchor_of(e))["line3"]
+    assert "specs differ" not in focus_row_texts(
+        e, _anchor_of(e), today=_today_of(e))["line3"]
 
 
 # ---- the zone -------------------------------------------------------------
