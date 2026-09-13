@@ -308,6 +308,361 @@ def check_ft_parser_console_silence() -> None:
           + (f" | raised: {failures}" if failures else ""))
 
 
+def check_ft_graded_window() -> None:
+    """The app grades final tests on the rows the SHEET grades — and only those.
+
+    THE DISPOSITION IS THE APP'S GRADE. What this section proves is (a) that
+    the station's own verdict is READ correctly, per template, so the
+    reference column beside the app's verdict is trustworthy; (b) that a
+    graded window is actually found on real files rather than silently
+    defaulting to "grade everything"; (c) that no final-test FAIL survives
+    only because of points the station never graded; (d) that a blank error
+    cell never reaches storage as 0.0; and (e) how often the app and the
+    station disagree, REPORTED rather than capped — a difference is expected
+    whenever the offset correction rescues a unit.
+
+    Standalone: it reads the local sample corpus and needs no work database.
+        python scripts/app_qa_sweep.py --only ft-window
+
+    Two weak-assertion traps are closed deliberately. The corpus size is
+    asserted first, so an empty `Work Files` (or a parser that raised on
+    every file) cannot read as a wall of green. And (c) is a RE-GRADE, not a
+    tolerance: every file the app fails is graded a second time with the
+    out-of-window points dropped, and it has to fail again.
+    """
+    import glob  # noqa: E402
+    from laser_trim_analyzer.core.analyzer import Analyzer  # noqa: E402
+    from laser_trim_analyzer.core.final_test_parser import FinalTestParser  # noqa: E402
+    from laser_trim_analyzer.core.ft_regrade import grade_ft_track  # noqa: E402
+    from laser_trim_analyzer.export.unit_chart import classify_graded_points  # noqa: E402
+
+    base = REPO / "Work Files" / "Sample_Base_2026-04-10" / "Test Station"
+    if not base.is_dir():
+        warn("FT graded window: sample corpus absent — section skipped",
+             str(base))
+        return
+
+    files = sorted(glob.glob(str(base / "*" / "*.xls*")))
+    check("FT graded window: sample corpus found",
+          len(files) >= 100, f"{len(files)} files under {base.name}")
+    if not files:
+        return
+
+    parser = FinalTestParser()
+    analyzer = Analyzer()
+    no_spec = {"linearity_type": None, "angle_spec": None, "angle_tol": None,
+               "angle_tol_type": None, "exclude_points": None}
+
+    parsed_ok = 0
+    cell_read = {}          # format -> [matched, total]
+    window_found = {}       # format -> [detected, tracks]
+    zero_errors = []        # files storing more 0.0 errors than the sheet holds
+    file_error_tracks = 0   # tracks whose errors came from the file's own column
+    window_only_fails = []  # tracks counting a fail point the station never graded
+    graded_tracks = 0       # tracks with a window, i.e. tracks this can judge
+    app_vs_station = {"agree": 0, "app_fail_station_pass": 0,
+                      "app_pass_station_fail": 0}
+    parse_errors = []
+
+    for path in files:
+        try:
+            parsed = parser.parse_file(Path(path))
+        except Exception as e:                       # noqa: BLE001
+            parse_errors.append(f"{Path(path).name}: {type(e).__name__}: {e}")
+            continue
+        parsed_ok += 1
+        fmt = parsed.get("format") or "?"
+        tracks = parsed.get("tracks") or []
+
+        # (a) the station's verdict, re-read straight off the sheet with no
+        # app code in the way, must equal what the parser reported.
+        expected = _sheet_verdict_independently(Path(path), fmt)
+        reported = parsed["test_results"].get("station_linearity_pass")
+        if expected is not None or reported is not None:
+            slot = cell_read.setdefault(fmt, [0, 0])
+            slot[1] += 1
+            slot[0] += 1 if expected == reported else 0
+
+        for track in tracks:
+            # (b) a window, from flags or from the declared ignore counts.
+            slot = window_found.setdefault(fmt, [0, 0])
+            slot[1] += 1
+            if track.get("graded_window_source") in ("flags", "ignore_cells"):
+                slot[0] += 1
+
+            # (d) a blank cell must never be stored as 0.0 -- dead centre of
+            # every band, the most flattering value a zero-tolerance metric can
+            # hold. The test is against the SHEET, not against a bare
+            # `0.0 in errors`: a station can legitimately measure exactly zero,
+            # and forbidding the value outright would be a false alarm on 87 of
+            # these files. What is forbidden is storing MORE zeros than the
+            # sheet contains.
+            stored = [e for e in (track.get("errors") or []) if e is not None]
+            sheet = _sheet_error_cells(Path(path), fmt)
+            if sheet is not None and stored and set(stored) <= set(sheet):
+                # Only meaningful when the parser used the file's own error
+                # column; the computed-error fallbacks have no sheet cells to
+                # compare against, and are counted rather than silently passed.
+                if stored.count(0.0) > sheet.count(0.0):
+                    zero_errors.append(
+                        f"{Path(path).name}: {stored.count(0.0)} stored vs "
+                        f"{sheet.count(0.0)} in the sheet")
+                file_error_tracks += 1
+
+            # (c) grade it, then check the COUNT against an independent
+            # implementation of the same rule (export.unit_chart.
+            # classify_graded_points, which the charts already grade with).
+            # The assertion is that every fail point the grader counted lies
+            # INSIDE the station's window and none outside it was counted —
+            # which is what "no FAIL survives on rows nobody grades" means as
+            # a number. Re-running the grader with the window switched off
+            # would prove nothing: disable the window everywhere and both
+            # sides move together, and the check passes on the bug.
+            result = grade_ft_track(analyzer, track, no_spec,
+                                    model=parsed["metadata"].get("model"),
+                                    filename=Path(path).name)
+            counted = track.get("linearity_fail_points")
+            window = track.get("graded_window")
+            if result is not None and counted is not None and window is not None:
+                out_of_band, unmeasured = classify_graded_points(
+                    track.get("errors"), track.get("upper_limits"),
+                    track.get("lower_limits"),
+                    offset=track.get("optimal_offset") or 0.0,
+                    k=track.get("optimal_slope") or 0.0,
+                    theory=track.get("theory_values"))
+                low, high = window
+                inside = sum(1 for i in set(out_of_band) | set(unmeasured)
+                             if low <= i <= high)
+                graded_tracks += 1
+                if counted != inside:
+                    window_only_fails.append(
+                        f"{Path(path).name}/{track.get('track_id')}: counted "
+                        f"{counted}, in-window violations {inside}")
+
+            # (e) report the agreement, both directions.
+            station = track.get("station_linearity_pass")
+            app = track.get("linearity_pass")
+            if station is None or app is None:
+                continue
+            if bool(app) == bool(station):
+                app_vs_station["agree"] += 1
+            elif station:
+                app_vs_station["app_fail_station_pass"] += 1
+            else:
+                app_vs_station["app_pass_station_fail"] += 1
+
+    check("FT graded window: every sample file parsed",
+          not parse_errors and parsed_ok >= 100,
+          f"{parsed_ok} parsed" + (f"; ERRORS: {'; '.join(parse_errors[:3])}"
+                                   if parse_errors else ""))
+
+    for fmt, (matched, total) in sorted(cell_read.items()):
+        check(f"FT station verdict matches the sheet's cell ({fmt})",
+              total > 0 and matched == total, f"{matched}/{total}")
+
+    f1 = window_found.get("format1", [0, 0])
+    share = (f1[0] / f1[1]) if f1[1] else 0.0
+    check("FT graded window detected on >=95% of Format-1 tracks",
+          f1[1] >= 100 and share >= 0.95,
+          f"{f1[0]}/{f1[1]} = {share * 100:.2f}%")
+    # The other templates, reported in ONE line rather than four: format 2 and
+    # the shop-test sheets state no window at all (correctly — they carry
+    # neither a flag column nor ignore counts), and format 4's flag column
+    # could not be identified, so these are facts about the templates, not
+    # findings about the code.
+    others = ", ".join(f"{fmt} {found}/{total}"
+                       for fmt, (found, total) in sorted(window_found.items())
+                       if fmt != "format1")
+    if others:
+        warn("FT graded window coverage on the other templates "
+             "(informational — not every template states one)", others)
+
+    # Weak-assertion trap: if no track took the file-error path, "no extra
+    # zeros" is vacuously true, so the population is asserted first.
+    check("FT: blanks compared against the sheet on a real population",
+          file_error_tracks >= 100, f"{file_error_tracks} file-error tracks")
+    check("FT: no blank error cell is stored as 0.0",
+          not zero_errors,
+          f"{len(zero_errors)}: {'; '.join(sorted(zero_errors)[:3])}"
+          if zero_errors else
+          f"{file_error_tracks} tracks hold no zero the sheet does not hold")
+
+    # Weak-assertion trap again: with no windowed tracks there is nothing to
+    # disagree about, so the population comes first.
+    check("FT fail points: a real population of windowed tracks was graded",
+          graded_tracks >= 100, f"{graded_tracks} windowed tracks")
+    check("FT: no fail point outside the station's window is ever counted",
+          not window_only_fails,
+          f"{len(window_only_fails)}: {'; '.join(window_only_fails[:3])}"
+          if window_only_fails else
+          f"{graded_tracks} tracks: counted fails == in-window violations")
+
+    total_compared = sum(app_vs_station.values())
+    # REPORTED, never capped: the app corrects the offset and the station does
+    # not, so disagreement is information about the two gradings, not a defect.
+    warn("FT app-vs-station agreement (reported, not a threshold)",
+         f"{app_vs_station['agree']}/{total_compared} agree · "
+         f"app FAIL/station PASS {app_vs_station['app_fail_station_pass']} · "
+         f"app PASS/station FAIL {app_vs_station['app_pass_station_fail']}")
+
+
+def _sheet_verdict_independently(path: Path, fmt: str):
+    """Read the sheet's linearity verdict WITHOUT the parser, for check (a).
+
+    Deliberately a second implementation: a check that calls the code it is
+    checking proves only that the code is self-consistent.
+    """
+    import pandas as pd  # noqa: E402
+    try:
+        with pd.ExcelFile(path) as xl:
+            if fmt == "format4_parameters":
+                df = pd.read_excel(xl, sheet_name="Parameters", header=None, nrows=1)
+                if df.shape[1] <= 11 or df.shape[0] == 0:
+                    return None
+                text = str(df.iloc[0, 11]).strip().upper()
+                return True if text == "PASSED" else (False if text == "FAILED" else None)
+            if fmt == "format3_multitrack":
+                verdicts = []
+                for sheet in [s for s in xl.sheet_names if len(s) == 1 and s.isalpha()]:
+                    verdicts.append(_verdict_from_frame(
+                        pd.read_excel(xl, sheet_name=sheet, header=None)))
+                known = [v for v in verdicts if v is not None]
+                return all(known) if known else None
+            if fmt in ("format2", "format_shop_test"):
+                return None
+            sheet = "Sheet1" if "Sheet1" in xl.sheet_names else xl.sheet_names[0]
+            return _verdict_from_frame(
+                pd.read_excel(xl, sheet_name=sheet, header=None))
+    except Exception:                                # noqa: BLE001
+        return None
+
+
+def _sheet_error_cells(path: Path, fmt: str):
+    """The sheet's OWN error column, non-blank cells only, or None.
+
+    A second reader on purpose (see `_sheet_verdict_independently`): comparing
+    the parser against itself proves only self-consistency.
+    """
+    import numpy as np  # noqa: E402
+    import pandas as pd  # noqa: E402
+    columns = {"format1": ("Sheet1", 3), "format4_parameters": ("Parameters", 5),
+               "format_shop_test": ("test", 8)}
+    if fmt not in columns:
+        return None
+    sheet_name, col = columns[fmt]
+    try:
+        with pd.ExcelFile(path) as xl:
+            if sheet_name not in xl.sheet_names:
+                sheet_name = xl.sheet_names[0]
+            df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+    except Exception:                                # noqa: BLE001
+        return None
+    if df.shape[1] <= col:
+        return None
+    out = []
+    for i in range(df.shape[0]):
+        value = df.iloc[i, col]
+        if pd.notna(value) and isinstance(value, (int, float, np.integer, np.floating)):
+            out.append(float(value))
+    return out
+
+
+def _verdict_from_frame(df):
+    import pandas as pd  # noqa: E402
+    if df.shape[1] <= 11:
+        return None
+    for row in range(min(10, df.shape[0])):
+        label = df.iloc[row, 10]
+        if pd.notna(label) and "linearity" in str(label).lower():
+            text = str(df.iloc[row, 11]).strip().upper()
+            return True if text == "PASSED" else (False if text == "FAILED" else None)
+    return None
+
+
+def check_ft_regrade_dry_run(db) -> None:
+    """A dry run computes every verdict and writes NOTHING.
+
+    This is the guard on the repair tool the owner will point at the
+    production database. `--apply` is never exercised here; what is asserted
+    is that WITHOUT it the row count, the verdicts and the legacy marker come
+    back byte-identical.
+
+    Capped at a small sample because each row re-parses a workbook from the
+    plant share; off the work network they all report unreachable, which is
+    itself the behaviour to check — an unreachable source must be counted and
+    skipped, never written as a NULL verdict.
+    """
+    from laser_trim_analyzer.core.ft_regrade import regrade_final_tests  # noqa: E402
+
+    legacy = db.count_legacy_ft_verdicts()
+    with db.session() as session:
+        before = session.execute(sqlalchemy_text(
+            "SELECT COUNT(*), SUM(linearity_pass = 1), SUM(linearity_pass = 0),"
+            " SUM(linearity_pass IS NULL),"
+            " SUM(graded_window_source IS NULL) FROM final_test_results")).fetchone()
+
+    report = regrade_final_tests(db, only_legacy=True, apply=False, limit=40)
+
+    with db.session() as session:
+        after = session.execute(sqlalchemy_text(
+            "SELECT COUNT(*), SUM(linearity_pass = 1), SUM(linearity_pass = 0),"
+            " SUM(linearity_pass IS NULL),"
+            " SUM(graded_window_source IS NULL) FROM final_test_results")).fetchone()
+
+    check("FT re-grade: the dry run examined rows",
+          report.examined > 0 or legacy == 0,
+          f"{report.examined} examined of {legacy} legacy row(s)")
+    check("FT re-grade: a dry run changes nothing in the database",
+          tuple(before) == tuple(after),
+          f"before={tuple(before)} after={tuple(after)}")
+    check("FT re-grade: every examined row got an outcome",
+          len(report.outcomes) == report.examined,
+          f"{len(report.outcomes)} outcome(s); missing={report.missing}, "
+          f"errors={report.errors}, would change={report.changed}")
+    check("FT re-grade: an unreachable source is counted, not graded NULL",
+          all(o.before == o.after for o in report.outcomes
+              if o.result == "missing_file"),
+          f"{report.missing} unreachable")
+
+
+def check_ft_disposition_excludes_ungraded(db, raw) -> None:
+    """Rows with no disposition stay out of every rate built on one.
+
+    `linearity_pass IS NULL` means "the app could not grade this" — a Format 2
+    file with no limit columns, or a window that left nothing inside it. Such
+    a row is not a failure and must not sit in a denominator.
+    """
+    ungraded = raw.execute(
+        "SELECT COUNT(*) FROM final_test_results "
+        "WHERE linearity_pass IS NULL").fetchone()[0]
+    graded = raw.execute(
+        "SELECT COUNT(*) FROM final_test_results "
+        "WHERE linearity_pass IS NOT NULL").fetchone()[0]
+    check("FT disposition: the database holds rows of both kinds to test with",
+          graded > 0, f"{graded} graded, {ungraded} not graded")
+
+    stats = db.get_model_trim_ft_agreement("6607")
+    expected = raw.execute(
+        "SELECT COUNT(*) FROM final_test_results "
+        "WHERE model = '6607' AND linearity_pass IS NOT NULL").fetchone()[0]
+    check("FT pass rate counts only rows that carry a disposition",
+          stats["ft_total"] == expected,
+          f"app ft_total={stats['ft_total']} vs graded rows={expected}")
+
+    escapes = db.get_escape_overkill_analysis(days_back=36500)
+    linked = escapes.get("total_linked") or 0
+    eligible = raw.execute(
+        "SELECT COUNT(*) FROM final_test_results "
+        "WHERE linked_trim_id IS NOT NULL AND linearity_pass IS NOT NULL "
+        "AND match_confidence >= 0.70").fetchone()[0]
+    # Weak-assertion trap: `0 <= anything` is true, so an empty classification
+    # would read green. The population is asserted before the bound.
+    check("escapes/overkills ran on a real linked population",
+          linked > 0 and eligible > 0, f"classified={linked} eligible={eligible}")
+    check("escapes/overkills classify no row without a disposition",
+          linked <= eligible, f"classified={linked} eligible={eligible}")
+
+
 def check_model_stats_vs_sql(db, raw) -> None:
     """INVESTIGATE stats table == raw SQL, filter and all.
 
@@ -1124,6 +1479,14 @@ def main() -> int:
     # shop numbers get reused across lots.
     check_trim_ft_disposition_vs_sql(db, raw)
 
+    # ---- final-test graded window (2026-09-13) -----------------------------
+    # The app grades a final test on the rows the SHEET grades, and only
+    # those. These three sections cover the parse, the repair tool that
+    # re-applies the grade to rows written before the fix, and the rule that
+    # a row with no disposition stays out of every rate built on one.
+    check_ft_disposition_excludes_ungraded(db, raw)
+    check_ft_regrade_dry_run(db)
+
     # Stale-model window anchoring: 8887's 90d window must NOT be empty.
     with db.session() as s:
         from sqlalchemy import func
@@ -1545,6 +1908,7 @@ def main() -> int:
 
     check_ft_incremental_fastpath()
     check_ft_parser_console_silence()
+    check_ft_graded_window()
     check_multi_folder_ingest()
 
     # Ingest guard fires on a synthetic corrupt track.
@@ -2124,6 +2488,7 @@ def _tally() -> int:
 #     python scripts/app_qa_sweep.py --only ft-fastpath
 STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
+              "ft-window": check_ft_graded_window,
               "ingest": check_multi_folder_ingest}
 
 

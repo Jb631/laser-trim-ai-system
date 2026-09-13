@@ -355,9 +355,14 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
             lines.append(f"  newest of {ft_overlay['n_links']} tests")
         # Both verdicts, in the one sentence core.ft_overlay writes, so the
         # print document and the on-screen modal cannot word it differently.
+        # WRAPPED, because this panel is one of three side by side: the full
+        # sentence runs to ~120 characters and ran straight through the
+        # metrics column beside it.
         legend = ft_overlay.get("legend")
         if legend:
-            lines.append(f"  {legend}")
+            import textwrap
+            lines.extend(f"  {chunk}"
+                         for chunk in textwrap.wrap(legend, width=44))
     ax_info.text(0.02, 0.98, "Unit Information", fontsize=11, fontweight="bold",
                  va="top", transform=ax_info.transAxes, color="black")
     for i, ln in enumerate(lines):
