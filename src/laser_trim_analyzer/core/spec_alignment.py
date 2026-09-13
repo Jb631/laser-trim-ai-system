@@ -149,13 +149,42 @@ def _fmt(v: float) -> str:
     return f"{v:.3f}" if abs(v) >= 5e-4 else f"{v:.2g}"
 
 
-def _band_text(bands: Sequence[float]) -> str:
-    """"±0.030 V", or "±0.050–0.200 V" when the spec is a bowtie."""
+def band_text(bands: Sequence[float], unit: str = " V") -> str:
+    """"±0.030 V", or "±0.050–0.200 V" when the spec is a bowtie.
+
+    THE one rendering of a spec band in this codebase, deliberately. A
+    potentiometer's linearity limit is usually a BOWTIE — tight through the
+    centre of travel, wide at the ends — so the scalar mean stored in
+    `linearity_spec` is a number no station ever applied at any single point.
+    Quoting it as "the band" is what sent the owner looking for a fault that
+    was not there (2026-09-13). Anything showing a band shows this range.
+    """
+    if not bands:
+        return ""
     lo, hi = min(bands), max(bands)
     # Within 2% counts as one band: float noise across a sweep is not a bowtie.
     if hi - lo <= max(0.02 * hi, 1e-9):
-        return f"±{_fmt(median(bands))} V"
-    return f"±{_fmt(lo)}–{_fmt(hi)} V"
+        return f"±{_fmt(median(bands))}{unit}"
+    return f"±{_fmt(lo)}–{_fmt(hi)}{unit}"
+
+
+def half_bands(upper_limits: Sequence, lower_limits: Sequence) -> List[float]:
+    """Per-point HALF-band widths from a stored limit pair, skipping gaps."""
+    out: List[float] = []
+    for u, l in zip(upper_limits or [], lower_limits or []):
+        if u is None or l is None:
+            continue
+        try:
+            width = (float(u) - float(l)) / 2.0
+        except (TypeError, ValueError):
+            continue
+        if width == width and abs(width) != float("inf"):   # not NaN/inf
+            out.append(abs(width))
+    return out
+
+
+# Kept as the old private name so nothing in this module reads differently.
+_band_text = band_text
 
 
 # ---------------------------------------------------------------------------

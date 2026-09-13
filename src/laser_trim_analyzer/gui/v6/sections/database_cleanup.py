@@ -283,3 +283,97 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
     ctk.CTkButton(parent, text="Fix missing tracks", command=_fix_missing_tracks,
                   fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
                   corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+
+    # ---- Re-grade final tests (2026-09-13) --------------------------------
+    regrade_cancel = {"event": None}
+
+    def _regrade_final_tests():
+        """Re-grade stored final tests against the window the sheet grades.
+
+        Until 2026-09-13 the app graded every row of a final-test sweep,
+        including the lead-in the station leaves ungraded — on 8232-1 that is
+        a phantom 0.047 error against a ±0.010 band, and it failed 98.5% of
+        the model's files at a station that passed them. The parser and the
+        grader are fixed, so new files are right; the rows already stored are
+        not, and this re-parses and re-grades them.
+
+        Count off-thread → confirm on the Tk thread → re-grade off-thread, the
+        same shape as Fix missing tracks above, with a Stop button because
+        this one can run over 150,000 records. The loop lives in
+        core.ft_regrade and is the SAME code path the processor grades with,
+        so a re-graded row is indistinguishable from a freshly ingested one.
+        """
+        from tkinter import messagebox
+        from laser_trim_analyzer.core.ft_regrade import regrade_final_tests
+
+        status.configure(text="Counting final-test records to re-grade…")
+
+        def runner():
+            try:
+                n_legacy = db.count_legacy_ft_verdicts()
+            except Exception as exc:
+                post_ui(app, lambda: status.winfo_exists() and status.configure(
+                    text=f"Error: {exc}"))
+                return
+
+            def confirm_and_run():
+                if not status.winfo_exists():
+                    return
+                if not n_legacy:
+                    status.configure(
+                        text="Every final-test record is already graded against "
+                             "the station's window.")
+                    return
+                if not messagebox.askyesno(
+                        "Re-grade final tests",
+                        f"Re-grade {n_legacy:,} final-test record(s) that were "
+                        f"graded before the ignore-window fix?\n\n"
+                        f"Each one is read again from its source workbook on the "
+                        f"plant share and re-graded on the rows the sheet itself "
+                        f"grades. Off the work network the sources are "
+                        f"unreachable and nothing is changed.\n\n"
+                        f"EVERY final-test number moves afterwards: fail rates, "
+                        f"escapes and overkills, the FOCUS list, and ML labels "
+                        f"trained on final test.\n\nThis can take a long time. "
+                        f"Stop is safe — what is written stays written and "
+                        f"re-running continues."):
+                    return
+
+                cancel = threading.Event()
+                regrade_cancel["event"] = cancel
+                stop_btn.configure(state="normal")
+
+                def on_progress(done, total, name):
+                    post_ui(app, lambda: status.winfo_exists() and status.configure(
+                        text=f"Re-grading {done:,}/{total:,} — {name}"))
+
+                def work():
+                    try:
+                        return regrade_final_tests(
+                            db, progress=on_progress, cancel=cancel,
+                            only_legacy=True, apply=True).summary()
+                    finally:
+                        regrade_cancel["event"] = None
+                        post_ui(app, lambda: stop_btn.winfo_exists()
+                                and stop_btn.configure(state="disabled"))
+                _async(work)
+            post_ui(app, confirm_and_run)
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _stop_regrade():
+        event = regrade_cancel.get("event")
+        if event is not None:
+            event.set()
+            status.configure(text="Stopping after the records already in flight…")
+
+    regrade_row = ctk.CTkFrame(parent, fg_color="transparent")
+    regrade_row.pack(side="top", fill="x", anchor="w", pady=(t.SPACE_SM, 0))
+    ctk.CTkButton(regrade_row, text="Re-grade final tests",
+                  command=_regrade_final_tests, fg_color=t.CARD,
+                  hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                  corner_radius=t.RADIUS_SM).pack(side="left", anchor="w")
+    stop_btn = ctk.CTkButton(regrade_row, text="Stop", command=_stop_regrade,
+                             state="disabled", width=70, fg_color=t.CARD,
+                             hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                             corner_radius=t.RADIUS_SM)
+    stop_btn.pack(side="left", padx=(t.SPACE_SM, 0))

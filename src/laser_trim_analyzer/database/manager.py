@@ -5196,9 +5196,13 @@ class DatabaseManager:
                         session.add(DBFinalTestTrack(
                             final_test_id=final_test_id,
                             track_id=track_data.get("track_id", "default"),
-                            status=(DBStatusType.FAIL
-                                    if track_data.get("linearity_pass") is False
-                                    else DBStatusType.PASS),
+                            # Byte-identical to save_final_test's rule, on
+                            # purpose: a re-graded row must be
+                            # indistinguishable from a freshly ingested one,
+                            # and `None -> FAIL` is part of that rule.
+                            status=(DBStatusType.PASS
+                                    if track_data.get("linearity_pass", True)
+                                    else DBStatusType.FAIL),
                             linearity_spec=track_data.get("linearity_spec"),
                             linearity_error=track_data.get("linearity_error"),
                             linearity_pass=track_data.get("linearity_pass"),

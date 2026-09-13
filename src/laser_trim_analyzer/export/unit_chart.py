@@ -57,6 +57,26 @@ def corrected_errors(errors, offset=0.0, k=0.0, theory=None):
             for i, e in enumerate(errs)]
 
 
+def _spec_band_text(data: Dict[str, Any]) -> str:
+    """The spec band as the STATION applies it — a range, not a mean.
+
+    These limits are bowties: tight through the centre of travel, wide at the
+    ends. `linearity_spec` is the MEAN half-width of that shape, a number no
+    station ever applied at any single point, and printing it as "the band"
+    sent the owner hunting a fault that was not there (2026-09-13). When the
+    per-point arrays are stored, the range is read off them; the scalar is the
+    fallback for a record that has no arrays, and is labelled "avg" so it can
+    never be mistaken for a limit again.
+    """
+    from laser_trim_analyzer.core.spec_alignment import band_text, half_bands
+    bands = half_bands(data.get("upper_limits"), data.get("lower_limits"))
+    text = band_text(bands, unit="")
+    if text:
+        return text
+    scalar = data.get("linearity_spec")
+    return f"{_fmt(scalar)} (avg)" if isinstance(scalar, (int, float)) else "N/A"
+
+
 def _missing(v) -> bool:
     """None or NaN — the two ways a number can be absent in these arrays."""
     return v is None or (isinstance(v, float) and v != v)
@@ -106,6 +126,23 @@ def classify_graded_points(errors, upper_limits, lower_limits,
     return out_of_band, unmeasured
 
 
+def _contiguous_runs(indices, n: int):
+    """[(first, last)] for each run of consecutive indices, clipped to n.
+
+    A window leaves at most two runs (lead-in and run-out), but a per-model
+    exclude list can leave more, and one axvspan per index would paint n
+    overlapping patches on a 3,000-point sweep.
+    """
+    ordered = sorted(i for i in indices if 0 <= i < n)
+    runs = []
+    for i in ordered:
+        if runs and i == runs[-1][1] + 1:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+    return [(a, b) for a, b in runs]
+
+
 def draw_ft_overlay(ax, ft_overlay: Optional[Dict[str, Any]],
                     color: Optional[str] = None) -> None:
     """The linked final-test sweep on the trim axes, styled clearly apart.
@@ -140,6 +177,31 @@ def draw_ft_overlay(ax, ft_overlay: Optional[Dict[str, Any]],
         ax.plot(p, u[:m], "-.", lw=0.9, color=c, alpha=0.55,
                 label="Final test limits")
         ax.plot(p, l[:m], "-.", lw=0.9, color=c, alpha=0.55)
+
+    # The rows the station did not grade, shaded rather than drawn over: the
+    # trace through them is real data, it is simply not part of anyone's
+    # verdict. Before 2026-09-13 the app graded them, and on 8232-1 the
+    # six-point lead-in alone failed 98.5% of the model's files. Shading is
+    # what stops that reading as an unexplained excursion.
+    ungraded = ft_overlay.get("ungraded_indices") or []
+    if ungraded and len(pos) > 1:
+        first = True
+        for lo_i, hi_i in _contiguous_runs(ungraded, len(pos)):
+            ax.axvspan(pos[lo_i], pos[hi_i], color=c, alpha=0.07, zorder=0,
+                       label="Not graded by the station" if first else None)
+            first = False
+
+    # The points the STATION itself flagged. Hollow rings so they read as a
+    # second opinion sitting beside the app's solid fail markers, never as
+    # more of them.
+    flags = ft_overlay.get("station_flags") or []
+    flagged = [i for i, f in enumerate(flags)
+               if f == 1 and i < len(pos) and i < len(corrected)
+               and corrected[i] is not None]
+    if flagged:
+        ax.plot([pos[i] for i in flagged], [corrected[i] for i in flagged],
+                "o", mfc="none", mec=c, mew=1.3, ms=8, ls="none", zorder=5,
+                label=f"Station flagged ({len(flagged)})")
 
 
 def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
@@ -291,6 +353,11 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
                      f" (match {float(ft_overlay.get('confidence') or 0):.2f})")
         if (ft_overlay.get("n_links") or 1) > 1:
             lines.append(f"  newest of {ft_overlay['n_links']} tests")
+        # Both verdicts, in the one sentence core.ft_overlay writes, so the
+        # print document and the on-screen modal cannot word it differently.
+        legend = ft_overlay.get("legend")
+        if legend:
+            lines.append(f"  {legend}")
     ax_info.text(0.02, 0.98, "Unit Information", fontsize=11, fontweight="bold",
                  va="top", transform=ax_info.transAxes, color="black")
     for i, ln in enumerate(lines):
@@ -312,7 +379,7 @@ def build_unit_export_figure(meta: Dict[str, Any], data: Dict[str, Any],
         rows = [
             f"Optimal Offset: {_fmt(data.get('optimal_offset'))}",
             f"Linearity Error: {_fmt(data.get('linearity_error'))}",
-            f"Linearity Spec: {_fmt(data.get('linearity_spec'))}",
+            f"Linearity Spec: {_spec_band_text(data)}",
             "",
             f"Fail Points: {len(fail_points)}",
             f"Linearity Pass: {'YES' if ft_pass else 'NO'}",

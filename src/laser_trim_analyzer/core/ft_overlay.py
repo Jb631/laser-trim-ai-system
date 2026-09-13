@@ -148,7 +148,8 @@ def resolve_linked_ft(db, analysis_id: int,
 
     with db.session() as s:
         rows = (s.query(DBFT.id, DBFT.filename, DBFT.match_confidence,
-                        DBFT.test_date, DBFT.file_date, DBFT.overall_status)
+                        DBFT.test_date, DBFT.file_date, DBFT.overall_status,
+                        DBFT.station_linearity_pass)
                 .filter(DBFT.linked_trim_id == analysis_id)
                 .all())
     if not rows:
@@ -178,6 +179,12 @@ def resolve_linked_ft(db, analysis_id: int,
         "date": str(when).split(" ")[0] if when else "",
         "n_links": len(good),
         "result": getattr(status, "name", str(status) if status else ""),
+        # The SHEET's own PASSED/FAILED, for reference beside the app's grade.
+        # They can legitimately differ: the app corrects the offset, so a unit
+        # the station rejected can grade in spec (7539-2 sn23 is the worked
+        # example). That is information, not an error, and the chart says both
+        # rather than picking one.
+        "station_pass": newest[6],
     }
 
 
@@ -214,6 +221,11 @@ def load_ft_overlay(db, analysis_id: int, trim_track_id=None,
             "linearity_pass": t.linearity_pass,
             "linearity_error": t.linearity_error,
             "linearity_spec": t.linearity_spec,
+            "linearity_fail_points": t.linearity_fail_points,
+            "station_flags": list(t.station_flags or []),
+            "station_fail_points": t.station_fail_points,
+            "graded_start": t.graded_start,
+            "graded_end": t.graded_end,
         } for t in (s.query(DBFTT)
                     .filter(DBFTT.final_test_id == link["ft_id"])
                     .order_by(DBFTT.track_id).all())]
@@ -256,7 +268,64 @@ def load_ft_overlay(db, analysis_id: int, trim_track_id=None,
         "k": k,
         "linearity_type": track["linearity_type"],
         "linearity_pass": track["linearity_pass"],
+        "linearity_fail_points": track["linearity_fail_points"],
         "linearity_error": track["linearity_error"],
         "label": label,
+        # The window the STATION graded, as index bounds into `positions`, and
+        # the points IT flagged. The renderer shades outside the window and
+        # marks the flagged points; nothing here re-grades anything.
+        "graded_start": track["graded_start"],
+        "graded_end": track["graded_end"],
+        "station_flags": track["station_flags"],
+        "station_fail_points": track["station_fail_points"],
+        "ungraded_indices": sorted(ungraded_indices(
+            len(track["error_data"]), track["graded_start"], track["graded_end"])),
     })
+    out["legend"] = ft_legend(out)
     return out
+
+
+def ungraded_indices(n_points: int, graded_start, graded_end) -> set:
+    """Indices outside the station's graded window. Empty when it stated none.
+
+    Lives here rather than in the renderer because the print export and the
+    on-screen modal must shade the same rows.
+    """
+    if graded_start is None and graded_end is None:
+        return set()
+    low = int(graded_start or 0)
+    high = int(graded_end if graded_end is not None else n_points - 1)
+    return set(range(0, max(0, low))) | set(range(min(n_points, high + 1), n_points))
+
+
+def ft_legend(overlay: Dict[str, Any]) -> str:
+    """One line naming BOTH verdicts, and saying so when they differ.
+
+    The app's grade is the disposition and is stated first, with the number of
+    points it failed. The station's is the reference. They can legitimately
+    disagree — the app corrects the offset, so a sweep the station rejected
+    can grade in spec (7539-2 sn23 is the worked example) — so a difference is
+    NAMED and explained rather than hidden or dressed up as an error.
+    """
+    app_pass = overlay.get("linearity_pass")
+    app_text = ("PASS" if app_pass else
+                ("FAIL" if app_pass is False else "not graded"))
+    fail_points = overlay.get("linearity_fail_points")
+    if app_pass is False and fail_points:
+        app_text += f" ({fail_points} point{'s' if fail_points != 1 else ''})"
+    parts = [f"Final test: {app_text}"]
+
+    station = overlay.get("station_pass")
+    if station is not None:
+        clause = f"station: {'PASSED' if station else 'FAILED'}"
+        flagged = overlay.get("station_fail_points")
+        if flagged:
+            clause += f" ({flagged} flagged)"
+        parts.append(clause)
+        if app_pass is not None and bool(app_pass) != bool(station):
+            parts.append("app grade differs — offset corrected")
+
+    ungraded = overlay.get("ungraded_indices") or []
+    if ungraded:
+        parts.append(f"{len(ungraded)} point(s) the station did not grade")
+    return " · ".join(parts)

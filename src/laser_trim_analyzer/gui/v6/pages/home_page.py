@@ -30,6 +30,7 @@ import customtkinter as ctk
 logger = logging.getLogger(__name__)
 
 from laser_trim_analyzer.core import ingest_run
+from laser_trim_analyzer.core.ft_regrade import legacy_ft_count, legacy_ft_notice
 from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
     format_progress_line)
@@ -107,6 +108,17 @@ class HomePage(PageBase):
                                      wraplength=1100, font=t.font(t.SIZE_BODY),
                                      text_color=t.TEXT_PRIMARY)
         self._summary.pack(side="top", fill="x", pady=(t.SPACE_SM, 0))
+
+        # One line, only when there is something to say: final-test records
+        # graded before the ignore-window fix (2026-09-13) carry a verdict
+        # that may include sweep points the station never graded. It is not an
+        # error state and it does not block anything, so it is a caption, not
+        # a banner — but it stays up until Settings clears it, because every
+        # final-test number on the screens below is computed from those rows.
+        self._legacy_ft_label = ctk.CTkLabel(
+            parent, text="", anchor="w", justify="left", wraplength=1100,
+            font=t.font(t.SIZE_CAPTION), text_color=t.TIER_WARNING)
+        self._legacy_ft_count = 0
 
         self._zone_header(parent, "WHAT THE APP IS TELLING YOU",
                           "drifting now, biggest first — one verdict per lot, "
@@ -279,12 +291,27 @@ class HomePage(PageBase):
     def reload_now(self) -> None:
         """Synchronous load + apply (test path, and the main-thread apply)."""
         self._apply_focus(*load_focus(self.app.db))
+        self._apply_legacy_ft(legacy_ft_count(self.app.db))
 
     def _reload_focus(self) -> None:
         def work():
             data = load_focus(self.app.db)
+            legacy = legacy_ft_count(self.app.db)
             self.safe_after(lambda: self._apply_focus(*data))
+            self.safe_after(lambda: self._apply_legacy_ft(legacy))
         threading.Thread(target=work, daemon=True).start()
+
+    def _apply_legacy_ft(self, count: int) -> None:
+        """Show or hide the legacy-verdict line. Tk thread."""
+        self._legacy_ft_count = int(count or 0)
+        text = legacy_ft_notice(self._legacy_ft_count)
+        if not text:
+            self._legacy_ft_label.pack_forget()
+            self._legacy_ft_label.configure(text="")
+            return
+        self._legacy_ft_label.configure(text=text)
+        self._legacy_ft_label.pack(side="top", fill="x",
+                                   pady=(0, self.theme.SPACE_SM))
 
     def _apply_focus(self, result, last_processed) -> None:
         # Handed to the zone untouched: one computation owns membership,

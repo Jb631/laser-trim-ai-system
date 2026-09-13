@@ -404,9 +404,15 @@ class UnitChartModal(ctk.CTkToplevel):
         # stated rather than left as a dead control or an empty chart.
         if ft_overlay and ft_overlay.get("available"):
             self._ft_toggle.configure(state="normal")
+            # Both verdicts, in the ONE sentence core.ft_overlay writes, so
+            # this line and the print export cannot word them differently —
+            # and so a station/app disagreement is visible on screen instead
+            # of only in the document.
+            legend = ft_overlay.get("legend") or ""
             self._note_lbl.configure(
                 text=(f"Final test linked: {ft_overlay.get('label', '')} · "
                       f"match {float(ft_overlay.get('confidence') or 0):.2f}"
+                      + (f"\n{legend}" if legend else "")
                       if self._show_ft else
                       "A linked final test is available — switch to Trim + FT."))
         else:

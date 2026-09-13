@@ -288,6 +288,36 @@ def graded_window_source(tracks: Sequence[Dict[str, Any]]) -> Optional[str]:
     return "all_rows"
 
 
+# ---- the legacy-verdict notice ----------------------------------------------
+
+def legacy_ft_count(db) -> int:
+    """How many stored final tests were graded before the window fix.
+
+    Wrapped rather than called directly so HOME can ask a database that
+    predates the column without a try/except of its own.
+    """
+    try:
+        return int(db.count_legacy_ft_verdicts())
+    except Exception:  # noqa: BLE001 - a count must never break the page
+        logger.debug("legacy FT count unavailable", exc_info=True)
+        return 0
+
+
+def legacy_ft_notice(count: int) -> str:
+    """The one line HOME shows, or "" when there is nothing to say.
+
+    Pure, so the wording is testable without a Tk root — and so the sentence
+    lives next to what it counts rather than inside a widget.
+    """
+    if not count or count < 0:
+        return ""
+    noun = "record" if count == 1 else "records"
+    verb = "was" if count == 1 else "were"
+    return (f"{count:,} final-test {noun} {verb} graded before the "
+            f"ignore-window fix, on rows the test station never graded — "
+            f"Settings → Re-grade final tests")
+
+
 # ---- the re-grade driver ----------------------------------------------------
 
 MISSING_FILE = "missing_file"
