@@ -201,24 +201,79 @@ class ProgressCoalescer:
     and paints ONE snapshot. `done` and `file` are running values (a counter
     that resets between paints reads as a bug); counts and reasons are DELTAS
     since the last drain, because the widgets they feed accumulate their own.
+
+    `done` counts WORK, against the work total the pre-scan announced (see
+    `_plan_work`). Files the database already had are not work and are not
+    counted: crediting them made "1,214 / 8,900 files" mean "1,214 of the
+    8,900 files that happen to be on the share", and the several thousand
+    already-known files of every folder the run had not reached yet sat inside
+    "remaining" until that folder's own scan landed. Divided by a real
+    processing rate, that is where "about 24 h left" came from on a re-run
+    that had about ten minutes of work in it (James, 2026-09-12).
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._done = 0
         # Of `_done`, how many were CREDITED in bulk by the incremental scan
-        # rather than processed. The bar wants both together; the rate wants
-        # only the work, or one 148,000-file credit in a single 0.25 s tick
-        # reads as 592,000 files/s and the ETA says "under a minute" to a run
-        # with three hours left.
+        # rather than processed one at a time. The bar wants both together;
+        # the rate wants only the steady stream, or one 3,000-file credit in a
+        # single 0.25 s tick reads as 12,000 files/s and the ETA says "under a
+        # minute" to a run with three hours left.
         self._known = 0
         self._file = ""
         self._scan_msg: Optional[str] = None
         self._moved = False
         self._counts = {k: 0 for k in BUCKETS}
         self._reasons: deque = deque(maxlen=MAX_REASONS)
+        # The announced denominator, and the current folder's budget of files
+        # the pre-scan already settled from memory. See expect_known().
+        self._total: Optional[int] = None
+        self._expect_known = 0
+        self._clamped = False
+
+    # ---- run setup (called by run_folder / run_folders, not by the UI) ----
+    def set_total(self, total: int) -> None:
+        """The work total that was announced through `on_total`.
+
+        Held only to CLAMP: `done` overrunning the denominator means the
+        pre-scan and the processor disagreed about what counts as work, and a
+        bar that reads 104% hides that instead of reporting it.
+        """
+        with self._lock:
+            self._total = max(0, int(total))
+
+    def expect_known(self, n: int) -> None:
+        """How many of the next folder's files the pre-scan settled in memory.
+
+        The processor reports its whole already-in-database population in one
+        "known" event whose count also includes the files it had to verify by
+        hash — those WERE work and are in the total; the memory-settled ones
+        never were. This budget is what separates the two.
+
+        It REPLACES any remainder rather than adding to it: a folder that
+        failed or stopped half-way leaves its budget unspent, and carrying
+        that into the next folder would silently swallow that folder's credit.
+        """
+        with self._lock:
+            self._expect_known = max(0, int(n))
 
     # ---- worker side ----
+    def _credit(self, n: int) -> None:
+        """Add `n` finished units of work to the bar. Caller holds the lock."""
+        if n <= 0:
+            return
+        self._done += n
+        if self._total is not None and self._done > self._total:
+            if not self._clamped:
+                self._clamped = True
+                logger.warning(
+                    "Ingest progress overran its plan: %d done against a "
+                    "planned %d — the pre-scan and the processor disagreed "
+                    "about what counts as work. Clamping the bar.",
+                    self._done, self._total)
+            self._done = self._total
+
     def note(self, status: ProcessingStatus) -> None:
         with self._lock:
             if status.status == "scanning":
@@ -228,17 +283,30 @@ class ProgressCoalescer:
                 return
             if status.status == "known":
                 # The whole already-in-database population of this folder, in
-                # one event. It IS progress against a denominator that counts
-                # every file found on disk — an incremental re-run would
-                # otherwise sit at 0/150,000 for the entire pass — but it is
-                # not work, so it stays out of the five per-folder counters.
+                # one event. Only the part the pre-scan could NOT settle from
+                # memory is work this run did (it cost a stat or a full hash
+                # over the share); the rest was never in the denominator.
                 n = int(getattr(status, "count", 0) or 0)
-                self._done += n
-                self._known += n
-                self._moved = self._moved or bool(n)
+                settled = min(self._expect_known, n)
+                self._expect_known -= settled
+                credit = n - settled
+                self._credit(credit)
+                self._known += credit
+                # `moved` stays False for a folder that was entirely known:
+                # nothing moved, so the page keeps showing the scan message
+                # ("…already in database") instead of repainting the same bar.
+                self._moved = self._moved or bool(credit)
                 return
             if status.status in ("completed", "skipped", "failed"):
-                self._done += int(getattr(status, "count", 1) or 1)
+                n = int(getattr(status, "count", 1) or 1)
+                if status.status == "skipped" and self._expect_known > 0:
+                    # The sequential path (folders under the turbo threshold)
+                    # has no bulk "known" event — it skips each already-known
+                    # file individually. Same budget, spent one at a time.
+                    settled = min(self._expect_known, n)
+                    self._expect_known -= settled
+                    n -= settled
+                self._credit(n)
                 self._file = status.filename or self._file
             if status.status == "skipped":
                 self._counts["skipped"] += 1
@@ -273,6 +341,9 @@ class ProgressCoalescer:
             self._moved = False
             self._counts = {k: 0 for k in BUCKETS}
             self._reasons.clear()
+            self._total = None
+            self._expect_known = 0
+            self._clamped = False
 
 
 class ProgressTicker:
@@ -418,15 +489,25 @@ def format_progress_line(done: int, total: int, *, folder: int = 0,
                          filename: str = "") -> str:
     """The one line above the bar, for the WHOLE run.
 
-    Spec: "Folder 2 of 3 · 1,214 / 8,900 files · 17 files/s · about 7 min left
-    · elapsed 12:04". Every part is dropped when it is not known yet rather
-    than rendered as a zero — "0 / 0 files · 0 files/s" during the folder walk
-    is worse than saying nothing, because it looks like a stuck run.
+    Spec: "Folder 2 of 3 · 1,214 done · 7,686 to go · 17 files/s · about 7 min
+    left · elapsed 12:04". Every part is dropped when it is not known yet
+    rather than rendered as a zero — "0 / 0 files · 0 files/s" during the
+    folder walk is worse than saying nothing, because it looks like a stuck
+    run.
+
+    "N to go" rather than "done / total" because that is the question being
+    asked of it (James, mid-ingest: "how many files is left to process?"). A
+    fraction makes the reader do the subtraction, and the old numerator and
+    denominator were both files-on-disk, so the subtraction gave the wrong
+    answer anyway — see ProgressCoalescer. `total` is the run's WORK, so the
+    remainder here is work left, which is the number the ETA is computed from.
     """
     parts = []
     if folders > 1 and folder:
         parts.append(f"Folder {folder} of {folders}")
-    parts.append(f"{done:,} / {total:,} files" if total > 0 else f"{done:,} files")
+    parts.append(f"{done:,} done")
+    if total > 0:
+        parts.append(f"{max(0, total - done):,} to go")
     if rate:
         parts.append(format_rate(rate))
     if eta:
@@ -436,6 +517,28 @@ def format_progress_line(done: int, total: int, *, folder: int = 0,
     if filename:
         parts.append(filename)
     return " · ".join(parts)
+
+
+@dataclass
+class FolderPlan:
+    """What one folder will COST this run, decided before a file is opened.
+
+    `work` is what the bar counts down: files the processor will actually
+    touch — the new ones, plus the few whose identity the in-memory index
+    cannot settle and which therefore need a stat or a full hash over the
+    share. Those are work even when the hash says "already known", because the
+    run paid for them. `known` is the rest: settled from memory, free, and
+    never part of the denominator.
+
+    `from_index=False` marks the fallback — the processed-file index could not
+    be read, so every file found is counted as work. That OVER-states the run,
+    which is the right way to be wrong about a denominator: the ETA comes in
+    long and shortens, instead of promising a finish that isn't coming.
+    """
+    files: int = 0
+    work: int = 0
+    known: int = 0
+    from_index: bool = True
 
 
 @dataclass
@@ -651,11 +754,18 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                on_total: Optional[Callable[[int], None]] = None,
                cancel: Optional[threading.Event] = None,
                discovered: Optional[Tuple[List[str], Dict[str, tuple]]] = None,
-               walk_seconds: float = 0.0) -> FolderResult:
+               walk_seconds: float = 0.0,
+               plan: Optional[FolderPlan] = None) -> FolderResult:
     """Process ONE folder end to end. Never raises; failures come back as data.
 
     Blocking and thread-safe to call from a worker. Every callback is invoked
     on THIS thread, so a caller that touches widgets must marshal them itself.
+
+    `plan` is the multi-folder run's pre-scan verdict on this folder (how much
+    of it is work, how much the database already has). Given one, this folder
+    is a part of a larger run: the total was announced for the whole run and
+    must not be re-announced here. Without one — the Process page's single
+    folder — the same sizing is done here, for this folder alone.
 
     `cancel` is cooperative and lands at a batch boundary inside the processor
     (see Processor.process_batch). Everything the run had already saved stays
@@ -687,11 +797,34 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
         return FolderResult(folder=folder, ok=True, files_found=0, phases=phases,
                             seconds=time.monotonic() - started)
 
-    processor = Processor(config=config)          # I7: no db= param
     total = len(files)
-    if on_total is not None:
-        on_total(total)
-    _say(on_phase, f"Checking {total:,} files against the database…")
+    own_plan = plan is None
+    if own_plan:
+        # A folder run of its own (the Process page). Size it the way the
+        # multi-folder pre-scan sizes a whole run, so both front ends count
+        # down the same thing: work, not files-on-disk.
+        if not incremental:
+            plan = FolderPlan(files=total, work=total)
+        else:
+            planned = _plan_work({folder: files}, disk_stats, config=config)
+            plan = (planned[folder] if planned else
+                    FolderPlan(files=total, work=total, from_index=False))
+            if not planned:
+                _say(on_phase, "Could not read the processed-file index — "
+                               "counting every file found as still to do.")
+    if progress is not None:
+        progress.expect_known(plan.known)
+        if own_plan:
+            progress.set_total(plan.work)
+    if own_plan and on_total is not None:
+        on_total(plan.work)
+    if plan.known:
+        _say(on_phase, f"Checking {total:,} files against the database… "
+                       f"({plan.known:,} already in it, {plan.work:,} to do)")
+    else:
+        _say(on_phase, f"Checking {total:,} files against the database…")
+
+    processor = Processor(config=config)          # I7: no db= param
 
     def progress_callback(status: ProcessingStatus) -> None:
         if progress is not None:
@@ -761,8 +894,70 @@ def run_folder(folder: str, *, db, config, incremental: bool = True,
                         seconds=time.monotonic() - started)
 
 
-def _prescan(folders: Sequence[str], on_phase, cancel
-             ) -> Tuple[Dict[str, tuple], int, bool]:
+def _plan_work(files_by_folder: Dict[str, Sequence[str]],
+               disk_stats: Dict[str, tuple], *, config
+               ) -> Optional[Dict[str, FolderPlan]]:
+    """How much of what the walk found is WORK, decided from memory alone.
+
+    This is what makes "how many to go" a real number. The walk knows how many
+    Excel files are on the share; on any re-run almost all of them are already
+    in the database, and counting them as remaining is what produced "about
+    24 h left" on a run with minutes of work in it.
+
+    It is affordable because the processor's own scan already splits in two:
+    `_classify_scan` answers from the in-memory index (no file I/O at all,
+    only the (size, mtime) the walk captured with each directory listing), and
+    only the leftovers pay a stat or a hash over the share. This calls the
+    memory half — once, for every folder, on a THROWAWAY processor whose
+    caches nobody else sees — and leaves the I/O half where it belongs, inside
+    the run. Those decisions are deterministic given the same database state,
+    so the per-folder run reaches the same counts when it gets there.
+
+    The price is ONE extra load of the processed-file index (the per-folder
+    run loads its own; a few seconds against the 3.8 GB work database) — paid
+    once for the whole run, against the 70-minute re-hash that lifting the I/O
+    half in here would have cost.
+
+    `use_ml=False`: the ML threshold load reaches for the global database
+    manager and is no part of counting files.
+
+    Returns None when the index cannot be read at all — including when the
+    module's `Processor` has been replaced by a stub that has no scan. The
+    caller then counts every file found as work and says so.
+    """
+    if not any(files_by_folder.values()):
+        return {f: FolderPlan() for f in files_by_folder}
+    try:
+        proc = Processor(config=config, use_ml=False)
+        proc._load_processed_hashes()
+        if getattr(proc, "_processed_filenames", None) is None:
+            return None
+        # The union, so a file reached under one folder's path form is still
+        # recognised while another folder's files are being classified.
+        proc._disk_stats = disk_stats
+        plans: Dict[str, FolderPlan] = {}
+        for folder, files in files_by_folder.items():
+            new = needs = known = 0
+            for f in files:
+                decision = proc._classify_scan(Path(f))
+                if decision == "processed":
+                    known += 1
+                elif decision == "needs_hash":
+                    needs += 1
+                else:
+                    new += 1
+            plans[folder] = FolderPlan(files=len(files), work=new + needs,
+                                       known=known)
+        return plans
+    except Exception:
+        logger.exception("Could not size the run from the processed-file "
+                         "index; counting every file found as work")
+        return None
+
+
+def _prescan(folders: Sequence[str], on_phase, cancel, *, config,
+             incremental: bool
+             ) -> Tuple[Dict[str, tuple], Dict[str, FolderPlan], bool]:
     """Walk every folder BEFORE processing any of it, so the run knows its size.
 
     This is the whole of "how many files has it got to go?". Until it existed
@@ -770,35 +965,45 @@ def _prescan(folders: Sequence[str], on_phase, cancel
     folder boundary — during a four-hour first ingest that is three separate
     progress bars and no answer.
 
-    The total counts every Excel file FOUND, not every file that will be
-    processed. Deciding which are new is the processor's incremental scan: it
-    needs the processed-file index loaded from the database and, for anything
-    whose recorded stat does not match, a hash of the file itself over the
-    share — the pass that once took 70 minutes for 170k files. Paying that
-    here would either double it or mean lifting the scan out of the processor,
-    and neither is worth it: the already-known files are credited to the bar
-    in one step the moment each folder's scan lands (ProcessingStatus
-    "known"), so an incremental re-run still shows a bar that moves.
+    The walk finds every Excel file; `_plan_work` then says how many of them
+    are actually work. Before that split the denominator was files-on-disk,
+    and each folder's already-known population only left "remaining" when that
+    folder's own scan landed — so a re-run of a mostly-ingested share spent
+    most of its life claiming hours of work it did not have.
 
     Folders that are unusable are NOT walked and NOT reported here — run_folder
     owns the "offline share?" wording and the ok=False result, and having two
     places that decide a share is dead is how they end up disagreeing.
     """
     walked: Dict[str, tuple] = {}
-    total = 0
+    found: Dict[str, Sequence[str]] = {}
+    stats: Dict[str, tuple] = {}
     n = len(folders)
     for i, folder in enumerate(folders, start=1):
         if cancel is not None and cancel.is_set():
-            return walked, total, False
+            return walked, {}, False
         _say(on_phase, f"Scanning folder {i} of {n} for Excel files… "
                        "(network folders can take a minute)")
         if ingest_folder_problem(folder):
             continue
         t = time.monotonic()
-        files, stats = discover_excel_files(folder)
-        walked[folder] = (files, stats, time.monotonic() - t)
-        total += len(files)
-    return walked, total, True
+        files, folder_stats = discover_excel_files(folder)
+        walked[folder] = (files, folder_stats, time.monotonic() - t)
+        found[folder] = files
+        stats.update(folder_stats)
+
+    if not incremental:
+        # Nothing is skipped, so every file found is work — no index needed.
+        return walked, {f: FolderPlan(files=len(v), work=len(v))
+                        for f, v in found.items()}, True
+
+    plans = _plan_work(found, stats, config=config)
+    if plans is None:
+        _say(on_phase, "Could not read the processed-file index — counting "
+                       "every file found as still to do.")
+        plans = {f: FolderPlan(files=len(v), work=len(v), from_index=False)
+                 for f, v in found.items()}
+    return walked, plans, True
 
 
 @_with_ingest_switch_interval
@@ -826,24 +1031,36 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
     finished its current batch and saved it. Every folder that ran is still in
     the report, with everything it counted.
 
-    `on_total` is called ONCE, with the whole run's file count, after the
-    pre-scan and before the first file is processed. It used to fire per
-    folder, which is why the bar restarted twice during a run and why "how
-    many to go" had no answer.
+    `on_total` is called ONCE, with the whole run's WORK, after the pre-scan
+    and before the first file is processed. It used to fire per folder, which
+    is why the bar restarted twice during a run; it used to carry every file
+    found on disk, which is why a re-run of an ingested share said it had
+    hours left when it had minutes.
     """
     started = time.monotonic()
     report = IngestReport(folders_requested=len(folders))
     total_folders = len(folders)
-    walked, planned, complete = _prescan(folders, on_phase, cancel)
+    walked, plans, complete = _prescan(folders, on_phase, cancel,
+                                       config=config, incremental=incremental)
     if not complete:
         # Stopped during the scan: nothing was processed, and half a scan is
         # not a denominator to quote afterwards.
         report.cancelled = True
         report.seconds = time.monotonic() - started
         return report
+    planned = sum(p.work for p in plans.values())
+    known = sum(p.known for p in plans.values())
     report.files_planned = planned
+    if progress is not None:
+        progress.set_total(planned)
     if on_total is not None:
         on_total(planned)
+    if known:
+        # Said once, for the whole run, so the size of the job is on screen
+        # before the first file opens: the number NOT being done is most of
+        # what an incremental re-run is doing.
+        _say(on_phase, f"{known:,} file" + ("" if known == 1 else "s")
+             + " already in the database will be skipped.")
     for i, folder in enumerate(folders, start=1):
         if cancel is not None and cancel.is_set():
             report.cancelled = True
@@ -855,7 +1072,8 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
                             incremental=incremental, progress=progress,
                             on_phase=on_phase, cancel=cancel,
                             discovered=None if pre is None else (pre[0], pre[1]),
-                            walk_seconds=0.0 if pre is None else pre[2])
+                            walk_seconds=0.0 if pre is None else pre[2],
+                            plan=plans.get(folder))
         report.results.append(result)
         if on_folder_done is not None:
             on_folder_done(result)
