@@ -376,3 +376,173 @@ def test_summary_line_reports_unreadable_count():
 
     rep.marked_unreadable = 1
     assert "1 file could not be read and was" in format_ingest_summary(rep)
+
+
+# ==========================================================================
+# 2026-09-15 — the two ways a final-test file is offered again forever
+#
+# Yesterday's per-path marker fixed the 38 files that were the same content
+# under two DIFFERENT paths. Two classes survived it, and today's work log
+# has both:
+#
+#   (1) content already stored under another path, reached by the UP-FRONT
+#       hash check, which returned the other row's id and recorded nothing
+#       about this path. ~370 files a day: the morning run parsed 1,371
+#       files and produced 442 verdicts while the index grew by 69.
+#   (2) the same path re-exported in place. Its OWN row owns the unique
+#       tuple, so the insert collides with itself; a skip marker cannot
+#       rescue it because `_load_processed_hashes` lets the FT row's stale
+#       (size, mtime) overwrite the marker's for that path. These are the 23
+#       `...\1844205\Voltage Output\*_VO_*.xlsx` files that came back in the
+#       08:11 run AND the 15:29 run on 2026-09-15 (re-saved on the share on
+#       09-10; stored hash 35ce2b5f…, on disk 38f9a1e8…).
+# ==========================================================================
+
+def _vo_workbook(path: Path, extra_cell=None) -> None:
+    """A Voltage-Output-style Format 1 export, as the work share holds it.
+
+    Its main sheet is NOT named 'Sheet1' (the reader falls back to the first
+    sheet) and its sweep carries a text cell, so Format 1 raises
+    `could not convert string to float: 'Test\\nParameters'` and the file is
+    saved header-only — the exact route the 23 recurring files take.
+    """
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Test Data"
+    for i in range(10):                      # A meas | B idx | C theory |
+        ws.cell(row=i + 1, column=1, value=0.1 * i)      # D err | E angle |
+        ws.cell(row=i + 1, column=2, value=i)            # G upper | H lower |
+        ws.cell(row=i + 1, column=3, value=0.1 * i)      # I flag
+        ws.cell(row=i + 1, column=4, value=0.0005)
+        ws.cell(row=i + 1, column=5, value=0.05 * i)
+        ws.cell(row=i + 1, column=7, value=0.01)
+        ws.cell(row=i + 1, column=8, value=-0.01)
+        ws.cell(row=i + 1, column=9, value=0)
+    ws.cell(row=12, column=1, value="Test\nParameters")
+    ws.cell(row=12, column=5, value=1.0)
+    if extra_cell:
+        ws.cell(row=30, column=14, value=extra_cell)     # changes the hash
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+
+
+def _ft_rows(db):
+    from laser_trim_analyzer.database.models import FinalTestResult
+    with db.session() as s:
+        return [(r.id, r.file_path, r.file_hash, r.file_size,
+                 r.file_modified_date) for r in s.query(FinalTestResult).all()]
+
+
+def _seen_by_a_fresh_scan(db, monkeypatch, *paths):
+    """What a fresh run's in-memory classification says about each path."""
+    proc = _processor_loaded_from(db, monkeypatch)
+    out = []
+    for p in paths:
+        st = p.stat()
+        proc._disk_stats[str(p)] = (st.st_size, st.st_mtime)
+        out.append(proc._classify_scan(Path(p)))
+    return proc, out
+
+
+def test_content_duplicate_under_a_second_path_is_recorded(tmp_path, monkeypatch):
+    """(1) Identical bytes, second path, DIFFERENT name: the up-front
+    hash check owns this one, and it used to record nothing at all."""
+    station = tmp_path / "Test Station" / "1844205"
+    first = station / "1844205-sn80A_VO_8-19-2026_7-36-16 AM.xlsx"
+    second = station / "Final Sheets" / "Copy of 1844205-sn80A_VO_8-19-2026_7-36-16 AM.xlsx"
+    _vo_workbook(first)
+    second.parent.mkdir(parents=True, exist_ok=True)
+    second.write_bytes(first.read_bytes())          # same content, new path
+
+    db = _db(tmp_path)
+    proc = _processor_loaded_from(db, monkeypatch)
+    proc.process_file(first, generate_plots=False)
+    proc.process_file(second, generate_plots=False)
+
+    rows = _ft_rows(db)
+    assert len(rows) == 1, "the content is stored once, under the first path"
+    assert rows[0][1] == str(first)
+
+    markers = _markers(db)
+    assert str(second) in markers, (
+        "the second path must be recorded — otherwise every scan calls it new, "
+        "re-reads it over the share, grades it and throws the verdict away")
+    row = markers[str(second)]
+    assert f"same content as final_test_results id {rows[0][0]}" in row.error_message
+    assert row.file_hash.startswith("skip:")
+    assert row.success is True and row.analysis_id is None
+
+    # And the point of the marker: the next run answers from memory alone.
+    _, seen = _seen_by_a_fresh_scan(db, monkeypatch, second)
+    assert seen == ["processed"]
+
+
+def test_same_path_reexport_stops_being_offered(tmp_path, monkeypatch):
+    """(2) The 23 Voltage Output files. The file at a recorded path is
+    replaced in place; its own row then owns the unique tuple."""
+    p = (tmp_path / "Test Station" / "1844205" / "Voltage Output"
+         / "1844205-sn62A_VO_8-19-2026_7-36-16 AM.xlsx")
+    _vo_workbook(p)
+
+    db = _db(tmp_path)
+    proc = _processor_loaded_from(db, monkeypatch)
+    proc.process_file(p, generate_plots=False)
+    first_row = _ft_rows(db)
+    assert len(first_row) == 1 and first_row[0][1] == str(p)
+
+    # The station re-exports over the same path (the work share: 09-10).
+    _vo_workbook(p, extra_cell="re-exported on the share")
+    st = p.stat()
+    os.utime(p, (st.st_atime, st.st_mtime + 4000))
+    new_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+    assert new_hash != first_row[0][2]
+
+    # A run now legitimately offers it again — the content DID change.
+    proc2, seen = _seen_by_a_fresh_scan(db, monkeypatch, p)
+    assert seen == ["needs_hash"]
+    assert proc2._is_processed(p) is False
+    proc2.process_file(p, generate_plots=False)
+
+    rows = _ft_rows(db)
+    assert len(rows) == 1, "one path, one row"
+    st = p.stat()
+    assert rows[0][2] == new_hash, (
+        "the row must point at the content now at its path; while it held the "
+        "old hash the scan re-hashed, missed, and re-parsed this file on every "
+        "single run — 23 of them, morning and afternoon, on 2026-09-15")
+    assert rows[0][3] == st.st_size
+    assert abs(rows[0][4].timestamp() - st.st_mtime) <= 2.0
+
+    # THE regression: the run after that leaves it alone.
+    proc3, seen = _seen_by_a_fresh_scan(db, monkeypatch, p)
+    assert seen == ["processed"]
+    assert proc3._is_processed(p) is True
+
+
+def test_same_path_reexport_keeps_the_stored_result(tmp_path, monkeypatch):
+    """Identity moves; the verdict does not. Re-ingesting changed content
+    under an existing row would mean rewriting its tracks and its trim link,
+    which the refresh deliberately is not — so it must not half-do it."""
+    from laser_trim_analyzer.database.models import FinalTestResult
+    p = (tmp_path / "Test Station" / "1844205" / "Voltage Output"
+         / "1844205-sn63A_VO_8-19-2026_11-03-17 AM.xlsx")
+    _vo_workbook(p)
+    db = _db(tmp_path)
+    proc = _processor_loaded_from(db, monkeypatch)
+    proc.process_file(p, generate_plots=False)
+    with db.session() as s:
+        before = s.query(FinalTestResult).one()
+        keep = (before.id, before.model, before.serial, before.file_date,
+                before.overall_status, before.filename)
+
+    _vo_workbook(p, extra_cell="re-exported")
+    st = p.stat()
+    os.utime(p, (st.st_atime, st.st_mtime + 4000))
+    proc2 = _processor_loaded_from(db, monkeypatch)
+    proc2.process_file(p, generate_plots=False)
+
+    with db.session() as s:
+        after = s.query(FinalTestResult).one()
+        assert (after.id, after.model, after.serial, after.file_date,
+                after.overall_status, after.filename) == keep

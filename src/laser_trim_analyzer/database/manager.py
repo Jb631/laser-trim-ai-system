@@ -4951,25 +4951,51 @@ class DatabaseManager:
 
         # Use lock to prevent race conditions with SQLite
         with self._write_lock:
+            # Is this CONTENT already on record?  Resolved in a session of
+            # its own so the marker write below happens OUTSIDE a read
+            # transaction — same reason as the IntegrityError branch at the
+            # bottom of this method.
+            dup_id = None
+            dup_path_on_record = None
+            with self.session() as session:
+                existing = (
+                    session.query(DBFinalTestResult)
+                    .filter(DBFinalTestResult.file_hash == file_hash)
+                    .first()
+                )
+                if existing:
+                    # Stamp the stat onto a legacy row while we're here —
+                    # this file was fully read to get here, so record what
+                    # it costs nothing to record.
+                    if file_size is not None and existing.file_size is None:
+                        existing.file_size = file_size
+                        existing.file_modified_date = file_modified_date
+                        session.commit()
+                    dup_id = existing.id
+                    dup_path_on_record = existing.file_path
+
+            if dup_id is not None:
+                this_path = str(metadata.get("file_path") or "")
+                if this_path and this_path != (dup_path_on_record or ""):
+                    # THIS PATH holds content already stored under ANOTHER
+                    # path — the same export dropped into a model folder and
+                    # into a "Voltage Output" / "Final Sheets" subfolder.
+                    # The identity lives on the other path's row, so until
+                    # 2026-09-15 nothing on record said this path had ever
+                    # been looked at: the scan called it new on every run,
+                    # read it over the share, parsed it, produced a verdict
+                    # and dropped it. ~370 files a day on the work share
+                    # (1,371 processed, 442 verdicts, index +69). A per-path
+                    # skip marker is what records it.
+                    self._mark_ft_duplicate_path(
+                        metadata, this_path, file_hash, file_size,
+                        file_modified_date,
+                        f"same content as final_test_results id {dup_id}")
+                logger.debug(f"Final test already exists: {metadata.get('filename')}")
+                return dup_id
+
             try:
                 with self.session() as session:
-                    # Check for duplicate by file_hash
-                    existing = (
-                        session.query(DBFinalTestResult)
-                        .filter(DBFinalTestResult.file_hash == file_hash)
-                        .first()
-                    )
-                    if existing:
-                        # Stamp the stat onto a legacy row while we're here —
-                        # this file was fully read to get here, so record what
-                        # it costs nothing to record.
-                        if file_size is not None and existing.file_size is None:
-                            existing.file_size = file_size
-                            existing.file_modified_date = file_modified_date
-                            session.commit()
-                        logger.debug(f"Final test already exists: {metadata.get('filename')}")
-                        return existing.id
-
                     # Determine overall status from corrected track-level
                     # linearity first. The raw FT header can be stale after
                     # analyzer correction; any corrected track failure wins.
@@ -5066,6 +5092,7 @@ class DatabaseManager:
                 # Test ... UNIQUE constraint failed". Query by both keys.
                 logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
                 existing_id = None
+                existing_path = None
                 try:
                     with self.session() as session:
                         existing = (
@@ -5086,34 +5113,98 @@ class DatabaseManager:
                             )
                         if existing:
                             existing_id = existing.id
+                            existing_path = existing.file_path
                 except Exception:
                     logger.debug("FT duplicate-recovery query failed", exc_info=True)
 
                 if existing_id is not None:
-                    # This PATH holds content already on record under another
-                    # path. Without a marker the scan re-parses it on every
-                    # run forever (60 files a day on the work share), because
-                    # the identity lives on the other path's row. Written
-                    # outside the recovery session so no write nests inside a
-                    # read transaction.
+                    # Written outside the recovery session so no write nests
+                    # inside a read transaction.
                     dup_path = metadata.get("file_path")
-                    if dup_path:
-                        try:
-                            self.mark_file_skipped(
-                                filename=(metadata.get("filename")
-                                          or Path(dup_path).name),
-                                file_path=dup_path,
-                                file_hash=file_hash,
-                                file_size=file_size,
-                                file_modified_date=file_modified_date,
-                                error_message=(
-                                    f"duplicate of final_test_results id {existing_id}"),
-                            )
-                        except Exception:
-                            logger.debug("Could not mark FT duplicate path as skipped",
-                                         exc_info=True)
+                    if dup_path and dup_path == (existing_path or ""):
+                        # SAME PATH. Not a copy at all: this file's own row
+                        # owns the unique tuple, and the file was re-exported
+                        # in place after that row was written, so the row's
+                        # recorded hash and (size, mtime) describe content
+                        # that is no longer there. A skip marker cannot help
+                        # here — `_load_processed_hashes` lets the FT row's
+                        # stat overwrite the marker's for the same path — so
+                        # the scan re-hashed, missed, and re-parsed these
+                        # every single run (the 23 Voltage Output files that
+                        # came back morning AND afternoon on 2026-09-15,
+                        # re-saved on the share on 09-10). Refresh the row's
+                        # IDENTITY so the next scan recognises the file.
+                        self._refresh_final_test_identity(
+                            existing_id, file_hash, file_size,
+                            file_modified_date,
+                            filename=metadata.get("filename") or Path(dup_path).name)
+                    elif dup_path:
+                        # This PATH holds content already on record under
+                        # another path. Without a marker the scan re-parses
+                        # it on every run forever, because the identity lives
+                        # on the other path's row.
+                        self._mark_ft_duplicate_path(
+                            metadata, dup_path, file_hash, file_size,
+                            file_modified_date,
+                            f"duplicate of final_test_results id {existing_id}")
                     return existing_id
                 raise
+
+    def _mark_ft_duplicate_path(self, metadata: Dict[str, Any], dup_path: str,
+                                file_hash: str, file_size: Optional[int],
+                                file_modified_date, reason: str) -> None:
+        """Record THIS path as holding content already on record elsewhere.
+
+        The row it duplicates keeps the content identity; this path gets a
+        per-path skip marker so the incremental scan stops offering it. Never
+        fatal — a file that cannot be marked is merely offered again.
+        """
+        try:
+            self.mark_file_skipped(
+                filename=(metadata.get("filename") or Path(dup_path).name),
+                file_path=dup_path,
+                file_hash=file_hash,
+                file_size=file_size,
+                file_modified_date=file_modified_date,
+                error_message=reason,
+            )
+        except Exception:
+            logger.debug("Could not mark FT duplicate path as skipped",
+                         exc_info=True)
+
+    def _refresh_final_test_identity(self, result_id: int, file_hash: str,
+                                     file_size: Optional[int],
+                                     file_modified_date,
+                                     filename: str = "") -> None:
+        """Point an existing FT row at the content now sitting at its path.
+
+        Only the identity columns move (file_hash, file_size,
+        file_modified_date). The stored RESULT is deliberately left alone:
+        re-ingesting changed content under an existing row would mean
+        rewriting its tracks and its trim link, which this method is not.
+        The log line says so, because a file whose content changed and whose
+        verdict did not is something the user should be able to see.
+        """
+        from laser_trim_analyzer.database.models import (
+            FinalTestResult as DBFinalTestResult,
+        )
+        try:
+            with self._write_lock:
+                with self.session() as session:
+                    row = session.get(DBFinalTestResult, result_id)
+                    if row is None:
+                        return
+                    row.file_hash = file_hash
+                    if file_size is not None:
+                        row.file_size = file_size
+                        row.file_modified_date = file_modified_date
+            logger.warning(
+                f"Final test {filename or result_id}: the file at this path has "
+                f"changed since it was recorded — identity refreshed on "
+                f"final_test_results id {result_id}; the stored result is "
+                f"unchanged (re-read the file to re-grade it)")
+        except Exception:
+            logger.debug("Could not refresh FT identity", exc_info=True)
 
     def count_legacy_ft_verdicts(self) -> int:
         """How many final-test rows were graded BEFORE the ignore-window fix.
