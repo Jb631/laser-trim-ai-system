@@ -1042,6 +1042,130 @@ def check_trim_ft_disposition_vs_sql(db, raw) -> None:
           "escape / overkill / agreement / agreement")
 
 
+def check_ingest_reoffers_only_retryable() -> None:
+    """A file the parser can NEVER read is offered exactly once (2026-09-14).
+
+    The work incident: ~930 final-test files were classified "new" on every
+    single run and only ~80 ever produced a record. 833 of them were empty
+    workbooks, and every empty file has the same content hash — so the one
+    `processed_files` row for `~$7029-72.xlsx` matched all of them and
+    `mark_file_skipped` returned early without recording any of them under
+    their own path. The processor logged "recorded as skipped" for each while
+    the write was silently dropped, and the scan re-offered them tomorrow.
+
+    The invariant: after one pass, the only files still offered are the ones
+    whose failure is RETRYABLE (a parser upgrade could fix them). Permanent
+    failures and duplicates are remembered.
+
+    Empty files are synthesised rather than taken from the corpus: the local
+    sample has none, and the collision they cause is the whole bug. A
+    duplicate is made the way the share makes one — same filename+date+model+
+    serial under a second folder, different bytes, which is the branch the
+    work log hits 60 times a run.
+
+    This check FAILS against the pre-fix code: only one of the four empties
+    is remembered, so the second pass re-offers the other three.
+    """
+    import shutil, tempfile  # noqa: E402
+    from laser_trim_analyzer.config import Config  # noqa: E402
+    from laser_trim_analyzer.core.ingest_run import run_folders  # noqa: E402
+    from laser_trim_analyzer.database import manager as _dbmod  # noqa: E402
+    from laser_trim_analyzer.database.manager import DatabaseManager  # noqa: E402
+
+    station = REPO / "Work Files" / "Sample_Base_2026-04-10" / "Test Station"
+    real = sorted(p for p in station.rglob("*.xls*") if p.is_file())[:12]
+    if len(real) < 4:
+        warn("ingest re-offer: fewer than 4 Test Station samples available")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="ltaqa_reoffer_"))
+    saved_global = _dbmod._db_manager
+    try:
+        folder = tmp / "Test Station"
+        folder.mkdir()
+        for f in real:
+            shutil.copy2(f, folder / f.name)
+
+        # (1) PERMANENT failures: empty workbooks. All four share the SHA-256
+        # of b"", which is exactly what defeated the old hash-keyed guard.
+        empties = [
+            "Final Test 8084-sn100_8-24-2011_2-44 PM.xls",
+            "Final Test 8084-sn107_8-27-2011_9-17 AM.xls",
+            "Final Test 7029-82.xls",
+            "Final Test 6607-sn200_11-15-2011_10-47 AM.xls",
+        ]
+        for name in empties:
+            (folder / name).write_bytes(b"")
+
+        # (2) A DUPLICATE: same identity tuple, second folder, edited bytes.
+        dup_dir = folder / "resent"
+        dup_dir.mkdir()
+        dup_src = real[0]
+        shutil.copy2(dup_src, dup_dir / dup_src.name)
+        with open(dup_dir / dup_src.name, "ab") as fh:
+            fh.write(b"\0")          # same identity, different content hash
+
+        cfg = Config()
+        cfg.database.path = tmp / "reoffer_qa.db"
+        db = DatabaseManager(cfg.database.path)
+        _dbmod._db_manager = db
+
+        rep1 = run_folders([str(folder)], db=db, config=cfg, incremental=True)
+        first_new = rep1.new_files
+
+        # Classify what the first pass could not turn into a record.
+        from laser_trim_analyzer.database.models import (  # noqa: E402
+            ProcessedFile as DBPF, FinalTestResult as DBFT,
+            SmoothnessResult as DBSM)
+        with db.session() as sess:
+            recorded = {r[0] for r in sess.query(DBFT.file_path).all()}
+            recorded |= {r[0] for r in sess.query(DBSM.file_path).all()}
+            markers = {r[0] for r in sess.query(DBPF.file_path)
+                       .filter(DBPF.success == True,             # noqa: E712
+                               DBPF.analysis_id.is_(None)).all()}
+        on_disk = {str(p) for p in folder.rglob("*.xls*") if p.is_file()}
+        unrecorded = on_disk - recorded
+        permanent = {p for p in unrecorded if Path(p).stat().st_size == 0}
+        duplicate = {str(dup_dir / dup_src.name)} & unrecorded
+        other = unrecorded - permanent - duplicate
+        total_failures = len(unrecorded)
+
+        print(f"     | first pass: {first_new} new · {len(permanent)} permanent · "
+              f"{len(duplicate)} duplicate · {len(other)} other "
+              f"(retryable) · {len(markers)} markers written")
+
+        check("ingest re-offer: the empty files really do collide on content",
+              len(permanent) == len(empties),
+              f"permanent={len(permanent)} expected={len(empties)}")
+        check("ingest re-offer: every permanent failure is remembered by path",
+              permanent <= markers,
+              f"unmarked={sorted(Path(x).name for x in permanent - markers)}")
+
+        # The second pass: only retryable failures may be offered again.
+        rep2 = run_folders([str(folder)], db=db, config=cfg, incremental=True)
+        second_new = rep2.new_files
+        print(f"     | second pass: {second_new} new (expected {len(other)})")
+
+        check("ingest re-offer: the second pass re-offers ONLY retryable "
+              "failures",
+              second_new == len(other),
+              f"second_new={second_new} retryable={len(other)} "
+              f"permanent={len(permanent)} duplicate={len(duplicate)}")
+        check("ingest re-offer: the second pass offers strictly fewer files "
+              "than the first pass failed on",
+              second_new < total_failures or total_failures == 0,
+              f"second_new={second_new} first_pass_failures={total_failures}")
+        check("ingest re-offer: the duplicate path is not re-parsed",
+              not (duplicate - markers),
+              f"unmarked_duplicate={sorted(Path(x).name for x in duplicate - markers)}")
+    except Exception as exc:
+        check("ingest re-offer: unreadable files are offered once", False,
+              f"{type(exc).__name__}: {exc}")
+    finally:
+        _dbmod._db_manager = saved_global
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_multi_folder_ingest() -> None:
     """Home's one-click batch IS the Process page's batch (2026-08-31).
 
@@ -1178,6 +1302,8 @@ def check_multi_folder_ingest() -> None:
     finally:
         _dbmod._db_manager = saved_global
         shutil.rmtree(tmp, ignore_errors=True)
+
+    check_ingest_reoffers_only_retryable()
 
 
 def main() -> int:
