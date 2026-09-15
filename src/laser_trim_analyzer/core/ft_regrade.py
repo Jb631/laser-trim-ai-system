@@ -343,6 +343,24 @@ REGRADE_BATCH = 200
 # callback that repaints a label is not free.
 PROGRESS_INTERVAL_SECONDS = 2.0
 
+# How often the run says where it is IN THE LOG. The window says it four times
+# a second, which is right for someone watching and useless afterwards: the
+# 2026-09-15 run went 08:18 -> 14:49, six and a half hours, and left not one
+# line saying how many rows it did, how fast, or how it ended. The log is what
+# survives the window being closed, so it gets a line every 500 rows — about
+# once every three minutes at the measured rate — plus one at the start and
+# one at the end.
+REGRADE_LOG_EVERY = 500
+
+
+def _regrade_counts_text(counts: Dict[str, int]) -> str:
+    """The tail every re-grade log line carries: what actually moved."""
+    return (f"changed PASS→FAIL {counts['pass_to_fail']:,}, "
+            f"FAIL→PASS {counts['fail_to_pass']:,}, "
+            f"→NULL {counts['to_null']:,}, "
+            f"missing {counts['missing']:,}, "
+            f"errors {counts['errors']:,}")
+
 
 def format_regrade_line(done: int, total: int, rate: Optional[float],
                         eta: str) -> str:
@@ -516,19 +534,67 @@ def regrade_final_tests(
     from laser_trim_analyzer.core.analyzer import Analyzer
     from laser_trim_analyzer.core.final_test_parser import FinalTestParser
     from laser_trim_analyzer.core.ingest_run import (
-        INGEST_SWITCH_INTERVAL, EtaEstimator)
+        INGEST_SWITCH_INTERVAL, EtaEstimator, format_clock, format_rate)
 
     rows = db.get_final_tests_for_regrade(only_legacy=only_legacy, limit=limit)
     report = RegradeReport(applied=apply)
+    total = len(rows)
+    started = time.monotonic()
+    logger.info(
+        f"Re-grade: {total:,} rows selected (FAIL-first, newest first), "
+        f"workers={max(1, int(workers))}, "
+        f"apply={'yes' if apply else 'no — dry run, nothing is written'}")
     if not rows:
         return report
 
     parser = FinalTestParser()
     analyzer = Analyzer()
-    total = len(rows)
     eta = EtaEstimator()
     done = 0
     last_sent = [0.0]
+    # Running totals for the log line. Counted as outcomes arrive rather than
+    # recomputed from `report.outcomes`, which is a full pass over everything
+    # examined so far — 300 of those over a 149,000-row run.
+    counts: Dict[str, int] = {"pass_to_fail": 0, "fail_to_pass": 0,
+                              "to_null": 0, "from_null": 0,
+                              "missing": 0, "errors": 0}
+
+    def _count(outcome: "RegradeOutcome") -> None:
+        if outcome.result == MISSING_FILE:
+            counts["missing"] += 1
+        elif outcome.result == PARSE_ERROR:
+            counts["errors"] += 1
+        if not outcome.changed:
+            return
+        if outcome.after is None:
+            counts["to_null"] += 1
+        elif outcome.before is None:
+            counts["from_null"] += 1
+        elif outcome.before and not outcome.after:
+            counts["pass_to_fail"] += 1
+        elif outcome.after and not outcome.before:
+            counts["fail_to_pass"] += 1
+
+    def _log_progress(*, final: bool = False) -> None:
+        """One line to the log. Driving thread only, same as `_tick`."""
+        eta.note(done)
+        rate = eta.rate()
+        if final:
+            head = (f"Re-grade {'cancelled' if report.cancelled else 'finished'}: "
+                    f"{done:,} of {total:,} rows")
+        else:
+            head = f"Re-grade: {done:,}/{total:,}"
+        parts = [head]
+        if rate:
+            parts.append(format_rate(rate))
+        if final:
+            parts.append(f"wall {format_clock(time.monotonic() - started)}")
+        else:
+            words = eta.eta_text(max(0, total - done))
+            if words:
+                parts.append(words)
+        parts.append(_regrade_counts_text(counts))
+        logger.info(" · ".join(parts))
 
     def _tick(name: str, *, force: bool = False) -> None:
         """Report where the run is. Called on the DRIVING thread only.
@@ -635,7 +701,10 @@ def regrade_final_tests(
                         writes.append(pending)
                     done += 1
                     last_name = outcome.filename
+                    _count(outcome)
                     _tick(last_name)
+                    if done % REGRADE_LOG_EVERY == 0:
+                        _log_progress()
                 if writes:
                     # ONE transaction for the whole batch. Cancel is NOT
                     # checked between here and the commit: a batch that has
@@ -650,4 +719,5 @@ def regrade_final_tests(
     if cancel is not None and cancel.is_set():
         report.cancelled = True
     _tick(last_name, force=True)
+    _log_progress(final=True)
     return report

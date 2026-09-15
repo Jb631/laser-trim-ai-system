@@ -309,3 +309,118 @@ def test_cancel_before_the_first_row_writes_nothing(tmp_path, parser):
     assert report.cancelled
     assert report.examined == 0
     assert db.count_legacy_ft_verdicts() == 4, "a stopped run must be resumable"
+
+
+# ---- (5) the log, which is what survives the window being closed -----------
+#
+# 2026-09-15: the re-grade ran 08:18 -> 14:49 on the work machine and left NO
+# record of it — not how many rows it did, not how fast, not whether it
+# finished or was stopped. Six and a half hours of a 3.7 GB database being
+# rewritten, and the only evidence it happened at all was the row counts
+# afterwards. These pin the three lines that fix that.
+
+def _regrade_lines(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.name == "laser_trim_analyzer.core.ft_regrade"
+            and r.levelname == "INFO"
+            and r.getMessage().startswith("Re-grade")]
+
+
+def _seed_a_mixed_batch(db, parser, tmp_path):
+    """7 rows: 5 gradeable, 1 whose file is gone, 1 the parser chokes on.
+
+    Two of the gradeable rows are given a stored FAIL the file does not
+    support, so the run has a real FAIL->PASS count to print.
+    """
+    ids = _seed(db, parser, n=7)
+    broken = tmp_path / "broken.xls"
+    broken.write_bytes(b"this is not a workbook")
+    with db.session() as session:
+        session.execute(text(
+            "UPDATE final_test_results SET file_path = :p WHERE id = :i"),
+            {"p": str(tmp_path / "gone" / "vanished.xls"), "i": ids[0]})
+        session.execute(text(
+            "UPDATE final_test_results SET file_path = :p WHERE id = :i"),
+            {"p": str(broken), "i": ids[1]})
+        session.execute(text(
+            "UPDATE final_test_results SET linearity_pass = 0 "
+            "WHERE id IN (:a, :b)"), {"a": ids[2], "b": ids[3]})
+        session.commit()
+    return ids
+
+
+def test_the_run_logs_its_start_its_progress_and_its_end(tmp_path, parser,
+                                                         caplog, monkeypatch):
+    import logging
+    from laser_trim_analyzer.core import ft_regrade
+
+    db = _manager(tmp_path)
+    _seed_a_mixed_batch(db, parser, tmp_path)
+    # Every 500 rows in production; 2 here, so seven rows exercise the same
+    # line the work run prints every few minutes.
+    monkeypatch.setattr(ft_regrade, "REGRADE_LOG_EVERY", 2)
+
+    caplog.set_level(logging.INFO, logger="laser_trim_analyzer.core.ft_regrade")
+    report = regrade_final_tests(db, apply=True, only_legacy=True,
+                                 batch_size=3, workers=2)
+    lines = _regrade_lines(caplog)
+    assert len(lines) >= 5, f"expected start + 3 progress + end, got {lines}"
+
+    start = lines[0]
+    assert start == ("Re-grade: 7 rows selected (FAIL-first, newest first), "
+                     "workers=2, apply=yes"), start
+
+    middle = lines[1:-1]
+    assert len(middle) == 3, f"7 rows every 2 should log 3 times: {middle}"
+    for line in middle:
+        assert "/7" in line, line
+        assert "changed PASS→FAIL" in line and "FAIL→PASS" in line, line
+
+    # The end line carries the same totals as the report the caller gets —
+    # the log and the screen can never disagree about how it went.
+    end = lines[-1]
+    moved = report.transitions()
+    assert report.examined == 7
+    assert moved["fail_to_pass"] == 2, "the two stored FAILs should be rescued"
+    assert report.missing == 1 and report.errors == 1
+    assert end.startswith("Re-grade finished: 7 of 7 rows"), end
+    assert "wall " in end, end
+    assert f"FAIL→PASS {moved['fail_to_pass']:,}" in end, end
+    assert f"PASS→FAIL {moved['pass_to_fail']:,}" in end, end
+    assert f"→NULL {moved['to_null']:,}" in end, end
+    assert f"missing {report.missing:,}" in end, end
+    assert f"errors {report.errors:,}" in end, end
+
+
+def test_a_stopped_run_says_so_in_the_log(tmp_path, parser, caplog):
+    import logging
+
+    db = _manager(tmp_path)
+    _seed(db, parser, n=4)
+    cancel = threading.Event()
+    real_write = db.apply_final_test_regrades
+
+    def write_then_stop(batch):
+        written = real_write(batch)
+        cancel.set()
+        return written
+
+    db.apply_final_test_regrades = write_then_stop
+    caplog.set_level(logging.INFO, logger="laser_trim_analyzer.core.ft_regrade")
+    report = regrade_final_tests(db, apply=True, only_legacy=True,
+                                 batch_size=2, workers=2, cancel=cancel)
+    assert report.cancelled
+    end = _regrade_lines(caplog)[-1]
+    assert end.startswith("Re-grade cancelled: 2 of 4 rows"), end
+    assert "wall " in end, end
+
+
+def test_a_dry_run_says_it_is_a_dry_run(tmp_path, parser, caplog):
+    import logging
+
+    db = _manager(tmp_path)
+    _seed(db, parser, n=2)
+    caplog.set_level(logging.INFO, logger="laser_trim_analyzer.core.ft_regrade")
+    regrade_final_tests(db, apply=False, only_legacy=True, workers=2)
+    start = _regrade_lines(caplog)[0]
+    assert "apply=no — dry run, nothing is written" in start, start
