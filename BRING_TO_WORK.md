@@ -1,18 +1,107 @@
 # Taking V6 to work — first-day checklist
 
-## ⚡ 2026-09-13 — FIRST THING TOMORROW: re-grade the final tests
+## ⚡ 2026-09-14 — FIRST THING TOMORROW: two jobs, in this order, not together
 
-**Pull, then run one thing.** Every final-test number in the app moves
-afterwards, so do this before you read any of them.
+Yesterday's page told you to run the re-grade. You did, at 14:19, and at 14:45
+you pressed "Process everything new" on top of it. That was a reasonable thing
+to do and the app should not have let you — **the two jobs share one database
+lock and one link to the plant share, and together they made each other
+slower than either one alone.** Your own log, before and during:
 
-**What was wrong.** A final-test sheet grades a WINDOW of its sweep, not the
-whole thing. Column I holds a per-point flag the station writes only on the
-rows it actually judged, and the parameter block says how many samples it
-ignores at each end. The app had never looked at either, so it graded every
-row — including the lead-in. On 8232-1 that lead-in is six rows where the pot
-reads 0 V against a theory of −0.045 V: a phantom 0.047 "error" against a
-±0.010 band, five times the limit, on a part nobody measured. **98.5% of that
-model's files failed here at a station that passed them.**
+| | on its own | with the other job running |
+|---|---|---|
+| processed-file index, per folder | 2.6 s | 26 s, 32 s, 88 s, 101 s |
+| final-test verify pass | 140 s | **542 s** |
+| the ingest | — | cancelled after 0 of 1,371 files |
+
+The app now refuses the second one and says which job is in the way. Nothing
+was damaged; the re-grade finished 2,356 records before you stopped it at
+15:35, and those stay done.
+
+### Do this
+
+1. **`git pull`.**
+
+2. **HOME → "Process everything new". Let it finish first.** It should be
+   fast now — minutes, not the hour it has been taking. Two lines in
+   `data\laser_trim.log` tell you whether the fix landed:
+
+       check 1.4s (170,940 known in memory)     <- was "(0 known in memory)"
+       verify 66 files 8.2s                     <- was "verify 171,006 files 542.0s"
+
+   **If it still says `(0 known in memory)`, stop and send me that line.**
+   That is the whole bug and it is the one thing I could not test against a
+   Windows share from here.
+
+   *What it was.* The folder paths come from the "browse" dialog, which hands
+   back forward slashes on Windows. The scan built its index of already-seen
+   files under that spelling and then looked them up under the backslash
+   spelling the database stores. Nothing ever matched, so every scan decided
+   all 171,006 final-test files were unknown and went and touched every one of
+   them over the share. Nine minutes, every run, on a folder where nothing had
+   changed.
+
+3. **Back up the database.** It is 3.7 GB, so give it a minute:
+
+       copy data\analysis.db data\analysis.db.bak-2026-09-15
+
+4. **Settings → Database → "Re-grade final tests." Start it and leave it
+   running.** It asks first and tells you how many. **149,019 records** are
+   left (of 151,375; the other 2,356 are yesterday's).
+
+   **It does the recent failures first now.** Yesterday it went in ingest
+   order, which is oldest-first, so it spent its whole hour and a quarter on
+   2010-era workbooks — the far end of the history, which no screen in the app
+   reads. Now it takes currently-FAIL records newest-first, then the rest
+   newest-first. Concretely, on your database:
+
+   - **3,959** failing final tests from the last 24 months (1,853 of them
+     8232-1, 383 8508, 310 8397-2, 235 8340-1)
+   - those are the first rows it touches, so **the last two years of failures
+     should be done inside the first half hour**
+   - 55,578 failing records in total, then 93,181 passing ones
+
+   Expect **a few files a second** — I measured the file-reading side at three
+   seconds per file per thread from your log, and the run now uses eight
+   threads instead of four. That is an estimate from your numbers, not
+   something I could measure from here; the window tells you the truth as it
+   goes:
+
+       12,480 of 149,019 · 2.6 files/s · about 14 h 50 min left · Stop
+
+   **Stop is safe and it resumes.** What is written stays written, and
+   starting again continues where it left off — it selects exactly the records
+   that have not been done. Stopping at 5pm and restarting tomorrow is a
+   supported way to run this. Closing the window stops it cleanly too.
+
+   **The amber line on HOME counts down as it goes** and disappears when there
+   is nothing left.
+
+   **Do not press "Process everything new" while it runs.** The app will
+   refuse, but the better habit is the order above: ingest first, then the
+   re-grade, then leave it alone.
+
+**Prefer the command line?** Same ordering, same ETA line. Dry run writes
+nothing and prints per model how many verdicts would move:
+
+```
+python scripts\regrade_final_tests.py data\analysis.db
+python scripts\regrade_final_tests.py data\analysis.db --apply
+```
+
+**Off the work network nothing happens.** Every source file reports
+"unreachable" and no row is touched. That is the expected result on the Mac.
+
+### Why the re-grade exists at all (unchanged from 2026-09-13)
+
+A final-test sheet grades a WINDOW of its sweep, not the whole thing. Column I
+holds a per-point flag the station writes only on the rows it actually judged,
+and the parameter block says how many samples it ignores at each end. The app
+had never looked at either, so it graded every row — including the lead-in. On
+8232-1 that lead-in is six rows where the pot reads 0 V against a theory of
+−0.045 V: a phantom 0.047 "error" against a ±0.010 band, five times the limit,
+on a part nobody measured. **98.5% of that model's files failed here at a
+station that passed them.**
 
 On the 690 local sample files, 35 files (5.2%) change verdict once the window
 is respected: 28 FAIL→PASS, 3 PASS→FAIL (blank cells that used to be stored
@@ -29,42 +118,34 @@ reference, and the two are allowed to differ — when the offset correction
 rescues a unit the station rejected, that is the app working, and the chart
 says so in words instead of hiding it.
 
-**Do this:**
-
-1. `git pull`
-2. Launch V6. HOME will show an amber line: *"150,202 final-test records were
-   graded before the ignore-window fix…"* (that is every row in the work
-   database — nothing was graded with a window before today).
-3. **Back up the database first.** `copy data\analysis.db data\analysis.db.bak-2026-09-13`
-4. **Settings → Database → "Re-grade final tests."** It asks before starting
-   and tells you how many. It re-reads each workbook from the plant share and
-   re-grades it, four at a time. **Stop is safe** — what is written stays
-   written and starting again continues where it left off. Expect this to take
-   a while: 150k workbooks off the share.
-5. The amber line on HOME disappears when it is done.
-
-**Prefer the command line?** Dry run first — it grades everything, writes
-nothing, and prints per model how many verdicts would move:
-
-```
-python scripts\regrade_final_tests.py data\analysis.db
-python scripts\regrade_final_tests.py data\analysis.db --apply
-```
-
-**Off the work network nothing happens.** Every source file reports
-"unreachable" and no row is touched. That is the expected result on the Mac.
-
 **What moves after it runs.** Final-test fail rates. Escapes and overkills
 (both directions — the Gap numbers will shift). The FOCUS list, because it
 ranks on those. Any ML model trained on final test as ground truth: **retrain
 after this**, the labels have changed.
 
-**Two smaller things in the same pull.** The unit chart now shades the rows
-the station never graded, rings the points the station itself flagged, and
-names both verdicts in one line. And "Linearity Spec" on that chart stopped
-printing the MEAN of a bowtie band — it shows the real range now
+**Two smaller things from the same 09-13 pull.** The unit chart now shades the
+rows the station never graded, rings the points the station itself flagged,
+and names both verdicts in one line. And "Linearity Spec" on that chart
+stopped printing the MEAN of a bowtie band — it shows the real range now
 ("±0.008–0.010"), which is what sent you looking for a fault that was not
-there this morning.
+there.
+
+### Still on the list, not fixed today
+
+**~1,300 final-test files are classified "new" every single day and only
+about 80 of them ever produce a record.** The rest are files the parser cannot
+read, so they never get a row, so tomorrow's scan finds them "new" again —
+every day, forever. It costs a re-read of 1,300 files per run and it is why
+the "new files" count never matches what actually lands. Not urgent, not a
+regression, but worth a session: either the parser learns them or they get
+recorded as refused so the scan stops offering them.
+
+**The 112 ERROR trim rows written today are old junk, not a regression.**
+DLTS files from 2013 (6952), 2017 (8232-1) and 2024 (8856) that the parser
+refuses with "Could not find data start", "positions not monotonically
+increasing", "limit columns are not a +/- band". They were already ERROR
+before the pull — the run said "111 retrying earlier errors" — and it retries
+them every run for the same reason as the paragraph above.
 
 ---
 
