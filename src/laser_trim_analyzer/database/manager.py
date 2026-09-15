@@ -5119,8 +5119,11 @@ class DatabaseManager:
 
                 if existing_id is not None:
                     # Written outside the recovery session so no write nests
-                    # inside a read transaction.
-                    dup_path = metadata.get("file_path")
+                    # inside a read transaction. `str` because that is how the
+                    # row's own file_path was written — comparing a Path with
+                    # the stored string would send every same-path case down
+                    # the copy branch.
+                    dup_path = str(metadata.get("file_path") or "")
                     if dup_path and dup_path == (existing_path or ""):
                         # SAME PATH. Not a copy at all: this file's own row
                         # owns the unique tuple, and the file was re-exported
