@@ -29,6 +29,12 @@ own database row because the station re-saved them in place on 09-10 (16 are
 `1844205\Voltage Output\*_VO_*.xlsx`, whose template the reader still cannot
 parse — they stay header-only, they just stop being re-read).
 
+One thing to know about that second class: the record now points at the file
+as it is today, but **the stored verdict is the one taken from the older
+content** — a line saying so, naming the file, goes into the log each time.
+For the seven that are not Voltage Output files (7691, 8232-1, 8895) the
+re-grade fixes that by itself, because it re-reads each file from the share.
+
 And the re-grade now writes itself into `data\laser_trim.log`: one line when it
 starts, one every 500 rows with the rate, the ETA and what has moved so far,
 and one when it finishes or is stopped with the totals and the wall time.
