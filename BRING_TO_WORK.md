@@ -130,15 +130,46 @@ stopped printing the MEAN of a bowtie band — it shows the real range now
 ("±0.008–0.010"), which is what sent you looking for a fault that was not
 there.
 
+### Also in this pull: the ~1,000 files that were "new" every day
+
+**The first "Process everything new" after this pull still parses those junk
+files once — and this time it records them.** Every run after that skips
+them, and the run summary line says how many were recorded, e.g.
+
+    3 folders · 214 new files · 4 min 12 s · 931 files could not be read and
+    were recorded as unreadable (skipped from now on)
+
+That clause appears only when the count is non-zero, so on a normal day it is
+not there at all. If you still see roughly a thousand "new" files on the
+SECOND run after this pull, that is the bug not being fixed — send me the
+line.
+
+*What it was.* A file the parser cannot read gets recorded as "refused" so
+the scan stops offering it — except the record was keyed by the file's
+CONTENT, and 833 of those files are empty. Every empty file has the same
+content fingerprint, so the one record already on file (for a stray
+`~$7029-72.xlsx`) matched all of them, and the app threw the rest away
+without saying so. The log even said "recorded as skipped" for each one
+while nothing was written. Records are now keyed by the file's PATH, so each
+file gets its own, and the reason is stored next to it. **No database
+migration and no change to how files are processed** — only which key the
+refusal is filed under. A refused file is still re-read the moment its
+size or timestamp changes, so if one of those empty files is ever replaced
+with a real workbook it will be picked up normally.
+
+**One part deliberately left undone:** the 67 `_OS_` files under the Test
+Station tree still get retried on every run. They go to the smoothness parser,
+which finds no usable columns, and teaching the app to remember that class
+needs a change to the processor — which I left alone on purpose this time.
+It costs 67 files a run, not 930, so it can wait for a session where the
+processor is in scope.
+
 ### Still on the list, not fixed today
 
-**~1,300 final-test files are classified "new" every single day and only
-about 80 of them ever produce a record.** The rest are files the parser cannot
-read, so they never get a row, so tomorrow's scan finds them "new" again —
-every day, forever. It costs a re-read of 1,300 files per run and it is why
-the "new files" count never matches what actually lands. Not urgent, not a
-regression, but worth a session: either the parser learns them or they get
-recorded as refused so the scan stops offering them.
+**~~~1,300 final-test files are classified "new" every single day~~ — FIXED
+2026-09-14**, see the section above. The ~930 that never produced a record are
+now recorded as refused after one parse. The 67 `_OS_` smoothness files are
+the remainder and are still retried every run.
 
 **The 112 ERROR trim rows written today are old junk, not a regression.**
 DLTS files from 2013 (6952), 2017 (8232-1) and 2024 (8856) that the parser
