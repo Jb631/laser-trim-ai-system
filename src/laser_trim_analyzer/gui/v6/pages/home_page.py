@@ -164,6 +164,19 @@ class HomePage(PageBase):
         folders = self._folders()
         if not folders or self._running:
             return
+        # One long job at a time (2026-09-14). A re-grade and an ingest both
+        # want the database write lock and both pull files over the same SMB
+        # share; run together, the index load went 2.6 s -> 101 s per folder,
+        # the final-test verify pass 140 s -> 542 s, and the batch was
+        # cancelled after 0 of 1,371 files. Refusing is not a limitation, it
+        # is the difference between one job finishing and neither.
+        busy = getattr(self.app, "active_run_name", lambda: None)()
+        if busy:
+            self._summary.configure(
+                text=f"{busy} is running — stop it first, then press this "
+                     f"again. Two jobs over the plant share make each other "
+                     f"slower than either one alone.")
+            return
         self._cancel = Event()         # a FRESH event: a stopped run must not
         self._set_running(True)        # leave the next one pre-cancelled
         self._progress.reset()
@@ -178,7 +191,7 @@ class HomePage(PageBase):
         # out from under a batch that is mid-write.
         register = getattr(self.app, "register_ingest", None)
         if register is not None:
-            register(self._cancel, thread)
+            register(self._cancel, thread, "An ingest")
 
     def _stop(self) -> None:
         """Ask the run to stop. Tk thread; the worker sees a set() Event.
@@ -282,6 +295,13 @@ class HomePage(PageBase):
         """Tk thread: the combined summary, the button back, fresh FOCUS."""
         self._summary.configure(text=format_ingest_summary(report))
         self._set_running(False)
+        # Say it is over, rather than leaving the app to infer it from a
+        # thread that is still alive for a few more instructions — otherwise
+        # pressing the button straight after a run would be refused by the
+        # one-job-at-a-time check.
+        drop = getattr(self.app, "unregister_ingest", None)
+        if drop is not None and self._cancel is not None:
+            drop(self._cancel)
         # The list on this same screen is now stale by exactly the data we
         # just ingested — reloading it is the point of having pressed the
         # button.

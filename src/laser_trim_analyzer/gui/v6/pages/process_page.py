@@ -104,7 +104,7 @@ class ProcessPage(PageBase):
         thread.start()
         register = getattr(self.app, "register_ingest", None)
         if register is not None:
-            register(self._cancel, thread)
+            register(self._cancel, thread, "An ingest")
 
     def _stop(self):
         """Ask the run to stop; it lands at the end of the current batch."""
@@ -202,4 +202,10 @@ class ProcessPage(PageBase):
 
     def _on_done(self):
         self._set_running(False)
+        # Tell the app this run is over (see V6App.unregister_ingest): a
+        # worker that has just posted its result is still alive for a moment,
+        # and the one-job-at-a-time check must not read that as a run.
+        drop = getattr(self.app, "unregister_ingest", None)
+        if drop is not None and self._cancel is not None:
+            drop(self._cancel)
         self._goto_triage.pack(side="top", anchor="w", pady=(self.theme.SPACE_SM, 0))

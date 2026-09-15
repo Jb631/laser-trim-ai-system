@@ -39,10 +39,12 @@ class V6App(ctk.CTk):
         self.db = db if db is not None else get_database()
         self._model_route: Optional[Tuple[str, Optional[str]]] = None
         self._auto_train_on_first_run = auto_train_on_first_run
-        # In-flight ingests: (cancel Event, worker thread). Closing the window
-        # used to destroy Tk while a batch was mid-write — the worker kept
-        # parsing and saving into a database whose app was already gone.
-        self._ingest_runs: List[Tuple[object, object]] = []
+        # In-flight long runs: (cancel Event, worker thread, name). Closing
+        # the window used to destroy Tk while a batch was mid-write — the
+        # worker kept parsing and saving into a database whose app was already
+        # gone. The name is what `active_run_name` reports when a second run
+        # is refused.
+        self._ingest_runs: List[Tuple[object, object, str]] = []
 
         # Main-thread UI dispatcher: workers post callbacks here instead of
         # touching Tk from their own threads (see ui_dispatch.py).
@@ -190,20 +192,57 @@ class V6App(ctk.CTk):
             ProcessPage(self.page_container, theme=self.theme, app=self, page_title="Process"),
         )
 
-    # ---- in-flight ingests ----
-    def register_ingest(self, cancel, thread) -> None:
-        """Remember a running ingest so closing the window can stop it first.
+    # ---- in-flight long runs ----
+    def register_ingest(self, cancel, thread, name: str = "An ingest") -> None:
+        """Remember a running long job so closing the window can stop it first.
+
+        `name` is what the OTHER front end says when it refuses to start
+        ("A re-grade is running — stop it first"), so it reads as a sentence
+        with " is running" after it: "An ingest", "A re-grade".
 
         Called from the page's Tk thread right after the worker starts. Dead
         entries are swept here rather than by the worker, which must not touch
         app state from off-thread.
         """
-        self._ingest_runs = [(c, t) for c, t in self._ingest_runs
-                             if _alive(t)]
-        self._ingest_runs.append((cancel, thread))
+        self._ingest_runs = [r for r in self._ingest_runs if _alive(r[1])]
+        self._ingest_runs.append((cancel, thread, name))
+
+    def unregister_ingest(self, cancel) -> None:
+        """Forget a run that has finished. Tk thread only.
+
+        `is_alive()` alone is not enough to decide that a run is over. A page
+        learns its run has finished from the worker POSTING its result, and at
+        that moment the worker thread is still alive for a few more
+        instructions — so a second press landing in that window would be
+        refused by `active_run_name` for a run that had already delivered its
+        summary. The page says when it is done; liveness is the backstop for
+        the case where nobody said.
+        """
+        self._ingest_runs = [r for r in self._ingest_runs
+                             if r[0] is not cancel and _alive(r[1])]
+
+    def active_run_name(self) -> Optional[str]:
+        """The name of a long job in flight, or None.
+
+        ONE place that answers "is something already running?", so HOME and
+        Settings cannot disagree about it — and so adding a third long job
+        later means registering it, not editing two `if`s.
+
+        Why this exists (2026-09-14). The re-grade was started at 14:19 and
+        "Process everything new" was pressed at 14:45 with it still going.
+        The two fought over the same database write lock and the same SMB
+        share: the processed-file index load went from 2.6 s to 26, 32, 88 and
+        101 s per folder, the final-test verify pass went from 140 s to 542,
+        and the batch was cancelled after 0 of 1,371 files. Neither job was
+        broken; they were simply sharing one lock and one network link.
+        """
+        for _cancel, thread, name in self._ingest_runs:
+            if _alive(thread):
+                return name
+        return None
 
     def stop_ingests(self, timeout: float = CLOSE_GRACE_SECONDS) -> None:
-        """Ask every in-flight ingest to stop and give it `timeout` to land.
+        """Ask every in-flight run to stop and give it `timeout` to land.
 
         Cooperative, never forced: the worker finishes the batch it already
         handed to the thread pool and persists it. If it needs longer than the
@@ -211,23 +250,23 @@ class V6App(ctk.CTk):
         dies with the process, and the batch boundary means the database is
         consistent either way.
         """
-        runs = [(c, t) for c, t in self._ingest_runs if _alive(t)]
+        runs = [r for r in self._ingest_runs if _alive(r[1])]
         self._ingest_runs = []
         if not runs:
             return
-        logger.info("Closing with %d ingest(s) in flight — asking them to stop",
-                    len(runs))
-        for cancel, _ in runs:
+        logger.info("Closing with %d run(s) in flight (%s) — asking them to stop",
+                    len(runs), ", ".join(sorted({r[2] for r in runs})))
+        for cancel, _thread, _name in runs:
             try:
                 cancel.set()
             except Exception:
-                logger.exception("Could not signal an ingest to stop")
+                logger.exception("Could not signal a run to stop")
         deadline = time.monotonic() + timeout
-        for _, thread in runs:
+        for _cancel, thread, _name in runs:
             try:
                 thread.join(max(0.0, deadline - time.monotonic()))
             except Exception:
-                logger.exception("Could not wait for an ingest thread")
+                logger.exception("Could not wait for a run's thread")
 
     def _on_closing(self) -> None:
         self.stop_ingests()

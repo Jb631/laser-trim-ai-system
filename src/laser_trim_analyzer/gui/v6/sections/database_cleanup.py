@@ -69,13 +69,20 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
     status.pack(side="top", fill="x")
 
     def _async(work_fn):
+        """Run `work_fn` off the Tk thread and show what it returned.
+
+        Returns the thread, so a long job (the re-grade) can be registered
+        with the app and stopped when the window closes.
+        """
         def runner():
             try:
                 msg = work_fn()
             except Exception as exc:
                 msg = f"Error: {exc}"
             post_ui(app, lambda: status.winfo_exists() and status.configure(text=msg))
-        threading.Thread(target=runner, daemon=True).start()
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        return thread
 
     def _scan():
         status.configure(text="Scanning…")
@@ -307,6 +314,17 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         from laser_trim_analyzer.core.ft_regrade import (
             format_regrade_line, regrade_final_tests)
 
+        # One long job at a time (2026-09-14) — the mirror of HOME's refusal.
+        # Checked BEFORE the count, because the count itself is a query
+        # against the database an ingest is busy writing.
+        busy = getattr(app, "active_run_name", lambda: None)()
+        if busy:
+            status.configure(
+                text=f"{busy} is running — stop it first, then start the "
+                     f"re-grade. Two jobs over the plant share make each "
+                     f"other slower than either one alone.")
+            return
+
         status.configure(text="Counting final-test records to re-grade…")
 
         def runner():
@@ -333,11 +351,18 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                         f"plant share and re-graded on the rows the sheet itself "
                         f"grades. Off the work network the sources are "
                         f"unreachable and nothing is changed.\n\n"
+                        f"RUN \"Process everything new\" FIRST, and do not start "
+                        f"one while this is going. They share the database and "
+                        f"the plant share, and together they make each other "
+                        f"slower than either one alone.\n\n"
+                        f"It works through the last two years' FAILURES first, "
+                        f"so a run you stop early has still done the rows the "
+                        f"screens read. Stop is safe — what is written stays "
+                        f"written and starting again continues where it left "
+                        f"off.\n\n"
                         f"EVERY final-test number moves afterwards: fail rates, "
                         f"escapes and overkills, the FOCUS list, and ML labels "
-                        f"trained on final test.\n\nThis can take a long time. "
-                        f"Stop is safe — what is written stays written and "
-                        f"re-running continues."):
+                        f"trained on final test."):
                     return
 
                 cancel = threading.Event()
@@ -363,7 +388,21 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                         regrade_cancel["event"] = None
                         post_ui(app, lambda: stop_btn.winfo_exists()
                                 and stop_btn.configure(state="disabled"))
-                _async(work)
+                        # Posted, not called: `_ingest_runs` is app state the
+                        # Tk thread owns, and this `finally` is on the worker.
+                        drop = getattr(app, "unregister_ingest", None)
+                        if drop is not None:
+                            post_ui(app, lambda: drop(cancel))
+
+                # Registered with the app like an ingest is, for two reasons:
+                # closing the window now stops a re-grade instead of killing
+                # Tk out from under a batch mid-write, and HOME can see it and
+                # refuse to start an ingest on top of it. Same registry, one
+                # `active_run_name`, no second notion of "busy".
+                thread = _async(work)
+                register = getattr(app, "register_ingest", None)
+                if register is not None and thread is not None:
+                    register(cancel, thread, "A re-grade")
             post_ui(app, confirm_and_run)
         threading.Thread(target=runner, daemon=True).start()
 
