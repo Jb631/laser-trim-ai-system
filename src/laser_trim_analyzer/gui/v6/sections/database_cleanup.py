@@ -304,7 +304,8 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
         so a re-graded row is indistinguishable from a freshly ingested one.
         """
         from tkinter import messagebox
-        from laser_trim_analyzer.core.ft_regrade import regrade_final_tests
+        from laser_trim_analyzer.core.ft_regrade import (
+            format_regrade_line, regrade_final_tests)
 
         status.configure(text="Counting final-test records to re-grade…")
 
@@ -343,9 +344,15 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                 regrade_cancel["event"] = cancel
                 stop_btn.configure(state="normal")
 
-                def on_progress(done, total, name):
+                def on_progress(done, total, name, rate, eta):
+                    # "12,480 of 151,375 · 2.6 files/s · about 14 h 50 min
+                    # left" — the same words the command-line script prints,
+                    # from the same formatter, because a run that takes hours
+                    # is a run someone will check from both. "· Stop" names
+                    # the button sitting next to this label.
+                    line = format_regrade_line(done, total, rate, eta)
                     post_ui(app, lambda: status.winfo_exists() and status.configure(
-                        text=f"Re-grading {done:,}/{total:,} — {name}"))
+                        text=f"{line} · Stop\n{name}"))
 
                 def work():
                     try:

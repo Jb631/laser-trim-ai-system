@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 # work the parser has already refused, on every launch, forever.
 UNKNOWN_REPARSE_COUNT_KEY = "unknown_model_reparse.last_count"
 
+# How many re-graded final tests `apply_final_test_regrades` puts in ONE
+# transaction. See that method for why per-row commits cost thirty hours; 200
+# is the compromise between commit overhead, how long one transaction holds
+# the write lock away from the UI, and how many parsed sweeps sit in memory
+# waiting to be written.
+REGRADE_WRITE_CHUNK = 200
+
 
 # ---------------------------------------------------------------------------
 # Unit identity helpers — used at write time and by the migration backfill.
@@ -5110,7 +5117,31 @@ class DatabaseManager:
         only_legacy: bool = True,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Rows for `core.ft_regrade.regrade_final_tests`, oldest first.
+        """Rows for `core.ft_regrade.regrade_final_tests`, most useful first.
+
+        ORDER: currently-FAIL rows first, newest `file_date` first; then the
+        PASS and not-graded rows, newest first. Ties broken by id so the order
+        is stable across runs (which is what makes a stopped run resume
+        somewhere sensible rather than re-shuffling).
+
+        Why not `id` (2026-09-14). The pass ran in id order, which is INGEST
+        order, which is oldest-file-first: it spent its first hour and a half
+        on 2010-era workbooks while every number the app shows is computed
+        from the last one or two years. Two things follow from the ordering,
+        and both of them matter on a run measured in hours:
+
+          * A FAIL is the verdict the window fix can actually move. The whole
+            point of the repair is that the app graded rows the station never
+            graded and failed units it should not have — so FAIL rows are
+            where the changes are, and PASS rows mostly re-confirm themselves.
+          * A partial run has to be USEFUL. The owner will stop this to go
+            home. Whatever it has finished by then should be the rows the
+            dashboards, FOCUS and the escape/overkill numbers read, not the
+            far end of the history.
+
+        NULL `file_date` sorts last within its group — SQLite treats NULL as
+        smaller than everything, so DESC puts it at the back, which is right:
+        a row with no date is the one whose recency cannot be claimed.
 
         Plain dicts, detached from the session: the re-grade parses files on
         worker threads and must not hold ORM instances across them.
@@ -5123,6 +5154,7 @@ class DatabaseManager:
                 DBFinalTestResult.id,
                 DBFinalTestResult.filename,
                 DBFinalTestResult.file_path,
+                DBFinalTestResult.file_date,
                 DBFinalTestResult.model,
                 DBFinalTestResult.serial,
                 DBFinalTestResult.linearity_pass,
@@ -5130,31 +5162,43 @@ class DatabaseManager:
             )
             if only_legacy:
                 query = query.filter(DBFinalTestResult.graded_window_source.is_(None))
-            query = query.order_by(DBFinalTestResult.id)
+            # 0 = FAIL, 1 = everything else (PASS and NULL/not-graded).
+            fail_first = case(
+                (DBFinalTestResult.linearity_pass.is_(False), 0), else_=1)
+            query = query.order_by(fail_first,
+                                   DBFinalTestResult.file_date.desc(),
+                                   DBFinalTestResult.id)
             if limit:
                 query = query.limit(int(limit))
             return [{
                 "id": row.id,
                 "filename": row.filename,
                 "file_path": row.file_path,
+                "file_date": row.file_date,
                 "model": row.model,
                 "serial": row.serial,
                 "linearity_pass": row.linearity_pass,
                 "graded_window_source": row.graded_window_source,
             } for row in query.all()]
 
-    def apply_final_test_regrade(
+    def _write_final_test_regrade(
         self,
+        session,
         final_test_id: int,
         tracks: List[Dict[str, Any]],
         test_results: Dict[str, Any],
     ) -> bool:
-        """Write a re-graded final test back over its stored row.
+        """Apply ONE re-graded final test inside an already-open session.
 
-        Replaces the tracks (same writer shape as `update_final_test_tracks`)
-        and re-derives the file-level verdict through the ONE resolver, so a
-        re-graded row is indistinguishable from a freshly ingested one. The
-        station-reference columns are rewritten from the same parse.
+        The shared body of `apply_final_test_regrade` (one row, one
+        transaction) and `apply_final_test_regrades` (up to
+        REGRADE_WRITE_CHUNK rows, one transaction). It does NOT commit and
+        does NOT take the write lock — both belong to the caller, which is the
+        only way a batch can be one transaction.
+
+        Two writers with two copies of this body is how a re-graded row and a
+        batch-re-graded row end up different, which is the failure this file
+        already exists to prevent (see core/ft_regrade's module docstring).
         """
         from laser_trim_analyzer.core.ft_regrade import (
             ft_reference_fields, graded_window_source)
@@ -5163,69 +5207,151 @@ class DatabaseManager:
             FinalTestTrack as DBFinalTestTrack,
         )
 
+        result = session.get(DBFinalTestResult, final_test_id)
+        if not result:
+            logger.warning(f"Final Test ID {final_test_id} not found")
+            return False
+
+        linearity_pass = self._resolve_final_test_linearity_pass(
+            test_results, tracks)
+        result.linearity_pass = linearity_pass
+        result.overall_status = (
+            DBStatusType.FAIL if linearity_pass is False
+            else DBStatusType.PASS
+        )
+        result.linearity_error = (
+            tracks[0].get("linearity_error") if tracks else None)
+        result.station_linearity_pass = self._coerce_optional_bool(
+            test_results.get("station_linearity_pass"))
+        result.station_cell_flag_conflict = self._coerce_optional_bool(
+            test_results.get("station_cell_flag_conflict"))
+        result.graded_window_source = graded_window_source(tracks)
+
+        session.query(DBFinalTestTrack).filter(
+            DBFinalTestTrack.final_test_id == final_test_id
+        ).delete()
+
+        for track_data in tracks:
+            position_values = (track_data.get("electrical_angles")
+                               or track_data.get("positions"))
+            session.add(DBFinalTestTrack(
+                final_test_id=final_test_id,
+                track_id=track_data.get("track_id", "default"),
+                # Byte-identical to save_final_test's rule, on
+                # purpose: a re-graded row must be
+                # indistinguishable from a freshly ingested one,
+                # and `None -> FAIL` is part of that rule.
+                status=(DBStatusType.PASS
+                        if track_data.get("linearity_pass", True)
+                        else DBStatusType.FAIL),
+                linearity_spec=track_data.get("linearity_spec"),
+                linearity_error=track_data.get("linearity_error"),
+                linearity_pass=track_data.get("linearity_pass"),
+                linearity_fail_points=track_data.get("linearity_fail_points", 0),
+                position_data=position_values,
+                error_data=track_data.get("errors"),
+                theory_data=track_data.get("theory_values"),
+                electrical_angle_data=track_data.get("electrical_angles"),
+                upper_limits=track_data.get("upper_limits"),
+                lower_limits=track_data.get("lower_limits"),
+                max_deviation=track_data.get("max_deviation"),
+                max_deviation_position=track_data.get("max_deviation_angle"),
+                optimal_offset=track_data.get("optimal_offset"),
+                optimal_slope=track_data.get("optimal_slope"),
+                linearity_type=track_data.get("linearity_type"),
+                **ft_reference_fields(track_data),
+            ))
+        return True
+
+    def apply_final_test_regrade(
+        self,
+        final_test_id: int,
+        tracks: List[Dict[str, Any]],
+        test_results: Dict[str, Any],
+    ) -> bool:
+        """Write ONE re-graded final test back over its stored row.
+
+        Replaces the tracks (same writer shape as `update_final_test_tracks`)
+        and re-derives the file-level verdict through the ONE resolver, so a
+        re-graded row is indistinguishable from a freshly ingested one. The
+        station-reference columns are rewritten from the same parse.
+
+        Kept for single-row callers (and for the tests that pin one row's
+        result exactly). A repair pass over the whole database should use
+        `apply_final_test_regrades` — see the note there on what 151,375
+        separate transactions cost.
+        """
         with self._write_lock:
             try:
                 with self.session() as session:
-                    result = session.get(DBFinalTestResult, final_test_id)
-                    if not result:
-                        logger.warning(f"Final Test ID {final_test_id} not found")
+                    ok = self._write_final_test_regrade(
+                        session, final_test_id, tracks, test_results)
+                    if not ok:
                         return False
-
-                    linearity_pass = self._resolve_final_test_linearity_pass(
-                        test_results, tracks)
-                    result.linearity_pass = linearity_pass
-                    result.overall_status = (
-                        DBStatusType.FAIL if linearity_pass is False
-                        else DBStatusType.PASS
-                    )
-                    result.linearity_error = (
-                        tracks[0].get("linearity_error") if tracks else None)
-                    result.station_linearity_pass = self._coerce_optional_bool(
-                        test_results.get("station_linearity_pass"))
-                    result.station_cell_flag_conflict = self._coerce_optional_bool(
-                        test_results.get("station_cell_flag_conflict"))
-                    result.graded_window_source = graded_window_source(tracks)
-
-                    session.query(DBFinalTestTrack).filter(
-                        DBFinalTestTrack.final_test_id == final_test_id
-                    ).delete()
-
-                    for track_data in tracks:
-                        position_values = (track_data.get("electrical_angles")
-                                           or track_data.get("positions"))
-                        session.add(DBFinalTestTrack(
-                            final_test_id=final_test_id,
-                            track_id=track_data.get("track_id", "default"),
-                            # Byte-identical to save_final_test's rule, on
-                            # purpose: a re-graded row must be
-                            # indistinguishable from a freshly ingested one,
-                            # and `None -> FAIL` is part of that rule.
-                            status=(DBStatusType.PASS
-                                    if track_data.get("linearity_pass", True)
-                                    else DBStatusType.FAIL),
-                            linearity_spec=track_data.get("linearity_spec"),
-                            linearity_error=track_data.get("linearity_error"),
-                            linearity_pass=track_data.get("linearity_pass"),
-                            linearity_fail_points=track_data.get("linearity_fail_points", 0),
-                            position_data=position_values,
-                            error_data=track_data.get("errors"),
-                            theory_data=track_data.get("theory_values"),
-                            electrical_angle_data=track_data.get("electrical_angles"),
-                            upper_limits=track_data.get("upper_limits"),
-                            lower_limits=track_data.get("lower_limits"),
-                            max_deviation=track_data.get("max_deviation"),
-                            max_deviation_position=track_data.get("max_deviation_angle"),
-                            optimal_offset=track_data.get("optimal_offset"),
-                            optimal_slope=track_data.get("optimal_slope"),
-                            linearity_type=track_data.get("linearity_type"),
-                            **ft_reference_fields(track_data),
-                        ))
-
                     session.commit()
                     return True
             except Exception as e:
                 logger.error(f"Failed to apply re-grade to FT {final_test_id}: {e}")
                 return False
+
+    def apply_final_test_regrades(
+        self,
+        batch: List[Tuple[int, List[Dict[str, Any]], Dict[str, Any]]],
+    ) -> int:
+        """Write a BATCH of re-graded final tests in one transaction each 200.
+
+        Returns how many rows were written.
+
+        Why (2026-09-14). The re-grade pass wrote one transaction per row,
+        each one taking the manager's write lock, opening a session,
+        committing and fsyncing against a 3.7 GB database. Over 151,375 rows
+        that is 151,375 commits, and the pass measured ~80 rows/minute at
+        work — about thirty hours. Per-row durability buys nothing here: the
+        unit of work that matters is "the run", the pass is idempotent, and a
+        crash mid-batch simply leaves those rows still marked legacy, so the
+        next run redoes them. That is the same resumability a per-row commit
+        gave, at 1/200th of the commits.
+
+        Chunked rather than one giant transaction: a single 151k-row
+        transaction would hold the write lock for the length of the run (the
+        app would look frozen), pile the whole thing into one WAL, and lose
+        everything on a crash. 200 is small enough to keep the lock in
+        someone else's reach and the memory bounded, large enough that the
+        commit cost stops being the bottleneck.
+
+        A chunk that fails for ANY reason is retried row by row, each in its
+        own transaction, so one unwritable row costs only itself and the other
+        199 still land. Rolling back partway through a staged session is not
+        an option — the rollback discards the rows already staged, not just
+        the bad one — so the retry is the honest way to isolate it. Anything
+        still unwritten keeps its NULL `graded_window_source` and is picked up
+        by the next run.
+        """
+        rows = list(batch or [])
+        if not rows:
+            return 0
+        written = 0
+        for start in range(0, len(rows), REGRADE_WRITE_CHUNK):
+            chunk = rows[start:start + REGRADE_WRITE_CHUNK]
+            try:
+                with self._write_lock:
+                    with self.session() as session:
+                        applied = 0
+                        for final_test_id, tracks, test_results in chunk:
+                            if self._write_final_test_regrade(
+                                    session, final_test_id, tracks,
+                                    test_results):
+                                applied += 1
+                        session.commit()
+                written += applied
+            except Exception as e:
+                logger.error(f"Re-grade batch of {len(chunk)} failed ({e}); "
+                             f"retrying it one row at a time")
+                for final_test_id, tracks, test_results in chunk:
+                    if self.apply_final_test_regrade(
+                            final_test_id, tracks, test_results):
+                        written += 1
+        return written
 
     def get_ml_staleness(self) -> List[Dict[str, Any]]:
         """

@@ -37,6 +37,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -122,9 +123,14 @@ def grade_ft_track(analyzer, track: Dict[str, Any], ft_spec: Dict[str, Any], *,
     # FAIL rather than silently calling unknown-status units PASS.
     linearity_pass = track.get("linearity_pass")
     if linearity_pass is None:
-        logger.warning(
+        # DEBUG, not WARNING (2026-09-14). The sentence was also wrong: a
+        # track with no gradeable limits does not end up FAIL, it ends up NULL
+        # — `_nothing_graded` below overwrites this local before it is stored.
+        # The only thing it did reliably was fire ~20 times per Rout_ batch
+        # and fill the 5 MB log with a verdict the app does not reach.
+        logger.debug(
             f"FT track {track.get('track_id', '?')} of {filename}: "
-            f"linearity_pass unknown (no spec limits) — defaulting to FAIL"
+            f"parser reported no linearity verdict (no spec limits)"
         )
         linearity_pass = False
 
@@ -325,6 +331,38 @@ PARSE_ERROR = "parse_error"
 REGRADED = "regraded"
 UNCHANGED = "unchanged"
 
+# How many parsed-and-graded rows are held before they are handed to the
+# database as ONE transaction. Matches `manager.REGRADE_WRITE_CHUNK` on
+# purpose — the driver is what decides how much memory the pass uses, and the
+# manager is what decides how big a transaction is; a mismatch would mean one
+# of them silently re-chunking the other's work.
+REGRADE_BATCH = 200
+
+# The rate/ETA line is recomputed on every file, but only SENT this often.
+# Under 8 workers over a share that is several times a second, and a progress
+# callback that repaints a label is not free.
+PROGRESS_INTERVAL_SECONDS = 2.0
+
+
+def format_regrade_line(done: int, total: int, rate: Optional[float],
+                        eta: str) -> str:
+    """"12,480 of 151,375 · 2.6 files/s · about 14 h 50 min left".
+
+    Lives here, next to the run, so the Settings label and the script's
+    stdout cannot word the same run differently — the same reason
+    `format_progress_line` lives in `core/ingest_run.py`. Each part is dropped
+    when it is not known yet rather than printed as a zero: "0.0 files/s" in
+    the first seconds of a thirty-hour job reads as a stuck run.
+    """
+    from laser_trim_analyzer.core.ingest_run import format_rate
+
+    parts = [f"{done:,} of {total:,}"]
+    if rate:
+        parts.append(format_rate(rate))
+    if eta:
+        parts.append(eta)
+    return " · ".join(parts)
+
 
 @dataclass
 class RegradeOutcome:
@@ -426,38 +464,59 @@ class RegradeReport:
 def regrade_final_tests(
     db,
     *,
-    progress: Optional[Callable[[int, int, str], None]] = None,
+    progress: Optional[Callable[[int, int, str, Optional[float], str], None]] = None,
     cancel: Optional[threading.Event] = None,
-    workers: int = 4,
+    workers: int = 8,
     only_legacy: bool = True,
     apply: bool = False,
     limit: Optional[int] = None,
+    batch_size: int = REGRADE_BATCH,
 ) -> RegradeReport:
     """Re-parse and re-grade stored final tests through `grade_ft_track`.
 
     Args:
         db: DatabaseManager.
-        progress: progress(done, total, filename). Exceptions are swallowed —
-            a progress callback must never kill a repair run.
-        cancel: cooperative stop, checked between files. Everything already
-            written stays written; the run is resumable because it is
-            idempotent.
-        workers: parse/analyze threads. The writes are serialized by the
-            manager's own write lock.
+        progress: progress(done, total, filename, rate, eta) — `rate` is files
+            per second over the last minute (None until there is enough of a
+            sample to mean anything) and `eta` is the words for the time left
+            ("about 14 h 50 min left", "estimating…", or "" when nothing is
+            left). Called at most every `PROGRESS_INTERVAL_SECONDS`, plus once
+            at the end. Exceptions are swallowed — a progress callback must
+            never kill a repair run.
+        cancel: cooperative stop, checked between batches and between the
+            files of a batch. Everything already written stays written; the
+            run is resumable because it is idempotent and because
+            `only_legacy` re-selects exactly what is left.
+        workers: parse/analyze threads. 8 rather than 4: the cost of a file
+            here is network round-trip latency against the plant share, the
+            same reason the ingest's verify pool is 8, and the writes no
+            longer contend per-file (see `batch_size`).
         only_legacy: only rows whose `graded_window_source` IS NULL, i.e.
             graded before the window fix. False re-grades everything.
         apply: False (default) computes every verdict and writes NOTHING —
             the dry run the script prints its table from.
         limit: cap the number of rows examined (dry-run sampling).
+        batch_size: how many rows are parsed and then written together. This
+            is the memory bound of the run as well as the transaction size:
+            each pending row holds its parsed sweeps until it is written.
 
     Returns:
         RegradeReport. Per-record problems are outcomes, never exceptions;
         only a failure to reach the database itself propagates.
+
+    The shape of the loop (2026-09-14). It used to submit all 151,375 rows to
+    the pool at once and write inside each worker, one transaction per row;
+    that measured ~80 rows/minute at work, about thirty hours. Now a BATCH is
+    submitted, collected, and written in one transaction, then the next. The
+    barrier at each batch boundary costs about one file's latency per 200 —
+    far less than 200 commits against a 3.7 GB database — and it is what keeps
+    both the memory and the transaction bounded.
     """
     from concurrent.futures import ThreadPoolExecutor
     from laser_trim_analyzer.core.analyzer import Analyzer
     from laser_trim_analyzer.core.final_test_parser import FinalTestParser
-    from laser_trim_analyzer.core.ingest_run import INGEST_SWITCH_INTERVAL
+    from laser_trim_analyzer.core.ingest_run import (
+        INGEST_SWITCH_INTERVAL, EtaEstimator)
 
     rows = db.get_final_tests_for_regrade(only_legacy=only_legacy, limit=limit)
     report = RegradeReport(applied=apply)
@@ -467,22 +526,48 @@ def regrade_final_tests(
     parser = FinalTestParser()
     analyzer = Analyzer()
     total = len(rows)
-    done_lock = threading.Lock()
+    eta = EtaEstimator()
     done = 0
+    last_sent = [0.0]
 
-    def _tick(name: str) -> None:
-        nonlocal done
-        with done_lock:
-            done += 1
-            current = done
+    def _tick(name: str, *, force: bool = False) -> None:
+        """Report where the run is. Called on the DRIVING thread only.
+
+        The workers do not touch this any more — they parse and return, and
+        the loop below counts what came back. One thread counting means no
+        lock, and it means `done` is the number of rows actually accounted
+        for rather than the number currently in flight.
+        """
         if progress is None:
             return
+        now = time.monotonic()
+        if not force and now - last_sent[0] < PROGRESS_INTERVAL_SECONDS:
+            return
+        last_sent[0] = now
+        eta.note(done)
         try:
-            progress(current, total, name)
+            progress(done, total, name, eta.rate(),
+                     eta.eta_text(max(0, total - done)))
         except Exception:  # noqa: BLE001 - never let the UI kill the run
             logger.debug("progress callback raised; continuing", exc_info=True)
 
-    def _one(row: Dict[str, Any]) -> RegradeOutcome:
+    def _one(row: Dict[str, Any]) -> Tuple[Optional[RegradeOutcome], Optional[tuple]]:
+        """Parse and grade ONE row. Worker thread: no database writes.
+
+        Returns the outcome and, when there is something to store, the
+        (id, tracks, test_results) the driver will write with the rest of its
+        batch. `None` for the payload in dry-run mode, so a run that writes
+        nothing does not also hold 200 parsed sweeps in memory for no reason.
+
+        A `None` OUTCOME means "never started" — the run was cancelled before
+        this row was picked up. That is what keeps Stop responsive now that
+        rows are submitted a batch at a time: without it a stop would wait for
+        the whole batch to parse, up to a couple of minutes over the share. A
+        row that never started is not examined, not counted, and still NULL in
+        `graded_window_source`, so the next run does it.
+        """
+        if cancel is not None and cancel.is_set():
+            return (None, None)
         name = row.get("filename") or f"id={row.get('id')}"
         model = row.get("model") or "unknown"
         before = row.get("linearity_pass")
@@ -490,14 +575,15 @@ def regrade_final_tests(
         path = Path(raw_path) if raw_path else None
         try:
             if path is None or not path.exists():
-                return RegradeOutcome(row["id"], model, name, MISSING_FILE,
-                                      before, before,
-                                      str(raw_path or "no stored path"))
+                return (RegradeOutcome(row["id"], model, name, MISSING_FILE,
+                                       before, before,
+                                       str(raw_path or "no stored path")), None)
             parsed = parser.parse_file(path)
             tracks = parsed.get("tracks") or []
             if not tracks:
-                return RegradeOutcome(row["id"], model, name, PARSE_ERROR,
-                                      before, before, "parser returned no tracks")
+                return (RegradeOutcome(row["id"], model, name, PARSE_ERROR,
+                                       before, before,
+                                       "parser returned no tracks"), None)
             spec = db.resolve_spec_for_ft(model, row.get("serial")) or {}
             ft_spec = {
                 "linearity_type": spec.get("linearity_type"),
@@ -511,18 +597,19 @@ def regrade_final_tests(
             for track in tracks:
                 grade_ft_track(analyzer, track, ft_spec, model=model,
                                ft_compensation=compensation, filename=name)
-            after = db.resolve_final_test_linearity_pass(
-                parsed.get("test_results") or {}, tracks)
-            if apply:
-                db.apply_final_test_regrade(
-                    row["id"], tracks, parsed.get("test_results") or {})
-            return RegradeOutcome(row["id"], model, name, REGRADED, before, after)
+            test_results = parsed.get("test_results") or {}
+            after = db.resolve_final_test_linearity_pass(test_results, tracks)
+            pending = (row["id"], tracks, test_results) if apply else None
+            return (RegradeOutcome(row["id"], model, name, REGRADED,
+                                   before, after), pending)
         except Exception as e:  # noqa: BLE001 - one bad file must not stop the batch
             logger.error(f"Re-grade failed for {name}: {e}")
-            return RegradeOutcome(row["id"], model, name, PARSE_ERROR,
-                                  before, before, f"{type(e).__name__}: {e}")
-        finally:
-            _tick(name)
+            return (RegradeOutcome(row["id"], model, name, PARSE_ERROR,
+                                   before, before, f"{type(e).__name__}: {e}"),
+                    None)
+
+    size = max(1, int(batch_size))
+    last_name = ""
 
     # Same GIL courtesy the ingest uses: several Excel parsers at once will
     # starve a Tk window of the interpreter lock for hundreds of milliseconds
@@ -532,17 +619,35 @@ def regrade_final_tests(
     sys.setswitchinterval(INGEST_SWITCH_INTERVAL)
     try:
         with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-            futures = []
-            for row in rows:
+            for start in range(0, total, size):
                 if cancel is not None and cancel.is_set():
                     report.cancelled = True
                     break
-                futures.append(pool.submit(_one, row))
-            for future in futures:
-                report.outcomes.append(future.result())
+                chunk = rows[start:start + size]
+                futures = [pool.submit(_one, row) for row in chunk]
+                writes: List[tuple] = []
+                for future in futures:
+                    outcome, pending = future.result()
+                    if outcome is None:
+                        continue              # cancelled before it started
+                    report.outcomes.append(outcome)
+                    if pending is not None:
+                        writes.append(pending)
+                    done += 1
+                    last_name = outcome.filename
+                    _tick(last_name)
+                if writes:
+                    # ONE transaction for the whole batch. Cancel is NOT
+                    # checked between here and the commit: a batch that has
+                    # been parsed is cheap to write and expensive to redo,
+                    # and leaving it unwritten would mean stopping threw away
+                    # work the run had already paid the share for.
+                    db.apply_final_test_regrades(writes)
+                    writes.clear()
     finally:
         sys.setswitchinterval(saved_interval)
 
     if cancel is not None and cancel.is_set():
         report.cancelled = True
+    _tick(last_name, force=True)
     return report

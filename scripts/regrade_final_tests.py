@@ -40,7 +40,6 @@ escapes and overkills, the FOCUS list, and any ML labels trained on final test
 as ground truth.
 """
 import sys
-import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,14 +95,14 @@ def main() -> int:
         print("  overkills, the FOCUS list, and ML labels trained on FT.")
     print()
 
-    last = [0.0]
+    from laser_trim_analyzer.core.ft_regrade import format_regrade_line
 
-    def progress(done: int, total: int, name: str) -> None:
-        now = time.monotonic()
-        if now - last[0] < 0.5 and done != total:
-            return
-        last[0] = now
-        print(f"\r  {done:,}/{total:,}  {name[:60]:<60}", end="", flush=True)
+    def progress(done: int, total: int, name: str, rate, eta: str) -> None:
+        # The driver already rate-limits to one call every ~2 s; the same line
+        # the Settings section shows, so a screenshot and a terminal cannot
+        # disagree about how far along the same run is.
+        line = format_regrade_line(done, total, rate, eta)
+        print(f"\r  {line}  {name[:40]:<40}", end="", flush=True)
 
     report = regrade_final_tests(
         db, progress=progress, only_legacy=only_legacy,
