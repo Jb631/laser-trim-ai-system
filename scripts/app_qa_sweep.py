@@ -1058,6 +1058,7 @@ def check_multi_folder_ingest() -> None:
     from laser_trim_analyzer.core.ingest_run import (  # noqa: E402
         format_ingest_summary, run_folders)
     from laser_trim_analyzer.core.parser import detect_file_type  # noqa: E402
+    from laser_trim_analyzer.core.processor import Processor  # noqa: E402
     from laser_trim_analyzer.database import manager as _dbmod  # noqa: E402
     from laser_trim_analyzer.database.manager import DatabaseManager  # noqa: E402
     from laser_trim_analyzer.database.models import AnalysisResult as DBAR  # noqa: E402
@@ -1128,6 +1129,49 @@ def check_multi_folder_ingest() -> None:
         check("multi-folder ingest: 'no new files' is what an idle run says",
               "no new files" in format_ingest_summary(rep2),
               format_ingest_summary(rep2))
+
+        # ---- the stat fast-path's KEY (2026-09-14 work incident) ----------
+        # `_classify_scan` looks the walk's dict up by `str(file_path)`, and
+        # the DB stores paths the same way. When the walk keyed by the raw
+        # `entry.path` instead, a root in any other spelling (Tk's
+        # `askdirectory` hands back forward slashes on Windows) missed on
+        # every file: "check … (0 known in memory)" and a 542-second stat()
+        # storm over the share, every run, on an unchanged folder.
+        from laser_trim_analyzer.core.ingest_run import (  # noqa: E402
+            discover_excel_files)
+        odd_root = str(a) + "//"
+        walked, walked_stats = discover_excel_files(odd_root)
+        unnormalised = [p for p in walked if str(Path(p)) != p]
+        missing_keys = [p for p in walked if str(Path(p)) not in walked_stats]
+        check("multi-folder ingest: the walk returns paths in str(Path(p)) form",
+              bool(walked) and not unnormalised,
+              f"files={len(walked)} unnormalised={len(unnormalised)}"
+              + (f" e.g. {unnormalised[0]}" if unnormalised else ""))
+        check("multi-folder ingest: every stat key is the one _classify_scan "
+              "looks up",
+              bool(walked) and not missing_keys,
+              f"files={len(walked)} missing={len(missing_keys)}"
+              + (f" e.g. {missing_keys[0]}" if missing_keys else ""))
+        # The end of it: an odd root must still settle in MEMORY. This is the
+        # check that would have caught the incident — the two above pin the
+        # spelling, this one pins the CONSEQUENCE.
+        proc_odd = Processor(use_ml=False)
+        proc_odd.config.processing.turbo_mode_threshold = 10 ** 9
+        gen_odd = proc_odd.process_batch([Path(p) for p in walked],
+                                         incremental=True,
+                                         disk_stats=walked_stats)
+        try:
+            while True:
+                next(gen_odd)
+        except StopIteration:
+            pass
+        odd_stats = proc_odd.last_scan_stats or {}
+        check("multi-folder ingest: a folder reached by an odd root stats "
+              "NOTHING",
+              odd_stats.get("needs_hash") == 0
+              and odd_stats.get("memory_hits") == len(walked),
+              f"needs_hash={odd_stats.get('needs_hash')} "
+              f"memory_hits={odd_stats.get('memory_hits')} of {len(walked)}")
     except Exception as exc:
         check("multi-folder ingest: shared pipeline contract", False,
               f"{type(exc).__name__}: {exc}")

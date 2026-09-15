@@ -161,6 +161,24 @@ def discover_excel_files(folder: str) -> Tuple[List[str], Dict[str, tuple]]:
     results are merged here, on one thread, so no lock is needed and no shared
     structure can be torn. Unreadable entries/folders are skipped — a
     permissions hiccup must not end the walk.
+
+    EVERY path leaves here in `str(Path(...))` form — the returned list, the
+    stats keys, and the roots the walk recurses into. That is not tidiness: it
+    is the key the consumer looks the dict up by. `Processor._classify_scan`
+    asks `self._disk_stats[str(file_path)]`, and the paths stored in
+    `analysis_results.file_path` / `final_test_results.file_path` are written
+    the same way, so any other spelling is a guaranteed miss.
+
+    The work incident (2026-09-14): the configured folders come from Tk's
+    `askdirectory`, which returns FORWARD slashes on Windows, so `entry.path`
+    came out mixed — `//192.168.66.9/…/Test Station\\6607\\file.xls` — while
+    the lookup used the all-backslash `str(Path(...))` form. Nothing matched.
+    Every scan logged "check … (0 known in memory)" and then stat()ed all
+    171,006 final-test files over the share: 542 seconds, every run, on a
+    folder where nothing had changed. Normalising here (~0.3 s for 172k paths,
+    against nine minutes of network round trips) is the whole fix, and it
+    belongs here rather than in the processor because this is where the key
+    and the value are created together.
     """
     def scan_one(d):
         subdirs, found = [], []
@@ -169,10 +187,11 @@ def discover_excel_files(folder: str) -> Tuple[List[str], Dict[str, tuple]]:
                 for entry in it:
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            subdirs.append(entry.path)
+                            subdirs.append(str(Path(entry.path)))
                         elif entry.name.lower().endswith((".xls", ".xlsx")):
                             st = entry.stat()
-                            found.append((entry.path, (st.st_size, st.st_mtime)))
+                            found.append((str(Path(entry.path)),
+                                          (st.st_size, st.st_mtime)))
                     except OSError:
                         continue   # unreadable entry: skip, don't die
         except OSError:
@@ -182,7 +201,9 @@ def discover_excel_files(folder: str) -> Tuple[List[str], Dict[str, tuple]]:
     out: List[str] = []
     stats: dict = {}
     with ThreadPoolExecutor(max_workers=8) as pool:
-        pending = {pool.submit(scan_one, folder)}
+        # The root too: a root carrying a trailing or doubled separator would
+        # otherwise push that spelling into every child path scandir joins.
+        pending = {pool.submit(scan_one, str(Path(folder)))}
         while pending:      # ends when no directory is left in flight
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for fut in done:
