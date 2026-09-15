@@ -12,6 +12,7 @@ Operations:
 - QA alerts management
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -5064,6 +5065,7 @@ class DatabaseManager:
                 # error propagated to the user as "Error processing Final
                 # Test ... UNIQUE constraint failed". Query by both keys.
                 logger.warning(f"Final test duplicate detected (race condition): {metadata.get('filename')}")
+                existing_id = None
                 try:
                     with self.session() as session:
                         existing = (
@@ -5083,9 +5085,34 @@ class DatabaseManager:
                                 .first()
                             )
                         if existing:
-                            return existing.id
+                            existing_id = existing.id
                 except Exception:
                     logger.debug("FT duplicate-recovery query failed", exc_info=True)
+
+                if existing_id is not None:
+                    # This PATH holds content already on record under another
+                    # path. Without a marker the scan re-parses it on every
+                    # run forever (60 files a day on the work share), because
+                    # the identity lives on the other path's row. Written
+                    # outside the recovery session so no write nests inside a
+                    # read transaction.
+                    dup_path = metadata.get("file_path")
+                    if dup_path:
+                        try:
+                            self.mark_file_skipped(
+                                filename=(metadata.get("filename")
+                                          or Path(dup_path).name),
+                                file_path=dup_path,
+                                file_hash=file_hash,
+                                file_size=file_size,
+                                file_modified_date=file_modified_date,
+                                error_message=(
+                                    f"duplicate of final_test_results id {existing_id}"),
+                            )
+                        except Exception:
+                            logger.debug("Could not mark FT duplicate path as skipped",
+                                         exc_info=True)
+                    return existing_id
                 raise
 
     def count_legacy_ft_verdicts(self) -> int:
@@ -7509,24 +7536,85 @@ class DatabaseManager:
 
         return count
 
+    @staticmethod
+    def skip_marker_hash(file_path: str) -> str:
+        """The synthetic `file_hash` a per-path skip marker is stored under.
+
+        "skip:" + 59 hex characters = exactly 64, which is what
+        check_pf_hash_length demands. The non-hex prefix is the point: a
+        marker can never be equal to a real SHA-256 content hash, so marker
+        rows stay invisible to every CONTENT-keyed query in the app — the
+        stat heal (`update_processed_file_stats`), the duplicate check in
+        `is_file_processed`, and the trim recording path's
+        `scalar_one_or_none()` lookup, which would raise MultipleResultsFound
+        if two rows ever shared a hash.
+        """
+        from laser_trim_analyzer.database.models import SKIP_MARKER_PREFIX
+        keep = 64 - len(SKIP_MARKER_PREFIX)
+        return SKIP_MARKER_PREFIX + hashlib.sha256(
+            file_path.encode("utf-8", "surrogatepass")).hexdigest()[:keep]
+
     def mark_file_skipped(self, filename: str, file_path: str,
                           file_hash: str, file_size: int,
-                          file_modified_date) -> None:
-        """Record a non-trim file so it's skipped on future processing runs."""
+                          file_modified_date, error_message: str = None) -> None:
+        """Record an unreadable/non-trim file so future runs skip it.
+
+        Keyed by FILE PATH, not by content hash.
+
+        WHY (2026-09-14). This used to return early if ANY row already held
+        the same content hash, and `processed_files` has UNIQUE(file_hash).
+        Every empty file on the share hashes to the SHA-256 of b"", so the
+        single row for `~$7029-72.xlsx` matched all 832 other empty files and
+        none of them was ever recorded under its own path. The scan then
+        re-offered them as "new" every single day — the app logged
+        "recorded as skipped" for each one while the write was silently
+        dropped. Keying the lookup on `file_path` and storing a synthetic
+        per-path `skip_marker_hash()` makes the existing UNIQUE(file_hash)
+        constraint mean "one marker per path", with no schema change.
+
+        The CONTENT hash the caller computed is deliberately NOT stored as
+        the row's identity (it would collide again); it is appended to
+        `error_message` so the reason and the real hash stay visible.
+
+        Markers written before this change keep their real content hashes.
+        That is harmless: they are found by path like any other row, and the
+        only thing a real hash there can do is make one content-keyed query
+        match a marker, which is what already happened.
+
+        `error_message` records WHY the file was skipped, so a refused file
+        can be explained without re-reading it.
+        """
+        marker_hash = self.skip_marker_hash(file_path)
+        reason = (error_message or "").strip()
+        if file_hash:
+            reason = (f"{reason} (content sha256={file_hash})"
+                      if reason else f"content sha256={file_hash}")
+        reason = reason[:2000] or None
+
         with self._write_lock:
             with self.session() as session:
                 existing = session.query(DBProcessedFile).filter(
-                    DBProcessedFile.file_hash == file_hash
+                    DBProcessedFile.file_path == file_path
                 ).first()
-                if existing:
+                if existing is not None:
+                    # Refresh the stat so the scan's fast path stays exact,
+                    # and the reason so it reflects this run. `success` and
+                    # `analysis_id` are left alone on purpose: a real
+                    # analysis row keeps its analysis, and a trim ERROR row
+                    # (success=False) stays retryable.
+                    existing.file_size = file_size
+                    existing.file_modified_date = file_modified_date
+                    if reason is not None:
+                        existing.error_message = reason
                     return
 
                 session.add(DBProcessedFile(
                     filename=filename,
                     file_path=file_path,
-                    file_hash=file_hash,
+                    file_hash=marker_hash,
                     file_size=file_size,
                     file_modified_date=file_modified_date,
+                    error_message=reason,
                     analysis_id=None,
                     success=True,
                 ))

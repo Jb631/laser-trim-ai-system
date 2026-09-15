@@ -107,15 +107,24 @@ def test_missing_stat_record_hash_confirms(sample):
 def test_update_processed_file_stats_persists(tmp_path):
     from laser_trim_analyzer.database.manager import DatabaseManager
 
+    from laser_trim_analyzer.database.models import ProcessedFile
+
     db = DatabaseManager(tmp_path / "t.db")
     src = tmp_path / "a.xls"
     src.write_bytes(b"x" * 100)
     fh = "ab" * 32  # valid 64-char SHA-256 shape
-    db.mark_file_skipped(
-        filename="a.xls", file_path=str(src),
-        file_hash=fh, file_size=1,
-        file_modified_date=datetime(2020, 1, 1),
-    )
+    # Inserted directly rather than via mark_file_skipped: since 2026-09-14
+    # that writes a per-path SKIP MARKER whose file_hash is synthetic, and
+    # markers are deliberately invisible to this content-keyed heal (see
+    # test_skip_markers_per_path.py::test_stat_heal_does_not_touch_markers).
+    # The heal's subject is a real, hash-identified processed row.
+    with db.session() as s:
+        s.add(ProcessedFile(
+            filename="a.xls", file_path=str(src), file_hash=fh,
+            file_size=1, file_modified_date=datetime(2020, 1, 1),
+            analysis_id=None, success=True,
+        ))
+        s.commit()
     n = db.update_processed_file_stats([(fh, 100, datetime(2026, 7, 6))])
     assert n["processed_files"] == 1 and n["total"] == 1
 

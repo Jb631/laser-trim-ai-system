@@ -32,6 +32,14 @@ from sqlalchemy.orm import DeclarativeBase, relationship, Session, validates
 from sqlalchemy.sql import func
 import json as json_lib
 
+# A `processed_files.file_hash` starting with this is a per-path SKIP MARKER,
+# not a content hash: the file was offered, found permanently unreadable (or
+# a duplicate), and recorded so the scan stops re-offering it. The value is
+# this prefix + 59 hex chars = exactly 64, satisfying check_pf_hash_length,
+# and the non-hex prefix guarantees it can never equal a real SHA-256 — so
+# markers stay invisible to every content-keyed query in the app.
+SKIP_MARKER_PREFIX = "skip:"
+
 
 class SafeJSON(TypeDecorator):
     """A JSON type that safely handles empty strings and None values."""
@@ -751,9 +759,20 @@ class ProcessedFile(Base):
 
     @validates('file_hash')
     def validate_file_hash(self, key, file_hash):
-        """Validate file_hash is a valid SHA-256 hash (64 hex characters)."""
+        """Validate file_hash is a SHA-256 hash, or a per-path skip marker.
+
+        Skip markers (2026-09-14) deliberately store a NON-hex value —
+        `SKIP_MARKER_PREFIX` + 59 hex characters, still exactly 64 so the
+        check_pf_hash_length constraint holds. The prefix is what keeps a
+        marker from ever colliding with a real content hash, which is the
+        whole point: UNIQUE(file_hash) then means "one marker per path"
+        instead of "one marker per distinct content", and 832 empty files
+        stop sharing the single row for the SHA-256 of b"".
+        """
         if not file_hash or len(file_hash) != 64:
             raise ValueError("File hash must be a 64-character SHA-256 hash")
+        if file_hash.startswith(SKIP_MARKER_PREFIX):
+            return file_hash            # a marker, not a content hash
         # Validate it's hexadecimal
         try:
             int(file_hash, 16)

@@ -594,6 +594,12 @@ class IngestReport:
     # line prints only the halves it actually knows.
     folders_requested: int = 0
     files_planned: int = 0
+    # Files this run recorded as permanently unreadable (a skip marker was
+    # written for their path). NOT the "skipped" bucket, which counts files
+    # already in the database — conflating the two would report ~170,000
+    # known-good final tests as junk. Measured as the growth in marker rows
+    # across the run, so it needs no per-file plumbing through the processor.
+    marked_unreadable: int = 0
 
     @property
     def folder_count(self) -> int:
@@ -636,6 +642,25 @@ def format_elapsed(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
+def _unreadable_clause(report: IngestReport) -> str:
+    """The " · N files could not be read…" half-sentence, or nothing.
+
+    Silent at zero, which is what every run after the first one should be.
+    It exists because the count is otherwise invisible: a file the parser
+    refuses produces no record to look at, and before 2026-09-14 it produced
+    no marker either, so ~930 of them were re-offered as "new" every day
+    forever. Now they are recorded once, and this says so the one time it
+    happens.
+    """
+    n = getattr(report, "marked_unreadable", 0) or 0
+    if n <= 0:
+        return ""
+    return (f" · {n:,} file" + ("" if n == 1 else "s")
+            + " could not be read and "
+            + ("was" if n == 1 else "were")
+            + " recorded as unreadable (skipped from now on)")
+
+
 def format_ingest_summary(report: IngestReport) -> str:
     """The one line Home shows after a run. Spec: "3 folders · 214 new files ·
     2 min 40 s" — and, when a share was down, which one and why.
@@ -662,6 +687,7 @@ def format_ingest_summary(report: IngestReport) -> str:
                 f" · {format_elapsed(report.seconds)}"
                 " — press Process everything new again to continue; it resumes "
                 "where this left off (everything already saved is skipped).")
+        line += _unreadable_clause(report)
         bad = report.failed
         if bad:
             detail = "; ".join(f"{r.folder} ({r.error})" for r in bad)
@@ -672,6 +698,7 @@ def format_ingest_summary(report: IngestReport) -> str:
              f"{new:,} new file" + ("" if new == 1 else "s"))
     line = (f"{n} folder" + ("" if n == 1 else "s") + f" · {files}"
             f" · {format_elapsed(report.seconds)}")
+    line += _unreadable_clause(report)
     bad = report.failed
     if bad:
         # Named, not counted: "1 folder failed" sends someone hunting through
@@ -1061,6 +1088,10 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
     started = time.monotonic()
     report = IngestReport(folders_requested=len(folders))
     total_folders = len(folders)
+    try:
+        markers_before = db.count_skipped_files()
+    except Exception:
+        markers_before = None
     walked, plans, complete = _prescan(folders, on_phase, cancel,
                                        config=config, incremental=incremental)
     if not complete:
@@ -1101,5 +1132,11 @@ def run_folders(folders: Sequence[str], *, db, config, incremental: bool = True,
         if result.cancelled or (cancel is not None and cancel.is_set()):
             report.cancelled = True
             break
+    if markers_before is not None:
+        try:
+            report.marked_unreadable = max(
+                0, db.count_skipped_files() - markers_before)
+        except Exception:
+            report.marked_unreadable = 0
     report.seconds = time.monotonic() - started
     return report
