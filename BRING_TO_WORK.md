@@ -18,6 +18,22 @@ The app now refuses the second one and says which job is in the way. Nothing
 was damaged; the re-grade finished 2,356 records before you stopped it at
 15:35, and those stay done.
 
+**Two things added 2026-09-15.** The SECOND run of any day should now report
+far fewer "new" files — the day's real arrivals plus the ~67 `_OS_` files the
+processor still retries, and nothing else. The two classes that kept coming
+back are each read once more after this pull and then recorded: ~370 files a
+day that are one export sitting in two folders under different names (parsed,
+graded and thrown away every run — that is why yesterday's 08:10 run produced
+442 verdicts while the index grew by 69), and the 23 that collided with their
+own database row because the station re-saved them in place on 09-10 (16 are
+`1844205\Voltage Output\*_VO_*.xlsx`, whose template the reader still cannot
+parse — they stay header-only, they just stop being re-read).
+
+And the re-grade now writes itself into `data\laser_trim.log`: one line when it
+starts, one every 500 rows with the rate, the ETA and what has moved so far,
+and one when it finishes or is stopped with the totals and the wall time.
+Yesterday's six-and-a-half-hour run left no record of itself at all.
+
 ### Do this
 
 1. **`git pull`.**
