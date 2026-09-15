@@ -1058,13 +1058,17 @@ def check_ingest_reoffers_only_retryable() -> None:
     failures and duplicates are remembered.
 
     Empty files are synthesised rather than taken from the corpus: the local
-    sample has none, and the collision they cause is the whole bug. A
-    duplicate is made the way the share makes one — same filename+date+model+
-    serial under a second folder, different bytes, which is the branch the
-    work log hits 60 times a run.
+    sample has none, and the collision they cause is the whole bug. The two
+    kinds of duplicate are made the way the share makes them — same
+    filename+date+model+serial under a second folder with different bytes
+    (the branch the work log hits 60 times a run), and the SAME BYTES under a
+    second folder with a different name (2026-09-15: ~370 files a day parsed,
+    graded and dropped, which is why the morning run produced 442 verdicts
+    while the index grew by 69).
 
-    This check FAILS against the pre-fix code: only one of the four empties
-    is remembered, so the second pass re-offers the other three.
+    This check FAILS against the pre-fix code, twice over: only one of the
+    four empties is remembered, and the byte-identical copy is offered again
+    on the second pass and on every pass after it.
     """
     import shutil, tempfile  # noqa: E402
     from laser_trim_analyzer.config import Config  # noqa: E402
@@ -1105,6 +1109,23 @@ def check_ingest_reoffers_only_retryable() -> None:
         with open(dup_dir / dup_src.name, "ab") as fh:
             fh.write(b"\0")          # same identity, different content hash
 
+        # (3) A CONTENT duplicate: the SAME BYTES under a second path and a
+        # different name — the share's habit of dropping one export into the
+        # model folder and into a "Voltage Output"/"Final Sheets" subfolder.
+        # Neither the basename rescue nor the identity constraint sees this
+        # one: the up-front hash check in `save_final_test` owns it, and
+        # until 2026-09-15 it returned the other row's id and recorded
+        # NOTHING about this path. ~370 files a day were parsed, graded and
+        # dropped on the work share (1,371 processed, 442 verdicts, index
+        # +69). This check FAILS against that code: the second pass offers
+        # the copy again, and every pass after it would too.
+        copy_dir = folder / "Final Sheets"
+        copy_dir.mkdir()
+        content_src = folder / real[1].name
+        content_dup = copy_dir / f"Copy of {content_src.name}"
+        shutil.copy2(content_src, content_dup)
+        content_pair = {str(content_src), str(content_dup)}
+
         cfg = Config()
         cfg.database.path = tmp / "reoffer_qa.db"
         db = DatabaseManager(cfg.database.path)
@@ -1120,19 +1141,22 @@ def check_ingest_reoffers_only_retryable() -> None:
         with db.session() as sess:
             recorded = {r[0] for r in sess.query(DBFT.file_path).all()}
             recorded |= {r[0] for r in sess.query(DBSM.file_path).all()}
-            markers = {r[0] for r in sess.query(DBPF.file_path)
-                       .filter(DBPF.success == True,             # noqa: E712
-                               DBPF.analysis_id.is_(None)).all()}
+            marker_rows = (sess.query(DBPF.file_path, DBPF.error_message)
+                           .filter(DBPF.success == True,         # noqa: E712
+                                   DBPF.analysis_id.is_(None)).all())
+        markers = {r[0] for r in marker_rows}
+        marker_reasons = {r[0]: (r[1] or "") for r in marker_rows}
         on_disk = {str(p) for p in folder.rglob("*.xls*") if p.is_file()}
         unrecorded = on_disk - recorded
         permanent = {p for p in unrecorded if Path(p).stat().st_size == 0}
         duplicate = {str(dup_dir / dup_src.name)} & unrecorded
-        other = unrecorded - permanent - duplicate
+        content_dupes = content_pair & unrecorded
+        other = unrecorded - permanent - duplicate - content_dupes
         total_failures = len(unrecorded)
 
         print(f"     | first pass: {first_new} new · {len(permanent)} permanent · "
-              f"{len(duplicate)} duplicate · {len(other)} other "
-              f"(retryable) · {len(markers)} markers written")
+              f"{len(duplicate)} duplicate · {len(content_dupes)} same-content · "
+              f"{len(other)} other (retryable) · {len(markers)} markers written")
 
         check("ingest re-offer: the empty files really do collide on content",
               len(permanent) == len(empties),
@@ -1140,6 +1164,19 @@ def check_ingest_reoffers_only_retryable() -> None:
         check("ingest re-offer: every permanent failure is remembered by path",
               permanent <= markers,
               f"unmarked={sorted(Path(x).name for x in permanent - markers)}")
+
+        # The byte-identical pair: exactly one path holds the record and the
+        # other holds a marker naming it. Which of the two wins the race is
+        # not the point and is not asserted — that nothing is left silent is.
+        check("ingest re-offer: identical bytes under two paths are stored "
+              "once and the other path is recorded",
+              len(content_pair & recorded) == 1 and content_dupes <= markers,
+              f"recorded={sorted(Path(x).name for x in content_pair & recorded)} "
+              f"unmarked={sorted(Path(x).name for x in content_dupes - markers)}")
+        check("ingest re-offer: the same-content marker says what it is",
+              all("same content as" in marker_reasons.get(p, "")
+                  for p in content_dupes) and bool(content_dupes),
+              f"reasons={[marker_reasons.get(p, '') [:60] for p in content_dupes]}")
 
         # The second pass: only retryable failures may be offered again.
         rep2 = run_folders([str(folder)], db=db, config=cfg, incremental=True)
@@ -1150,7 +1187,8 @@ def check_ingest_reoffers_only_retryable() -> None:
               "failures",
               second_new == len(other),
               f"second_new={second_new} retryable={len(other)} "
-              f"permanent={len(permanent)} duplicate={len(duplicate)}")
+              f"permanent={len(permanent)} duplicate={len(duplicate)} "
+              f"same-content={len(content_dupes)}")
         check("ingest re-offer: the second pass offers strictly fewer files "
               "than the first pass failed on",
               second_new < total_failures or total_failures == 0,
