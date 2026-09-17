@@ -66,6 +66,7 @@ def _error_reason(analysis) -> Optional[str]:
     text = "; ".join(str(e) for e in errors if e).strip()
     return text[:200] or None
 
+
 # app_meta key: how many "Unknown" model rows the re-parse migration last
 # looked at (post-fix). Its whole job is to keep that migration from redoing
 # work the parser has already refused, on every launch, forever.
@@ -3799,6 +3800,7 @@ class DatabaseManager:
             ).delete()
 
             # Delete processed file record (allows re-processing of same file)
+            self._forget_paths_of(session, analysis_id)
             session.query(DBProcessedFile).filter(
                 DBProcessedFile.analysis_id == analysis_id
             ).delete()
@@ -3813,6 +3815,19 @@ class DatabaseManager:
 
             logger.info(f"Deleted analysis ID {analysis_id}: {filename}")
             return True
+
+    def _forget_paths_of(self, session: Session, analysis_id: int) -> None:
+        """Drop any failure marker on the paths this analysis was recorded at.
+
+        A failure marker is keyed by PATH and carries no analysis_id, so it
+        would outlive the record and keep the file from ever being offered
+        again — the exact opposite of what "delete the processed file record
+        (to allow re-processing)" above is for.
+        """
+        for row in session.query(DBProcessedFile.file_path).filter(
+                DBProcessedFile.analysis_id == analysis_id).all():
+            if row[0]:
+                self._clear_failure_marker(session, Path(row[0]))
 
     def delete_analysis_by_filename(self, filename: str) -> bool:
         """
@@ -3841,6 +3856,7 @@ class DatabaseManager:
             ).delete()
 
             # Delete processed file record
+            self._forget_paths_of(session, analysis_id)
             session.query(DBProcessedFile).filter(
                 DBProcessedFile.analysis_id == analysis_id
             ).delete()

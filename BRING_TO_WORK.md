@@ -1,5 +1,58 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-17 — the repeat files stop repeating (pull, then one run)
+
+"i dont want to keep processing repeat files. i just want to process new
+stuff." The last ~178 files that came back on every single run are the two
+classes I left undone on 09-14, and both are closed now:
+
+| | what it was | what it is now |
+|---|---|---|
+| **67** `_OS_` smoothness exports | parser finds no usable columns → error → **nothing written anywhere**, so the scan called them new again tomorrow | read once more, then recorded with the reason |
+| **111** old trim exports (8856, 8888, 6952, 8204-3, 8232-1, 8094-2, 8914) | recorded, but as an ERROR the scan deliberately retries — this is the "111 retrying earlier errors" on every scan line | the ERROR row stays exactly as it is; a second, separate record says "do not offer this path again" |
+
+**The rule: a file that failed to read before, and has not changed on disk
+since, is not offered again.**
+
+### What to expect
+
+1. **`git pull`.**
+2. **HOME → "Process everything new."** This first run reads those ~178 files
+   one last time and records them. The summary line says so:
+
+       3 folders · 214 new files · 4 min 12 s · 178 files could not be read
+       and were recorded as unreadable (skipped from now on)
+
+3. **The run after that is the one to check.** The scan line in
+   `data\laser_trim.log` should now say **`0 retrying earlier errors`**, and
+   the final-test folder should offer only files that genuinely arrived since
+   the last run. If it still says 111, send me that line.
+
+Below the FOCUS list, HOME now carries one quiet line while there is anything
+to say:
+
+    178 files are being skipped because they failed to read before —
+    Settings → Retry unreadable files
+
+It is a caption, not an alarm; it is there so the app never silently decides
+not to read something.
+
+### After a parser upgrade: Settings → Database → "Retry unreadable files"
+
+That button is the way back. It offers those files again on the next run, and
+any that still cannot be read are recorded again. **It clears only the
+could-not-read records** — the ~8,100 files that are not test data at all, and
+the duplicates already stored under another path, are left alone. ("Reset
+skipped files" next to it is still the blunt one that re-offers everything.)
+
+A file that is simply LOCKED when the run reaches it — you have it open in
+Excel, or the share blinks — is never recorded as unreadable, so it is picked
+up normally next time. Same for a file a station is still writing: when the
+write finishes its size and timestamp change, and the scan offers it again by
+itself.
+
+---
+
 ## ⚡ 2026-09-14 — FIRST THING TOMORROW: two jobs, in this order, not together
 
 Yesterday's page told you to run the re-grade. You did, at 14:19, and at 14:45
@@ -179,26 +232,26 @@ refusal is filed under. A refused file is still re-read the moment its
 size or timestamp changes, so if one of those empty files is ever replaced
 with a real workbook it will be picked up normally.
 
-**One part deliberately left undone:** the 67 `_OS_` files under the Test
-Station tree still get retried on every run. They go to the smoothness parser,
-which finds no usable columns, and teaching the app to remember that class
-needs a change to the processor — which I left alone on purpose this time.
-It costs 67 files a run, not 930, so it can wait for a session where the
-processor is in scope.
+**~~One part deliberately left undone:~~ — FIXED 2026-09-17**, see the section
+at the top of this page. The 67 `_OS_` files under the Test Station tree used
+to be retried on every run: they go to the smoothness parser, which finds no
+usable columns, and remembering that needed a change to the processor, which I
+left alone that day.
 
 ### Still on the list, not fixed today
 
 **~~~1,300 final-test files are classified "new" every single day~~ — FIXED
 2026-09-14**, see the section above. The ~930 that never produced a record are
-now recorded as refused after one parse. The 67 `_OS_` smoothness files are
-the remainder and are still retried every run.
+now recorded as refused after one parse. **The 67 `_OS_` smoothness files were
+the remainder — FIXED 2026-09-17.**
 
-**The 112 ERROR trim rows written today are old junk, not a regression.**
+**~~The 112 ERROR trim rows written today are old junk, not a regression.~~ —
+they are still old junk, and since 2026-09-17 they are not retried.**
 DLTS files from 2013 (6952), 2017 (8232-1) and 2024 (8856) that the parser
 refuses with "Could not find data start", "positions not monotonically
 increasing", "limit columns are not a +/- band". They were already ERROR
-before the pull — the run said "111 retrying earlier errors" — and it retries
-them every run for the same reason as the paragraph above.
+before the pull — the run said "111 retrying earlier errors" — and that line
+should read 0 from the second run after the 09-17 pull.
 
 ---
 

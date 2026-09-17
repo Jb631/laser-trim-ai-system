@@ -468,6 +468,28 @@ def test_a_file_that_later_succeeds_stops_being_counted(tmp_path, monkeypatch):
         "the file reads fine now; nothing is being skipped")
 
 
+def test_deleting_the_error_record_re_offers_the_file(tmp_path, monkeypatch):
+    """`delete_analysis` deletes the processed row "to allow re-processing".
+
+    The marker is keyed by PATH and carries no analysis_id, so it would
+    outlive the record and make that promise false.
+    """
+    import shutil
+    src = _a_trim_sample()
+    p = tmp_path / "LTS" / src.name
+    p.parent.mkdir(parents=True)
+    shutil.copy2(src, p)
+
+    db = _db(tmp_path)
+    proc = _processor_loaded_from(db, monkeypatch)
+    analysis_id = db.save_analysis(_error_result(proc, p))
+    assert _classify_next_run(db, monkeypatch, p) == "processed"
+
+    assert db.delete_analysis(analysis_id) is True
+    assert _rows(db).get(str(p)) is None, "a row survived the delete"
+    assert _classify_next_run(db, monkeypatch, p) == "new"
+
+
 # ---------------------------------------------------------------------------
 # (g) two rows for one path break nothing
 # ---------------------------------------------------------------------------
