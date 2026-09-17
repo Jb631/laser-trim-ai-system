@@ -33,7 +33,7 @@ from laser_trim_analyzer.core import ingest_run
 from laser_trim_analyzer.core.ft_regrade import legacy_ft_count, legacy_ft_notice
 from laser_trim_analyzer.core.ingest_run import (
     EtaEstimator, ProgressCoalescer, ProgressTicker, format_ingest_summary,
-    format_progress_line)
+    format_progress_line, unreadable_count, unreadable_notice)
 from laser_trim_analyzer.gui.v6.focus_data import load_focus
 from laser_trim_analyzer.gui.v6.page_base import PageBase
 from laser_trim_analyzer.gui.v6.widgets.focus_list_zone import FocusListZone
@@ -119,6 +119,15 @@ class HomePage(PageBase):
             parent, text="", anchor="w", justify="left", wraplength=1100,
             font=t.font(t.SIZE_CAPTION), text_color=t.TIER_WARNING)
         self._legacy_ft_count = 0
+
+        # The same shape, for the files the button is NOT processing: ones
+        # that failed to read on an earlier run and are skipped while they are
+        # unchanged on disk (2026-09-17). Silent at zero; while it says
+        # anything it also says the way back.
+        self._unreadable_label = ctk.CTkLabel(
+            parent, text="", anchor="w", justify="left", wraplength=1100,
+            font=t.font(t.SIZE_CAPTION), text_color=t.TEXT_SECONDARY)
+        self._unreadable_count = 0
 
         self._zone_header(parent, "WHAT THE APP IS TELLING YOU",
                           "drifting now, biggest first — one verdict per lot, "
@@ -312,13 +321,16 @@ class HomePage(PageBase):
         """Synchronous load + apply (test path, and the main-thread apply)."""
         self._apply_focus(*load_focus(self.app.db))
         self._apply_legacy_ft(legacy_ft_count(self.app.db))
+        self._apply_unreadable(unreadable_count(self.app.db))
 
     def _reload_focus(self) -> None:
         def work():
             data = load_focus(self.app.db)
             legacy = legacy_ft_count(self.app.db)
+            unreadable = unreadable_count(self.app.db)
             self.safe_after(lambda: self._apply_focus(*data))
             self.safe_after(lambda: self._apply_legacy_ft(legacy))
+            self.safe_after(lambda: self._apply_unreadable(unreadable))
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_legacy_ft(self, count: int) -> None:
@@ -332,6 +344,18 @@ class HomePage(PageBase):
         self._legacy_ft_label.configure(text=text)
         self._legacy_ft_label.pack(side="top", fill="x",
                                    pady=(0, self.theme.SPACE_SM))
+
+    def _apply_unreadable(self, count: int) -> None:
+        """Show or hide the skipped-because-unreadable line. Tk thread."""
+        self._unreadable_count = int(count or 0)
+        text = unreadable_notice(self._unreadable_count)
+        if not text:
+            self._unreadable_label.pack_forget()
+            self._unreadable_label.configure(text="")
+            return
+        self._unreadable_label.configure(text=text)
+        self._unreadable_label.pack(side="top", fill="x",
+                                    pady=(0, self.theme.SPACE_SM))
 
     def _apply_focus(self, result, last_processed) -> None:
         # Handed to the zone untouched: one computation owns membership,

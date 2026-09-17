@@ -708,6 +708,35 @@ def format_ingest_summary(report: IngestReport) -> str:
     return line
 
 
+def unreadable_count(db) -> int:
+    """How many files the app is currently refusing to re-offer.
+
+    Wrapped rather than called directly so HOME can ask a database that
+    predates the marker without a try/except of its own.
+    """
+    try:
+        return int(db.count_failed_file_markers())
+    except Exception:  # noqa: BLE001 - a count must never break the page
+        logger.debug("unreadable-file count unavailable", exc_info=True)
+        return 0
+
+
+def unreadable_notice(count: int) -> str:
+    """The one line HOME shows, or "" when there is nothing to say.
+
+    Never silent about a decision the app made on its own: "process everything
+    new" quietly skipping 178 files it failed on last week is the same class
+    of surprise as re-reading them forever, and the way back has to be named
+    where the number is. Pure, so the wording is testable without a Tk root.
+    """
+    if not count or count < 0:
+        return ""
+    noun = "file" if count == 1 else "files"
+    verb = "is" if count == 1 else "are"
+    return (f"{count:,} {noun} {verb} being skipped because they failed to "
+            f"read before — Settings → Retry unreadable files")
+
+
 def log_phases(phases: dict, total: int, processor, summary) -> None:
     """One INFO line per batch naming every phase and what it cost.
 

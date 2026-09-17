@@ -184,6 +184,52 @@ def build_database_cleanup_section(parent, theme: ThemeManager, app) -> None:
                   hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
                   corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_MD, 0))
 
+    def _retry_unreadable():
+        """Offer the files that FAILED TO READ again (2026-09-17).
+
+        The narrow sibling of "Reset skipped files" above: that one re-offers
+        every skipped file, including the 8,114 the app correctly decided are
+        not test data. This one clears only the markers written because a file
+        could not be parsed — what a parser upgrade needs, and the way back
+        from the line HOME shows.
+
+        Count off-thread → confirm on the Tk thread → clear off-thread, the
+        same shape as every other button in this section.
+        """
+        from tkinter import messagebox
+
+        def runner():
+            try:
+                count = db.count_failed_file_markers()
+            except Exception as exc:
+                post_ui(app, lambda: status.winfo_exists() and status.configure(text=f"Error: {exc}"))
+                return
+
+            def confirm_and_run():
+                if not status.winfo_exists():
+                    return
+                if count == 0:
+                    status.configure(text="No files are being skipped for being unreadable.")
+                    return
+                if not messagebox.askyesno(
+                        "Retry unreadable files",
+                        f"Offer {count:,} file(s) again that could not be read on an "
+                        f"earlier run?\n\n"
+                        f"They are re-parsed on the next \"Process everything new\". "
+                        f"Any that still cannot be read are recorded again, so this "
+                        f"is worth pressing after a parser upgrade and not before.\n\n"
+                        f"Files skipped for NOT being test data, and duplicates "
+                        f"already stored under another path, are left alone."):
+                    return
+                _async(lambda: f"{db.reset_failed_file_markers():,} file(s) will be "
+                               f"read again on the next run.")
+            post_ui(app, confirm_and_run)
+        threading.Thread(target=runner, daemon=True).start()
+
+    ctk.CTkButton(parent, text="Retry unreadable files", command=_retry_unreadable,
+                  fg_color=t.CARD, hover_color=t.ELEVATED, text_color=t.TEXT_PRIMARY,
+                  corner_radius=t.RADIUS_SM).pack(side="top", anchor="w", pady=(t.SPACE_SM, 0))
+
     def _recompute_statuses():
         """Re-grade Pass/Warning/Fail from stored track flags (M4, 2026-07-07).
 

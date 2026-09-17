@@ -624,6 +624,11 @@ class Processor:
                 self._mark_file_skipped(file_path)
             else:
                 logger.exception(f"Error processing Final Test {file_path.name}: {e}")
+                # Same as the smoothness branch below: an FT error result is
+                # never saved, so without this the file comes back tomorrow.
+                if not self._is_transient_failure(e):
+                    self._mark_file_skipped(
+                        file_path, reason=f"{type(e).__name__}: {e}"[:200])
             error_result = self._create_error_result(
                 self._create_minimal_metadata(file_path),
                 f"Final Test error: {e}",
@@ -1257,6 +1262,13 @@ class Processor:
                 f"Smoothness error: {e}", start_time
             )
             error_result.file_type = "smoothness"  # Prevent saving as trim record
+            # …and record WHY, or nothing is written anywhere at all: the error
+            # result is not saved (file_type keeps it out of save_analysis), so
+            # the scan offered these files again every single run. 67 of them
+            # on 2026-09-17 — opened, refused, forgotten, repeat.
+            if not self._is_transient_failure(e):
+                self._mark_file_skipped(
+                    file_path, reason=f"{type(e).__name__}: {e}"[:200])
             return error_result
 
     def _get_linearity_type(self, model: str) -> Optional[str]:
@@ -1620,11 +1632,58 @@ class Processor:
         msg = str(exc)
         return any(sig in msg for sig in cls._PERMANENT_FAILURES)
 
-    def _mark_file_skipped(self, file_path: Path) -> None:
-        """Record a non-trim file as processed so it's skipped on future runs.
+    # Known-TRANSIENT failures — the mirror of the taxonomy above, and the one
+    # class that must NEVER be recorded as unreadable (2026-09-17). A workbook
+    # someone has open in Excel, a share that blinked, or an export a station
+    # is still writing has told us nothing about its contents; remembering it
+    # as unreadable would mean never reading that unit's data again.
+    #
+    # A half-written export needs no help from this list: when the station
+    # finishes writing it, its size and mtime change, and `_classify_scan`'s
+    # stat check offers it again by itself, with nobody pressing anything.
+    #
+    # The classifier takes an exception OR a reason STRING, because the trim
+    # path's decision is made in the database manager, which only ever has the
+    # text (see manager._record_processed_file).
+    _TRANSIENT_FAILURES = (
+        "Permission denied",            # locked by Excel, or a share ACL blip
+        "No such file or directory",    # moved or deleted mid-run
+        "used by another process",      # Windows lock (WinError 32)
+        "timed out",                    # SMB stall
+        "Network is unreachable",
+        "network path",                 # share dropped (WinError 53/64)
+        "Errno 13",
+        "Errno 2",
+    )
 
-        Prevents re-opening and re-checking junk files every time the same
-        folder is processed — important for network drives with many files.
+    @classmethod
+    def _is_transient_failure(cls, exc) -> bool:
+        if isinstance(exc, (FileNotFoundError, PermissionError, TimeoutError)):
+            return True
+        if isinstance(exc, OSError) and not cls._is_permanent_failure(exc):
+            # Any other OS-level error is the share or the lock, not the
+            # workbook — unless its message is a known-permanent parse failure.
+            return True
+        return any(sig in str(exc) for sig in cls._TRANSIENT_FAILURES)
+
+    def _mark_file_skipped(self, file_path: Path,
+                           reason: Optional[str] = None) -> None:
+        """Record a file as processed so it's skipped on future runs.
+
+        With NO reason this keeps its original meaning: the file is not test
+        data (a parameter workbook, a report, a duplicate), and it is skipped
+        for good. Prevents re-opening and re-checking junk files every time the
+        same folder is processed — important for network drives with many
+        files.
+
+        With a reason it is a READ FAILURE: the name says test data but this
+        build of the parser cannot turn it into a record. Those markers are
+        tagged, so Settings → "Retry unreadable files" clears exactly them
+        after a parser upgrade and leaves the thousands of non-trim markers
+        alone. Callers must have ruled out `_is_transient_failure` first.
+
+        Either way the marker is per-PATH and carries the file's size and
+        mtime, so a file whose bytes CHANGE on disk is offered again by itself.
         """
         try:
             from laser_trim_analyzer.database import get_database
@@ -1639,6 +1698,8 @@ class Processor:
                 file_hash=file_hash,
                 file_size=stat.st_size,
                 file_modified_date=datetime.fromtimestamp(stat.st_mtime),
+                error_message=reason,
+                failed_read=reason is not None,
             )
 
             # Update in-memory cache if loaded (path + content hash).

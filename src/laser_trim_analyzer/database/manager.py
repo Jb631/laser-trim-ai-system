@@ -35,6 +35,7 @@ from laser_trim_analyzer.database.models import (
     QAAlert as DBQAAlert,
     ProcessedFile as DBProcessedFile,
     ModelSpec,
+    UNREADABLE_PREFIX,
     SystemType as DBSystemType,
     StatusType as DBStatusType,
     RiskCategory as DBRiskCategory,
@@ -52,6 +53,18 @@ from laser_trim_analyzer.config import get_config
 from laser_trim_analyzer.utils.hashing import calculate_file_hash
 
 logger = logging.getLogger(__name__)
+
+
+def _error_reason(analysis) -> Optional[str]:
+    """What an ERROR result says went wrong, in one short line.
+
+    The processor puts the message in `errors`; this is the text a failure
+    marker records so a refused file can be explained without re-reading it
+    (and so the transient check has something to read).
+    """
+    errors = getattr(analysis, "errors", None) or []
+    text = "; ".join(str(e) for e in errors if e).strip()
+    return text[:200] or None
 
 # app_meta key: how many "Unknown" model rows the re-parse migration last
 # looked at (post-fix). Its whole job is to keep that migration from redoing
@@ -1491,6 +1504,7 @@ class DatabaseManager:
                 analysis.metadata.file_path,
                 db_analysis.id,
                 success=is_success,
+                reason=_error_reason(analysis),
             )
 
             logger.debug(f"Saved new analysis: {analysis.metadata.filename} (ID: {db_analysis.id})")
@@ -1543,6 +1557,7 @@ class DatabaseManager:
                                 analysis.metadata.file_path,
                                 db_analysis.id,
                                 success=is_success,
+                                reason=_error_reason(analysis),
                             )
 
                             saved_ids.append(db_analysis.id)
@@ -1775,6 +1790,7 @@ class DatabaseManager:
         file_path: Path,
         analysis_id: int,
         success: bool = True,
+        reason: Optional[str] = None,
     ) -> None:
         """Record a file as processed.
 
@@ -1783,6 +1799,7 @@ class DatabaseManager:
             file_path: Path to the processed file
             analysis_id: ID of the saved AnalysisResult
             success: False for ERROR results — allows retry on next run
+            reason: the ERROR's own words, used for the failure marker below
         """
         file_path = Path(file_path)
 
@@ -1822,6 +1839,88 @@ class DatabaseManager:
                 DBProcessedFile.filename: file_path.name,
             })
             session.flush()
+
+        # An ERROR row is retried BY DESIGN — `_load_processed_hashes` loads
+        # only success=True — and that design is why 111 old trim exports were
+        # re-read, re-refused and re-logged on every run since 2013 ("N new,
+        # 111 retrying earlier errors"). So the path ALSO gets a per-path
+        # failure marker: a second row, success=True, analysis_id=NULL, keyed
+        # by the synthetic `skip:` hash, which the existing scan already skips
+        # from memory. The ERROR row itself is left exactly as it was.
+        #
+        # Two rows for one path is safe precisely because the hashes differ:
+        # `idx_processed_path` is non-unique, UNIQUE(file_hash) still holds,
+        # and every content-keyed lookup (is_file_processed, the
+        # scalar_one_or_none() above, update_processed_file_stats) still
+        # matches exactly the one real row.
+        if success:
+            self._clear_failure_marker(session, file_path)
+        else:
+            self._write_failure_marker(session, file_path, reason)
+
+    def _write_failure_marker(self, session: Session, file_path: Path,
+                              reason: Optional[str]) -> bool:
+        """Remember that this PATH could not be read. Returns whether it was.
+
+        Refuses TRANSIENT reasons — a locked workbook, a dropped share, a
+        half-written export — using the processor's single classifier, which
+        takes the reason text for exactly this caller. Those files must stay
+        retryable; a half-written one also re-offers itself as soon as its
+        size or mtime changes.
+        """
+        # Deferred import: core imports database, never the reverse. By the
+        # time an ERROR result exists, the processor module is already loaded.
+        from laser_trim_analyzer.core.processor import Processor
+
+        if not reason:
+            return False
+        if Processor._is_transient_failure(reason):
+            logger.debug(f"Not marking {file_path.name} unreadable — "
+                         f"transient failure: {reason}")
+            return False
+
+        marker_hash = self.skip_marker_hash(str(file_path))
+        text = (UNREADABLE_PREFIX + reason)[:2000]
+        try:
+            stat = file_path.stat()
+            size, modified = stat.st_size, datetime.fromtimestamp(stat.st_mtime)
+        except OSError:
+            return False
+
+        existing = session.execute(
+            select(DBProcessedFile).where(
+                DBProcessedFile.file_hash == marker_hash)
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.file_size = size
+            existing.file_modified_date = modified
+            existing.error_message = text
+        else:
+            session.add(DBProcessedFile(
+                filename=file_path.name,
+                file_path=str(file_path),
+                file_hash=marker_hash,
+                file_size=size,
+                file_modified_date=modified,
+                error_message=text,
+                analysis_id=None,
+                success=True,
+            ))
+        session.flush()
+        return True
+
+    def _clear_failure_marker(self, session: Session, file_path: Path) -> None:
+        """Forget a failure marker for a path that has now been read.
+
+        A marker is a statement about bytes that could not be read, not about
+        a path forever: once the file parses, HOME must stop counting it.
+        Scoped to the unreadable tag so a non-trim or duplicate marker for the
+        same path is never deleted by a save.
+        """
+        session.query(DBProcessedFile).filter(
+            DBProcessedFile.file_hash == self.skip_marker_hash(str(file_path)),
+            DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
+        ).delete(synchronize_session=False)
 
     # =========================================================================
     # QA Alerts
@@ -7600,6 +7699,51 @@ class DatabaseManager:
 
         return deleted
 
+    def count_failed_file_markers(self) -> int:
+        """Count files being skipped because they FAILED TO READ (2026-09-17).
+
+        A subset of `count_skipped_files`: same rows, narrowed to the ones
+        whose reason carries `UNREADABLE_PREFIX`. That tag, not "has a reason",
+        is the discriminator — every marker has a reason (`mark_file_skipped`
+        records the content hash in it), and the duplicate markers say "same
+        content as final_test_results id N". Scoping on NOT NULL would sweep
+        in the 8,114 non-trim files and every duplicate.
+        """
+        with self.session() as session:
+            return session.query(func.count(DBProcessedFile.id)).filter(
+                DBProcessedFile.analysis_id.is_(None),
+                DBProcessedFile.success == True,
+                DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
+            ).scalar() or 0
+
+    def reset_failed_file_markers(self) -> int:
+        """Forget the "could not read this" markers so the files are re-offered.
+
+        The escape hatch behind Settings → "Retry unreadable files": what a
+        parser upgrade needs, and nothing more. Non-trim markers and duplicate
+        markers are left in place — they did not fail to read, and re-offering
+        them would undo the thing the markers exist for.
+
+        Trim ERROR rows (success=False, with their analysis) are untouched:
+        they are what the cleanup tools and the scan's "retrying earlier
+        errors" line read. Dropping the marker is what makes the file eligible
+        again; the file is then re-processed and, if it fails again, re-marked.
+
+        Returns the number of markers cleared.
+        """
+        with self._write_lock:
+            with self.session() as session:
+                count = session.query(DBProcessedFile).filter(
+                    DBProcessedFile.analysis_id.is_(None),
+                    DBProcessedFile.success == True,
+                    DBProcessedFile.error_message.like(UNREADABLE_PREFIX + "%"),
+                ).delete(synchronize_session=False)
+
+                logger.info(f"Cleared {count} unreadable-file markers; those "
+                            f"files will be offered again on the next run")
+
+        return count
+
     def count_skipped_files(self) -> int:
         """Count non-trim/non-FT files that were skipped and recorded."""
         with self.session() as session:
@@ -7650,7 +7794,8 @@ class DatabaseManager:
 
     def mark_file_skipped(self, filename: str, file_path: str,
                           file_hash: str, file_size: int,
-                          file_modified_date, error_message: str = None) -> None:
+                          file_modified_date, error_message: str = None,
+                          failed_read: bool = False) -> None:
         """Record an unreadable/non-trim file so future runs skip it.
 
         Keyed by FILE PATH, not by content hash.
@@ -7677,9 +7822,17 @@ class DatabaseManager:
 
         `error_message` records WHY the file was skipped, so a refused file
         can be explained without re-reading it.
+
+        `failed_read` (2026-09-17) says that reason is a PARSE FAILURE rather
+        than "not test data" or "already stored under another path". It tags
+        the reason with `UNREADABLE_PREFIX`, which is what
+        `count_failed_file_markers` / `reset_failed_file_markers` — and so
+        Settings → "Retry unreadable files" — scope on.
         """
         marker_hash = self.skip_marker_hash(file_path)
         reason = (error_message or "").strip()
+        if failed_read:
+            reason = UNREADABLE_PREFIX + (reason or "could not be read")
         if file_hash:
             reason = (f"{reason} (content sha256={file_hash})"
                       if reason else f"content sha256={file_hash}")

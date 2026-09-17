@@ -40,6 +40,18 @@ import json as json_lib
 # markers stay invisible to every content-keyed query in the app.
 SKIP_MARKER_PREFIX = "skip:"
 
+# A marker whose `error_message` starts with this was written because the file
+# COULD NOT BE READ (2026-09-17) — as opposed to the ones written because the
+# file is not test data, or is a duplicate of a record already stored. Only
+# these are cleared by Settings → "Retry unreadable files", which is what a
+# parser upgrade needs and what the 8,114 non-trim markers must survive.
+#
+# It has to be a positive tag rather than "error_message IS NOT NULL": every
+# marker carries a reason, because `mark_file_skipped` records the file's real
+# content hash in that column, and the duplicate markers say "same content as
+# final_test_results id N". NOT NULL would clear all of them.
+UNREADABLE_PREFIX = "unreadable: "
+
 
 class SafeJSON(TypeDecorator):
     """A JSON type that safely handles empty strings and None values."""

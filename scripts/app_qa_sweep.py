@@ -67,6 +67,7 @@ sys.path.insert(0, str(REPO / "src"))
 import sqlite3  # noqa: E402
 from sqlalchemy import text as sqlalchemy_text  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
+from laser_trim_analyzer.database.models import UNREADABLE_PREFIX  # noqa: E402
 
 RESULTS: list = []
 
@@ -1126,27 +1127,54 @@ def check_ingest_reoffers_only_retryable() -> None:
         shutil.copy2(content_src, content_dup)
         content_pair = {str(content_src), str(content_dup)}
 
+        # (4) RETRYABLE failures: the two populations that came back on every
+        # run of the work share until 2026-09-17, one per route.
+        #   * an output-smoothness export the parser finds no usable columns
+        #     in. Its error result is never saved (file_type keeps it out of
+        #     save_analysis), so before the fix NOTHING was recorded about it
+        #     anywhere — 67 of these, offered, opened and forgotten daily.
+        #   * a trim export whose layout the parser refuses. This one DOES get
+        #     a processed_files row, but success=False, and the incremental
+        #     index loads only success=True — the "111 retrying earlier
+        #     errors" on every scan line since 2013.
+        # Both are synthesised: the local corpus is a curated sample and has
+        # no unreadable files at all (this section printed "0 other" before).
+        os_junk = folder / "6581" / "6581-sn330_-65_OS_load_1-2-2017_10-00-00 AM.xlsx"
+        _unreadable_smoothness_workbook(os_junk)
+        laser = tmp / "LTS"          # NOT under Test Station: the folder name
+        laser.mkdir()                # decides final_test before the filename
+        trim_junk = laser / "8888-99_TA_Test Data_1-1-2013_9-00 AMTrimmed Correct.xlsx"
+        _unreadable_trim_workbook(trim_junk)
+        retryable = {str(os_junk), str(trim_junk)}
+
         cfg = Config()
         cfg.database.path = tmp / "reoffer_qa.db"
         db = DatabaseManager(cfg.database.path)
         _dbmod._db_manager = db
 
-        rep1 = run_folders([str(folder)], db=db, config=cfg, incremental=True)
+        rep1 = run_folders([str(folder), str(laser)], db=db, config=cfg,
+                           incremental=True)
         first_new = rep1.new_files
 
         # Classify what the first pass could not turn into a record.
         from laser_trim_analyzer.database.models import (  # noqa: E402
-            ProcessedFile as DBPF, FinalTestResult as DBFT,
-            SmoothnessResult as DBSM)
+            AnalysisResult as DBAR2, ProcessedFile as DBPF,
+            FinalTestResult as DBFT, SmoothnessResult as DBSM)
         with db.session() as sess:
             recorded = {r[0] for r in sess.query(DBFT.file_path).all()}
             recorded |= {r[0] for r in sess.query(DBSM.file_path).all()}
+            # Trim files land in analysis_results, not in either table above;
+            # an ERROR row is not a record of the file, it is a record of the
+            # failure, so it does not count as recorded.
+            recorded |= {r[0] for r in sess.query(DBAR2.file_path)
+                         .filter(DBAR2.overall_status != "ERROR").all() if r[0]}
             marker_rows = (sess.query(DBPF.file_path, DBPF.error_message)
                            .filter(DBPF.success == True,         # noqa: E712
                                    DBPF.analysis_id.is_(None)).all())
         markers = {r[0] for r in marker_rows}
         marker_reasons = {r[0]: (r[1] or "") for r in marker_rows}
         on_disk = {str(p) for p in folder.rglob("*.xls*") if p.is_file()}
+        on_disk |= {str(p) for p in laser.rglob("*.xls*") if p.is_file()}
         unrecorded = on_disk - recorded
         permanent = {p for p in unrecorded if Path(p).stat().st_size == 0}
         duplicate = {str(dup_dir / dup_src.name)} & unrecorded
@@ -1178,14 +1206,36 @@ def check_ingest_reoffers_only_retryable() -> None:
                   for p in content_dupes) and bool(content_dupes),
               f"reasons={[marker_reasons.get(p, '') [:60] for p in content_dupes]}")
 
-        # The second pass: only retryable failures may be offered again.
-        rep2 = run_folders([str(folder)], db=db, config=cfg, incremental=True)
-        second_new = rep2.new_files
-        print(f"     | second pass: {second_new} new (expected {len(other)})")
+        # (4) The files that FAILED TO READ are remembered too (2026-09-17).
+        # James: "i dont want to keep processing repeat files. i just want to
+        # process new stuff." Against the old code both of these are unmarked
+        # and the second pass offers them — which is what it did every day.
+        check("ingest re-offer: a file the parser could not read is remembered "
+              "by path",
+              retryable <= markers,
+              f"unmarked={sorted(Path(x).name for x in retryable - markers)}")
+        check("ingest re-offer: the marker says the file could not be READ, "
+              "not that it is junk",
+              all(marker_reasons.get(p, "").startswith(UNREADABLE_PREFIX)
+                  for p in retryable),
+              f"reasons={[marker_reasons.get(p, '')[:70] for p in sorted(retryable)]}")
+        check("ingest re-offer: the trim ERROR row is still an ERROR row",
+              _trim_error_row_intact(db, trim_junk),
+              "the marker must not have been implemented by flipping success")
 
-        check("ingest re-offer: the second pass re-offers ONLY retryable "
-              "failures",
-              second_new == len(other),
+        # The second pass: NOTHING is offered again. Every failure is now
+        # remembered, permanent or not — the retry is an explicit button, not
+        # a thing that happens to you every morning.
+        rep2 = run_folders([str(folder), str(laser)], db=db, config=cfg,
+                           incremental=True)
+        second_new = rep2.new_files
+        # Deliberately no new-API call in this line: against the old code the
+        # ZERO check below must be REACHED and fail on its number, not be
+        # skipped by an AttributeError from a count that does not exist yet.
+        print(f"     | second pass: {second_new} new (expected 0)")
+
+        check("ingest re-offer: the second pass offers ZERO files",
+              second_new == 0,
               f"second_new={second_new} retryable={len(other)} "
               f"permanent={len(permanent)} duplicate={len(duplicate)} "
               f"same-content={len(content_dupes)}")
@@ -1196,12 +1246,89 @@ def check_ingest_reoffers_only_retryable() -> None:
         check("ingest re-offer: the duplicate path is not re-parsed",
               not (duplicate - markers),
               f"unmarked_duplicate={sorted(Path(x).name for x in duplicate - markers)}")
+
+        # (5) The escape hatch, end to end: Settings → Retry unreadable files
+        # re-offers the read failures and NOTHING else. If this counted the
+        # permanent failures or the duplicates, pressing it once would undo
+        # everything the markers are for.
+        failures_before = db.count_failed_file_markers()
+        cleared = db.reset_failed_file_markers()
+        rep3 = run_folders([str(folder), str(laser)], db=db, config=cfg,
+                           incremental=True)
+        print(f"     | after Retry unreadable files: {cleared} cleared, "
+              f"{rep3.new_files} offered again")
+        check("ingest re-offer: the retry counts ONLY the read failures",
+              failures_before == len(retryable) and cleared == len(retryable),
+              f"count={failures_before} cleared={cleared} "
+              f"expected={len(retryable)} of {db.count_skipped_files()} markers")
+        check("ingest re-offer: the retry re-offers the read failures and "
+              "nothing else",
+              rep3.new_files == len(retryable),
+              f"offered={rep3.new_files} expected={len(retryable)}")
+        check("ingest re-offer: a file that still cannot be read is marked "
+              "again",
+              db.count_failed_file_markers() == len(retryable),
+              f"markers={db.count_failed_file_markers()} expected={len(retryable)}")
     except Exception as exc:
         check("ingest re-offer: unreadable files are offered once", False,
               f"{type(exc).__name__}: {exc}")
     finally:
         _dbmod._db_manager = saved_global
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _unreadable_smoothness_workbook(path: Path) -> None:
+    """An `*_OS_*` export the smoothness parser finds no usable columns in.
+
+    The work-share signature, reproduced: "Generic parser found no usable
+    columns in sheet 'Sheet1' (pos_col='Electrical Angle* + 280 min:',
+    smooth_cols=[])", then "Smoothness parser returned no tracks for …".
+    """
+    import openpyxl  # noqa: E402
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.cell(row=1, column=1, value="Electrical Angle* + 280 min:")
+    for i in range(2, 8):
+        ws.cell(row=i, column=1, value=float(i))
+    wb.save(path)
+
+
+def _unreadable_trim_workbook(path: Path) -> None:
+    """A trim-named export whose sheet layout the parser refuses.
+
+    Stands in for the 111 old exports (8856, 8888, 6952, 8204-3, 8232-1, …)
+    that produce a success=False `processed_files` row and are therefore
+    retried on every single run.
+    """
+    import openpyxl  # noqa: E402
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "TRK1 Trimmed"
+    for i in range(1, 6):
+        ws.cell(row=i, column=1, value="header junk")
+    wb.save(path)
+
+
+def _trim_error_row_intact(db, path: Path) -> bool:
+    """The ERROR row keeps success=False and its analysis; the marker is EXTRA.
+
+    Conflating the two would hide the failure from the cleanup tools and from
+    the scan's "retrying earlier errors" line.
+    """
+    from laser_trim_analyzer.database.models import (  # noqa: E402
+        ProcessedFile as DBPF)
+    with db.session() as sess:
+        rows = sess.query(DBPF.file_hash, DBPF.success, DBPF.analysis_id,
+                          DBPF.error_message).filter(
+            DBPF.file_path == str(path)).all()
+    errors = [r for r in rows if r[1] is False]
+    marks = [r for r in rows if r[1] is True and r[2] is None
+             and (r[3] or "").startswith(UNREADABLE_PREFIX)]
+    return len(rows) == 2 and len(errors) == 1 and len(marks) == 1 \
+        and errors[0][2] is not None
 
 
 def check_multi_folder_ingest() -> None:
