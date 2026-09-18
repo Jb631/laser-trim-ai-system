@@ -73,9 +73,7 @@ the capture work unlocks.
 10. **Machine comparison.** Same model, different machine (A, B or C),
     different yield. Settings that work on one laser may not transfer.
 
-A cut-length process model — given a starting curve, what cut works — is the
-speculative payoff of the per-pass data. It is explicitly **not** in this
-design. Revisit once the trajectory data exists and has been looked at.
+11. **Cut-length model.** Deferred, not dropped. See its own section below.
 
 ## 1. What gets captured
 
@@ -223,6 +221,42 @@ on. So it is planned in two halves: **the first implementation plan covers
 step 1 only**, ending at the no-op proof. Steps 3 and 4 get their own plan,
 written after the reprocess has run and the trajectory data can actually be
 looked at — which may well change what the later analyzers should do.
+
+## The cut-length model — deferred, not dropped
+
+This is the most valuable thing the per-pass data could give us, and James
+has asked explicitly that it not be lost. It is deferred only because it
+cannot be designed before the data it learns from exists.
+
+**What it is.** The per-pass table gives, for every cut ever made: the curve
+going in, the cut applied (length, speeds, trim voltage, tolerances), and
+the curve coming out. That is a supervised learning problem with the
+label already recorded. Learn the mapping and you can recommend the cut
+rather than score the outcome after the fact.
+
+**Why it has to wait.** The trajectory data does not exist in the database
+yet. Designing the model from the single file opened on 2026-09-17 would be
+guessing. Once step 2 has run, roughly 114,000 pass rows exist across the
+full history, of which the multi-pass tracks — about 5,300 in the last two
+years — carry the before-and-after pairs that matter most.
+
+**The first questions to ask of it, before any modelling.** These are cheap
+and may make a model unnecessary:
+
+1. Does the first pass systematically make linearity worse? In the one file
+   examined, worst error went 0.163 before trimming, 0.191 after pass one,
+   then 0.063 after pass two. If that pattern is general it is a finding on
+   its own and a same-day laser lever.
+2. For a given starting shape, which cut lengths produce a pass on the first
+   attempt and which lead to a second?
+3. Is there a cut that would have avoided the second pass entirely? Second
+   and third passes are 23% of tracks and pure cost.
+4. Do the answers differ between the three machines?
+
+**Entry criteria.** Pick this up when the per-pass table is populated from a
+completed reprocess, and after questions 1 to 4 have been answered
+descriptively. It gets its own design pass and its own approval; it is not
+carried by this spec's approval.
 
 ## Known limits, carried forward
 
