@@ -22,24 +22,6 @@ That last row is the one to care about. It is the before-and-after of every
 cut ever made, recorded for free, going back through your whole history —
 roughly 110,000 pass rows.
 
-### ⚠ Check your free disk space first
-
-**Have at least 12 GB free before you start.** The earlier draft of this page
-said the new data would add "about 200 MB". That was wrong — it came from an
-estimate made before anyone measured a real pass row. Measured against your
-actual files it is **about 1.6 GB**, because System A stores eleven arrays per
-pass, not four:
-
-| | |
-|---|---|
-| Database now | 3.5 GB |
-| Rebuilt, with the new tables | **≈ 5.0 GB** |
-| Plus the backup you are keeping beside it | **≈ 8.5 GB total** |
-
-Add SQLite's own page and index overhead and 12 GB free is the safe number.
-This matters because the run is unattended: if the disk fills at hour six,
-it fails with your old database already moved aside.
-
 **That is the raw material for the cut-length model you asked me not to
 forget.** With it, the question changes from "was that cut any good?" to
 "what cut should we have made?" It cannot be designed until the data exists,
@@ -60,6 +42,24 @@ Four reasons, and the last two are hours of your life:
 3. It clears the legacy verdict count to zero instead of chipping at 149,000 rows.
 4. Nothing is lost. Everything in the database is derived from the files.
    Trained models live in their own folder and survive.
+
+### ⚠ Check your free disk space first
+
+**Have at least 12 GB free before you start.** The earlier draft of this page
+said the new data would add "about 200 MB". That was wrong — it came from an
+estimate made before anyone measured a real pass row. Measured against your
+actual files it is **about 1.6 GB**, because System A stores eleven arrays per
+pass, not four:
+
+| | |
+|---|---|
+| Database now | 3.5 GB |
+| Rebuilt, with the new tables | **≈ 5.0 GB** |
+| Plus the backup you are keeping beside it | **≈ 8.5 GB total** |
+
+Add SQLite's own page and index overhead and 12 GB free is the safe number.
+This matters because the run is unattended: if the disk fills at hour six,
+it fails with your old database already moved aside.
 
 ### The sequence
 
@@ -96,9 +96,11 @@ actually update its final-test verdict. It does now.
   and they should not differ. It is the only customer-facing model where the
   laser and final test grade to different limit tables — 29 of the other
   findings are trim-only.
-- **First real LTS3 file validation.** The app parses laser 3 already (it is
-  format-identical to laser 2, identified by the `LTS3` folder); it has just
-  never seen a real one.
+- ~~First real LTS3 file validation.~~ **Already done — 547 real LTS3 files
+  are in the database** (2026-03-31 to 2026-08-19), and they parse cleaner
+  than either older laser: **0 errors**, against 1 on LTS and 111 on DLTS.
+  The 36 tracks with no sigma or verdict are the 36 UNTRIMMED files, which is
+  correct. Top models on it: 7281, 7539-2, 7845, 6952. Nothing to validate.
 
 ---
 
@@ -740,7 +742,9 @@ The app also self-checks its environment at every launch and writes
 "Environment OK — …" (or a plain-language failure) at the top of the log.
 
 ## 4. Two things to watch the first week
-1. **First LTS3 batch.** LTS3 support is tested against synthetic files but no
+1. ~~**First LTS3 batch.**~~ **DONE — 547 real files processed as of 2026-08-19,
+   0 errors. Superseded; the note below is kept only for how the folder
+   detection works.** LTS3 support is tested against synthetic files but no
    real third-laser file has been through it yet (no sample existed). Process
    the first LTS3 folder, then check the unit shows System C on the Model
    page. If a file errors, it will say so loudly — send it to Claude.

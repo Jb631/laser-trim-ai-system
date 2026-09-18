@@ -139,7 +139,7 @@ green once). New features get a sweep entry in the same commit.
 ### V5 — Released (tag `v5.0.0`, 2026-04-16)
 `pyproject.toml` is at `version = "5.0.0"`. Main has continued past the tag with bugfixes, drift-tab redesign, and Trends consolidation work.
 
-**Current focus:** V6 is feature-complete per the 2026-08-29 app-shape spec (FOCUS · INVESTIGATE stats table · HOME/shell, all shipped) — see `BRING_TO_WORK.md`. The trim-vs-FT overlay is in V6 (2026-08-31) and Fix Missing Tracks lives in V6 Settings, so V5 no longer holds anything V6 lacks; it stays launchable as fallback until James retires it explicitly. Remaining: first real LTS3 file validation (work machine), work-machine data scripts per BRING_TO_WORK. Older plans live in git history at `4c6ebd8` under `archive/completed_docs/`.
+**Current focus:** V6 is feature-complete per the 2026-08-29 app-shape spec (FOCUS · INVESTIGATE stats table · HOME/shell, all shipped) — see `BRING_TO_WORK.md`. The trim-vs-FT overlay is in V6 (2026-08-31) and Fix Missing Tracks lives in V6 Settings, so V5 no longer holds anything V6 lacks; it stays launchable as fallback until James retires it explicitly. Remaining: work-machine data scripts per BRING_TO_WORK. (LTS3 validation is DONE — 547 real System C files processed through 2026-08-19 with 0 errors; verified 2026-09-18.) Older plans live in git history at `4c6ebd8` under `archive/completed_docs/`.
 
 ### V4 Upgrade — Operational Analytics & Data Quality — **COMPLETE**
 **Plan/Tracker:** `git show 4c6ebd8:archive/completed_docs/UPGRADE_PLAN_V4.md` (and `UPGRADE_TRACKER.md`)
