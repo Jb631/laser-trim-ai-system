@@ -360,3 +360,22 @@ def test_blanks_and_booleans_are_still_blanks():
     from laser_trim_analyzer.core.trim_passes import _col
     df = pd.DataFrame({0: [1.5, True, None, float("nan"), "x", np.float64(2.5)]})
     assert _col(df, 0, 0) == [1.5, None, None, None, None, 2.5]
+
+
+def test_a_duration_cell_is_a_blank_and_never_raises():
+    """np.timedelta64 subclasses np.signedinteger, so `numbers.Real` says yes
+    and `float()` then raises TypeError -- widening the numeric test made this
+    raise where it used to return None. A timedelta64[ns] COLUMN hands back
+    pd.Timedelta (not Real, safely None); only a raw np.timedelta64 in an
+    object column reaches the branch. A duration is not a measurement either
+    way, so both shapes must read as blank.
+    """
+    import numbers
+    import numpy as np
+    import pandas as pd
+    from laser_trim_analyzer.core.trim_passes import _col
+    assert isinstance(np.timedelta64(5, "s"), numbers.Real), \
+        "premise of this test: numbers.Real accepts it, float() does not"
+    df = pd.DataFrame({0: [1.5, np.timedelta64(5, "s"),
+                           pd.Timedelta(seconds=5), 2.5]}, dtype=object)
+    assert _col(df, 0, 0) == [1.5, None, None, 2.5]

@@ -11,6 +11,7 @@ import numbers
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from laser_trim_analyzer.core.models import SystemType
@@ -82,8 +83,20 @@ def _col(df: pd.DataFrame, idx: int, start_row: int) -> List[Optional[float]]:
         # Error`, 61 integer-zero cells silently dropped. Rare only because a
         # header string usually forces object dtype; a model writing
         # whole-number cut lengths would lose the lot. bool is an Integral, so
-        # it is excluded explicitly -- a TRUE cell is not a measurement.
-        if v is None or isinstance(v, bool) or not isinstance(v, numbers.Real):
+        # it is excluded explicitly -- a TRUE cell is not a measurement, and
+        # the OLD test turned True into 1.0 and False into 0.0, fabricating
+        # measurements out of flags.
+        #
+        # np.timedelta64 is excluded for the opposite reason: it subclasses
+        # np.signedinteger, so `numbers.Real` says yes and `float()` then
+        # raises TypeError -- widening the test made it raise where it used
+        # to return None. A timedelta64[ns] COLUMN hands back pd.Timedelta,
+        # which is not Real and lands on None safely; only a raw
+        # np.timedelta64 sitting in an object column reaches here, so this is
+        # a guard against a shape nothing produces today rather than an
+        # observed failure. A duration is not a measurement either way.
+        if (v is None or isinstance(v, (bool, np.timedelta64))
+                or not isinstance(v, numbers.Real)):
             out.append(None)
         else:
             f = float(v)

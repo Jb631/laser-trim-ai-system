@@ -3048,22 +3048,46 @@ def main() -> int:
             if reason:
                 offenders.setdefault(model, [0, reason])
                 offenders[model][0] += 1
-        # Guard against a silently-empty scan (weak-assertion trap).
-        # RELATIVE to the eligible rows, not an absolute 100_000: the table
-        # holds 86,856 rows, all of them eligible, so the old constant could
-        # not be satisfied by this database before OR after a rebuild. A gate
-        # that can never pass is as useless as one that can never fail, and a
-        # permanently-red line trains the reader to skip past red. 81,017 of
-        # the 86,856 are actually scanned (93.3%); the rest parse to an empty
-        # limit array and are skipped on purpose a few lines up. The floor is
-        # 75% -- real headroom under the observed figure, still nowhere near
-        # the collapse-to-nothing this exists to catch, and expressed as a
-        # ratio so it survives the reprocess into a fresh database.
+        # Guard against a silently-empty scan (weak-assertion trap), in TWO
+        # parts, because there are two ways for this to go quiet and a ratio
+        # alone can only see one of them.
+        #
+        # COVERAGE is relative. The old gate asked for an absolute
+        # `scanned > 100_000` against a table of 86,856 rows, all eligible: a
+        # gate that could not be satisfied by this database before OR after a
+        # rebuild. One that can never pass is as useless as one that can never
+        # fail, and a permanently-red line teaches the reader to skip past
+        # red. 81,017 of the 86,856 are scanned (93.3%); the rest parse to an
+        # empty limit array and are skipped on purpose a few lines up. 75%
+        # leaves headroom under that without going anywhere near the collapse
+        # this exists to catch, and a ratio survives the reprocess.
+        #
+        # POPULATION is absolute, and has to be, because `eligible` and
+        # `scanned` move together: a rebuild that wrote limit arrays for only
+        # a thousand tracks would report "1000 of 1000 eligible tracks
+        # scanned" and read green on the ratio alone. This is the one check
+        # whose whole job is to notice that the overnight rebuild produced
+        # LESS DATA THAN IT SHOULD HAVE, so the size of the corpus is the
+        # thing being asserted, not the fraction of it that was walked.
+        #
+        # 50,000 against today's 86,856: the rebuild has to lose more than
+        # four tracks in ten before this fires, which is far outside any
+        # plausible variation from re-ingesting the same corpus, while still
+        # being 50x the thousand-row collapse it is here for. If the corpus
+        # legitimately shrinks, lower this DELIBERATELY and say why -- that is
+        # the point of it being a number someone had to choose.
+        POPULATION_FLOOR = 50_000
         eligible = raw.execute(
             "SELECT COUNT(*) FROM track_results t "
             "JOIN analysis_results a ON a.id = t.analysis_id "
             "WHERE t.upper_limits IS NOT NULL AND t.lower_limits IS NOT NULL"
         ).fetchone()[0]
+        check("data quality: the limit-column population did not collapse",
+              eligible >= POPULATION_FLOOR,
+              f"{eligible} tracks carry limit arrays, floor {POPULATION_FLOOR}"
+              + ("" if eligible >= POPULATION_FLOOR else
+                 " -- the rebuild wrote less than it should have, or the floor "
+                 "needs lowering on purpose"))
         check("data quality: limit-column scan actually examined rows",
               eligible > 0 and scanned >= 0.75 * eligible,
               f"{scanned} of {eligible} eligible tracks scanned"

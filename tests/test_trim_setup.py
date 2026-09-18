@@ -90,13 +90,36 @@ def test_a_datetime_cell_does_not_take_the_whole_block_down():
 
 def test_a_date_in_the_label_column_is_not_a_key():
     """_clean coerces VALUES so they survive JSON. Labels must not go through
-    it: `8251-1`'s value-first sheet has the date in the label column, and
-    coercing it invented the key '2026_01_06t00_00_00'."""
+    it, or a date sitting in a label cell becomes a key.
+
+    The first version of this test read the frame with `label_col=1`, where
+    the label column holds only strings -- so `_label` never saw the date and
+    the test passed with the bug present. The date has to be in the column
+    being read AS the label, which is `label_col=0`.
+
+    That is not a contrived arrangement. `8251-1`'s `Model Parameters` is
+    value-first (`2026-01-06 00:00:00 | Template Updated:`), but the parser
+    tries the label-first layout on every candidate sheet as well and merges
+    what each produces -- so the label-first read of this value-first sheet
+    really does run, and really did invent '2026_01_06t00_00_00'.
+    """
+    import re
     from datetime import datetime
     df = pd.DataFrame([[datetime(2026, 1, 6), "Template Updated:"],
                        [28, "Laser Power (0-255)"]])
-    got = read_keyvalue(df, label_col=1, value_col=0)
-    assert got == {"template_updated": "2026-01-06T00:00:00", "laser_power": 28}
+
+    # Label-first over the value-first sheet: every label cell is a non-string,
+    # so nothing here is a label and the layout yields nothing at all.
+    label_first = read_keyvalue(df, label_col=0, value_col=1)
+    dated = [k for k in label_first if re.match(r"^\d{4}_\d{2}_\d{2}", k)]
+    assert not dated, f"a date became a key: {dated}"
+    assert label_first == {}, label_first
+
+    # And read the way this sheet is actually laid out, the date is a VALUE
+    # and must survive as an ISO string.
+    value_first = read_keyvalue(df, label_col=1, value_col=0)
+    assert value_first == {"template_updated": "2026-01-06T00:00:00",
+                           "laser_power": 28}
 
 
 def test_the_real_file_that_found_this_stores_a_usable_dict():

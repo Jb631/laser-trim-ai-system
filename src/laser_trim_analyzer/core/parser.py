@@ -547,6 +547,44 @@ class ExcelParser:
         # Multiple tracks if we have TRK1 and TRK2
         return len(set(re.findall(r'TRK\d', ' '.join(trk_sheets), re.I))) > 1
 
+    @staticmethod
+    def _log_recipe_failure(xl: pd.ExcelFile, file_path: Path, exc: Exception) -> None:
+        """Say that a file lost its per-pass recipes, at a level that is SEEN.
+
+        Losing them means every pass row for the file gets NULL
+        laser_cut_length, speeds, trim voltage and tolerances -- the half of
+        the capture that records what the laser was TOLD to do, as opposed to
+        what came out. In the middle of an unattended 151,000-file overnight
+        run, that has to be visible in the morning.
+
+        The level turns on whether the sheet was there:
+
+        - Sheet present, read raised: a real defect. WARNING. `__main__`
+          configures the root logger at INFO with nothing lowering this
+          module, so DEBUG here was invisible in exactly the run it was
+          written for -- the reviewer made `read_per_pass` raise and got zero
+          lines. The "it would be noisy" worry does not survive the data:
+          every one of the 584 corpus files and all 5 fixtures carries a
+          `Trim Parameters` sheet and none of them raised, so a WARNING would
+          have fired zero times across the whole corpus.
+        - Sheet absent: ordinary, and the common way into this handler.
+          DEBUG, so it does not shout once per System B file.
+        """
+        try:
+            has_sheet = "Trim Parameters" in (xl.sheet_names or [])
+        except Exception:               # a workbook too broken to list sheets
+            has_sheet = False
+        if has_sheet:
+            logger.warning(
+                "Per-pass recipes LOST for %s: the 'Trim Parameters' sheet is "
+                "present but could not be read (%s: %s). Every trim pass for "
+                "this file will store NULL cut length, speeds, trim voltage "
+                "and tolerances.",
+                file_path.name, type(exc).__name__, exc)
+        else:
+            logger.debug("No 'Trim Parameters' sheet for %s (%s: %s)",
+                         file_path.name, type(exc).__name__, exc)
+
     def _extract_tracks(
         self, xl: pd.ExcelFile, file_path: Path, system_type: SystemType
     ) -> List[Dict[str, Any]]:
@@ -567,16 +605,7 @@ class ExcelParser:
             recipes = _ts.read_per_pass(
                 pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
         except Exception as exc:
-            # A file with no "Trim Parameters" sheet is ordinary and this is
-            # how it lands here, so the swallow itself is right. The SILENCE
-            # was not: if read_per_pass ever raises for a real reason, every
-            # pass row for this file gets NULL laser_cut_length, speeds, trim
-            # voltage and tolerances -- the recipe half of the capture --
-            # with no trace at all, in the middle of an unattended 151k-file
-            # run. Debug, not warning: the absent-sheet case is the common
-            # one and must not shout on every System B file.
-            logger.debug("No per-pass recipes for %s: %s: %s",
-                         file_path.name, type(exc).__name__, exc)
+            self._log_recipe_failure(xl, file_path, exc)
             recipes = []
 
         # Find track sheets
@@ -683,8 +712,7 @@ class ExcelParser:
             recipes = _ts.read_per_pass(
                 pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
         except Exception as exc:
-            logger.debug("No per-pass recipes for %s: %s: %s",
-                         file_path.name, type(exc).__name__, exc)
+            self._log_recipe_failure(xl, file_path, exc)
             recipes = []
 
         # Find untrimmed and trimmed sheets
