@@ -17,6 +17,8 @@ import pandas as pd
 import numpy as np
 
 from laser_trim_analyzer.core.models import SystemType, FileMetadata
+from laser_trim_analyzer.core import trim_passes as _tp
+from laser_trim_analyzer.core import trim_setup as _ts
 from laser_trim_analyzer.utils.constants import (
     SYSTEM_A_COLUMNS, SYSTEM_B_COLUMNS,
     SYSTEM_A_CELLS, SYSTEM_B_CELLS,
@@ -103,6 +105,34 @@ class ExcelParser:
             # Extract track data (needs xl)
             tracks = self._extract_tracks(xl, file_path, format_type)
 
+            # The laser parameter block for this file: resistance limits,
+            # laser settings, ignored-point counts. Must be read here, while
+            # `xl` is still open — it closes at the end of this `with` block,
+            # and pandas can't read from it afterward. Three candidate
+            # (sheet, column layout) triples cover System A's two label-first
+            # sheets and System B/C's single value-first sheet; layouts that
+            # don't apply to this file are read and immediately discarded ("A
+            # layout that produced nothing was the wrong layout") rather than
+            # branched on system type, so a file is never assumed to be
+            # exactly one layout.
+            trim_setup: Dict[str, Any] = {}
+            for sheet, label_col, value_col in (
+                    ("Track Parameters", 0, 1),     # System A
+                    ("Model Parameters", 0, 1),     # System A
+                    ("Model Parameters", 1, 0)):    # System B/C: value first
+                if sheet not in sheet_names:
+                    continue
+                try:
+                    got = _ts.read_keyvalue(
+                        pd.read_excel(xl, sheet_name=sheet, header=None),
+                        label_col=label_col, value_col=value_col)
+                except Exception:
+                    continue
+                # A layout that produced nothing was the wrong layout for this file.
+                if len(got) >= 3:
+                    for k, v in got.items():
+                        trim_setup.setdefault(k, v)
+
         # Build metadata after file is closed (metadata carries the IDENTITY,
         # extraction above used the FORMAT).
         metadata = self._build_metadata(file_path, system_type, has_multi_tracks, test_date)
@@ -111,6 +141,7 @@ class ExcelParser:
             "metadata": metadata,
             "tracks": tracks,
             "file_hash": file_hash,
+            "trim_setup": trim_setup or None,
         }
 
     def _calculate_hash(self, file_path: Path) -> str:
@@ -529,6 +560,15 @@ class ExcelParser:
         """Extract tracks from System A file."""
         tracks = []
 
+        # Per-pass recipes, shared by every track in this file (the sheet
+        # holds one column per pass across ALL tracks/sections, labelled
+        # "<SEC>-<TRK>-<TRM>"). Read once, joined per-track below.
+        try:
+            recipes = _ts.read_per_pass(
+                pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
+        except Exception:
+            recipes = []
+
         # Find track sheets
         for track_id in ["TRK1", "TRK2"]:
             # Find untrimmed sheet
@@ -605,6 +645,9 @@ class ExcelParser:
 
             if track_data:
                 track_data["trim_pass_count"] = trim_pass_count
+                start_row = track_data.pop("start_row", 0)
+                track_data["trim_passes"] = self._read_trim_passes(
+                    xl, SystemType.A, track_id, start_row, recipes)
                 tracks.append(track_data)
 
         return tracks
@@ -612,6 +655,13 @@ class ExcelParser:
     def _extract_system_b_tracks(self, xl: pd.ExcelFile, file_path: Path) -> List[Dict[str, Any]]:
         """Extract tracks from System B file."""
         tracks = []
+
+        # Same per-pass recipe sheet as System A (see _extract_system_a_tracks).
+        try:
+            recipes = _ts.read_per_pass(
+                pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
+        except Exception:
+            recipes = []
 
         # Find untrimmed and trimmed sheets
         untrimmed_sheet = None
@@ -679,6 +729,9 @@ class ExcelParser:
 
             if track_data:
                 track_data["trim_pass_count"] = trim_pass_count
+                start_row = track_data.pop("start_row", 0)
+                track_data["trim_passes"] = self._read_trim_passes(
+                    xl, SystemType.B, sys_b_track_id, start_row, recipes)
                 tracks.append(track_data)
 
         return tracks
@@ -1030,6 +1083,11 @@ class ExcelParser:
                 "station_compensation": station_compensation,
                 "theory_volts": theory_volts,
                 "test_volts": test_volts,
+                # Internal bookkeeping only — popped off by the caller before
+                # the track dict is kept. Trim-pass sweeps share this sheet's
+                # header layout, so the caller reuses this instead of
+                # recomputing it per pass (see _read_trim_passes).
+                "start_row": data_start,
             }
 
         except Exception as e:
@@ -1038,6 +1096,85 @@ class ExcelParser:
                 exc_info=True,
             )
             return None
+
+    # "<sec> <trk> <rest>" — the same grouping trim_passes._A uses to find a
+    # track's pass sheets, kept as a separate pattern here because that one
+    # is a private module detail, not part of the committed interface.
+    # "rest" ends in the TRM token when the sheet is named after the recipe
+    # it used, e.g. "SEC1 TRK1 2 TRM2" -> rest="2 TRM2" -> trm="TRM2".
+    _PASS_SHEET_RE = re.compile(r"^(?P<sec>\S+)\s+(?P<trk>TRK\d)\s+(?P<rest>.+)$", re.I)
+
+    @staticmethod
+    def _recipe_for_pass(
+        sheet: str, idx: int, recipes: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Join one pass sheet to its Trim Parameters recipe.
+
+        Recipes are labelled "<SEC>-<TRK>-<TRM>" (e.g. "SEC1-TRK1-TRM2", one
+        column per pass across every track in the file). Pass count and
+        recipe count can disagree: a later pass may reuse an earlier
+        recipe verbatim rather than get a new one. Confirmed on
+        dlts_8232-1_243.xls, which has 3 pass sheets ("SEC1 TRK1 1 TRM1",
+        "SEC1 TRK1 2 TRM2", "SEC1 TRK1 3 TRM2") but only 2 recipes
+        ("SEC1-TRK1-TRM1", "SEC1-TRK1-TRM2") — pass 3 reuses TRM2's recipe.
+        Position in the pass list can't express that reuse (position 3 has
+        no recipe at all), so whenever the sheet name carries a TRM token
+        it is joined by that label instead. This also makes the join
+        track-safe on multi-track files, where a raw position into the
+        combined recipe list would drift across tracks.
+
+        Only sheets with no TRM token at all — System B's "Trim 1"/
+        "Trim 2"/"Lin Error", or a plain-numbered System A intermediate
+        sheet under the older naming convention — fall back to position.
+        """
+        m = ExcelParser._PASS_SHEET_RE.match(sheet.strip())
+        if m:
+            parts = m.group("rest").split()
+            if parts and parts[-1].upper().startswith("TRM"):
+                label = (f"{m.group('sec').upper()}-{m.group('trk').upper()}"
+                         f"-{parts[-1].upper()}")
+                for recipe in recipes:
+                    if str(recipe.get("label", "")).strip().upper() == label:
+                        return recipe
+                return {}  # named its own recipe, but nothing matched — don't guess
+        if 0 < idx <= len(recipes):
+            return recipes[idx - 1]
+        return {}
+
+    def _read_trim_passes(
+        self, xl: pd.ExcelFile, system_type: SystemType, track_id: str,
+        start_row: int, recipes: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Sweeps for every pass after the untrimmed one, each joined to its recipe.
+
+        Never raises: a file whose pass sheets are malformed must still parse
+        for everything else. Returns [] when there is nothing to read. Each
+        pass is read in its own try/except so one malformed sheet is skipped
+        rather than discarding every pass already read for this track — real
+        production files are messy.
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            sheets = _tp.pass_sheets(xl.sheet_names, system_type, track_id)
+        except Exception:
+            logger.warning("Could not list trim passes for track %s", track_id, exc_info=True)
+            return out
+
+        for idx, sheet in sheets:
+            try:
+                df = pd.read_excel(xl, sheet_name=sheet, header=None)
+                entry: Dict[str, Any] = {"pass_index": idx, "sheet": sheet}
+                entry.update(_tp.read_pass(df, system_type, start_row))
+                recipe = self._recipe_for_pass(sheet, idx, recipes)
+                entry.update({k: v for k, v in recipe.items() if k not in entry})
+            except Exception:
+                logger.warning(
+                    "Could not read trim pass %r for track %s", sheet, track_id,
+                    exc_info=True,
+                )
+                continue
+            out.append(entry)
+        return out
 
     def _extract_untrimmed_only_track(
         self,

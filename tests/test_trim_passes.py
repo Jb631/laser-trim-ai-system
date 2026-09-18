@@ -1,8 +1,10 @@
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytest
 from laser_trim_analyzer.core.models import SystemType
+from laser_trim_analyzer.core.parser import ExcelParser
 from laser_trim_analyzer.core.trim_passes import pass_sheets, read_pass
 
 DLTS = "tests/fixtures/trim/dlts_8232-1_243.xls"
@@ -151,3 +153,76 @@ def test_aligned_column_longer_than_positions_logs_a_warning(caplog):
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("errors" in msg and "3" in msg and "2" in msg for msg in warnings), (
         f"expected a warning naming the key and both lengths, got: {warnings}")
+
+
+# ---------------------------------------------------------------------------
+# Parser wiring: the two reader modules above are only useful once parse_file
+# actually calls them. These exercise that integration.
+# ---------------------------------------------------------------------------
+
+def test_parser_attaches_passes_to_the_track():
+    result = ExcelParser().parse_file(Path(DLTS))
+    track = result["tracks"][0]
+    assert len(track["trim_passes"]) >= 2
+    first = track["trim_passes"][0]
+    assert first["pass_index"] == 1
+    assert len(first["errors"]) > 50
+    assert first["laser_cut_length_mm"] == 0.75   # recipe joined to sweep
+
+
+def test_parser_attaches_setup_to_the_file():
+    result = ExcelParser().parse_file(Path(DLTS))
+    setup = result["trim_setup"]
+    assert setup["initial_resistance_lower_limit"] == 4200
+    assert setup["final_resistance_upper_limit"] == 5500
+
+
+def test_system_b_setup_carries_the_final_resistance_spec():
+    result = ExcelParser().parse_file(Path(LTS))
+    setup = result["trim_setup"]
+    assert setup["min_resistance"] == 5000
+    assert setup["max_resistance"] == 5500
+
+
+def test_everything_the_parser_returned_before_is_unchanged():
+    """The keys that existed before capture must still be present."""
+    track = ExcelParser().parse_file(Path(DLTS))["tracks"][0]
+    for key in ("track_id", "positions", "errors", "upper_limits", "lower_limits",
+                "untrimmed_positions", "untrimmed_errors", "travel_length",
+                "linearity_spec", "untrimmed_resistance", "trimmed_resistance"):
+        assert key in track, f"capture dropped the pre-existing key {key}"
+
+
+def test_pass_reusing_an_earlier_recipe_is_joined_by_trm_label_not_position():
+    """dlts_8232-1_243.xls has 3 pass sheets ("SEC1 TRK1 1 TRM1",
+    "SEC1 TRK1 2 TRM2", "SEC1 TRK1 3 TRM2") but only 2 recipes
+    ("SEC1-TRK1-TRM1", "SEC1-TRK1-TRM2") — pass 3 reuses TRM2's recipe
+    rather than getting one of its own.
+
+    A positional join (recipes[idx - 1]) leaves pass 3 unjoined, since
+    there is no recipes[2]. The sheet name's own TRM token is what
+    recovers the correct recipe: pass 3 must carry TRM2's recipe, with
+    the same cut length as pass 2.
+    """
+    result = ExcelParser().parse_file(Path(DLTS))
+    passes = result["tracks"][0]["trim_passes"]
+    assert len(passes) == 3
+
+    second, third = passes[1], passes[2]
+    assert third["pass_index"] == 3
+    assert "laser_cut_length_mm" in third, "pass 3 must carry a recipe, not go unjoined"
+    assert third["laser_cut_length_mm"] == second["laser_cut_length_mm"] == 0.88
+
+
+def test_pass_count_matching_recipe_count_still_joins_correctly():
+    """dlts_8232-1_242.xls uses the same Trim Parameters sheet as the 243
+    fixture above (recipes SEC1-TRK1-TRM1=0.75, SEC1-TRK1-TRM2=0.88) but
+    stopped after 2 passes, so pass count equals recipe count exactly and
+    a plain positional join would also happen to get this right. Covered
+    so the TRM-label join can't silently break the common 1:1 case while
+    fixing the reuse case above."""
+    result = ExcelParser().parse_file(Path("tests/fixtures/trim/dlts_8232-1_242.xls"))
+    passes = result["tracks"][0]["trim_passes"]
+    assert len(passes) == 2
+    assert passes[0]["laser_cut_length_mm"] == 0.75
+    assert passes[1]["laser_cut_length_mm"] == 0.88
