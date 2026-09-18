@@ -5199,6 +5199,37 @@ class DatabaseManager:
                         metadata, this_path, file_hash, file_size,
                         file_modified_date,
                         f"same content as final_test_results id {dup_id}")
+                # Refresh the stored verdict and tracks from THIS parse.
+                # Trim rows have always updated in place on a re-read
+                # (_update_existing_analysis); this early return used to
+                # hand back the old id and touch nothing else, so a
+                # reprocess of the ~151k-row work database silently
+                # refreshed only half of what anyone would expect.
+                # apply_final_test_regrade is the SAME writer the re-grade
+                # repair pass already uses, so a refreshed row is
+                # indistinguishable from a freshly graded one. It takes
+                # _write_lock itself, which is fine — the lock is an RLock
+                # specifically so nested acquisitions on this thread do not
+                # deadlock (see its declaration).
+                #
+                # Never fatal: this save path runs unattended, overnight,
+                # over ~151,000 files. apply_final_test_regrade already
+                # catches its own exceptions and reports failure by
+                # returning False rather than raising, so this try/except
+                # is belt-and-suspenders for anything that still escapes
+                # it. Either way, one malformed record must cost only its
+                # own refresh, not this file's save (the row being
+                # refreshed already exists and is valid, just possibly
+                # stale) and not the run. See the task report for the full
+                # reasoning.
+                try:
+                    self.apply_final_test_regrade(dup_id, tracks, test_results)
+                except Exception:
+                    logger.warning(
+                        "Could not refresh final test %s on reprocess "
+                        "(final_test_results id %s) — leaving the "
+                        "previously stored result in place",
+                        metadata.get("filename"), dup_id, exc_info=True)
                 logger.debug(f"Final test already exists: {metadata.get('filename')}")
                 return dup_id
 
