@@ -1,5 +1,89 @@
 # Taking V6 to work — first-day checklist
 
+## ⚡ 2026-09-18 — THE BIG ONE: a fresh database, run overnight
+
+This is the run everything else has been waiting for. Budget **four to eight
+hours** — start it before you leave, not at 4pm.
+
+### Why
+
+The app was throwing away most of what your laser files contain. It read the
+untrimmed sweep and the final sweep, and discarded everything in between.
+
+It now keeps:
+
+| | what it is | which machines |
+|---|---|---|
+| **Every intermediate trim pass** | the full sweep at each stage — positions, errors, limits, resistance at that moment — plus the recipe used for that pass | A, B and C |
+| **The laser parameter block** | incoming and final resistance limits, laser power, pulse duration, cut length, test voltage, indexing, ignored-point counts | A, B and C |
+| **Per-position process data** | at *every point*: the cut length applied, the trim current, what the machine **predicted** the correction would be, and what it **actually got** | System A (DLTS) only |
+
+That last row is the one to care about. It is the before-and-after of every
+cut ever made, recorded for free, going back through your whole history —
+roughly 114,000 pass rows, about 200 MB on top of the database.
+
+**That is the raw material for the cut-length model you asked me not to
+forget.** With it, the question changes from "was that cut any good?" to
+"what cut should we have made?" It cannot be designed until the data exists,
+which is what this run creates. Its entry criteria are written down in
+`docs/superpowers/specs/2026-09-17-process-recommendations-design.md`.
+
+"Predicted vs actual" is also, for free, the machine's own accuracy on every
+cut — and it is per-machine, so laser A and laser B can be compared directly.
+
+### Why a FRESH database and not a reprocess over the old one
+
+Four reasons, and the last two are hours of your life:
+
+1. A reprocess over the existing database would capture only part of this.
+2. It re-grades **every** final-test record with the ignore-window fix — which
+   makes the pending re-grade unnecessary. **That alone saves about fifteen
+   hours.**
+3. It clears the legacy verdict count to zero instead of chipping at 149,000 rows.
+4. Nothing is lost. Everything in the database is derived from the files.
+   Trained models live in their own folder and survive.
+
+### The sequence
+
+1. **`git pull`.**
+2. **Back up the current database and move it aside.** Do not delete it —
+   move it. `data\analysis.db` → somewhere safe with today's date on it.
+3. **Launch the app.** It creates the new schema, empty.
+4. **Run every folder, with "incremental" UNCHECKED.** This is the long part.
+5. **Retrain when it finishes** (Settings → train models).
+
+Leave it overnight. If it is still going in the morning that is normal.
+
+### What was proven before asking you to do this
+
+You have said you do not want the processor messed up. So the claim that this
+changed nothing is not an opinion:
+
+- **645 real files** were parsed by the old code and the new code, and every
+  stored value compared. **Zero differences.** (`tests/test_parse_all_models.py`,
+  37 seconds — worth running yourself after any pull.)
+- A second, deeper proof compares **26 stored database columns** on four real
+  workbooks, all the way through the save path, against a baseline captured
+  from the tree as it was *before* this work.
+- Both proofs were deliberately broken first, to confirm they can actually
+  fail. So were the new QA-sweep checks.
+
+One real bug was found and fixed on the way: **a reprocess used to refresh
+trim rows but silently skip final-test rows**, so re-running a file did not
+actually update its final-test verdict. It does now.
+
+### Still on your list at work
+
+- **Check the 8232-1 station.** You said one of the two stations looks wrong
+  and they should not differ. It is the only customer-facing model where the
+  laser and final test grade to different limit tables — 29 of the other
+  findings are trim-only.
+- **First real LTS3 file validation.** The app parses laser 3 already (it is
+  format-identical to laser 2, identified by the `LTS3` folder); it has just
+  never seen a real one.
+
+---
+
 ## ⚡ 2026-09-17 — the repeat files stop repeating (pull, then one run)
 
 "i dont want to keep processing repeat files. i just want to process new

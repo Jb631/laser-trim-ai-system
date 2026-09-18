@@ -276,3 +276,17 @@ carried by this spec's approval.
   reprocess over an already-populated database a refreshed verdict can sit
   beside a trim link from the previous parse, so any analyzer that reads
   those columns together must not assume they came from the same parse.
+- **`initial_trim_value` lives in the per-pass `recipe` JSON, not in its own
+  column** (added 2026-09-17, Task 9 review). It is per-point data — one
+  value per position, like `trim_target` and `final_trim_value` — but
+  `TrimPass` gives columns to six of the seven System A per-point series and
+  this one falls into the recipe blob. Nothing is lost; it reads back
+  whole. But an analyzer cannot filter or aggregate on it in SQL the way it
+  can on the other six, and a reader who assumes the recipe blob holds only
+  per-pass scalars will mis-handle it. Moving it to its own column is a
+  schema change and belongs with the engine work, not here.
+- **The no-op proof covers single-track files only** (added 2026-09-17,
+  Task 9 review). All four trim fixtures are single-track 8232-1. The
+  multi-track save path is covered by a unit test rather than by the
+  fixture-driven proof, so a multi-track regression that the unit test does
+  not model would not be caught by the baseline diff.
