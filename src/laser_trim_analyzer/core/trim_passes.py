@@ -7,6 +7,7 @@ untrimmed sweep and is already stored on the track row, so it never appears
 here.
 """
 import logging
+import numbers
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -74,10 +75,19 @@ def _col(df: pd.DataFrame, idx: int, start_row: int) -> List[Optional[float]]:
         return out
     for r in range(start_row, df.shape[0]):
         v = df.iat[r, idx]
-        if v is None or (isinstance(v, float) and pd.isna(v)) or not isinstance(v, (int, float)):
+        # numbers.Real, NOT isinstance(v, (int, float)): a column pandas types
+        # as int64 hands back np.int64, which is neither -- so every cell read
+        # as None and the column vanished with no error. Real instance:
+        # `8340_147_TA_Test Data_4-2-2026_3-01 PMTrimmed Correct.xls`, `Lin
+        # Error`, 61 integer-zero cells silently dropped. Rare only because a
+        # header string usually forces object dtype; a model writing
+        # whole-number cut lengths would lose the lot. bool is an Integral, so
+        # it is excluded explicitly -- a TRUE cell is not a measurement.
+        if v is None or isinstance(v, bool) or not isinstance(v, numbers.Real):
             out.append(None)
         else:
-            out.append(float(v))
+            f = float(v)
+            out.append(None if f != f else f)    # NaN is a blank, not a value
     while out and out[-1] is None:      # trailing blank rows are not data
         out.pop()
     return out

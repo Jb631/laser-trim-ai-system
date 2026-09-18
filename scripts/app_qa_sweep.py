@@ -1522,15 +1522,30 @@ def check_trim_capture() -> None:
     # Observed on the four tracked fixtures and pinned. "blanks" counts None
     # cells across upper_limits + lower_limits — the ignored points whose
     # limits must stay blank rather than become 0.0.
+    # "populated" is the non-None count per System A per-point column, summed
+    # over that file's passes. A bare "at least one real number" bar passes a
+    # column of 55 Nones and one float, and the realistic bug with that exact
+    # shape is an off-by-one index landing on a SPARSE neighbour -- the class
+    # of 1c70a0a. The length check cannot see it either, because `_aligned`
+    # pads to the same length whichever column it read. These columns are the
+    # input to the cut-length model, so a hollow one matters.
     EXPECTED = {
-        "dlts_8232-1_242.xls": {"tracks": ["TRK1"], "passes": 2,
-                                "setup_keys": 46, "blanks": 44},
-        "dlts_8232-1_243.xls": {"tracks": ["TRK1"], "passes": 3,
-                                "setup_keys": 46, "blanks": 66},
+        "dlts_8232-1_242.xls": {
+            "tracks": ["TRK1"], "passes": 2, "setup_keys": 46, "blanks": 44,
+            "populated": {"trim_target": 96, "initial_trim_value": 96,
+                          "final_trim_value": 96, "pred_deltas": 112,
+                          "used_deltas": 112, "cut_lengths": 112,
+                          "trim_currents": 112}},
+        "dlts_8232-1_243.xls": {
+            "tracks": ["TRK1"], "passes": 3, "setup_keys": 46, "blanks": 66,
+            "populated": {"trim_target": 144, "initial_trim_value": 144,
+                          "final_trim_value": 144, "pred_deltas": 168,
+                          "used_deltas": 168, "cut_lengths": 168,
+                          "trim_currents": 168}},
         "lts_8232-1_193.xls": {"tracks": ["default"], "passes": 3,
-                               "setup_keys": 70, "blanks": 72},
+                               "setup_keys": 70, "blanks": 72, "populated": {}},
         "lts_8232-1_194.xls": {"tracks": ["default"], "passes": 3,
-                               "setup_keys": 70, "blanks": 72},
+                               "setup_keys": 70, "blanks": 72, "populated": {}},
     }
 
     fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
@@ -1550,7 +1565,7 @@ def check_trim_capture() -> None:
     parsed_ok = 0
     blanks_seen = 0
     wrong_passes, wrong_tracks, wrong_setup, wrong_blanks = [], [], [], []
-    zero_limits, bad_core, a_bad, b_leaked = [], [], [], []
+    zero_limits, bad_core, a_bad, b_leaked, hollow = [], [], [], [], []
 
     for f in fixtures:
         want = EXPECTED.get(f.name)
@@ -1583,6 +1598,7 @@ def check_trim_capture() -> None:
             wrong_tracks.append(f"{f.name}: {got_tracks} != {want['tracks']}")
 
         file_passes = file_blanks = 0
+        populated = {k: 0 for k in A_PER_POINT}
         for track in tracks:
             passes = track.get("trim_passes") or []
             file_passes += len(passes)
@@ -1606,6 +1622,9 @@ def check_trim_capture() -> None:
                         bad = _column_defect(p, key, n)
                         if bad:
                             a_bad.append(f"{where} {bad}")
+                        else:
+                            populated[key] += sum(
+                                1 for v in p[key] if v is not None)
                 else:
                     leaked = [k for k in A_PER_POINT if k in p]
                     if leaked:
@@ -1618,6 +1637,12 @@ def check_trim_capture() -> None:
             wrong_blanks.append(
                 f"{f.name}: {file_blanks} blank limits, expected {want['blanks']}")
         blanks_seen += file_blanks
+        want_pop = want["populated"]
+        for key in A_PER_POINT:
+            got = populated[key] if want_pop else 0
+            if got != want_pop.get(key, 0):
+                hollow.append(f"{f.name} {key}: {got} real values, "
+                              f"expected {want_pop.get(key, 0)}")
 
     check("trim capture: every fixture parses", parsed_ok == len(EXPECTED),
           f"{parsed_ok} of {len(EXPECTED)}")
@@ -1649,9 +1674,79 @@ def check_trim_capture() -> None:
           not a_bad, "; ".join(a_bad[:3]) if a_bad
           else f"all {len(A_PER_POINT)} columns present, aligned and populated "
                f"on every System A pass")
+    # The sparse-neighbour case the "at least one real number" bar cannot see.
+    check("trim capture: each System A column holds every value it is known "
+          "to hold", not hollow, "; ".join(hollow[:3]) if hollow
+          else "per-column non-None counts as pinned on both DLTS fixtures")
     check("trim capture: System B does not fake the columns it lacks",
           not b_leaked, "; ".join(b_leaked[:3]) if b_leaked
           else "absent, not empty, on every non-System-A pass")
+    _check_setup_block_survives_json()
+
+
+def _check_setup_block_survives_json() -> None:
+    """A parameter block with a non-string cell must store as a real dict.
+
+    `trim_setup.parameters` is one SafeJSON blob, and SafeJSON substitutes
+    None for a value it cannot serialise -- so a single `Template Updated`
+    datetime did not lose that one cell, it wrote the WHOLE block as the
+    literal string "null", which reads back as `[]`. 44 of 522 real DLTS
+    files across 23 models, with the promoted columns landing correctly the
+    whole time, which is exactly why nobody noticed.
+
+    The fixture is kept OUT of tests/fixtures/trim on purpose: that directory
+    is globbed by the pinned table above and by the no-op baseline, and a
+    fifth file there would break both for the wrong reason.
+    """
+    import json as _json  # noqa: E402
+    from laser_trim_analyzer.core.parser import ExcelParser  # noqa: E402
+
+    src = REPO / "tests" / "fixtures" / "trim_setup" / "8251-1_29_template_updated.xls"
+    check("trim setup: the Template Updated fixture is present", src.exists(),
+          str(src))
+    if not src.exists():
+        return
+    try:
+        setup = (ExcelParser().parse_file(src) or {}).get("trim_setup")
+    except Exception as exc:
+        check("trim setup: the Template Updated fixture parses", False,
+              f"{type(exc).__name__}: {exc}")
+        return
+
+    check("trim setup: the file really does carry the non-string cell that "
+          "broke this", isinstance(setup, dict)
+          and setup.get("template_updated") is not None,
+          f"template_updated={setup.get('template_updated')!r}"
+          if isinstance(setup, dict) else f"setup={setup!r}")
+    # The failure shape, asserted directly: a dict, not a list, and not the
+    # 4-byte "null" SafeJSON writes when serialisation fails.
+    try:
+        encoded = _json.dumps(setup)
+        ok, why = True, f"{len(setup)} keys, {len(encoded)} bytes of JSON"
+    except (TypeError, ValueError) as exc:
+        ok, why = False, (f"{type(exc).__name__}: {exc} -- SafeJSON would "
+                          f"store the WHOLE block as \"null\"")
+    check("trim setup: the whole parameter block survives JSON serialisation",
+          ok and isinstance(setup, dict) and len(setup) > 3, why)
+    # And a date is stored as text a consumer can read, not silently dropped.
+    check("trim setup: a date cell is stored as an ISO string, not discarded",
+          isinstance(setup, dict)
+          and isinstance(setup.get("template_updated"), str),
+          f"template_updated={setup.get('template_updated')!r}"
+          if isinstance(setup, dict) else f"setup={setup!r}")
+    # A date in the LABEL column must not become a key: _clean coerces values
+    # so they survive JSON, and running labels through it invented the key
+    # '2026_01_06t00_00_00' on this very file.
+    # Not "starts with a digit": `8251_1` and `05bf8251_1` are real labels on
+    # this sheet (the model number, with the value "Model"). The shape ruled
+    # out is a key derived from a coerced DATE. The key COUNT is pinned too,
+    # which is what actually catches a label rule that starts inventing keys.
+    import re as _re  # noqa: E402
+    dated = [k for k in (setup or {}) if _re.match(r"^\d{4}_\d{2}_\d{2}", k)]
+    check("trim setup: a date in the label column does not become a key",
+          not dated and isinstance(setup, dict) and len(setup) == 54,
+          f"dated={dated[:3]} keys={len(setup) if isinstance(setup, dict) else setup} "
+          f"(expected 54)")
 
 
 def _column_defect(p: dict, key: str, n: int):
@@ -2954,8 +3049,26 @@ def main() -> int:
                 offenders.setdefault(model, [0, reason])
                 offenders[model][0] += 1
         # Guard against a silently-empty scan (weak-assertion trap).
+        # RELATIVE to the eligible rows, not an absolute 100_000: the table
+        # holds 86,856 rows, all of them eligible, so the old constant could
+        # not be satisfied by this database before OR after a rebuild. A gate
+        # that can never pass is as useless as one that can never fail, and a
+        # permanently-red line trains the reader to skip past red. 81,017 of
+        # the 86,856 are actually scanned (93.3%); the rest parse to an empty
+        # limit array and are skipped on purpose a few lines up. The floor is
+        # 75% -- real headroom under the observed figure, still nowhere near
+        # the collapse-to-nothing this exists to catch, and expressed as a
+        # ratio so it survives the reprocess into a fresh database.
+        eligible = raw.execute(
+            "SELECT COUNT(*) FROM track_results t "
+            "JOIN analysis_results a ON a.id = t.analysis_id "
+            "WHERE t.upper_limits IS NOT NULL AND t.lower_limits IS NOT NULL"
+        ).fetchone()[0]
         check("data quality: limit-column scan actually examined rows",
-              scanned > 100_000, f"{scanned} tracks with limit data scanned")
+              eligible > 0 and scanned >= 0.75 * eligible,
+              f"{scanned} of {eligible} eligible tracks scanned"
+              + (f" ({eligible - scanned} had empty limit arrays)"
+                 if eligible else ""))
         n_bad = sum(v[0] for v in offenders.values())
         if n_bad:
             detail = "; ".join(f"{m}={v[0]}" for m, v in sorted(offenders.items()))

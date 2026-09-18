@@ -566,7 +566,17 @@ class ExcelParser:
         try:
             recipes = _ts.read_per_pass(
                 pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
-        except Exception:
+        except Exception as exc:
+            # A file with no "Trim Parameters" sheet is ordinary and this is
+            # how it lands here, so the swallow itself is right. The SILENCE
+            # was not: if read_per_pass ever raises for a real reason, every
+            # pass row for this file gets NULL laser_cut_length, speeds, trim
+            # voltage and tolerances -- the recipe half of the capture --
+            # with no trace at all, in the middle of an unattended 151k-file
+            # run. Debug, not warning: the absent-sheet case is the common
+            # one and must not shout on every System B file.
+            logger.debug("No per-pass recipes for %s: %s: %s",
+                         file_path.name, type(exc).__name__, exc)
             recipes = []
 
         # Find track sheets
@@ -667,11 +677,14 @@ class ExcelParser:
         """Extract tracks from System B file."""
         tracks = []
 
-        # Same per-pass recipe sheet as System A (see _extract_system_a_tracks).
+        # Same per-pass recipe sheet as System A (see _extract_system_a_tracks),
+        # and the same reason for logging rather than swallowing in silence.
         try:
             recipes = _ts.read_per_pass(
                 pd.read_excel(xl, sheet_name="Trim Parameters", header=None))
-        except Exception:
+        except Exception as exc:
+            logger.debug("No per-pass recipes for %s: %s: %s",
+                         file_path.name, type(exc).__name__, exc)
             recipes = []
 
         # Find untrimmed and trimmed sheets

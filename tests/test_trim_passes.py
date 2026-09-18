@@ -333,3 +333,30 @@ def test_first_pass_start_row_matches_the_known_offset_on_a_real_fixture():
     must independently arrive at the same answer."""
     xl = pd.ExcelFile(DLTS)
     assert ExcelParser()._first_pass_start_row(xl, SystemType.A, "SEC1 TRK1 2 TRM2") == 1
+
+
+def test_a_numpy_integer_column_is_not_silently_dropped():
+    """np.int64 is neither int nor float, so `isinstance(v, (int, float))`
+    read every cell of an int64-typed column as blank and the column
+    vanished with no error. Real instance: `8340_147_TA_Test Data_...xls`,
+    `Lin Error`, 61 integer-zero cells. Rare only because a header string
+    usually forces object dtype -- a model writing whole-number cut lengths
+    would lose the lot.
+    """
+    import numpy as np
+    import pandas as pd
+    from laser_trim_analyzer.core.trim_passes import _col
+    df = pd.DataFrame({0: np.array([0, 1, 2, 3], dtype=np.int64)})
+    assert df.dtypes[0] == np.int64
+    assert _col(df, 0, 0) == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_blanks_and_booleans_are_still_blanks():
+    """The widened numeric test must not start accepting non-measurements.
+    bool is an Integral, so True would read as 1.0 without the explicit guard.
+    """
+    import numpy as np
+    import pandas as pd
+    from laser_trim_analyzer.core.trim_passes import _col
+    df = pd.DataFrame({0: [1.5, True, None, float("nan"), "x", np.float64(2.5)]})
+    assert _col(df, 0, 0) == [1.5, None, None, None, None, 2.5]
