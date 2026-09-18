@@ -85,8 +85,13 @@ the sheet. System A reads the numbered track sheets; systems B and C read
 the `Trim N` / `TrimVolts N` sheets. The untrimmed sweep already lives on
 the track row, so this table starts at the first cut.
 
-Sizing: about 1.3 passes per track, roughly 114,000 rows over the full
-history, adding on the order of 200 MB to a 3.7 GB database.
+Sizing: about 1.3 passes per track, roughly 110,000 rows over the full
+history. **The "200 MB" in this spec's first draft was wrong** — it assumed
+four arrays per pass. System A stores eleven. Measured against real files:
+~124 bytes per point on System A, ~51 on System B, giving **about 1.6 GB** of
+JSON text on top of a 3.5 GB database, before SQLite page and index overhead.
+A rebuild keeping the old database beside the new one needs roughly 8.5 GB
+free; 12 GB is the safe number.
 
 **Per file setup.** New table, one row per analysis, holding the whole
 parameter block as stored text plus these promoted, indexed columns:
@@ -289,4 +294,35 @@ carried by this spec's approval.
   Task 9 review). All four trim fixtures are single-track 8232-1. The
   multi-track save path is covered by a unit test rather than by the
   fixture-driven proof, so a multi-track regression that the unit test does
-  not model would not be caught by the baseline diff.
+  not model would not be caught by the baseline diff. Mitigated: the
+  whole-branch review ran the full pipeline over the 30 real two-track DLTS
+  files in the sample base — 60 tracks, 76 pass rows, 0 misfiled, 0 dropped.
+- **On systems B and C the last captured pass duplicates the one before it,
+  so pass counts run one high** (added 2026-09-18, whole-branch review).
+  `Lin Error` is captured as a pass because it is the final state, but its
+  error sweep is identical to the preceding `Trim N` on 59 of 60 real LTS
+  files, and `MAX(pass_index)` exceeds the existing `trim_pass_count` by
+  exactly one on 60 of 62 System B tracks (System A: 545/545 agree). Its
+  recipe is joined positionally to a padding column, so every System B final
+  row also carries a fabricated `laser_cut_direction`.
+  **Finding #6, "multi-pass burden", must not count System B/C passes with a
+  naive `COUNT(*)` or `MAX(pass_index)`** — it would inflate every System B
+  and C model by one pass and manufacture a burden that is not there. Either
+  exclude the `Lin Error` row or subtract one on those systems.
+- **Four promoted columns are always NULL, by system** (added 2026-09-18,
+  whole-branch review). `points_ignored_start` and `points_ignored_end` are
+  NULL on all 515 real System A files — the counts exist, but inside each
+  pass's `recipe` as `initial_linearity_points_ignored`. `test_voltage` and
+  `indexing_method` are NULL on all 62 System B files. Only the System B
+  `initial_resistance_*` NULLs were previously documented, under "Format
+  asymmetry". **An analyzer reading `points_ignored_start` as 0 on System A
+  would grade points the station ignores** — the same blank-versus-zero
+  mistake this project already made once on the final-test side.
+- **`parameters` carries junk keys from the discarded layouts** (added
+  2026-09-18, whole-branch review). The parser tries all three (sheet,
+  layout) combinations and merges with `setdefault`, so reading a value-first
+  sheet label-first yields keys like `'yes'`, `'no'`, `'rotary'` — about 7.4
+  per System B file, 0.4 per System A file. Checked across 577 real files:
+  **0 mis-promotions**, so no promoted column is ever wrong. Cosmetic, but a
+  consumer enumerating the block's keys should not assume they are all real
+  parameter names.

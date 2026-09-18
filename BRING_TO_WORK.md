@@ -20,7 +20,25 @@ It now keeps:
 
 That last row is the one to care about. It is the before-and-after of every
 cut ever made, recorded for free, going back through your whole history —
-roughly 114,000 pass rows, about 200 MB on top of the database.
+roughly 110,000 pass rows.
+
+### ⚠ Check your free disk space first
+
+**Have at least 12 GB free before you start.** The earlier draft of this page
+said the new data would add "about 200 MB". That was wrong — it came from an
+estimate made before anyone measured a real pass row. Measured against your
+actual files it is **about 1.6 GB**, because System A stores eleven arrays per
+pass, not four:
+
+| | |
+|---|---|
+| Database now | 3.5 GB |
+| Rebuilt, with the new tables | **≈ 5.0 GB** |
+| Plus the backup you are keeping beside it | **≈ 8.5 GB total** |
+
+Add SQLite's own page and index overhead and 12 GB free is the safe number.
+This matters because the run is unattended: if the disk fills at hour six,
+it fails with your old database already moved aside.
 
 **That is the raw material for the cut-length model you asked me not to
 forget.** With it, the question changes from "was that cut any good?" to
@@ -527,6 +545,19 @@ escapes 614 → 619. Look at the corrected numbers first and decide.
 
 Until you run it, two QA sweep checks fail by design, naming this script as
 the remedy. That's expected, not a broken build.
+
+> **Correction, 2026-09-18.** Those two checks now **pass**. The sweep still
+> exits red, but on three *different* checks, none of them caused by this
+> work — they sit in code the capture wave never touched. One was a threshold
+> set higher than the table can ever reach (fixed). The other two only fire
+> because the newest 4,000 rows happen to contain no unmeasured point inside
+> a graded band, and they are selected by `id DESC`.
+>
+> **So expect the sweep's red lines to CHANGE after the rebuild, for reasons
+> that mean nothing** — a fresh database reassigns ids in ingest order, so
+> "the newest 4,000 rows" become a different 4,000 rows. If the sweep looks
+> different on the far side of the run, compare it against this note before
+> assuming the rebuild broke something.
 
 ### 2. INVESTIGATE — the stats table that replaces the Excel round-trip
 
