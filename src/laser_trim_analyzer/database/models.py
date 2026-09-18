@@ -587,6 +587,87 @@ class TrackResult(Base):
         return f"<TrackResult(id={self.id}, analysis_id={self.analysis_id}, track_id='{self.track_id}', status='{self.status}')>"
 
 
+class TrimPass(Base):
+    """One laser cut: the sweep measured after it, and the recipe that made it.
+
+    The parser used to keep only the untrimmed sweep and the final one. This
+    is everything in between — the record of what each cut actually did to
+    the curve, which is what a cut-length model would learn from.
+    """
+    __tablename__ = 'trim_passes'
+
+    id = Column(Integer, primary_key=True)
+    track_result_id = Column(Integer, ForeignKey('track_results.id', ondelete='CASCADE'),
+                             nullable=False)
+    pass_index = Column(Integer, nullable=False)   # 1 = first cut; 0 is the untrimmed sweep
+    sheet = Column(String(64))
+    label = Column(String(64))
+
+    positions = Column(SafeJSON, nullable=True)
+    errors = Column(SafeJSON, nullable=True)
+    upper_limits = Column(SafeJSON, nullable=True)
+    lower_limits = Column(SafeJSON, nullable=True)
+
+    # Per-POINT process data. System A only; NULL on B and C, which do not
+    # record it. `cut_lengths` is the cut applied at each position — the
+    # single most valuable column in these files.
+    cut_lengths = Column(SafeJSON, nullable=True)
+    trim_currents = Column(SafeJSON, nullable=True)
+    pred_deltas = Column(SafeJSON, nullable=True)
+    used_deltas = Column(SafeJSON, nullable=True)
+    trim_target = Column(SafeJSON, nullable=True)
+    final_trim_value = Column(SafeJSON, nullable=True)
+
+    # Per-PASS recipe, from the Trim Parameters sheet.
+    laser_cut_length = Column(Float)
+    laser_speed_high = Column(Float)
+    laser_speed_low = Column(Float)
+    trim_voltage = Column(Float)
+    trim_upper_tolerance = Column(Float)
+    trim_lower_tolerance = Column(Float)
+    recipe = Column(SafeJSON, nullable=True)       # everything else from the sheet
+
+    created_date = Column(DateTime, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        Index('idx_trimpass_track', 'track_result_id'),
+        Index('idx_trimpass_track_idx', 'track_result_id', 'pass_index', unique=True),
+    )
+
+
+class TrimSetup(Base):
+    """The laser parameter block for one analysed file.
+
+    Promoted columns are the ones the engine queries across models and over
+    time; `parameters` keeps the whole block so nothing is lost to a schema
+    decision made today.
+    """
+    __tablename__ = 'trim_setup'
+
+    id = Column(Integer, primary_key=True)
+    analysis_id = Column(Integer, ForeignKey('analysis_results.id', ondelete='CASCADE'),
+                         nullable=False, unique=True)
+
+    initial_resistance_low = Column(Float)
+    initial_resistance_high = Column(Float)
+    final_resistance_low = Column(Float)
+    final_resistance_high = Column(Float)
+    theoretical_resistance = Column(Float)
+    test_voltage = Column(Float)
+    laser_power = Column(Float)
+    indexing_method = Column(String(32))
+    points_ignored_start = Column(Integer)
+    points_ignored_end = Column(Integer)
+
+    parameters = Column(SafeJSON, nullable=True)
+    created_date = Column(DateTime, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        Index('idx_trimsetup_analysis', 'analysis_id'),
+        Index('idx_trimsetup_initial_low', 'initial_resistance_low'),
+    )
+
+
 class QAAlert(Base):
     """
     Quality assurance alerts and maintenance notifications.
