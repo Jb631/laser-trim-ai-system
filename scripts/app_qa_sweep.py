@@ -1471,6 +1471,101 @@ def check_multi_folder_ingest() -> None:
     check_ingest_reoffers_only_retryable()
 
 
+def check_trim_capture() -> None:
+    """Passes and setup are captured, and blank limits never become 0.0.
+
+    Standalone: real trim workbooks from tests/fixtures/trim, no database.
+        python scripts/app_qa_sweep.py --only ingest
+
+    Guards the 2026-09-17 capture (per-pass sweeps + the laser setup block).
+    The invariant that actually costs money is the blank one: an ignored point
+    carries no limit, and turning that blank into 0.0 grades every point as
+    failing. That exact bug cost a week on the final-test side in September
+    2026, which is why the blank case gets both a FAIL condition AND a
+    companion check that blanks are genuinely present in the fixtures — a
+    "no zeros found" result is meaningless if there was nothing to get wrong.
+
+    System A records per-POINT process columns (cut length, trim current,
+    predicted vs used delta) that System B does not record at all. Those keys
+    must be ABSENT on System B rather than present-and-empty, so a consumer
+    can tell "this machine does not record it" from "it recorded nothing".
+    """
+    from laser_trim_analyzer.core.models import SystemType  # noqa: E402
+    from laser_trim_analyzer.core.parser import ExcelParser  # noqa: E402
+
+    A_PER_POINT = ("trim_target", "initial_trim_value", "final_trim_value",
+                   "pred_deltas", "used_deltas", "cut_lengths", "trim_currents")
+
+    fixtures = sorted((REPO / "tests" / "fixtures" / "trim").glob("*.xls"))
+    if not fixtures:
+        warn("trim capture: fixtures present", "tests/fixtures/trim is empty")
+        return
+
+    parser = ExcelParser()
+    no_setup, no_passes, zero_limits, blanks_seen = [], [], [], 0
+    a_missing, b_leaked, parsed_ok = [], [], 0
+    for f in fixtures:
+        try:
+            parsed = parser.parse_file(f)
+        except Exception as exc:
+            # An exception must read FAIL, never vanish into a skipped file:
+            # a check that can pass on an ERROR result is itself a bug.
+            check(f"trim capture: {f.name} parses", False,
+                  f"{type(exc).__name__}: {exc}")
+            continue
+        parsed_ok += 1
+        if not parsed.get("trim_setup"):
+            no_setup.append(f.name)
+        system = getattr(parsed.get("metadata"), "system", None)
+        file_passes = 0
+        for track in parsed.get("tracks") or []:
+            passes = track.get("trim_passes") or []
+            file_passes += len(passes)
+            for p in passes:
+                where = f"{f.name} {track.get('track_id')} pass {p.get('pass_index')}"
+                for side in ("upper_limits", "lower_limits"):
+                    vals = p.get(side) or []
+                    blanks_seen += sum(1 for v in vals if v is None)
+                    if any(v == 0.0 for v in vals if v is not None):
+                        zero_limits.append(f"{where} {side}")
+                present = [k for k in A_PER_POINT if k in p]
+                if system == SystemType.A and len(present) != len(A_PER_POINT):
+                    a_missing.append(
+                        f"{where}: {sorted(set(A_PER_POINT) - set(present))}")
+                if system != SystemType.A and present:
+                    b_leaked.append(f"{where}: {present}")
+        if not file_passes:
+            no_passes.append(f.name)
+
+    check("trim capture: every fixture parses", parsed_ok == len(fixtures),
+          f"{parsed_ok} of {len(fixtures)}")
+    check("trim capture: passes read from every fixture", not no_passes,
+          "; ".join(no_passes) if no_passes
+          else f"all {len(fixtures)} files yielded passes")
+    check("trim capture: setup read from every fixture", not no_setup,
+          "; ".join(no_setup) if no_setup else f"all {len(fixtures)} files")
+    # Vacuity guard for the check below: without real blanks in the fixtures,
+    # "no 0.0 found" would be true of code that turns every blank into 0.0.
+    check("trim capture: the fixtures really do carry blank limits",
+          blanks_seen >= 4 * len(fixtures), f"{blanks_seen} blank limit cells")
+    check("trim capture: a blank limit never becomes 0.0", not zero_limits,
+          "; ".join(zero_limits[:3]) if zero_limits
+          else f"0 zero-valued limits across {blanks_seen} blanks")
+    check("trim capture: System A keeps its per-point process columns",
+          not a_missing, "; ".join(a_missing[:3]) if a_missing
+          else f"all {len(A_PER_POINT)} columns on every System A pass")
+    check("trim capture: System B does not fake the columns it lacks",
+          not b_leaked, "; ".join(b_leaked[:3]) if b_leaked
+          else "absent, not empty, on every non-System-A pass")
+
+
+def check_ingest_group() -> None:
+    """The ingest group: the batch contract, the re-offer policy, and the
+    trim-pass/setup capture that rides the same parse."""
+    check_multi_folder_ingest()
+    check_trim_capture()
+
+
 def main() -> int:
     # REQUIRED DB-path argv (2026-08-31; was optional with a production
     # default). The sweep opens its target read-write, and the old default —
@@ -2244,7 +2339,7 @@ def main() -> int:
     check_ft_incremental_fastpath()
     check_ft_parser_console_silence()
     check_ft_graded_window()
-    check_multi_folder_ingest()
+    check_ingest_group()
 
     # Ingest guard fires on a synthetic corrupt track.
     guard_track = TrackData(
@@ -2824,7 +2919,7 @@ def _tally() -> int:
 STANDALONE = {"ft-fastpath": check_ft_incremental_fastpath,
               "ft-silence": check_ft_parser_console_silence,
               "ft-window": check_ft_graded_window,
-              "ingest": check_multi_folder_ingest}
+              "ingest": check_ingest_group}
 
 
 if __name__ == "__main__":
