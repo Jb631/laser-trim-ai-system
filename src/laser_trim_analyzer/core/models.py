@@ -180,6 +180,12 @@ class TrackData(BaseAnalysisModel):
     trimmed_resistance: Optional[float] = Field(None, ge=0, description="Trimmed resistance")
     measured_electrical_angle: Optional[float] = Field(None, description="Measured electrical angle from trim sheet")
 
+    trim_passes: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="One entry per laser trim pass: the sweep at that stage plus "
+                    "the recipe used. Empty when the file records no intermediate "
+                    "passes, or when read from a database written before capture.")
+
     # Risk assessment (from ML)
     failure_probability: Optional[float] = Field(None, ge=0, le=1, description="Failure probability")
     risk_category: RiskCategory = Field(default=RiskCategory.UNKNOWN, description="Risk category")
@@ -301,6 +307,12 @@ class AnalysisResult(BaseAnalysisModel):
     # Data quality flags — validation issues found during ingest
     data_quality: str = Field(default="good", description="Data quality: 'good' or 'suspect'")
     data_quality_issues: List[str] = Field(default_factory=list, description="List of validation issues found")
+
+    trim_setup: Optional[Dict[str, Any]] = Field(
+        None,
+        description="The laser parameter block for this file: resistance limits, "
+                    "laser settings, ignored-point counts. None for files that "
+                    "carry no parameter sheet.")
 
     @field_validator('tracks')
     @classmethod
