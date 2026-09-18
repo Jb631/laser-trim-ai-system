@@ -1,3 +1,5 @@
+import logging
+
 import pandas as pd
 import pytest
 from laser_trim_analyzer.core.models import SystemType
@@ -110,3 +112,42 @@ def test_read_pass_aligns_every_key_to_positions_length():
     # position, not be dropped and let an earlier value slide into its slot.
     assert b_sweep["positions"][-1] == pytest.approx(27.5)
     assert b_sweep["errors"][-1] is None
+
+
+def test_aligned_column_longer_than_positions_logs_a_warning(caplog):
+    """The alignment fix above pads a SHORT column to positions' length.
+    The other direction matters just as much: a column LONGER than
+    positions must not be silently truncated, because a future key read
+    through the same helper could reproduce the exact bug just fixed with
+    nothing to catch it.
+
+    This isn't hypothetical: SYSTEM_B_COLUMNS['measured_volts'] runs 2 rows
+    past where positions goes blank on every System-B pass sheet checked,
+    with genuine data in the overflow (e.g. lts_8232-1_194.xls Trim 1 has
+    5.021913 / 5.021891 past position's last real row). read_pass doesn't
+    read that column today, so today's output is fine either way — but the
+    guard has to be in the shared helper, not in a comment, because the
+    next key added through it won't come with a fixture to catch it by
+    hand. This test exercises the guard through `errors`, a key read_pass
+    already returns, by making its column artificially longer than
+    positions in a synthetic sheet shaped like System B's."""
+    df = pd.DataFrame({
+        0: [1.1, 2.2, 3.3],        # measured_volts (not read by read_pass)
+        1: [0, 1, 2],
+        2: [0.0, 0.5, 1.0],
+        3: [0.01, 0.02, 0.03],     # error: 3 real values...
+        4: [-1.0, 0.0, None],      # ...but position blank on row 2 -> n=2
+        5: [0.05, 0.05, None],
+        6: [-0.05, -0.05, None],
+    })
+    with caplog.at_level(logging.WARNING):
+        sweep = read_pass(df, SystemType.B, start_row=0)
+
+    # The guard doesn't change the output contract: still aligned, overflow
+    # dropped, not raised. It only has to stop being SILENT about it.
+    assert len(sweep["positions"]) == 2
+    assert sweep["errors"] == [0.01, 0.02]
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("errors" in msg and "3" in msg and "2" in msg for msg in warnings), (
+        f"expected a warning naming the key and both lengths, got: {warnings}")

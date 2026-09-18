@@ -6,6 +6,7 @@ recipe they are the record of what each cut did. Pass index 0 IS the
 untrimmed sweep and is already stored on the track row, so it never appears
 here.
 """
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,6 +14,8 @@ import pandas as pd
 
 from laser_trim_analyzer.core.models import SystemType
 from laser_trim_analyzer.utils.constants import SYSTEM_A_COLUMNS, SYSTEM_B_COLUMNS
+
+logger = logging.getLogger(__name__)
 
 # "SEC1 TRK1 2 TRM2" / "SEC1 TRK1 1" / "SEC1 TRK1 TRM"
 _A = re.compile(r"^(?P<sec>\S+)\s+(?P<trk>TRK\d)\s+(?P<rest>.+)$", re.I)
@@ -99,6 +102,44 @@ _A_PER_POINT: Dict[str, int] = {
 }
 
 
+def _aligned(df: pd.DataFrame, idx: int, start_row: int, n: int, key: str) -> List[Optional[float]]:
+    """Read column `idx` and force it to length `n` (positions' length).
+
+    `_col` only knows how to strip blanks trailing ITS OWN column; it has no
+    idea where the real sweep ends. `n` — positions' length — is the real
+    answer, so every other column is forced to match it here:
+
+    - Shorter than `n`: padded with None. This is the common, legitimate
+      case — an ignored point's error/limit is blank while position keeps
+      going (confirmed on both fixtures this module is tested against: DLTS
+      `SEC1 TRK1 2 TRM2` opens with 6 ignored points before the graded
+      window starts; LTS `Trim 1` closes with 6, positions 23..27.5 real,
+      ungraded).
+    - Longer than `n`: truncated, but LOUDLY. This should not normally
+      happen for a key `read_pass` already reads — but System B's own
+      `measured_volts` column (`SYSTEM_B_COLUMNS["measured_volts"]`, not
+      currently read here) runs 2 rows past where `positions` goes blank on
+      every System-B pass sheet checked, with genuine non-blank data in
+      those extra rows (e.g. `lts_8232-1_194.xls` `Trim 1`: 5.021913 and
+      5.021891 past position's last real row). A future key added through
+      this helper would silently reproduce the exact truncation-without-a-
+      trace bug this module was fixed for, so the overflow case logs
+      instead of vanishing quietly.
+    """
+    vals = _col(df, idx, start_row)
+    if len(vals) > n:
+        logger.warning(
+            "trim_passes.read_pass: column %r (index %d) returned %d values, "
+            "more than positions' %d; dropping the last %d row(s) rather than "
+            "let the sweep misalign. This may mean that column legitimately "
+            "outruns positions (as SYSTEM_B_COLUMNS['measured_volts'] does on "
+            "every System-B pass sheet checked) and should not be read through "
+            "this helper without a length policy of its own.",
+            key, idx, len(vals), n, len(vals) - n,
+        )
+    return (vals + [None] * n)[:n]
+
+
 def read_pass(df: pd.DataFrame, system: SystemType, start_row: int) -> Dict[str, Any]:
     """One pass sheet as a sweep. Keys mirror the track dict the parser builds.
 
@@ -106,34 +147,20 @@ def read_pass(df: pd.DataFrame, system: SystemType, start_row: int) -> Dict[str,
     those keys are ABSENT rather than empty, so a consumer can distinguish
     "this machine does not record it" from "it recorded nothing".
 
-    Every returned list is padded or truncated to the length of
-    `positions`, which is the anchor column: it is recorded for every
-    tested point, ignored or not. `_col` on its own only knows how to strip
-    blanks trailing ITS OWN column, and an ignored point's error/limit can
-    be blank in the middle or at either end of the sweep while position
-    keeps going — confirmed on both fixtures this module is tested against
-    (DLTS `SEC1 TRK1 2 TRM2` opens with 6 ignored points before the graded
-    window starts; LTS `Trim 1` closes with 6: positions 23..27.5 are real
-    but carry no error or limit). Without re-aligning to `positions` here,
-    those trailing/leading blanks would make errors/upper_limits/
-    lower_limits shorter than positions, silently shifting every later
-    value out of point-for-point alignment instead of leaving a gap.
+    Every returned list is aligned to the length of `positions` — see
+    `_aligned` for why, and for the overflow case it guards against.
     """
     cols = SYSTEM_A_COLUMNS if system == SystemType.A else SYSTEM_B_COLUMNS
     positions = _col(df, cols["position"], start_row)
     n = len(positions)
 
-    def _aligned(idx: int) -> List[Optional[float]]:
-        vals = _col(df, idx, start_row)
-        return (vals + [None] * n)[:n]
-
     out: Dict[str, Any] = {
         "positions": positions,
-        "errors": _aligned(cols["error"]),
-        "upper_limits": _aligned(cols["upper_limit"]),
-        "lower_limits": _aligned(cols["lower_limit"]),
+        "errors": _aligned(df, cols["error"], start_row, n, "errors"),
+        "upper_limits": _aligned(df, cols["upper_limit"], start_row, n, "upper_limits"),
+        "lower_limits": _aligned(df, cols["lower_limit"], start_row, n, "lower_limits"),
     }
     if system == SystemType.A:
         for key, idx in _A_PER_POINT.items():
-            out[key] = _aligned(idx)
+            out[key] = _aligned(df, idx, start_row, n, key)
     return out
