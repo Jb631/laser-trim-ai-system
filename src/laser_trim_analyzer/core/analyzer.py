@@ -430,6 +430,10 @@ class Analyzer:
             untrimmed_errors=track_data.get("untrimmed_errors"),
             # Number of laser-trim passes the equipment ran (from sheet count)
             trim_pass_count=track_data.get("trim_pass_count"),
+            # Per-pass sweep + recipe capture (parser -> model, Task 7 wiring).
+            # This is the analyzed (graded) track's constructor -- the one at
+            # processor.py's untrimmed-only branch handles the other case.
+            trim_passes=track_data.get("trim_passes") or [],
         )
 
     def _calculate_sigma(

@@ -304,6 +304,7 @@ class Processor:
                         test_volts=track_data.get("test_volts"),
                         untrimmed_positions=untrimmed_positions or None,
                         untrimmed_errors=untrimmed_errors or None,
+                        trim_passes=track_data.get("trim_passes") or [],
                     )
                     analyzed_tracks.append(track_result)
                     continue
@@ -442,6 +443,7 @@ class Processor:
                 tracks=analyzed_tracks,
                 data_quality=data_quality,
                 data_quality_issues=quality_issues,
+                trim_setup=parsed.get("trim_setup"),
             )
 
             logger.debug(f"Completed: {file_path.name} - {overall_status.value} "

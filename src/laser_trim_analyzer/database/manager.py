@@ -67,6 +67,14 @@ def _error_reason(analysis) -> Optional[str]:
     return text[:200] or None
 
 
+def _as_float(v):
+    """Float or None. Parameter sheets carry text in numeric cells."""
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 # app_meta key: how many "Unknown" model rows the re-parse migration last
 # looked at (post-fix). Its whole job is to keep that migration from redoing
 # work the parser has already refused, on every launch, forever.
@@ -1496,6 +1504,15 @@ class DatabaseManager:
             db_analysis = self._map_analysis_to_db(analysis)
             session.add(db_analysis)
             session.flush()  # Get ID before commit
+
+            # Per-pass sweep/recipe rows and the file's laser-setup row.
+            # db_analysis.tracks preserves the append order _map_analysis_to_db
+            # built it in, so zipping with analysis.tracks pairs each parser
+            # track's trim_passes with the matching freshly-flushed DBTrackResult
+            # (which now carries a real id).
+            for track, db_track in zip(analysis.tracks, db_analysis.tracks):
+                self._write_trim_passes(session, db_track, track)
+            self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
 
             # Record as processed file
             # ERROR results are marked success=False so they get retried
@@ -3475,6 +3492,70 @@ class DatabaseManager:
             plot_path=str(track.plot_path) if track.plot_path else None,
         )
 
+    def _write_trim_passes(self, session, db_track, track) -> None:
+        """Replace this track's pass rows. Idempotent: a reprocess refreshes."""
+        from laser_trim_analyzer.database.models import TrimPass
+        passes = getattr(track, "trim_passes", None) or []
+        session.query(TrimPass).filter(
+            TrimPass.track_result_id == db_track.id).delete(synchronize_session=False)
+        per_point = ("cut_lengths", "trim_currents", "pred_deltas",
+                     "used_deltas", "trim_target", "final_trim_value")
+        # pass_sheets has no dedup guard upstream: two differently-named sheets
+        # that normalise to the same leading number would produce two passes
+        # with the same pass_index and collide on the (track_result_id,
+        # pass_index) unique index. Never observed in a fixture, but an
+        # uncaught IntegrityError here would roll back the WHOLE analysis save
+        # -- the graded verdict along with it -- which is worse than losing
+        # one duplicate pass row. Tolerate it: keep the first occurrence
+        # (file/sheet order), drop the rest, and log so it's visible.
+        seen_indices = set()
+        for p in passes:
+            idx = p.get("pass_index")
+            if idx in seen_indices:
+                logger.warning(
+                    "Track %s: duplicate trim pass_index %r (sheet %r) -- "
+                    "keeping the first, dropping this one",
+                    db_track.track_id, idx, p.get("sheet"))
+                continue
+            seen_indices.add(idx)
+            recipe = {k: v for k, v in p.items()
+                      if k not in ("positions", "errors", "upper_limits",
+                                   "lower_limits", "pass_index", "sheet")
+                      and k not in per_point}
+            session.add(TrimPass(
+                track_result_id=db_track.id,
+                pass_index=idx,
+                sheet=p.get("sheet"),
+                label=str(p.get("label"))[:64] if p.get("label") else None,
+                positions=p.get("positions"), errors=p.get("errors"),
+                upper_limits=p.get("upper_limits"), lower_limits=p.get("lower_limits"),
+                **{k: p.get(k) for k in per_point},
+                laser_cut_length=_as_float(p.get("laser_cut_length_mm")
+                                           or p.get("laser_cut_length")),
+                laser_speed_high=_as_float(p.get("laser_speed_high")),
+                laser_speed_low=_as_float(p.get("laser_speed_low")),
+                trim_voltage=_as_float(p.get("trim_volts") or p.get("trim_voltage")),
+                trim_upper_tolerance=_as_float(p.get("trim_upper_tolerance")),
+                trim_lower_tolerance=_as_float(p.get("trim_lower_tolerance")),
+                recipe=recipe or None,
+            ))
+
+    def _write_trim_setup(self, session, analysis_id: int, setup) -> None:
+        """Replace this analysis's setup row. Idempotent."""
+        from laser_trim_analyzer.core.trim_setup import PROMOTED
+        from laser_trim_analyzer.database.models import TrimSetup
+        if not setup:
+            return
+        session.query(TrimSetup).filter(
+            TrimSetup.analysis_id == analysis_id).delete(synchronize_session=False)
+        row = TrimSetup(analysis_id=analysis_id, parameters=setup)
+        for key, column in PROMOTED.items():
+            if key in setup and getattr(row, column, None) is None:
+                value = setup[key]
+                setattr(row, column, value if column == "indexing_method"
+                        else _as_float(value))
+        session.add(row)
+
     @staticmethod
     def _map_status_enum(db_status, default=None):
         """Map DB status to AnalysisStatus, handling both enum and string values.
@@ -3748,13 +3829,22 @@ class DatabaseManager:
             session.flush()
 
             # Add new tracks
+            new_tracks = []
             for track in analysis.tracks:
                 db_track = self._map_track_to_db(track)
                 db_track.analysis_id = existing.id
                 session.add(db_track)
+                new_tracks.append((track, db_track))
 
-            # Flush to ensure changes are written
+            # Flush to ensure changes are written (also assigns each db_track's
+            # id -- set via the raw analysis_id FK above rather than the
+            # `tracks` relationship, so we pair track/db_track ourselves
+            # instead of trusting existing.tracks to already reflect them)
             session.flush()
+            for track, db_track in new_tracks:
+                self._write_trim_passes(session, db_track, track)
+            self._write_trim_setup(session, existing.id, getattr(analysis, 'trim_setup', None))
+
             logger.debug(f"Updated analysis ID {existing.id}: status={analysis.overall_status.value}")
             return existing.id
 
@@ -3762,6 +3852,9 @@ class DatabaseManager:
         db_analysis = self._map_analysis_to_db(analysis)
         session.add(db_analysis)
         session.flush()
+        for track, db_track in zip(analysis.tracks, db_analysis.tracks):
+            self._write_trim_passes(session, db_track, track)
+        self._write_trim_setup(session, db_analysis.id, getattr(analysis, 'trim_setup', None))
         return db_analysis.id
 
     # =========================================================================
