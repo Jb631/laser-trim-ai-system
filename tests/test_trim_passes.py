@@ -226,3 +226,110 @@ def test_pass_count_matching_recipe_count_still_joins_correctly():
     assert len(passes) == 2
     assert passes[0]["laser_cut_length_mm"] == 0.75
     assert passes[1]["laser_cut_length_mm"] == 0.88
+
+
+# ---------------------------------------------------------------------------
+# Fix round: start_row must never be inherited from the wrong sheet.
+#
+# _extract_track_data's start_row is only trustworthy when it was computed
+# against a REAL trimmed sheet. A track can reach _read_trim_passes via
+# _extract_untrimmed_only_track instead -- reachable on System A whenever
+# numbered pass sheets exist ("SEC1 TRK1 1", "SEC1 TRK1 2", ...) but none of
+# them (and no separate sheet) carries a "TRM" suffix: has_trm stays False,
+# highest_trm_sheet stays None, so _extract_system_a_tracks never picks a
+# trimmed_sheet at all even though trim_pass_count is > 0. In that path the
+# only sheet _extract_track_data ever reads is the untrimmed one, so its
+# start_row describes THAT sheet's layout, not the pass sheets'.
+#
+# No fixture on disk exhibits this sheet-naming gap, so it is constructed
+# directly here with a minimal synthetic workbook rather than hunted for.
+# ---------------------------------------------------------------------------
+
+def _write_min_system_a_sheet(writer, sheet_name, n_meta_rows, n_data_rows):
+    """Minimal System A sheet: `n_meta_rows` of non-numeric filler in the
+    position column (so _find_data_start must skip past them), then
+    `n_data_rows` of real position/error/limit data. Column indices match
+    SYSTEM_A_COLUMNS (error=6, position=7, upper_limit=8, lower_limit=9).
+    Returns the position values actually written, for the caller to assert
+    against.
+    """
+    grid = []
+    positions = []
+    for r in range(n_meta_rows + n_data_rows):
+        row = [None] * 10
+        if r < n_meta_rows:
+            row[0] = "META"          # non-numeric -> not a data-start candidate
+        else:
+            i = r - n_meta_rows
+            pos = float(i)
+            row[6] = round(0.01 * (i + 1), 4)   # error
+            row[7] = pos                         # position
+            row[8] = 0.05                        # upper_limit
+            row[9] = -0.05                        # lower_limit
+            positions.append(pos)
+        grid.append(row)
+    pd.DataFrame(grid).to_excel(writer, sheet_name=sheet_name, header=False, index=False)
+    return positions
+
+
+def test_untrimmed_only_track_computes_start_row_from_the_first_pass_sheet(tmp_path):
+    """Construct the gap directly: sheets "SEC1 TRK1 0/1/2" with 1/2 carrying
+    no TRM suffix at all, so the track is routed through
+    _extract_untrimmed_only_track even though it has 2 real pass sheets.
+
+    The untrimmed sheet ("...0") is given ONE EXTRA meta row the pass sheets
+    don't have, so its start_row (2) genuinely differs from the pass
+    sheets' own (1). Reusing the untrimmed sheet's start_row for the pass
+    sheets -- the pre-fix behaviour -- would read pass 1 one row late,
+    silently dropping its first real point (5 -> 4). The fix must recompute
+    start_row from the first pass sheet itself and recover all 5.
+    """
+    path = tmp_path / "9999_1_TEST.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        _write_min_system_a_sheet(writer, "SEC1 TRK1 0", n_meta_rows=2, n_data_rows=5)
+        pass1_positions = _write_min_system_a_sheet(writer, "SEC1 TRK1 1", n_meta_rows=1, n_data_rows=5)
+        _write_min_system_a_sheet(writer, "SEC1 TRK1 2", n_meta_rows=1, n_data_rows=5)
+
+    result = ExcelParser().parse_file(path)
+    track = result["tracks"][0]
+    # Confirms the gap is real, not a stale assumption about the fixture.
+    assert track["is_untrimmed_only"] is True
+    assert track["trim_pass_count"] == 2
+
+    passes = track["trim_passes"]
+    assert len(passes) == 2, "the fix must still find both pass sheets"
+    first = passes[0]
+    assert len(first["positions"]) == 5, (
+        "start_row must be computed from the pass sheet itself, not "
+        "inherited from the untrimmed sheet's different (longer-header) layout"
+    )
+    assert first["positions"][0] == pytest.approx(pass1_positions[0])
+    assert first["positions"] == pytest.approx(pass1_positions)
+
+
+def test_read_trim_passes_gives_up_when_no_start_row_is_determinable(tmp_path):
+    """If start_row is None (the untrimmed-only path) and even the first
+    pass sheet has no findable position data, _read_trim_passes must return
+    no passes rather than guess one (e.g. 0) -- a missing field is
+    recoverable, a silently wrong one is not."""
+    path = tmp_path / "9999_2_TEST.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        # No numeric data anywhere in the position column (col 7) -->
+        # _find_data_start can't locate a start row on this sheet.
+        pd.DataFrame([["META"] * 10] * 5).to_excel(
+            writer, sheet_name="SEC1 TRK1 1 TRM1", header=False, index=False)
+
+    xl = pd.ExcelFile(path)
+    assert ExcelParser()._first_pass_start_row(xl, SystemType.A, "SEC1 TRK1 1 TRM1") is None
+
+    out = ExcelParser()._read_trim_passes(xl, SystemType.A, "TRK1", None, recipes=[])
+    assert out == []
+
+
+def test_first_pass_start_row_matches_the_known_offset_on_a_real_fixture():
+    """Sanity check the new helper against a real, already-verified sheet:
+    SEC1 TRK1 2 TRM2 of the DLTS fixture is read at start_row=1 throughout
+    this file (see test_read_pass_returns_a_full_sweep above); the helper
+    must independently arrive at the same answer."""
+    xl = pd.ExcelFile(DLTS)
+    assert ExcelParser()._first_pass_start_row(xl, SystemType.A, "SEC1 TRK1 2 TRM2") == 1

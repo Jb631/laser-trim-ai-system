@@ -645,7 +645,18 @@ class ExcelParser:
 
             if track_data:
                 track_data["trim_pass_count"] = trim_pass_count
-                start_row = track_data.pop("start_row", 0)
+                start_row = track_data.pop("start_row", None)
+                if track_data.get("is_untrimmed_only"):
+                    # Came via _extract_untrimmed_only_track, which only
+                    # ever reads the untrimmed ("...0") sheet -- start_row
+                    # above belongs to THAT sheet's layout, not to any
+                    # numbered pass sheet found below, even though
+                    # trim_pass_count can still be > 0 here (has_trm can
+                    # stay False while numbered pass sheets exist, so no
+                    # trimmed_sheet is ever chosen). Not trustworthy for the
+                    # pass sheets; _read_trim_passes recomputes it from the
+                    # first pass sheet instead of guessing.
+                    start_row = None
                 track_data["trim_passes"] = self._read_trim_passes(
                     xl, SystemType.A, track_id, start_row, recipes)
                 tracks.append(track_data)
@@ -729,7 +740,11 @@ class ExcelParser:
 
             if track_data:
                 track_data["trim_pass_count"] = trim_pass_count
-                start_row = track_data.pop("start_row", 0)
+                start_row = track_data.pop("start_row", None)
+                if track_data.get("is_untrimmed_only"):
+                    # See the matching comment in _extract_system_a_tracks --
+                    # same gap, same fix.
+                    start_row = None
                 track_data["trim_passes"] = self._read_trim_passes(
                     xl, SystemType.B, sys_b_track_id, start_row, recipes)
                 tracks.append(track_data)
@@ -1084,9 +1099,16 @@ class ExcelParser:
                 "theory_volts": theory_volts,
                 "test_volts": test_volts,
                 # Internal bookkeeping only — popped off by the caller before
-                # the track dict is kept. Trim-pass sweeps share this sheet's
-                # header layout, so the caller reuses this instead of
-                # recomputing it per pass (see _read_trim_passes).
+                # the track dict is kept. Trim-pass sweeps normally share
+                # THIS sheet's header layout, so the caller reuses this
+                # instead of recomputing it per pass (see _read_trim_passes)
+                # — but only when this dict came from a real trimmed sheet.
+                # When it came via _extract_untrimmed_only_track, the
+                # `trimmed_sheet` parameter above IS the untrimmed sheet
+                # (that helper has no real trimmed sheet to pass), so this
+                # data_start belongs to the untrimmed sheet's layout, not
+                # any pass sheet — the caller must discard it rather than
+                # reuse it for passes.
                 "start_row": data_start,
             }
 
@@ -1141,17 +1163,46 @@ class ExcelParser:
             return recipes[idx - 1]
         return {}
 
+    def _first_pass_start_row(
+        self, xl: pd.ExcelFile, system_type: SystemType, sheet: str
+    ) -> Optional[int]:
+        """Header-row offset for one pass sheet, computed fresh against it.
+
+        Only used when the caller has no start_row already computed against
+        this track's own trimmed sheet — the untrimmed-only path never reads
+        one, since there is no trimmed sheet to read. Never raises: an
+        unreadable sheet and a readable one with no findable data start both
+        just yield None, and the caller treats either as "don't guess."
+        """
+        columns = SYSTEM_A_COLUMNS if system_type == SystemType.A else SYSTEM_B_COLUMNS
+        try:
+            df = pd.read_excel(xl, sheet_name=sheet, header=None)
+        except Exception:
+            return None
+        return self._find_data_start(df, columns["position"])
+
     def _read_trim_passes(
         self, xl: pd.ExcelFile, system_type: SystemType, track_id: str,
-        start_row: int, recipes: List[Dict[str, Any]]
+        start_row: Optional[int], recipes: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Sweeps for every pass after the untrimmed one, each joined to its recipe.
 
+        `start_row` is normally the header-row offset already computed for
+        this track's own trimmed sheet, reused here because every pass sheet
+        shares that sheet's layout. Pass None when no such value is
+        trustworthy (the untrimmed-only path, which never read a trimmed
+        sheet at all) — this then computes it fresh from the FIRST pass
+        sheet instead of silently reusing a start_row measured against a
+        different sheet's layout. If that can't be determined either, no
+        passes are read: a missing field is recoverable, a silently wrong
+        one — one garbage point at the head of every pass's sweep — is not.
+
         Never raises: a file whose pass sheets are malformed must still parse
-        for everything else. Returns [] when there is nothing to read. Each
-        pass is read in its own try/except so one malformed sheet is skipped
-        rather than discarding every pass already read for this track — real
-        production files are messy.
+        for everything else. Returns [] when there is nothing to read, or
+        nothing trustworthy to read it with. Each pass is read in its own
+        try/except so one malformed sheet is skipped rather than discarding
+        every pass already read for this track — real production files are
+        messy.
         """
         out: List[Dict[str, Any]] = []
         try:
@@ -1159,6 +1210,19 @@ class ExcelParser:
         except Exception:
             logger.warning("Could not list trim passes for track %s", track_id, exc_info=True)
             return out
+        if not sheets:
+            return out
+
+        if start_row is None:
+            start_row = self._first_pass_start_row(xl, system_type, sheets[0][1])
+            if start_row is None:
+                logger.warning(
+                    "No trustworthy start_row for track %s's pass sheets "
+                    "(first sheet %r gave none) — skipping trim_passes "
+                    "rather than read them at a guessed offset",
+                    track_id, sheets[0][1],
+                )
+                return out
 
         for idx, sheet in sheets:
             try:
